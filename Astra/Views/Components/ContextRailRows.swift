@@ -267,7 +267,7 @@ extension View {
     func railCard(
         cornerRadius: CGFloat = Stanford.railCardCornerRadius,
         fill: Color = Color(nsColor: .windowBackgroundColor),
-        strokeOpacity: Double = 0.06
+        strokeOpacity: Double = Stanford.strokeSubtle
     ) -> some View {
         liquidSurface(
             cornerRadius: cornerRadius,

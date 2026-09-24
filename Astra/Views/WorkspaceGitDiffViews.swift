@@ -179,7 +179,7 @@ struct ChangedFileDiffSheet: View {
                     .background(Stanford.panelBackground.opacity(0.78))
                     .overlay(
                         RoundedRectangle(cornerRadius: 7)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                            .stroke(Stanford.borderSubtle, lineWidth: 1)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                 }

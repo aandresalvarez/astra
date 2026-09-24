@@ -114,7 +114,7 @@ struct ComposerInputChipsView: View {
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(isMissing ? Stanford.poppy.opacity(0.45) : Color.primary.opacity(0.08), lineWidth: 1)
+                .stroke(isMissing ? Stanford.poppy.opacity(Stanford.strokeFocus) : Stanford.borderRest, lineWidth: 1)
         )
         .help(isMissing ? "\(path)\n\nMissing — macOS may have cleaned it out of the temporary folder." : path)
         .accessibilityLabel(isMissing ? "Missing task input \(name)" : "Task input \(name)")

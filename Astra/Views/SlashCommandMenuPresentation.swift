@@ -17,9 +17,7 @@ enum SlashCommandMenuPresentation {
     static let returnIconSize: CGFloat = 11
     static let dividerLeadingPadding: CGFloat = 50
     static let dividerTrailingPadding: CGFloat = 12
-    static let dividerOpacity = 0.12
     static let selectedBackgroundOpacity = 0.075
-    static let borderOpacity = 0.10
     static let shadowRadius: CGFloat = 8
     static let shadowOpacity = 0.08
     static let shadowYOffset: CGFloat = -2

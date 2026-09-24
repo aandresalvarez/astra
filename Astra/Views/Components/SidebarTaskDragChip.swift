@@ -21,7 +21,7 @@ struct SidebarTaskDragChip: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 7)
         .background(shape.fill(Stanford.cardBackground))
-        .overlay(shape.strokeBorder(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1))
+        .overlay(shape.strokeBorder(Stanford.borderRest, lineWidth: 1))
         .shadow(color: Color.black.opacity(0.18), radius: 8, y: 4)
     }
 }

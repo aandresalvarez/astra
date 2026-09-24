@@ -311,8 +311,7 @@ struct WorkspaceDockerSectionView: View {
     }
 
     private var rowDivider: some View {
-        Divider()
-            .opacity(0.22)
+        SubtleDivider()
             .padding(.leading, Self.rowIconFrame)
     }
 

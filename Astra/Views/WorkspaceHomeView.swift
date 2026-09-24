@@ -304,7 +304,7 @@ struct WorkspaceHomeView: View {
         }
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Color.primary.opacity(0.055))
+                .fill(Stanford.borderSubtle)
                 .frame(height: 1)
         }
         .accessibilityElement(children: .contain)
@@ -668,7 +668,7 @@ struct WorkspaceHomeView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                        .stroke(Stanford.borderSubtle, lineWidth: 1)
                 )
 
             Button {
@@ -1161,7 +1161,7 @@ struct WorkspaceHomeView: View {
                     .padding(.vertical, 6)
 
                 Rectangle()
-                    .fill(Color.primary.opacity(0.07))
+                    .fill(Stanford.borderSubtle)
                     .frame(height: 1)
 
                 WorkspaceInstructionEditorView(text: $editedInstructions, controller: instructionEditorController)
@@ -1172,7 +1172,7 @@ struct WorkspaceHomeView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(0.28), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
             )
 
             HStack(spacing: 10) {
@@ -1213,7 +1213,7 @@ struct WorkspaceHomeView: View {
 
     private var workspaceDivider: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.055))
+            .fill(Stanford.borderSubtle)
             .frame(height: 1)
             .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
     }
@@ -1388,7 +1388,7 @@ private struct WorkspaceSectionPanelModifier: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: WorkspaceHomePresentation.cardCornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: WorkspaceHomePresentation.cardCornerRadius, style: .continuous)
-                    .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+                    .stroke(Stanford.borderSubtle, lineWidth: 1)
             )
     }
 }

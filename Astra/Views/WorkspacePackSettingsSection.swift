@@ -27,7 +27,7 @@ struct WorkspacePackSettingsSection: View {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(presentation.rows.enumerated()), id: \.element.id) { index, row in
                             if index > 0 {
-                                Divider().opacity(0.4)
+                                SubtleDivider()
                             }
                             WorkspacePackSettingsRow(
                                 row: row,
@@ -42,7 +42,7 @@ struct WorkspacePackSettingsSection: View {
                 }
 
                 if !presentation.diagnostics.isEmpty {
-                    Divider().opacity(0.4)
+                    SubtleDivider()
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(presentation.diagnostics) { diagnostic in
                             WorkspacePackDiagnosticRow(diagnostic: diagnostic)

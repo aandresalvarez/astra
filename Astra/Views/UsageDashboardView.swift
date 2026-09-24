@@ -333,7 +333,7 @@ struct StatCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 }

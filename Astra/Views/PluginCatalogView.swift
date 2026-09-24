@@ -519,7 +519,7 @@ struct PluginCatalogView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
         .frame(maxWidth: .infinity)
     }
@@ -652,7 +652,7 @@ struct PluginCatalogView: View {
             .foregroundStyle(isSelected ? Stanford.lagunita : Color.primary)
             .background(shape.fill(isSelected ? Stanford.lagunita.opacity(0.10) : Color.primary.opacity(0.03)))
             .overlay {
-                shape.stroke(isSelected ? Stanford.lagunita.opacity(0.24) : Color.primary.opacity(0.04), lineWidth: 1)
+                shape.stroke(isSelected ? Stanford.lagunita.opacity(Stanford.strokeActive) : Stanford.borderSubtle, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
@@ -739,7 +739,7 @@ struct PluginCatalogView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+                    .stroke(Stanford.borderSubtle, lineWidth: 1)
             }
         }
     }
@@ -1292,7 +1292,7 @@ struct PluginCatalogView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+                                .stroke(Stanford.borderSubtle, lineWidth: 1)
                         }
                     }
                 }
@@ -1563,7 +1563,7 @@ struct PluginCatalogView: View {
                 .liquidSurface(
                     cornerRadius: Stanford.railCompactCardCornerRadius,
                     fallbackFill: Color.primary.opacity(0.018),
-                    fallbackStrokeOpacity: 0.045
+                    fallbackStrokeOpacity: Stanford.strokeSubtle
                 )
             }
         }
@@ -1650,7 +1650,7 @@ struct PluginCatalogView: View {
         let sourceKind = package.sourceMetadata?.kind ?? "local"
 
         if sourceKind == "built-in" {
-            Divider().opacity(0.35)
+            SubtleDivider()
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "lock.fill")
                     .font(Stanford.ui(10, weight: .semibold))
@@ -1662,7 +1662,7 @@ struct PluginCatalogView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         } else if sourceKind == "local" || sourceKind == "remote" {
-            Divider().opacity(0.35)
+            SubtleDivider()
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Library Package")
@@ -1717,7 +1717,7 @@ struct PluginCatalogView: View {
 
         if !links.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Divider().opacity(0.35)
+                SubtleDivider()
 
                 // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
                 // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
@@ -1748,7 +1748,7 @@ struct PluginCatalogView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+                        .stroke(Stanford.borderSubtle, lineWidth: 1)
                 }
             }
         }
@@ -2451,7 +2451,7 @@ struct PluginInstallSheet: View {
                 }
                 .background(Stanford.fog.opacity(0.45))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.06), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderSubtle, lineWidth: 1))
             }
         }
         .padding(14)
@@ -2459,7 +2459,7 @@ struct PluginInstallSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(validationPassed ? Stanford.paloAltoGreen.opacity(0.24) : Color.primary.opacity(0.08), lineWidth: 1)
+                .stroke(validationPassed ? Stanford.paloAltoGreen.opacity(Stanford.strokeActive) : Stanford.borderRest, lineWidth: 1)
         )
     }
 
@@ -2758,7 +2758,7 @@ struct PluginInstallSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+                .stroke(Stanford.borderSubtle, lineWidth: 1)
         )
     }
 

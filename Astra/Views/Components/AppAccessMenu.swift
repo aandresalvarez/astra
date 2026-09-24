@@ -167,7 +167,7 @@ private struct AppAccessAttachedDrawer: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         }
         .accessibilityIdentifier("AppAccessMenuDrawer")
     }

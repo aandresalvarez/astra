@@ -287,7 +287,7 @@ struct SettingsRuntimeTab: View {
     }
 
     private var settingsDivider: some View {
-        Divider().opacity(0.45)
+        SubtleDivider()
     }
 
     /// Silent while the field is empty: an untouched Vertex form should read as
@@ -781,7 +781,7 @@ private struct SettingsRuntimeCard<Content: View>: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 }

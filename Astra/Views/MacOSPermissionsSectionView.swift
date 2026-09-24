@@ -257,7 +257,7 @@ struct MacOSPermissionsSectionView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(summaryColor.opacity(0.22), lineWidth: 1)
+                .stroke(summaryColor.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .task(id: workspaceRoot) {
             guard checkedWorkspaceRoot != workspaceRoot else { return }

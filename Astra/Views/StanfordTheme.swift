@@ -275,10 +275,37 @@ enum Stanford {
     }
 
     // MARK: - Stroke Scale
-    // Rest (0.12) → resting borders; Active (0.22) → state-tinted; Focus (0.36) → keyboard ring. Pair with Color.primary or a status tint.
-    static let strokeRest: Double = 0.12
+    //
+    // Every border snaps to one of five steps. The strength steps are
+    // opacities, so they pair with `Color.primary` (neutral) or a tint:
+    // Subtle (0.06) → rows, chips, and dividers nested inside a card;
+    // Rest (0.08) → cards, inputs, pills; Separator → `Divider()` and every
+    // line between window regions; Active (0.22) → selected or state-tinted;
+    // Focus (0.36 at 1.5pt) → text-entry focus, drop targets, and errors.
+    // Keyboard focus rings keep `focusRing` at full strength for
+    // accessibility. ThemeTests scans the views for raw stroke opacities.
+    static let strokeSubtle: Double = 0.06
+    static let strokeRest: Double = 0.08
     static let strokeActive: Double = 0.22
     static let strokeFocus: Double = 0.36
+    static let strokeFocusWidth: CGFloat = 1.5
+    static let borderSubtle = Color.primary.opacity(strokeSubtle)
+    static let borderRest = Color.primary.opacity(strokeRest)
+    /// The system separator (10% in both appearances): the line `Divider()`
+    /// draws, for hand-drawn region edges and the sidebar's split divider.
+    static let separator = Color(nsColor: .separatorColor)
+
+    // MARK: - Fill Scale
+    //
+    // Interaction and wash fills, paired like the stroke scale with
+    // `Color.primary` or a tint: Soft (0.06) → resting soft controls, hint
+    // boxes, and hover; Pressed (0.12) → a pressed neutral control; Tint
+    // (0.10) → selected rows, active toggles, badges, and notices in any
+    // tint; Tint pressed (0.16) → a pressed tinted control.
+    static let fillSoft: Double = 0.06
+    static let fillPressed: Double = 0.12
+    static let fillTint: Double = 0.10
+    static let fillTintPressed: Double = 0.16
 
     // MARK: - Density Tokens
 
@@ -348,6 +375,16 @@ enum Stanford {
     static let panelBackground = Color(nsColor: .windowBackgroundColor)
     static let cardBackground = Color(nsColor: .textBackgroundColor)
     static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
+
+    // MARK: - Composer Surface
+    //
+    // The chat canvas is whatever macOS paints for the detail column, not
+    // `cardBackground`, so an opaque composer fill read as a white slab in
+    // light mode and a dark hole in dark mode. A translucent white wash lifts
+    // the composer one quiet step above the canvas in BOTH appearances;
+    // keyboard focus is carried by the lagunita stroke, not by the fill.
+    static let composerSurface = Color(light: 0xFFFFFF, dark: 0xFFFFFF, opacity: 0.5, darkOpacity: 0.05)
+    static let composerSurfaceFocused = Color(light: 0xFFFFFF, dark: 0xFFFFFF, opacity: 0.7, darkOpacity: 0.07)
 }
 
 // MARK: - Color Extension for Hex
@@ -369,8 +406,9 @@ extension Color {
     /// .dark mode, selected by the current `NSAppearance` at draw time.
     /// This is how every brand hue in `Stanford` composes its dark
     /// variant — when macOS flips appearance, AppKit re-resolves the
-    /// dynamic color on our behalf.
-    init(light: UInt, dark: UInt, opacity: Double = 1.0) {
+    /// dynamic color on our behalf. `darkOpacity` overrides `opacity` in
+    /// .dark mode, for washes that need a different strength per appearance.
+    init(light: UInt, dark: UInt, opacity: Double = 1.0, darkOpacity: Double? = nil) {
         let dynamic = NSColor(name: nil) { appearance in
             let wantsDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             let hex = wantsDark ? dark : light
@@ -378,7 +416,7 @@ extension Color {
                 srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
                 green:   CGFloat((hex >>  8) & 0xFF) / 255,
                 blue:    CGFloat((hex >>  0) & 0xFF) / 255,
-                alpha:   CGFloat(opacity)
+                alpha:   CGFloat(wantsDark ? (darkOpacity ?? opacity) : opacity)
             )
         }
         self.init(nsColor: dynamic)
@@ -395,7 +433,7 @@ struct StanfordCardStyle: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium))
             .overlay(
                 RoundedRectangle(cornerRadius: Stanford.radiusMedium)
-                    .stroke(Color.primary.opacity(Stanford.strokeRest), lineWidth: 1)
+                    .stroke(Stanford.borderRest, lineWidth: 1)
             )
     }
 }
@@ -440,9 +478,23 @@ struct StanfordButtonStyle: ButtonStyle {
 
     private var strokeColor: Color {
         if !isEnabled {
-            return Color.secondary.opacity(0.12)
+            return Stanford.borderSubtle
         }
-        return isPrimary ? color.opacity(0.0) : Color.secondary.opacity(0.25)
+        return isPrimary ? color.opacity(0) : Stanford.borderRest
+    }
+}
+
+/// The Subtle stroke step as a divider, for rows and columns inside a card,
+/// table, or menu. Breaks between regions use the system `Divider()`. The
+/// vertical axis fills the height it is proposed, so place it where that
+/// height is known (a row overlay), not in a vertically unbounded stack.
+struct SubtleDivider: View {
+    var axis: Axis = .horizontal
+
+    var body: some View {
+        Rectangle()
+            .fill(Stanford.borderSubtle)
+            .frame(width: axis == .vertical ? 1 : nil, height: axis == .horizontal ? 1 : nil)
     }
 }
 
@@ -456,7 +508,7 @@ extension View {
         cornerRadius: CGFloat = 10,
         interactive: Bool = false,
         fallbackFill: Color = Color(nsColor: .windowBackgroundColor),
-        fallbackStrokeOpacity: Double = 0.06
+        fallbackStrokeOpacity: Double = Stanford.strokeSubtle
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 

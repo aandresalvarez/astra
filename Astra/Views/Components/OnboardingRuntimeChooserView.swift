@@ -32,7 +32,7 @@ struct OnboardingRuntimeChooserView: View {
             ForEach(primaryRows) { presentation in
                 runtimeRow(presentation)
                 if presentation.id != primaryRows.last?.id || !additionalRows.isEmpty {
-                    Divider().opacity(0.52)
+                    SubtleDivider()
                 }
             }
 
@@ -42,7 +42,7 @@ struct OnboardingRuntimeChooserView: View {
                 DisclosureGroup(isExpanded: $showsAdditionalRuntimes) {
                     VStack(spacing: 0) {
                         ForEach(additionalRows) { presentation in
-                            Divider().opacity(0.52)
+                            SubtleDivider()
                             runtimeRow(presentation)
                         }
                     }
@@ -56,14 +56,14 @@ struct OnboardingRuntimeChooserView: View {
                 .accessibilityLabel("More runtimes, \(additionalRows.count)")
             }
 
-            Divider().opacity(0.52)
+            SubtleDivider()
             recheckFooter
         }
         .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
-                .stroke(Stanford.sandstone.opacity(0.34), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         }
     }
 
@@ -127,8 +127,8 @@ struct OnboardingRuntimeChooserView: View {
             ZStack {
                 Circle()
                     .stroke(
-                        presentation.isSelected ? Stanford.interactive : Stanford.sandstone.opacity(0.72),
-                        lineWidth: 1.5
+                        presentation.isSelected ? Stanford.interactive : Stanford.textTertiary,
+                        lineWidth: Stanford.strokeFocusWidth
                     )
                 if presentation.isSelected {
                     Circle()

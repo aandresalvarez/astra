@@ -3169,7 +3169,7 @@ private struct ContentDetailAreaView: View {
         .overlay(alignment: .leading) {
             ZStack(alignment: .leading) {
                 Rectangle()
-                    .fill(Color.primary.opacity(0.10))
+                    .fill(Stanford.separator)
                     .frame(width: 1)
 
                 shelfResizeHandle(for: item, availableWidth: availableWidth)
@@ -3721,7 +3721,7 @@ struct WorkspaceSetupForm: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(focusedField == .name ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
+                            .stroke(focusedField == .name ? Stanford.focusRing : Stanford.borderRest, lineWidth: 1)
                     )
                     .focused($focusedField, equals: .name)
                     .accessibilityLabel("Workspace name")
@@ -3758,7 +3758,7 @@ struct WorkspaceSetupForm: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(focusedField == .guidance ? Stanford.focusRing : Color.secondary.opacity(0.20), lineWidth: 1)
+                                .stroke(focusedField == .guidance ? Stanford.focusRing : Stanford.borderRest, lineWidth: 1)
                         )
                         .focused($focusedField, equals: .guidance)
                         .accessibilityLabel("Workspace guidance")
@@ -3877,7 +3877,7 @@ struct WorkspaceSetupForm: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Stanford.sandstone.opacity(0.22), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
@@ -3997,7 +3997,7 @@ struct WorkspaceSetupForm: View {
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(isSelected ? Stanford.lagunita.opacity(0.22) : Stanford.sandstone.opacity(0.16), lineWidth: 1)
+                .stroke(isSelected ? Stanford.lagunita.opacity(Stanford.strokeActive) : Stanford.borderSubtle, lineWidth: 1)
         )
     }
 
