@@ -113,17 +113,19 @@ struct ProviderTranscriptConformanceTests {
         // next message's first line (messages are appended without a
         // separator), at most once per such boundary; anything else is text
         // the provider never sent.
+        let unsent = lineCounts(output).filter { sent[$0.key] == nil }
         let joins = truth.boundaryJoins
-        report(.noUnsentLines, of: fixture, failures: lineCounts(output).sorted { $0.key < $1.key }.compactMap { line, count in
-            guard sent[line] == nil else { return nil }
-            let boundaries = joins[line] ?? 0
-            if boundaries == 0 {
-                return (line, "line the provider never sent: \(line.prefix(80))")
-            }
-            return count <= boundaries
-                ? nil
-                : (line, "boundary join recorded \(count)x across \(boundaries) boundary(ies): \(line.prefix(80))")
-        })
+        var unsentFailures: [(item: String, message: String)] = unsent.keys.sorted().compactMap { line in
+            joins.keys.contains { $0.contains(line) } ? nil : (line, "line the provider never sent: \(line.prefix(80))")
+        }
+        // A boundary's spellings share one budget: with or without a space,
+        // the boundary joins once.
+        for (spellings, boundaries) in joins.sorted(by: { $0.key.sorted().joined() < $1.key.sorted().joined() }) {
+            let used = spellings.reduce(0) { $0 + (unsent[$1] ?? 0) }
+            guard used > boundaries, let line = spellings.filter({ unsent[$0] != nil }).sorted().first else { continue }
+            unsentFailures.append((line, "boundary join recorded \(used)x across \(boundaries) boundary(ies): \(line.prefix(80))"))
+        }
+        report(.noUnsentLines, of: fixture, failures: unsentFailures)
 
         // Collapsed comparisons ignore line breaks, so each message present in
         // the output must also keep its lines and blank-line paragraph breaks.
@@ -170,12 +172,18 @@ struct ProviderTranscriptConformanceTests {
             ("", "provider order \(expectedSteps), recorded \(actualSteps)")
         ])
 
-        // The durable transcript is the response rows, not run.output: every
-        // message, each copy the provider sent, must reach them.
-        report(.messagesInResponseRows, of: fixture, failures: truth.messages.indices.compactMap { index in
-            seenMessages.contains(index)
+        // The durable transcript is the response rows, not run.output: each
+        // message must reach them exactly as many times as the provider sent
+        // it, no copy missing and none extra.
+        let collapsedRows = collapsed(responseSoFar)
+        report(.messagesInResponseRows, of: fixture, failures: truth.messages.enumerated().compactMap { index, message in
+            let text = collapsed(message)
+            guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
+            let expected = expectedMultiplicity[text] ?? 1
+            let occurrences = collapsedRows.components(separatedBy: text).count - 1
+            return occurrences == expected
                 ? nil
-                : (truth.messages[index], "message missing from agent.response rows: \(truth.messages[index].prefix(80))")
+                : (message, "in agent.response rows \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
         let recordedOutcomes = multiset(events.compactMap { event -> String? in
@@ -591,10 +599,11 @@ struct ProviderStreamTruth {
     /// Task ids of the subagents the provider started and finished.
     private(set) var subagentStarts: [String] = []
     private(set) var subagentCompletions: [String] = []
-    /// Collapsed "last line of a message + first line of the next message",
-    /// counted per boundary: the only lines, besides the provider's own, that
-    /// appending messages without a separator can produce, once each.
-    private(set) var boundaryJoins: [String: Int] = [:]
+    /// The spellings of "last line of a message + first line of the next
+    /// message" (with or without a space), and how many boundaries produce
+    /// them: the only lines, besides the provider's own, that appending
+    /// messages without a separator can produce, once per boundary.
+    private(set) var boundaryJoins: [Set<String>: Int] = [:]
     /// The message the user asked for: the drafted reply in the
     /// answer-write-signoff scenario, otherwise the last message.
     private(set) var answer: String?
@@ -795,10 +804,7 @@ struct ProviderStreamTruth {
         for (earlier, later) in zip(messages, messages.dropFirst()) {
             let lastLine = earlier.components(separatedBy: "\n").last ?? ""
             let firstLine = later.components(separatedBy: "\n").first ?? ""
-            // Either spelling of the join, but one boundary is one join.
-            for join in Set([collapsed(lastLine + firstLine), collapsed(lastLine + " " + firstLine)]) {
-                boundaryJoins[join, default: 0] += 1
-            }
+            boundaryJoins[Set([collapsed(lastLine + firstLine), collapsed(lastLine + " " + firstLine)]), default: 0] += 1
         }
 
         answer = messages.first { $0.contains("Suggested reply") } ?? messages.last
@@ -859,7 +865,11 @@ private func isRawProviderFrame(_ line: String) -> Bool {
     if let object = (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) as? [String: Any] {
         return object["type"] != nil || object["event"] != nil
     }
-    return trimmed.range(of: #"\{"[A-Za-z_]+"\s*:.*"(?:type|event)"\s*:\s*""#, options: .regularExpression) != nil
+    // The discriminator can be the object's first key or a later one.
+    return trimmed.range(
+        of: #"\{\s*"(?:type|event)"\s*:\s*"|\{\s*"[^"]+"\s*:.*"(?:type|event)"\s*:\s*""#,
+        options: .regularExpression
+    ) != nil
 }
 
 private let extraLineSeparator = "\u{1F}"

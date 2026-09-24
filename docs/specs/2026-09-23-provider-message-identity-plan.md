@@ -269,8 +269,8 @@ Status: landed with this plan, except the OpenCode capture.
   through the real adapter, pipeline and recorder, using the
   `HeadlessChatHarness` pattern with a fake CLI that `cat`s the fixture. For
   every provider and scenario it asserts:
-  - every provider message appears in `run.output` exactly once, and in the
-    durable `agent.response` rows;
+  - every provider message appears in `run.output`, and in the durable
+    `agent.response` rows, exactly as many times as the provider sent it;
   - there are no duplicated lines beyond what the provider sent;
   - no raw provider JSON appears in the text, whatever its key order;
   - tool calls are recorded;
@@ -301,9 +301,10 @@ Status: landed with this plan, except the OpenCode capture.
   duplicated lines under the 80-character echo floor, or errors that start
   with "Configured value for". Any other failure of the same check is a real
   failure.
-- The suite landed with 18 known issues across 4 fixtures, all matching
+- The suite landed with 19 known issues across 4 fixtures, all matching
   production symptoms or the captures:
-  - Claude: short closing message doubled, hollow echo lines, answer not shown.
+  - Claude: short closing message doubled (in the output and the response
+    rows), hollow echo lines, answer not shown.
   - Copilot: answer not shown; `apply_patch` write not recorded; session id
     not recorded.
   - Codex: run failed by warning items, earlier messages lost, no
@@ -320,8 +321,8 @@ Status: landed with this plan, except the OpenCode capture.
 ### Phase 1: core types, ledger and Claude
 
 Status: implemented. The Claude `answer-write-signoff` fixture no longer
-doubles its closing message or records hollow echo lines; its only known
-issue left is the hidden answer (Phase 3).
+doubles its closing message, in the output or the response rows, or records
+hollow echo lines; its only known issue left is the hidden answer (Phase 3).
 
 - The fragment type and new cases, the per-key pipeline filters, the ledger, the
   commit event, and the monitor change.
