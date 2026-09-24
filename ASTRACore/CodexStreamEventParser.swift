@@ -90,7 +90,8 @@ public enum CodexStreamEventParser {
             return [commandToolUseEvent(from: item)]
         }
         if itemType == "file_change" {
-            return [fileChangeEvent(from: item) ?? .control(type: "item.started.file_change")]
+            // A started patch has not been applied yet, and may never be.
+            return [.control(type: "item.started.file_change")]
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             return [.control(type: "item.started.\(itemType)")]
@@ -115,6 +116,10 @@ public enum CodexStreamEventParser {
             return [.toolResult(id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item))]
         }
         if itemType == "file_change" {
+            if let status = string(in: item, keys: ["status"])?.lowercased(),
+               failedItemStatuses.contains(status) {
+                return [.control(type: "item.completed.file_change.\(status)")]
+            }
             return [fileChangeEvent(from: item) ?? .control(type: "item.completed.file_change")]
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
@@ -161,6 +166,9 @@ public enum CodexStreamEventParser {
             .joined(separator: "\n")
         return summary.isEmpty ? "command_execution completed" : summary
     }
+
+    /// A completed item in one of these states changed nothing on disk.
+    private static let failedItemStatuses: Set<String> = ["failed", "declined", "rejected", "cancelled", "canceled", "error"]
 
     private static func fileChangeEvent(from item: [String: Any]) -> AgentEvent? {
         guard let path = string(in: item, keys: ["path", "file_path", "filePath", "filename", "name"]) else {

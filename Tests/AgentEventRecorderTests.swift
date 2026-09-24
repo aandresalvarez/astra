@@ -592,7 +592,7 @@ struct AgentEventRecorderTests {
         }
         #expect(toolName == "Edit")
         #expect(toolID == "tool-1")
-        guard case .fileChange(let path, let kind, _, let oldString, let newString) = agentEvents.last else {
+        guard case .fileChange(let path, let kind, _, let oldString, let newString, let toolUseID) = agentEvents.last else {
             Issue.record("Expected Edit tool use to map to .fileChange")
             return
         }
@@ -600,6 +600,7 @@ struct AgentEventRecorderTests {
         #expect(kind == "Edit")
         #expect(oldString == "let x = 1")
         #expect(newString == "let x = 2")
+        #expect(toolUseID == "tool-1")
 
         for agentEvent in agentEvents {
             AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
@@ -608,6 +609,165 @@ struct AgentEventRecorderTests {
         #expect(run.fileChanges.count == 1)
         #expect(run.fileChanges.first?.oldString == "let x = 1")
         #expect(run.fileChanges.first?.newString == "let x = 2")
+    }
+
+    @Test("A Claude Write is recorded when its result succeeds, not when the tool is called")
+    func claudeWriteWaitsForItsResult() throws {
+        let fixture = try makeToolFixture()
+        record(.toolUse(name: "Write", id: "tool-w", input: ["file_path": "/tmp/report.md", "content": "rows"]), in: fixture)
+
+        #expect(fixture.run.fileChanges.isEmpty)
+        #expect(fixture.task.artifacts.isEmpty)
+
+        record(.toolResult(toolId: "tool-w", content: "File created", isError: false), in: fixture)
+
+        #expect(fixture.run.fileChanges.map(\.path) == ["/tmp/report.md"])
+        #expect(fixture.run.fileChanges.map(\.kind) == [.write])
+        #expect(fixture.task.artifacts.map(\.path) == ["/tmp/report.md"])
+    }
+
+    @Test("A Claude Write whose result is an error leaves no file change and no artifact")
+    func claudeFailedWriteIsNotRecorded() throws {
+        let fixture = try makeToolFixture()
+        record(.toolUse(name: "Write", id: "tool-w", input: ["file_path": "/tmp/denied.md", "content": "x"]), in: fixture)
+        record(.toolResult(toolId: "tool-w", content: "Permission denied", isError: true), in: fixture)
+
+        #expect(fixture.run.fileChanges.isEmpty)
+        #expect(fixture.task.artifacts.isEmpty)
+        #expect(fixture.task.events.contains { $0.type == TaskEventTypes.Tool.resultFailed.rawValue })
+    }
+
+    @Test("A Claude Write denied by permission leaves no file change")
+    func claudePermissionDeniedWriteIsNotRecorded() throws {
+        let fixture = try makeToolFixture()
+        record(.toolUse(name: "Write", id: "tool_denied", input: ["file_path": "/tmp/denied.md", "content": "x"]), in: fixture)
+        // Claude's parser turns a denied tool_result into a denial carrying
+        // the tool-use id, not an error result.
+        let line = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_denied","is_error":true,"content":"Permission denied"}]}}"#
+        for parsed in StreamEventParser.parseAll(line: line) {
+            record(parsed, in: fixture)
+        }
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: fixture.state,
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext
+        )
+
+        #expect(fixture.run.fileChanges.isEmpty)
+        #expect(fixture.task.artifacts.isEmpty)
+    }
+
+    @Test("A Claude Edit keeps its diff when its result succeeds and is dropped when it fails")
+    func claudeEditFollowsItsResult() throws {
+        let fixture = try makeToolFixture()
+        func edit(_ id: String, _ old: String, _ new: String) -> ParsedEvent {
+            .toolUse(name: "Edit", id: id, input: ["file_path": "/tmp/plan.md", "old_string": old, "new_string": new])
+        }
+        record(edit("edit-ok", "v1", "v2"), in: fixture)
+        record(edit("edit-bad", "missing", "v3"), in: fixture)
+        record(.toolResult(toolId: "edit-bad", content: "old_string not found", isError: true), in: fixture)
+        record(.toolResult(toolId: "edit-ok", content: "Edited", isError: false), in: fixture)
+
+        #expect(fixture.run.fileChanges.map(\.newString) == ["v2"])
+        #expect(fixture.run.fileChanges.first?.oldString == "v1")
+    }
+
+    @Test("A tool file change whose result never arrived is kept when the run's events are drained")
+    func unresolvedToolFileChangesAreCommittedAtRunEnd() throws {
+        let fixture = try makeToolFixture()
+        record(.toolUse(name: "Write", id: "tool-w", input: ["file_path": "/tmp/late.md", "content": "x"]), in: fixture)
+        #expect(fixture.run.fileChanges.isEmpty)
+
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: fixture.state,
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext
+        )
+
+        #expect(fixture.run.fileChanges.map(\.path) == ["/tmp/late.md"])
+        // Committed once: a second drain finds nothing left.
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: fixture.state,
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext
+        )
+        #expect(fixture.run.fileChanges.count == 1)
+    }
+
+    @Test("Changes left without a result are committed in the order their calls came")
+    func unresolvedToolFileChangesKeepCallOrder() throws {
+        let fixture = try makeToolFixture()
+        func edit(_ id: String, _ old: String, _ new: String) -> ParsedEvent {
+            .toolUse(name: "Edit", id: id, input: ["file_path": "/tmp/plan.md", "old_string": old, "new_string": new])
+        }
+        record(edit("z-first", "v1", "v2"), in: fixture)
+        record(edit("a-second", "v2", "v3"), in: fixture)
+
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: fixture.state,
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext
+        )
+
+        #expect(fixture.run.fileChanges.map(\.newString) == ["v2", "v3"])
+    }
+
+    @Test("A file change with no tool-use id is recorded at once, as providers without ids need")
+    func fileChangeWithoutToolIDIsRecordedImmediately() throws {
+        let fixture = try makeToolFixture()
+        AgentEventRecorder.recordCodexEvent(
+            .fileChange(path: "/tmp/codex.md", kind: "modified", summary: "Patched"),
+            to: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext,
+            recordingState: fixture.state
+        )
+
+        #expect(fixture.run.fileChanges.map(\.path) == ["/tmp/codex.md"])
+    }
+
+    @Test("Codex records a file change only once its item completes, and not when it failed")
+    func codexFileChangesWaitForASuccessfulCompletion() {
+        func parsed(_ line: String) -> [AgentEvent] { CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true) }
+        func isFileChange(_ events: [AgentEvent]) -> Bool {
+            events.contains { if case .fileChange = $0 { true } else { false } }
+        }
+
+        #expect(!isFileChange(parsed(#"{"type":"item.started","item":{"id":"i1","type":"file_change","path":"a.md","kind":"add","status":"in_progress"}}"#)))
+        #expect(!isFileChange(parsed(#"{"type":"item.completed","item":{"id":"i1","type":"file_change","path":"a.md","kind":"add","status":"failed"}}"#)))
+        #expect(isFileChange(parsed(#"{"type":"item.completed","item":{"id":"i1","type":"file_change","path":"a.md","kind":"add","status":"completed"}}"#)))
+    }
+
+    private struct ToolFixture {
+        let container: ModelContainer
+        let task: AgentTask
+        let run: TaskRun
+        let state: AgentEventRecordingState
+    }
+
+    private func makeToolFixture() throws -> ToolFixture {
+        let container = try makeAgentEventRecorderContainer()
+        let task = AgentTask(title: "Tools", goal: "Write files")
+        let run = TaskRun(task: task)
+        container.mainContext.insert(task)
+        container.mainContext.insert(run)
+        return ToolFixture(container: container, task: task, run: run, state: AgentEventRecordingState())
+    }
+
+    private func record(_ parsed: ParsedEvent, in fixture: ToolFixture) {
+        for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+            AgentEventRecorder.recordClaudeEvent(
+                agentEvent,
+                to: fixture.task,
+                run: fixture.run,
+                modelContext: fixture.container.mainContext,
+                recordingState: fixture.state
+            )
+        }
     }
 
     @Test("Claude preserves every edit to the same file within one run, not just the first")

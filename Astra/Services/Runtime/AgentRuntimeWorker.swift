@@ -1150,6 +1150,12 @@ final class AgentRuntimeWorker {
             }
         }
         await pendingEvents.drainAll()
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: recordingState,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
             homeDirectory: launchSettings.homeDirectory,
             task: task,
