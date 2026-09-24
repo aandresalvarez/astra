@@ -87,7 +87,7 @@ struct CapabilityMCPServerDraftEditor: View {
                 .padding(6)
                 .background(Color(nsColor: .textBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderRest, lineWidth: 1))
         }
     }
 }

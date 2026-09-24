@@ -358,12 +358,12 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
 
     private func buttonStroke(_ action: TaskDecisionDockAction, isPrimary: Bool) -> Color {
         if !action.isEnabled {
-            return Color.secondary.opacity(0.12)
+            return Stanford.borderSubtle
         }
         if isQuiet(action) {
             return .clear
         }
-        return isPrimary ? toneColor.opacity(0) : Color.secondary.opacity(0.18)
+        return isPrimary ? toneColor.opacity(0) : Stanford.borderRest
     }
 
     private func isQuiet(_ action: TaskDecisionDockAction) -> Bool {

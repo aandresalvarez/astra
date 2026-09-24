@@ -85,7 +85,7 @@ struct RuntimeSetupSection: View {
             }
 
             if !remediationViewIsEmpty {
-                Divider().opacity(0.45)
+                SubtleDivider()
                 remediationView
             }
 
@@ -108,7 +108,7 @@ struct RuntimeSetupSection: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(tint.opacity(0.24), lineWidth: 1)
+                .stroke(tint.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(presentation.title), \(chipLabel(for: presentation.state))")
@@ -287,7 +287,7 @@ struct RuntimeSetupSection: View {
     @ViewBuilder
     private var installStatusView: some View {
         if let installState = model.installState, installState.runtime == model.selectedRuntime {
-            Divider().opacity(0.45)
+            SubtleDivider()
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
@@ -308,7 +308,7 @@ struct RuntimeSetupSection: View {
                     .accessibilityLabel("Cancel install")
             }
         } else if let result = model.installResult, result.runtime == model.selectedRuntime {
-            Divider().opacity(0.45)
+            SubtleDivider()
             installResultRow(result)
         }
     }
@@ -513,12 +513,12 @@ struct RuntimeSetupSection: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
     private var rowDivider: some View {
-        Divider().opacity(0.45).padding(.leading, 34)
+        SubtleDivider().padding(.leading, 34)
     }
 
     /// Which computed catalog group a row is rendered under. The heading

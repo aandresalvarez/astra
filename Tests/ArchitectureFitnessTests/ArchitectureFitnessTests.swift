@@ -1956,7 +1956,7 @@ struct ArchitectureFitnessTests {
             // already being run rather than during launch preflight.
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_950, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
-            "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_550, .owner("Shelf markdown panel")),
+            "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_460, .owner("Shelf markdown panel")),
             // Budget raised for Track A4 (ASTRAPersistence extraction): every
             // public struct now needs an explicit `public init` (Swift's
             // synthesized memberwise init is always internal, even for an

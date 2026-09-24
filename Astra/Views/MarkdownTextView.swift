@@ -441,21 +441,28 @@ struct MarkdownTextView: View, Equatable {
                                     .frame(width: columnWidths[colIdx], alignment: alignment.frameAlignment)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 8)
-
-                                if colIdx < table.columnCount - 1 {
-                                    Divider()
-                                        .opacity(0.25)
+                            }
+                        }
+                        // Column separators ride on the whole row, so they span
+                        // its tallest cell; a sibling in this top-aligned,
+                        // vertically unbounded HStack would size to a stub.
+                        .overlay(alignment: .leading) {
+                            // Each separator sits independently at its column's
+                            // trailing edge (cell width plus 12pt padding each
+                            // side), so none consumes width and pushes the next.
+                            ZStack(alignment: .leading) {
+                                ForEach(0..<max(table.columnCount - 1, 0), id: \.self) { colIdx in
+                                    SubtleDivider(axis: .vertical)
+                                        .offset(x: columnWidths.prefix(colIdx + 1).reduce(0, +) + CGFloat(colIdx + 1) * 24)
                                 }
                             }
                         }
                         .background(rowIdx == 0 ? Stanford.fog.opacity(0.5) : (rowIdx % 2 == 0 ? Stanford.fog.opacity(0.2) : Color.clear))
 
                         if rowIdx == 0 {
-                            Divider()
-                                .opacity(0.35)
+                            SubtleDivider()
                         } else if table.rows.count >= 5 && rowIdx < table.rows.count - 1 {
-                            Divider()
-                                .opacity(0.16)
+                            SubtleDivider()
                         }
                     }
                 }
@@ -479,7 +486,7 @@ struct MarkdownTextView: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.sandstone.opacity(0.3), lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderSubtle, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -596,9 +603,9 @@ struct MarkdownTextView: View, Equatable {
     }
 
     private static func tableRenderedWidth(_ widths: [CGFloat], columnCount: Int) -> CGFloat {
-        let dividerWidth = max(0, columnCount - 1)
-        let horizontalPadding = CGFloat(columnCount) * 24
-        return widths.reduce(0, +) + horizontalPadding + CGFloat(dividerWidth)
+        // Cells plus 12pt padding on each side; column separators are drawn in
+        // a row overlay and take no width of their own.
+        widths.reduce(0, +) + CGFloat(columnCount) * 24
     }
 
     private static func numericTableColumns(_ rows: [[String]], columnCount: Int) -> Set<Int> {
@@ -1185,7 +1192,7 @@ private struct SuggestedNextStepControls: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
             )
             .help("Move this suggestion into the composer")
 
@@ -1262,7 +1269,7 @@ private struct SuggestedNextActionChips: View {
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(Stanford.lagunita.opacity(0.16), lineWidth: 1)
+                .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
         )
         .help("Move \"\(action.title)\" into the composer")
         .accessibilityLabel("Pursue suggestion: \(action.title)")

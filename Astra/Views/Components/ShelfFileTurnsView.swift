@@ -159,7 +159,7 @@ struct ShelfFileTurnsView: View {
             .padding(.trailing, 10)
             .padding(.vertical, 5)
             .contentShape(Rectangle())
-            .background(isSelected ? Stanford.lagunita.opacity(0.10) : Color.clear)
+            .background(isSelected ? Stanford.lagunita.opacity(Stanford.fillTint) : Color.clear)
             .opacity(entry.exists ? 1 : 0.55)
         }
         .buttonStyle(.plain)

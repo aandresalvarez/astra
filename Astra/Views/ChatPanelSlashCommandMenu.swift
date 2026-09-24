@@ -94,8 +94,7 @@ struct ChatPanelSlashCommandMenu: View {
                 optionRow(option, at: index)
 
                 if SlashCommandMenuPresentation.usesIconColumnDividers && index < options.count - 1 {
-                    Divider()
-                        .opacity(SlashCommandMenuPresentation.dividerOpacity)
+                    SubtleDivider()
                         .padding(.leading, SlashCommandMenuPresentation.dividerLeadingPadding)
                         .padding(.trailing, SlashCommandMenuPresentation.dividerTrailingPadding)
                 }
@@ -107,7 +106,7 @@ struct ChatPanelSlashCommandMenu: View {
         .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)
-                .stroke(Color.primary.opacity(SlashCommandMenuPresentation.borderOpacity), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
         .shadow(
             color: .black.opacity(SlashCommandMenuPresentation.shadowOpacity),

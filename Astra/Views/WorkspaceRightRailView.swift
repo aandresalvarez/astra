@@ -616,7 +616,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private var floatingSectionStroke: Color {
-        Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.085)
+        Stanford.borderRest
     }
 
     private func capabilityHealthPanel(_ snapshot: CapabilityRailSnapshot) -> some View {
@@ -851,8 +851,7 @@ struct WorkspaceRightRailView: View {
                 capabilityRow(item)
 
                 if index < items.count - 1 {
-                    Divider()
-                        .opacity(0.34)
+                    SubtleDivider()
                         .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
                         .padding(.trailing, CapabilityRailLayout.dividerTrailingPadding(isCompact: isCompact))
                 }
@@ -893,11 +892,11 @@ struct WorkspaceRightRailView: View {
     private func capabilityGroupStroke(_ style: CapabilityRailGroupStyle) -> Color {
         switch style {
         case .attention:
-            return Stanford.poppy.opacity(0.16)
+            return Stanford.poppy.opacity(Stanford.strokeActive)
         case .ready:
-            return Color.primary.opacity(0.055)
+            return Stanford.borderSubtle
         case .draft:
-            return Color.primary.opacity(0.055)
+            return Stanford.borderSubtle
         }
     }
 
@@ -1684,7 +1683,7 @@ struct WorkspaceRightRailView: View {
             .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    .stroke(Stanford.borderRest, lineWidth: 1)
             )
 
             HStack(spacing: 8) {
@@ -1893,7 +1892,7 @@ struct WorkspaceRightRailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                        .stroke(Stanford.borderRest, lineWidth: 1)
                 )
 
             Button {
@@ -2031,8 +2030,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private func checklistDivider() -> some View {
-        Divider()
-            .opacity(0.22)
+        SubtleDivider()
             .padding(.leading, CapabilityRailLayout.dividerLeadingPadding(isCompact: isCompact))
     }
 

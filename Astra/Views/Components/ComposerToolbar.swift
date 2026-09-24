@@ -261,7 +261,7 @@ struct ComposerToolbar: View {
         .background(shape.fill(Color.clear))
         .overlay(
             shape
-                .stroke(Color.primary.opacity(isPlusHovered ? 0.16 : 0.12), lineWidth: 1)
+                .stroke(isPlusHovered ? Color.primary.opacity(Stanford.strokeActive) : Stanford.borderRest, lineWidth: 1)
         )
         .contentShape(shape)
         .onHover { isPlusHovered = $0 }
@@ -295,7 +295,7 @@ struct ComposerToolbar: View {
             .background(presentation.color.opacity(0.075))
             .clipShape(shape)
             .overlay(
-                shape.stroke(presentation.color.opacity(0.16), lineWidth: 1)
+                shape.stroke(presentation.color.opacity(Stanford.strokeActive), lineWidth: 1)
             )
             .help(presentation.help)
             .accessibilityLabel("Task status")
@@ -579,9 +579,9 @@ struct ComposerToolbar: View {
     private var runtimePillStroke: Color {
         switch taskStatus {
         case .some(.failed), .some(.budgetExceeded), .some(.pendingUser):
-            return runtimePillColor.opacity(0.16)
+            return runtimePillColor.opacity(Stanford.strokeActive)
         default:
-            return (isRunning ? Stanford.lagunita : Color.primary).opacity(isRunning ? 0.15 : 0.08)
+            return (isRunning ? Stanford.lagunita : Color.primary).opacity(Stanford.strokeRest)
         }
     }
 
@@ -766,7 +766,7 @@ struct ComposerToolbar: View {
                     )
                     .overlay(
                         Circle()
-                            .stroke(canSubmit ? submitColor.opacity(0.0) : Color.primary.opacity(0.08), lineWidth: 1)
+                            .stroke(canSubmit ? submitColor.opacity(0) : Stanford.borderRest, lineWidth: 1)
                     )
             }
             .buttonStyle(.plain)
@@ -792,7 +792,7 @@ struct ComposerToolbar: View {
                     )
                     .overlay(
                         Circle()
-                            .stroke(canSubmit ? submitColor.opacity(0.0) : Color.primary.opacity(0.08), lineWidth: 1)
+                            .stroke(canSubmit ? submitColor.opacity(0) : Stanford.borderRest, lineWidth: 1)
                     )
             }
             .buttonStyle(.plain)

@@ -182,7 +182,7 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                .stroke(Stanford.borderRest, lineWidth: 1)
         )
     }
 
