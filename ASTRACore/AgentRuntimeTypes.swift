@@ -165,6 +165,9 @@ public enum AgentEvent: Sendable, Equatable {
     case started(sessionID: String?, model: String?)
     case thinking(text: String)
     case text(text: String)
+    /// Assistant text keyed by provider message identity: raw coordinates
+    /// from a parser, or a resolved fragment after `AgentRuntimeEventPipeline`.
+    case assistantMessage(AssistantMessageEvent)
     case toolUse(name: String, id: String, inputSummary: String?)
     case toolResult(id: String, content: String, isError: Bool = false)
     /// `oldString`/`newString` carry a precise before/after diff when the

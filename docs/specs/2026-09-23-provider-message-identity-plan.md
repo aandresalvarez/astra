@@ -298,6 +298,10 @@ Status: landed with this plan, except the OpenCode capture.
 
 ### Phase 1: core types, ledger and Claude
 
+Status: implemented. The Claude `answer-write-signoff` fixture no longer
+doubles its closing message or records hollow echo lines; its only known
+issue left is the hidden answer (Phase 3).
+
 - The fragment type and new cases, the per-key pipeline filters, the ledger, the
   commit event, and the monitor change.
 - Claude parser identity.
@@ -312,6 +316,40 @@ Status: landed with this plan, except the OpenCode capture.
 - Suites: `AgentEventRecorderTests`, `StreamParserTests`,
   `HeadlessChatDuplicateOutputTests`, the conformance suite,
   `ArchitectureFitnessTests`.
+
+How it landed, where it differs from the design above:
+
+- **Event shape.** `AgentEvent.assistantMessage(AssistantMessageEvent)` carries
+  the provider's raw coordinates (`claudeMessageStart`, `claudeTextDelta`,
+  `claudeTextFinal`). `AssistantMessageIdentityResolver` lives inside
+  `AgentRuntimeEventPipeline`, which already is per run, and turns them into
+  keyed `.fragment`s; only fragments reach the recorder. No `ParsedEvent` case
+  was needed: Claude records through `AgentEvent`.
+- **Claude ordinals.** A text block's ordinal is assigned when its first delta
+  arrives, not at `content_block_start`: non-text blocks never produce text
+  deltas, so first-seen order is text-block order. An envelope without a
+  `message.id`, and a delta before any `message_start`, stay plain `.text` on
+  the legacy path, which keeps id-less fakes and older streams working.
+- **Unkeyed text** is not given a synthesized key yet. It keeps today's
+  coalescing and echo check until Phase 4 deletes them; a keyed message breaks
+  coalescing so the two never share a row.
+- **Commit event moved to Phase 3**, where its first reader (answer selection)
+  is. The ledger already has the committed flag and each message's rows.
+- **No full-refresh signal exists.** A rewritten row that is not the newest
+  keeps its timestamp so it can't jump past later tool events, and posts the
+  normal change notification. The incremental tail reader only refetches rows
+  at or after its cursor, so the live view shows such a row's new text on the
+  next full read. This only happens when an earlier message's final copy
+  differs from its streamed draft, which the captures never do.
+- **Monitor change moved to Phase 2.** The process monitor reads the separate
+  `parseProcessEvents` path, which Phase 1 leaves untouched, so estimated tokens
+  still count a Claude final after its deltas, as before. Phase 2 feeds the
+  monitor resolved fragments for every provider at once.
+- Suites run: `AssistantMessageIdentityTests`, `AssistantMessageLedgerTests`
+  (equal final writes nothing, differing final replaces, final-only, late
+  delta ignored, interleaving keeps row order, row-cap continuation, split
+  secret redaction, an end-to-end Claude stream with short lines), plus the
+  suites listed above and the full `swift test`.
 
 ### Phase 2: Copilot, Codex, Antigravity, OpenCode, Cursor identity
 
@@ -343,11 +381,16 @@ Status: landed with this plan, except the OpenCode capture.
   `codexMultipleCompletedMessagesKeepFinalAnswer` to assert the answer
   presentation rather than `run.output`. Check the validation `text_contains`
   assertions and continuation prompts that read `run.output`.
+- The process monitor (moved from Phase 1): feed it resolved fragments so a
+  final that repeats its deltas counts as `.control` for estimated tokens and
+  repetition signatures, for every provider at once.
 - Tests: every provider's conformance fixtures go green on the "recorded exactly
   once" and "no lost messages" assertions.
 
 ### Phase 3: choose the answer from messages (shared policy)
 
+- Write the `agent.message.committed` event (moved from Phase 1) from the
+  ledger: on a final, when a new key starts after a tool event, or at run end.
 - Add `RunAnswerSelectionPolicy` in ASTRACore, fed by committed messages and
   tool events. It is used by `TaskRunOutputPresentation` **and**
   `AgentEventCompactor`, so the two can no longer disagree.

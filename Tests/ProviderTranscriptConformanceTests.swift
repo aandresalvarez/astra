@@ -397,10 +397,6 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "claude",
             model: "claude-sonnet-5",
             knownIssues: [
-                .eachMessageOnce: .items("the envelope echo re-appends the short closing message whole (plan phase 1)") {
-                    $0.hasPrefix("The draft reply is saved")
-                },
-                .noExtraLines: .shortLines("the envelope echo re-appends every line under 80 characters (plan phase 1)"),
                 .answerVisible: .whole("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)")
             ]
         ),

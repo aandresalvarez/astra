@@ -202,6 +202,8 @@ public enum CodexStreamEventParser {
             return .thinking(text: text)
         case .text(let text):
             return .text(text: text)
+        case .assistantMessage(let message):
+            return message.text.map { .text(text: $0) }
         case .toolUse(let name, let id, let inputSummary):
             let input: [String: Any]? = inputSummary.map { ["summary": $0] }
             return .toolUse(name: name, id: id, input: input)

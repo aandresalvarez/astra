@@ -18,6 +18,11 @@ final class AgentEventRecordingState {
     private var runsWithProviderStart: Set<UUID> = []
     /// Runs whose provider stream said the turn itself failed.
     private var runsWithAgentReportedError: Set<UUID> = []
+    private var messageLedgers: [UUID: AssistantMessageLedger] = [:]
+    /// Rows recorded per run by anything other than keyed assistant messages.
+    private var nonMessageSequences: [UUID: Int] = [:]
+    /// Runs that also recorded unkeyed `.text`, whose output is append-only.
+    private var runsWithUnkeyedText: Set<UUID> = []
 
     init(maxCoalescedPayloadLength: Int = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
@@ -96,6 +101,31 @@ final class AgentEventRecordingState {
         let event = TaskEvent(task: task, eventType: eventType, payload: text, run: run)
         TaskEventInsertionService.insert(event, into: modelContext)
         lastConversationEventByKey[key] = event
+    }
+
+    func messageLedger(for run: TaskRun) -> AssistantMessageLedger {
+        if let ledger = messageLedgers[run.id] { return ledger }
+        let ledger = AssistantMessageLedger()
+        messageLedgers[run.id] = ledger
+        return ledger
+    }
+
+    var messageRowCap: Int { maxCoalescedPayloadLength }
+
+    func noteNonMessageEvent(for run: TaskRun) {
+        nonMessageSequences[run.id, default: 0] += 1
+    }
+
+    func nonMessageSequence(for run: TaskRun) -> Int {
+        nonMessageSequences[run.id, default: 0]
+    }
+
+    func noteUnkeyedText(for run: TaskRun) {
+        runsWithUnkeyedText.insert(run.id)
+    }
+
+    func hasUnkeyedText(for run: TaskRun) -> Bool {
+        runsWithUnkeyedText.contains(run.id)
     }
 
     func breakConversationCoalescing(for run: TaskRun) {
@@ -526,8 +556,29 @@ enum AgentEventRecorder {
         recordingState: AgentEventRecordingState? = nil
     ) {
         switch event {
+        case .control, .assistantMessage:
+            break
+        default:
+            recordingState?.noteNonMessageEvent(for: run)
+        }
+        switch event {
         case .control:
             break
+
+        case .assistantMessage(let message):
+            if case .fragment(let fragment) = message, let recordingState {
+                AssistantMessageRecording.record(
+                    fragment,
+                    to: task,
+                    run: run,
+                    modelContext: modelContext,
+                    recordingState: recordingState
+                )
+            } else if let text = message.text {
+                // Unresolved or state-less: the legacy text path.
+                recordingState?.noteUnkeyedText(for: run)
+                appendResponseText(text, to: task, run: run, modelContext: modelContext, recordingState: recordingState)
+            }
 
         case .started(let sessionID, let model):
             if let sessionID {
@@ -570,6 +621,7 @@ enum AgentEventRecorder {
             )
 
         case .text(let text):
+            recordingState?.noteUnkeyedText(for: run)
             appendResponseText(
                 text,
                 to: task,
@@ -716,6 +768,8 @@ enum AgentEventRecorder {
         switch event {
         case .control:
             return nil
+        case .assistantMessage(let message):
+            return message.text.map { .text(text: $0) }
         case .started(let sessionID, let model):
             return .systemInit(model: model, sessionId: sessionID)
         case .thinking(let text):
