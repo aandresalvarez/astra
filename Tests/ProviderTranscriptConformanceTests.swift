@@ -746,34 +746,46 @@ struct ProviderStreamTruth {
                 let (type, object) = Self.copilotFrame(frame)
                 let data = Self.copilotPayload(object)
                 // A field can sit on the frame or in its payload; the runtime
-                // reads both, the frame first.
-                func field(_ key: String) -> Any? { object[key] ?? data?[key] }
-                if type == "assistant.message", let text = field("content") as? String {
+                // reads both, the frame first, skipping a value of the wrong
+                // type (a null on the frame falls back to the payload).
+                func field<T>(_ key: String, as _: T.Type = T.self) -> T? { object[key] as? T ?? data?[key] as? T }
+                if type == "assistant.message", let text = field("content", as: String.self) {
                     appendMessage(text)
-                } else if type == "session.shutdown", let metrics = field("modelMetrics") as? [String: Any] {
-                    // Per-model totals; Copilot counts cache reads and writes
-                    // next to inputTokens rather than inside them.
-                    let entries = metrics.values.compactMap { $0 as? [String: Any] }.map { $0["usage"] as? [String: Any] ?? $0 }
+                } else if type == "session.shutdown", let metrics = field("modelMetrics", as: [String: Any].self) {
+                    // Per-model totals with the runtime's aliases, each read
+                    // from the entry's usage first and the entry second.
+                    // Copilot counts cache reads and writes next to input.
+                    let entries = metrics.values.compactMap { $0 as? [String: Any] }
+                    func total(_ keys: [String]) -> Int {
+                        entries.reduce(0) { sum, entry in
+                            let usage = entry["usage"] as? [String: Any]
+                            let value = keys.lazy.compactMap { usage?[$0] as? NSNumber }.first
+                                ?? keys.lazy.compactMap { entry[$0] as? NSNumber }.first
+                            return sum + (value?.intValue ?? 0)
+                        }
+                    }
                     usage = (
-                        entries.reduce(0) { $0 + int($1["inputTokens"]) + int($1["cacheReadTokens"]) + int($1["cacheWriteTokens"]) },
-                        entries.reduce(0) { $0 + int($1["outputTokens"]) }
+                        total(["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"])
+                            + total(["cacheReadTokens", "cacheReadInputTokens", "cache_read_input_tokens"])
+                            + total(["cacheWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens"]),
+                        total(["outputTokens", "output_tokens", "completionTokens", "completion_tokens"])
                     )
                 } else if type == "result" {
                     // Copilot's stdout names its session only in the result.
-                    sessionID = field("sessionId") as? String
+                    sessionID = field("sessionId", as: String.self)
                 } else if let role = Self.copilotToolRole(type, object) {
                     // Every shape Copilot's stream uses for a tool call or
                     // result, not only tool.execution_start / _complete.
                     switch role {
                     case .result:
-                        let explicitError = ["is_error", "isError", "error"].lazy.compactMap { field($0) as? Bool }.first
-                        let success = ["success", "succeeded", "ok"].lazy.compactMap { field($0) as? Bool }.first
+                        let explicitError = ["is_error", "isError", "error"].lazy.compactMap { field($0, as: Bool.self) }.first
+                        let success = ["success", "succeeded", "ok"].lazy.compactMap { field($0, as: Bool.self) }.first
                         let failed = explicitError ?? success.map { !$0 } ?? false
                         toolResultOutcomes.append(failed ? "failure" : "success")
                     case .use:
-                        let name = ["tool", "toolName", "name"].lazy.compactMap { field($0) as? String }.first ?? "tool"
+                        let name = ["tool", "toolName", "name"].lazy.compactMap { field($0, as: String.self) }.first ?? "tool"
                         appendTool(name)
-                        if name == "apply_patch", let patch = field("arguments") as? String {
+                        if name == "apply_patch", let patch = field("arguments", as: String.self) {
                             writtenPaths += Self.patchedPaths(in: patch)
                         }
                     }
