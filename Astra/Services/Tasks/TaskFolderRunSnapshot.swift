@@ -309,19 +309,53 @@ extension TaskFolderRunSnapshot {
         runEndedAt: Date
     ) -> Observation? {
         guard let after = scan(taskFolder: before.root.standardized) else { return nil }
+        let recorded = (try? TaskRun.decodedFileChanges(from: recordedJSON).get()) ?? []
         let changes = after.changes(since: before)
+            + toolFilesGone(recorded: recorded, executionPath: executionPath, before: before, after: after)
         return Observation(
             fileCount: after.entries.count,
             changeCount: changes.count,
             records: records(
                 for: changes,
                 under: after.root,
-                recordedJSON: recordedJSON,
+                recorded: recorded,
+                usedBytes: recordedJSON.utf8.count,
                 executionPath: executionPath,
                 runStartedAt: runStartedAt,
                 runEndedAt: runEndedAt
             )
         )
+    }
+
+    /// Files a tool wrote during the run that were gone again by its end.
+    /// Neither walk saw them, so the comparison alone would leave the run
+    /// with the creation and no deletion.
+    static func toolFilesGone(
+        recorded: [StoredFileChange],
+        executionPath: String,
+        before: TaskFolderRunSnapshot,
+        after: TaskFolderRunSnapshot
+    ) -> [Change] {
+        let hostFileAccess = HostFileAccessBroker()
+        let intent = HostFileAccessIntent.astraManagedStorage(root: URL(fileURLWithPath: after.root.standardized))
+        var gone = Set<String>()
+        for change in recorded where change.kind == .write || change.kind == .edit {
+            for form in spellings(of: change.path, relativeTo: executionPath) {
+                guard let relative = relativePath(of: URL(fileURLWithPath: form), under: after.root),
+                      // Hidden files are outside both walks, not deleted.
+                      !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
+                      let visible = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                        relative,
+                        context: .taskFolder
+                      ),
+                      before.entries[visible] == nil, after.entries[visible] == nil,
+                      // The walk skips what is not a regular file; only a
+                      // path with nothing at it is a deletion.
+                      !hostFileAccess.fileExists(at: URL(fileURLWithPath: form), intent: intent) else { continue }
+                gone.insert(visible)
+            }
+        }
+        return gone.sorted().map { Change(relativePath: $0, kind: .removed, modifiedAt: nil) }
     }
 
     @MainActor
@@ -337,7 +371,8 @@ extension TaskFolderRunSnapshot {
         let stored = records(
             for: changes,
             under: root,
-            recordedJSON: run.fileChangesJSON,
+            recorded: run.allFileChanges,
+            usedBytes: run.fileChangesJSON.utf8.count,
             executionPath: executionPath,
             runStartedAt: runStartedAt,
             runEndedAt: runEndedAt,
@@ -347,13 +382,14 @@ extension TaskFolderRunSnapshot {
         return stored
     }
 
-    /// The changes worth appending to a run whose changes so far are
-    /// `recordedJSON`: not already recorded, new and edited files first, and
-    /// bounded by count and by encoded size.
+    /// The changes worth appending to a run that has already `recorded`
+    /// changes taking `usedBytes` of JSON: not already recorded, new and
+    /// edited files first, and bounded by count and by encoded size.
     static func records(
         for changes: [Change],
         under root: TaskOutputArtifactPathPolicy.ResolvedRoot,
-        recordedJSON: String,
+        recorded: [StoredFileChange],
+        usedBytes: Int,
         executionPath: String,
         runStartedAt: Date,
         runEndedAt: Date,
@@ -364,7 +400,7 @@ extension TaskFolderRunSnapshot {
         // spellings come from its root.
         var recordedPaths = Set<String>()
         var recordedRemovals = Set<String>()
-        for change in (try? TaskRun.decodedFileChanges(from: recordedJSON).get()) ?? [] {
+        for change in recorded {
             let forms = spellings(of: change.path, relativeTo: executionPath)
             recordedPaths.formUnion(forms)
             if change.kind == .removed { recordedRemovals.formUnion(forms) }
@@ -379,14 +415,15 @@ extension TaskFolderRunSnapshot {
         let window = runStartedAt...max(runStartedAt, runEndedAt)
         // Past the thread's decode limit the whole array stops showing, the
         // tool changes with it. A run already past it has nothing left to keep.
-        let usedBytes = recordedJSON.utf8.count
         var byteBudget = usedBytes <= TaskRun.displayedFileChangesJSONByteLimit
             ? TaskRun.displayedFileChangesJSONByteLimit - usedBytes
             : Int.max
         var stored: [StoredFileChange] = []
         for change in unrecorded
-            .sorted(by: { ($0.kind.recordingPriority, $0.relativePath) < ($1.kind.recordingPriority, $1.relativePath) })
-            .prefix(limit) {
+            .sorted(by: { ($0.kind.recordingPriority, $0.relativePath) < ($1.kind.recordingPriority, $1.relativePath) }) {
+            // The count is of records kept, so a skipped long path frees its
+            // slot for the next one.
+            guard stored.count < limit else { break }
             let record = StoredFileChange(
                 path: root.standardized + "/" + change.relativePath,
                 changeType: change.kind.storedKind.rawValue,

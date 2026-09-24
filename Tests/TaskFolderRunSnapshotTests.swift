@@ -203,6 +203,64 @@ struct TaskFolderRunSnapshotTests {
         #expect(fixture.run.fileChangesJSON.utf8.count <= TaskRun.displayedFileChangesJSONByteLimit)
     }
 
+    @Test("A file a tool made and something deleted before the run ended is recorded as removed")
+    func toolCreatedThenDeletedIsRemoved() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+        try write("kept", to: folder, "kept.md")
+        try write("SECRET=1", to: folder, ".env")
+        let recordedJSON = TaskEvent.payloadString([
+            StoredFileChange(path: folder.path + "/scratch.md", changeType: "Write"),
+            StoredFileChange(path: folder.path + "/kept.md", changeType: "Write"),
+            StoredFileChange(path: folder.path + "/.env", changeType: "Write"),
+            StoredFileChange(path: folder.path + "/.cache/x.md", changeType: "Write"),
+            StoredFileChange(path: folder.path + "/outputs/turn_001.md", changeType: "Write")
+        ])
+
+        let observation = TaskFolderRunSnapshot.observe(
+            since: before,
+            recordedJSON: recordedJSON,
+            executionPath: folder.path,
+            runStartedAt: Date().addingTimeInterval(-5),
+            runEndedAt: Date()
+        )
+
+        let records = observation?.records ?? []
+        #expect(records.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["scratch.md"])
+        #expect(records.map(\.kind) == [.removed])
+    }
+
+    @Test("The record count limit counts records kept, not records skipped for size")
+    func countLimitAppliesAfterSizeFiltering() throws {
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(fixture.folder.path)
+        fixture.run.appendFileChange(StoredFileChange(
+            path: root.standardized + "/big.md",
+            changeType: "Write",
+            content: String(repeating: "x", count: TaskRun.displayedFileChangesJSONByteLimit - 1_500)
+        ))
+        let long = String(repeating: "long", count: 500)
+
+        let stored = TaskFolderRunSnapshot.append(
+            [
+                .init(relativePath: "a1-\(long).md", kind: .created, modifiedAt: nil),
+                .init(relativePath: "a2-\(long).md", kind: .created, modifiedAt: nil),
+                .init(relativePath: "b.csv", kind: .created, modifiedAt: nil),
+                .init(relativePath: "c.csv", kind: .created, modifiedAt: nil)
+            ],
+            under: root,
+            to: fixture.run,
+            executionPath: fixture.folder.path,
+            runStartedAt: Date(),
+            runEndedAt: Date(),
+            limit: 2
+        )
+
+        #expect(stored.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["b.csv", "c.csv"])
+    }
+
     @Test("The after-run comparison and bounding run off the main actor")
     func observationRunsOffTheMainActor() async throws {
         let folder = try makeFolder()
