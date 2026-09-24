@@ -269,9 +269,10 @@ Status: landed with this plan, except the OpenCode capture.
   through the real adapter, pipeline and recorder, using the
   `HeadlessChatHarness` pattern with a fake CLI that `cat`s the fixture. For
   every provider and scenario it asserts:
-  - every provider message appears in `run.output` exactly once;
+  - every provider message appears in `run.output` exactly once, and in the
+    durable `agent.response` rows;
   - there are no duplicated lines beyond what the provider sent;
-  - no raw provider JSON appears in the text;
+  - no raw provider JSON appears in the text, whatever its key order;
   - tool calls are recorded;
   - once Phase 3 lands, the answer bubble contains the whole answer message,
     all of its text and its line and paragraph breaks, not a digest;
@@ -300,16 +301,17 @@ Status: landed with this plan, except the OpenCode capture.
   duplicated lines under the 80-character echo floor, or errors that start
   with "Configured value for". Any other failure of the same check is a real
   failure.
-- The suite landed with 16 known issues across 4 fixtures, all matching
+- The suite landed with 18 known issues across 4 fixtures, all matching
   production symptoms or the captures:
   - Claude: short closing message doubled, hollow echo lines, answer not shown.
   - Copilot: answer not shown; `apply_patch` write not recorded; session id
     not recorded.
-  - Codex: run failed by warning items, earlier messages lost, spurious errors,
-    write not recorded, answer not shown.
+  - Codex: run failed by warning items, earlier messages lost, no
+    `agent.response` rows, spurious errors, write not recorded, answer not
+    shown.
   - Cursor: the re-sent previous message recorded as a hollow echo, the
-    message not stored once and its answer split in the bubble, tool calls
-    and the write not recorded.
+    message not stored once and split across rows and in the bubble, tool
+    calls and the write not recorded.
   - Antigravity and the Claude subagent capture: fully green.
 - Copilot's narration doubling is not exercised: the capture's only narration
   with `toolRequests` is the run's first message, which today's whole-output
@@ -401,7 +403,8 @@ Status: landed with this plan, except the OpenCode capture.
   and `fileChange`.
 - Copilot: record `apply_patch` writes as file changes. The replay records none,
   even though Copilot's own `result` frame lists them in
-  `usage.codeChanges.filesModified`.
+  `usage.codeChanges.filesModified` (the committed fixture drops that usage
+  block; the `apply_patch` arguments carry the same paths).
 - Copilot: record a line that looks like JSON but fails to parse
   (`{"type":"…`) as a diagnostic event, never as `.text`. File the `******`
   masking bug upstream with a redacted sample.
