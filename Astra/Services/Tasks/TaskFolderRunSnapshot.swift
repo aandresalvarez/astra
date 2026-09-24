@@ -95,6 +95,12 @@ struct TaskFolderRunSnapshot: Sendable, Equatable {
     /// separately, by `TaskRun.displayedFileChangesJSONByteLimit`.
     static let recordedChangeLimit = 250
 
+    /// What observations may add to a run whose record is already past the
+    /// thread's decode limit. The thread shows none of it either way, but the
+    /// turns ledger reads the whole record, and a run that wrote a large file
+    /// with a tool is exactly one whose shell-made changes are worth keeping.
+    static let overLimitByteAllowance = 64 * 1_024
+
     let root: TaskOutputArtifactPathPolicy.ResolvedRoot
     /// Keyed by path relative to `root`.
     let entries: [String: Entry]
@@ -307,7 +313,9 @@ extension TaskFolderRunSnapshot {
             "files": String(observation.fileCount),
             "changed": String(observation.changeCount),
             "recorded": String(observation.records.count),
-            "limit_reached": String(observation.records.count >= recordedChangeLimit),
+            // Detected changes the count or byte bound left out of the record.
+            "omitted": String(observation.omittedCount),
+            "limit_reached": String(observation.omittedCount > 0),
             "duration_ms": String(Int(Date().timeIntervalSince(started) * 1_000))
         ])
         return observation.records
@@ -317,6 +325,13 @@ extension TaskFolderRunSnapshot {
         let fileCount: Int
         let changeCount: Int
         let records: [StoredFileChange]
+        let omittedCount: Int
+    }
+
+    /// Records to append, and how many new observations the bounds left out.
+    struct BoundedRecords: Sendable {
+        let records: [StoredFileChange]
+        let omitted: Int
     }
 
     enum ObservationSkip: String, Error {
@@ -340,18 +355,20 @@ extension TaskFolderRunSnapshot {
         }
         guard let after = scan(taskFolder: before.root.standardized) else { return .failure(.unreadableOrOverLimit) }
         let changes = after.changes(since: before)
+        let bounded = records(
+            for: changes,
+            under: after.root,
+            recorded: recorded,
+            usedBytes: recordedJSON.utf8.count,
+            executionPath: executionPath,
+            runStartedAt: runStartedAt,
+            runEndedAt: runEndedAt
+        )
         return .success(Observation(
             fileCount: after.entries.count,
             changeCount: changes.count,
-            records: records(
-                for: changes,
-                under: after.root,
-                recorded: recorded,
-                usedBytes: recordedJSON.utf8.count,
-                executionPath: executionPath,
-                runStartedAt: runStartedAt,
-                runEndedAt: runEndedAt
-            )
+            records: bounded.records,
+            omittedCount: bounded.omitted
         ))
     }
 
@@ -374,14 +391,16 @@ extension TaskFolderRunSnapshot {
             runStartedAt: runStartedAt,
             runEndedAt: runEndedAt,
             limit: limit
-        )
+        ).records
         run.appendHostFileChanges(stored)
         return stored
     }
 
     /// The changes worth appending to a run that has already `recorded`
     /// changes taking `usedBytes` of JSON: not already recorded, new and
-    /// edited files first, and bounded by count and by encoded size.
+    /// edited files first, and bounded by count and by encoded size — up to
+    /// the thread's decode limit, or by `overLimitByteAllowance` for a record
+    /// already past it.
     static func records(
         for changes: [Change],
         under root: TaskOutputArtifactPathPolicy.ResolvedRoot,
@@ -391,8 +410,8 @@ extension TaskFolderRunSnapshot {
         runStartedAt: Date,
         runEndedAt: Date,
         limit: Int = recordedChangeLimit
-    ) -> [StoredFileChange] {
-        guard !changes.isEmpty else { return [] }
+    ) -> BoundedRecords {
+        guard !changes.isEmpty else { return BoundedRecords(records: [], omitted: 0) }
         // Only the already-recorded paths pay a resolve; a snapshot path's two
         // spellings come from its root.
         var recordedPaths = Set<String>()
@@ -411,10 +430,10 @@ extension TaskFolderRunSnapshot {
         }
         let window = runStartedAt...max(runStartedAt, runEndedAt)
         // Past the thread's decode limit the whole array stops showing, the
-        // tool changes with it. A run already past it has nothing left to keep.
+        // tool changes with it, so a record under it stays under it.
         var byteBudget = usedBytes <= TaskRun.displayedFileChangesJSONByteLimit
             ? TaskRun.displayedFileChangesJSONByteLimit - usedBytes
-            : Int.max
+            : overLimitByteAllowance
         var stored: [StoredFileChange] = []
         for change in unrecorded
             .sorted(by: { ($0.kind.recordingPriority, $0.relativePath) < ($1.kind.recordingPriority, $1.relativePath) }) {
@@ -433,7 +452,7 @@ extension TaskFolderRunSnapshot {
             byteBudget -= size
             stored.append(record)
         }
-        return stored
+        return BoundedRecords(records: stored, omitted: unrecorded.count - stored.count)
     }
 
     /// A tool event carries whatever path the provider reported: relative to
