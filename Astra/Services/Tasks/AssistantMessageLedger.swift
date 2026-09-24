@@ -15,6 +15,7 @@ import ASTRAPersistence
 final class AssistantMessageLedger {
     struct Entry {
         let key: String
+        let subagent: Bool
         var text: String
         var committed: Bool
         var rows: [TaskEvent]
@@ -34,9 +35,9 @@ final class AssistantMessageLedger {
         indexByKey[key]
     }
 
-    func appendEntry(key: String, sequence: Int) -> Int {
+    func appendEntry(key: String, subagent: Bool, sequence: Int) -> Int {
         let index = entries.count
-        entries.append(Entry(key: key, text: "", committed: false, rows: [], lastWriteSequence: sequence))
+        entries.append(Entry(key: key, subagent: subagent, text: "", committed: false, rows: [], lastWriteSequence: sequence))
         indexByKey[key] = index
         return index
     }
@@ -76,7 +77,8 @@ enum AssistantMessageRecording {
         guard !fragment.text.isEmpty else { return }
         let ledger = state.messageLedger(for: run)
         let sequence = state.nonMessageSequence(for: run)
-        let index = ledger.index(of: fragment.key) ?? ledger.appendEntry(key: fragment.key, sequence: sequence)
+        let index = ledger.index(of: fragment.key)
+            ?? ledger.appendEntry(key: fragment.key, subagent: fragment.isSubagent, sequence: sequence)
         guard !ledger.entries[index].committed else { return }
         let movesForward = canMoveForward(index, in: ledger, sequence: sequence)
         ledger.update(index) { $0.text += fragment.text }
@@ -104,7 +106,7 @@ enum AssistantMessageRecording {
             // A final without a streamed draft: a subagent message, or a stream
             // without partial messages. It is the message's only copy.
             guard !fragment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            let index = ledger.appendEntry(key: fragment.key, sequence: sequence)
+            let index = ledger.appendEntry(key: fragment.key, subagent: fragment.isSubagent, sequence: sequence)
             ledger.update(index) {
                 $0.text = fragment.text
                 $0.committed = true
@@ -134,6 +136,28 @@ enum AssistantMessageRecording {
         }
         task.updatedAt = Date()
         TaskThreadChangeNotifier.post(taskID: task.id, source: "assistant_message_final")
+    }
+
+    /// Writes one `agent.message` event per recorded message, in the order the
+    /// messages started, once the run's stream is fully recorded. Readers use
+    /// them to group `agent.response` rows into messages; a run without them
+    /// was recorded before messages were keyed.
+    static func recordMessageIndex(
+        for run: TaskRun,
+        task: AgentTask,
+        modelContext: ModelContext,
+        recordingState state: AgentEventRecordingState
+    ) {
+        for entry in state.messageLedger(for: run).entries where !entry.rows.isEmpty {
+            let record = AssistantMessageRecord(key: entry.key, rows: entry.rows.map(\.id), subagent: entry.subagent)
+            let event = TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Conversation.assistantMessage,
+                payload: TaskEvent.payloadString(record),
+                run: run
+            )
+            TaskEventInsertionService.insert(event, into: modelContext)
+        }
     }
 
     /// A row may move to "now" only while it is the newest thing recorded for

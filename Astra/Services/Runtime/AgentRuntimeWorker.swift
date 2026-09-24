@@ -1150,6 +1150,7 @@ final class AgentRuntimeWorker {
             }
         }
         await pendingEvents.drainAll()
+        AssistantMessageRecording.recordMessageIndex(for: run, task: task, modelContext: modelContext, recordingState: recordingState)
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
             homeDirectory: launchSettings.homeDirectory,
             task: task,

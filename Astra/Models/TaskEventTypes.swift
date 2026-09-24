@@ -61,6 +61,9 @@ public enum TaskEventTypes {
     public enum Conversation {
         public static let userMessage: TaskEventType = "user.message"
         public static let agentResponse: TaskEventType = "agent.response"
+        /// Which `agent.response` rows form one assistant message; payload is
+        /// `AssistantMessageRecord`. Written when the run ends; never shown.
+        public static let assistantMessage: TaskEventType = "agent.message"
         public static let agentThinking: TaskEventType = "agent.thinking"
         public static let planUserMessage: TaskEventType = "plan.user.message"
         public static let planAssistantMessage: TaskEventType = "plan.assistant.message"

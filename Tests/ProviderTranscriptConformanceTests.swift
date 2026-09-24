@@ -552,9 +552,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .claudeCode,
             executableName: "claude",
             model: "claude-sonnet-5",
-            knownIssues: [
-                .answerVisible: .items("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
-            ],
+            knownIssues: [:],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(
@@ -581,8 +579,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             knownIssues: [
                 .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
                     $0 == "answer.md"
-                },
-                .answerVisible: .items("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
+                }
             ],
             notExercised: [
                 .failedToolResultsRecorded: "no tool call in this capture fails",
