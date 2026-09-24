@@ -321,11 +321,14 @@ Status: landed with this plan, except the OpenCode capture.
   provider message (`Done` in `Done with work`) is not counted as its copy.
   The answer is the message with the scenario's `## Suggested reply` heading
   line.
-- A known issue is scoped to the items it explains: a specific message,
-  duplicated lines under the 80-character echo floor, or errors that start
-  with "Configured value for". Any other failure of the same check is a real
-  failure.
-- The suite landed with 19 known issues across 4 fixtures, all matching
+- A known issue is scoped to the items it explains: a specific message and
+  its exact defect (one extra copy, or lost), duplicated lines under the
+  80-character echo floor, or errors that start with "Configured value for".
+  Any other failure of the same check, including a worse multiplicity, is a
+  real failure.
+- Cursor's cumulative last frame is read as the provider sends it: the text
+  it adds after a tool call is a new message at that point in the sequence.
+- The suite landed with 16 known issues across 4 fixtures, all matching
   production symptoms or the captures:
   - Claude: short closing message doubled (in the output and the response
     rows), hollow echo lines, answer not shown.
@@ -334,8 +337,7 @@ Status: landed with this plan, except the OpenCode capture.
   - Codex: run failed by warning items, earlier messages lost, no
     `agent.response` rows, spurious errors, write not recorded, answer not
     shown.
-  - Cursor: the re-sent previous message recorded as a hollow echo, the
-    message not stored once and split across rows and in the bubble, tool
+  - Cursor: the re-sent previous message's short lines appended again, tool
     calls and the write not recorded.
   - Antigravity and the Claude subagent capture: fully green.
 - Copilot's narration doubling is not exercised: the capture's only narration

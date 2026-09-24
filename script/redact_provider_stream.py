@@ -280,6 +280,9 @@ def without_copilot_result_payload(fields):
             kept[key] = error_placeholder(value)
         elif key in COPILOT_RESULT_PAYLOAD_KEYS:
             kept[key] = TOOL_OUTPUT if value else value
+        elif key in ("data", "payload") and isinstance(value, dict):
+            # The parser follows nested data objects for a result's text too.
+            kept[key] = without_copilot_result_payload(value)
         elif key in COPILOT_RESULT_IDENTITY_KEYS:
             kept[key] = value
     return kept
@@ -611,6 +614,14 @@ DIRECTORY_JUMP_PATTERN = re.compile(
 COMMAND_WRAPPERS = re.compile(r"(?:\b(?:builtin|command|eval|exec|nohup|time)(?:\s+(?:-[A-Za-z]+|--))*\s+)+$")
 
 
+# The workspace's parent, computed rather than written: `dirname "$PWD"`,
+# `dirname $(pwd)`, `pwd | xargs dirname`. `$PWD` itself is allowed.
+PARENT_OF_WORKSPACE_PATTERN = re.compile(
+    r"\bdirname\b(?:\s+-\S+)*\s+[\"']?(?:\$\{?PWD\b|\$\(\s*pwd\b|`\s*pwd\b|\.[\"']?(?=$|[\s;&|)]))"
+    r"|\bpwd\b[^;&\n]*\|\s*(?:xargs\s+)?dirname\b"
+)
+
+
 def unquoted(command):
     """The command with backslash escapes and quote characters removed, as
     quote removal leaves its words: `c\\d` and `c""d` both run `cd`. Checked
@@ -765,6 +776,7 @@ def audit_frame(number, frame):
             any(OUTSIDE_PATH_PATTERN.search(form) for _, form in forms)
             or any(ENV_DUMP_PATTERN.search(form) for is_command, form in forms if is_command)
             or any(jumps_directory(command) or jumps_directory(unquoted(command)) for command in commands)
+            or any(PARENT_OF_WORKSPACE_PATTERN.search(command) for command in commands)
         )
         if reached or any(has_escaped_bytes(command) for command in commands):
             findings.append(f"line {number}: {name} {arguments[:160]}")

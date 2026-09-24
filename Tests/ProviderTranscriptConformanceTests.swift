@@ -80,7 +80,8 @@ struct ProviderTranscriptConformanceTests {
             let occurrences = messageCount(text, in: collapsedOutput, among: collapsedMessages)
             return occurrences == expected
                 ? nil
-                : (message, "recorded \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
+                : (multiplicityItem(message, recorded: occurrences, sent: expected),
+                   "recorded \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
         // Lines two messages glued together are not the provider's lines, so
@@ -129,7 +130,8 @@ struct ProviderTranscriptConformanceTests {
             let occurrences = messageCount(text, in: collapsedRows, among: collapsedMessages)
             return occurrences == expected
                 ? nil
-                : (message, "in agent.response rows \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
+                : (multiplicityItem(message, recorded: occurrences, sent: expected),
+                   "in agent.response rows \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
         // Messages must appear in provider order in the output and in the
@@ -386,6 +388,18 @@ struct ProviderTranscriptConformanceTests {
         #expect(ProviderStreamTruth.copilotToolRole("tool.execution_progress", [:]) == nil)
     }
 
+    @Test("A multiplicity known issue covers only its exact defect")
+    func multiplicityKnownIssuesAreExact() {
+        let extra = ProviderStreamKnownIssue.oneExtraCopy("one extra copy") { $0 == "Done." }
+        #expect(extra.covers(multiplicityItem("Done.", recorded: 2, sent: 1)))
+        #expect(!extra.covers(multiplicityItem("Done.", recorded: 3, sent: 1)))
+        #expect(!extra.covers(multiplicityItem("Done.", recorded: 0, sent: 1)))
+        #expect(!extra.covers(multiplicityItem("Other.", recorded: 2, sent: 1)))
+        let lost = ProviderStreamKnownIssue.lost("lost")
+        #expect(lost.covers(multiplicityItem("Done.", recorded: 0, sent: 1)))
+        #expect(!lost.covers(multiplicityItem("Done.", recorded: 2, sent: 1)))
+    }
+
     /// Records each failure of `check`. Failures the fixture's known issue
     /// covers are recorded together under that known issue; the rest are real
     /// failures. A known issue with nothing left to cover is itself reported,
@@ -454,6 +468,23 @@ struct ProviderStreamKnownIssue: Sendable {
 
     static func items(_ reason: String, where covers: @escaping @Sendable (String) -> Bool) -> Self {
         Self(reason: reason, covers: covers)
+    }
+
+    /// A message recorded exactly once more than the provider sent it;
+    /// dropping it, or any further copy, is a new defect.
+    static func oneExtraCopy(_ reason: String, of message: @escaping @Sendable (String) -> Bool) -> Self {
+        items(reason) { item in
+            guard let (text, recorded, sent) = multiplicity(of: item) else { return false }
+            return recorded == sent + 1 && message(text)
+        }
+    }
+
+    /// A message missing entirely; a copy recorded too often is a new defect.
+    static func lost(_ reason: String, of message: @escaping @Sendable (String) -> Bool = { _ in true }) -> Self {
+        items(reason) { item in
+            guard let (text, recorded, _) = multiplicity(of: item) else { return false }
+            return recorded == 0 && message(text)
+        }
     }
 
     /// The per-line echo check re-appends each copy of a line under its
@@ -646,6 +677,8 @@ struct ProviderStreamTruth {
         var rawMessages: [String] = []
         var rawSequence: [RawStep] = []
         var antigravityMessageIndex: [Int: Int] = [:]
+        // Cursor's last full assistant frame, which the next one may repeat.
+        var cursorSnapshot = ""
         func appendMessage(_ text: String) {
             rawSequence.append(.message(rawMessages.count))
             rawMessages.append(text)
@@ -776,11 +809,21 @@ struct ProviderStreamTruth {
                    let blocks = message["content"] as? [[String: Any]] {
                     let text = blocks.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
                         .joined()
-                    if let previous = rawMessages.last, !previous.isEmpty, text.hasPrefix(previous) {
-                        rawMessages[rawMessages.count - 1] = text
+                    if !cursorSnapshot.isEmpty, text.hasPrefix(cursorSnapshot) {
+                        // The frame repeats the previous one and adds to it.
+                        // Straight after it, the same message grew; after a
+                        // tool call, the addition is a new message at its own
+                        // place in the sequence.
+                        let addition = String(text.dropFirst(cursorSnapshot.count))
+                        if case .message? = rawSequence.last {
+                            rawMessages[rawMessages.count - 1] += addition
+                        } else if !addition.isEmpty {
+                            appendMessage(addition)
+                        }
                     } else if !text.isEmpty {
                         appendMessage(text)
                     }
+                    cursorSnapshot = text
                 } else if type == "result", let reported = frame["usage"] as? [String: Any] {
                     // Cursor reports cache reads and writes apart from input,
                     // as Anthropic does; it gives no total to check against.
@@ -1074,6 +1117,18 @@ private func isRawProviderFrame(_ line: String) -> Bool {
 }
 
 private let extraLineSeparator = "\u{1F}"
+
+/// A message-multiplicity failure item: the message and how many times it was
+/// recorded and sent, so a known issue can cover one exact defect.
+private func multiplicityItem(_ message: String, recorded: Int, sent: Int) -> String {
+    [message, String(recorded), String(sent)].joined(separator: extraLineSeparator)
+}
+
+private func multiplicity(of item: String) -> (message: String, recorded: Int, sent: Int)? {
+    let parts = item.components(separatedBy: extraLineSeparator)
+    guard parts.count == 3, let recorded = Int(parts[1]), let sent = Int(parts[2]) else { return nil }
+    return (parts[0], recorded, sent)
+}
 
 /// A `noExtraLines` failure item: the line, how many copies too many, and how
 /// many the provider sent.
