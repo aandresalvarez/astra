@@ -903,6 +903,9 @@ public struct ASTRAApp: App {
             approvedPackages: PluginCatalog.builtInPackages
         )
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
+        // Before recovery: the tasks and turns it ends must reach worktree
+        // hygiene as activity. Its launch pass reads state later.
+        startWorktreeStorageHygiene(modelContext: modelContext)
         TaskRunLifecycleService.recoverOrphanedRunningRuns(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
@@ -911,13 +914,13 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
-        startWorktreeStorageHygiene(modelContext: modelContext)
     }
 
     /// Connects worktree storage hygiene to the store, reacts to finished
     /// tasks, and schedules the once-per-launch pass that finishes interrupted
-    /// reclaims and reclaims idle build artifacts. Runs after crash recovery,
-    /// so orphaned tasks no longer look in use.
+    /// reclaims and reclaims idle build artifacts. Starts before crash
+    /// recovery so the runs it ends are recorded as activity; the launch pass
+    /// fires minutes later, when orphaned tasks no longer look in use.
     @MainActor
     private static func startWorktreeStorageHygiene(modelContext: ModelContext) {
         let service = WorktreeReclaimService.shared

@@ -400,6 +400,93 @@ struct WorktreeReclaimServiceTests {
         #expect(FileManager.default.fileExists(atPath: setup.linked.path + "/node_modules/pkg/index.js"))
     }
 
+    @Test("A file git starts tracking mid-pass keeps its artifact")
+    func trackingStartedMidPassIsKept() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        try setup.fixture.file("worktrees/feature/node_modules/pkg/index.js", bytes: 50_000)
+        try setup.fixture.file("worktrees/feature/package.json", bytes: 10)
+        WorktreeStorageFixture.backdate(setup.linked.path, by: 3 * Self.day)
+        let linkedPath = setup.linked.path
+        // Untracked when the pass starts; `git add -N` lands while it awaits.
+        setup.git.trackedFilesProvider = { path, query in
+            path == linkedPath && query > 1 ? ["node_modules/pkg/index.js"] : []
+        }
+
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(FileManager.default.fileExists(atPath: setup.linked.path + "/node_modules/pkg/index.js"))
+        let report = try #require(setup.service.statuses[setup.linked.path]?.report)
+        #expect(report.artifacts.isEmpty, "the tracked folder isn't reported as reclaimable afterwards")
+    }
+
+    @Test("An index that changes at the last moment keeps the worktree and retries")
+    func indexChangeAtGateKeepsWorktree() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let index = try setup.fixture.file("worktrees/feature/.git/index", bytes: 10)
+        WorktreeStorageFixture.backdate(setup.linked.path, by: 3 * Self.day)
+        let linkedPath = setup.linked.path
+        setup.git.trackedFilesProvider = { path, query in
+            if path == linkedPath, query > 1 {
+                try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: index)
+            }
+            return []
+        }
+
+        let summary = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+
+        #expect(FileManager.default.fileExists(atPath: setup.linkedBuild))
+        #expect(summary.kept.contains { $0.reason == WorktreeReclaimService.indexChangedReason })
+        let retry = try #require(setup.service.pendingRecheckDates[setup.linked.path])
+        #expect(abs(retry.timeIntervalSinceNow - WorktreeActivityProbe.recentWriteWindow) < 60)
+    }
+
+    @Test("A pass kept by unreadable state retries a bounded number of times")
+    func readFailureRetriesAreBounded() async throws {
+        let setup = try makeSetup()
+        defer { finish(setup) }
+        let store = FailSwitch()
+        setup.service.attach(
+            taskHolds: {
+                guard !store.failing else { throw CocoaError(.coderReadCorrupt) }
+                return []
+            },
+            workspaceRoots: { [] }
+        )
+
+        for attempt in 1...WorktreeReclaimService.maxReadFailureRetries {
+            _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+            let retry = try #require(setup.service.pendingRecheckDates[setup.linked.path], "retry \(attempt)")
+            #expect(abs(retry.timeIntervalSinceNow - WorktreeActivityProbe.recentWriteWindow) < 60)
+            #expect(FileManager.default.fileExists(atPath: setup.linkedBuild), "still fails closed")
+            setup.service.cancelScheduledWork()
+        }
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+        #expect(setup.service.pendingRecheckDates.isEmpty, "gives up after the last retry")
+
+        store.failing = false
+        _ = await setup.service.evaluate(repoPath: setup.primary.path, worktrees: setup.worktrees, mode: .automatic)
+        #expect(!FileManager.default.fileExists(atPath: setup.linkedBuild), "a readable store reclaims")
+    }
+
+    @Test("Worktree hygiene listens before startup recovery ends interrupted runs")
+    func hygieneStartsBeforeRecovery() throws {
+        let app = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Astra/ASTRAApp.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(app.range(of: "startWorktreeStorageHygiene(modelContext: modelContext)"))
+        let runs = try #require(app.range(of: "TaskRunLifecycleService.recoverOrphanedRunningRuns("))
+        let requests = try #require(app.range(of: "TaskTurnRequestRecoveryService.recoverInterruptedRequests("))
+        #expect(start.lowerBound < runs.lowerBound)
+        #expect(start.lowerBound < requests.lowerBound)
+    }
+
     @Test("A worktree whose tracked files can't be checked is kept, even by the Reclaim button")
     func unknownTrackingFailsClosed() async throws {
         let setup = try makeSetup()
@@ -997,6 +1084,10 @@ private final class CallCounter: @unchecked Sendable {
         count += 1
         return count
     }
+}
+
+private final class FailSwitch: @unchecked Sendable {
+    var failing = true
 }
 
 private final class LockBox: @unchecked Sendable {

@@ -121,6 +121,9 @@ final class WorktreeReclaimService: ObservableObject {
     private var automaticallyEvaluatedRepositories: Set<String> = []
     private var repositoryPasses: [String: Task<Void, Never>] = [:]
     private var suggestionCheckedAt: [String: Date] = [:]
+    /// Consecutive keeps per worktree that a failed read caused. Only a
+    /// pass that reads cleanly resets it.
+    private var readFailureRetries: [String: Int] = [:]
     /// Tries a recheck makes at listing the worktree before giving up.
     static let maxRecheckListingAttempts = 3
     private var revalidatingSuggestions: Set<String> = []
@@ -575,7 +578,7 @@ final class WorktreeReclaimService: ObservableObject {
     private struct ReclaimJob: Sendable {
         let worktree: String
         let name: String
-        let artifacts: [WorktreeArtifactMeasurement]
+        var artifacts: [WorktreeArtifactMeasurement]
     }
 
     private func runPass(
@@ -670,6 +673,10 @@ final class WorktreeReclaimService: ObservableObject {
             if mode == .automatic, act, let recheckAt = decision.recheckAt {
                 scheduleRecheck(repoPath: repoPath, worktreePath: worktree.path, at: recheckAt)
             }
+            // Candidates get their final answer at the gate below.
+            if mode == .automatic, act, !decision.reclaimArtifacts {
+                retryAfterReadFailure(repoPath: repoPath, worktreePath: worktree.path, decision: decision)
+            }
         }
 
         // Last look before anything is renamed: the pass awaited git and
@@ -698,12 +705,22 @@ final class WorktreeReclaimService: ObservableObject {
                 }
                 return busy
             }
+            // Git may have started tracking a file under an artifact while
+            // the pass awaited GitHub (`git add -N` changes nothing on disk).
+            // Ask again, noting the index's timestamp first: the turn below
+            // keeps any worktree whose index changed since.
+            var gateTracking: [String: (index: Date?, tracked: Set<String>?)] = [:]
+            for job in candidates {
+                let index = probe.gitIndexModificationDate(worktreePath: job.worktree)
+                let tracked = await git.trackedDirectories(among: job.artifacts.map(\.relativePath), at: job.worktree)
+                gateTracking[job.worktree] = (index, tracked)
+            }
             let checkedAt = clock()
             let current = currentTaskHolds()
             let currentRoots = mode == .automatic ? currentWorkspaceRoots() : []
             let currentThresholds = WorktreeStorageSettings.thresholds(in: defaults)
             let stillEnabled = mode == .manual || WorktreeStorageSettings.isAutomaticReclaimEnabled(in: defaults)
-            for job in candidates {
+            for var job in candidates {
                 guard var input = inputs[job.worktree] else { continue }
                 guard stillEnabled else {
                     kept.append(.init(worktreeName: job.name, reason: "Automatic reclaim turned off"))
@@ -722,6 +739,18 @@ final class WorktreeReclaimService: ObservableObject {
                         if currentRoots == nil, input.inUse == nil { input.inUse = Self.unreadableWorkspaceStateReason }
                     }
                 }
+                let gate = gateTracking[job.worktree]
+                if let tracked = gate?.tracked {
+                    if probe.gitIndexModificationDate(worktreePath: job.worktree) != gate?.index {
+                        input.inUse = input.inUse ?? Self.indexChangedReason
+                    } else if !tracked.isEmpty {
+                        job.artifacts.removeAll { tracked.contains($0.relativePath) }
+                        trackedArtifacts[job.worktree, default: []].formUnion(tracked)
+                        input.artifactBytes = job.artifacts.reduce(Int64(0)) { $0 + $1.bytes }
+                    }
+                } else {
+                    input.inUse = input.inUse ?? Self.unreadableTrackingReason
+                }
                 input.now = checkedAt
                 inputs[job.worktree] = input
                 let decision = WorktreeReclaimPolicy.decide(input)
@@ -733,8 +762,12 @@ final class WorktreeReclaimService: ObservableObject {
                     if mode == .automatic, let recheckAt = decision.recheckAt {
                         scheduleRecheck(repoPath: repoPath, worktreePath: job.worktree, at: recheckAt)
                     }
+                    if mode == .automatic {
+                        retryAfterReadFailure(repoPath: repoPath, worktreePath: job.worktree, decision: decision)
+                    }
                     continue
                 }
+                readFailureRetries[job.worktree] = nil
                 jobs.append(job)
                 let step = reclaimer.prepare(
                     artifactPaths: job.artifacts.map(\.path),
@@ -838,6 +871,34 @@ final class WorktreeReclaimService: ObservableObject {
 
     nonisolated static let unreadableWorkspaceStateReason = "Workspace state couldn't be read"
     nonisolated static let unreadableTrackingReason = "Tracked files couldn't be checked"
+    nonisolated static let indexChangedReason = "Git index changed during the check"
+
+    /// Keeps caused by state that couldn't be read (or moved mid-check), not
+    /// by a worktree being busy. Nothing else would bring the pass back.
+    nonisolated static let readFailureReasons: Set<String> = [
+        WorktreeTaskUsage.unreadableTaskStateReason,
+        unreadableWorkspaceStateReason,
+        unreadableTrackingReason,
+        indexChangedReason
+    ]
+    static let maxReadFailureRetries = 3
+
+    /// Automatic mode: after a keep a failed read caused, look again after
+    /// the recent-write window, up to `maxReadFailureRetries` times in a row.
+    /// Still fail closed: the retry decides from fresh reads. Any other
+    /// answer resets the count.
+    private func retryAfterReadFailure(repoPath: String, worktreePath: String, decision: WorktreeReclaimDecision) {
+        guard Self.readFailureReasons.contains(decision.reason) else {
+            readFailureRetries[worktreePath] = nil
+            return
+        }
+        let failures = (readFailureRetries[worktreePath] ?? 0) + 1
+        readFailureRetries[worktreePath] = failures
+        let at = clock().addingTimeInterval(WorktreeActivityProbe.recentWriteWindow)
+        guard failures <= Self.maxReadFailureRetries else { return }
+        if let pending = pendingRecheckDates[worktreePath], pending <= at { return }
+        scheduleRecheck(repoPath: repoPath, worktreePath: worktreePath, at: at)
+    }
 
     /// Canonical protected paths, or nil when workspace state can't be read.
     private func currentWorkspaceRoots() -> Set<String>? {

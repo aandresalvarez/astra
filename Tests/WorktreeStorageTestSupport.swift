@@ -153,6 +153,10 @@ final class StubWorktreeGit: WorktreeStorageGitReading {
     var trackedFiles: [String: [String]] = [:]
     /// Worktrees whose `ls-files` fails.
     var trackingFailures: Set<String> = []
+    /// Overrides `trackedFiles`: gets the worktree and which query this is
+    /// for it (1, 2, …), so a test can change the answer mid-pass.
+    var trackedFilesProvider: ((String, Int) -> [String])?
+    private var trackedQueries: [String: Int] = [:]
     /// Keyed by branch; missing branches answer `.none`.
     var mergedPullRequests: [String: GitMergedPullRequestLookupResult] = [:]
     private(set) var ancestryCalls: [String] = []
@@ -178,7 +182,9 @@ final class StubWorktreeGit: WorktreeStorageGitReading {
 
     func trackedDirectories(among relativePaths: [String], at worktreePath: String) async -> Set<String>? {
         guard !trackingFailures.contains(worktreePath) else { return nil }
-        let files = trackedFiles[worktreePath] ?? []
+        let query = (trackedQueries[worktreePath] ?? 0) + 1
+        trackedQueries[worktreePath] = query
+        let files = trackedFilesProvider?(worktreePath, query) ?? trackedFiles[worktreePath] ?? []
         return Set(relativePaths.filter { directory in
             files.contains { $0 == directory || $0.hasPrefix(directory + "/") }
         })

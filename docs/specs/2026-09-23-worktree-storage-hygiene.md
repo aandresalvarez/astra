@@ -303,6 +303,12 @@ before it ran (no task status changes) rechecks after 15 minutes. An earlier
 pending recheck is kept, since it re-derives any later one.
 A recheck whose `git worktree list` fails (an empty list) tries again after
 15 minutes, up to 3 attempts; a worktree git no longer lists is gone.
+Likewise, an automatic pass that keeps a worktree only because task,
+workspace or tracked-file state couldn't be read looks again after 15 minutes,
+up to 3 times in a row, still failing closed.
+The service starts listening before startup crash recovery, so the runs and
+turns recovery ends are recorded as activity; the launch pass reads state when
+it fires, two minutes later.
 The panel lists worktrees only for the selected repository, and only while it's
 visible. So the service calls `GitService.shared.listWorktrees(at:)` for each
 workspace repository itself. `GitService` is neither an actor nor `@MainActor`,
@@ -356,7 +362,9 @@ threshold, schedules a fresh pass. Tests must use `InMemoryDefaults`
 2. An artifact without its sibling manifest is never deleted, and neither is
    one holding any file in git's index (`git ls-files`, staged or committed):
    a tracked file is source whatever its folder is called. When git can't
-   answer, the whole worktree is kept, even by the Reclaim button.
+   answer, the whole worktree is kept, even by the Reclaim button. Git is
+   asked again right before the rename, and the rename turn keeps any
+   worktree whose index changed since (`git add -N` touches nothing else).
 3. Symlinks are never followed, whether measuring or deleting. An artifact
    symlink pointing outside the worktree is refused.
 4. Nothing is reclaimed from a worktree with a non-terminal pinned task or a
