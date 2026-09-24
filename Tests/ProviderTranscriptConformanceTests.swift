@@ -10,12 +10,14 @@ import ASTRACore
 /// through the real adapter, event pipeline and recorder, and checks the same
 /// transcript contract for every provider.
 ///
-/// The expected messages come from the fixture itself, read the way each
-/// provider documents its frames, never through ASTRA's parsers. Checks that
-/// fail today are listed per fixture in `knownIssues` and run under
-/// `withKnownIssue`, so a phase of
-/// docs/specs/2026-09-23-provider-message-identity-plan.md that fixes one
-/// turns it into a failure until its entry is deleted.
+/// The expected transcript comes from the fixture itself, read the way each
+/// provider documents its frames, never through ASTRA's parsers. A defect that
+/// exists today is listed per fixture in `knownIssues`, scoped to the items it
+/// affects: those failures are reported as one known issue, and any other
+/// failure of the same check is a real one. When a phase of
+/// docs/specs/2026-09-23-provider-message-identity-plan.md fixes a defect, its
+/// known issue stops being recorded and the suite fails until the entry is
+/// deleted.
 @Suite("Provider transcript conformance", .serialized)
 @MainActor
 struct ProviderTranscriptConformanceTests {
@@ -58,65 +60,86 @@ struct ProviderTranscriptConformanceTests {
         _ = await harness.execute(task: task, worker: worker)
 
         let run = try #require(task.runs.first)
-        verify(.runCompletes, of: fixture) {
-            #expect(run.status == .completed, "stopReason=\(run.stopReason)")
-        }
         let output = run.output
         let collapsedOutput = collapsed(output)
         let events = task.events
 
-        verify(.eachMessageOnce, of: fixture) {
-            for message in truth.messages {
-                let occurrences = collapsedOutput.components(separatedBy: collapsed(message)).count - 1
-                #expect(occurrences == 1, "recorded \(occurrences)x: \(message.prefix(80))")
+        report(.runCompletes, of: fixture, failures: run.status == .completed ? [] : [
+            ("", "run ended \(run.status) with stopReason=\(run.stopReason)")
+        ])
+
+        report(.eachMessageOnce, of: fixture, failures: truth.messages.compactMap { message in
+            let occurrences = collapsedOutput.components(separatedBy: collapsed(message)).count - 1
+            return occurrences == 1 ? nil : (message, "recorded \(occurrences)x: \(message.prefix(80))")
+        })
+
+        // Messages that are lost or split belong to eachMessageOnce; every
+        // message that is present must sit after the one before it.
+        let positions = truth.messages.compactMap { message in
+            collapsedOutput.range(of: collapsed(message)).map {
+                collapsedOutput.distance(from: collapsedOutput.startIndex, to: $0.lowerBound)
             }
         }
+        report(.messagesInOrder, of: fixture, failures: zip(positions, positions.dropFirst()).allSatisfy(<) ? [] : [
+            ("", "messages recorded out of provider order: \(positions)")
+        ])
 
-        verify(.noExtraLines, of: fixture) {
-            // Lines two messages glued together are not the provider's lines,
-            // so only lines the provider actually sent are counted.
-            let sent = lineCounts(truth.messages.joined(separator: "\n"))
-            for (line, count) in lineCounts(output) where sent[line] != nil {
-                let expected = sent[line] ?? 0
-                #expect(count <= expected, "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
-            }
-        }
+        // Lines two messages glued together are not the provider's lines, so
+        // only lines the provider actually sent are counted.
+        let sent = lineCounts(truth.messages.joined(separator: "\n"))
+        report(.noExtraLines, of: fixture, failures: lineCounts(output).sorted { $0.key < $1.key }.compactMap { line, count in
+            guard let expected = sent[line], count > expected else { return nil }
+            return (line, "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
+        })
 
-        verify(.noRawProviderJSON, of: fixture) {
-            #expect(!output.contains(#"{"type":""#) && !output.contains(#"{"event":""#),
-                    "raw provider frame in run output")
-        }
+        let rawFrameInOutput = output.contains(#"{"type":""#) || output.contains(#"{"event":""#)
+        report(.noRawProviderJSON, of: fixture, failures: rawFrameInOutput ? [("", "raw provider frame in run output")] : [])
 
-        verify(.toolCallsRecorded, of: fixture) {
-            let recorded = events.filter { $0.type == TaskEventTypes.Tool.use.rawValue }.count
-            #expect(recorded >= truth.toolCallCount, "recorded \(recorded) of \(truth.toolCallCount) tool calls")
-        }
+        let recordedToolCalls = events.filter { $0.type == TaskEventTypes.Tool.use.rawValue }.count
+        report(.toolCallsRecorded, of: fixture, failures: recordedToolCalls >= truth.toolCallCount ? [] : [
+            ("", "recorded \(recordedToolCalls) of \(truth.toolCallCount) tool calls")
+        ])
 
-        verify(.noSpuriousErrors, of: fixture) {
-            let errors = events.filter { $0.type == TaskEventTypes.System.error.rawValue }
-            #expect(errors.isEmpty, "a successful turn recorded errors: \(errors.map { $0.payload.prefix(80) })")
-        }
+        let recordedFileNames = Set(run.fileChanges.map { URL(fileURLWithPath: $0.path).lastPathComponent })
+        report(.fileChangesRecorded, of: fixture, failures: truth.writtenFileNames.sorted().compactMap { fileName in
+            recordedFileNames.contains(fileName)
+                ? nil
+                : (fileName, "write to \(fileName) not recorded; recorded \(recordedFileNames.sorted())")
+        })
 
-        verify(.answerVisible, of: fixture) {
-            let snapshot = TaskThreadSnapshot(task: task)
-            let displayed = collapsed(
-                snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
-            )
-            for marker in truth.answerMarkers {
-                #expect(displayed.contains(collapsed(marker)), "answer bubble is missing \(marker.prefix(60))")
-            }
-        }
+        report(.noSpuriousErrors, of: fixture, failures: events
+            .filter { $0.type == TaskEventTypes.System.error.rawValue }
+            .map { ($0.payload, "a successful turn recorded an error: \($0.payload.prefix(80))") })
+
+        let snapshot = TaskThreadSnapshot(task: task)
+        let displayed = collapsed(
+            snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
+        )
+        report(.answerVisible, of: fixture, failures: truth.answerExcerpts.compactMap { excerpt in
+            displayed.contains(excerpt) ? nil : (excerpt, "answer bubble is missing: \(excerpt)")
+        })
     }
 
-    private func verify(
+    /// Records each failure of `check`. Failures the fixture's known issue
+    /// covers are recorded together under that known issue; the rest are real
+    /// failures. A known issue with nothing left to cover is itself reported,
+    /// so a fix cannot land without deleting its entry.
+    private func report(
         _ check: ProviderStreamFixture.Check,
         of fixture: ProviderStreamFixture,
-        _ body: () -> Void
+        failures: [(item: String, message: String)],
+        sourceLocation: SourceLocation = #_sourceLocation
     ) {
-        if let reason = fixture.knownIssues[check] {
-            withKnownIssue(Comment(rawValue: "\(check.rawValue): \(reason)"), body)
-        } else {
-            body()
+        let known = fixture.knownIssues[check]
+        for failure in failures where known?.covers(failure.item) != true {
+            Issue.record(Comment(rawValue: "\(check.rawValue): \(failure.message)"), sourceLocation: sourceLocation)
+        }
+        guard let known else { return }
+        let covered = failures.filter { known.covers($0.item) }
+        withKnownIssue(Comment(rawValue: "\(check.rawValue): \(known.reason)"), sourceLocation: sourceLocation) {
+            for failure in covered {
+                Issue.record(Comment(rawValue: failure.message), sourceLocation: sourceLocation)
+            }
         }
     }
 
@@ -137,13 +160,38 @@ struct ProviderTranscriptConformanceTests {
     }
 }
 
+/// A defect the suite expects today, limited to the failures it explains.
+struct ProviderStreamKnownIssue: Sendable {
+    let reason: String
+    /// Which failing items this defect explains: a message, a line, an
+    /// excerpt, a file name or an error payload, or `""` for a whole-check
+    /// failure.
+    let covers: @Sendable (String) -> Bool
+
+    static func whole(_ reason: String) -> Self {
+        Self(reason: reason) { _ in true }
+    }
+
+    static func items(_ reason: String, where covers: @escaping @Sendable (String) -> Bool) -> Self {
+        Self(reason: reason, covers: covers)
+    }
+
+    /// The per-line echo check re-appends only lines under its 80-character
+    /// floor; a duplicated longer line is a new defect.
+    static func shortLines(_ reason: String) -> Self {
+        items(reason) { $0.count < 80 }
+    }
+}
+
 struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
     enum Check: String, Sendable {
         case runCompletes
         case eachMessageOnce
+        case messagesInOrder
         case noExtraLines
         case noRawProviderJSON
         case toolCallsRecorded
+        case fileChangesRecorded
         case noSpuriousErrors
         case answerVisible
     }
@@ -153,7 +201,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
     let runtime: AgentRuntimeID
     let executableName: String
     let model: String
-    let knownIssues: [Check: String]
+    let knownIssues: [Check: ProviderStreamKnownIssue]
 
     var testDescription: String { "\(provider)/\(scenario)" }
 
@@ -176,9 +224,11 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "claude",
             model: "claude-sonnet-5",
             knownIssues: [
-                .eachMessageOnce: "the envelope echo re-appends a short message whole (plan phase 1)",
-                .noExtraLines: "the envelope echo re-appends every line under 80 characters (plan phase 1)",
-                .answerVisible: "the answer precedes the Write call, so only the sign-off is shown (plan phase 3)"
+                .eachMessageOnce: .items("the envelope echo re-appends the short closing message whole (plan phase 1)") {
+                    $0.hasPrefix("The draft reply is saved")
+                },
+                .noExtraLines: .shortLines("the envelope echo re-appends every line under 80 characters (plan phase 1)"),
+                .answerVisible: .whole("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)")
             ]
         ),
         ProviderStreamFixture(
@@ -200,7 +250,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             // whole-output echo check already drops; prod runs show the
             // doubling on later narration.
             knownIssues: [
-                .answerVisible: "the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)"
+                .fileChangesRecorded: .whole("apply_patch writes are not recorded as file changes (plan phase 4)"),
+                .answerVisible: .whole("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)")
             ]
         ),
         ProviderStreamFixture(
@@ -210,10 +261,15 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "codex",
             model: "gpt-5.5",
             knownIssues: [
-                .runCompletes: "config-warning items of type error fail the run as agent_reported_error (plan phase 2)",
-                .eachMessageOnce: "last-completed-wins keeps only the final agent_message (plan phase 2)",
-                .noSpuriousErrors: "config-warning items of type error are recorded as agent errors (plan phase 2)",
-                .answerVisible: "the answer message is dropped before it can be shown (plan phase 2)"
+                .runCompletes: .whole("config-warning items of type error fail the run as agent_reported_error (plan phase 2)"),
+                .eachMessageOnce: .items("last-completed-wins keeps only the final agent_message (plan phase 2)") {
+                    !$0.hasPrefix("The draft is saved")
+                },
+                .fileChangesRecorded: .whole("file_change paths nest under changes[] and are dropped (plan phase 2)"),
+                .noSpuriousErrors: .items("config-warning items of type error are recorded as agent errors (plan phase 2)") {
+                    $0.hasPrefix("Configured value for")
+                },
+                .answerVisible: .whole("the answer message is dropped before it can be shown (plan phase 2)")
             ]
         ),
         ProviderStreamFixture(
@@ -223,9 +279,12 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "cursor-agent",
             model: "composer-2.5-fast",
             knownIssues: [
-                .eachMessageOnce: "the last frame re-sends the previous message, and only its long lines are dropped (plan phase 2)",
-                .noExtraLines: "re-sent short lines of the previous message are appended again (plan phase 2)",
-                .toolCallsRecorded: "tool_call frames are not parsed (plan phase 4)"
+                .eachMessageOnce: .items("the last frame re-sends the previous message and echo residue splits it (plan phase 2)") {
+                    $0.hasSuffix("The same draft is saved in `answer.md`.")
+                },
+                .noExtraLines: .shortLines("re-sent short lines of the previous message are appended again (plan phase 2)"),
+                .toolCallsRecorded: .whole("tool_call frames are not parsed (plan phase 4)"),
+                .fileChangesRecorded: .whole("editToolCall writes are not parsed (plan phase 4)")
             ]
         ),
         ProviderStreamFixture(
@@ -239,23 +298,29 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
     ]
 }
 
-/// What the provider actually said, read straight from the fixture frames.
+/// What the provider actually said and did, read straight from the fixture
+/// frames.
 struct ProviderStreamTruth {
     private(set) var messages: [String] = []
     private(set) var toolCallCount = 0
-    private(set) var answerMarkers: [String] = []
+    private(set) var writtenFileNames: Set<String> = []
+    /// Collapsed excerpts of the answer's substantive lines, so a bubble that
+    /// shows only a hollow skeleton of headings and greetings fails.
+    private(set) var answerExcerpts: [String] = []
 
     init(fixture: ProviderStreamFixture, frames: [String]) {
         var rawMessages: [String] = []
         var antigravitySteps: [(index: Int, text: String)] = []
+        var writtenPaths: [String] = []
         for line in frames {
             guard let data = line.data(using: .utf8),
                   let frame = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+            let type = frame["type"] as? String
             switch fixture.runtime {
             case .claudeCode:
                 // Subagent frames carry a parent_tool_use_id; only the main
                 // agent's messages are the user's transcript.
-                guard frame["type"] as? String == "assistant",
+                guard type == "assistant",
                       frame["parent_tool_use_id"] is NSNull || frame["parent_tool_use_id"] == nil,
                       let message = frame["message"] as? [String: Any],
                       let blocks = message["content"] as? [[String: Any]] else { continue }
@@ -264,29 +329,38 @@ struct ProviderStreamTruth {
                         rawMessages.append(text)
                     } else if block["type"] as? String == "tool_use" {
                         toolCallCount += 1
+                        if ["Write", "Edit", "MultiEdit"].contains(block["name"] as? String ?? ""),
+                           let path = (block["input"] as? [String: Any])?["file_path"] as? String {
+                            writtenPaths.append(path)
+                        }
                     }
                 }
             case .copilotCLI:
                 let data = frame["data"] as? [String: Any]
-                if frame["type"] as? String == "assistant.message", let text = data?["content"] as? String {
+                if type == "assistant.message", let text = data?["content"] as? String {
                     rawMessages.append(text)
-                } else if frame["type"] as? String == "tool.execution_start" {
+                } else if type == "tool.execution_start" {
                     toolCallCount += 1
+                    if data?["toolName"] as? String == "apply_patch", let patch = data?["arguments"] as? String {
+                        writtenPaths += Self.patchedPaths(in: patch)
+                    }
                 }
             case .codexCLI:
                 let item = frame["item"] as? [String: Any]
-                if frame["type"] as? String == "item.completed",
-                   item?["type"] as? String == "agent_message",
+                if type == "item.completed", item?["type"] as? String == "agent_message",
                    let text = item?["text"] as? String {
                     rawMessages.append(text)
-                } else if frame["type"] as? String == "item.started", item?["type"] as? String == "command_execution" {
+                } else if type == "item.started", item?["type"] as? String == "command_execution" {
                     toolCallCount += 1
+                } else if type == "item.completed", item?["type"] as? String == "file_change",
+                          let changes = item?["changes"] as? [[String: Any]] {
+                    writtenPaths += changes.compactMap { $0["path"] as? String }
                 }
             case .cursorCLI:
                 // Cursor's last assistant frame repeats the previous message
                 // and appends to it, so a frame that extends the previous
                 // message's text continues that message.
-                if frame["type"] as? String == "assistant",
+                if type == "assistant",
                    let message = frame["message"] as? [String: Any],
                    let blocks = message["content"] as? [[String: Any]] {
                     let text = blocks.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
@@ -296,8 +370,12 @@ struct ProviderStreamTruth {
                     } else if !text.isEmpty {
                         rawMessages.append(text)
                     }
-                } else if frame["type"] as? String == "tool_call", frame["subtype"] as? String == "started" {
+                } else if type == "tool_call", frame["subtype"] as? String == "started" {
                     toolCallCount += 1
+                    let edit = (frame["tool_call"] as? [String: Any])?["editToolCall"] as? [String: Any]
+                    if let path = (edit?["args"] as? [String: Any])?["path"] as? String {
+                        writtenPaths.append(path)
+                    }
                 }
             case .antigravityCLI:
                 guard frame["event"] as? String == "step_update",
@@ -319,10 +397,12 @@ struct ProviderStreamTruth {
         }
         rawMessages += antigravitySteps.map(\.text)
         messages = rawMessages.map(Self.visibleText).filter { !$0.isEmpty }
+        writtenFileNames = Set(writtenPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
+
         if let answer = messages.first(where: { $0.contains("Suggested reply") }) {
-            answerMarkers = ["Suggested reply", "All the best"].filter { answer.contains($0) }
+            answerExcerpts = Self.substantiveExcerpts(of: answer)
         } else if let last = messages.last {
-            answerMarkers = [String(last.prefix(60))]
+            answerExcerpts = [String(collapsed(last).prefix(60))]
         }
     }
 
@@ -332,6 +412,31 @@ struct ProviderStreamTruth {
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("ASTRA_EVENT ") }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The opening 40 characters of every prose line of 60+ characters, with
+    /// quote and bullet markers removed. Table rows and short lines are left
+    /// out, because the echo defect keeps exactly those.
+    private static func substantiveExcerpts(of answer: String) -> [String] {
+        answer.components(separatedBy: "\n").compactMap { line in
+            var text = line.trimmingCharacters(in: .whitespaces)
+            guard !text.hasPrefix("|") else { return nil }
+            for marker in ["> ", "- ", "* "] where text.hasPrefix(marker) {
+                text = String(text.dropFirst(marker.count))
+            }
+            let words = collapsed(text)
+            return words.count >= 60 ? String(words.prefix(40)) : nil
+        }
+    }
+
+    /// `*** Add File: <path>` / `*** Update File: <path>` headers of a patch.
+    private static func patchedPaths(in patch: String) -> [String] {
+        patch.components(separatedBy: "\n").compactMap { line in
+            for header in ["*** Add File: ", "*** Update File: "] where line.hasPrefix(header) {
+                return String(line.dropFirst(header.count)).trimmingCharacters(in: .whitespaces)
+            }
+            return nil
+        }
     }
 }
 

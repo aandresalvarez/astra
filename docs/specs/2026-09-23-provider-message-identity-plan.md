@@ -249,16 +249,21 @@ Status: landed with this plan, except the OpenCode capture.
   - no raw provider JSON appears in the text;
   - tool calls are recorded;
   - once Phase 3 lands, the answer bubble contains the final answer;
-  - a successful turn completes and records no error events.
-- The suite landed with 11 failing checks across 4 fixtures (32 recorded
-  known issues, since each duplicated line counts separately), all matching
+  - a successful turn completes and records no error events;
+  - messages are recorded in provider order;
+  - every file the provider wrote is recorded as a file change.
+- A known issue is scoped to the items it explains: a specific message,
+  duplicated lines under the 80-character echo floor, or errors that start
+  with "Configured value for". Any other failure of the same check is a real
+  failure.
+- The suite landed with 14 known issues across 4 fixtures, all matching
   production symptoms or the captures:
   - Claude: short closing message doubled, hollow echo lines, answer not shown.
-  - Copilot: answer not shown.
+  - Copilot: answer not shown; `apply_patch` write not recorded.
   - Codex: run failed by warning items, earlier messages lost, spurious errors,
-    answer not shown.
+    write not recorded, answer not shown.
   - Cursor: the re-sent previous message recorded as a hollow echo, the
-    message not stored once, tool calls not recorded.
+    message not stored once, tool calls and the write not recorded.
   - Antigravity and the Claude subagent capture: fully green.
 - Copilot's narration doubling is not exercised: the capture's only narration
   with `toolRequests` is the run's first message, which today's whole-output
@@ -288,6 +293,10 @@ Status: landed with this plan, except the OpenCode capture.
   `model_call_id`, with the exact-prefix continuation for its last frame.
 - Codex `item.completed` items of `type: error` become a warning or diagnostic
   event, not `.failed`. Only `turn.failed` fails the turn.
+- Codex `file_change` items carry their paths under `changes[]`, which
+  `fileChangeEvent` does not read
+  ([CodexStreamEventParser.swift:165](../../ASTRACore/CodexStreamEventParser.swift#L165)),
+  so every Codex write is dropped. Record one file change per entry.
 - **Behavior change:** Codex `run.output` becomes every message in order, like
   the other providers, instead of the last one only. Update
   `codexMultipleCompletedMessagesKeepFinalAnswer` to assert the answer
@@ -330,6 +339,9 @@ Status: landed with this plan, except the OpenCode capture.
   `rawText`.
 - Cursor: parse `tool_call` `started`/`completed` into `toolUse`/`toolResult`
   and `fileChange`.
+- Copilot: record `apply_patch` writes as file changes. The replay records none,
+  even though Copilot's own `result` frame lists them in
+  `usage.codeChanges.filesModified`.
 - Copilot: record a line that looks like JSON but fails to parse
   (`{"type":"…`) as a diagnostic event, never as `.text`. File the `******`
   masking bug upstream with a redacted sample.

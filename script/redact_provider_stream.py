@@ -7,7 +7,7 @@ The fixture must keep every field ASTRA's parsers read -- frame types, message
 and tool ids, text, usage -- because those are what the conformance suite
 tests. Everything that describes the capturing machine goes: home directory,
 user name, email, host name, the scratch workspace path, the local tool / MCP /
-plugin inventory that init frames advertise, account rate-limit details,
+plugin inventory that init and Copilot session frames advertise, account rate-limit details,
 opaque signatures, and streamed tool-argument fragments. Lines that are not JSON pass through with string redaction
 only.
 """
@@ -120,8 +120,36 @@ def redact(value, pairs):
     return value
 
 
+def minimized_copilot_session(frame):
+    """Copilot advertises its MCP servers and prompt-cache state in session frames.
+
+    ASTRA only reads `session_id` / `model` from `session.*` frames, so server
+    names, instructions, tool metadata and cache state are dropped while the
+    frame shape stays.
+    """
+    data = frame.get("data")
+    if not isinstance(data, dict):
+        return frame
+    frame = dict(frame)
+    data = dict(data)
+    kind = frame.get("type")
+    if kind == "session.mcp_servers_loaded" and isinstance(data.get("servers"), list):
+        data["servers"] = [
+            {"name": "[redacted]", "status": server.get("status"), "source": server.get("source")}
+            for server in data["servers"] if isinstance(server, dict)
+        ]
+    elif kind == "session.mcp_server_status_changed" and "serverName" in data:
+        data["serverName"] = "[redacted]"
+    elif kind == "session.usage_checkpoint":
+        data.pop("promptCacheBreakState", None)
+    frame["data"] = data
+    return frame
+
+
 def minimized(frame):
-    """Drop the local inventory that init frames advertise."""
+    """Drop the local inventory that init and session frames advertise."""
+    if isinstance(frame.get("type"), str) and frame["type"].startswith("session."):
+        return minimized_copilot_session(frame)
     if frame.get("type") == "system" and frame.get("subtype") == "init":
         return {key: value for key, value in frame.items() if key in INIT_KEEP_KEYS}
     if frame.get("type") == "rate_limit_event" and isinstance(frame.get("rate_limit_info"), dict):

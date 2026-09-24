@@ -98,31 +98,40 @@ esac
 raw="$workspace/stdout.jsonl"
 stderr_file="$workspace/stderr.txt"
 echo "==> $provider/$scenario in $workspace" >&2
-(
-  cd "$workspace"
-  "${cmd[@]}" >"$raw" 2>"$stderr_file" </dev/null &
-  pid=$!
-  ( sleep "$TIMEOUT_SECONDS"; kill -TERM "$pid" 2>/dev/null ) &
-  watchdog=$!
-  status=0
-  wait "$pid" || status=$?
-  pkill -P "$watchdog" 2>/dev/null || true
-  kill "$watchdog" 2>/dev/null || true
-  echo "==> exit $status, $(wc -l <"$raw" | tr -d ' ') stdout lines" >&2
-)
+(cd "$workspace" && exec "${cmd[@]}") >"$raw" 2>"$stderr_file" </dev/null &
+pid=$!
+( sleep "$TIMEOUT_SECONDS"; kill -TERM "$pid" ) 2>/dev/null &
+watchdog=$!
+status=0
+wait "$pid" || status=$?
+pkill -P "$watchdog" 2>/dev/null || true
+kill "$watchdog" 2>/dev/null || true
+echo "==> exit $status, $(wc -l <"$raw" | tr -d ' ') stdout lines" >&2
+
+keep_raw_copy() {
+  [[ -n "$keep_raw" ]] || return 0
+  mkdir -p "$keep_raw"
+  cp "$raw" "$keep_raw/$provider-$scenario.raw.jsonl"
+  cp "$stderr_file" "$keep_raw/$provider-$scenario.stderr.txt"
+  cp -R "$workspace" "$keep_raw/$provider-$scenario.workspace"
+}
+
+# A failed, killed or silent run must not replace the committed fixture.
+if [[ "$status" -ne 0 || ! -s "$raw" ]]; then
+  echo "==> capture failed; fixture left unchanged. stderr (not saved):" >&2
+  tail -5 "$stderr_file" >&2
+  keep_raw_copy
+  exit "$(( status == 0 ? 1 : status ))"
+fi
 
 out_dir="$ROOT_DIR/Tests/Fixtures/ProviderStreams/$provider"
 mkdir -p "$out_dir"
 out="$out_dir/$scenario.jsonl"
-python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$out"
+python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$out.tmp"
+mv "$out.tmp" "$out"
 echo "==> wrote ${out#"$ROOT_DIR/"} ($(wc -l <"$out" | tr -d ' ') lines)" >&2
 if [[ -s "$stderr_file" ]]; then
   echo "==> stderr (not saved):" >&2
   tail -5 "$stderr_file" >&2
 fi
-if [[ -n "$keep_raw" ]]; then
-  mkdir -p "$keep_raw"
-  cp "$raw" "$keep_raw/$provider-$scenario.raw.jsonl"
-  cp "$stderr_file" "$keep_raw/$provider-$scenario.stderr.txt"
-  cp -R "$workspace" "$keep_raw/$provider-$scenario.workspace"
-fi
+keep_raw_copy
