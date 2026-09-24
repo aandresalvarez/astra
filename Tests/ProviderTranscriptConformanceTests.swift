@@ -109,23 +109,6 @@ struct ProviderTranscriptConformanceTests {
             return (extraLineItem(line, overage: count - expected, sent: expected), "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
         })
 
-        // Every other line must be a join of one message's last line with the
-        // next message's first line (messages are appended without a
-        // separator), at most once per such boundary; anything else is text
-        // the provider never sent.
-        let unsent = lineCounts(output).filter { sent[$0.key] == nil }
-        let joins = truth.boundaryJoins
-        var unsentFailures: [(item: String, message: String)] = unsent.keys.sorted().compactMap { line in
-            joins.keys.contains { $0.contains(line) } ? nil : (line, "line the provider never sent: \(line.prefix(80))")
-        }
-        // A boundary's spellings share one budget: with or without a space,
-        // the boundary joins once.
-        for (spellings, boundaries) in joins.sorted(by: { $0.key.sorted().joined() < $1.key.sorted().joined() }) {
-            let used = spellings.reduce(0) { $0 + (unsent[$1] ?? 0) }
-            guard used > boundaries, let line = spellings.filter({ unsent[$0] != nil }).sorted().first else { continue }
-            unsentFailures.append((line, "boundary join recorded \(used)x across \(boundaries) boundary(ies): \(line.prefix(80))"))
-        }
-        report(.noUnsentLines, of: fixture, failures: unsentFailures)
 
         // Collapsed comparisons ignore line breaks, so each message present in
         // the output must also keep its lines and blank-line paragraph breaks.
@@ -186,6 +169,12 @@ struct ProviderTranscriptConformanceTests {
                 : (message, "in agent.response rows \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
+        // Neither the output nor the durable rows may hold text the provider
+        // never sent, apart from joins at message boundaries.
+        report(.noUnsentLines, of: fixture, failures: [("run output", output), ("agent.response rows", responseSoFar)].flatMap {
+            unsentLineFailures(in: $0.1, sent: sent, boundaries: truth.boundaryJoins, source: $0.0)
+        })
+
         let recordedOutcomes = multiset(events.compactMap { event -> String? in
             switch event.type {
             case TaskEventTypes.Tool.result.rawValue: "success"
@@ -238,8 +227,8 @@ struct ProviderTranscriptConformanceTests {
             return expected == recorded ? nil : (summary, "completion \"\(summary)\": marked \(expected)x, recorded \(recorded)x")
         })
 
-        report(.noRawProviderJSON, of: fixture, failures: output.components(separatedBy: "\n").filter(isRawProviderFrame).map {
-            ("", "raw provider frame in run output: \($0.prefix(80))")
+        report(.noRawProviderJSON, of: fixture, failures: [("run output", output), ("agent.response rows", responseSoFar)].flatMap { source, text in
+            text.components(separatedBy: "\n").filter(isRawProviderFrame).map { ("", "raw provider frame in \(source): \($0.prefix(80))") }
         })
 
         // Tool calls are compared by name as a multiset, so a dropped call
@@ -317,15 +306,29 @@ struct ProviderTranscriptConformanceTests {
         let snapshot = TaskThreadSnapshot(task: task)
         let displayed = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).displayText
         let answer = try #require(truth.answer, "fixture has no answer message")
+        let answerCopies = collapsed(displayed).components(separatedBy: collapsed(answer)).count - 1
         let answerFailure: (item: String, message: String)? =
-            if !collapsed(displayed).contains(collapsed(answer)) {
+            if answerCopies == 0 {
                 ("text", "answer bubble is missing answer text: \(answer.prefix(80))")
+            } else if answerCopies > 1 {
+                ("duplicate", "answer bubble shows the answer \(answerCopies)x")
             } else if !lineStructure(displayed).contains(lineStructure(answer)) {
                 ("structure", "answer bubble lost the answer's line or paragraph breaks")
             } else {
                 nil
             }
         report(.answerVisible, of: fixture, failures: answerFailure.map { [$0] } ?? [])
+    }
+
+    @Test("A join line several boundaries can produce is charged to one of them, and each boundary joins once")
+    func boundaryJoinsAreMatchedToBoundaries() {
+        // `a` + `bc` and `ab` + `c` can both produce `abc`.
+        let overlapping: [Set<String>] = [["abc", "a bc"], ["abc", "ab c"]]
+        #expect(unsentLineFailures(in: "abc\nabc", sent: [:], boundaries: overlapping, source: "output").isEmpty)
+        #expect(unsentLineFailures(in: "abc\nabc\nabc", sent: [:], boundaries: overlapping, source: "output").count == 1)
+        // Both spellings of one boundary are two joins, one too many.
+        #expect(unsentLineFailures(in: "abc\na bc", sent: [:], boundaries: [["abc", "a bc"]], source: "output").count == 1)
+        #expect(unsentLineFailures(in: "xyz", sent: [:], boundaries: overlapping, source: "output").count == 1)
     }
 
     /// Records each failure of `check`. Failures the fixture's known issue
@@ -606,11 +609,11 @@ struct ProviderStreamTruth {
     /// Task ids of the subagents the provider started and finished.
     private(set) var subagentStarts: [String] = []
     private(set) var subagentCompletions: [String] = []
-    /// The spellings of "last line of a message + first line of the next
-    /// message" (with or without a space), and how many boundaries produce
-    /// them: the only lines, besides the provider's own, that appending
-    /// messages without a separator can produce, once per boundary.
-    private(set) var boundaryJoins: [Set<String>: Int] = [:]
+    /// For each boundary between consecutive messages, the spellings of
+    /// "last line + first line" (with or without a space): the only lines,
+    /// besides the provider's own, that appending messages without a
+    /// separator can produce, once per boundary.
+    private(set) var boundaryJoins: [Set<String>] = []
     /// The message the user asked for: the drafted reply in the
     /// answer-write-signoff scenario, otherwise the last message.
     private(set) var answer: String?
@@ -811,7 +814,7 @@ struct ProviderStreamTruth {
         for (earlier, later) in zip(messages, messages.dropFirst()) {
             let lastLine = earlier.components(separatedBy: "\n").last ?? ""
             let firstLine = later.components(separatedBy: "\n").first ?? ""
-            boundaryJoins[Set([collapsed(lastLine + firstLine), collapsed(lastLine + " " + firstLine)]), default: 0] += 1
+            boundaryJoins.append(Set([collapsed(lastLine + firstLine), collapsed(lastLine + " " + firstLine)]))
         }
 
         answer = messages.first { $0.contains("Suggested reply") } ?? messages.last
@@ -861,6 +864,52 @@ private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]
         remaining[step] = count - 1
         return true
     }
+}
+
+/// Lines of `text` the provider never sent. A line may instead be a join of
+/// one message's last line with the next message's first line (messages are
+/// appended without a separator), and each boundary joins at most once, in
+/// either spelling. A line that several boundaries can produce is charged to
+/// one of them, never to all: occurrences are matched to boundaries.
+private func unsentLineFailures(
+    in text: String,
+    sent: [String: Int],
+    boundaries: [Set<String>],
+    source: String
+) -> [(item: String, message: String)] {
+    let unsent = lineCounts(text).filter { sent[$0.key] == nil }
+    var failures: [(item: String, message: String)] = []
+    var occurrences: [String] = []
+    for line in unsent.keys.sorted() {
+        if boundaries.contains(where: { $0.contains(line) }) {
+            occurrences += Array(repeating: line, count: unsent[line] ?? 0)
+        } else {
+            failures.append((line, "line in \(source) the provider never sent: \(line.prefix(80))"))
+        }
+    }
+    // Augmenting-path matching of occurrences to the boundaries that can
+    // produce them.
+    var occurrenceAtBoundary = [Int?](repeating: nil, count: boundaries.count)
+    func charge(_ occurrence: Int, visited: inout Set<Int>) -> Bool {
+        for boundary in boundaries.indices where boundaries[boundary].contains(occurrences[occurrence]) {
+            guard visited.insert(boundary).inserted else { continue }
+            if let other = occurrenceAtBoundary[boundary], !charge(other, visited: &visited) { continue }
+            occurrenceAtBoundary[boundary] = occurrence
+            return true
+        }
+        return false
+    }
+    var uncharged: [String: Int] = [:]
+    for occurrence in occurrences.indices {
+        var visited = Set<Int>()
+        if !charge(occurrence, visited: &visited) {
+            uncharged[occurrences[occurrence], default: 0] += 1
+        }
+    }
+    for (line, extra) in uncharged.sorted(by: { $0.key < $1.key }) {
+        failures.append((line, "boundary join in \(source) recorded \(extra)x more than its boundaries allow: \(line.prefix(80))"))
+    }
+    return failures
 }
 
 /// A provider frame leaked into the text, whatever its key order: a line that

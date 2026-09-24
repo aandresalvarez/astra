@@ -274,13 +274,17 @@ Status: landed with this plan, except the OpenCode capture.
   - there are no duplicated lines beyond what the provider sent;
   - no raw provider JSON appears in the text, whatever its key order;
   - tool calls are recorded;
-  - once Phase 3 lands, the answer bubble contains the whole answer message,
-    all of its text and its line and paragraph breaks, not a digest;
+  - once Phase 3 lands, the answer bubble contains the whole answer message
+    exactly once, all of its text and its line and paragraph breaks, not a
+    digest;
   - a successful turn completes and records no error events;
   - messages are recorded in provider order;
   - every file the provider wrote is recorded as a file change;
-  - no output line is text the provider never sent, apart from at most one
-    join per boundary between consecutive messages;
+  - no line of the output or of the response rows is text the provider never
+    sent, apart from at most one join per boundary between consecutive
+    messages (occurrences are matched to boundaries, so two boundaries that
+    can produce the same line each allow one), and no raw frame appears in
+    either;
   - identical messages are counted by how many times the provider sent them;
   - messages and tool calls interleave in provider order;
   - each message keeps its line and paragraph breaks;
