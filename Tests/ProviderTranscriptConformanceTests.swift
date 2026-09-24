@@ -154,6 +154,46 @@ struct ProviderTranscriptConformanceTests {
             ("", "provider order \(expectedSteps), recorded \(actualSteps)")
         ])
 
+        let recordedOutcomes = multiset(events.compactMap { event -> String? in
+            switch event.type {
+            case TaskEventTypes.Tool.result.rawValue: "success"
+            case TaskEventTypes.Tool.resultFailed.rawValue: "failure"
+            default: nil
+            }
+        })
+        let expectedOutcomes = multiset(truth.toolResultOutcomes)
+        report(.toolResultsRecorded, of: fixture, failures: ["success", "failure"].compactMap { outcome in
+            let expected = expectedOutcomes[outcome] ?? 0
+            let recorded = recordedOutcomes[outcome] ?? 0
+            return expected == recorded ? nil : (outcome, "\(outcome) tool results: provider reported \(expected), recorded \(recorded)")
+        })
+
+        if let usage = truth.usage {
+            #expect(fixture.notExercised[.usageRecorded] == nil, "fixture now reports usage; drop usageRecorded from notExercised")
+            report(.usageRecorded, of: fixture, failures: [
+                ("input", usage.input, run.inputTokens),
+                ("output", usage.output, run.outputTokens)
+            ].compactMap { name, expected, recorded in
+                expected == recorded ? nil : (name, "\(name) tokens: provider reported \(expected), recorded \(recorded)")
+            })
+        } else {
+            #expect(fixture.notExercised[.usageRecorded] != nil,
+                    "fixture reports no token usage; list usageRecorded in notExercised")
+        }
+
+        // Each complete marker must leave its durable astra.complete event.
+        let recordedSummaries = multiset(events
+            .filter { $0.type == "astra.complete" }
+            .compactMap { event in
+                (try? JSONSerialization.jsonObject(with: Data(event.payload.utf8)) as? [String: Any])?["summary"] as? String
+            })
+        let expectedSummaries = multiset(truth.completionSummaries)
+        report(.completionRecorded, of: fixture, failures: Set(recordedSummaries.keys).union(expectedSummaries.keys).sorted().compactMap { summary in
+            let expected = expectedSummaries[summary] ?? 0
+            let recorded = recordedSummaries[summary] ?? 0
+            return expected == recorded ? nil : (summary, "completion \"\(summary)\": marked \(expected)x, recorded \(recorded)x")
+        })
+
         let rawFrameInOutput = output.contains(#"{"type":""#) || output.contains(#"{"event":""#)
         report(.noRawProviderJSON, of: fixture, failures: rawFrameInOutput ? [("", "raw provider frame in run output")] : [])
 
@@ -286,6 +326,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
         case noUnsentLines
         case paragraphStructure
         case toolsInterleaved
+        case toolResultsRecorded
+        case usageRecorded
+        case completionRecorded
         case noRawProviderJSON
         case toolCallsRecorded
         case fileChangesRecorded
@@ -355,7 +398,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                     $0 == "answer.md"
                 },
                 .answerVisible: .whole("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)")
-            ]
+            ],
+            notExercised: [.usageRecorded: "Copilot's stream reports premium requests, not tokens"]
         ),
         ProviderStreamFixture(
             provider: "codex",
@@ -376,6 +420,12 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .noSpuriousErrors: .items("config-warning items of type error are recorded as agent errors (plan phase 2)") {
                     $0.hasPrefix("Configured value for")
                 },
+                .usageRecorded: .items("cached_input_tokens are added to input_tokens, which already include them (plan phase 2)") {
+                    $0 == "input"
+                },
+                .completionRecorded: .items("ASTRA_EVENT markers in agent_message items are stripped, never recorded (plan phase 2)") {
+                    $0 == "Drafted the reply and saved answer.md"
+                },
                 .answerVisible: .whole("the answer message is dropped before it can be shown (plan phase 2)")
             ]
         ),
@@ -393,6 +443,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .toolCallsRecorded: .items("tool_call frames are not parsed (plan phase 4)") {
                     ["readToolCall", "editToolCall"].contains($0)
                 },
+                .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") { $0 == "success" },
                 .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
                     $0 == "answer.md"
                 }
@@ -424,6 +475,12 @@ struct ProviderStreamTruth {
     private(set) var toolNames: [String] = []
     /// Messages and tool calls in the order the provider produced them.
     private(set) var sequence: [TranscriptStep] = []
+    /// "success" / "failure" for every tool result the provider reported.
+    private(set) var toolResultOutcomes: [String] = []
+    /// The run's token totals as the provider reports them, when it does.
+    private(set) var usage: (input: Int, output: Int)?
+    /// Summaries of the `ASTRA_EVENT` complete markers in the main messages.
+    private(set) var completionSummaries: [String] = []
 
     private enum RawStep {
         case message(Int)
@@ -456,6 +513,21 @@ struct ProviderStreamTruth {
             let type = frame["type"] as? String
             switch fixture.runtime {
             case .claudeCode:
+                if type == "result", let modelUsage = frame["modelUsage"] as? [String: [String: Any]] {
+                    // Anthropic reports cache reads and writes apart from input.
+                    let entries = Array(modelUsage.values)
+                    usage = (
+                        entries.reduce(0) {
+                            $0 + int($1["inputTokens"]) + int($1["cacheReadInputTokens"]) + int($1["cacheCreationInputTokens"])
+                        },
+                        entries.reduce(0) { $0 + int($1["outputTokens"]) }
+                    )
+                }
+                if type == "user", let blocks = (frame["message"] as? [String: Any])?["content"] as? [[String: Any]] {
+                    for block in blocks where block["type"] as? String == "tool_result" {
+                        toolResultOutcomes.append(block["is_error"] as? Bool == true ? "failure" : "success")
+                    }
+                }
                 // Subagent frames carry a parent_tool_use_id; only the main
                 // agent's messages are the user's transcript, but every tool
                 // call is tool activity.
@@ -478,6 +550,8 @@ struct ProviderStreamTruth {
                 let data = frame["data"] as? [String: Any]
                 if type == "assistant.message", let text = data?["content"] as? String {
                     appendMessage(text)
+                } else if type == "tool.execution_complete" {
+                    toolResultOutcomes.append(data?["success"] as? Bool == false ? "failure" : "success")
                 } else if type == "tool.execution_start" {
                     appendTool(data?["toolName"] as? String ?? "tool")
                     if data?["toolName"] as? String == "apply_patch", let patch = data?["arguments"] as? String {
@@ -491,6 +565,13 @@ struct ProviderStreamTruth {
                     appendMessage(text)
                 } else if type == "item.started", item?["type"] as? String == "command_execution" {
                     appendTool("command_execution")
+                } else if type == "item.completed", item?["type"] as? String == "command_execution" {
+                    let exitCode = item?["exit_code"] as? Int
+                    toolResultOutcomes.append(exitCode == nil || exitCode == 0 ? "success" : "failure")
+                } else if type == "turn.completed", let reported = frame["usage"] as? [String: Any] {
+                    // Codex's input_tokens already include cached_input_tokens:
+                    // its own total_tokens is input_tokens + output_tokens.
+                    usage = (int(reported["input_tokens"]), int(reported["output_tokens"]))
                 } else if type == "item.completed", item?["type"] as? String == "file_change",
                           let changes = item?["changes"] as? [[String: Any]] {
                     writtenPaths += changes.compactMap { $0["path"] as? String }
@@ -509,6 +590,17 @@ struct ProviderStreamTruth {
                     } else if !text.isEmpty {
                         appendMessage(text)
                     }
+                } else if type == "result", let reported = frame["usage"] as? [String: Any] {
+                    // Cursor reports cache reads and writes apart from input,
+                    // as Anthropic does; it gives no total to check against.
+                    usage = (
+                        int(reported["inputTokens"]) + int(reported["cacheReadTokens"]) + int(reported["cacheWriteTokens"]),
+                        int(reported["outputTokens"])
+                    )
+                } else if type == "tool_call", frame["subtype"] as? String == "completed" {
+                    let call = (frame["tool_call"] as? [String: Any])?.values.compactMap { $0 as? [String: Any] }.first
+                    let result = call?["result"] as? [String: Any]
+                    toolResultOutcomes.append(result?["success"] != nil ? "success" : "failure")
                 } else if type == "tool_call", frame["subtype"] as? String == "started" {
                     let call = frame["tool_call"] as? [String: Any] ?? [:]
                     appendTool(call.keys.first { $0.hasSuffix("ToolCall") } ?? "tool")
@@ -518,6 +610,11 @@ struct ProviderStreamTruth {
                     }
                 }
             case .antigravityCLI:
+                if frame["event"] as? String == "result",
+                   let reported = (frame["result"] as? [String: Any])?["usage"] as? [String: Any] {
+                    // input_tokens already count cached reads (total_tokens = input + output).
+                    usage = (int(reported["input_tokens"]), int(reported["output_tokens"]))
+                }
                 guard frame["event"] as? String == "step_update",
                       let step = frame["step_update"] as? [String: Any],
                       let index = step["step_index"] as? Int else { continue }
@@ -529,6 +626,8 @@ struct ProviderStreamTruth {
                         antigravityMessageIndex[index] = rawMessages.count
                         appendMessage(delta)
                     }
+                } else if step["step_type"] as? String == "tool", ["DONE", "ERROR"].contains(step["state"] as? String) {
+                    toolResultOutcomes.append(step["state"] as? String == "DONE" ? "success" : "failure")
                 } else if step["step_type"] as? String == "tool", step["state"] as? String == "ACTIVE" {
                     appendTool(step["tool_name"] as? String ?? "tool")
                     let parameters = (step["tool_info"] as? [String: Any])?["parameters"] as? [String: Any]
@@ -538,6 +637,18 @@ struct ProviderStreamTruth {
                 }
             default:
                 continue
+            }
+        }
+        for raw in rawMessages {
+            for line in raw.components(separatedBy: "\n") {
+                let marker = line.trimmingCharacters(in: .whitespaces)
+                guard marker.hasPrefix("ASTRA_EVENT "),
+                      let data = marker.dropFirst("ASTRA_EVENT ".count).data(using: .utf8),
+                      let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      event["type"] as? String == "complete",
+                      let summary = event["summary"] as? String,
+                      !completionSummaries.contains(summary) else { continue }
+                completionSummaries.append(summary)
             }
         }
         var messageIndexByRaw: [Int: Int] = [:]
@@ -628,6 +739,10 @@ private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]
         remaining[step] = count - 1
         return true
     }
+}
+
+private func int(_ value: Any?) -> Int {
+    (value as? NSNumber)?.intValue ?? 0
 }
 
 private func multiset(_ items: [String]) -> [String: Int] {

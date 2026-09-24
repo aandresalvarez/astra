@@ -165,6 +165,7 @@ def minimized_copilot_session(frame):
 
 
 TOOL_OUTPUT = "[tool output redacted]"
+CODEX_TOOL_ITEM_TYPES = {"command_execution", "mcp_tool_call", "local_shell_call", "function_call", "web_search"}
 
 
 def without_tool_output(frame):
@@ -191,12 +192,20 @@ def without_tool_output(frame):
         frame = dict(frame, data=dict(frame["data"], result={"content": TOOL_OUTPUT}))
     elif kind in ("item.started", "item.updated", "item.completed") and isinstance(frame.get("item"), dict):  # Codex
         item = frame["item"]
-        payload_keys = [key for key in ("aggregated_output", "output", "stdout", "stderr", "result") if key in item]
-        if payload_keys and item.get("type") not in ("agent_message", "reasoning"):
+        # Only tool items: agent messages, reasoning and warning items keep
+        # their text, which is what the conformance suite reads.
+        payload_keys = [
+            key for key in ("aggregated_output", "output", "stdout", "stderr", "result", "text", "message")
+            if key in item
+        ]
+        if payload_keys and item.get("type") in CODEX_TOOL_ITEM_TYPES:
             frame = dict(frame, item=dict(item, **{key: TOOL_OUTPUT if item[key] else item[key] for key in payload_keys}))
     elif kind == "tool_call" and isinstance(frame.get("tool_call"), dict):  # Cursor
+        # Keep the outcome key (`success` / `error`), drop what it carried.
+        def blank(result):
+            return {outcome: TOOL_OUTPUT for outcome in result} if isinstance(result, dict) else TOOL_OUTPUT
         frame = dict(frame, tool_call={
-            name: (dict(call, result=TOOL_OUTPUT) if isinstance(call, dict) and "result" in call else call)
+            name: (dict(call, result=blank(call["result"])) if isinstance(call, dict) and "result" in call else call)
             for name, call in frame["tool_call"].items()
         })
     elif frame.get("event") == "step_update" and isinstance(frame.get("step_update"), dict):  # Antigravity
@@ -250,6 +259,43 @@ OUTSIDE_PATH_PATTERN = re.compile(
 ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
 
 
+ANSI_C_STRING = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+ESCAPED_BYTES = re.compile(r"\\(?:x[0-9A-Fa-f]{1,2}|[0-7]{3}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})")
+
+
+def string_leaves(arguments_json):
+    try:
+        value = json.loads(arguments_json)
+    except ValueError:
+        return [arguments_json]
+    leaves = []
+
+    def collect(node):
+        if isinstance(node, str):
+            leaves.append(node)
+        elif isinstance(node, list):
+            for item in node:
+                collect(item)
+        elif isinstance(node, dict):
+            for item in node.values():
+                collect(item)
+
+    collect(value)
+    return leaves
+
+
+def shell_decoded(leaf):
+    """A string with its shell `$'…'` segments decoded.
+
+    `cat $'\\x2fetc\\x2fpasswd'` reads /etc/passwd without a literal rooted
+    path, so the audit also checks the decoded form.
+    """
+    return ANSI_C_STRING.sub(
+        lambda match: match.group(1).encode("utf-8", "backslashreplace").decode("unicode_escape", "replace"),
+        leaf,
+    )
+
+
 def command_executables_as_basenames(arguments):
     """Replace an executable path in command position by its basename.
 
@@ -271,14 +317,22 @@ def audit(fixture_path):
             try:
                 frame = json.loads(line)
             except ValueError:
+                findings.append(f"line {number}: not JSON, cannot be audited")
                 continue
             if not isinstance(frame, dict):
                 continue
             for name, arguments in tool_call_arguments(frame):
                 # An executable path becomes its basename, so `/usr/bin/env` is
                 # judged like `env` while `/bin/zsh` stops counting as a path.
-                reach = command_executables_as_basenames(arguments)
-                if OUTSIDE_PATH_PATTERN.search(reach) or ENV_DUMP_PATTERN.search(reach):
+                # Shell-escaped strings are judged decoded, and escapes left
+                # over (printf, echo -e) are refused as obfuscation.
+                decoded = [shell_decoded(leaf) for leaf in string_leaves(arguments)]
+                forms = [arguments] + [json.dumps(leaf) for leaf in decoded]
+                reached = any(
+                    OUTSIDE_PATH_PATTERN.search(reach) or ENV_DUMP_PATTERN.search(reach)
+                    for reach in map(command_executables_as_basenames, forms)
+                )
+                if reached or any(ESCAPED_BYTES.search(leaf) for leaf in decoded):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
     for finding in findings:
         print(finding)

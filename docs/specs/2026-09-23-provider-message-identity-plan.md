@@ -262,7 +262,12 @@ Status: landed with this plan, except the OpenCode capture.
   - every file the provider wrote is recorded as a file change;
   - no output line is text the provider never sent, apart from joins at
     message boundaries;
-  - identical messages are counted by how many times the provider sent them.
+  - identical messages are counted by how many times the provider sent them;
+  - messages and tool calls interleave in provider order;
+  - each message keeps its line and paragraph breaks;
+  - tool results are recorded with their success or failure outcome;
+  - the run's token totals equal what the provider reported;
+  - every `ASTRA_EVENT` complete marker leaves its `astra.complete` event.
 - A fixture that cannot exercise a check says so in `notExercised`, and the
   suite fails if it starts to. Antigravity's `agy` print mode ends the turn on
   a response without tool calls, so the answer-first scenario never reaches its
@@ -308,6 +313,16 @@ Status: landed with this plan, except the OpenCode capture.
   `model_call_id`, with the exact-prefix continuation for its last frame.
 - Codex `item.completed` items of `type: error` become a warning or diagnostic
   event, not `.failed`. Only `turn.failed` fails the turn.
+- Codex's `input_tokens` already include `cached_input_tokens`; Codex's own
+  `total_tokens` is input plus output. `usageEvent` adds the cached count again
+  ([CodexStreamEventParser.swift:173](../../ASTRACore/CodexStreamEventParser.swift#L173)).
+  The capture records 118,991 input tokens instead of 65,359, which inflates
+  Codex token budgets. Count `input_tokens` once.
+- An `ASTRA_EVENT` marker in a Codex `agent_message` reaches the recorder as
+  `.completed`, bypasses the protocol filter, and is stripped from the output
+  without being recorded. No September Codex run has an `astra.complete`
+  event (0 of 8). Route agent messages through the same marker handling as
+  other providers' text.
 - Codex `file_change` items carry their paths under `changes[]`, which
   `fileChangeEvent` does not read
   ([CodexStreamEventParser.swift:165](../../ASTRACore/CodexStreamEventParser.swift#L165)),
