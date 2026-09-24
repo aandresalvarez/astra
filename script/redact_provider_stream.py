@@ -138,7 +138,7 @@ def redact(value, pairs):
     return value
 
 
-def minimized_copilot_session(frame):
+def minimized_copilot_session(frame, kind):
     """Copilot advertises its MCP servers and prompt-cache state in session frames.
 
     ASTRA only reads `session_id` / `model` from `session.*` frames, so server
@@ -149,7 +149,7 @@ def minimized_copilot_session(frame):
     # The parser reads either wrapper object, so both are minimized.
     for wrapper in ("data", "payload"):
         if isinstance(frame.get(wrapper), dict):
-            frame[wrapper] = minimized_copilot_session_fields(str(frame.get("type") or "").lower(), frame[wrapper])
+            frame[wrapper] = minimized_copilot_session_fields(kind, frame[wrapper])
     return frame
 
 
@@ -260,7 +260,11 @@ def is_copilot_tool_result(frame):
     # one prefixed `assistant.`, can be read as a tool result.
     if kind.startswith("session.") or kind in COPILOT_CONVERSATION_TYPES:
         return False
-    looks_like_result = "tool" in kind and any(word in kind for word in ("result", "output", "complete", "progress"))
+    # The parser reads any type containing `error` (or `failed`) as a failure
+    # carrying the frame's text, so a tool's error frame is a result too.
+    looks_like_result = "tool" in kind and any(
+        word in kind for word in ("result", "output", "complete", "progress", "error", "fail")
+    )
     return (looks_like_result and kind != "tool_call") or any(
         "toolResult" in container for container in (frame, copilot_payload(frame))
     )
@@ -482,7 +486,11 @@ ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|
 # `cd` with no directory, or `-`, moves to $HOME or the previous directory: a
 # path that never appears in the arguments. Options (`-L`, `-P`, `-e`, `-@`,
 # zsh's `-q` / `-s`) may come before the missing directory.
-DIRECTORY_JUMP_PATTERN = re.compile(r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?\s*(?=$|[;&|)`}\"'\n])")
+# A redirection (`2>&1`, `>/dev/null`, `&>log`) is not a directory either.
+REDIRECTION = r"(?:\s*\d*(?:&>>?|>>?&?|<&?|<<<?)\s*(?:&?\d+-?|[^\s;&|)`}\"']+))"
+DIRECTORY_JUMP_PATTERN = re.compile(
+    r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?" + REDIRECTION + r"*\s*(?=$|[;&|)`}\"'\n])"
+)
 
 
 # Words that run the next word as a command: `command cd`, `builtin cd`,
@@ -625,9 +633,11 @@ def minimized(frame):
         return dict(frame, **{wrapper: minimized(frame[wrapper])})
     # Parsers lowercase the type before matching, so casing is no way around.
     kind = str(frame.get("type") or "").lower()
-    if kind.startswith("session."):
-        return minimized_copilot_session(frame)
-    if kind == "result" and "sessionId" in frame:  # Copilot's terminal frame
+    # Copilot's type can sit under any of its discriminator keys.
+    copilot = copilot_kind(frame)
+    if copilot.startswith("session."):
+        return minimized_copilot_session(frame, copilot)
+    if copilot == "result" and "sessionId" in frame:  # Copilot's terminal frame
         # It ends the turn and names the session; its usage block is premium
         # requests, timings and change counts the parser does not read.
         return {key: value for key, value in frame.items() if key in COPILOT_RESULT_KEEP_KEYS}
