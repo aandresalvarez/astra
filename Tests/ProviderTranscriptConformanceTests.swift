@@ -80,7 +80,8 @@ struct ProviderTranscriptConformanceTests {
             let occurrences = messageCount(text, in: collapsedOutput, among: collapsedMessages)
             return occurrences == expected
                 ? nil
-                : (message, "recorded \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
+                : (multiplicityItem(message, recorded: occurrences, sent: expected),
+                   "recorded \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
         // Lines two messages glued together are not the provider's lines, so
@@ -129,7 +130,8 @@ struct ProviderTranscriptConformanceTests {
             let occurrences = messageCount(text, in: collapsedRows, among: collapsedMessages)
             return occurrences == expected
                 ? nil
-                : (message, "in agent.response rows \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
+                : (multiplicityItem(message, recorded: occurrences, sent: expected),
+                   "in agent.response rows \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
         // Messages must appear in provider order in the output and in the
@@ -386,6 +388,18 @@ struct ProviderTranscriptConformanceTests {
         #expect(ProviderStreamTruth.copilotToolRole("tool.execution_progress", [:]) == nil)
     }
 
+    @Test("A multiplicity known issue covers only its exact defect")
+    func multiplicityKnownIssuesAreExact() {
+        let extra = ProviderStreamKnownIssue.oneExtraCopy("one extra copy") { $0 == "Done." }
+        #expect(extra.covers(multiplicityItem("Done.", recorded: 2, sent: 1)))
+        #expect(!extra.covers(multiplicityItem("Done.", recorded: 3, sent: 1)))
+        #expect(!extra.covers(multiplicityItem("Done.", recorded: 0, sent: 1)))
+        #expect(!extra.covers(multiplicityItem("Other.", recorded: 2, sent: 1)))
+        let lost = ProviderStreamKnownIssue.lost("lost")
+        #expect(lost.covers(multiplicityItem("Done.", recorded: 0, sent: 1)))
+        #expect(!lost.covers(multiplicityItem("Done.", recorded: 2, sent: 1)))
+    }
+
     /// Records each failure of `check`. Failures the fixture's known issue
     /// covers are recorded together under that known issue; the rest are real
     /// failures. A known issue with nothing left to cover is itself reported,
@@ -456,6 +470,23 @@ struct ProviderStreamKnownIssue: Sendable {
         Self(reason: reason, covers: covers)
     }
 
+    /// A message recorded exactly once more than the provider sent it;
+    /// dropping it, or any further copy, is a new defect.
+    static func oneExtraCopy(_ reason: String, of message: @escaping @Sendable (String) -> Bool) -> Self {
+        items(reason) { item in
+            guard let (text, recorded, sent) = multiplicity(of: item) else { return false }
+            return recorded == sent + 1 && message(text)
+        }
+    }
+
+    /// A message missing entirely; a copy recorded too often is a new defect.
+    static func lost(_ reason: String, of message: @escaping @Sendable (String) -> Bool = { _ in true }) -> Self {
+        items(reason) { item in
+            guard let (text, recorded, _) = multiplicity(of: item) else { return false }
+            return recorded == 0 && message(text)
+        }
+    }
+
     /// The per-line echo check re-appends each copy of a line under its
     /// 80-character floor once; a longer line, or more extra copies than the
     /// provider sent, is a new defect.
@@ -522,10 +553,10 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "claude",
             model: "claude-sonnet-5",
             knownIssues: [
-                .eachMessageOnce: .items("the envelope echo re-appends the short closing message whole (plan phase 1)") {
+                .eachMessageOnce: .oneExtraCopy("the envelope echo re-appends the short closing message whole (plan phase 1)") {
                     $0.hasPrefix("The draft reply is saved")
                 },
-                .messagesInResponseRows: .items("the same echo writes the short closing message's row twice (plan phase 1)") {
+                .messagesInResponseRows: .oneExtraCopy("the same echo writes the short closing message's row twice (plan phase 1)") {
                     $0.hasPrefix("The draft reply is saved")
                 },
                 .noExtraLines: .shortLines("the envelope echo re-appends every line under 80 characters (plan phase 1)"),
@@ -578,10 +609,10 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .runCompletes: .items("config-warning items of type error fail the run as agent_reported_error (plan phase 2)") {
                     $0 == "agent_reported_error"
                 },
-                .eachMessageOnce: .items("last-completed-wins keeps only the final agent_message (plan phase 2)") {
+                .eachMessageOnce: .lost("last-completed-wins keeps only the final agent_message (plan phase 2)") {
                     !$0.hasPrefix("The draft is saved")
                 },
-                .messagesInResponseRows: .whole("agent_message items become completions, which write no agent.response rows (plan phase 2)"),
+                .messagesInResponseRows: .lost("agent_message items become completions, which write no agent.response rows (plan phase 2)"),
                 .fileChangesRecorded: .items("file_change paths nest under changes[] and are dropped (plan phase 2)") {
                     $0 == "answer.md"
                 },
@@ -605,12 +636,6 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "cursor-agent",
             model: "composer-2.5-fast",
             knownIssues: [
-                .eachMessageOnce: .items("the last frame re-sends the previous message and echo residue splits it (plan phase 2)") {
-                    $0.hasSuffix("The same draft is saved in `answer.md`.")
-                },
-                .messagesInResponseRows: .items("the same echo residue splits that message across rows (plan phase 2)") {
-                    $0.hasSuffix("The same draft is saved in `answer.md`.")
-                },
                 .noExtraLines: .shortLines("re-sent short lines of the previous message are appended again (plan phase 2)"),
                 .toolCallsRecorded: .items("tool_call frames are not parsed (plan phase 4)") {
                     ["readToolCall", "editToolCall"].contains($0)
@@ -618,9 +643,6 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") { $0 == "success" },
                 .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
                     $0 == "answer.md"
-                },
-                .answerVisible: .items("the re-sent previous message splits the answer with echo residue (plan phase 2)") {
-                    $0 == "text"
                 }
             ],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
@@ -687,6 +709,8 @@ struct ProviderStreamTruth {
         var rawMessages: [String] = []
         var rawSequence: [RawStep] = []
         var antigravityMessageIndex: [Int: Int] = [:]
+        // Cursor's last full assistant frame, which the next one may repeat.
+        var cursorSnapshot = ""
         func appendMessage(_ text: String) {
             rawSequence.append(.message(rawMessages.count))
             rawMessages.append(text)
@@ -817,11 +841,21 @@ struct ProviderStreamTruth {
                    let blocks = message["content"] as? [[String: Any]] {
                     let text = blocks.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
                         .joined()
-                    if let previous = rawMessages.last, !previous.isEmpty, text.hasPrefix(previous) {
-                        rawMessages[rawMessages.count - 1] = text
+                    if !cursorSnapshot.isEmpty, text.hasPrefix(cursorSnapshot) {
+                        // The frame repeats the previous one and adds to it.
+                        // Straight after it, the same message grew; after a
+                        // tool call, the addition is a new message at its own
+                        // place in the sequence.
+                        let addition = String(text.dropFirst(cursorSnapshot.count))
+                        if case .message? = rawSequence.last {
+                            rawMessages[rawMessages.count - 1] += addition
+                        } else if !addition.isEmpty {
+                            appendMessage(addition)
+                        }
                     } else if !text.isEmpty {
                         appendMessage(text)
                     }
+                    cursorSnapshot = text
                 } else if type == "result", let reported = frame["usage"] as? [String: Any] {
                     // Cursor reports cache reads and writes apart from input,
                     // as Anthropic does; it gives no total to check against.
@@ -1115,6 +1149,18 @@ private func isRawProviderFrame(_ line: String) -> Bool {
 }
 
 private let extraLineSeparator = "\u{1F}"
+
+/// A message-multiplicity failure item: the message and how many times it was
+/// recorded and sent, so a known issue can cover one exact defect.
+private func multiplicityItem(_ message: String, recorded: Int, sent: Int) -> String {
+    [message, String(recorded), String(sent)].joined(separator: extraLineSeparator)
+}
+
+private func multiplicity(of item: String) -> (message: String, recorded: Int, sent: Int)? {
+    let parts = item.components(separatedBy: extraLineSeparator)
+    guard parts.count == 3, let recorded = Int(parts[1]), let sent = Int(parts[2]) else { return nil }
+    return (parts[0], recorded, sent)
+}
 
 /// A `noExtraLines` failure item: the line, how many copies too many, and how
 /// many the provider sent.
