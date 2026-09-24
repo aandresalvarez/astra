@@ -228,8 +228,17 @@ Status: landed with this plan, except the OpenCode capture.
   rate-limit details, opaque signatures and managed-policy names. It is run by
   the owner, never in CI; set `ASTRA_CAPTURE_MODEL` to keep captures cheap. A
   Claude capture on Sonnet 5 cost $0.10.
+- Capture safeguards, added after an Antigravity write-first run explored
+  outside its workspace (`env`, `ls /tmp`, a `grep` through `/tmp`). That
+  fixture was never committed.
+  - The CLI runs under `env -i` with an allowlist, so no session tokens.
+  - Tool results are replaced with a placeholder in every fixture.
+  - `redact_provider_stream.py --audit` refuses a capture whose tool calls
+    reach outside the workspace or dump the environment.
 - Captured scenarios:
-  - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor. It covers
+  - `answer-write-signoff` for Claude, Copilot, Codex, Antigravity and Cursor.
+    Antigravity was captured with `--add-dir <workspace>`; see the open
+    question below. It covers
     planned scenarios 1–4: narration, a tool read, a multi-line answer with
     short lines, a quote block and a table, a file write, and a final message
     that opens with an `ASTRA_EVENT complete` marker. Antigravity's model
@@ -251,7 +260,14 @@ Status: landed with this plan, except the OpenCode capture.
   - once Phase 3 lands, the answer bubble contains the final answer;
   - a successful turn completes and records no error events;
   - messages are recorded in provider order;
-  - every file the provider wrote is recorded as a file change.
+  - every file the provider wrote is recorded as a file change;
+  - no output line is text the provider never sent, apart from joins at
+    message boundaries;
+  - identical messages are counted by how many times the provider sent them.
+- A fixture that cannot exercise a check says so in `notExercised`, and the
+  suite fails if it starts to. Antigravity's `agy` print mode ends the turn on
+  a response without tool calls, so the answer-first scenario never reaches its
+  write.
 - A known issue is scoped to the items it explains: a specific message,
   duplicated lines under the 80-character echo floor, or errors that start
   with "Configured value for". Any other failure of the same check is a real
@@ -384,6 +400,16 @@ runs started after the phase's build:
   optional repair could rebuild old runs from provider transcripts
   (`~/.claude/projects`, `~/.codex/sessions`, Copilot `session-state`), but it is
   out of scope here.
+
+## Open question: Antigravity's workspace
+
+`agy` scopes its workspace with `--add-dir`, not the process's working
+directory. Without the flag, a capture's `run_command` reported `pwd` as the
+home directory and `view_file` could not find `question.txt`. ASTRA leaves the
+workspace out of `--add-dir` and relies on the working directory
+([AntigravityCLIRuntime.swift:473](../../Astra/Services/Runtime/AntigravityCLIRuntime.swift#L473)).
+Verify whether ASTRA's own Antigravity runs can see the workspace before
+relying on them. This is separate from message identity.
 
 ## Out of scope
 

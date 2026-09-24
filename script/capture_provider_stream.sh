@@ -5,6 +5,8 @@
 #
 # providers: claude copilot codex antigravity cursor
 # scenarios: answer-write-signoff   (every provider)
+#            write-file             (every provider; for CLIs such as agy that
+#                                    end the turn after a text-only answer)
 #            subagent               (claude only)
 #
 # The CLI runs with ASTRA's stream-format flags, in a fresh scratch workspace
@@ -12,6 +14,12 @@
 # still allows writing inside the workspace. The prompt is fixed and harmless,
 # but the run is real: it uses your provider login and quota. Run it by hand,
 # never in CI, and review the fixture before committing it.
+#
+# The agent can still read anything your macOS user can. The CLI therefore gets
+# an allowlisted environment (no session tokens), tool results never reach the
+# fixture, and a capture whose tool calls reach outside the workspace or dump
+# the environment is refused (set ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS=1 only after
+# reviewing why).
 #
 # Output: Tests/Fixtures/ProviderStreams/<provider>/<scenario>.jsonl
 # Set ASTRA_CAPTURE_REDACT_EMAIL to your account email so it is redacted too.
@@ -24,7 +32,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TIMEOUT_SECONDS="${ASTRA_CAPTURE_TIMEOUT_SECONDS:-300}"
 
 usage() {
-  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
   exit 64
 }
 
@@ -54,6 +62,9 @@ Step 3. Only after that chat message, save the same draft to answer.md with your
 Step 4. Send one last short message whose first line is exactly:
 ASTRA_EVENT {"v":1,"type":"complete","summary":"Drafted the reply and saved answer.md"}
 then a blank line, then one sentence under 60 characters saying the draft is saved.'
+    ;;
+  write-file)
+    prompt='Read question.txt in the current directory, then save a two-sentence reply to Dana in answer.md with your file-writing tool. After the file is saved, say in one short sentence that it is saved.'
     ;;
   subagent)
     [[ "$provider" == "claude" ]] || { echo "subagent is a claude-only scenario" >&2; exit 64; }
@@ -87,7 +98,10 @@ case "$provider" in
     cmd=(codex exec --json --color never --skip-git-repo-check --sandbox workspace-write
          --cd "$workspace" ${model_args[@]+"${model_args[@]}"} "$prompt") ;;
   antigravity)
-    cmd=(agy --print "$prompt" --output-format stream-json --print-timeout "${TIMEOUT_SECONDS}s" --sandbox
+    # agy scopes its workspace by --add-dir, not by the working directory, and
+    # hides account details only when ASTRA's AGY_CLI_HIDE_ACCOUNT_INFO is set.
+    cmd=(env AGY_CLI_HIDE_ACCOUNT_INFO=1 agy --print "$prompt" --output-format stream-json
+         --print-timeout "${TIMEOUT_SECONDS}s" --sandbox --mode accept-edits --add-dir "$workspace"
          ${model_args[@]+"${model_args[@]}"}) ;;
   cursor)
     cmd=(cursor-agent --print --output-format stream-json --trust --workspace "$workspace"
@@ -98,7 +112,14 @@ esac
 raw="$workspace/stdout.jsonl"
 stderr_file="$workspace/stderr.txt"
 echo "==> $provider/$scenario in $workspace" >&2
-(cd "$workspace" && exec "${cmd[@]}") >"$raw" 2>"$stderr_file" </dev/null &
+# Only what the CLIs need to find themselves and their logins; everything else
+# in this shell (API keys, session tokens) stays out of the agent's reach.
+capture_env=(HOME="$HOME" USER="$USER" LOGNAME="${LOGNAME:-$USER}" PATH="$PATH"
+             SHELL="${SHELL:-/bin/zsh}" TERM="${TERM:-xterm-256color}" LANG="${LANG:-en_US.UTF-8}"
+             TMPDIR="$workspace/.tmp" NO_COLOR=1)
+[[ -n "${AGY_ADC_AUTH:-}" ]] && capture_env+=(AGY_ADC_AUTH="$AGY_ADC_AUTH")
+mkdir -p "$workspace/.tmp"
+(cd "$workspace" && exec env -i "${capture_env[@]}" "${cmd[@]}") >"$raw" 2>"$stderr_file" </dev/null &
 pid=$!
 ( sleep "$TIMEOUT_SECONDS"; kill -TERM "$pid" ) 2>/dev/null &
 watchdog=$!
@@ -128,6 +149,14 @@ out_dir="$ROOT_DIR/Tests/Fixtures/ProviderStreams/$provider"
 mkdir -p "$out_dir"
 out="$out_dir/$scenario.jsonl"
 python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$out.tmp"
+if ! findings="$(python3 "$ROOT_DIR/script/redact_provider_stream.py" --audit "$out.tmp")" \
+  && [[ "${ASTRA_CAPTURE_ALLOW_OUTSIDE_PATHS:-}" != 1 ]]; then
+  echo "==> tool calls reached outside the workspace; fixture not written:" >&2
+  echo "$findings" >&2
+  rm -f "$out.tmp"
+  keep_raw_copy
+  exit 3
+fi
 mv "$out.tmp" "$out"
 echo "==> wrote ${out#"$ROOT_DIR/"} ($(wc -l <"$out" | tr -d ' ') lines)" >&2
 if [[ -s "$stderr_file" ]]; then

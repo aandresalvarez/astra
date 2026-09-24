@@ -2,13 +2,19 @@
 """Redact a captured provider stdout stream before it becomes a test fixture.
 
 Usage: redact_provider_stream.py RAW_JSONL WORKSPACE_PATH > FIXTURE_JSONL
+       redact_provider_stream.py --audit FIXTURE_JSONL
 
 The fixture must keep every field ASTRA's parsers read -- frame types, message
 and tool ids, text, usage -- because those are what the conformance suite
 tests. Everything that describes the capturing machine goes: home directory,
 user name, email, host name, the scratch workspace path, the local tool / MCP /
 plugin inventory that init and Copilot session frames advertise, account rate-limit details,
-opaque signatures, and streamed tool-argument fragments. Lines that are not JSON pass through with string redaction
+opaque signatures, streamed tool-argument fragments, and the content of every
+tool result: an agent that reads outside the workspace must not carry what it
+read into the repository. ASTRA only needs to see that a result arrived.
+
+`--audit` lists tool calls in a redacted fixture that reach outside the
+scratch workspace or dump the environment, and exits 3 if there are any. Lines that are not JSON pass through with string redaction
 only.
 """
 
@@ -27,9 +33,11 @@ OPAQUE_VALUE_KEYS = {
     "signature", "encrypted_content", "encryptedContent", "reasoningId", "reasoningOpaque",
     "encryptedReasoning",
 }
-# Opaque only when long: Copilot's model_call_id is an encrypted blob, while
-# Cursor's is a short per-call id that identifies its messages.
-OPAQUE_WHEN_LONG_KEYS = {"model_call_id"}
+# Opaque only when long: Copilot's model_call_id, apiCallId,
+# previousResponseId and reasoning block ids are ~500-character provider
+# continuation blobs, while Cursor's model_call_id and every message, tool and
+# session id are short and are what the conformance suite keys on.
+OPAQUE_WHEN_LONG_KEYS = {"model_call_id", "apiCallId", "previousResponseId", "id"}
 OPAQUE_MIN_LENGTH = 80
 TOKEN_PATTERNS = [
     re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
@@ -71,8 +79,8 @@ def workspace_spellings(workspace):
 
 
 def replacements(workspace):
+    """Exact machine strings: distinctive enough to replace anywhere."""
     home = os.path.expanduser("~")
-    user = getpass.getuser()
     pairs = []
     for path in workspace_spellings(workspace):
         pairs.append((path, "/workspace"))
@@ -80,18 +88,24 @@ def replacements(workspace):
     email = os.environ.get("ASTRA_CAPTURE_REDACT_EMAIL", "").strip()
     if email:
         pairs.append((email, "tester@example.com"))
-    for host in {socket.gethostname(), socket.gethostname().split(".")[0]}:
-        if host and len(host) > 3:
-            pairs.append((host, "host"))
-    if len(user) > 3:
-        pairs.append((user, "tester"))
     # Longest first so a workspace under $HOME is rewritten before $HOME is.
     return sorted(pairs, key=lambda pair: len(pair[0]), reverse=True)
+
+
+# The login and host name can be ordinary words ("will"), so they are replaced
+# only where they identify the machine: as a path component, as `<host>.local`,
+# or as the whole value of a host field. Prose keeps its words.
+USER_PATH_PATTERN = re.compile(r"(?<=/)" + re.escape(getpass.getuser()) + r"(?=/|$|[\"'\s:])")
+SHORT_HOST = socket.gethostname().split(".")[0]
+HOST_LOCAL_PATTERN = re.compile(r"\b" + re.escape(SHORT_HOST) + r"\.local\b")
+HOST_VALUE_KEYS = {"hostname", "host", "hostName", "machine", "computerName", "computer_name"}
 
 
 def redact_string(value, pairs):
     for old, new in pairs:
         value = value.replace(old, new)
+    value = USER_PATH_PATTERN.sub("tester", value)
+    value = HOST_LOCAL_PATTERN.sub("host.local", value)
     for pattern in TOKEN_PATTERNS:
         value = pattern.sub("[redacted-token]", value)
     value = MACOS_TEMP_PATTERN.sub("/tmp", value)
@@ -114,6 +128,8 @@ def redact(value, pairs):
                 redacted[key] = "[redacted]"
             elif key in TOOL_ARGUMENT_FRAGMENT_KEYS and isinstance(item, str) and item:
                 redacted[key] = "…"
+            elif key in HOST_VALUE_KEYS and isinstance(item, str) and item.split(".")[0] == SHORT_HOST:
+                redacted[key] = "host"
             else:
                 redacted[key] = redact(item, pairs)
         return redacted
@@ -146,6 +162,92 @@ def minimized_copilot_session(frame):
     return frame
 
 
+TOOL_OUTPUT = "[tool output redacted]"
+
+
+def without_tool_output(frame):
+    """Replace every provider's tool-result payload with a placeholder."""
+    kind = frame.get("type")
+    if kind == "user":  # Claude Code and Cursor tool results
+        frame = dict(frame)
+        frame.pop("tool_use_result", None)
+        message = frame.get("message")
+        if isinstance(message, dict) and isinstance(message.get("content"), list):
+            message = dict(message)
+            message["content"] = [
+                dict(block, content=TOOL_OUTPUT)
+                if isinstance(block, dict) and block.get("type") == "tool_result" else block
+                for block in message["content"]
+            ]
+            frame["message"] = message
+    elif kind == "tool.execution_complete" and isinstance(frame.get("data"), dict):  # Copilot
+        frame = dict(frame, data=dict(frame["data"], result={"content": TOOL_OUTPUT}))
+    elif kind in ("item.started", "item.updated", "item.completed") and isinstance(frame.get("item"), dict):  # Codex
+        item = frame["item"]
+        if "aggregated_output" in item:
+            frame = dict(frame, item=dict(item, aggregated_output=TOOL_OUTPUT if item["aggregated_output"] else ""))
+    elif kind == "tool_call" and isinstance(frame.get("tool_call"), dict):  # Cursor
+        frame = dict(frame, tool_call={
+            name: (dict(call, result=TOOL_OUTPUT) if isinstance(call, dict) and "result" in call else call)
+            for name, call in frame["tool_call"].items()
+        })
+    elif frame.get("event") == "step_update" and isinstance(frame.get("step_update"), dict):  # Antigravity
+        step = frame["step_update"]
+        info = step.get("tool_info")
+        if isinstance(info, dict) and "output" in info:
+            frame = dict(frame, step_update=dict(step, tool_info=dict(info, output=TOOL_OUTPUT)))
+    return frame
+
+
+def tool_call_arguments(frame):
+    """The arguments of every tool call a frame starts, as JSON text."""
+    kind = frame.get("type")
+    if kind == "assistant":  # Claude Code
+        for block in (frame.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                yield block.get("name", "tool"), json.dumps(block.get("input"))
+    elif kind == "tool.execution_start":  # Copilot
+        data = frame.get("data") or {}
+        yield data.get("toolName", "tool"), json.dumps(data.get("arguments"))
+    elif kind == "item.started":  # Codex
+        item = frame.get("item") or {}
+        if item.get("type") == "command_execution":
+            yield "command_execution", json.dumps(item.get("command"))
+    elif kind == "tool_call" and frame.get("subtype") == "started":  # Cursor
+        yield "tool_call", json.dumps(frame.get("tool_call"))
+    elif frame.get("event") == "step_update":  # Antigravity
+        step = frame.get("step_update") or {}
+        if step.get("step_type") == "tool" and step.get("state") == "ACTIVE":
+            yield step.get("tool_name", "tool"), json.dumps((step.get("tool_info") or {}).get("parameters"))
+
+
+# After redaction the scratch workspace is /workspace. System executables are
+# fine; any other absolute path, a parent-directory escape, or an environment
+# dump means the agent explored beyond the capture.
+OUTSIDE_PATH_PATTERN = re.compile(
+    r"(?<![\w.\-])(?:/(?!workspace\b|bin/|usr/|dev/null\b)[A-Za-z]|/(?=[\s\"'\\]|$)|\.\./)"
+)
+ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
+
+
+def audit(fixture_path):
+    findings = []
+    with open(fixture_path, encoding="utf-8") as fixture:
+        for number, line in enumerate(fixture, 1):
+            try:
+                frame = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(frame, dict):
+                continue
+            for name, arguments in tool_call_arguments(frame):
+                if OUTSIDE_PATH_PATTERN.search(arguments) or ENV_DUMP_PATTERN.search(arguments):
+                    findings.append(f"line {number}: {name} {arguments[:160]}")
+    for finding in findings:
+        print(finding)
+    return 3 if findings else 0
+
+
 def minimized(frame):
     """Drop the local inventory that init and session frames advertise."""
     if isinstance(frame.get("type"), str) and frame["type"].startswith("session."):
@@ -161,8 +263,10 @@ def minimized(frame):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--audit":
+        sys.exit(audit(sys.argv[2]))
     if len(sys.argv) != 3:
-        sys.exit("usage: redact_provider_stream.py RAW_JSONL WORKSPACE_PATH")
+        sys.exit("usage: redact_provider_stream.py RAW_JSONL WORKSPACE_PATH | --audit FIXTURE_JSONL")
     raw_path, workspace = sys.argv[1], sys.argv[2]
     pairs = replacements(workspace)
     with open(raw_path, encoding="utf-8", errors="replace") as raw:
@@ -176,7 +280,7 @@ def main():
                 print(redact_string(line, pairs))
                 continue
             if isinstance(frame, dict):
-                frame = minimized(frame)
+                frame = without_tool_output(minimized(frame))
             print(json.dumps(redact(frame, pairs), ensure_ascii=False, separators=(",", ":")))
 
 

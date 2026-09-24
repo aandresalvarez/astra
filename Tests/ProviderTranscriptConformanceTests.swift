@@ -68,21 +68,36 @@ struct ProviderTranscriptConformanceTests {
             ("", "run ended \(run.status) with stopReason=\(run.stopReason)")
         ])
 
-        report(.eachMessageOnce, of: fixture, failures: truth.messages.compactMap { message in
-            let occurrences = collapsedOutput.components(separatedBy: collapsed(message)).count - 1
-            return occurrences == 1 ? nil : (message, "recorded \(occurrences)x: \(message.prefix(80))")
+        // Two provider messages can carry the same text; each text must be
+        // recorded exactly as many times as the provider sent it.
+        var expectedMultiplicity: [String: Int] = [:]
+        for message in truth.messages { expectedMultiplicity[collapsed(message), default: 0] += 1 }
+        report(.eachMessageOnce, of: fixture, failures: truth.messages.enumerated().compactMap { index, message in
+            let text = collapsed(message)
+            guard truth.messages.firstIndex(where: { collapsed($0) == text }) == index else { return nil }
+            let expected = expectedMultiplicity[text] ?? 1
+            let occurrences = collapsedOutput.components(separatedBy: text).count - 1
+            return occurrences == expected
+                ? nil
+                : (message, "recorded \(occurrences)x, sent \(expected)x: \(message.prefix(80))")
         })
 
-        // Messages that are lost or split belong to eachMessageOnce; every
-        // message that is present must sit after the one before it.
-        let positions = truth.messages.compactMap { message in
-            collapsedOutput.range(of: collapsed(message)).map {
-                collapsedOutput.distance(from: collapsedOutput.startIndex, to: $0.lowerBound)
+        // Match messages left to right: each must be found after the previous
+        // match. A message present only earlier is out of order; one absent
+        // everywhere belongs to eachMessageOnce.
+        var cursor = collapsedOutput.startIndex
+        var outOfOrder: [String] = []
+        for message in truth.messages {
+            let text = collapsed(message)
+            if let match = collapsedOutput.range(of: text, range: cursor..<collapsedOutput.endIndex) {
+                cursor = match.upperBound
+            } else if collapsedOutput.contains(text) {
+                outOfOrder.append(String(message.prefix(60)))
             }
         }
-        report(.messagesInOrder, of: fixture, failures: zip(positions, positions.dropFirst()).allSatisfy(<) ? [] : [
-            ("", "messages recorded out of provider order: \(positions)")
-        ])
+        report(.messagesInOrder, of: fixture, failures: outOfOrder.map {
+            ($0, "message recorded before the one the provider sent ahead of it: \($0)")
+        })
 
         // Lines two messages glued together are not the provider's lines, so
         // only lines the provider actually sent are counted.
@@ -90,6 +105,14 @@ struct ProviderTranscriptConformanceTests {
         report(.noExtraLines, of: fixture, failures: lineCounts(output).sorted { $0.key < $1.key }.compactMap { line, count in
             guard let expected = sent[line], count > expected else { return nil }
             return (line, "line recorded \(count)x, sent \(expected)x: \(line.prefix(80))")
+        })
+
+        // Every other line must be a join of one message's last line with a
+        // later message's first line (messages are appended without a
+        // separator); anything else is text the provider never sent.
+        let joins = truth.boundaryJoins
+        report(.noUnsentLines, of: fixture, failures: lineCounts(output).keys.sorted().compactMap { line in
+            sent[line] != nil || joins.contains(line) ? nil : (line, "line the provider never sent: \(line.prefix(80))")
         })
 
         let rawFrameInOutput = output.contains(#"{"type":""#) || output.contains(#"{"event":""#)
@@ -100,6 +123,13 @@ struct ProviderTranscriptConformanceTests {
             ("", "recorded \(recordedToolCalls) of \(truth.toolCallCount) tool calls")
         ])
 
+        if fixture.notExercised[.fileChangesRecorded] == nil {
+            #expect(!truth.writtenFileNames.isEmpty,
+                    "fixture writes no file; capture one or list fileChangesRecorded in notExercised")
+        } else {
+            #expect(truth.writtenFileNames.isEmpty,
+                    "fixture now writes a file; drop fileChangesRecorded from notExercised")
+        }
         let recordedFileNames = Set(run.fileChanges.map { URL(fileURLWithPath: $0.path).lastPathComponent })
         report(.fileChangesRecorded, of: fixture, failures: truth.writtenFileNames.sorted().compactMap { fileName in
             recordedFileNames.contains(fileName)
@@ -189,6 +219,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
         case eachMessageOnce
         case messagesInOrder
         case noExtraLines
+        case noUnsentLines
         case noRawProviderJSON
         case toolCallsRecorded
         case fileChangesRecorded
@@ -202,6 +233,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
     let executableName: String
     let model: String
     let knownIssues: [Check: ProviderStreamKnownIssue]
+    /// Checks this capture cannot exercise, and why. The suite fails if the
+    /// capture starts exercising one, so coverage gaps stay explicit.
+    var notExercised: [Check: String] = [:]
 
     var testDescription: String { "\(provider)/\(scenario)" }
 
@@ -237,7 +271,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .claudeCode,
             executableName: "claude",
             model: "claude-sonnet-5",
-            knownIssues: [:]
+            knownIssues: [:],
+            notExercised: [.fileChangesRecorded: "the subagent scenario only reads"]
         ),
         ProviderStreamFixture(
             provider: "copilot",
@@ -293,7 +328,13 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .antigravityCLI,
             executableName: "agy",
             model: "Gemini 3.5 Flash",
-            knownIssues: [:]
+            knownIssues: [:],
+            // agy's print mode ends the turn on a response without tool calls,
+            // so the answer-first scenario never reaches its write. A
+            // write-first capture was withheld: that run's agent explored
+            // outside the workspace (env, /tmp), which the capture audit now
+            // refuses.
+            notExercised: [.fileChangesRecorded: "agy ends the turn after the text-only answer"]
         )
     ]
 }
@@ -304,6 +345,10 @@ struct ProviderStreamTruth {
     private(set) var messages: [String] = []
     private(set) var toolCallCount = 0
     private(set) var writtenFileNames: Set<String> = []
+    /// Collapsed "last line of a message + first line of a later message":
+    /// the only lines, besides the provider's own, that appending messages
+    /// without a separator can produce.
+    private(set) var boundaryJoins: Set<String> = []
     /// Collapsed excerpts of the answer's substantive lines, so a bubble that
     /// shows only a hollow skeleton of headings and greetings fails.
     private(set) var answerExcerpts: [String] = []
@@ -390,6 +435,10 @@ struct ProviderStreamTruth {
                     }
                 } else if step["step_type"] as? String == "tool", step["state"] as? String == "ACTIVE" {
                     toolCallCount += 1
+                    let parameters = (step["tool_info"] as? [String: Any])?["parameters"] as? [String: Any]
+                    if step["tool_name"] as? String == "write_to_file", let path = parameters?["TargetFile"] as? String {
+                        writtenPaths.append(path)
+                    }
                 }
             default:
                 continue
@@ -398,6 +447,14 @@ struct ProviderStreamTruth {
         rawMessages += antigravitySteps.map(\.text)
         messages = rawMessages.map(Self.visibleText).filter { !$0.isEmpty }
         writtenFileNames = Set(writtenPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
+        for (index, earlier) in messages.enumerated() {
+            let lastLine = earlier.components(separatedBy: "\n").last ?? ""
+            for later in messages.dropFirst(index + 1) {
+                let firstLine = later.components(separatedBy: "\n").first ?? ""
+                boundaryJoins.insert(collapsed(lastLine + firstLine))
+                boundaryJoins.insert(collapsed(lastLine + " " + firstLine))
+            }
+        }
 
         if let answer = messages.first(where: { $0.contains("Suggested reply") }) {
             answerExcerpts = Self.substantiveExcerpts(of: answer)
