@@ -371,6 +371,9 @@ threshold, schedules a fresh pass. Tests must use `InMemoryDefaults`
    answer, the whole worktree is kept, even by the Reclaim button. Git is
    asked again right before the rename, and the rename turn keeps any
    worktree whose index changed since (`git add -N` touches nothing else).
+   The index timestamp is compared again right before and right after each
+   artifact's rename: a change before skips that artifact, a change after
+   renames it back.
 3. Symlinks are never followed, whether measuring or deleting. An artifact
    symlink pointing outside the worktree is refused.
 4. Nothing is reclaimed from a worktree with a non-terminal pinned task or a

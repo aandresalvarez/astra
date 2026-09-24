@@ -64,11 +64,16 @@ struct WorktreeReclaimer: Sendable {
     /// rename then scans only as deep as `quickScanDepth(for:)`, so it stays
     /// cheap on the main actor while still catching a build that started
     /// since, including Cargo and npm, which have no lock to take.
+    /// `indexUnchanged`, when given, is asked right before and right after
+    /// each rename: git may start tracking a file under an artifact at any
+    /// moment (`git add -N` touches nothing else), so a change before skips
+    /// the artifact and a change after renames it back.
     func prepare(
         artifactPaths: [String],
         inWorktree worktreePath: String,
         now: Date = Date(),
-        quickActivityCheck: Bool = false
+        quickActivityCheck: Bool = false,
+        indexUnchanged: (() -> Bool)? = nil
     ) -> (prepared: [Prepared], outcome: WorktreeReclaimOutcome) {
         var outcome = WorktreeReclaimOutcome()
         guard let root = WorktreePath.realPath(worktreePath) else {
@@ -84,7 +89,8 @@ struct WorktreeReclaimer: Sendable {
                 canonicalRoot: root,
                 worktreePath: worktreePath,
                 now: now,
-                quickActivityCheck: quickActivityCheck
+                quickActivityCheck: quickActivityCheck,
+                indexUnchanged: indexUnchanged
             )
             if let aside { prepared.append(aside) }
             outcome.merge(result)
@@ -131,7 +137,8 @@ struct WorktreeReclaimer: Sendable {
         canonicalRoot: String,
         worktreePath: String,
         now: Date,
-        quickActivityCheck: Bool
+        quickActivityCheck: Bool,
+        indexUnchanged: (() -> Bool)?
     ) -> (Prepared?, WorktreeReclaimOutcome) {
         func skip(_ reason: String) -> (Prepared?, WorktreeReclaimOutcome) {
             (nil, self.skip(path, worktreePath: worktreePath, reason))
@@ -177,10 +184,22 @@ struct WorktreeReclaimer: Sendable {
         let parent = (canonical as NSString).deletingLastPathComponent
         let asideName = rule.directoryName + WorktreeFileSystem.reclaimingMarker + UUID().uuidString
         let aside = (parent as NSString).appendingPathComponent(asideName)
+        if let indexUnchanged, !indexUnchanged() {
+            return skip(Self.indexChangedSummary)
+        }
         guard rename(canonical, aside) == 0 else {
             let message = String(cString: strerror(errno))
             log("failed", path: path, worktreePath: worktreePath, fields: ["reason": "rename: \(message)"], level: .warning)
             return (nil, WorktreeReclaimOutcome(failures: [.init(path: path, message: message)]))
+        }
+        // A file git started tracking in between moved with the rename.
+        if let indexUnchanged, !indexUnchanged() {
+            guard rename(aside, canonical) == 0 else {
+                let message = "git index changed; couldn't put it back: \(String(cString: strerror(errno)))"
+                log("failed", path: path, worktreePath: worktreePath, fields: ["reason": message], level: .error)
+                return (nil, WorktreeReclaimOutcome(failures: [.init(path: path, message: message)]))
+            }
+            return skip(Self.indexChangedSummary)
         }
         // 4. `finish` deletes it for good. Trash would free nothing.
         return (Prepared(originalPath: path, asidePath: aside, worktreePath: worktreePath), WorktreeReclaimOutcome())
@@ -202,6 +221,8 @@ struct WorktreeReclaimer: Sendable {
         log("reclaimed", path: originalPath, worktreePath: worktreePath, fields: ["bytes": "\(bytes)", "reason": reason], level: .info)
         return WorktreeReclaimOutcome(reclaimed: [.init(path: originalPath, bytes: bytes)])
     }
+
+    static let indexChangedSummary = "git index changed"
 
     private func skip(_ path: String, worktreePath: String, _ reason: String) -> WorktreeReclaimOutcome {
         log("skipped", path: path, worktreePath: worktreePath, fields: ["reason": reason], level: .debug)

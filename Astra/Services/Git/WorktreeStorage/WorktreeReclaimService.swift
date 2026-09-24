@@ -824,11 +824,14 @@ final class WorktreeReclaimService: ObservableObject {
                 }
                 readFailureRetries[job.worktree] = nil
                 jobs.append(job)
+                let worktreePath = job.worktree
+                let indexAtGate = gate?.index
                 let step = reclaimer.prepare(
                     artifactPaths: job.artifacts.map(\.path),
-                    inWorktree: job.worktree,
+                    inWorktree: worktreePath,
                     now: checkedAt,
-                    quickActivityCheck: true
+                    quickActivityCheck: true,
+                    indexUnchanged: { probe.gitIndexModificationDate(worktreePath: worktreePath) == indexAtGate }
                 )
                 prepared += step.prepared
                 outcome.merge(step.outcome)

@@ -257,6 +257,49 @@ struct WorktreeReclaimerTests {
         #expect(!FileManager.default.fileExists(atPath: prepared.asidePath))
     }
 
+    @Test("An index change before a later artifact's rename skips just that artifact")
+    func indexChangeBeforeRenameSkips() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+        try setup.fixture.file("wt-feature/package.json", bytes: 20)
+        try setup.fixture.file("wt-feature/node_modules/pkg/index.js", bytes: 50_000)
+        let modules = "\(setup.worktree)/node_modules"
+        WorktreeStorageFixture.backdate(modules, by: Self.old)
+        var checks = 0
+        // Unchanged around the first rename; `git add -N` lands before the second.
+        let step = setup.reclaimer.prepare(
+            artifactPaths: [setup.build, modules],
+            inWorktree: setup.worktree,
+            indexUnchanged: { checks += 1; return checks <= 2 }
+        )
+
+        #expect(step.prepared.map(\.originalPath) == [setup.build])
+        #expect(step.outcome.skipped == [.init(path: modules, reason: WorktreeReclaimer.indexChangedSummary)])
+        #expect(FileManager.default.fileExists(atPath: modules + "/pkg/index.js"))
+        _ = setup.reclaimer.finish(step.prepared)
+    }
+
+    @Test("An index change during a rename puts the artifact back")
+    func indexChangeDuringRenameRestores() throws {
+        let setup = try makeSetup()
+        defer { setup.fixture.cleanUp() }
+        let binary = setup.build + "/out/Products/Debug/App"
+        let before = try Data(contentsOf: URL(fileURLWithPath: binary))
+        var checks = 0
+        let step = setup.reclaimer.prepare(
+            artifactPaths: [setup.build],
+            inWorktree: setup.worktree,
+            indexUnchanged: { checks += 1; return checks == 1 }
+        )
+
+        #expect(step.prepared.isEmpty)
+        #expect(step.outcome.skipped.map(\.reason) == [WorktreeReclaimer.indexChangedSummary])
+        #expect(try Data(contentsOf: URL(fileURLWithPath: binary)) == before, "back in place, untouched")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: setup.worktree)
+            .filter { $0.contains(WorktreeFileSystem.reclaimingMarker) }
+        #expect(leftovers.isEmpty)
+    }
+
     @Test("An artifact whose manifest disappeared is refused")
     func manifestGoneRefused() throws {
         let setup = try makeSetup()
