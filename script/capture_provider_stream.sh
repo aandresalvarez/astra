@@ -119,14 +119,20 @@ capture_env=(HOME="$HOME" USER="$USER" LOGNAME="${LOGNAME:-$USER}" PATH="$PATH"
              TMPDIR="$workspace/.tmp" NO_COLOR=1)
 [[ -n "${AGY_ADC_AUTH:-}" ]] && capture_env+=(AGY_ADC_AUTH="$AGY_ADC_AUTH")
 mkdir -p "$workspace/.tmp"
+# Job control gives the provider its own process group, so the watchdog and
+# the cleanup below reach every tool process it spawned, not just the CLI.
+set -m
 (cd "$workspace" && exec env -i "${capture_env[@]}" "${cmd[@]}") >"$raw" 2>"$stderr_file" </dev/null &
 pid=$!
-( sleep "$TIMEOUT_SECONDS"; kill -TERM "$pid" ) 2>/dev/null &
+set +m
+( sleep "$TIMEOUT_SECONDS"; kill -TERM -- "-$pid" ) 2>/dev/null &
 watchdog=$!
 status=0
 wait "$pid" || status=$?
 pkill -P "$watchdog" 2>/dev/null || true
 kill "$watchdog" 2>/dev/null || true
+# Anything the provider left running must not outlive the capture.
+kill -TERM -- "-$pid" 2>/dev/null || true
 echo "==> exit $status, $(wc -l <"$raw" | tr -d ' ') stdout lines" >&2
 
 keep_raw_copy() {

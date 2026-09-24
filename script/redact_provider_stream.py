@@ -236,12 +236,32 @@ def tool_call_arguments(frame):
 EXECUTABLE_PATTERN = re.compile(
     r"(?<![\w.\-])/(?:usr/(?:local/)?|opt/homebrew/)?s?bin/[A-Za-z0-9._+\-]+(?![\w/.\-])"
 )
+# What may precede a command: the start of the arguments, a shell separator
+# or subshell opener, or the quote that opens a JSON string or `-c` script.
+COMMAND_POSITION_PREFIX = re.compile(r"(?:^|[;&|(`\n{]|\$\(|\\?\")\s*$")
+# Any rooted token is outside unless it is exactly /workspace, something below
+# it, or /dev/null. A token rooted at a URL's `://` is not a path.
 OUTSIDE_PATH_PATTERN = re.compile(
-    r"(?<![\w.\-])(?:/(?!workspace\b|dev/null\b)[A-Za-z0-9*?\[{]|/(?=[\s\"'\\]|$)|\.\.(?=/|[\s\"'\\]|$))"
+    r"(?<![\w.\-~/:])/(?!workspace(?:/|$|[\s\"'\\])|dev/null(?:$|[\s\"'\\]))"
+    r"|(?<![\w.\-])\.\.(?=/|[\s\"'\\]|$)"
     r"|(?<![\w])~(?=/|[\s\"'\\]|$)"
     r"|\$\{?(?:HOME|USER|LOGNAME|TMPDIR)\b"
 )
 ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
+
+
+def command_executables_as_basenames(arguments):
+    """Replace an executable path in command position by its basename.
+
+    `/bin/zsh -lc …` stops counting as a path and `/usr/bin/env` is judged like
+    `env`, while a path argument such as `cat /usr/bin/private` stays a path.
+    """
+    pieces, last = [], 0
+    for match in EXECUTABLE_PATTERN.finditer(arguments):
+        if COMMAND_POSITION_PREFIX.search(arguments[:match.start()]):
+            pieces += [arguments[last:match.start()], " " + os.path.basename(match.group(0))]
+            last = match.end()
+    return "".join(pieces) + arguments[last:]
 
 
 def audit(fixture_path):
@@ -257,7 +277,7 @@ def audit(fixture_path):
             for name, arguments in tool_call_arguments(frame):
                 # An executable path becomes its basename, so `/usr/bin/env` is
                 # judged like `env` while `/bin/zsh` stops counting as a path.
-                reach = EXECUTABLE_PATTERN.sub(lambda match: " " + os.path.basename(match.group(0)), arguments)
+                reach = command_executables_as_basenames(arguments)
                 if OUTSIDE_PATH_PATTERN.search(reach) or ENV_DUMP_PATTERN.search(reach):
                     findings.append(f"line {number}: {name} {arguments[:160]}")
     for finding in findings:

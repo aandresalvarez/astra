@@ -134,8 +134,13 @@ struct ProviderTranscriptConformanceTests {
             if event.type == TaskEventTypes.Conversation.agentResponse.rawValue {
                 responseSoFar += event.payload
                 let collapsedSoFar = collapsed(responseSoFar)
-                for (index, message) in truth.messages.enumerated()
-                where !seenMessages.contains(index) && collapsedSoFar.contains(collapsed(message)) {
+                // The k-th message with a given text is recorded once that
+                // text has occurred k times, so identical messages on either
+                // side of a tool call keep their own positions.
+                for (index, message) in truth.messages.enumerated() where !seenMessages.contains(index) {
+                    let text = collapsed(message)
+                    let rank = truth.messages[..<index].filter { collapsed($0) == text }.count
+                    guard collapsedSoFar.components(separatedBy: text).count - 1 > rank else { continue }
                     seenMessages.insert(index)
                     recordedSteps.append(.message(index))
                 }
