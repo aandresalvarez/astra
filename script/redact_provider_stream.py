@@ -604,8 +604,11 @@ ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|
 # zsh's `-q` / `-s`) may come before the missing directory.
 # A redirection (`2>&1`, `>/dev/null`, `&>log`) is not a directory either.
 REDIRECTION = r"(?:\s*\d*(?:&>>?|>>?&?|<&?|<<<?)\s*(?:&?\d+-?|\"[^\"]*\"|'[^']*'|[^\s;&|)`}\"']+))"
+# After the options, the command ends (a separator, or the quote that closes
+# an `eval` / `sh -c` script right after `cd`); a quote after whitespace opens
+# a quoted directory operand instead.
 DIRECTORY_JUMP_PATTERN = re.compile(
-    r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?" + REDIRECTION + r"*\s*(?=$|[;&|)`}\"'\n])"
+    r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?" + REDIRECTION + r"*(?:\s*(?=$|[;&|)`}\n])|(?=[\"']))"
 )
 
 
@@ -616,9 +619,11 @@ COMMAND_WRAPPERS = re.compile(r"(?:\b(?:builtin|command|eval|exec|nohup|time)(?:
 
 # The workspace's parent, computed rather than written: `dirname "$PWD"`,
 # `dirname $(pwd)`, `pwd | xargs dirname`. `$PWD` itself is allowed.
+CURRENT_DIRECTORY_COMMAND = r"(?:pwd|realpath|readlink|greadlink)\b"
 PARENT_OF_WORKSPACE_PATTERN = re.compile(
-    r"\bdirname\b(?:\s+-\S+)*\s+[\"']?(?:\$\{?PWD\b|\$\(\s*pwd\b|`\s*pwd\b|\.[\"']?(?=$|[\s;&|)]))"
-    r"|\bpwd\b[^;&\n]*\|\s*(?:xargs\s+)?dirname\b"
+    r"\bdirname\b(?:\s+-\S+)*\s+[\"']?(?:\$\{?PWD\b|\$\(\s*" + CURRENT_DIRECTORY_COMMAND
+    + r"|`\s*" + CURRENT_DIRECTORY_COMMAND + r"|\.[\"']?(?=$|[\s;&|)]))"
+    + r"|\b" + CURRENT_DIRECTORY_COMMAND + r"[^;&\n]*\|\s*(?:xargs\s+)?dirname\b"
 )
 
 
@@ -775,6 +780,8 @@ def audit_frame(number, frame):
         reached = (
             any(OUTSIDE_PATH_PATTERN.search(form) for _, form in forms)
             or any(ENV_DUMP_PATTERN.search(form) for is_command, form in forms if is_command)
+            # Quote removal spells `env` from `e\\nv` or `e""nv` too.
+            or any(ENV_DUMP_PATTERN.search(unquoted(command)) for command in commands)
             or any(jumps_directory(command) or jumps_directory(unquoted(command)) for command in commands)
             or any(PARENT_OF_WORKSPACE_PATTERN.search(command) for command in commands)
         )
@@ -824,6 +831,9 @@ def minimized(frame):
     return frame
 
 
+LITERAL_WORKSPACE_PATTERN = re.compile(r"(?<![\w.\-~/:])/workspace(?=/|$|[\s\"'\\,)\]}])")
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--audit":
         sys.exit(audit(sys.argv[2]))
@@ -831,6 +841,15 @@ def main():
         sys.exit("usage: redact_provider_stream.py RAW_JSONL WORKSPACE_PATH | --audit FIXTURE_JSONL")
     raw_path, workspace = sys.argv[1], sys.argv[2]
     pairs = replacements(workspace)
+    # The scratch workspace becomes `/workspace`, which the audit allows. A
+    # literal `/workspace` already in the capture is some other directory (a
+    # real one on this machine) that redaction would make indistinguishable
+    # from the scratch workspace, so such a capture is refused.
+    if "/workspace" not in workspace_spellings(workspace):
+        with open(raw_path, encoding="utf-8", errors="replace") as raw:
+            for number, line in enumerate(raw, 1):
+                if LITERAL_WORKSPACE_PATTERN.search(line):
+                    sys.exit(f"line {number} of the capture names a literal /workspace path; refusing to write a fixture")
     with open(raw_path, encoding="utf-8", errors="replace") as raw:
         for number, line in enumerate(raw, 1):
             line = line.rstrip("\n")
