@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRAModels
 import ASTRAPersistence
+import ASTRACore
 @testable import ASTRA
 
 @Suite("Task folder run snapshot")
@@ -203,32 +204,66 @@ struct TaskFolderRunSnapshotTests {
         #expect(fixture.run.fileChangesJSON.utf8.count <= TaskRun.displayedFileChangesJSONByteLimit)
     }
 
-    @Test("A file a tool made and something deleted before the run ended is recorded as removed")
-    func toolCreatedThenDeletedIsRemoved() throws {
+    @Test("A tool write with nothing on disk at either end is not read as a removal")
+    func toolAttemptAloneIsNotARemoval() throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
-        try write("kept", to: folder, "kept.md")
-        try write("SECRET=1", to: folder, ".env")
+        // A Write is recorded when the tool is called, before its result says
+        // whether it succeeded, so it is no proof the file ever existed.
         let recordedJSON = TaskEvent.payloadString([
-            StoredFileChange(path: folder.path + "/scratch.md", changeType: "Write"),
-            StoredFileChange(path: folder.path + "/kept.md", changeType: "Write"),
-            StoredFileChange(path: folder.path + "/.env", changeType: "Write"),
-            StoredFileChange(path: folder.path + "/.cache/x.md", changeType: "Write"),
-            StoredFileChange(path: folder.path + "/outputs/turn_001.md", changeType: "Write")
+            StoredFileChange(path: folder.path + "/never-written.md", changeType: "Write")
         ])
 
-        let observation = TaskFolderRunSnapshot.observe(
+        let observation = try TaskFolderRunSnapshot.observe(
             since: before,
             recordedJSON: recordedJSON,
             executionPath: folder.path,
             runStartedAt: Date().addingTimeInterval(-5),
             runEndedAt: Date()
-        )
+        ).get()
 
-        let records = observation?.records ?? []
-        #expect(records.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["scratch.md"])
-        #expect(records.map(\.kind) == [.removed])
+        #expect(observation.records.isEmpty)
+    }
+
+    @Test("A change record that cannot be decoded is left alone, not replaced by observations")
+    func undecodableRecordIsLeftAlone() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+        try write("rows", to: folder, "report.csv")
+
+        let outcome = TaskFolderRunSnapshot.observe(
+            since: before,
+            recordedJSON: "{not json",
+            executionPath: folder.path,
+            runStartedAt: Date().addingTimeInterval(-5),
+            runEndedAt: Date()
+        )
+        #expect(throws: TaskFolderRunSnapshot.ObservationSkip.undecodableRecord) { try outcome.get() }
+
+        let fixture = try makeRun()
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        fixture.run.fileChangesJSON = "{not json"
+        fixture.run.appendHostFileChanges([StoredFileChange(path: "/tmp/a.md", changeType: "discovered")])
+        #expect(fixture.run.fileChangesJSON == "{not json")
+    }
+
+    @Test("A fingerprint never reads past its limit, even if the file grew after its size was read")
+    func fingerprintReadIsBounded() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try write(String(repeating: "x", count: 100), to: folder, "grown.md")
+        let url = folder.appendingPathComponent("grown.md")
+        let intent = HostFileAccessIntent.astraManagedStorage(root: folder)
+
+        let tooBig = TaskFolderRunSnapshot.contentFingerprint(of: url, maxBytes: 50, intent: intent)
+        #expect(tooBig.fingerprint == nil)
+        #expect(tooBig.bytesRead == 51)
+
+        let fits = TaskFolderRunSnapshot.contentFingerprint(of: url, maxBytes: 200, intent: intent)
+        #expect(fits.fingerprint != nil)
+        #expect(fits.bytesRead == 100)
     }
 
     @Test("The record count limit counts records kept, not records skipped for size")
@@ -270,13 +305,13 @@ struct TaskFolderRunSnapshotTests {
         let started = Date().addingTimeInterval(-5)
 
         let observation = await Task.detached {
-            TaskFolderRunSnapshot.observe(
+            try? TaskFolderRunSnapshot.observe(
                 since: before,
                 recordedJSON: "[]",
                 executionPath: folder.path,
                 runStartedAt: started,
                 runEndedAt: Date()
-            )
+            ).get()
         }.value
 
         #expect(observation?.changeCount == 1)

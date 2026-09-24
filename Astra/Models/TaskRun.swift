@@ -170,9 +170,11 @@ public final class TaskRun {
     /// and one encode. `appendFileChange` round-trips the whole array per
     /// call, which is quadratic for a run that produces hundreds of files, and
     /// maps container paths, which a host-side observation never has.
+    /// A record that cannot be decoded is left as it is rather than replaced.
     public func appendHostFileChanges(_ newChanges: [StoredFileChange]) {
-        guard !newChanges.isEmpty else { return }
-        fileChangesJSON = TaskEvent.payloadString(allFileChanges + newChanges, fallback: fileChangesJSON)
+        guard !newChanges.isEmpty,
+              case .success(let existing) = fileChangesDecodeResult else { return }
+        fileChangesJSON = TaskEvent.payloadString(existing + newChanges, fallback: fileChangesJSON)
         task?.updatedAt = Date()
     }
 
