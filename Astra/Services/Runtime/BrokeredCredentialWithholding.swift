@@ -24,7 +24,18 @@ struct BrokeredCredentialApprovalRecord: Sendable, Equatable {
     /// re-recording replaces the open request instead of stacking another copy
     /// of it in the dock.
     var requestID: String {
-        "connector-credentials-\(connectorID.uuidString.lowercased())"
+        Self.offerRequestID(forConnectors: [connectorID])
+    }
+
+    static let offerRequestIDPrefix = "connector-credentials-"
+
+    /// The open request's id for an offer covering `connectorIDs`: one
+    /// connector keeps the id it always had, and a set gets one id of its own.
+    static func offerRequestID(forConnectors connectorIDs: [UUID]) -> String {
+        offerRequestIDPrefix + connectorIDs
+            .map { $0.uuidString.lowercased() }
+            .sorted()
+            .joined(separator: "+")
     }
 }
 
@@ -223,7 +234,8 @@ enum BrokeredCredentialApprovalDiscovery {
             for: task,
             runtime: runtime
         ))
-        let alreadyOpen = openConnectorCredentialRequestIDs(for: task)
+        let openOffers = openCredentialOffers(for: task)
+        let alreadyOpen = Set(openOffers.flatMap(\.coveredRequestIDs))
         var recorded: [BrokeredCredentialApprovalRecord] = []
         for approval in drained {
             // A grant recorded after the launch read its labels — the user
@@ -234,16 +246,24 @@ enum BrokeredCredentialApprovalDiscovery {
                   !alreadyOpen.contains(approval.requestID) else {
                 continue
             }
-            recordOpenRequest(
-                approval,
-                task: task,
-                run: run,
-                runtime: runtime,
-                modelContext: modelContext
-            )
             recorded.append(approval)
         }
         guard !recorded.isEmpty else { return [] }
+        // One offer, never one per connector. The dock shows only the latest
+        // open request and "Allow similar" grants exactly that one before
+        // closing the rest, so a second offer in the store is a connector the
+        // user approves without ever being shown — and it stays sealed. Anything
+        // an earlier run left open therefore travels in this offer too.
+        let stillWaiting = records(stillWaitingIn: openOffers, excluding: granted, modelContext: modelContext)
+        recordOpenRequest(
+            covering: stillWaiting + recorded,
+            includesEarlierRuns: !stillWaiting.isEmpty,
+            replacing: openOffers.map(\.requestID),
+            task: task,
+            run: run,
+            runtime: runtime,
+            modelContext: modelContext
+        )
         WorkspacePersistenceCoordinator.saveAndAutoExport(
             workspace: task.workspace,
             modelContext: modelContext,
@@ -256,28 +276,46 @@ enum BrokeredCredentialApprovalDiscovery {
         return recorded
     }
 
+    /// Records one offer for every connector in `approvals` and retires the
+    /// open offers it now stands for.
     private static func recordOpenRequest(
-        _ approval: BrokeredCredentialApprovalRecord,
+        covering approvals: [BrokeredCredentialApprovalRecord],
+        includesEarlierRuns: Bool,
+        replacing replacedRequestIDs: [String],
         task: AgentTask,
         run: TaskRun,
         runtime: AgentRuntimeID,
         modelContext: ModelContext
     ) {
+        guard let offer = ConnectorRuntimeProjection.CredentialApprovalRequest.merged(approvals.map {
+            .init(
+                connectorID: $0.connectorID,
+                connectorName: $0.connectorName,
+                serviceType: $0.serviceType,
+                labels: $0.credentialLabels
+            )
+        }) else { return }
+        let connectorIDs = approvals.map(\.connectorID)
         let request = PermissionRequest.connectorCredentials(
-            connectorID: approval.connectorID,
-            displayName: approval.connectorName,
-            labels: approval.credentialLabels
+            connectorID: offer.connectorID,
+            displayName: offer.connectorName,
+            labels: offer.labels
         )
         let payload = PermissionBroker.approvalPayloadString(
             providerID: runtime,
             request: request,
-            reason: "The agent called \(approval.connectorName) during this run, but this turn's wording did not "
-                + "mention it, so ASTRA kept its saved credentials sealed. The credentials are configured and "
-                + "unchanged — approving here lets ASTRA use them without you re-entering anything.",
-            providerDetail: approval.connectorName,
+            reason: offerReason(
+                connectorNames: offer.connectorName,
+                connectorCount: approvals.count,
+                includesEarlierRuns: includesEarlierRuns
+            ),
+            providerDetail: offer.connectorName,
             grants: PermissionBroker.approvalGrants(for: request),
-            requestID: approval.requestID
+            requestID: BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: connectorIDs)
         )
+        for requestID in replacedRequestIDs {
+            TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: requestID, task: task)
+        }
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
         modelContext.insert(TaskEvent(
             task: task,
@@ -288,17 +326,90 @@ enum BrokeredCredentialApprovalDiscovery {
         AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
             "source": "brokered_credential_withheld",
             "runtime": runtime.rawValue,
-            "connector_id": approval.connectorID.uuidString,
-            "connector_alias": approval.alias,
-            "service_type": approval.serviceType,
-            "credential_label_count": String(approval.credentialLabels.count),
+            "connector_id": offer.connectorID.uuidString,
+            "connector_ids": connectorIDs.map(\.uuidString).joined(separator: ","),
+            "connector_count": String(connectorIDs.count),
+            "connector_alias": approvals.map(\.alias).joined(separator: ","),
+            "service_type": Set(approvals.map(\.serviceType)).sorted().joined(separator: ","),
+            "credential_label_count": String(offer.labels.count),
+            "replaced_offer_count": String(replacedRequestIDs.count),
             "result": "approval_offered_non_blocking"
         ], level: .warning, fieldMaxLength: 240)
     }
 
-    private static func openConnectorCredentialRequestIDs(for task: AgentTask) -> Set<String> {
-        Set(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).compactMap {
-            PermissionApprovalEventPayload.decoded(from: $0)?.requestID
-        })
+    private static func offerReason(
+        connectorNames: String,
+        connectorCount: Int,
+        includesEarlierRuns: Bool
+    ) -> String {
+        let unchanged = "The credentials are configured and unchanged — approving here lets ASTRA use them "
+            + "without you re-entering anything."
+        guard connectorCount > 1 else {
+            return "The agent called \(connectorNames) during this run, but this turn's wording did not "
+                + "mention it, so ASTRA kept its saved credentials sealed. " + unchanged
+        }
+        let when = includesEarlierRuns
+            ? "in this task's recent runs, but those turns' wording did not"
+            : "during this run, but this turn's wording did not"
+        return "The agent called \(connectorNames) \(when) mention them, so ASTRA kept their saved "
+            + "credentials sealed. " + unchanged
+    }
+
+    /// An offer this discovery recorded that the user has not answered yet.
+    private struct OpenOffer {
+        let requestID: String
+        let labels: [String]
+
+        /// Its own id and the per-connector id of every connector it covers, so
+        /// a connector folded into a combined offer still counts as offered.
+        var coveredRequestIDs: [String] {
+            [requestID] + ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: labels).map {
+                BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: [$0])
+            }
+        }
+    }
+
+    private static func openCredentialOffers(for task: AgentTask) -> [OpenOffer] {
+        TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).compactMap { payload in
+            guard let decoded = PermissionApprovalEventPayload.decoded(from: payload),
+                  let requestID = decoded.requestID,
+                  requestID.hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix),
+                  case .connectorCredentials(_, _, let labels) = decoded.request else {
+                return nil
+            }
+            return OpenOffer(requestID: requestID, labels: labels)
+        }
+    }
+
+    /// The connectors earlier offers are still waiting on, rebuilt from their
+    /// own rows so they can travel in the next offer. One granted since, or
+    /// deleted, is left out: there is nothing left to ask about it.
+    private static func records(
+        stillWaitingIn offers: [OpenOffer],
+        excluding granted: Set<String>,
+        modelContext: ModelContext
+    ) -> [BrokeredCredentialApprovalRecord] {
+        let labelsByConnector = Dictionary(grouping: offers.flatMap(\.labels)) {
+            ConnectorRuntimeProjection.connectorID(fromCredentialLabel: $0)
+        }
+        return labelsByConnector.compactMap { connectorID, labels in
+            guard let connectorID,
+                  !labels.allSatisfy(granted.contains),
+                  let connector = connector(id: connectorID, modelContext: modelContext) else {
+                return nil
+            }
+            return BrokeredCredentialApprovalRecord(
+                connectorID: connectorID,
+                connectorName: connector.name,
+                alias: ConnectorRuntimeProjection.alias(for: connector),
+                serviceType: connector.serviceType,
+                credentialLabels: Array(Set(labels)).sorted()
+            )
+        }
+    }
+
+    private static func connector(id: UUID, modelContext: ModelContext) -> Connector? {
+        let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == id })
+        return try? modelContext.fetch(descriptor).first
     }
 }
