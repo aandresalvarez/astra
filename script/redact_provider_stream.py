@@ -617,7 +617,21 @@ DIRECTORY_JUMP_PATTERN = re.compile(
 
 # Words that run the next word as a command: `command cd`, `builtin cd`,
 # `eval cd`, `time cd`, each with or without options.
-COMMAND_WRAPPERS = re.compile(r"(?:\b(?:builtin|command|eval|exec|nohup|time)(?:\s+(?:-[A-Za-z]+|--))*\s+)+$")
+COMMAND_WRAPPER = r"\b(?:builtin|command|eval|exec|nohup|time)(?:\s+(?:-[A-Za-z]+|--))*"
+# `X=1 cd` runs `cd` with X set, so assignment words before a command are
+# skipped like wrappers. A value may be quoted or a substitution.
+ASSIGNMENT_WORD = (
+    r"(?<![^\s;&|(`{])[A-Za-z_]\w*="
+    r"(?:\"[^\"]*\"|'[^']*'|\$\([^)]*\)|`[^`]*`|[^\s;&|()`\"'])*"
+)
+COMMAND_PREFIX_WORDS = re.compile(r"(?:(?:" + COMMAND_WRAPPER + "|" + ASSIGNMENT_WORD + r")\s+)+$")
+
+
+def at_command_position(before):
+    """Whether a word right after `before` is a command, looking past the
+    wrappers and assignments that may precede it."""
+    prefix = COMMAND_PREFIX_WORDS.search(before)
+    return bool(COMMAND_POSITION_PREFIX.search(before[:prefix.start()] if prefix else before))
 
 
 # The workspace's parent, computed rather than written: `dirname "$PWD"`,
@@ -645,8 +659,7 @@ def runs_variable_as_command(command):
         # Quoted, as in `"$x"`, it is still the command word.
         before = before[:-1] if before.endswith(("\"", "'")) else before
         before = before[:GLUED_WORD_PREFIX.search(before).start()]
-        wrapper = COMMAND_WRAPPERS.search(before)
-        if COMMAND_POSITION_PREFIX.search(before[:wrapper.start()] if wrapper else before):
+        if at_command_position(before):
             return True
     return False
 
@@ -674,9 +687,7 @@ def jumps_directory(command):
         if not re.search(r"\$\{?PWD\b", match.group(1))
     ]
     for match in matches:
-        before = command[:match.start()]
-        wrapper = COMMAND_WRAPPERS.search(before)
-        if COMMAND_POSITION_PREFIX.search(before[:wrapper.start()] if wrapper else before):
+        if at_command_position(command[:match.start()]):
             return True
     return False
 
