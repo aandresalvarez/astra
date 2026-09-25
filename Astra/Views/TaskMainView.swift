@@ -2193,6 +2193,9 @@ struct TaskMainView: View {
                         onSuggestedNextStep: pursueSuggestedNextStep
                     )
                     .equatable()
+                    if outputPresentation.hasMoreThanDisplayText {
+                        FullResponseDisclosureView(fullText: outputPresentation.fullText)
+                    }
                 }
             }
 

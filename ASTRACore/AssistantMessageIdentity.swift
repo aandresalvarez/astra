@@ -106,6 +106,25 @@ public enum ClaudeMessageIdentity {
         }
     }
 
+    /// The process monitor's view of one line. ASTRA launches Claude with
+    /// `--include-partial-messages`, so a main-agent envelope repeats text the
+    /// monitor already counted from its deltas: that copy is control, not new
+    /// output, for estimated tokens and progress. A subagent's envelopes are
+    /// its only copy and stay text.
+    public static func monitorEvents(_ events: [ParsedEvent], line: String) -> [ParsedEvent] {
+        guard line.contains("\"assistant\""),
+              let data = line.data(using: .utf8),
+              let frame = try? JSONDecoder().decode(ClaudeIdentityFrame.self, from: data),
+              frame.type == "assistant", frame.parent_tool_use_id == nil,
+              let messageID = frame.message?.id, !messageID.isEmpty else {
+            return events
+        }
+        return events.map { event in
+            guard case .text = event else { return event }
+            return .control(type: "assistant.final_copy")
+        }
+    }
+
     private struct ClaudeIdentityFrame: Decodable {
         struct Message: Decodable {
             let id: String?

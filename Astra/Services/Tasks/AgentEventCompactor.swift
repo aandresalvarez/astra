@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRACore
 
 enum AgentEventCompactor {
     static let threshold = 200
@@ -87,7 +88,9 @@ enum AgentEventCompactor {
         // (see latestReconstructedEventIDs for the per-key rules). Bounded by the
         // number of distinct keys, so high-volume plan.step.* streams still compact.
         let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
-        let outputPresentationAnchorIDs = latestOutputPresentationAnchorIDs(in: compactionCandidates)
+        // The answer is chosen over each run's full event list, with the rule
+        // the transcript view uses, so compaction keeps exactly what is shown.
+        let outputPresentationAnchorIDs = latestOutputPresentationAnchorIDs(in: events)
         let preservedIDs = reconstructionCriticalIDs.union(outputPresentationAnchorIDs)
         let toCompact = compactionCandidates.filter { !preservedIDs.contains($0.id) }
         guard !toCompact.isEmpty else {
@@ -204,46 +207,33 @@ enum AgentEventCompactor {
         return Set(latestByKey.values.map(\.id))
     }
 
+    /// What each run's answer needs to survive compaction: its rows, the work
+    /// event it follows, and (for a keyed run) its message records, chosen by
+    /// `RunAnswerSelectionPolicy` exactly as the transcript view chooses them.
     private static func latestOutputPresentationAnchorIDs(in events: [TaskEvent]) -> Set<UUID> {
-        let grouped = Dictionary(grouping: events.filter { isOutputPresentationEvent($0) }) { event in
+        let grouped = Dictionary(grouping: events) { event in
             event.run?.id.uuidString ?? "task"
         }
         var output = Set<UUID>()
         for runEvents in grouped.values {
             let sorted = runEvents.sorted { $0.timestamp < $1.timestamp }
-            guard let latestBoundaryIndex = sorted.lastIndex(where: isOutputPresentationBoundaryEvent) else {
-                if let latestResponse = sorted.last(where: { $0.type == "agent.response" }) {
-                    output.insert(latestResponse.id)
-                }
-                continue
-            }
-
-            output.insert(sorted[latestBoundaryIndex].id)
-            let finalResponses = sorted
-                .dropFirst(latestBoundaryIndex + 1)
-                .filter { $0.type == "agent.response" }
-            guard finalResponses.count <= maxPreservedFinalResponseChunks else {
-                output.remove(sorted[latestBoundaryIndex].id)
-                continue
-            }
-            for event in finalResponses {
-                output.insert(event.id)
+            let transcript = sorted.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
+            if let keyed = RunAnswerSelectionPolicy.select(transcript) {
+                let rows = keyed.answer.flatMap { $0 }
+                guard rows.count <= maxPreservedFinalResponseChunks else { continue }
+                output.formUnion(rows)
+                output.formUnion(sorted.filter { $0.type == RunAnswerSelectionPolicy.messageRecordType }.map(\.id))
+                if let anchor = keyed.anchor { output.insert(anchor) }
+            } else if let legacy = RunAnswerSelectionPolicy.legacySelection(transcript) {
+                let rows = legacy.answer.flatMap { $0 }
+                guard rows.count <= maxPreservedFinalResponseChunks else { continue }
+                output.formUnion(rows)
+                if let anchor = legacy.anchor { output.insert(anchor) }
+            } else if let latestResponse = sorted.last(where: { $0.type == "agent.response" }) {
+                output.insert(latestResponse.id)
             }
         }
         return output
-    }
-
-    private static func isOutputPresentationEvent(_ event: TaskEvent) -> Bool {
-        event.type == "agent.response" || isOutputPresentationBoundaryEvent(event)
-    }
-
-    private static func isOutputPresentationBoundaryEvent(_ event: TaskEvent) -> Bool {
-        switch event.type {
-        case "tool.use", "tool.result", "permission.denied", "permission.approval.requested":
-            return true
-        default:
-            return false
-        }
     }
 
     private static func isReconstructedLifecycleEvent(_ event: TaskEvent) -> Bool {

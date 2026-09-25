@@ -551,6 +551,9 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
     let displayText: String
     let progressMessages: [TaskRunProgressMessage]
     let rawText: String
+    /// Every main-agent message of the run, joined at message boundaries: the
+    /// full response the answer was chosen from.
+    private(set) var fullText = ""
 
     static let empty = TaskRunOutputPresentation(displayText: "", progressMessages: [], rawText: "")
 
@@ -558,6 +561,12 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         self.displayText = displayText
         self.progressMessages = progressMessages
         self.rawText = rawText
+    }
+
+    /// Whether the full response holds more than the answer shows.
+    var hasMoreThanDisplayText: Bool {
+        let key: (String) -> String = { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        return !fullText.isEmpty && key(fullText) != key(displayText)
     }
 
     var hasDisplayText: Bool {
@@ -587,29 +596,16 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             return
         }
 
-        var latestWorkIndex: Int?
-        for index in events.indices.reversed() {
-            if index.isMultiple(of: 16) { try cancellationCheck() }
-            if Self.isOutputBoundaryEvent(events[index]) {
-                latestWorkIndex = index
-                break
-            }
-        }
-        guard let latestWorkIndex else {
-            let presentation = Self.rawOutputPresentation(for: run)
-            displayText = presentation.displayText
-            progressMessages = presentation.progressMessages
-            return
-        }
-
-        var finalResponseEvents: [TaskEventSnapshot] = []
-        for (offset, event) in events.dropFirst(latestWorkIndex + 1).enumerated() {
-            if offset.isMultiple(of: 16) { try cancellationCheck() }
-            if event.type == "agent.response" &&
-                !event.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                finalResponseEvents.append(event)
-            }
-        }
+        // The answer is chosen by the rule the compactor also uses: from the
+        // run's message records when it has them, otherwise from its rows
+        // after the last work event (RunAnswerSelectionPolicy).
+        try cancellationCheck()
+        let transcript = events.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
+        let keyed = RunAnswerSelectionPolicy.select(transcript)
+        let selection = keyed ?? RunAnswerSelectionPolicy.legacySelection(transcript)
+        let rowsByID = Dictionary(responseEvents.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let answerMessages = (selection?.answer ?? []).map { rows in rows.compactMap { rowsByID[$0] } }.filter { !$0.isEmpty }
+        let finalResponseEvents = answerMessages.flatMap { $0 }
 
         guard !finalResponseEvents.isEmpty else {
             let presentation = Self.rawOutputPresentation(for: run)
@@ -629,7 +625,11 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
 
         try cancellationCheck()
-        let finalText = Self.joinResponsePayloads(finalResponseEvents)
+        // A keyed answer is whole messages, joined at their boundaries; an
+        // older run's rows go through the legacy normalization.
+        let finalText = keyed != nil
+            ? TaskRunAnswerPresentationPolicy.presentation(messages: answerMessages.map { $0.map(\.payload).joined() }).answerText
+            : Self.joinResponsePayloads(finalResponseEvents)
         guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             let presentation = Self.rawOutputPresentation(for: run)
             displayText = presentation.displayText
@@ -638,20 +638,20 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
 
         try cancellationCheck()
-        // `finalText` comes from `joinResponsePayloads`, which normalizes.
-        displayText = TaskRunAnswerPresentationPolicy.presentation(normalizedText: finalText).answerText
+        // `joinResponsePayloads` normalizes; a keyed answer is already final.
+        displayText = keyed != nil
+            ? finalText
+            : TaskRunAnswerPresentationPolicy.presentation(normalizedText: finalText).answerText
+        // The full response, for "Show full response": whole messages joined
+        // at their boundaries, or an older run's rows as they were recorded.
+        let allMessages = (selection?.messages ?? []).map { rows in rows.compactMap { rowsByID[$0]?.payload }.joined() }
+        let full = keyed != nil
+            ? TaskRunAnswerPresentationPolicy.presentation(messages: allMessages).answerText
+            : Self.joinResponsePayloads(responseEvents)
+        fullText = full.utf8.count <= Self.maximumFinalAnswerPresentationBytes ? full : ""
         let finalIDs = Set(finalResponseEvents.map(\.id))
         progressMessages = Self.progressMessages(from: responseEvents.filter { !finalIDs.contains($0.id) })
         try cancellationCheck()
-    }
-
-    private static func isOutputBoundaryEvent(_ event: TaskEventSnapshot) -> Bool {
-        switch event.type {
-        case "tool.use", "tool.result", "permission.denied", "permission.approval.requested":
-            return true
-        default:
-            return false
-        }
     }
 
     private static func rawOutputPresentation(for run: TaskRunSnapshot) -> TaskRunOutputPresentation {
