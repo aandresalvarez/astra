@@ -193,6 +193,31 @@ struct AssistantMessageLedgerTests {
         #expect(!harness.run.output.contains(secret))
     }
 
+    @Test("A delta is redacted whole before it is split into rows, and across the row it continues")
+    func secretsAreRedactedBeforeRowsSplit() throws {
+        let harness = try Harness(rowCap: 16)
+        let secret = "sk-test-0123456789abcdefghijklmnopqrstuv"
+        let taskID = harness.task.id
+        RunSecretRedactionScope.beginRun(taskID: taskID)
+        defer {
+            RunSecretRedactionScope.endRun(taskID: taskID)
+            RunSecretRedactionScope.forget(taskID: taskID)
+        }
+        RunSecretRedactionScope.register(taskID: taskID, secrets: [secret])
+
+        // One delta over the cap, the secret straddling its chunk boundaries.
+        harness.delta("claude:msg_A#0", "key=\(secret) ok")
+        #expect(try harness.responseRows().map(\.payload).joined() == "key=[redacted] ok")
+
+        // A row ending in the secret's first few characters, then a delta
+        // that overflows it with the rest.
+        harness.delta("claude:msg_B#0", "abcdefgh sk-tes")
+        harness.delta("claude:msg_B#0", "\(secret.dropFirst(6)) end")
+        let rows = try harness.responseRows().filter { !$0.payload.hasPrefix("key=") && $0.payload != "k" }
+        #expect(rows.map(\.payload).joined() == "abcdefgh [redacted] end")
+        #expect(rows.allSatisfy { !$0.payload.isEmpty })
+    }
+
     @Test("A streamed Claude reply with short lines is recorded once, end to end")
     func claudeStreamRecordsTheReplyOnce() throws {
         let harness = try Harness()
