@@ -627,6 +627,22 @@ PARENT_OF_WORKSPACE_PATTERN = re.compile(
 )
 
 
+# A command word that is a variable (`x=cd; $x`, `eval "$cmd"`) runs whatever
+# it expands to, which the audit cannot see; it is refused like escaped bytes.
+VARIABLE_COMMAND_PATTERN = re.compile(r"\$\{?[A-Za-z_]\w*\}?")
+
+
+def runs_variable_as_command(command):
+    for match in VARIABLE_COMMAND_PATTERN.finditer(command):
+        before = command[:match.start()]
+        # Quoted, as in `"$x"`, it is still the command word.
+        before = before[:-1] if before.endswith(("\"", "'")) else before
+        wrapper = COMMAND_WRAPPERS.search(before)
+        if COMMAND_POSITION_PREFIX.search(before[:wrapper.start()] if wrapper else before):
+            return True
+    return False
+
+
 def unquoted(command):
     """The command with backslash escapes and quote characters removed, as
     quote removal leaves its words: `c\\d` and `c""d` both run `cd`. Checked
@@ -784,6 +800,7 @@ def audit_frame(number, frame):
             or any(ENV_DUMP_PATTERN.search(unquoted(command)) for command in commands)
             or any(jumps_directory(command) or jumps_directory(unquoted(command)) for command in commands)
             or any(PARENT_OF_WORKSPACE_PATTERN.search(command) for command in commands)
+            or any(runs_variable_as_command(command) for command in commands)
         )
         if reached or any(has_escaped_bytes(command) for command in commands):
             findings.append(f"line {number}: {name} {arguments[:160]}")
