@@ -630,10 +630,13 @@ PARENT_OF_WORKSPACE_PATTERN = re.compile(
 )
 
 
-# A command word that is a variable or a command substitution (`x=cd; $x`,
-# `eval "$cmd"`, `$(printf cd)`) runs whatever it expands to, which the audit
-# cannot see; it is refused like escaped bytes.
-VARIABLE_COMMAND_PATTERN = re.compile(r"\$\{?[A-Za-z_]\w*\}?|\$\(|`")
+# A command word built by an expansion (`x=cd; $x`, `eval "$cmd"`,
+# `$(printf cd)`, `{cd,}`) runs whatever it expands to, which the audit cannot
+# see; it is refused like escaped bytes. So is one with an expansion glued on:
+# `cd${IFS}` and `cd$x` (empty) both run a bare `cd`. After an `=` the word is
+# an assignment, and the expansion its value.
+VARIABLE_COMMAND_PATTERN = re.compile(r"\$\{?[A-Za-z_]\w*\}?|\$\(|`|\{[^\s{}]*,")
+GLUED_WORD_PREFIX = re.compile(r"[^\s;&|()`{}<>\"'$\\=]*$")
 
 
 def runs_variable_as_command(command):
@@ -641,6 +644,7 @@ def runs_variable_as_command(command):
         before = command[:match.start()]
         # Quoted, as in `"$x"`, it is still the command word.
         before = before[:-1] if before.endswith(("\"", "'")) else before
+        before = before[:GLUED_WORD_PREFIX.search(before).start()]
         wrapper = COMMAND_WRAPPERS.search(before)
         if COMMAND_POSITION_PREFIX.search(before[:wrapper.start()] if wrapper else before):
             return True
@@ -818,7 +822,7 @@ def audit_frame(number, frame):
             or any(ENV_DUMP_PATTERN.search(unquoted(command)) for command in commands)
             or any(jumps_directory(command) or jumps_directory(unquoted(command)) for command in commands)
             or any(PARENT_OF_WORKSPACE_PATTERN.search(command) for command in commands)
-            or any(runs_variable_as_command(command) for command in commands)
+            or any(runs_variable_as_command(command) or runs_variable_as_command(unquoted(command)) for command in commands)
         )
         if reached or any(has_escaped_bytes(command) for command in commands):
             findings.append(f"line {number}: {name} {arguments[:160]}")
@@ -869,6 +873,39 @@ def minimized(frame):
 LITERAL_WORKSPACE_PATTERN = re.compile(r"(?<![\w.\-~/:])/workspace(?=/|$|[\s\"'\\,)\]}])")
 
 
+def decoded_strings(value):
+    """Every string a frame decodes to, dict keys included, and the strings
+    inside a string that is itself JSON (Copilot's arguments). A raw line can
+    spell `/` as `\\u002f`, which only the decoded value shows."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from decoded_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from decoded_strings(item)
+    elif isinstance(value, str):
+        yield value
+        if value.strip()[:1] in ("{", "[", "\""):
+            try:
+                inner = json.loads(value)
+            except ValueError:
+                return
+            if inner != value:
+                yield from decoded_strings(inner)
+
+
+def names_literal_workspace(line):
+    try:
+        decoded = list(decoded_strings(json.loads(line)))
+    except ValueError:
+        decoded = []  # refused below as not JSON
+    return any(
+        LITERAL_WORKSPACE_PATTERN.search(text)
+        for text in [line, *decoded, *map(shell_decoded, decoded)]
+    )
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--audit":
         sys.exit(audit(sys.argv[2]))
@@ -883,7 +920,7 @@ def main():
     if "/workspace" not in workspace_spellings(workspace):
         with open(raw_path, encoding="utf-8", errors="replace") as raw:
             for number, line in enumerate(raw, 1):
-                if LITERAL_WORKSPACE_PATTERN.search(line):
+                if names_literal_workspace(line):
                     sys.exit(f"line {number} of the capture names a literal /workspace path; refusing to write a fixture")
     with open(raw_path, encoding="utf-8", errors="replace") as raw:
         for number, line in enumerate(raw, 1):
