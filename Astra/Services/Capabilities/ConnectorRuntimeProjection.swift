@@ -11,11 +11,40 @@ struct ConnectorRuntimeProjection {
         var labels: [String]
 
         var displayName: String {
-            let name = connectorName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let service = serviceType.trimmingCharacters(in: .whitespacesAndNewlines)
-            let connectorDisplayName = name.isEmpty ? (service.isEmpty ? "Connector" : service) : name
             let noun = labels.count == 1 ? "credential" : "credentials"
             return "\(connectorDisplayName) connector \(noun) (\(labels.count) configured \(noun))"
+        }
+
+        private var connectorDisplayName: String {
+            let name = connectorName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let service = serviceType.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? (service.isEmpty ? "Connector" : service) : name
+        }
+
+        /// One request covering every connector a launch still needs approved.
+        ///
+        /// Asking about one connector per launch cannot converge once a launch
+        /// needs two: "Allow once" grants only what it was just asked about, so
+        /// production task 06E0814E alternated between two connectors for
+        /// twelve approvals. `labels` is authoritative and may span several
+        /// connectors; `connectorID` names only the first, so a consumer that
+        /// needs every connector reads the IDs back out of the labels.
+        static func merged(_ requests: [CredentialApprovalRequest]) -> CredentialApprovalRequest? {
+            let ordered = requests.sorted { lhs, rhs in
+                let lhsName = lhs.connectorDisplayName.localizedLowercase
+                let rhsName = rhs.connectorDisplayName.localizedLowercase
+                guard lhsName != rhsName else { return lhs.connectorID.uuidString < rhs.connectorID.uuidString }
+                return lhsName < rhsName
+            }
+            guard let first = ordered.first else { return nil }
+            guard ordered.count > 1 else { return first }
+            let serviceTypes = Set(ordered.map { $0.serviceType.lowercased() })
+            return CredentialApprovalRequest(
+                connectorID: first.connectorID,
+                connectorName: ConnectorRuntimeProjection.joinedNames(ordered.map(\.connectorDisplayName)),
+                serviceType: serviceTypes.count == 1 ? first.serviceType : "",
+                labels: ConnectorRuntimeProjection.uniquedSorted(ordered.flatMap(\.labels))
+            )
         }
     }
 
@@ -244,6 +273,19 @@ struct ConnectorRuntimeProjection {
     static func credentialLabel(connectorID: UUID, key: String) -> String {
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         return "connector:\(connectorID.uuidString):\(trimmedKey)"
+    }
+
+    /// The inverse of `credentialLabel(connectorID:key:)`.
+    static func connectorID(fromCredentialLabel label: String) -> UUID? {
+        let parts = label.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "connector" else { return nil }
+        return UUID(uuidString: String(parts[1]))
+    }
+
+    /// Every connector a set of credential labels belongs to, in label order.
+    static func connectorIDs(inCredentialLabels labels: [String]) -> [UUID] {
+        var seen = Set<UUID>()
+        return labels.compactMap(connectorID(fromCredentialLabel:)).filter { seen.insert($0).inserted }
     }
 
     static func alias(for connector: Connector) -> String {
@@ -528,6 +570,13 @@ struct ConnectorRuntimeProjection {
 
     private static func uniquedSorted(_ values: [String]) -> [String] {
         Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+    }
+
+    /// "A", "A and B", "A, B and C".
+    private static func joinedNames(_ names: [String]) -> String {
+        guard let last = names.last else { return "" }
+        guard names.count > 1 else { return last }
+        return names.dropLast().joined(separator: ", ") + " and " + last
     }
 
     private static func uniqueManifestName(startingWith preferred: String, usedNames: inout Set<String>) -> String {

@@ -559,6 +559,143 @@ struct ConnectorPreflightServiceTests {
         #expect(openPayloads.contains(sandboxPayload))
         #expect(openPayloads.contains { $0.contains("connectorCredentials") })
     }
+
+    // Production task 06E0814E paused twelve times in a row. The gate asked
+    // about one connector per launch, and "Allow once" granted only the
+    // connector it had just asked about, so two connectors took turns forever.
+    @Test("Launch preflight asks for every unapproved connector in one approval")
+    func launchPreflightAsksForEveryUnapprovedConnectorInOneApproval() async throws {
+        let container = try makeConnectorPreflightContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Two Jira Connectors", primaryPath: "/tmp/two-jira-connectors")
+        let store = MockSecretStore()
+        let connectors = ["Jira-new", "Jira"].map { name in
+            let connector = Connector(
+                name: name,
+                serviceType: "jira",
+                baseURL: "https://example.atlassian.net/",
+                authMethod: "basic"
+            )
+            connector.workspace = workspace
+            connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+            let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+            store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: entityID, label: nil)
+            store.save(key: "JIRA_API_TOKEN", value: "secret-token", entityID: entityID, label: nil)
+            return connector
+        }
+        let task = AgentTask(title: "Export SS", goal: "Download the SS tickets from Jira", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        for connector in connectors { context.insert(connector) }
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        let expectedGrants = Set(connectors.flatMap { connector in
+            ["JIRA_EMAIL", "JIRA_API_TOKEN"].map {
+                PermissionGrant.credential(label: ConnectorRuntimeProjection.credentialLabel(for: connector, key: $0))
+            }
+        })
+
+        let result = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "test",
+            contextText: "Download the SS tickets from Jira",
+            secretStore: store,
+            mcpDetectExecutable: { $0 },
+            mcpIsExecutableFile: { _ in true }
+        )
+
+        let approvalEvents = task.events.filter {
+            $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue
+        }
+        let payload = try #require(approvalEvents.first.flatMap {
+            PermissionApprovalEventPayload.decoded(from: $0.payload)
+        })
+        #expect(result.status == .connectorCredentialApprovalRequired)
+        #expect(approvalEvents.count == 1)
+        #expect(result.detail == "Jira and Jira-new connector credentials (4 configured credentials)")
+        #expect(Set(payload.grants) == expectedGrants)
+        #expect(Set(TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)) == expectedGrants)
+    }
+
+    // Two genuinely different systems, the shape most production loops had
+    // (Jira and REDCap). Neither is a Jira connector here only so the second
+    // launch does not reach Jira's network preflight.
+    @Test("One approval of the batched credentials lets the next launch pass")
+    func oneApprovalOfBatchedCredentialsLetsTheNextLaunchPass() async throws {
+        let container = try makeConnectorPreflightContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "REDCap and Internal API", primaryPath: "/tmp/redcap-internal-api")
+        let store = MockSecretStore()
+        let redcap = Connector(
+            name: "REDCap",
+            serviceType: "redcap",
+            baseURL: "https://redcap.example.test/api/",
+            authMethod: "bearer"
+        )
+        redcap.credentialKeys = ["REDCAP_API_TOKEN"]
+        let internalAPI = Connector(
+            name: "Internal API",
+            serviceType: "custom_api",
+            baseURL: "https://api.example.test/",
+            authMethod: "bearer"
+        )
+        internalAPI.credentialKeys = ["INTERNAL_API_TOKEN"]
+        for (connector, key) in [(redcap, "REDCAP_API_TOKEN"), (internalAPI, "INTERNAL_API_TOKEN")] {
+            connector.workspace = workspace
+            store.save(
+                key: key,
+                value: "secret-\(key)",
+                entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+                label: nil
+            )
+            context.insert(connector)
+        }
+        let goal = "Compare the REDCap records with the Internal API"
+        let task = AgentTask(title: "Compare records", goal: goal, workspace: workspace)
+        let firstRun = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(firstRun)
+        try context.save()
+
+        let first = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+            task: task,
+            run: firstRun,
+            modelContext: context,
+            phase: "test",
+            contextText: goal,
+            secretStore: store,
+            mcpDetectExecutable: { $0 },
+            mcpIsExecutableFile: { _ in true }
+        )
+        #expect(first.status == .connectorCredentialApprovalRequired)
+
+        // "Allow once & continue": the relaunch carries exactly the grants of
+        // the request the user approved.
+        let approved = TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
+        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
+        let secondRun = TaskRun(task: task)
+        context.insert(secondRun)
+        let second = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+            task: task,
+            run: secondRun,
+            modelContext: context,
+            phase: "test",
+            contextText: goal,
+            executionPolicy: PermissionBroker.executionPolicy(forRuntime: .claudeCode, grants: approved),
+            secretStore: store,
+            mcpDetectExecutable: { $0 },
+            mcpIsExecutableFile: { _ in true }
+        )
+
+        #expect(second.status == .connectorPreflightPassed)
+        #expect(task.events.filter {
+            $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue
+        }.count == 1)
+    }
 }
 
 private func makeConnectorPreflightContainer() throws -> ModelContainer {
