@@ -66,4 +66,15 @@ struct AgentProcessResult {
     var runtimeStopped: Bool {
         runtimeStopReason?.isEmpty == false
     }
+
+    /// ASTRA ended the provider itself: a watchdog or other runtime stop, the
+    /// idle timeout, a policy stop or approval pause, the token budget, the
+    /// turn limit, or a repetition kill. Some of these close stdin first and
+    /// let the provider exit 0, so the exit code alone does not say the turn
+    /// finished. A reap after the turn's terminal frame is not one of them:
+    /// the turn had already ended, and it reads as exit 0.
+    var stoppedByASTRA: Bool {
+        runtimeStopped || timedOut || policyViolation || policyApprovalRequired
+            || budgetExceeded || maxTurnsExceeded || repetitionKilled
+    }
 }

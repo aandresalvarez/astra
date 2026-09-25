@@ -1155,9 +1155,7 @@ final class AgentRuntimeWorker {
             task: task,
             run: run,
             modelContext: modelContext,
-            processExitedCleanly: (result.exitCode == 0 || result.terminatedAfterTerminalProgress)
-                && !result.timedOut && !result.policyViolation && !result.policyApprovalRequired
-                && !cancellationRequested
+            processExitedCleanly: result.exitCode == 0 && !result.stoppedByASTRA && !cancellationRequested
         )
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
             homeDirectory: launchSettings.homeDirectory,

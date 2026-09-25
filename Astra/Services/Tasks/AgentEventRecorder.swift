@@ -1100,8 +1100,9 @@ enum AgentEventRecorder {
     /// Settles the tool file changes whose result never arrived. After a
     /// clean exit the provider dropped the result, and a real write is likelier
     /// than a failure whose error the stream swallowed, so they are kept.
-    /// After a stop ASTRA forced — a timeout, a cancel, a policy stop, a
-    /// budget limit — the call may never have run, so they are dropped, and
+    /// After a stop ASTRA forced — a cancel, a watchdog, a timeout, a policy
+    /// stop, the budget or turn limit, a repetition kill — the call may never
+    /// have run, so they are dropped, even when the provider then exited 0, and
     /// so they are when the provider reported the turn failed, even with a
     /// clean exit (Codex exits 0 after one). The task-folder comparison still
     /// records what actually changed on disk. Call once the run's events are
