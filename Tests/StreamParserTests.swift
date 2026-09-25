@@ -391,7 +391,39 @@ struct StreamParserTests {
             return
         }
         #expect(taskId == "a64fbccb35b9bec59")
-        #expect(name == "Write haiku about mountains")
+        // No description, so named like task_started: by task id.
+        #expect(name == "a64fbccb35b9bec59")
+    }
+
+    @Test("task_notification's summary is the subagent's answer, never its name")
+    func taskNotificationSummaryIsNotTheName() throws {
+        // Shaped like a real Claude Code notification: no description, and a
+        // summary holding the subagent's whole multi-sentence answer.
+        let summary = "Dana is asking whether the 32,872-day top-coding was implemented by capping "
+            + "each day offset at 32,872 (using LEAST) or by first checking whether the patient reached "
+            + "age 90, and wants a short reply drafted. The file also notes: the cohort was refreshed "
+            + "on Monday, and \\\"LEAST\\\" is applied per row."
+        let json = """
+        {"type":"system","subtype":"task_notification","task_id":"a613e2b53651b7b23","tool_use_id":"toolu_01YUZV3AuQdnA5AN1Uay89Nd","status":"completed","output_file":"/tmp/claude/tasks/a613e2b53651b7b23.output","summary":"\(summary)","usage":{"total_tokens":39805,"tool_uses":1,"duration_ms":4579},"uuid":"uuid-4"}
+        """
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .teammateCompleted(let taskId, let name) = parsed else {
+            Issue.record("Expected .teammateCompleted for task_notification, got \(String(describing: parsed))")
+            return
+        }
+        #expect(taskId == "a613e2b53651b7b23")
+        #expect(name == "a613e2b53651b7b23")
+        #expect(!name.contains("Dana"))
+
+        // With a description, the completion takes the same name its start does.
+        let described = """
+        {"type":"system","subtype":"task_notification","task_id":"t1","description":"research-agent: Find all references","status":"completed","summary":"\(summary)"}
+        """
+        guard case .teammateCompleted(_, let describedName) = StreamEventParser.parse(line: described) else {
+            Issue.record("Expected .teammateCompleted for a described task_notification")
+            return
+        }
+        #expect(describedName == "research-agent")
     }
 
     @Test("Agent name extraction from description")

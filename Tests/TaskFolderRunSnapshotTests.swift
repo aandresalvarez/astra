@@ -204,15 +204,55 @@ struct TaskFolderRunSnapshotTests {
         #expect(fixture.run.fileChangesJSON.utf8.count <= TaskRun.displayedFileChangesJSONByteLimit)
     }
 
-    @Test("A tool write with nothing on disk at either end is not read as a removal")
-    func toolAttemptAloneIsNotARemoval() throws {
+    @Test("A file the run's tools wrote and a shell command deleted is recorded as removed")
+    func writtenThenDeletedFileIsRecordedAsRemoved() throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
-        // A Write is recorded when the tool is called, before its result says
-        // whether it succeeded, so it is no proof the file ever existed.
+        // Written and deleted inside the run, so neither walk sees either file.
+        try write("draft", to: folder, "notes/draft.md")
+        try write("rows", to: folder, "scratch.csv")
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("notes/draft.md"))
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("scratch.csv"))
+        // A tool's change is recorded once its result succeeds, so it proves
+        // the file existed; one path is relative to the working directory.
         let recordedJSON = TaskEvent.payloadString([
-            StoredFileChange(path: folder.path + "/never-written.md", changeType: "Write")
+            StoredFileChange(path: folder.path + "/notes/draft.md", changeType: "Write"),
+            StoredFileChange(path: "scratch.csv", changeType: "Edit")
+        ])
+        let runEndedAt = Date()
+
+        let observation = try TaskFolderRunSnapshot.observe(
+            since: before,
+            recordedJSON: recordedJSON,
+            executionPath: folder.path,
+            runStartedAt: runEndedAt.addingTimeInterval(-5),
+            runEndedAt: runEndedAt
+        ).get()
+
+        #expect(observation.records.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["draft.md", "scratch.csv"])
+        #expect(observation.records.map(\.kind) == [.removed, .removed])
+        #expect(observation.records.map(\.timestamp) == [runEndedAt, runEndedAt])
+        #expect(observation.inferredRemovalCount == 2)
+    }
+
+    @Test("A written file that is still there is not read as removed, even where the walk cannot see it")
+    func writtenFileStillOnDiskIsUntouched() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let target = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: target) }
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+        try write("kept", to: folder, "kept.md")
+        // The walk skips a symlink, so only the path itself says it is there.
+        try write("real", to: target, "real.md")
+        try FileManager.default.createSymbolicLink(
+            at: folder.appendingPathComponent("linked.md"),
+            withDestinationURL: target.appendingPathComponent("real.md")
+        )
+        let recordedJSON = TaskEvent.payloadString([
+            StoredFileChange(path: folder.path + "/kept.md", changeType: "Write"),
+            StoredFileChange(path: folder.path + "/linked.md", changeType: "Write")
         ])
 
         let observation = try TaskFolderRunSnapshot.observe(
@@ -224,6 +264,34 @@ struct TaskFolderRunSnapshotTests {
         ).get()
 
         #expect(observation.records.isEmpty)
+        #expect(observation.inferredRemovalCount == 0)
+    }
+
+    @Test("A written path outside the task folder, or one the walk never lists, is not read as removed")
+    func writesTheWalkCannotSeeAreIgnored() throws {
+        let workspace = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let folder = workspace.appendingPathComponent("task", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let before = try #require(TaskFolderRunSnapshot.scan(taskFolder: folder.path))
+        // Nothing is on disk at any of these paths.
+        let recordedJSON = TaskEvent.payloadString([
+            StoredFileChange(path: workspace.path + "/README.md", changeType: "Write"),
+            StoredFileChange(path: "/tmp/astra-elsewhere-\(UUID().uuidString).md", changeType: "Write"),
+            StoredFileChange(path: folder.path + "/outputs/turn_001.md", changeType: "Write"),
+            StoredFileChange(path: folder.path + "/.cache/state.json", changeType: "Write")
+        ])
+
+        let observation = try TaskFolderRunSnapshot.observe(
+            since: before,
+            recordedJSON: recordedJSON,
+            executionPath: workspace.path,
+            runStartedAt: Date().addingTimeInterval(-5),
+            runEndedAt: Date()
+        ).get()
+
+        #expect(observation.records.isEmpty)
+        #expect(observation.inferredRemovalCount == 0)
     }
 
     @Test("A change record that cannot be decoded is left alone, not replaced by observations")

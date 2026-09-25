@@ -334,6 +334,8 @@ extension TaskFolderRunSnapshot {
             "files": String(observation.fileCount),
             "changed": String(observation.changeCount),
             "recorded": String(observation.records.count),
+            // Files the run's tools wrote that were gone again by its end.
+            "inferred_removed": String(observation.inferredRemovalCount),
             // Detected changes the count or byte bound left out of the record.
             "omitted": String(observation.omittedCount),
             "limit_reached": String(observation.omittedCount > 0),
@@ -348,6 +350,7 @@ extension TaskFolderRunSnapshot {
         let changeCount: Int
         let records: [StoredFileChange]
         let omittedCount: Int
+        let inferredRemovalCount: Int
     }
 
     /// Records to append, and how many new observations the bounds left out.
@@ -377,7 +380,8 @@ extension TaskFolderRunSnapshot {
             return .failure(.undecodableRecord)
         }
         guard let after = scan(taskFolder: before.root.standardized) else { return .failure(.unreadableOrOverLimit) }
-        let changes = after.changes(since: before)
+        let removedWrites = removalsOfWrittenFiles(recorded, before: before, after: after, executionPath: executionPath)
+        let changes = after.changes(since: before) + removedWrites
         let bounded = records(
             for: changes,
             under: after.root,
@@ -391,8 +395,43 @@ extension TaskFolderRunSnapshot {
             fileCount: after.entries.count,
             changeCount: changes.count,
             records: bounded.records,
-            omittedCount: bounded.omitted
+            omittedCount: bounded.omitted,
+            inferredRemovalCount: removedWrites.count
         ))
+    }
+
+    /// Removals neither walk can see: files this run's tools wrote that
+    /// neither walk found and nothing occupies now, so the run created and
+    /// deleted them. A tool's write proves the file existed because the
+    /// recorder keeps it only once the call's result succeeded, or after a
+    /// clean exit with no failure reported. Requiring an empty path, not only
+    /// absence from the walks, keeps a hidden file, a symlink, or anything
+    /// else the walk skips from reading as removed.
+    static func removalsOfWrittenFiles(
+        _ recorded: [StoredFileChange],
+        before: TaskFolderRunSnapshot,
+        after: TaskFolderRunSnapshot,
+        executionPath: String
+    ) -> [Change] {
+        var removed = Set<String>()
+        for change in recorded where change.kind == .write || change.kind == .edit {
+            let underRoot = spellings(of: change.path, relativeTo: executionPath).lazy.compactMap {
+                relativePath(of: URL(fileURLWithPath: $0), under: after.root)
+            }
+            guard let relativePath = underRoot.first,
+                  isListedByWalk(relativePath),
+                  before.entries[relativePath] == nil, after.entries[relativePath] == nil,
+                  (try? FileManager.default.attributesOfItem(atPath: after.root.standardized + "/" + relativePath)) == nil
+            else { continue }
+            removed.insert(relativePath)
+        }
+        return removed.sorted().map { Change(relativePath: $0, kind: .removed, modifiedAt: nil) }
+    }
+
+    /// A path the walk lists when a file is there: one the Files shelf shows,
+    /// outside any hidden file or folder, which the walk skips.
+    private static func isListedByWalk(_ relativePath: String) -> Bool {
+        isWalkablePath(relativePath) && !relativePath.split(separator: "/").contains { $0.hasPrefix(".") }
     }
 
     @MainActor

@@ -978,6 +978,48 @@ struct AgentEventRecorderTests {
         }
         #expect(task.events.contains { $0.type == "team.agent.completed" && $0.agentId == "agent-1" })
     }
+
+    @Test("A completed subagent keeps its started name, not its answer")
+    func completedSubagentKeepsStartedName() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Subagent", goal: "Summarize question.txt")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        func record(_ line: String) {
+            for parsed in StreamEventParser.parseAll(line: line) {
+                for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+                    AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+                }
+            }
+        }
+
+        let answer = "Dana is asking whether the 32,872-day top-coding was implemented by capping each day "
+            + "offset at 32,872 (using LEAST) or by first checking whether the patient reached age 90, "
+            + "and wants a short reply drafted. Nothing else in the file needs an answer."
+        record("""
+        {"type":"system","subtype":"task_started","task_id":"a613e2b53651b7b23","tool_use_id":"toolu_1","description":"Summarize question.txt","subagent_type":"general-purpose","task_type":"local_agent","prompt":"Read question.txt and summarize it in one sentence."}
+        """)
+        record("""
+        {"type":"system","subtype":"task_notification","task_id":"a613e2b53651b7b23","tool_use_id":"toolu_1","status":"completed","summary":"\(answer)"}
+        """)
+        // A subagent whose start was never recorded falls back to its task id.
+        record("""
+        {"type":"system","subtype":"task_notification","task_id":"b7c1d2e3f4a5b6c7d","status":"completed","summary":"\(answer)"}
+        """)
+
+        let completed = task.events.filter { $0.type == TaskEventTypes.Team.agentCompleted.rawValue }
+        #expect(completed.count == 2)
+        let matched = try #require(completed.first { $0.agentId == "a613e2b53651b7b23" })
+        #expect(matched.agentName == "Summarize question.txt")
+        #expect(matched.payload == "Summarize question.txt finished")
+        let unmatched = try #require(completed.first { $0.agentId == "b7c1d2e3f4a5b6c7d" })
+        #expect(unmatched.agentName == "b7c1d2e3f4a5b6c7d")
+        #expect(unmatched.payload == "b7c1d2e3f4a5b6c7d finished")
+        #expect(!completed.contains { ($0.agentName ?? "").contains("Dana") || $0.payload.contains("Dana") })
+    }
 }
 
 @Suite("Agent Event Recording Presentation echo window")

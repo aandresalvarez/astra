@@ -72,6 +72,25 @@ struct TaskFileTurnsTests {
         #expect(turns.last?.entries.map(\.change) == [.new, .new])
     }
 
+    @Test("A file a turn's tool wrote and a command then deleted is not listed, not even from the index")
+    func writtenThenDeletedFileIsNotListed() {
+        let input = makeInput(
+            runs: [run(at: 10, changes: [
+                change("draft.md", .write, at: 11),
+                change("report.md", .write, at: 12),
+                // The snapshot's removal, stamped at the end of the run.
+                change("draft.md", .removed, at: 15)
+            ])],
+            // The tool write's artifact row outlives the file.
+            indexedFiles: [indexed("draft.md", at: 11)]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { !$0.hasSuffix("/draft.md") })
+
+        #expect(turns.first?.entries.map(\.displayPath) == ["report.md"])
+        #expect(turns.first?.listsNewFilesOnly == false)
+    }
+
     @Test("Bookkeeping and other tasks' files stay out; workspace files show relative to the workspace")
     func keepsOnlyFilesAUserWouldBrowse() {
         let input = makeInput(runs: [run(at: 10, changes: [

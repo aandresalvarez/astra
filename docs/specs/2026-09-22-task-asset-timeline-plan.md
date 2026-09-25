@@ -239,10 +239,15 @@ changes (tool events and the Git-based detector still cover those), and a
 user editing a task file by hand while a run is in progress, which is
 attributed to that run. ASTRA's `connector-mutations/` and `mission-audit/`
 folders are not hidden by the path policy, on the shelf or here. A file a tool
-created and a command deleted within one run keeps only the tool's write: the
-recorder stores a tool's file change when the tool is called, before its
-result says whether it succeeded, so the write is no proof the file existed
-and no deletion is inferred from it. A run whose change record cannot be
+wrote and a command deleted within one run is in neither walk, so its removal
+is inferred from the tool's record instead. Since #427 the recorder keeps a
+tool's write or edit only once its result succeeds, or at the drain after a
+clean exit with no stop ASTRA forced and no failure reported, so a recorded
+change proves the file existed; the worker commits the drained changes before
+it compares the folder. A removal is inferred only for a path under the task
+folder that the walk would list, that neither walk saw, and where nothing is
+on disk at the end: a hidden file, a symlink, or anything else the walk skips
+never reads as removed. A run whose change record cannot be
 decoded is skipped rather than rewritten. A run interrupted by a crash or quit
 is compared at the next launch instead. The worker keeps the pre-run baseline
 in the task folder's `diagnostics/` until the run's changes are saved (content
@@ -265,7 +270,12 @@ lands, so recovery compares them rather than skipping them as live.
 - `TaskFolderRunSnapshotTests`: created, modified, and removed; ignored paths;
   a folder the run creates; the entry limit; dedupe against tool paths across
   a symlinked root; timestamps and kinds; the batch append and the per-run
-  cap; `fileChanges` and the thread snapshot leaving observed entries out.
+  cap; `fileChanges` and the thread snapshot leaving observed entries out; a
+  file a tool wrote and a command deleted, recorded as removed, but not one
+  still on disk (a symlink included) or one the walk never lists.
+- `HeadlessChatScenarioTests`: a fake Claude run writes two files and deletes
+  both, one confirmed by its result and one committed at the drain; both read
+  as removed.
 
 ### PR 4: the asset timeline in the UI
 
@@ -407,6 +417,15 @@ so on tasks with more than 50 runs the two would disagree.
   way means a separate record: a typed per-run event (subject to compaction,
   the fork's substring path rewrite, and the 10-event export mirror) or a V20
   column. Open for the owner to decide before PR 3 ships.
+- **An inferred removal is only as good as the write it comes from.** A write
+  the drain committed without a result, after a clean exit that hid the tool's
+  failure, never reached disk yet reads as created and removed. For a run
+  compared at the next launch, a tool-written file something else deleted
+  after the interruption reads as that run's removal, like every other change
+  in that window. The thread still lists the write (observed entries stay out
+  of `run.fileChanges`), and the Turns view hides a file created and removed
+  within one turn, so the cost is a stray `removed` entry in `allFileChanges`,
+  which a build from before PR 3 would read as tool evidence (above).
 - **Observed entries are hidden from every existing `run.fileChanges` reader**
   in this build (`isObserved`); each is opted in deliberately (PR 4).
 - **Imports lose turns.** The workspace export mirrors only the last 10 runs and

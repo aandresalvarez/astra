@@ -13,7 +13,6 @@ public struct StreamSystemEvent: Decodable {
     public let prompt: String?
     public let uuid: String?
     public let status: String?
-    public let summary: String?
 }
 
 public struct StreamUsage: Decodable {
@@ -262,7 +261,11 @@ public enum StreamEventParser {
                 )])
             }
             if baseEvent.subtype == "task_completed" || baseEvent.subtype == "task_notification" {
-                let name = baseEvent.summary ?? extractAgentName(from: baseEvent.description) ?? baseEvent.task_id ?? "teammate"
+                // Named exactly as `task_started` names it. A notification's
+                // `summary` is the subagent's whole answer, not a name; the
+                // answer reaches the transcript as the result of the Agent
+                // tool call that spawned it.
+                let name = extractAgentName(from: baseEvent.description) ?? baseEvent.task_id ?? "teammate"
                 return .recognized([.teammateCompleted(
                     taskId: baseEvent.task_id ?? "",
                     name: name
