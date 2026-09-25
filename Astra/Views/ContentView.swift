@@ -2673,6 +2673,7 @@ struct ContentView: View {
         // after this frame is presented. Run-once-guarded inside.
         Task { @MainActor in
             ASTRAApp.runDeferredStartupWork(modelContext: modelContext)
+            await ASTRAApp.recoverTaskFolderSnapshots(modelContext: modelContext)
             runtime.taskQueue.replayRecoveredTurns(modelContext: modelContext)
             refreshRunningTaskCount()
             await ASTRAApp.runDeferredStartupMigrations(modelContext: modelContext)
