@@ -195,7 +195,9 @@ struct ProviderTranscriptConformanceTests {
         func outcomeFailures(_ outcome: String) -> [(item: String, message: String)] {
             let expected = expectedOutcomes[outcome] ?? 0
             let recorded = recordedOutcomes[outcome] ?? 0
-            return expected == recorded ? [] : [(outcome, "\(outcome) tool results: provider reported \(expected), recorded \(recorded)")]
+            guard expected != recorded else { return [] }
+            return [(valueItem(outcome, expected: String(expected), recorded: String(recorded)),
+                     "\(outcome) tool results: provider reported \(expected), recorded \(recorded)")]
         }
         report(.toolResultsRecorded, of: fixture, failures: outcomeFailures("success"))
         // Without a failing tool call the failure count is zero against zero,
@@ -246,10 +248,12 @@ struct ProviderTranscriptConformanceTests {
             #expect(fixture.notExercised[.completionRecorded] == nil,
                     "fixture now sends a complete marker; drop completionRecorded from notExercised")
         }
-        report(.completionRecorded, of: fixture, failures: Set(recordedSummaries.keys).union(expectedSummaries.keys).sorted().compactMap { summary in
+        report(.completionRecorded, of: fixture, failures: Set(recordedSummaries.keys).union(expectedSummaries.keys).sorted().compactMap { summary -> (item: String, message: String)? in
             let expected = expectedSummaries[summary] ?? 0
             let recorded = recordedSummaries[summary] ?? 0
-            return expected == recorded ? nil : (summary, "completion \"\(summary)\": marked \(expected)x, recorded \(recorded)x")
+            guard expected != recorded else { return nil }
+            return (valueItem(summary, expected: String(expected), recorded: String(recorded)),
+                    "completion \"\(summary)\": marked \(expected)x, recorded \(recorded)x")
         })
 
         report(.noRawProviderJSON, of: fixture, failures: sources.flatMap { source, text in
@@ -262,10 +266,12 @@ struct ProviderTranscriptConformanceTests {
             .filter { $0.type == TaskEventTypes.Tool.use.rawValue }
             .map { toolName(fromUsePayload: $0.payload) })
         let expectedTools = multiset(truth.toolNames)
-        report(.toolCallsRecorded, of: fixture, failures: Set(recordedTools.keys).union(expectedTools.keys).sorted().compactMap { name in
+        report(.toolCallsRecorded, of: fixture, failures: Set(recordedTools.keys).union(expectedTools.keys).sorted().compactMap { name -> (item: String, message: String)? in
             let expected = expectedTools[name] ?? 0
             let recorded = recordedTools[name] ?? 0
-            return expected == recorded ? nil : (name, "tool \(name): provider called \(expected)x, recorded \(recorded)x")
+            guard expected != recorded else { return nil }
+            return (valueItem(name, expected: String(expected), recorded: String(recorded)),
+                    "tool \(name): provider called \(expected)x, recorded \(recorded)x")
         })
 
         if fixture.notExercised[.fileChangesRecorded] == nil {
@@ -376,6 +382,9 @@ struct ProviderTranscriptConformanceTests {
         #expect(outOfOrderMessages(in: "Second. First.", messages: ["First.", "Second."]) == ["Second."])
         #expect(outOfOrderMessages(in: "First. Second.", messages: ["First.", "Second."]).isEmpty)
         #expect(outOfOrderMessages(in: "Done. Then.", messages: ["Done.", "Then.", "Done."]).isEmpty)
+        // A lost first message is not found inside the second one that kept.
+        #expect(outOfOrderMessages(in: "Done with work", messages: ["Done", "Done with work"]).isEmpty)
+        #expect(outOfOrderMessages(in: "Done with work Done", messages: ["Done", "Done with work"]) == ["Done with work"])
     }
 
     @Test("Generic Codex tool items are tool calls in the fixture truth")
@@ -415,15 +424,22 @@ struct ProviderTranscriptConformanceTests {
             try #require(ProviderStreamFixture.all.first { $0.runtime == runtime })
         }
         let copilot = ProviderStreamTruth(fixture: try fixture(.copilotCLI), frames: [
-            #"{"type":"tool.use","tool":{"name":"fetch"}}"#
+            #"{"type":"tool.use","tool":{"name":"fetch"}}"#,
+            #"{"type":"assistant.message","text":"Hi"}"#,
+            #"{"type":"assistant.message","data":{"content":[{"type":"text","text":"There"}]}}"#
         ])
         #expect(copilot.toolNames == ["fetch"])
+        #expect(copilot.messages == ["Hi", "There"])
 
         let codex = ProviderStreamTruth(fixture: try fixture(.codexCLI), frames: [
             #"{"type":"item.completed","item":{"type":"message","content":[{"text":"First."}]}}"#,
-            #"{"type":"item.completed","item":{"kind":"Assistant_Message","text":"Second."}}"#
+            #"{"event":"Item.Completed","item":{"kind":"Assistant_Message","text":"Second."}}"#,
+            #"{"kind":"item.completed","item":{"type":"file_change","path":"answer.md"}}"#,
+            #"{"type":"turn.completed","usage":{"inputTokens":4,"outputTokens":2}}"#
         ])
         #expect(codex.messages == ["First.", "Second."])
+        #expect(codex.writtenPaths == ["answer.md"])
+        #expect(codex.usage?.input == 4 && codex.usage?.output == 2)
 
         let antigravity = ProviderStreamTruth(fixture: try fixture(.antigravityCLI), frames: [
             #"{"event":"Step_Update","step_update":{"step_index":1,"step_type":"TOOL","state":"active","tool_info":{"name":"run_command"}}}"#,
@@ -625,7 +641,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             // any message, so its final copy no longer repeats its deltas.
             knownIssues: [
                 .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
-                    valueParts(of: $0).map { $0.name == "answer.md" && $0.recorded == "0" } == true
+                    isUnrecorded($0, among: ["answer.md"])
                 },
                 .answerVisible: .items("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
             ],
@@ -651,11 +667,13 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             model: "composer-2.5-fast",
             knownIssues: [
                 .toolCallsRecorded: .items("tool_call frames are not parsed (plan phase 4)") {
-                    ["readToolCall", "editToolCall"].contains($0)
+                    isUnrecorded($0, among: ["readToolCall", "editToolCall"])
                 },
-                .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") { $0 == "success" },
+                .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") {
+                    isUnrecorded($0, among: ["success"])
+                },
                 .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
-                    valueParts(of: $0).map { $0.name == "answer.md" && $0.recorded == "0" } == true
+                    isUnrecorded($0, among: ["answer.md"])
                 }
             ],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
@@ -798,7 +816,7 @@ struct ProviderStreamTruth {
                 // reads both, the frame first, skipping a value of the wrong
                 // type (a null on the frame falls back to the payload).
                 func field<T>(_ key: String, as _: T.Type = T.self) -> T? { object[key] as? T ?? data?[key] as? T }
-                if type == "assistant.message", let text = field("content", as: String.self) {
+                if type == "assistant.message", let text = Self.copilotText(object), !text.isEmpty {
                     appendMessage(text)
                 } else if type == "session.shutdown", let metrics = field("modelMetrics", as: [String: Any].self) {
                     // Per-model totals with the runtime's aliases, each read
@@ -843,27 +861,40 @@ struct ProviderStreamTruth {
                     }
                 }
             case .codexCLI:
+                // Types are read as the runtime reads them: the frame's from
+                // `type`, `event` or `kind`, the item's from `type` or `kind`,
+                // any case. Three item types are assistant messages.
+                let type = Self.codexString(frame, keys: ["type", "event", "kind"])?.lowercased()
                 let item = frame["item"] as? [String: Any]
-                // Item types are read as the runtime reads them: `type` or
-                // `kind`, any case; three of them are assistant messages.
-                let itemType = item.flatMap(Self.codexItemType)
+                let itemType = item.flatMap { Self.codexString($0, keys: ["type", "kind"])?.lowercased() }
                 if type == "item.completed", ["agent_message", "message", "assistant_message"].contains(itemType),
                    let text = item.flatMap(Self.codexText) {
                     appendMessage(text)
                 } else if type == "thread.started" {
-                    sessionID = frame["thread_id"] as? String
+                    sessionID = Self.codexString(frame, keys: ["thread_id", "threadId", "id"])
                 } else if type == "item.started", itemType == "command_execution" {
                     appendTool("command_execution")
                 } else if type == "item.completed", itemType == "command_execution" {
                     let exitCode = item?["exit_code"] as? Int
                     toolResultOutcomes.append(exitCode == nil || exitCode == 0 ? "success" : "failure")
-                } else if type == "turn.completed", let reported = frame["usage"] as? [String: Any] {
-                    // Codex's input_tokens already include cached_input_tokens:
-                    // its own total_tokens is input_tokens + output_tokens.
-                    usage = (int(reported["input_tokens"]), int(reported["output_tokens"]))
-                } else if type == "item.completed", itemType == "file_change",
-                          let changes = item?["changes"] as? [[String: Any]] {
-                    writtenPaths += changes.compactMap { $0["path"] as? String }
+                } else if type == "turn.completed" {
+                    // The runtime's aliases, on `usage` or the frame itself.
+                    // Codex's input_tokens already include cached_input_tokens
+                    // (its own total_tokens is input + output), so the cached
+                    // count is not added; Anthropic-style cache counts are.
+                    let reported = frame["usage"] as? [String: Any] ?? frame
+                    let uncached = Self.codexInt(reported, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"])
+                    let cacheRead = Self.codexInt(reported, keys: ["cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"])
+                    let cacheWrite = Self.codexInt(reported, keys: ["cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"])
+                    let input = uncached + cacheRead + cacheWrite
+                    let output = Self.codexInt(reported, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"])
+                    if input > 0 || output > 0 {
+                        usage = (input, output)
+                    }
+                } else if type == "item.completed", itemType == "file_change", let item {
+                    // Every `changes[]` entry, or the item itself without one.
+                    let changes = (item["changes"] as? [[String: Any]]).flatMap { $0.isEmpty ? nil : $0 } ?? [item]
+                    writtenPaths += changes.compactMap { Self.codexString($0, keys: ["path", "file_path", "filePath", "filename", "name"]) }
                 } else if let item, Self.isGenericCodexToolItem(item) {
                     // Any other tool item (an MCP call, a web search): one
                     // call when it starts, one result when it completes.
@@ -1059,10 +1090,21 @@ struct ProviderStreamTruth {
     /// A Codex item the stream reports as a tool call other than a command:
     /// its type names a tool, or it carries a `tool` / `name`. Messages,
     /// reasoning, file changes and commands are read on their own.
-    static func codexItemType(_ item: [String: Any]) -> String? {
-        ["type", "kind"].lazy.compactMap { key -> String? in
-            let value = (item[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return value?.isEmpty == false ? value?.lowercased() : nil
+    /// CodexStreamEventParser.int: the first key holding a number or a
+    /// numeric string, else zero.
+    static func codexInt(_ object: [String: Any], keys: [String]) -> Int {
+        for key in keys {
+            if let number = object[key] as? NSNumber { return number.intValue }
+            if let text = object[key] as? String, let value = Int(text) { return value }
+        }
+        return 0
+    }
+
+    /// CodexStreamEventParser.string: the first nonempty key, trimmed.
+    static func codexString(_ object: [String: Any], keys: [String]) -> String? {
+        keys.lazy.compactMap { key -> String? in
+            let value = (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value?.isEmpty == false ? value : nil
         }.first
     }
 
@@ -1087,10 +1129,66 @@ struct ProviderStreamTruth {
     }
 
     static func isGenericCodexToolItem(_ item: [String: Any]) -> Bool {
-        let type = codexItemType(item) ?? ""
+        let type = codexString(item, keys: ["type", "kind"])?.lowercased() ?? ""
         let ownShapes = ["agent_message", "message", "assistant_message", "file_change", "command_execution"]
         guard !ownShapes.contains(type), !type.contains("reasoning"), !type.contains("error") else { return false }
         return type.contains("tool") || item["tool"] != nil || item["name"] != nil
+    }
+
+    /// CopilotStreamEventParser.textValue, in its order: flat aliases on the
+    /// frame then its payload, nested paths, then content parts.
+    static func copilotText(_ object: [String: Any]) -> String? {
+        let payload = copilotPayload(object)
+        let aliases = ["text", "message", "content", "delta", "deltaContent", "delta_content", "chunk", "output", "result", "summary"]
+        for source in [object, payload].compactMap({ $0 }) {
+            if let text = aliases.lazy.compactMap({ source[$0] as? String }).first(where: { !$0.isEmpty }) { return text }
+        }
+        func nested(_ source: [String: Any]?, _ path: [String]) -> String? {
+            var current: Any? = source
+            for key in path { current = (current as? [String: Any])?[key] }
+            return current as? String
+        }
+        let withPayload: [[String]] = [["result", "content"], ["result", "detailedContent"], ["error", "message"]]
+        for path in withPayload {
+            if let text = nested(object, path) ?? nested(payload, path) { return text }
+        }
+        for path in [["content", "text"], ["message", "content"], ["delta", "text"], ["delta", "content"]] {
+            if let text = nested(object, path) { return text }
+        }
+        for path in [["content", "text"], ["message", "content"], ["message", "text"], ["delta", "text"], ["delta", "content"]] {
+            if let text = nested(object, path) ?? nested(payload, path) { return text }
+        }
+        let message = object["message"] as? [String: Any]
+        let delta = object["delta"] as? [String: Any]
+        return copilotContentText(object["content"])
+            ?? copilotContentText(message?["content"])
+            ?? payload.flatMap { copilotContentText($0) }
+            ?? copilotContentText(delta?["content"])
+            ?? copilotContentText(delta?["message"])
+    }
+
+    /// CopilotStreamEventParser.nestedContentText.
+    static func copilotContentText(_ value: Any?) -> String? {
+        if let text = value as? String {
+            return text.isEmpty ? nil : text
+        }
+        if let dictionary = value as? [String: Any] {
+            let keys = ["text", "content", "delta", "deltaContent", "delta_content", "message", "summary", "chunk", "output", "result"]
+            if let text = keys.lazy.compactMap({ dictionary[$0] as? String }).first(where: { !$0.isEmpty }) { return text }
+            for key in ["data", "content", "delta", "message"] {
+                if let text = copilotContentText(dictionary[key]) { return text }
+            }
+            return nil
+        }
+        guard let array = value as? [Any] else { return nil }
+        let parts = array.compactMap { element -> String? in
+            guard let block = element as? [String: Any] else { return element as? String }
+            let blockType = (block["type"] as? String).flatMap { $0.isEmpty ? nil : $0.lowercased() }
+            guard blockType == nil || ["text", "text_delta", "output_text"].contains(blockType) else { return nil }
+            return copilotContentText(block)
+        }
+        let text = parts.joined()
+        return text.isEmpty ? nil : text
     }
 
     static func copilotPayload(_ object: [String: Any]) -> [String: Any]? {
@@ -1148,11 +1246,18 @@ private func commonSteps(_ steps: [TranscriptStep], with other: [TranscriptStep]
 /// `Done with work` belongs to that message, not a copy of `Done`.
 private func messageCount(_ message: String, in text: String, among messages: [String]) -> Int {
     guard !message.isEmpty else { return 0 }
-    let covering = Set(messages.filter { $0.count > message.count && $0.contains(message) })
+    let covering = coveringRanges(of: message, in: text, among: messages)
+    return nonOverlappingRanges(of: message, in: text).filter { !isEmbedded($0, in: covering) }.count
+}
+
+/// Where the longer messages that contain `message` appear in `text`.
+private func coveringRanges(of message: String, in text: String, among messages: [String]) -> [Range<String.Index>] {
+    Set(messages.filter { $0.count > message.count && $0.contains(message) })
         .flatMap { nonOverlappingRanges(of: $0, in: text) }
-    return nonOverlappingRanges(of: message, in: text).filter { range in
-        !covering.contains { $0.lowerBound <= range.lowerBound && range.upperBound <= $0.upperBound }
-    }.count
+}
+
+private func isEmbedded(_ range: Range<String.Index>, in covering: [Range<String.Index>]) -> Bool {
+    covering.contains { $0.lowerBound <= range.lowerBound && range.upperBound <= $0.upperBound }
 }
 
 private func nonOverlappingRanges(of needle: String, in text: String) -> [Range<String.Index>] {
@@ -1167,20 +1272,32 @@ private func nonOverlappingRanges(of needle: String, in text: String) -> [Range<
 
 /// Messages found in `text` (collapsed) only before the one the provider sent
 /// ahead of them. Matching runs left to right; a message absent everywhere
-/// belongs to the multiplicity checks.
+/// belongs to the multiplicity checks. As in `messageCount`, a message's
+/// text inside a longer message is not an occurrence of it.
 private func outOfOrderMessages(in text: String, messages: [String]) -> [String] {
+    let needles = messages.map(collapsed)
     var cursor = text.startIndex
     var outOfOrder: [String] = []
     var rankByNeedle: [String: Int] = [:]
-    for message in messages {
-        let needle = collapsed(message)
+    for (message, needle) in zip(messages, needles) {
         // The k-th copy of a text is out of order only if the text has at
         // least k copies; a missing copy belongs to the multiplicity checks.
         let rank = rankByNeedle[needle, default: 0]
         rankByNeedle[needle] = rank + 1
-        if let match = text.range(of: needle, range: cursor..<text.endIndex) {
+        guard !needle.isEmpty else { continue }
+        let covering = coveringRanges(of: needle, in: text, among: needles)
+        var search = cursor
+        var match: Range<String.Index>?
+        while match == nil, let found = text.range(of: needle, range: search..<text.endIndex) {
+            if isEmbedded(found, in: covering) {
+                search = text.index(after: found.lowerBound)
+            } else {
+                match = found
+            }
+        }
+        if let match {
             cursor = match.upperBound
-        } else if nonOverlappingRanges(of: needle, in: text).count > rank {
+        } else if messageCount(needle, in: text, among: needles) > rank {
             outOfOrder.append(String(message.prefix(60)))
         }
     }
@@ -1262,6 +1379,13 @@ private func valueParts(of item: String) -> (name: String, expected: String, rec
     let parts = item.components(separatedBy: extraLineSeparator)
     guard parts.count == 3 else { return nil }
     return (parts[0], parts[1], parts[2])
+}
+
+/// A count item for one of `names` that was not recorded at all: a known
+/// gap, as opposed to a partial or duplicated recording of it.
+private func isUnrecorded(_ item: String, among names: Set<String>) -> Bool {
+    guard let parts = valueParts(of: item) else { return false }
+    return names.contains(parts.name) && parts.recorded == "0"
 }
 
 /// A message-multiplicity failure item: the message and how many times it was
