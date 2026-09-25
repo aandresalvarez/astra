@@ -127,6 +127,60 @@ def redact_string(value, pairs):
     return MANAGED_POLICY_PATTERN.sub("(set by enterprise-managed requirements [redacted])", value)
 
 
+# Streamed text arrives in fragments (deltas) redacted one string at a time,
+# so a credential split across two of them matches no pattern in either. Each
+# stream's fragments are joined in order and scanned whole: a match left after
+# redaction spans fragments, and the capture is refused.
+FRAGMENT_TEXT_KEYS = {"text", "thinking", "deltaContent", "delta_content", "text_delta", "chunk", "delta", "content"}
+# What tells one stream from another. Per-frame ids (`id`, `uuid`) do not.
+STREAM_ID_KEYS = (
+    "session_id", "parent_tool_use_id", "index", "messageId", "message_id", "step_index", "model_call_id",
+    "conversation_id",
+)
+STREAM_ID_SCOPES = ("event", "data", "payload", "step_update")
+
+
+def text_fragments(frame):
+    """(stream, text) for every string a frame holds under a text key. The
+    stream is the string's key path plus the ids naming the frame's stream."""
+    scopes = [frame] + [frame[key] for key in STREAM_ID_SCOPES if isinstance(frame.get(key), dict)]
+    ids = tuple((key, json.dumps(scope[key])) for scope in scopes for key in STREAM_ID_KEYS if key in scope)
+    fragments = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, str) and key in FRAGMENT_TEXT_KEYS:
+                    fragments.append(((path + (key,), ids), value))
+                else:
+                    walk(value, path + (key,))
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, path)
+
+    walk(frame, ())
+    return fragments
+
+
+def split_credential_lines(frames):
+    """Line numbers of text fragments that together spell a credential, given
+    (line number, redacted frame) pairs in stream order."""
+    streams = {}
+    for number, frame in frames:
+        for stream, text in text_fragments(frame):
+            streams.setdefault(stream, []).append((number, text))
+    lines = set()
+    for fragments in streams.values():
+        spans, joined = [], ""
+        for number, text in fragments:
+            spans.append((len(joined), len(joined) + len(text), number))
+            joined += text
+        for pattern in TOKEN_PATTERNS:
+            for match in pattern.finditer(joined):
+                lines.update(number for start, end, number in spans if start < match.end() and end > match.start())
+    return sorted(lines)
+
+
 def redact(value, pairs):
     if isinstance(value, str):
         return redact_string(value, pairs)
@@ -828,9 +882,10 @@ AUDIT_REFUSED_EXIT = 4
 def audit(fixture_path):
     """Exit 3 when tool calls reach outside the workspace (the capture script
     lets an owner accept those after review), 4 when a frame cannot be audited
-    at all (never accepted), 0 otherwise."""
+    at all or streamed text spells a credential (never accepted), 0 otherwise."""
     findings = []
     unauditable = []
+    frames = []
     with open(fixture_path, encoding="utf-8") as fixture:
         for number, line in enumerate(fixture, 1):
             try:
@@ -841,10 +896,12 @@ def audit(fixture_path):
             if not isinstance(frame, dict):
                 unauditable.append(f"line {number}: JSON that is not an object, cannot be audited")
                 continue
+            frames.append((number, frame))
             try:
                 findings += audit_frame(number, frame)
             except Exception as error:  # a shape the audit does not expect
                 unauditable.append(f"line {number}: cannot be audited ({type(error).__name__}: {error})")
+    unauditable += [f"line {number}: part of a credential split across streamed text" for number in split_credential_lines(frames)]
     for finding in unauditable + findings:
         print(finding)
     return AUDIT_REFUSED_EXIT if unauditable else AUDIT_FINDINGS_EXIT if findings else 0
@@ -976,6 +1033,7 @@ def main():
             for number, line in enumerate(raw, 1):
                 if names_literal_workspace(line):
                     sys.exit(f"line {number} of the capture names a literal /workspace path; refusing to write a fixture")
+    published = []
     with open(raw_path, encoding="utf-8", errors="replace") as raw:
         for number, line in enumerate(raw, 1):
             line = line.rstrip("\n")
@@ -990,8 +1048,13 @@ def main():
             if not isinstance(frame, dict):
                 # A scalar or array frame can be neither minimized nor audited.
                 sys.exit(f"line {number} of the capture is JSON but not an object; refusing to write a fixture")
-            frame = without_tool_output(minimized(frame))
-            print(json.dumps(redact(frame, pairs), ensure_ascii=False, separators=(",", ":")))
+            published.append((number, redact(without_tool_output(minimized(frame)), pairs)))
+    split = split_credential_lines(published)
+    if split:
+        lines = ", ".join(map(str, split))
+        sys.exit(f"lines {lines} of the capture split a credential across streamed text; refusing to write a fixture")
+    for _, frame in published:
+        print(json.dumps(frame, ensure_ascii=False, separators=(",", ":")))
 
 
 if __name__ == "__main__":
