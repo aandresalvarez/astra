@@ -323,7 +323,7 @@ public enum CopilotStreamEventParser {
             return .text(text: summary)
         case .failed(let message):
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
-        case .fileChange(let path, let kind, let summary, let oldString, let newString):
+        case .fileChange(let path, let kind, let summary, let oldString, let newString, _):
             let toolName = kind.lowercased().contains("write") ? "Write" : "Edit"
             var input: [String: Any] = ["file_path": path]
             if let summary, !summary.isEmpty {

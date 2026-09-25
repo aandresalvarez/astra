@@ -1152,6 +1152,13 @@ final class AgentRuntimeWorker {
             }
         }
         await pendingEvents.drainAll()
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: recordingState,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            processExitedCleanly: result.exitCode == 0 && !result.stoppedByASTRA && !cancellationRequested
+        )
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
             homeDirectory: launchSettings.homeDirectory,
             task: task,
