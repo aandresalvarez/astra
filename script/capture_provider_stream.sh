@@ -197,15 +197,19 @@ fi
 out_dir="$ROOT_DIR/Tests/Fixtures/ProviderStreams/$provider"
 mkdir -p "$out_dir"
 out="$out_dir/$scenario.jsonl"
-staged="$out.tmp"
-if ! python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$out.tmp"; then
+# A private staging file per capture, so two captures of one scenario never
+# audit or promote each other's output. BSD mktemp only randomizes trailing
+# X's, and the hidden, suffix-less name keeps it out of fixture discovery.
+staged="$(mktemp "$out_dir/.$scenario.jsonl.XXXXXX")"
+chmod 644 "$staged"
+if ! python3 "$ROOT_DIR/script/redact_provider_stream.py" "$raw" "$workspace" >"$staged"; then
   echo "==> redaction refused the capture; fixture not written" >&2
-  rm -f "$out.tmp"
+  rm -f "$staged"
   keep_raw_copy
   exit 4
 fi
 audit_status=0
-findings="$(python3 "$ROOT_DIR/script/redact_provider_stream.py" --audit "$out.tmp")" || audit_status=$?
+findings="$(python3 "$ROOT_DIR/script/redact_provider_stream.py" --audit "$staged")" || audit_status=$?
 # Exit 3 is the audit's outside-path findings, which an owner may accept after
 # reviewing them. Any other failure (a frame the audit cannot read, a crash)
 # means the fixture was never audited, and is always refused.
@@ -219,11 +223,11 @@ elif [[ "$audit_status" -ne 0 ]]; then
     echo "==> the audit could not check the capture (exit $audit_status); fixture not written:" >&2
   fi
   echo "$findings" >&2
-  rm -f "$out.tmp"
+  rm -f "$staged"
   keep_raw_copy
   exit 3
 fi
-mv "$out.tmp" "$out"
+mv "$staged" "$out"
 staged=""
 echo "==> wrote ${out#"$ROOT_DIR/"} ($(wc -l <"$out" | tr -d ' ') lines)" >&2
 if [[ -s "$stderr_file" ]]; then

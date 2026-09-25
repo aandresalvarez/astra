@@ -211,14 +211,16 @@ struct ProviderTranscriptConformanceTests {
 
         if let usage = truth.usage {
             #expect(fixture.notExercised[.usageRecorded] == nil, "fixture now reports usage; drop usageRecorded from notExercised")
-            report(.usageRecorded, of: fixture, failures: [
+            // Typed apart: inferred in one expression, this outlasts the CI
+            // compiler's type-checking limit.
+            let totals: [(name: String, expected: Int, recorded: Int)] = [
                 ("input", usage.input, run.inputTokens),
                 ("output", usage.output, run.outputTokens)
-            ].compactMap { name, expected, recorded in
-                expected == recorded
-                    ? nil
-                    : (valueItem(name, expected: String(expected), recorded: String(recorded)),
-                       "\(name) tokens: provider reported \(expected), recorded \(recorded)")
+            ]
+            report(.usageRecorded, of: fixture, failures: totals.compactMap { total -> (item: String, message: String)? in
+                guard total.expected != total.recorded else { return nil }
+                return (valueItem(total.name, expected: String(total.expected), recorded: String(total.recorded)),
+                        "\(total.name) tokens: provider reported \(total.expected), recorded \(total.recorded)")
             })
         } else {
             #expect(fixture.notExercised[.usageRecorded] != nil,
@@ -278,10 +280,12 @@ struct ProviderTranscriptConformanceTests {
         let workspaceRoots = ["/workspace", harness.workspaceURL.path]
         let recordedPaths = multiset(run.fileChanges.map { workspaceRelative($0.path, roots: workspaceRoots) })
         let expectedPaths = multiset(truth.writtenPaths.map { workspaceRelative($0, roots: workspaceRoots) })
-        report(.fileChangesRecorded, of: fixture, failures: Set(recordedPaths.keys).union(expectedPaths.keys).sorted().compactMap { path in
+        report(.fileChangesRecorded, of: fixture, failures: Set(recordedPaths.keys).union(expectedPaths.keys).sorted().compactMap { path -> (item: String, message: String)? in
             let expected = expectedPaths[path] ?? 0
             let recorded = recordedPaths[path] ?? 0
-            return expected == recorded ? nil : (path, "file \(path): provider wrote \(expected)x, recorded \(recorded)x")
+            guard expected != recorded else { return nil }
+            return (valueItem(path, expected: String(expected), recorded: String(recorded)),
+                    "file \(path): provider wrote \(expected)x, recorded \(recorded)x")
         })
 
         report(.noSpuriousErrors, of: fixture, failures: events
@@ -292,14 +296,15 @@ struct ProviderTranscriptConformanceTests {
         // stream announced must reach both durable owners.
         if let sessionID = truth.sessionID {
             #expect(fixture.notExercised[.sessionRecorded] == nil, "fixture now announces a session; drop sessionRecorded from notExercised")
-            report(.sessionRecorded, of: fixture, failures: [
+            let owners: [(field: String, recorded: String?)] = [
                 ("task.sessionId", task.sessionId),
                 ("run.providerSessionId", run.providerSessionId)
-            ].compactMap { field, recorded in
-                recorded == sessionID
-                    ? nil
-                    : (valueItem(field, expected: sessionID, recorded: recorded ?? "nil"),
-                       "\(field): provider session \(sessionID), recorded \(recorded ?? "nil")")
+            ]
+            report(.sessionRecorded, of: fixture, failures: owners.compactMap { owner -> (item: String, message: String)? in
+                guard owner.recorded != sessionID else { return nil }
+                let recorded = owner.recorded ?? "nil"
+                return (valueItem(owner.field, expected: sessionID, recorded: recorded),
+                        "\(owner.field): provider session \(sessionID), recorded \(recorded)")
             })
         } else {
             #expect(fixture.notExercised[.sessionRecorded] != nil,
@@ -596,7 +601,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             // any message, so its final copy no longer repeats its deltas.
             knownIssues: [
                 .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
-                    $0 == "answer.md"
+                    valueParts(of: $0).map { $0.name == "answer.md" && $0.recorded == "0" } == true
                 },
                 .answerVisible: .items("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
             ],
@@ -626,7 +631,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 },
                 .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") { $0 == "success" },
                 .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
-                    $0 == "answer.md"
+                    valueParts(of: $0).map { $0.name == "answer.md" && $0.recorded == "0" } == true
                 }
             ],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
@@ -871,9 +876,14 @@ struct ProviderStreamTruth {
                 } else if type == "result", let reported = frame["usage"] as? [String: Any] {
                     // Cursor reports cache reads and writes apart from input,
                     // as Anthropic does; it gives no total to check against.
+                    // Each field resolves as StreamUsage decodes it: the
+                    // snake_case name first, then its camelCase aliases.
+                    let field = { (keys: [String]) in keys.lazy.compactMap { reported[$0] as? NSNumber }.first?.intValue ?? 0 }
                     usage = (
-                        int(reported["inputTokens"]) + int(reported["cacheReadTokens"]) + int(reported["cacheWriteTokens"]),
-                        int(reported["outputTokens"])
+                        field(["input_tokens", "inputTokens"]) + field(["cachedInputTokens"])
+                            + field(["cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"])
+                            + field(["cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"]),
+                        field(["output_tokens", "outputTokens"])
                     )
                 } else if type == "tool_call", frame["subtype"] as? String == "completed" {
                     let call = (frame["tool_call"] as? [String: Any])?.values.compactMap { $0 as? [String: Any] }.first

@@ -595,6 +595,9 @@ OUTSIDE_PATH_PATTERN = re.compile(
     # parent, and zsh's `$PWD[1]` is `/`.
     r"|\$\{[#!]?(?:[A-Za-z_]\w*|\d+|[@*?$!-])(?:\[[^]]*\])?[:#%/^,@]"
     r"|\$\{?[A-Za-z_]\w*\["
+    # A bare variable in front of `/` makes an absolute path when it is empty:
+    # with `x=`, `$x/etc` is `/etc`. (`${x}/etc` already shows its `/etc`.)
+    r"|\$(?!PWD\b)(?:[A-Za-z_]\w*|\d)(?=/(?!workspace(?:/|$|[\s\"']|\\[\"'ntr])))"
     # A local file URL reads the disk however its slashes look.
     r"|(?i:\bfile:(?=/))"
 )
@@ -651,8 +654,22 @@ def unquoted(command):
     return re.sub(r"\\(.)", r"\1", command).replace('"', "").replace("'", "")
 
 
+# A `cd` whose only operands are expansions (`cd $x`, `cd ${x} $(true)`) is a
+# bare `cd` when they expand to nothing, and moves to $HOME. `$PWD` is never
+# empty, so an operand list that uses it is a real directory.
+EXPANSION = r"(?:\$(?:[A-Za-z_]\w*|[0-9@*#?!$-]|\{[^}]*\}|\([^)]*\))|`[^`]*`)"
+EMPTYABLE_DIRECTORY_PATTERN = re.compile(
+    r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--)?((?:\s+" + EXPANSION + r"+)+)"
+    + REDIRECTION + r"*\s*(?=$|[;&|)`}\n\"'])"
+)
+
+
 def jumps_directory(command):
-    for match in DIRECTORY_JUMP_PATTERN.finditer(command):
+    matches = list(DIRECTORY_JUMP_PATTERN.finditer(command)) + [
+        match for match in EMPTYABLE_DIRECTORY_PATTERN.finditer(command)
+        if not re.search(r"\$\{?PWD\b", match.group(1))
+    ]
+    for match in matches:
         before = command[:match.start()]
         wrapper = COMMAND_WRAPPERS.search(before)
         if COMMAND_POSITION_PREFIX.search(before[:wrapper.start()] if wrapper else before):
