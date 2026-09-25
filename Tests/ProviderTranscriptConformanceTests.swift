@@ -215,7 +215,10 @@ struct ProviderTranscriptConformanceTests {
                 ("input", usage.input, run.inputTokens),
                 ("output", usage.output, run.outputTokens)
             ].compactMap { name, expected, recorded in
-                expected == recorded ? nil : (name, "\(name) tokens: provider reported \(expected), recorded \(recorded)")
+                expected == recorded
+                    ? nil
+                    : (valueItem(name, expected: String(expected), recorded: String(recorded)),
+                       "\(name) tokens: provider reported \(expected), recorded \(recorded)")
             })
         } else {
             #expect(fixture.notExercised[.usageRecorded] != nil,
@@ -293,7 +296,10 @@ struct ProviderTranscriptConformanceTests {
                 ("task.sessionId", task.sessionId),
                 ("run.providerSessionId", run.providerSessionId)
             ].compactMap { field, recorded in
-                recorded == sessionID ? nil : (field, "\(field): provider session \(sessionID), recorded \(recorded ?? "nil")")
+                recorded == sessionID
+                    ? nil
+                    : (valueItem(field, expected: sessionID, recorded: recorded ?? "nil"),
+                       "\(field): provider session \(sessionID), recorded \(recorded ?? "nil")")
             })
         } else {
             #expect(fixture.notExercised[.sessionRecorded] != nil,
@@ -594,7 +600,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                 .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
                     $0 == "answer.md"
                 },
-                .sessionRecorded: .whole("Copilot names its session only in the result frame, which is not read (plan phase 2)"),
+                .sessionRecorded: .items("Copilot names its session only in the result frame, which is not read (plan phase 2)") {
+                    valueParts(of: $0)?.recorded == "nil"
+                },
                 .answerVisible: .items("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
             ],
             notExercised: [
@@ -623,7 +631,8 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
                     $0.hasPrefix("Configured value for")
                 },
                 .usageRecorded: .items("cached_input_tokens are added to input_tokens, which already include them (plan phase 2)") {
-                    $0 == "input"
+                    // 65,359 input tokens plus the 53,632 cached ones again.
+                    valueParts(of: $0).map { [$0.name, $0.expected, $0.recorded] } == ["input", "65359", "118991"]
                 },
                 .completionRecorded: .items("ASTRA_EVENT markers in agent_message items are stripped, never recorded (plan phase 2)") {
                     $0 == "Drafted the reply and saved answer.md"
@@ -740,8 +749,10 @@ struct ProviderStreamTruth {
                    let taskID = frame["task_id"] as? String {
                     subagentStarts.append(taskID)
                 }
+                // Only a subagent's completion: a background shell task also
+                // sends one, and it is not a team event.
                 if type == "system", ["task_notification", "task_completed"].contains(frame["subtype"] as? String ?? ""),
-                   let taskID = frame["task_id"] as? String {
+                   let taskID = frame["task_id"] as? String, subagentStarts.contains(taskID) {
                     subagentCompletions.append(taskID)
                 }
                 if type == "result", let modelUsage = frame["modelUsage"] as? [String: [String: Any]] {
@@ -1193,6 +1204,19 @@ private func isRawProviderFrame(_ line: String) -> Bool {
 }
 
 private let extraLineSeparator = "\u{1F}"
+
+/// A value-mismatch failure item (a token total, a session id): the field,
+/// what the provider reported and what was recorded, so a known issue can
+/// cover one exact wrong value rather than any.
+private func valueItem(_ name: String, expected: String, recorded: String) -> String {
+    [name, expected, recorded].joined(separator: extraLineSeparator)
+}
+
+private func valueParts(of item: String) -> (name: String, expected: String, recorded: String)? {
+    let parts = item.components(separatedBy: extraLineSeparator)
+    guard parts.count == 3 else { return nil }
+    return (parts[0], parts[1], parts[2])
+}
 
 /// A message-multiplicity failure item: the message and how many times it was
 /// recorded and sent, so a known issue can cover one exact defect.
