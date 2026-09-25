@@ -273,6 +273,7 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
         case .started: "started"
         case .thinking: "thinking"
         case .text: "text"
+        case .assistantMessage: "assistant_message"
         case .toolUse: "tool_use"
         case .toolResult: "tool_result"
         case .fileChange: "file_change"

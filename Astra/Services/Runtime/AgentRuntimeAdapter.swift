@@ -1531,7 +1531,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
 
     func parseWorkerStreamEvents(line: String, parsesJSONLines _: Bool) -> AgentRuntimeStreamEventBatch {
         let agentEvents = StreamEventParser.parseAll(line: line).flatMap(AgentEventRecorder.agentEvents(from:))
-        return AgentRuntimeStreamEventBatch(agentEvents: agentEvents)
+        return AgentRuntimeStreamEventBatch(agentEvents: ClaudeMessageIdentity.annotate(agentEvents, line: line))
     }
 
     func processWorkerStreamEvent(

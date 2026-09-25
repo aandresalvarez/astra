@@ -630,13 +630,6 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             executableName: "claude",
             model: "claude-sonnet-5",
             knownIssues: [
-                .eachMessageOnce: .oneExtraCopy("the envelope echo re-appends the short closing message whole (plan phase 1)") {
-                    $0.hasPrefix("The draft reply is saved")
-                },
-                .messagesInResponseRows: .oneExtraCopy("the same echo writes the short closing message's row twice (plan phase 1)") {
-                    $0.hasPrefix("The draft reply is saved")
-                },
-                .noExtraLines: .shortLines("the envelope echo re-appends every line under 80 characters (plan phase 1)"),
                 .answerVisible: .items("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
             ],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
