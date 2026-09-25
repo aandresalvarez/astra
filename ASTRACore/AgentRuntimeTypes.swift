@@ -171,7 +171,17 @@ public enum AgentEvent: Sendable, Equatable {
     /// originating provider's structured tool input has them (currently only
     /// Claude's `Edit` tool). Other providers always pass `nil` here and rely
     /// on `summary` alone.
-    case fileChange(path: String, kind: String, summary: String?, oldString: String? = nil, newString: String? = nil)
+    /// `toolUseID` names the tool call that makes the change, when the
+    /// provider announces the change with the call rather than its result; the
+    /// recorder then holds it until that call's result says it succeeded.
+    case fileChange(
+        path: String,
+        kind: String,
+        summary: String?,
+        oldString: String? = nil,
+        newString: String? = nil,
+        toolUseID: String? = nil
+    )
     case permissionRequested(tool: String, reason: String)
     case stats(inputTokens: Int, outputTokens: Int, costUSD: Double?, durationMs: Int?, turns: Int?)
     case astraProtocol(AstraRunProtocolParsedEvent)
