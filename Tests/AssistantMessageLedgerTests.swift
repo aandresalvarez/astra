@@ -112,6 +112,30 @@ struct AssistantMessageLedgerTests {
         #expect(!harness.state.agentReportedError(for: harness.run))
     }
 
+    @Test("At run end each message's rows are recorded, subagent messages marked")
+    func messageIndexRecordsEachMessage() throws {
+        let harness = try Harness(rowCap: 10)
+        harness.delta("claude:msg_A#0", "0123456789")
+        harness.delta("claude:msg_A#0", "abc")
+        harness.final("claude:msg_S#0", "Sub result", isSubagent: true)
+
+        AssistantMessageRecording.recordMessageIndex(
+            for: harness.run,
+            task: harness.task,
+            modelContext: harness.container.mainContext,
+            recordingState: harness.state
+        )
+
+        let records = harness.task.events
+            .filter { $0.type == TaskEventTypes.Conversation.assistantMessage.rawValue }
+            .compactMap { try? $0.decodePayload(as: AssistantMessageRecord.self).get() }
+        let rows = try harness.responseRows()
+        #expect(records.map(\.key) == ["claude:msg_A#0", "claude:msg_S#0"])
+        #expect(records.map(\.subagent) == [false, true])
+        #expect(Set(records[0].rows) == Set(rows.filter { $0.payload != "Sub result" }.map(\.id)))
+        #expect(records[0].rows.count == 2)
+    }
+
     @Test("Text for a committed message is ignored")
     func committedMessageIgnoresLateText() throws {
         let harness = try Harness()

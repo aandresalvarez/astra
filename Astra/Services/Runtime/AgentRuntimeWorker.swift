@@ -1159,6 +1159,7 @@ final class AgentRuntimeWorker {
             modelContext: modelContext,
             processExitedCleanly: result.exitCode == 0 && !result.stoppedByASTRA && !cancellationRequested
         )
+        AssistantMessageRecording.recordMessageIndex(for: run, task: task, modelContext: modelContext, recordingState: recordingState)
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
             homeDirectory: launchSettings.homeDirectory,
             task: task,

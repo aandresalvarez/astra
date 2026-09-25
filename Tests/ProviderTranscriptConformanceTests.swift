@@ -629,9 +629,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .claudeCode,
             executableName: "claude",
             model: "claude-sonnet-5",
-            knownIssues: [
-                .answerVisible: .items("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
-            ],
+            knownIssues: [:],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(
@@ -655,12 +653,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             model: "gpt-5",
             // Narration that carries toolRequests is keyed by messageId like
             // any message, so its final copy no longer repeats its deltas.
-            knownIssues: [
-                .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
-                    isUnrecorded($0, among: ["answer.md"])
-                },
-                .answerVisible: .items("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
-            ],
+            knownIssues: [:],
             notExercised: [
                 .failedToolResultsRecorded: "no tool call in this capture fails",
                 .usageRecorded: "the capture has no session.shutdown frame, the only one with token totals"
@@ -681,17 +674,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .cursorCLI,
             executableName: "cursor-agent",
             model: "composer-2.5-fast",
-            knownIssues: [
-                .toolCallsRecorded: .items("tool_call frames are not parsed (plan phase 4)") {
-                    isUnrecorded($0, among: ["readToolCall", "editToolCall"])
-                },
-                .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") {
-                    isUnrecorded($0, among: ["success"])
-                },
-                .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
-                    isUnrecorded($0, among: ["answer.md"])
-                }
-            ],
+            knownIssues: [:],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(

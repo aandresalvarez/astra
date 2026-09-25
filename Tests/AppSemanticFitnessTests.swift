@@ -139,6 +139,7 @@ struct AppSemanticFitnessTests {
             "tool.use": .tool,
             "user.attachments": .conversation,
             "user.message": .conversation,
+            "agent.message": .conversation,
             "agent.response": .conversation,
             "agent.thinking": .conversation,
             "validation.assertion.defined": .tool,

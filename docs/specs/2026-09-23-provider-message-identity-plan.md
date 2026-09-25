@@ -485,6 +485,34 @@ How it landed, where it differs from the list above:
 
 ### Phase 3: choose the answer from messages (shared policy)
 
+Status: implemented. Claude's and Copilot's answer-before-write known issues
+are fixed; every conformance fixture shows its whole answer once.
+
+How it landed:
+
+- **Message records, not commit events.** At run end the recorder writes one
+  hidden `agent.message` record per message (`AssistantMessageRecord`: key,
+  rows, subagent). The reader needs them only once the run is complete (the
+  answer bubble shows nothing while it runs), so one write at the end replaces
+  per-final and per-boundary commits.
+- **The rule** (`RunAnswerSelectionPolicy`): the last main-agent message,
+  extended backward over a message directly before it (one reply split in
+  several messages), or over one separated only by bookkeeping when what
+  follows is shorter than a third of it. Work ends the answer; subagent
+  messages are skipped and break nothing. Tool results carry no name, so each
+  is paired with the oldest unanswered tool use.
+- **Legacy runs** use the same rule with each row standing in for a message
+  (rows were already split at every tool call). Their summary cut now needs a
+  heading line, 40 or more visible characters in the section, and a section
+  that is not only lines repeated from above.
+- **Keyed answers** join whole messages with a paragraph break; no summary
+  cut, no sentence repair.
+- **Compaction** keeps the selected answer rows, the run's records and the
+  work event the answer follows, computed over each run's full event list.
+- The run fixtures (5343, 4946, 5237, 5189) are covered as synthetic shapes in
+  `RunAnswerSelectionPolicyTests`, so no production task text enters the
+  repository.
+
 - Write the `agent.message.committed` event (moved from Phase 1) from the
   ledger: on a final, when a new key starts after a tool event, or at run end.
 - Add `RunAnswerSelectionPolicy` in ASTRACore, fed by committed messages and
@@ -513,6 +541,34 @@ How it landed, where it differs from the list above:
     more than 200 events.
 
 ### Phase 4: full text reachable, adapter gaps, deletion
+
+Status: the user-visible part is implemented; the conformance suite has no
+known issues left for any provider.
+
+- Done:
+  - Updates entries open in place ("Show full update"), rendered as markdown.
+  - The answer bubble offers "Show full response" when the run said more than
+    the answer: every main-agent message joined at message boundaries, rather
+    than `rawText`, which glues messages together.
+  - Cursor `tool_call` frames become tool uses and results; a successful edit
+    or write is a file change.
+  - Copilot `apply_patch` writes are file changes, from the patch headers.
+  - A Copilot line that looks like JSON but fails to parse is a logged
+    diagnostic, never answer text.
+  - The process monitor no longer counts a Claude main-agent envelope again
+    (ASTRA always launches Claude with `--include-partial-messages`).
+- Not done, deliberately:
+  - Deleting `responseTextToAppend`'s echo heuristics and last-completed-wins:
+    unkeyed text still arrives (plain-text modes, id-less frames, local
+    models), so "no adapter emits unkeyed duplicates" does not hold. The
+    heuristics no longer touch keyed messages.
+  - Moving utility-prompt collectors onto `parseIdentifiedAgentEvents`: they
+    would have to resolve Cursor frames and Copilot's completion semantics
+    themselves, for no user-visible gain.
+  - Copilot's monitor double count: Copilot streams deltas only with
+    `--stream=on`, which is added when the CLI supports it, so a final can be
+    the only copy; telling them apart needs per-run identity in the monitor.
+  - Filing the `******` masking bug with Copilot upstream is for the owner.
 
 - Make Updates entries expandable: remove the 4-line clamp on tap, and render
   entries as markdown. Add "Show full response" on the answer bubble, backed by

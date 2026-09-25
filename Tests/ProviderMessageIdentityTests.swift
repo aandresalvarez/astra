@@ -144,4 +144,59 @@ struct ProviderMessageIdentityTests {
         #expect(resolver.resolve(.cursorFrame(modelCallID: nil, text: "Something else."))
             == .fragment(.init(key: "cursor:frame-1", kind: .final, text: "Something else.")))
     }
+
+    // MARK: - Phase 4: adapter gaps
+
+    @Test("Cursor tool calls become tool uses and results, and a successful edit a file change")
+    func cursorToolCallsAreParsed() {
+        let started = CursorStreamEventParser.parseAgentEvents(
+            line: #"{"type":"tool_call","subtype":"started","call_id":"t1","tool_call":{"editToolCall":{"args":{"path":"/w/answer.md","streamContent":"the whole file"}}}}"#
+        )
+        let completed = CursorStreamEventParser.parseAgentEvents(
+            line: #"{"type":"tool_call","subtype":"completed","call_id":"t1","tool_call":{"editToolCall":{"args":{"path":"/w/answer.md"},"result":{"success":{"linesAdded":3}}}}}"#
+        )
+        let failed = CursorStreamEventParser.parseAgentEvents(
+            line: #"{"type":"tool_call","subtype":"completed","call_id":"t2","tool_call":{"readToolCall":{"args":{"path":"/w/x"},"result":{"error":{"message":"No such file"}}}}}"#
+        )
+
+        #expect(started == [.toolUse(name: "editToolCall", id: "t1", inputSummary: #"{"path":"\/w\/answer.md"}"#)])
+        #expect(completed == [
+            .toolResult(id: "t1", content: "Completed editToolCall", isError: false),
+            .fileChange(path: "/w/answer.md", kind: "update", summary: nil)
+        ])
+        #expect(failed == [.toolResult(id: "t2", content: "No such file", isError: true)])
+    }
+
+    @Test("A Copilot apply_patch names its files as file changes")
+    func copilotApplyPatchRecordsFileChanges() {
+        let line = #"{"type":"tool.execution_start","data":{"toolCallId":"c1","toolName":"apply_patch","arguments":"*** Begin Patch\n*** Add File: /w/answer.md\n+Hi\n*** Update File: /w/notes.md\n*** End Patch"}}"#
+        let events = CopilotStreamEventParser.parseIdentifiedAgentEvents(line: line)
+        #expect(events.contains(.fileChange(path: "/w/answer.md", kind: "add", summary: nil)))
+        #expect(events.contains(.fileChange(path: "/w/notes.md", kind: "update", summary: nil)))
+    }
+
+    @Test("A Copilot frame whose JSON broke is a diagnostic, never answer text")
+    func copilotMalformedJSONIsNotText() {
+        let events = CopilotStreamEventParser.parseIdentifiedAgentEvents(
+            line: #"{"type":"assistant.message","data":{"content":"token ******"broken}}"#
+        )
+        #expect(events.count == 1)
+        guard case .unknown(_, let type, _) = events.first else {
+            Issue.record("expected a diagnostic, got \(events)")
+            return
+        }
+        #expect(type == "malformed_json")
+    }
+
+    @Test("The monitor does not count a Claude main-agent envelope again; a subagent's stays text")
+    func claudeMonitorSkipsRepeatedEnvelopes() {
+        let main = #"{"type":"assistant","message":{"id":"msg_A","content":[{"type":"text","text":"Hello"}]},"parent_tool_use_id":null}"#
+        let sub = #"{"type":"assistant","message":{"id":"msg_S","content":[{"type":"text","text":"Sub"}]},"parent_tool_use_id":"toolu_1"}"#
+        let mainEvents = ClaudeMessageIdentity.monitorEvents(StreamEventParser.parseAll(line: main), line: main)
+        #expect(!mainEvents.contains { if case .text = $0 { true } else { false } })
+        #expect(mainEvents.contains { if case .control("assistant.final_copy") = $0 { true } else { false } })
+        #expect(ClaudeMessageIdentity.monitorEvents(StreamEventParser.parseAll(line: sub), line: sub).contains {
+            if case .text = $0 { true } else { false }
+        })
+    }
 }

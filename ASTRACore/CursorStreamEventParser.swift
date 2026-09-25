@@ -21,7 +21,7 @@ public enum CursorStreamEventParser {
     }
 
     public static func parseAgentEvents(line: String) -> [AgentEvent] {
-        parseAll(line: line).flatMap { agentEvents(from: $0, rawLine: line) }
+        parseAll(line: line).flatMap { agentEvents(from: $0, rawLine: line) } + fileChangeEvents(line: line)
     }
 
     /// The events the worker records, with each assistant message keyed by
@@ -107,6 +107,8 @@ public enum CursorStreamEventParser {
             return .recognized([.unknown(type: "unknown")])
         }
         switch type {
+        case "tool_call":
+            return .recognized(toolCallEvents(object))
         case "thinking":
             guard let text = object["text"] as? String, !text.isEmpty else {
                 return .recognized([.unknown(type: type)])
@@ -116,6 +118,66 @@ public enum CursorStreamEventParser {
             return .unrecognized
         }
     }
+
+    /// A `tool_call` frame names its tool by key (`readToolCall`,
+    /// `editToolCall`, `shellToolCall`, …) with `args`, and on completion a
+    /// `result` holding `success` or an error.
+    private static func toolCallEvents(_ object: [String: Any]) -> [ParsedEvent] {
+        guard let (name, call) = toolCall(in: object) else { return [.unknown(type: "tool_call")] }
+        let id = object["call_id"] as? String ?? name
+        switch (object["subtype"] as? String)?.lowercased() {
+        case "started":
+            // The file body a write streams is not a summary of the call.
+            let args = (call["args"] as? [String: Any] ?? [:]).filter { !bulkyArgumentKeys.contains($0.key) }
+            return [.toolUse(name: name, id: id, input: args)]
+        case "completed":
+            let result = call["result"] as? [String: Any] ?? [:]
+            let succeeded = result["success"] != nil
+            let text = result.values.first.map(resultText) ?? ""
+            // The recorder keeps only results with content; an edit can
+            // succeed without any.
+            let content = text.isEmpty ? (succeeded ? "Completed \(name)" : "\(name) failed") : text
+            return [.toolResult(toolId: id, content: content, isError: !succeeded)]
+        default:
+            return [.control(type: "tool_call")]
+        }
+    }
+
+    /// A completed, successful edit or write is a file change.
+    private static func fileChangeEvents(line: String) -> [AgentEvent] {
+        guard line.contains("\"tool_call\""),
+              let data = line.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["type"] as? String == "tool_call",
+              (object["subtype"] as? String)?.lowercased() == "completed",
+              let (name, call) = toolCall(in: object),
+              let kind = fileChangeKinds[name],
+              (call["result"] as? [String: Any])?["success"] != nil,
+              let path = (call["args"] as? [String: Any])?["path"] as? String else {
+            return []
+        }
+        return [.fileChange(path: path, kind: kind, summary: nil)]
+    }
+
+    private static func toolCall(in object: [String: Any]) -> (String, [String: Any])? {
+        guard let calls = object["tool_call"] as? [String: Any] else { return nil }
+        let name = calls.keys.sorted().first { $0.hasSuffix("ToolCall") } ?? calls.keys.sorted().first
+        guard let name, let call = calls[name] as? [String: Any] else { return nil }
+        return (name, call)
+    }
+
+    private static func resultText(_ value: Any) -> String {
+        if let text = value as? String { return text }
+        if let object = value as? [String: Any] {
+            for key in ["content", "output", "message", "error", "stdout"] {
+                if let text = object[key] as? String { return text }
+            }
+        }
+        return ""
+    }
+
+    private static let bulkyArgumentKeys: Set<String> = ["streamContent", "content", "contents", "fileText", "newText"]
+    private static let fileChangeKinds = ["editToolCall": "update", "writeToolCall": "add", "deleteToolCall": "delete"]
 
     private static func inputSummary(_ input: [String: Any]?) -> String? {
         guard let input else { return nil }
