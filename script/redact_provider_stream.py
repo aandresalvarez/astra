@@ -627,9 +627,10 @@ PARENT_OF_WORKSPACE_PATTERN = re.compile(
 )
 
 
-# A command word that is a variable (`x=cd; $x`, `eval "$cmd"`) runs whatever
-# it expands to, which the audit cannot see; it is refused like escaped bytes.
-VARIABLE_COMMAND_PATTERN = re.compile(r"\$\{?[A-Za-z_]\w*\}?")
+# A command word that is a variable or a command substitution (`x=cd; $x`,
+# `eval "$cmd"`, `$(printf cd)`) runs whatever it expands to, which the audit
+# cannot see; it is refused like escaped bytes.
+VARIABLE_COMMAND_PATTERN = re.compile(r"\$\{?[A-Za-z_]\w*\}?|\$\(|`")
 
 
 def runs_variable_as_command(command):

@@ -85,14 +85,18 @@ watchdog=""
 staged=""
 # TERM the provider's whole group, give it a bounded grace period, then KILL
 # whatever ignored TERM.
+# Once the group is gone its id is cleared, so a later cleanup cannot signal
+# an unrelated group that reused it.
 stop_provider_group() {
   [[ -n "$pid" ]] || return 0
-  kill -TERM -- "-$pid" 2>/dev/null || return 0
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    kill -0 -- "-$pid" 2>/dev/null || return 0
-    sleep 0.3
-  done
-  kill -KILL -- "-$pid" 2>/dev/null || true
+  if kill -TERM -- "-$pid" 2>/dev/null; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 -- "-$pid" 2>/dev/null || break
+      sleep 0.3
+    done
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
+  pid=""
 }
 # The watchdog must not outlive the capture: once the provider group is gone
 # its id can be reused, and a late kill would reach an unrelated group.
