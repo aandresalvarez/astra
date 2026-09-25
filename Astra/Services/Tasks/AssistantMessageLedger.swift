@@ -154,44 +154,73 @@ enum AssistantMessageRecording {
         modelContext: ModelContext,
         cap: Int
     ) {
-        // Redact the whole addition in one pass, across the seam with the row
-        // it continues, before it is placed or split: split first, a secret
-        // straddling a row boundary matches in neither half. The last row
-        // already went through `TaskEvent`'s redacting initializer, so only
-        // its tail can join a match.
-        let last = ledger.entries[index].rows.last
-        let redacted = RunSecretRedactionScope.redactedAppend(
-            existing: last?.payload ?? "",
-            addition: text,
-            taskID: task.id
-        )
-        if let last, redacted.dropFromExisting > 0 {
-            last.payload.removeLast(redacted.dropFromExisting)
+        // With a secret registered, an addition cannot be redacted on its own
+        // or against the rows: a secret can span a row boundary or several
+        // rows, and the rows already hide its leading fragment, so the rest of
+        // it, arriving later, matches nothing there. Only the entry's raw text
+        // still holds it whole, so the rows are rebuilt from that text,
+        // redacted in one pass.
+        guard RunSecretRedactionScope.secrets(for: task.id).isEmpty else {
+            syncRedactedRows(entry: index, ledger: ledger, movesForward: movesForward,
+                             task: task, run: run, modelContext: modelContext, cap: cap)
+            return
         }
-        var pieces = chunks(of: redacted.append, cap: cap)[...]
-        if let last {
-            var continued: String?
-            if last.payload.count + redacted.append.count <= cap {
-                continued = redacted.append
-                pieces = []
-            } else if last.payload.isEmpty, let first = pieces.first {
-                // The seam took the whole row: refill it rather than leave it empty.
-                continued = first
-                pieces = pieces.dropFirst()
+        if let row = ledger.entries[index].rows.last, row.payload.count + text.count <= cap {
+            row.payload += text
+            if movesForward {
+                row.timestamp = Date()
             }
-            if let continued {
-                last.payload += continued
-                if movesForward {
-                    last.timestamp = Date()
-                }
-                task.updatedAt = Date()
-                TaskThreadChangeNotifier.post(taskID: task.id, source: "assistant_message_delta")
-            }
+            task.updatedAt = Date()
+            TaskThreadChangeNotifier.post(taskID: task.id, source: "assistant_message_delta")
+            return
         }
-        for chunk in pieces {
+        for chunk in chunks(of: text, cap: cap) {
             let row = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.agentResponse, payload: chunk, run: run)
             TaskEventInsertionService.insert(row, into: modelContext)
             ledger.update(index) { $0.rows.append(row) }
+        }
+    }
+
+    /// Rows cut from the entry's whole text, redacted in one pass. Only rows
+    /// whose piece changed are written, so a delta usually touches the last
+    /// row and any it adds; only the row the text continues may move to "now".
+    private static func syncRedactedRows(
+        entry index: Int,
+        ledger: AssistantMessageLedger,
+        movesForward: Bool,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        cap: Int
+    ) {
+        let redacted = RunSecretRedactionScope.redact(ledger.entries[index].text, taskID: task.id)
+        let pieces = chunks(of: redacted, cap: cap)
+        var rows = ledger.entries[index].rows
+        let continuedRow = rows.count - 1
+        var changedInPlace = false
+        for (offset, piece) in pieces.enumerated() {
+            if offset < rows.count {
+                guard rows[offset].payload != piece else { continue }
+                rows[offset].payload = piece
+                if movesForward, offset == continuedRow {
+                    rows[offset].timestamp = Date()
+                }
+                changedInPlace = true
+            } else {
+                let row = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.agentResponse, payload: piece, run: run)
+                TaskEventInsertionService.insert(row, into: modelContext)
+                rows.append(row)
+            }
+        }
+        for row in rows.dropFirst(pieces.count) {
+            modelContext.delete(row)
+            changedInPlace = true
+        }
+        let kept = Array(rows.prefix(pieces.count))
+        ledger.update(index) { $0.rows = kept }
+        if changedInPlace {
+            task.updatedAt = Date()
+            TaskThreadChangeNotifier.post(taskID: task.id, source: "assistant_message_delta")
         }
     }
 
