@@ -280,11 +280,18 @@ def without_copilot_result_payload(fields):
             kept[key] = error_placeholder(value)
         elif key in COPILOT_RESULT_PAYLOAD_KEYS:
             kept[key] = TOOL_OUTPUT if value else value
-        elif key in ("data", "payload") and isinstance(value, dict):
-            # The parser follows nested data objects for a result's text too.
-            kept[key] = without_copilot_result_payload(value)
+        elif key in ("data", "payload"):
+            # The parser follows nested data objects for a result's text too,
+            # and reads a string there as text.
+            kept[key] = without_copilot_result_payload(value) if isinstance(value, dict) else TOOL_OUTPUT if value else value
         elif key in COPILOT_RESULT_IDENTITY_KEYS:
-            kept[key] = value
+            # An identity is a scalar. A nested one (`"tool": {"name": …,
+            # "output": …}`) is scrubbed like the result itself, keeping only
+            # its own identity; a list is no identity and is dropped.
+            if isinstance(value, dict):
+                kept[key] = without_copilot_result_payload(value)
+            elif not isinstance(value, list):
+                kept[key] = value
     return kept
 
 
