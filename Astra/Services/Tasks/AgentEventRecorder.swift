@@ -846,6 +846,11 @@ enum AgentEventRecorder {
                 "reason": "agent_reported_error"
             ], level: .warning)
 
+        case .notice(let message):
+            recordingState?.breakConversationCoalescing(for: run)
+            // A warning the provider carried on after: visible, never a failure.
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: message, run: run))
+
         case .unknown(_, let type, _):
             recordingState?.breakConversationCoalescing(for: run)
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
@@ -897,7 +902,7 @@ enum AgentEventRecorder {
             return .toolUse(name: toolName, id: "", input: input)
         case .teamEvent(let teamEvent):
             return parsedEvent(from: teamEvent)
-        case .unknown:
+        case .notice, .unknown:
             return nil
         }
     }

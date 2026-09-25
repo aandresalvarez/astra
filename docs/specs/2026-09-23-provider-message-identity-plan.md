@@ -401,6 +401,14 @@ How it landed, where it differs from the design above:
 
 ### Phase 2: Copilot, Codex, Antigravity, OpenCode, Cursor identity
 
+Status: implemented. The conformance suite lost every Phase 2 known issue:
+Copilot's session id; all eight Codex issues (warning items failing the run,
+lost messages, no response rows, spurious errors, double-counted input tokens,
+dropped `ASTRA_EVENT` completions, dropped file changes, hidden answer); and
+Cursor's re-sent message, its echo lines and its split answer. What remains is
+Phase 3 (Claude's and Copilot's answer before the write) and Phase 4
+(Copilot `apply_patch` writes, Cursor `tool_call` frames).
+
 - Copilot keyed by `messageId`. Codex keeps every `agent_message`. Antigravity
   keyed by `step_index`. OpenCode keyed by `part.id`. Cursor keyed by
   `model_call_id`, with the exact-prefix continuation for its last frame.
@@ -435,7 +443,75 @@ How it landed, where it differs from the design above:
 - Tests: every provider's conformance fixtures go green on the "recorded exactly
   once" and "no lost messages" assertions.
 
+How it landed, where it differs from the list above:
+
+- **Keys.** Parsers emit resolved fragments directly where a line carries the
+  identity: `copilot:<messageId>` (deltas and the final copy, narration with
+  `toolRequests` included), `codex:<item.id>` (finals), `antigravity:step-<n>`
+  (deltas), `opencode:<part id>` (finals). Cursor needs state, so its parser
+  emits `cursorFrame(modelCallID:text:)` and the resolver keys it
+  `cursor:<model_call_id>#<n>`.
+- **Cursor's last frame** is keyed as a continuation of the previous message
+  (`<key>+<n>`) carrying only the text after the repeated prefix, instead of a
+  final that rewrites the previous key: the committed message stays immutable
+  and the recorded text is the same. An exact repeat is dropped; an id-less
+  frame that does not extend the previous message gets `cursor:frame-<n>`.
+- **OpenCode upsert.** A later final for a committed message that differs now
+  replaces it (the ledger's final path no longer ignores committed entries),
+  so OpenCode can re-send a part with more text. Other providers never repeat
+  a final for one key.
+- **Codex warnings** become `AgentEvent.notice`, recorded as a `system.info`
+  event. They no longer fail the run, and no longer reach the process monitor
+  as a terminal error result either.
+- **Codex file changes** are recorded once, on `item.completed`, one per
+  `changes[]` entry; `item.started` is control.
+- **Two parse entry points, until Phase 4.** The worker's recording path
+  calls `parseIdentifiedAgentEvents` (Copilot, Codex, Cursor, OpenCode;
+  Antigravity is keyed everywhere). `parseAgentEvents` keeps the unkeyed
+  shapes for the utility-prompt collectors, which aggregate one reply from
+  `.text` / `.completed` and, for Copilot, end early on a completed final
+  answer; keyed events would fall through their `default` branches. The
+  monitor's ParsedEvent mappings turn keyed text back into `.text`, so its
+  progress signal is unchanged (Antigravity's mapping needed this).
+- **The process monitor change moves to Phase 4.** The monitor reads the
+  separate `parseProcessEvents` path; feeding it resolved fragments means
+  moving the runner onto the resolved AgentEvent stream, which belongs with
+  deleting the legacy paths. Estimated tokens still count a final after its
+  deltas, as before this plan.
+- **Behavior change landed:** Codex `run.output` holds every message in
+  order. Validation `text_contains` reads files and artifacts, not
+  `run.output`; follow-up prompts keep a bounded suffix of it, which still
+  ends with the answer.
+
 ### Phase 3: choose the answer from messages (shared policy)
+
+Status: implemented. Claude's and Copilot's answer-before-write known issues
+are fixed; every conformance fixture shows its whole answer once.
+
+How it landed:
+
+- **Message records, not commit events.** At run end the recorder writes one
+  hidden `agent.message` record per message (`AssistantMessageRecord`: key,
+  rows, subagent). The reader needs them only once the run is complete (the
+  answer bubble shows nothing while it runs), so one write at the end replaces
+  per-final and per-boundary commits.
+- **The rule** (`RunAnswerSelectionPolicy`): the last main-agent message,
+  extended backward over a message directly before it (one reply split in
+  several messages), or over one separated only by bookkeeping when what
+  follows is shorter than a third of it. Work ends the answer; subagent
+  messages are skipped and break nothing. Tool results carry no name, so each
+  is paired with the oldest unanswered tool use.
+- **Legacy runs** use the same rule with each row standing in for a message
+  (rows were already split at every tool call). Their summary cut now needs a
+  heading line, 40 or more visible characters in the section, and a section
+  that is not only lines repeated from above.
+- **Keyed answers** join whole messages with a paragraph break; no summary
+  cut, no sentence repair.
+- **Compaction** keeps the selected answer rows, the run's records and the
+  work event the answer follows, computed over each run's full event list.
+- The run fixtures (5343, 4946, 5237, 5189) are covered as synthetic shapes in
+  `RunAnswerSelectionPolicyTests`, so no production task text enters the
+  repository.
 
 - Write the `agent.message.committed` event (moved from Phase 1) from the
   ledger: on a final, when a new key starts after a tool event, or at run end.
@@ -466,6 +542,34 @@ How it landed, where it differs from the design above:
 
 ### Phase 4: full text reachable, adapter gaps, deletion
 
+Status: the user-visible part is implemented; the conformance suite has no
+known issues left for any provider.
+
+- Done:
+  - Updates entries open in place ("Show full update"), rendered as markdown.
+  - The answer bubble offers "Show full response" when the run said more than
+    the answer: every main-agent message joined at message boundaries, rather
+    than `rawText`, which glues messages together.
+  - Cursor `tool_call` frames become tool uses and results; a successful edit
+    or write is a file change.
+  - Copilot `apply_patch` writes are file changes, from the patch headers.
+  - A Copilot line that looks like JSON but fails to parse is a logged
+    diagnostic, never answer text.
+  - The process monitor no longer counts a Claude main-agent envelope again
+    (ASTRA always launches Claude with `--include-partial-messages`).
+- Not done, deliberately:
+  - Deleting `responseTextToAppend`'s echo heuristics and last-completed-wins:
+    unkeyed text still arrives (plain-text modes, id-less frames, local
+    models), so "no adapter emits unkeyed duplicates" does not hold. The
+    heuristics no longer touch keyed messages.
+  - Moving utility-prompt collectors onto `parseIdentifiedAgentEvents`: they
+    would have to resolve Cursor frames and Copilot's completion semantics
+    themselves, for no user-visible gain.
+  - Copilot's monitor double count: Copilot streams deltas only with
+    `--stream=on`, which is added when the CLI supports it, so a final can be
+    the only copy; telling them apart needs per-run identity in the monitor.
+  - Filing the `******` masking bug with Copilot upstream is for the owner.
+
 - Make Updates entries expandable: remove the 4-line clamp on tap, and render
   entries as markdown. Add "Show full response" on the answer bubble, backed by
   `rawText`.
@@ -480,6 +584,11 @@ How it landed, where it differs from the design above:
   masking bug upstream with a redacted sample.
 - Delete `responseTextToAppend`'s echo heuristics and the Copilot and Codex
   last-completed-wins paths once no adapter emits unkeyed duplicates.
+- Move the utility-prompt collectors onto `parseIdentifiedAgentEvents` and
+  delete the unkeyed `parseAgentEvents` shapes.
+- The process monitor (moved from Phase 2): run it on the resolved AgentEvent
+  stream so a final that repeats its deltas counts as `.control` for
+  estimated tokens and repetition signatures.
 - Read `docs/design-system/lean-ui-system.md` before the Updates and bubble UI
   changes.
 

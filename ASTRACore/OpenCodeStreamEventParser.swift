@@ -19,6 +19,31 @@ public enum OpenCodeStreamEventParser {
         parseAll(line: line).flatMap { agentEvents(from: $0, rawLine: line) }
     }
 
+    /// The events the worker records, with each assistant message keyed by
+    /// the provider's own identity (docs/specs/2026-09-23-provider-message-
+    /// identity-plan.md). `parseAgentEvents` keeps the unkeyed shapes that
+    /// utility-prompt collectors aggregate, until those paths move over too.
+    public static func parseIdentifiedAgentEvents(line: String) -> [AgentEvent] {
+        keyedTextPart(line: line).map { [$0] } ?? parseAgentEvents(line: line)
+    }
+
+    /// A `text` part with an id is one message's final text, keyed
+    /// `opencode:<part id>`. OpenCode may send a part again with more text;
+    /// a later final for the same key replaces it.
+    private static func keyedTextPart(line: String) -> AgentEvent? {
+        guard line.contains("\"text\""),
+              let data = line.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["type"] as? String == "text",
+              let text = textFromPart(object), !text.isEmpty else {
+            return nil
+        }
+        let part = object["part"] as? [String: Any]
+            ?? (object["properties"] as? [String: Any])?["part"] as? [String: Any]
+        guard let id = part?["id"] as? String, !id.isEmpty else { return nil }
+        return .assistantMessage(.fragment(AssistantMessageFragment(key: "opencode:\(id)", kind: .final, text: text)))
+    }
+
     public static func parsePlainTextAgentEvents(line: String, appendingNewline: Bool = false) -> [AgentEvent] {
         CopilotStreamEventParser.parsePlainTextAgentEvents(
             line: line,

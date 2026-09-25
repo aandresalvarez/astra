@@ -54,28 +54,28 @@ struct CodexCLIRuntimeTests {
             Issue.record("Expected visible text event")
         }
 
-        if case .completed(let summary) = agentEvents.first {
-            #expect(summary == "I am Codex.")
-        } else {
-            Issue.record("Expected completed agent event")
-        }
+        // The worker records it as one keyed message, kept in order with the
+        // run's other messages.
+        #expect(agentEvents == [.assistantMessage(.fragment(AssistantMessageFragment(
+            key: "codex:item_0", kind: .final, text: "I am Codex."
+        )))])
     }
 
-    @Test("Codex turn completed usage includes cached input tokens")
-    func codexTurnCompletedUsageIncludesCachedInputTokens() {
+    @Test("Codex turn completed usage counts input tokens once; they already include cached ones")
+    func codexTurnCompletedUsageCountsInputTokensOnce() {
         let line = #"{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":4,"output_tokens":5,"reasoning_output_tokens":3}}"#
         let parsed = CodexCLIRuntime.parseEvents(line: line, parsesJSONLines: true)
         let agentEvents = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
 
         if case .usage(let input, let output) = parsed.first {
-            #expect(input == 16)
+            #expect(input == 12)
             #expect(output == 5)
         } else {
             Issue.record("Expected usage event")
         }
 
         if case .stats(let input, let output, _, _, _) = agentEvents.first {
-            #expect(input == 16)
+            #expect(input == 12)
             #expect(output == 5)
         } else {
             Issue.record("Expected stats agent event")
@@ -178,14 +178,12 @@ struct CodexCLIRuntimeTests {
         }
         #expect(!parsed.contains { if case .result = $0 { true } else { false } })
 
-        // The recorder still receives `.completed`, which is what keeps run
-        // output on last-completed-wins terms.
+        // The recorder receives it as one keyed message: every Codex message
+        // is kept, in order, rather than the last one replacing the others.
         let agentEvents = CodexCLIRuntime.parseAgentEvents(line: preamble, parsesJSONLines: true)
-        if case .completed(let summary) = agentEvents.first {
-            #expect(summary == "I'll trace the fact-relationship logic first.")
-        } else {
-            Issue.record("Expected the progress note to stay a completed AgentEvent for run output")
-        }
+        #expect(agentEvents == [.assistantMessage(.fragment(AssistantMessageFragment(
+            key: "codex:item_0", kind: .final, text: "I'll trace the fact-relationship logic first."
+        )))])
     }
 
     @Test("Codex turn.completed is the terminal event and still reports usage")
@@ -201,7 +199,8 @@ struct CodexCLIRuntimeTests {
             return nil
         }
         #expect(usage.count == 1)
-        #expect(usage.first?.0 == 102_965)
+        // input_tokens already include the 45,824 cached ones.
+        #expect(usage.first?.0 == 57_141)
         #expect(usage.first?.1 == 493)
 
         #expect(parsed.contains { event in

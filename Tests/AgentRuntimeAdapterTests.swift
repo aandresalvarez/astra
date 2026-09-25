@@ -2852,7 +2852,7 @@ struct AgentRuntimeAdapterTests {
         ])
         #expect(cursor.parseProcessEvents(line: cursorLine, parsesJSONLines: true).count == 1)
         #expect(cursor.parseWorkerStreamEvents(line: cursorLine, parsesJSONLines: true).agentEvents == [
-            .text(text: "hello")
+            .assistantMessage(.cursorFrame(modelCallID: nil, text: "hello"))
         ])
         #expect(claude.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) == nil)
         #expect(copilot.blockingProcessPermissionMessage(line: permissionPrompt, parsesJSONLines: false) != nil)

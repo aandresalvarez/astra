@@ -5,6 +5,9 @@ enum RunActivityLayout {
     static let disclosureIconHitFrame: CGFloat = 28
     static let tabMinimumHitHeight: CGFloat = 34
     static let progressMessageLineLimit = 4
+    /// Longer than this, an update may not fit its collapsed lines, so it
+    /// offers to show the rest.
+    static let progressMessageExpandableLength = 240
 }
 
 struct RunActivityDetailSection<Content: View>: View {
@@ -176,6 +179,8 @@ struct RunActivityProgressTimelineView: View {
     let presentation: RunActivityProgressTimelinePresentation
     let isRunning: Bool
     let onSelectHistoryAnchor: (UUID?) -> Void
+    /// Updates the user opened: shown whole, as markdown, until closed again.
+    @State private var expandedMessageIDs: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -254,13 +259,7 @@ struct RunActivityProgressTimelineView: View {
                         .monospacedDigit()
                         .frame(width: 58, alignment: .leading)
 
-                    Text(message.text)
-                        .font(Stanford.chatSection())
-                        .foregroundStyle(isCurrent ? Stanford.readingText : Stanford.textSecondary)
-                        .lineLimit(RunActivityLayout.progressMessageLineLimit)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    progressMessageBody(message, isCurrent: isCurrent)
                 }
                 .padding(.vertical, 7)
                 .padding(.horizontal, 7)
@@ -268,6 +267,42 @@ struct RunActivityProgressTimelineView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
             }
         }
+    }
+
+    /// An update is clamped to a few lines; a long one can be opened in place
+    /// to read it whole, rendered as markdown, and closed again.
+    @ViewBuilder
+    private func progressMessageBody(_ message: TaskRunProgressMessage, isCurrent: Bool) -> some View {
+        let isExpanded = expandedMessageIDs.contains(message.id)
+        let isExpandable = message.text.count > RunActivityLayout.progressMessageExpandableLength
+            || message.text.filter { $0 == "\n" }.count >= RunActivityLayout.progressMessageLineLimit
+        VStack(alignment: .leading, spacing: 4) {
+            if isExpanded {
+                MarkdownTextView(text: message.text, isSelectable: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(message.text)
+                    .font(Stanford.chatSection())
+                    .foregroundStyle(isCurrent ? Stanford.readingText : Stanford.textSecondary)
+                    .lineLimit(RunActivityLayout.progressMessageLineLimit)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if isExpandable {
+                Button(isExpanded ? "Show less" : "Show full update") {
+                    if isExpanded {
+                        expandedMessageIDs.remove(message.id)
+                    } else {
+                        expandedMessageIDs.insert(message.id)
+                    }
+                }
+                .font(Stanford.chatMeta(12))
+                .buttonStyle(.plain)
+                .foregroundStyle(Stanford.lagunita)
+                .accessibilityHint(isExpanded ? "Collapses this update" : "Shows this update in full")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder

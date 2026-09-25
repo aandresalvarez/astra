@@ -629,9 +629,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .claudeCode,
             executableName: "claude",
             model: "claude-sonnet-5",
-            knownIssues: [
-                .answerVisible: .items("the answer precedes the Write call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
-            ],
+            knownIssues: [:],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(
@@ -653,19 +651,9 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .copilotCLI,
             executableName: "copilot",
             model: "gpt-5",
-            // Copilot re-sends narration that carries toolRequests as text, but
-            // this capture's only such message is the run's first, which the
-            // whole-output echo check already drops; prod runs show the
-            // doubling on later narration.
-            knownIssues: [
-                .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
-                    isUnrecorded($0, among: ["answer.md"])
-                },
-                .sessionRecorded: .items("Copilot names its session only in the result frame, which is not read (plan phase 2)") {
-                    valueParts(of: $0)?.recorded == "nil"
-                },
-                .answerVisible: .items("the answer precedes the apply_patch call, so only the sign-off is shown (plan phase 3)") { $0 == "text" }
-            ],
+            // Narration that carries toolRequests is keyed by messageId like
+            // any message, so its final copy no longer repeats its deltas.
+            knownIssues: [:],
             notExercised: [
                 .failedToolResultsRecorded: "no tool call in this capture fails",
                 .usageRecorded: "the capture has no session.shutdown frame, the only one with token totals"
@@ -677,29 +665,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .codexCLI,
             executableName: "codex",
             model: "gpt-5.5",
-            knownIssues: [
-                .runCompletes: .items("config-warning items of type error fail the run as agent_reported_error (plan phase 2)") {
-                    $0 == "agent_reported_error"
-                },
-                .eachMessageOnce: .lost("last-completed-wins keeps only the final agent_message (plan phase 2)") {
-                    !$0.hasPrefix("The draft is saved")
-                },
-                .messagesInResponseRows: .lost("agent_message items become completions, which write no agent.response rows (plan phase 2)"),
-                .fileChangesRecorded: .items("file_change paths nest under changes[] and are dropped (plan phase 2)") {
-                    isUnrecorded($0, among: ["answer.md"])
-                },
-                .noSpuriousErrors: .items("config-warning items of type error are recorded as agent errors (plan phase 2)") {
-                    $0.hasPrefix("Configured value for")
-                },
-                .usageRecorded: .items("cached_input_tokens are added to input_tokens, which already include them (plan phase 2)") {
-                    // 65,359 input tokens plus the 53,632 cached ones again.
-                    valueParts(of: $0).map { [$0.name, $0.expected, $0.recorded] } == ["input", "65359", "118991"]
-                },
-                .completionRecorded: .items("ASTRA_EVENT markers in agent_message items are stripped, never recorded (plan phase 2)") {
-                    isUnrecorded($0, among: ["Drafted the reply and saved answer.md"])
-                },
-                .answerVisible: .items("the answer message is dropped before it can be shown (plan phase 2)") { $0 == "text" }
-            ],
+            knownIssues: [:],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(
@@ -708,18 +674,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .cursorCLI,
             executableName: "cursor-agent",
             model: "composer-2.5-fast",
-            knownIssues: [
-                .noExtraLines: .shortLines("re-sent short lines of the previous message are appended again (plan phase 2)"),
-                .toolCallsRecorded: .items("tool_call frames are not parsed (plan phase 4)") {
-                    isUnrecorded($0, among: ["readToolCall", "editToolCall"])
-                },
-                .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") {
-                    isUnrecorded($0, among: ["success"])
-                },
-                .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
-                    isUnrecorded($0, among: ["answer.md"])
-                }
-            ],
+            knownIssues: [:],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(

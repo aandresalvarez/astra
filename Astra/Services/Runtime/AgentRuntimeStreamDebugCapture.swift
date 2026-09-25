@@ -282,6 +282,7 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
         case .astraProtocol: "astra_protocol"
         case .completed: "completed"
         case .failed: "failed"
+        case .notice: "notice"
         case .teamEvent: "team_event"
         case .unknown(_, let type, _): "unknown:\(type)"
         }

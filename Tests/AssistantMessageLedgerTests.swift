@@ -91,6 +91,51 @@ struct AssistantMessageLedgerTests {
         #expect(harness.run.output == "Subagent result")
     }
 
+    @Test("A later final that differs replaces a committed message, as OpenCode re-sends parts")
+    func laterFinalReplacesCommittedMessage() throws {
+        let harness = try Harness()
+        harness.final("opencode:prt_1", "Draft")
+        harness.final("opencode:prt_1", "Draft, now longer.")
+
+        #expect(try harness.responseRows().map(\.payload) == ["Draft, now longer."])
+        #expect(harness.run.output == "Draft, now longer.")
+    }
+
+    @Test("A notice is a system note and never an agent-reported failure")
+    func noticeIsRecordedAsInfo() throws {
+        let harness = try Harness()
+        harness.record(.notice(message: "Configured value for approval_policy is disallowed"))
+
+        let infos = harness.task.events.filter { $0.type == TaskEventTypes.System.info.rawValue }
+        #expect(infos.map(\.payload) == ["Configured value for approval_policy is disallowed"])
+        #expect(!harness.task.events.contains { $0.type == TaskEventTypes.System.error.rawValue })
+        #expect(!harness.state.agentReportedError(for: harness.run))
+    }
+
+    @Test("At run end each message's rows are recorded, subagent messages marked")
+    func messageIndexRecordsEachMessage() throws {
+        let harness = try Harness(rowCap: 10)
+        harness.delta("claude:msg_A#0", "0123456789")
+        harness.delta("claude:msg_A#0", "abc")
+        harness.final("claude:msg_S#0", "Sub result", isSubagent: true)
+
+        AssistantMessageRecording.recordMessageIndex(
+            for: harness.run,
+            task: harness.task,
+            modelContext: harness.container.mainContext,
+            recordingState: harness.state
+        )
+
+        let records = harness.task.events
+            .filter { $0.type == TaskEventTypes.Conversation.assistantMessage.rawValue }
+            .compactMap { try? $0.decodePayload(as: AssistantMessageRecord.self).get() }
+        let rows = try harness.responseRows()
+        #expect(records.map(\.key) == ["claude:msg_A#0", "claude:msg_S#0"])
+        #expect(records.map(\.subagent) == [false, true])
+        #expect(Set(records[0].rows) == Set(rows.filter { $0.payload != "Sub result" }.map(\.id)))
+        #expect(records[0].rows.count == 2)
+    }
+
     @Test("Text for a committed message is ignored")
     func committedMessageIgnoresLateText() throws {
         let harness = try Harness()

@@ -20,6 +20,18 @@ public enum CodexStreamEventParser {
     }
 
     public static func parseAgentEvents(line: String) -> [AgentEvent] {
+        agentEvents(line: line, keyed: false)
+    }
+
+    /// The events the worker records, with each assistant message keyed by
+    /// the provider's own identity (docs/specs/2026-09-23-provider-message-
+    /// identity-plan.md). `parseAgentEvents` keeps the unkeyed shapes that
+    /// utility-prompt collectors aggregate, until those paths move over too.
+    public static func parseIdentifiedAgentEvents(line: String) -> [AgentEvent] {
+        agentEvents(line: line, keyed: true)
+    }
+
+    private static func agentEvents(line: String, keyed: Bool) -> [AgentEvent] {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
@@ -31,7 +43,7 @@ public enum CodexStreamEventParser {
             return [.unknown(provider: "codex", type: "unknown", raw: trimmed)]
         }
 
-        return events(from: object, raw: trimmed).resolvingUnrecognized(with: {
+        return events(from: object, raw: trimmed, keyed: keyed).resolvingUnrecognized(with: {
             CopilotStreamEventParser.parseAgentEvents(line: line).map(relabelUnknownAgentEvent)
         })
     }
@@ -48,7 +60,7 @@ public enum CodexStreamEventParser {
         return .unknown(provider: "codex", type: type, raw: raw)
     }
 
-    private static func events(from object: [String: Any], raw: String) -> StructuredStreamParseOutcome<AgentEvent> {
+    private static func events(from object: [String: Any], raw: String, keyed: Bool) -> StructuredStreamParseOutcome<AgentEvent> {
         let type = string(in: object, keys: ["type", "event", "kind"]) ?? "unknown"
         let normalized = type.lowercased()
 
@@ -73,7 +85,7 @@ public enum CodexStreamEventParser {
         case "item.started":
             return .recognized(startedItemEvents(from: object, raw: raw))
         case "item.completed":
-            return .recognized(completedItemEvents(from: object, raw: raw))
+            return .recognized(completedItemEvents(from: object, raw: raw, keyed: keyed))
         case "assistant.message_delta", "assistant.message", "assistant.reasoning_delta", "assistant.reasoning":
             return .recognized(CopilotStreamEventParser.parseAgentEvents(line: raw).map(relabelUnknownAgentEvent))
         default:
@@ -90,11 +102,12 @@ public enum CodexStreamEventParser {
             return [commandToolUseEvent(from: item)]
         }
         if itemType == "file_change" {
-            // Emitted at the start so the policy guard sees the path before the
-            // patch lands. The item id makes the recorder hold it until the
+            // Emitted at the start so the policy guard sees the paths before the
+            // patch lands. The item id makes the recorder hold them until the
             // completion says whether the patch applied.
             let itemID = string(in: item, keys: ["id", "call_id", "callId"])
-            return [fileChangeEvent(from: item, toolUseID: itemID) ?? .control(type: "item.started.file_change")]
+            let changes = fileChangeEvents(from: item, toolUseID: itemID)
+            return changes.isEmpty ? [.control(type: "item.started.file_change")] : changes
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             return [.control(type: "item.started.\(itemType)")]
@@ -110,7 +123,7 @@ public enum CodexStreamEventParser {
         return [.unknown(provider: "codex", type: "item.started.\(itemType)", raw: raw)]
     }
 
-    private static func completedItemEvents(from object: [String: Any], raw: String) -> [AgentEvent] {
+    private static func completedItemEvents(from object: [String: Any], raw: String, keyed: Bool) -> [AgentEvent] {
         guard let item = object["item"] as? [String: Any] else {
             return [.unknown(provider: "codex", type: "item.completed", raw: raw)]
         }
@@ -122,20 +135,26 @@ public enum CodexStreamEventParser {
             let itemID = string(in: item, keys: ["id", "call_id", "callId"])
             if let status = string(in: item, keys: ["status"])?.lowercased(),
                failedItemStatuses.contains(status) {
-                // Drops the change held since the start.
+                // Drops the changes held since the start.
                 guard let itemID else { return [.control(type: "item.completed.file_change.\(status)")] }
                 return [.toolResult(id: itemID, content: "file_change \(status)", isError: true)]
             }
-            guard let change = fileChangeEvent(from: item, toolUseID: itemID) else {
-                return [.control(type: "item.completed.file_change")]
-            }
-            guard let itemID else { return [change] }
-            // The change again, for a completion with no start, then the
+            let changes = fileChangeEvents(from: item, toolUseID: itemID)
+            guard !changes.isEmpty else { return [.control(type: "item.completed.file_change")] }
+            guard let itemID else { return changes }
+            // The changes again, for a completion with no start, then the
             // result that commits whatever the item holds; the recorder keeps
             // one per path. Empty content adds no transcript row.
-            return [change, .toolResult(id: itemID, content: "", isError: false)]
+            return changes + [.toolResult(id: itemID, content: "", isError: false)]
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
+            // Every agent message is one keyed final, kept in order with the
+            // others and filtered for ASTRA_EVENT markers like any provider's
+            // text, rather than a completion that replaces the last one.
+            if keyed, let id = string(in: item, keys: ["id"]), !id.isEmpty,
+               let text = textValue(in: item), !text.isEmpty {
+                return [.assistantMessage(.fragment(AssistantMessageFragment(key: "codex:\(id)", kind: .final, text: text)))]
+            }
             return [.completed(summary: textValue(in: item))]
         }
         if itemType.contains("reasoning") {
@@ -150,7 +169,10 @@ public enum CodexStreamEventParser {
             return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: item))]
         }
         if itemType.contains("error") || itemType == "failed" {
-            return [.failed(message: textValue(in: item) ?? raw)]
+            // An error item is a warning Codex carries on after, such as a
+            // config value that enterprise-managed requirements override.
+            // Only turn.failed ends the turn.
+            return [.notice(message: textValue(in: item) ?? raw)]
         }
         return [.unknown(provider: "codex", type: "item.completed.\(itemType)", raw: raw)]
     }
@@ -183,18 +205,27 @@ public enum CodexStreamEventParser {
     /// A completed item in one of these states changed nothing on disk.
     private static let failedItemStatuses: Set<String> = ["failed", "declined", "rejected", "cancelled", "canceled", "error"]
 
-    private static func fileChangeEvent(from item: [String: Any], toolUseID: String? = nil) -> AgentEvent? {
-        guard let path = string(in: item, keys: ["path", "file_path", "filePath", "filename", "name"]) else {
-            return nil
+    /// One file change per entry of `changes[]`, where Codex lists them; an
+    /// item that names its path directly is one change.
+    private static func fileChangeEvents(from item: [String: Any], toolUseID: String? = nil) -> [AgentEvent] {
+        let pathKeys = ["path", "file_path", "filePath", "filename", "name"]
+        let kindKeys = ["kind", "change_type", "changeType"]
+        let entries = (item["changes"] as? [[String: Any]]).flatMap { $0.isEmpty ? nil : $0 } ?? [item]
+        return entries.compactMap { entry in
+            guard let path = string(in: entry, keys: pathKeys) else { return nil }
+            let kind = string(in: entry, keys: kindKeys)
+                ?? string(in: item, keys: kindKeys + ["status"])
+                ?? "modified"
+            let summary = textValue(in: entry) ?? textValue(in: item)
+            return .fileChange(path: path, kind: kind, summary: summary, toolUseID: toolUseID)
         }
-        let kind = string(in: item, keys: ["kind", "change_type", "changeType", "status"]) ?? "modified"
-        return .fileChange(path: path, kind: kind, summary: textValue(in: item), toolUseID: toolUseID)
     }
 
     private static func usageEvent(from object: [String: Any]) -> AgentEvent? {
         let usage = object["usage"] as? [String: Any] ?? object
+        // Codex's input_tokens already include cached_input_tokens (its own
+        // total_tokens is input plus output), so the cached count is not added.
         let input = (int(in: usage, keys: ["input_tokens", "inputTokens", "prompt_tokens", "promptTokens"]) ?? 0)
-            + (int(in: usage, keys: ["cached_input_tokens", "cachedInputTokens"]) ?? 0)
             + (int(in: usage, keys: ["cache_read_input_tokens", "cacheReadInputTokens", "cacheReadTokens"]) ?? 0)
             + (int(in: usage, keys: ["cache_creation_input_tokens", "cacheCreationInputTokens", "cacheWriteTokens"]) ?? 0)
         let output = int(in: usage, keys: ["output_tokens", "outputTokens", "completion_tokens", "completionTokens"]) ?? 0
@@ -272,6 +303,8 @@ public enum CodexStreamEventParser {
                 numTurns: nil,
                 isError: true
             )
+        case .notice:
+            return nil
         case .fileChange:
             return nil
         case .teamEvent:

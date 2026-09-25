@@ -190,6 +190,10 @@ public enum AgentEvent: Sendable, Equatable {
     case astraProtocol(AstraRunProtocolParsedEvent)
     case completed(summary: String?)
     case failed(message: String)
+    /// Something the provider reported that is neither assistant text nor a
+    /// failure, such as a configuration warning it continued after. Recorded
+    /// as a system note; it never fails the run.
+    case notice(message: String)
     /// In-process teammate orchestration events. Currently only Claude Code's
     /// CLI emits `local_agent`/`in_process_teammate` system events; the other
     /// five runtimes never produce these, so this case is Claude-only in

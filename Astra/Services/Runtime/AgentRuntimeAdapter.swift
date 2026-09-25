@@ -1522,7 +1522,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func parseProcessEvents(line: String, parsesJSONLines _: Bool) -> [ParsedEvent] {
-        StreamEventParser.parseAll(line: line)
+        ClaudeMessageIdentity.monitorEvents(StreamEventParser.parseAll(line: line), line: line)
     }
 
     func blockingProcessPermissionMessage(line _: String, parsesJSONLines _: Bool) -> String? {
@@ -2114,7 +2114,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
 
     func parseWorkerStreamEvents(line: String, parsesJSONLines: Bool) -> AgentRuntimeStreamEventBatch {
         let events = parsesJSONLines
-            ? CopilotStreamEventParser.parseAgentEvents(line: line)
+            ? CopilotStreamEventParser.parseIdentifiedAgentEvents(line: line)
             : CopilotStreamEventParser.parsePlainTextAgentEvents(line: line, appendingNewline: true)
         return AgentRuntimeStreamEventBatch(agentEvents: events)
     }

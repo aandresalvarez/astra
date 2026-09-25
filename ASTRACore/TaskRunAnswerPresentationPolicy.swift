@@ -32,6 +32,19 @@ public enum TaskRunAnswerPresentationPolicy {
         presentation(rawText: normalizedText, visible: normalizedText)
     }
 
+    /// A run recorded with keyed messages: the answer's messages, each whole,
+    /// joined with a paragraph break at every message boundary. No summary cut
+    /// and no sentence repair: nothing was glued together, and the rule that
+    /// chose these messages already decided what the answer is.
+    public static func presentation(messages: [String]) -> TaskRunAnswerPresentation {
+        let joined = messages
+            .map { strippingProtocolMarkerLines(from: $0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        let text = MarkdownRenderPreparation.prepareForDisplay(replace(regex: repeatedNewlineRegex, in: joined, template: "\n\n"))
+        return TaskRunAnswerPresentation(answerText: text, progressMessages: [], rawText: joined)
+    }
+
     private static func presentation(rawText: String, visible: String) -> TaskRunAnswerPresentation {
         let raw = rawText
         guard !visible.isEmpty else {
@@ -157,24 +170,40 @@ public enum TaskRunAnswerPresentationPolicy {
             .joined(separator: "\n")
     }
 
+    /// Runs recorded before messages were keyed: when the text has a summary
+    /// section, show from its heading on. The heading must start its own line,
+    /// the section must say something (40 or more visible characters after the
+    /// heading), and it must not merely repeat lines already written above it,
+    /// the way a re-sent copy of a message would. The last such section wins.
     private static func explicitAnswerSection(in text: String) -> String? {
-        let markers = [
-            "## Full Run Summary",
-            "## Summary",
-            "### Summary",
-            "## Final Answer",
-            "### Final Answer",
-            "**Bottom line**",
-            "Bottom line"
-        ]
-        let lower = text.lowercased()
-        for marker in markers {
-            guard let range = lower.range(of: marker.lowercased(), options: .backwards) else { continue }
-            let suffix = String(text[range.lowerBound...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if suffix.count >= 20 {
-                return dedupeAdjacentSegments(in: suffix)
+        let lines = text.components(separatedBy: "\n")
+        for index in lines.indices.reversed() {
+            guard let sameLine = summaryHeadingRemainder(lines[index]) else { continue }
+            let body = ([sameLine] + lines[(index + 1)...]).joined(separator: "\n")
+            guard body.filter({ !$0.isWhitespace && $0 != ":" && $0 != "*" }).count >= 40 else { continue }
+            let earlier = Set(lines[..<index].map(comparisonKey).filter { !$0.isEmpty })
+            let sectionLines = lines[(index + 1)...].map(comparisonKey).filter { !$0.isEmpty }
+            if !sectionLines.isEmpty, sectionLines.allSatisfy(earlier.contains) { continue }
+            let section = lines[index...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            return dedupeAdjacentSegments(in: section)
+        }
+        return nil
+    }
+
+    /// What follows a summary heading on its own line, or `nil` when the line
+    /// is not one: a markdown heading titled Summary, Full Run Summary, Final
+    /// Answer or Bottom line, or a line that opens with a Bottom line label.
+    private static func summaryHeadingRemainder(_ line: String) -> String? {
+        let lower = line.trimmingCharacters(in: .whitespaces).lowercased()
+        if lower.hasPrefix("#") {
+            let title = lower.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
+            for marker in ["full run summary", "summary", "final answer", "bottom line"] where title.hasPrefix(marker) {
+                return String(title.dropFirst(marker.count))
             }
+            return nil
+        }
+        for marker in ["**bottom line**", "bottom line"] where lower.hasPrefix(marker) {
+            return String(lower.dropFirst(marker.count))
         }
         return nil
     }

@@ -246,7 +246,7 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
             toolUseEventCount += 1
         case .toolResult:
             toolResultEventCount += 1
-        case .fileChange:
+        case .fileChange, .notice:
             break
         case .permissionRequested:
             break
