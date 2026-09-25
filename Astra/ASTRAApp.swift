@@ -888,7 +888,13 @@ public struct ASTRAApp: App {
         }
 
         if !skipWorkspaceRecovery {
-            WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContext)
+            // A store rebuilt from workspace mirrors imports its runs after
+            // the settling below, so what it imported in flight is settled
+            // again as soon as it lands, before snapshot recovery compares it.
+            workspaceRecoveryAfterLaunch = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+                modelContext: modelContext,
+                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
+            )
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
         // (runtime.loadPluginCatalog()), which runs synchronously in
@@ -903,11 +909,59 @@ public struct ASTRAApp: App {
             approvedPackages: PluginCatalog.builtInPackages
         )
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
+        settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
+    }
+
+    /// Settles the runs and turn requests a crash or quit left in flight.
+    @MainActor
+    private static func settleInterruptedWork(modelContext: ModelContext, autoExportWorkspaces: Bool) {
         TaskRunLifecycleService.recoverOrphanedRunningRuns(
             modelContext: modelContext,
-            autoExportWorkspaces: !skipWorkspaceRecovery
+            autoExportWorkspaces: autoExportWorkspaces
         )
         TaskTurnRequestRecoveryService.recoverInterruptedRequests(
+            modelContext: modelContext,
+            autoExportWorkspaces: autoExportWorkspaces
+        )
+    }
+
+    /// One recovery for the process: every window's startup awaits the same
+    /// one, so none replays queued turns while another is still comparing.
+    @MainActor private static var taskFolderSnapshotRecovery: Task<Void, Never>?
+    /// Rebuilding workspaces from their mirrors, when the store has none; the
+    /// tasks it imports may hold baselines to recover.
+    @MainActor private static var workspaceRecoveryAfterLaunch: Task<Void, Never>?
+
+    /// Compares every task-folder baseline a run left behind — interrupted by
+    /// a crash, or cancelled by a quit before its worker compared — after
+    /// `runDeferredStartupWork` has settled orphaned runs and before the queue
+    /// replays recovered turns: a new run on the same task would otherwise
+    /// change its folder mid-comparison, or replace its baseline.
+    @MainActor
+    public static func recoverTaskFolderSnapshots(modelContext: ModelContext) async {
+        if let recovery = taskFolderSnapshotRecovery {
+            await recovery.value
+            return
+        }
+        let recovery = Task { @MainActor in
+            await performTaskFolderSnapshotRecovery(modelContext: modelContext)
+        }
+        taskFolderSnapshotRecovery = recovery
+        await recovery.value
+    }
+
+    @MainActor
+    private static func performTaskFolderSnapshotRecovery(modelContext: ModelContext) async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard !arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
+        let skipWorkspaceRecovery = arguments.contains("--skip-workspace-recovery") ||
+            ["1", "true", "yes"].contains(
+                ProcessInfo.processInfo.environment["ASTRA_SKIP_WORKSPACE_RECOVERY"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            )
+        await workspaceRecoveryAfterLaunch?.value
+        await TaskFolderRunSnapshot.recoverPersistedBaselines(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery
         )
