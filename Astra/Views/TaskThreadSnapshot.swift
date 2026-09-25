@@ -48,7 +48,7 @@ struct TaskEventSnapshot: Identifiable, Hashable, Sendable {
 }
 
 struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
-    private static let maximumDecodedFileChangesJSONBytes = 262_144
+    private static let maximumDecodedFileChangesJSONBytes = TaskRun.displayedFileChangesJSONByteLimit
     let id: UUID
     let status: RunStatus
     let startedAt: Date
@@ -119,7 +119,8 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
               let changes = try? JSONDecoder().decode([StoredFileChange].self, from: data) else {
             return []
         }
-        return changes
+        // The same evidence `TaskRun.fileChanges` reads; see there.
+        return changes.filter { !$0.kind.isObserved }
     }
 
     private static func outputContainsVPNWarning(

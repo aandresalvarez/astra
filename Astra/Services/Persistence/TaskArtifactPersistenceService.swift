@@ -287,7 +287,7 @@ public enum TaskArtifactPersistenceService {
         let pathKind = ArtifactKind.forPath(change.path)
         guard pathKind != .file else {
             switch change.kind {
-            case .write, .edit, .discovered, .unknown:
+            case .write, .edit, .discovered, .modified, .removed, .unknown:
                 return .file
             }
         }

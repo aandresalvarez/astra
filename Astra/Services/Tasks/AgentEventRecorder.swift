@@ -15,9 +15,21 @@ final class AgentEventRecordingState {
     /// clobbering output assembled from streamed `.text` deltas.
     private var runsWithCompletedOutput: Set<UUID> = []
     private var toolUseEvidenceByRunAndID: [String: String] = [:]
+    private var toolNamesByRunAndID: [String: String] = [:]
     private var runsWithProviderStart: Set<UUID> = []
     /// Runs whose provider stream said the turn itself failed.
     private var runsWithAgentReportedError: Set<UUID> = []
+    /// File changes announced with the tool call that makes them, in the
+    /// order they were announced, until that call's result arrives.
+    private var pendingFileChanges: [(runID: UUID, toolUseID: String, change: PendingFileChange)] = []
+
+    struct PendingFileChange: Equatable {
+        let path: String
+        let kind: String
+        let summary: String?
+        let oldString: String?
+        let newString: String?
+    }
 
     init(maxCoalescedPayloadLength: Int = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
@@ -105,14 +117,62 @@ final class AgentEventRecordingState {
         }
     }
 
-    func recordToolUse(id: String, evidence: String, run: TaskRun) {
+    func recordToolUse(id: String, name: String, evidence: String, run: TaskRun) {
         guard !id.isEmpty else { return }
         toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"] = evidence
+        toolNamesByRunAndID["\(run.id.uuidString)#\(id)"] = name
     }
 
     func toolUseEvidence(id: String, run: TaskRun) -> String? {
         guard !id.isEmpty else { return nil }
         return toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"]
+    }
+
+    /// A later announcement of the same call and path — Codex repeats the
+    /// change on the item's completion — replaces the earlier one in place,
+    /// so the version the call finished with is the one recorded. Claude's
+    /// repeated edits to one path each carry their own call id, so all stay.
+    func holdFileChange(_ change: PendingFileChange, toolUseID: String, run: TaskRun) {
+        if let index = pendingFileChanges.firstIndex(where: {
+            $0.runID == run.id && $0.toolUseID == toolUseID && $0.change.path == change.path
+        }) {
+            pendingFileChanges[index].change = change
+        } else {
+            pendingFileChanges.append((run.id, toolUseID, change))
+        }
+    }
+
+    /// The changes held for one tool call, removed from the pending set.
+    func takePendingFileChanges(toolUseID: String, run: TaskRun) -> [PendingFileChange] {
+        guard !toolUseID.isEmpty else { return [] }
+        return takePendingFileChanges { $0.runID == run.id && $0.toolUseID == toolUseID }
+    }
+
+    /// The changes a permission denial rules out. Claude's parser names the
+    /// call by its tool-use id when that is all the result carries, but by
+    /// the tool's name when both are there; a name only settles which call
+    /// was denied when exactly one held call used that tool. Otherwise
+    /// nothing is dropped, and the change is kept like any unresolved one.
+    func takePendingFileChangesDenied(tool: String, run: TaskRun) -> [PendingFileChange] {
+        let byID = takePendingFileChanges(toolUseID: tool, run: run)
+        guard byID.isEmpty else { return byID }
+        let heldIDs = Set(pendingFileChanges.filter { $0.runID == run.id }.map(\.toolUseID))
+        let named = heldIDs.filter { toolNamesByRunAndID["\(run.id.uuidString)#\($0)"] == tool }
+        guard named.count == 1, let id = named.first else { return [] }
+        return takePendingFileChanges(toolUseID: id, run: run)
+    }
+
+    /// Every change still held for the run, in the order the calls came.
+    func takeUnresolvedFileChanges(for run: TaskRun) -> [PendingFileChange] {
+        takePendingFileChanges { $0.runID == run.id }
+    }
+
+    private func takePendingFileChanges(
+        where matches: ((runID: UUID, toolUseID: String, change: PendingFileChange)) -> Bool
+    ) -> [PendingFileChange] {
+        let taken = pendingFileChanges.filter(matches).map(\.change)
+        if !taken.isEmpty { pendingFileChanges.removeAll(where: matches) }
+        return taken
     }
 
     private func conversationKey(eventType: TaskEventType, run: TaskRun) -> String {
@@ -526,8 +586,12 @@ enum AgentEventRecorder {
         recordingState: AgentEventRecordingState? = nil
     ) {
         switch event {
-        case .control:
-            break
+        case .control(let type):
+            if let toolUseID = ToolCallDenialMarker.toolUseID(fromControlType: type),
+               let dropped = recordingState?.takePendingFileChanges(toolUseID: toolUseID, run: run),
+               !dropped.isEmpty {
+                logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
+            }
 
         case .started(let sessionID, let model):
             if let sessionID {
@@ -582,7 +646,7 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
             let payload = "Using tool: \(name)\(suffix)"
-            recordingState?.recordToolUse(id: id, evidence: payload, run: run)
+            recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run)
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run))
 
         case .toolResult(let toolID, let content, let isError):
@@ -598,9 +662,30 @@ enum AgentEventRecorder {
                     : String(content.prefix(10_000))
                 modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: payload, run: run))
             }
+            // The result, not the call, is the evidence a file changed.
+            if let pending = recordingState?.takePendingFileChanges(toolUseID: toolID, run: run), !pending.isEmpty {
+                if isError {
+                    logDroppedFileChanges(pending.count, reason: "tool_result_error", task: task)
+                } else {
+                    for change in pending {
+                        appendFileChange(change, task: task, run: run, modelContext: modelContext)
+                    }
+                }
+            }
 
-        case .fileChange(let path, let kind, let summary, let oldString, let newString):
+        case .fileChange(let path, let kind, let summary, let oldString, let newString, let toolUseID):
             recordingState?.breakConversationCoalescing(for: run)
+            // Announced with its tool call: the call may still fail, so hold
+            // it for the result. Without an id, or without state to hold it
+            // in, the event itself is the only evidence there will be.
+            if let toolUseID, !toolUseID.isEmpty, let recordingState {
+                recordingState.holdFileChange(
+                    .init(path: path, kind: kind, summary: summary, oldString: oldString, newString: newString),
+                    toolUseID: toolUseID,
+                    run: run
+                )
+                return
+            }
             appendFileChange(
                 path: path,
                 kind: kind,
@@ -618,6 +703,11 @@ enum AgentEventRecorder {
 
         case .permissionRequested(let tool, let reason):
             recordingState?.breakConversationCoalescing(for: run)
+            // Claude reports a denied call as a denial rather than as an error
+            // result; the change it announced never happened.
+            if let dropped = recordingState?.takePendingFileChangesDenied(tool: tool, run: run), !dropped.isEmpty {
+                logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
+            }
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionDenied, payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
                 "tool": AgentEventRecordingPresentation.normalizedPermissionTool(tool),
@@ -737,7 +827,7 @@ enum AgentEventRecorder {
             return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
         case .failed(let message):
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
-        case .fileChange(let path, let kind, let summary, let oldString, let newString):
+        case .fileChange(let path, let kind, let summary, let oldString, let newString, _):
             let toolName = kind.lowercased().contains("write") ? "Write" : "Edit"
             var input: [String: Any] = ["file_path": path]
             if let summary, !summary.isEmpty {
@@ -794,7 +884,8 @@ enum AgentEventRecorder {
                         kind: fileChange.changeType.rawValue,
                         summary: fileChange.content,
                         oldString: fileChange.oldString,
-                        newString: fileChange.newString
+                        newString: fileChange.newString,
+                        toolUseID: id
                     )
                 ]
             }
@@ -976,6 +1067,71 @@ enum AgentEventRecorder {
             payload: event.normalizedPayload,
             run: run
         ))
+    }
+
+    @MainActor
+    private static func appendFileChange(
+        _ change: AgentEventRecordingState.PendingFileChange,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext
+    ) {
+        appendFileChange(
+            path: change.path,
+            kind: change.kind,
+            summary: change.summary,
+            oldString: change.oldString,
+            newString: change.newString,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
+    }
+
+    @MainActor
+    private static func logDroppedFileChanges(_ count: Int, reason: String, task: AgentTask) {
+        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
+            "event": "tool_file_change_dropped",
+            "reason": reason,
+            "count": String(count)
+        ], level: .debug)
+    }
+
+    /// Settles the tool file changes whose result never arrived. After a
+    /// clean exit the provider dropped the result, and a real write is likelier
+    /// than a failure whose error the stream swallowed, so they are kept.
+    /// After a stop ASTRA forced — a cancel, a watchdog, a timeout, a policy
+    /// stop, the budget or turn limit, a repetition kill — the call may never
+    /// have run, so they are dropped, even when the provider then exited 0, and
+    /// so they are when the provider reported the turn failed, even with a
+    /// clean exit (Codex exits 0 after one). The task-folder comparison still
+    /// records what actually changed on disk. Call once the run's events are
+    /// drained.
+    @MainActor
+    static func commitUnresolvedFileChanges(
+        recordingState: AgentEventRecordingState,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        processExitedCleanly: Bool
+    ) {
+        let unresolved = recordingState.takeUnresolvedFileChanges(for: run)
+        guard !unresolved.isEmpty else { return }
+        guard processExitedCleanly else {
+            logDroppedFileChanges(unresolved.count, reason: "no_result_after_forced_stop", task: task)
+            return
+        }
+        guard !recordingState.agentReportedError(for: run) else {
+            logDroppedFileChanges(unresolved.count, reason: "no_result_after_reported_failure", task: task)
+            return
+        }
+        for change in unresolved {
+            appendFileChange(change, task: task, run: run, modelContext: modelContext)
+        }
+        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
+            "event": "tool_file_change_committed_without_result",
+            "count": String(unresolved.count)
+        ], level: .warning)
     }
 
     @MainActor

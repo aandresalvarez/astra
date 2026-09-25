@@ -1238,6 +1238,32 @@ struct AgentRuntimeRunPersistenceTests {
     }
 }
 
+@Suite("Agent process result")
+struct AgentProcessResultTests {
+    @Test("Every stop ASTRA forces counts as one, whatever the exit code; a reap after the turn ended does not")
+    func stoppedByASTRACoversEveryForcedStop() {
+        let forced = [
+            AgentProcessResult(exitCode: 0, runtimeStopReason: "provider_active_tool_stalled"),
+            AgentProcessResult(exitCode: 0, timedOut: true),
+            AgentProcessResult(exitCode: 0, policyViolation: true),
+            AgentProcessResult(exitCode: 0, policyApprovalRequired: true),
+            AgentProcessResult(exitCode: 0, budgetExceeded: true),
+            AgentProcessResult(exitCode: 0, repetitionKilled: true),
+            AgentProcessResult(exitCode: 0, maxTurnsExceeded: true)
+        ]
+        for result in forced {
+            #expect(result.stoppedByASTRA)
+        }
+
+        #expect(!AgentProcessResult(exitCode: 0).stoppedByASTRA)
+        #expect(!AgentProcessResult(exitCode: 1).stoppedByASTRA)
+        #expect(!AgentProcessResult(exitCode: 0, runtimeStopReason: "").stoppedByASTRA)
+        let reaped = AgentProcessResult(exitCode: 143, terminatedAfterTerminalProgress: true)
+        #expect(!reaped.stoppedByASTRA)
+        #expect(reaped.exitCode == 0)
+    }
+}
+
 @Suite("Agent Runtime Budget Policy")
 @MainActor
 struct AgentRuntimeBudgetPolicyTests {
