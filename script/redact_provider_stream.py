@@ -358,6 +358,33 @@ COPILOT_RESULT_IDENTITY_KEYS = {
 }
 
 
+CURSOR_TOOL_CALL_IDENTITY_KEYS = {"toolCallId", "startedAtMs", "completedAtMs"}
+
+
+def without_cursor_tool_payload(calls):
+    """A Cursor `tool_call` object keeps its tool entries, each with its
+    result's outcome key (`success` / `error`) but not what it carried, and
+    its ids and timestamps. Anything else beside the entries, such as the
+    `hookAdditionalContexts` hooks fill with file or workspace text, keeps
+    its shape but not its content."""
+    def blank(result):
+        return {outcome: TOOL_OUTPUT for outcome in result} if isinstance(result, dict) else TOOL_OUTPUT
+
+    kept = {}
+    for name, value in calls.items():
+        if isinstance(value, dict) and (name.endswith("ToolCall") or "args" in value or "result" in value):
+            kept[name] = dict(value, result=blank(value["result"])) if "result" in value else value
+        elif name in CURSOR_TOOL_CALL_IDENTITY_KEYS and not isinstance(value, (dict, list)):
+            kept[name] = value
+        elif isinstance(value, list):
+            kept[name] = [TOOL_OUTPUT for _ in value]
+        elif isinstance(value, dict):
+            kept[name] = {key: TOOL_OUTPUT for key in value}
+        else:
+            kept[name] = TOOL_OUTPUT if isinstance(value, str) and value else value
+    return kept
+
+
 CODEX_FILE_CHANGE_PATH_KEYS = ("path", "file_path", "filePath", "filename", "name")
 # What a Codex file change keeps: the parser reads its text (a diff, file
 # contents) from many keys, so everything but identity, paths and kinds goes.
@@ -483,13 +510,7 @@ def without_tool_output(frame):
         elif codex_item_type(item) == "file_change":
             frame = dict(frame, item=without_file_change_payload(item))
     elif kind == "tool_call" and isinstance(frame.get("tool_call"), dict):  # Cursor
-        # Keep the outcome key (`success` / `error`), drop what it carried.
-        def blank(result):
-            return {outcome: TOOL_OUTPUT for outcome in result} if isinstance(result, dict) else TOOL_OUTPUT
-        frame = dict(frame, tool_call={
-            name: (dict(call, result=blank(call["result"])) if isinstance(call, dict) and "result" in call else call)
-            for name, call in frame["tool_call"].items()
-        })
+        frame = dict(frame, tool_call=without_cursor_tool_payload(frame["tool_call"]))
     elif is_copilot_tool_result(frame):  # Copilot's other result shapes
         frame = without_copilot_result_payload(frame)
         # The parser reads a result from either wrapper object.

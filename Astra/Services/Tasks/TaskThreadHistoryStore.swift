@@ -78,6 +78,28 @@ actor TaskThreadHistoryStore {
         )
     }
 
+    /// The task's turns that changed files, newest first. Unlike the pages
+    /// above, this reads every run: turn numbers count the whole task.
+    func fileTurns(
+        taskID: UUID,
+        taskFolder: String,
+        workspacePath: String,
+        executionPath: String? = nil,
+        additionalRoots: [String] = [],
+        pendingRuns: [TaskFileTurnsReader.PendingRun] = []
+    ) throws -> [TaskFileTurn] {
+        guard let input = try TaskFileTurnsReader.input(
+            taskID: taskID,
+            taskFolder: taskFolder,
+            workspacePath: workspacePath,
+            executionPath: executionPath,
+            additionalRoots: additionalRoots,
+            pendingRuns: pendingRuns,
+            modelContext: makeContext()
+        ) else { return [] }
+        return TaskFileTurns.build(input)
+    }
+
     private func makeContext() -> ModelContext {
         let context = ModelContext(container)
         // These contexts only ever read. Autosave would let SwiftData write

@@ -1473,6 +1473,45 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.primaryPath != configURL.deletingLastPathComponent().path)
     }
 
+    @Test("async launch recovery runs its after-import step once the workspace is in the store")
+    @MainActor
+    func asyncLaunchRecoveryRunsAfterImportWithTheImportedWorkspace() async throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_async_recovery_after_import_\(UUID().uuidString)")
+        let workspaceFolder = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceContainer = try makeWorkspacePersistenceContainer()
+        let sourceContext = sourceContainer.mainContext
+        let sourceWorkspace = try makeRichWorkspace(in: sourceContext, root: workspaceFolder.path)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceFolder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
+
+        let recoveryContainer = try makeWorkspacePersistenceContainer()
+        let recoveryContext = recoveryContainer.mainContext
+        var workspacesSeenAfterImport: [Int] = []
+        await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false,
+            afterImport: {
+                workspacesSeenAfterImport.append((try? recoveryContext.fetchCount(FetchDescriptor<Workspace>())) ?? 0)
+            }
+        ).value
+
+        #expect(workspacesSeenAfterImport == [1])
+
+        // Nothing to import: the step does not run.
+        var ranWithoutAnImport = false
+        await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: recoveryContext,
+            extraRoots: [root.appendingPathComponent("empty").path],
+            includeDefaultRoots: false,
+            afterImport: { ranWithoutAnImport = true }
+        ).value
+        #expect(!ranWithoutAnImport)
+    }
+
     @Test("deleting workspace removes canonical and legacy generated mirrors")
     @MainActor
     func deletingWorkspaceRemovesCanonicalAndLegacyGeneratedMirrors() throws {

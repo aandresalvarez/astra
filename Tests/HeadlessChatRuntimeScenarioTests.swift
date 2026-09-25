@@ -86,6 +86,33 @@ extension HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == TaskEventTypes.Task.completed.rawValue })
     }
 
+    @Test("A Claude Write whose tool result fails leaves no file change through the worker")
+    func failedClaudeWriteLeavesNoFileChange() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"write-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_denied","name":"Write","input":{"file_path":"/tmp/astra-denied.md","content":"x"}}]}}'
+            printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_denied","is_error":true,"content":"Permission denied"}]}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_ok","name":"Write","input":{"file_path":"/tmp/astra-written.md","content":"y"}}]}}'
+            printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_ok","is_error":false,"content":"File created"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Done","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Write two files", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(run.fileChanges.map(\.path) == ["/tmp/astra-written.md"])
+        #expect(!task.artifacts.contains { $0.path == "/tmp/astra-denied.md" })
+    }
+
     @Test("Fake Copilot chat completes through the worker without UI")
     func fakeCopilotChatCompletes() async throws {
         let harness = try HeadlessChatHarness()
@@ -217,6 +244,41 @@ extension HeadlessChatScenarioTests {
         #expect(run.inputTokens == 3)
         #expect(run.outputTokens == 5)
         #expect(events.contains { if case .systemInit(_, "session-1") = $0 { true } else { false } })
+    }
+
+    @Test("A run records task-folder files its provider changed without a tool event")
+    func runRecordsTaskFolderChangesMadeOutsideTools() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Refresh the report", model: "claude-sonnet-4-6")
+        let taskFolder = URL(fileURLWithPath: try TaskWorkspaceAccess(task: task).ensureTaskFolder(), isDirectory: true)
+        try "v1\n".write(to: taskFolder.appendingPathComponent("plan.md"), atomically: true, encoding: .utf8)
+        try "old\n".write(to: taskFolder.appendingPathComponent("stale.md"), atomically: true, encoding: .utf8)
+        let folder = Self.shQuoteSandboxPath(taskFolder.path)
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' 'rows from a script' > \(folder)/report.csv
+            printf '%s\\n' 'version two of the plan' > \(folder)/plan.md
+            rm \(folder)/stale.md
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"session-1","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Refreshed"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Refreshed","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        let observed = Dictionary(uniqueKeysWithValues: run.allFileChanges.map {
+            (URL(fileURLWithPath: $0.path).lastPathComponent, $0.kind)
+        })
+        #expect(observed == ["report.csv": .discovered, "plan.md": .modified, "stale.md": .removed])
+        #expect(run.fileChanges.isEmpty)
+        #expect(run.status == .completed)
     }
 
     @Test("Fake Antigravity chat completes through the worker without UI")

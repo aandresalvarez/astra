@@ -1,6 +1,9 @@
 # Task Asset Timeline Plan
 
 Status: draft, 2026-09-22. Branch `claude/astra-asset-timestamps-20f05f`.
+PR 1 and PR 2 shipped (#414, #417). Revised 2026-09-23: PR 3 now records
+every task-folder change from a before/after snapshot, and PR 4 adds a by-turn
+view to Browse files (branch `claude/turn-organized-file-view-5825d8`).
 
 ## Goal
 
@@ -19,6 +22,15 @@ and the user's own messages in the thread.
 | Pasted text or image, or dropped image, on a follow-up | The same text block, pointing at `$TMPDIR/astra_paste_*` or `astra_drop_*` | Event `timestamp` | Same | Same. The file itself is purged by macOS after about three days, because only `task.inputs` is copied into the task folder ([TaskInputMaterializer.swift:40](../../Astra/Services/Tasks/TaskInputMaterializer.swift#L40-L87)) |
 | File the agent wrote or edited with a tool | A `StoredFileChange` in `TaskRun.fileChangesJSON`, plus a new `Artifact` row per change (version n+1) | Change `timestamp`, row `createdAt` | The run that holds the change | Task Files list with a source label; `TaskFileItem.change.timestamp` is never shown |
 | File the agent created without a tool event (for example from a shell command) | An `Artifact` row from the output reconcile at run finalization | Row insert time | None: the run is in scope but not passed ([AgentRuntimeRunPersistence.swift:121](../../Astra/Services/Runtime/AgentRuntimeRunPersistence.swift#L121)) | Task Files list as "output", no time |
+
+Measured on a production task (2026-09-23, 90 runs, 529 distinct file
+paths): only 14 paths are tied to a run, and 76 runs recorded no file change
+at all. Claude records only its own `Write`/`Edit` tool uses. The inferred
+detector for Codex, Copilot, and the others ignores `.astra/`, which is where
+task folders live, so its 59 Copilot runs recorded nothing either. Every
+`Artifact` row lands inside a run or less than 5 s after one ends, so the turn
+that *created* each file can be recovered for old history; 42 files were
+edited and 48 removed later with no record, and that cannot be.
 
 Two facts shape this plan:
 
@@ -60,8 +72,8 @@ shown is derived from them.
 - **The current set of task inputs.** Still `task.inputs`. The event is
   history; `inputs` stays the live set the runtime reads.
 - **What the agent touched, when, and in which turn.** `TaskRun.fileChangesJSON`.
-  Outputs found at finalization are appended to the run that produced them as
-  `discovered` changes.
+  What changed in the task folder between the run's start and end is appended
+  to that run as `discovered`, `modified`, and `removed` changes.
 - **What the user sees.** A pure, `Sendable` `TaskAssetTimeline`, built off the
   main actor from a store read. No view body touches `task.artifacts`,
   `task.events`, or the disk.
@@ -76,8 +88,8 @@ Four PRs:
 
 - PR 1 is a standalone bug fix.
 - PR 2 and PR 3 are independent of each other.
-- PR 4 needs PR 2's reader. It can ship without PR 3, but then outputs that no
-  tool event recorded show no turn.
+- PR 4 needs PR 2's reader. It can ship without PR 3, but then files that no
+  tool event recorded show no turn, and edits and removals do not show at all.
 
 ### PR 1: keep follow-up pastes and drops alive
 
@@ -172,43 +184,88 @@ same purge for initial inputs only.
   message (disabling the remap fails the test), and a record stays behind with
   its message.
 
-### PR 3: stamp discovered outputs onto their run
+### PR 3: record every task-folder change on its run
+
+**Why.** Stamping only the outputs found at finalization would still miss
+every edit and deletion made without a tool event, which is most of them (see
+the measurement above). Edit history that is not recorded when it happens is
+lost for good, so this ships before the UI.
 
 **Change.**
 
-- Pass the run into `TaskArtifactPersistenceService.reconcileTaskOutputArtifacts`
-  from both callers:
-  - `AgentRuntimeRunPersistence.finalizeAndPersist`
-    ([:121](../../Astra/Services/Runtime/AgentRuntimeRunPersistence.swift#L121))
-  - `TaskDeliverableVerificationService`
-    ([:47](../../Astra/Services/Validation/TaskDeliverableVerificationService.swift#L47))
+- `TaskFolderRunSnapshot` walks the task folder just before the provider
+  starts and again after it exits, off the main actor. It reads size,
+  modified and status-change times, and file identifier for every file, and a
+  content fingerprint for files up to 256 KB (at most 32 MB per walk), which
+  catches a same-length rewrite whose timestamps round to the same tick. The
+  visibility rules are the Files shelf's
+  (`TaskOutputArtifactPathPolicy`), so `outputs/`, `inputs/`,
+  `current_state.*`, `diagnostics/`, dependency trees, and hidden files never
+  count. A folder past 50,000 entries is skipped rather than half-compared.
+- The difference is appended to the run as content-less `StoredFileChange`s:
+  `discovered` (created), `modified` (new kind), and `removed` (new kind).
+  Paths the run already recorded through a tool event keep that record. Older
+  builds read the new kinds as `unknown`.
+- Created and modified changes are timestamped with the file's modified time,
+  clamped to the run; removals with the run's end.
+- `TaskRun.appendHostFileChanges(_:)` appends the batch with one decode and one
+  encode. At most 250 observed changes are kept per run, new and edited files
+  ahead of removals, and never more than still fit under the 256 KB past which
+  the thread stops decoding a run's changes, tool changes included
+  (`TaskRun.displayedFileChangesJSONByteLimit`). A record already past it
+  gains at most 64 KB: the thread shows none of it, but the turns ledger
+  reads the whole record.
+- A walk that hits an unreadable directory, or a visible file whose metadata
+  cannot be read, is discarded rather than compared, since every file it
+  missed would otherwise read as removed. A tool path
+  relative to the provider's working directory is resolved before deduping,
+  and a removal is kept even when a tool edited the file earlier in the run.
+- **No existing reader changes behavior.** `TaskRun.fileChanges` now returns
+  tool evidence only (tool events plus the inferred detector), and the
+  thread's own decoder applies the same filter. `allFileChanges` is the whole
+  record. An audit of every consumer found several that must not see observed
+  entries as they are: Git publication would take ownership of task-folder
+  edits the agent did not make; deliverable and empty-run checks would count a
+  removed file as output; the AI self-check would start reviewing path-only
+  entries; prompts and `session_history.md` would mark removals and new files
+  as edits. Each is opted in deliberately in PR 4 or later.
+- `reconcileTaskOutputArtifacts` is unchanged: it still creates `Artifact` rows
+  for new paths. Observed edits and removals create no `Artifact` rows.
+- One `task.stats event=task_folder_snapshot` log line per run, with counts,
+  the number of detected changes the bounds omitted, and duration.
 
-  For each newly created row, append a `discovered` `StoredFileChange` to that
-  run, unless the run already records that path.
-- Timestamp each change with the file's modified time from discovery
-  (`TaskOutputDiscoveredFile.modifiedAt`), clamped to the run's window, instead
-  of the reconcile time.
-- Add a batch `TaskRun.appendFileChanges(_:)`. The single-item version decodes
-  and re-encodes the whole JSON on every call
-  ([TaskRun.swift:140](../../Astra/Models/TaskRun.swift#L140-L145)), which is
-  quadratic for a run that produces hundreds of files.
-- Review every `run.fileChanges` consumer for the new entries:
-  - `DiffsTabView`: a `discovered` entry has no diff content.
-  - `hasRunScopedArtifact`.
-  - Deliverable verification: must stay idempotent.
-  - The changed files in `current_state.json`: that projection already
-    synthesizes `discovered` entries, so dedupe against them.
-  - The thread snapshot's 256 KB decode cap per run
-    ([TaskThreadSnapshot.swift:51](../../Astra/Views/TaskThreadSnapshot.swift#L51)).
-    A `discovered` entry carries no content, so it is about 150 bytes.
+**Not covered.** Workspace files outside the task folder that a shell command
+changes (tool events and the Git-based detector still cover those), and a
+user editing a task file by hand while a run is in progress, which is
+attributed to that run. ASTRA's `connector-mutations/` and `mission-audit/`
+folders are not hidden by the path policy, on the shelf or here. A file a tool
+created and a command deleted within one run keeps only the tool's write: the
+recorder stores a tool's file change when the tool is called, before its
+result says whether it succeeded, so the write is no proof the file existed
+and no deletion is inferred from it. A run whose change record cannot be
+decoded is skipped rather than rewritten. A run interrupted by a crash or quit
+is compared at the next launch instead. The worker keeps the pre-run baseline
+in the task folder's `diagnostics/` until the run's changes are saved (content
+fingerprints are SHA-256, so they compare across launches). At launch, before
+the queue replays any turn, ASTRA looks for baselines in tasks updated in the
+last 30 days — a run a crash interrupted, or one a quit cancelled before its
+worker compared — replays each, saves and exports the result, and only then
+removes it. Anything that changed the folder between the interruption and that
+launch is attributed to the interrupted run, since nothing on disk tells the
+two apart. Writing a run's baseline removes any other the task left behind.
+The task folder is provider-writable, so a baseline is read only up to its
+size limit, only as a regular file, and only when it names the folder it sits
+in and every path in it is one a walk could have produced. Every window's
+startup awaits the same recovery. A store rebuilt from workspace mirrors
+settles the runs and requests it imported in flight as soon as the import
+lands, so recovery compares them rather than skipping them as live.
 
 **Tests.**
 
-- `TaskArtifactPersistenceServiceTests`: the run is stamped, there is no
-  duplicate when a tool change already exists for the path, and batch append
-  works.
-- A finalization test.
-- One test per consumer reviewed above.
+- `TaskFolderRunSnapshotTests`: created, modified, and removed; ignored paths;
+  a folder the run creates; the entry limit; dedupe against tool paths across
+  a symlinked root; timestamps and kinds; the batch append and the per-run
+  cap; `fileChanges` and the thread snapshot leaving observed entries out.
 
 ### PR 4: the asset timeline in the UI
 
@@ -237,6 +294,45 @@ same purge for initial inputs only.
   ([TaskMainView.swift:1010](../../Astra/Views/TaskMainView.swift#L1010-L1029)).
 
 **UI** (following `docs/design-system/lean-ui-system.md`).
+
+- **Browse files, by turn.** A `Folders | Turns` switch beside the scope menu.
+  It is a way of organizing files, not a scope, because one turn can touch
+  task files and workspace files.
+  - One section per turn, newest on top. A running turn is live at the top.
+  - The section title is what the user asked; `Turn 87 · Today 10:05 AM ·
+    1 new, 2 edited` is its subtitle. Only the latest turn starts expanded.
+  - A file appears under every turn that touched it, so a turn's list is
+    complete. Clicking opens the current version; removed files are dimmed.
+  - An open turn shows its first 100 files and a "Show all N files" button:
+    the panel's lazy list holds the whole view as one row, so every row
+    shown is built at once.
+  - Relative tool paths resolve where the task runs (its pinned repository
+    or worktree), then in the workspace folder, which older runs ran in.
+  - Turns before snapshot capture show new files only, recovered from
+    `Artifact.createdAt`, and say so.
+- **Thread.** Each answer's changed-files button opens that turn's files, not
+  the task-wide list.
+- **Opting readers in to observed changes.** The ledger reads
+  `allFileChanges`. Before any existing reader does, it needs:
+  - `SessionHistoryManager` and `AgentPromptBuilder`: `+` for new, `~` for
+    edited, `-` for removed, a cap on the list, removals left out of "You
+    were working in".
+  - `DiffsTabView`: icons by kind, and "No diff recorded" for observed entries.
+  - Changed-file counts (`TaskRunVisibleFileChangeCounts`,
+    `RunActivityPresentation`, `MissionControlPresentation`) and
+    `TaskContextStateManager`: removals excluded or shown as removals, and
+    paths deduped before `isUserFacingOutputPath`, which resolves symlinks on
+    the main actor.
+  - `TaskMainView.headerFileItemsInputSignature` joins every path on every
+    keystroke; it needs a cheap key first.
+  - Git publication, deliverable checks, and `ValidationService` stay on tool
+    evidence.
+  - A fork keeps the parent's paths for observed edits and removals. A
+    shared-files fork reads those files where they are, and a file-copy fork
+    copies them to `fork_sources/<kind>/`, so the ledger opens a copied path
+    from the copy its manifest records and any other from the source folder,
+    as the Files shelf does. The fork copies runs but not artifact rows, so
+    the ledger also reads each source's rows up to the fork.
 
 - **Task Files list.**
   - Rows get a quiet subtitle, `Turn 3 · Today 2:14 PM`. The tooltip shows the
@@ -268,7 +364,9 @@ same purge for initial inputs only.
 
 Proposed:
 
-- "Turn N" is the Nth thing the user asked, with the goal counting as 1.
+- "Turn N" is the Nth thing the user asked, with the goal counting as 1. A
+  plan-created task records its ask as a plan message with the goal's text;
+  that message is turn 1, as the thread shows it once.
 - A run belongs to the message it was launched for (the `user.message` event's
   `run` link). If there is no link, it belongs to the latest ask before the run
   started. This keeps retries and plan steps in their ask's turn.
@@ -297,11 +395,20 @@ so on tasks with more than 50 runs the two would disagree.
 
 ## Risks
 
-- **Rollback is safe.** Older builds hide unknown event types from the thread
+- **Rollback is safe for PR 2's event, not for PR 3's entries.** Older builds
+  hide unknown event types from the thread
   ([TaskThreadSnapshot.swift:1235](../../Astra/Views/TaskThreadSnapshot.swift#L1218-L1237)),
-  and the store shape does not change.
-- **`discovered` entries become visible to every `run.fileChanges` consumer.**
-  That is why PR 3 includes the review list.
+  and the store shape does not change. But PR 3's observed entries share
+  `fileChangesJSON` with tool changes, and a build from before PR 3 has no
+  `isObserved` filter: it reads `discovered` as it is and `modified` and
+  `removed` as `unknown`, so Git publication ownership, deliverable and
+  empty-run checks, validation, prompts, and counts would treat them as tool
+  evidence for runs this build recorded. Keeping them out of an older build's
+  way means a separate record: a typed per-run event (subject to compaction,
+  the fork's substring path rewrite, and the 10-event export mirror) or a V20
+  column. Open for the owner to decide before PR 3 ships.
+- **Observed entries are hidden from every existing `run.fileChanges` reader**
+  in this build (`isObserved`); each is opted in deliberately (PR 4).
 - **Imports lose turns.** The workspace export mirrors only the last 10 runs and
   10 events per task
   ([WorkspaceConfigManager.swift:24](../../Astra/Services/Persistence/WorkspaceConfigManager.swift#L24-L33)),
@@ -315,12 +422,9 @@ so on tasks with more than 50 runs the two would disagree.
 - **Launch reading the typed record.** Read grants and Docker mounts would come
   from the typed record instead of parsing message text, leaving the typed event
   as the only owner.
-- **Edits to existing files made without a tool event**, for example from a
-  shell command. `TaskOutputDiscovery.filesChanged(during:)` could feed them in,
-  at the cost of noise.
+- **Shell edits to workspace files outside the task folder** for providers
+  without the Git-based detector.
 - **Other surfaces:**
-  - per-turn file lists under every agent response (today only the latest run
-    has one);
   - dates on the Files shelf;
   - search by date;
   - times in `current_state.json` for the agent.

@@ -506,12 +506,19 @@ public enum WorkspaceRecoveryService {
         return recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
     }
 
+    /// The returned task finishes when any import has; startup awaits it before
+    /// anything that reads the imported tasks, such as snapshot recovery.
+    /// `afterImport` runs right after an import that added a workspace, in the
+    /// same main-actor step, so nothing can start a run on an imported task
+    /// before it sees them.
+    @discardableResult
     public static func recoverMissingWorkspacesAfterLaunch(
         modelContext: ModelContext,
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
-        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) {
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        afterImport: @escaping @MainActor () -> Void = {}
+    ) -> Task<Void, Never> {
         Task { @MainActor in
             if extraRoots.isEmpty,
                includeDefaultRoots,
@@ -531,7 +538,9 @@ public enum WorkspaceRecoveryService {
             }
             let loadedConfigs = await loadWorkspaceConfigs(configs)
             guard !Task.isCancelled else { return }
-            _ = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs)
+            if recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs) > 0 {
+                afterImport()
+            }
         }
     }
 

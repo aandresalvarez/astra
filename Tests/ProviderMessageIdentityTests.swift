@@ -65,7 +65,7 @@ struct ProviderMessageIdentityTests {
         #expect(events.contains(.stats(inputTokens: 65359, outputTokens: 1200, costUSD: nil, durationMs: nil, turns: nil)))
     }
 
-    @Test("A completed Codex file change records every entry of changes[] once")
+    @Test("A Codex file change holds every entry of changes[] until its completion commits them")
     func codexFileChangesComeFromChanges() {
         let started = CodexStreamEventParser.parseIdentifiedAgentEvents(
             line: #"{"type":"item.started","item":{"id":"item_6","type":"file_change","changes":[{"path":"/w/answer.md","kind":"add"}]}}"#
@@ -74,10 +74,13 @@ struct ProviderMessageIdentityTests {
             line: #"{"type":"item.completed","item":{"id":"item_6","type":"file_change","changes":[{"path":"/w/answer.md","kind":"add"},{"path":"/w/notes.md","kind":"update"}],"status":"completed"}}"#
         )
 
-        #expect(started == [.control(type: "item.started.file_change")])
+        // Held under the item id from the start; the completion repeats them
+        // (the recorder keeps one per path) and its result commits them.
+        #expect(started == [.fileChange(path: "/w/answer.md", kind: "add", summary: nil, toolUseID: "item_6")])
         #expect(completed == [
-            .fileChange(path: "/w/answer.md", kind: "add", summary: nil),
-            .fileChange(path: "/w/notes.md", kind: "update", summary: nil)
+            .fileChange(path: "/w/answer.md", kind: "add", summary: nil, toolUseID: "item_6"),
+            .fileChange(path: "/w/notes.md", kind: "update", summary: nil, toolUseID: "item_6"),
+            .toolResult(id: "item_6", content: "", isError: false)
         ])
     }
 

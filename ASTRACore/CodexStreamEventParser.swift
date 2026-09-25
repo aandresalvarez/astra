@@ -102,8 +102,12 @@ public enum CodexStreamEventParser {
             return [commandToolUseEvent(from: item)]
         }
         if itemType == "file_change" {
-            // Recorded once the change is applied, on item.completed.
-            return [.control(type: "item.started.file_change")]
+            // Emitted at the start so the policy guard sees the paths before the
+            // patch lands. The item id makes the recorder hold them until the
+            // completion says whether the patch applied.
+            let itemID = string(in: item, keys: ["id", "call_id", "callId"])
+            let changes = fileChangeEvents(from: item, toolUseID: itemID)
+            return changes.isEmpty ? [.control(type: "item.started.file_change")] : changes
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             return [.control(type: "item.started.\(itemType)")]
@@ -128,8 +132,20 @@ public enum CodexStreamEventParser {
             return [.toolResult(id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item))]
         }
         if itemType == "file_change" {
-            let changes = fileChangeEvents(from: item)
-            return changes.isEmpty ? [.control(type: "item.completed.file_change")] : changes
+            let itemID = string(in: item, keys: ["id", "call_id", "callId"])
+            if let status = string(in: item, keys: ["status"])?.lowercased(),
+               failedItemStatuses.contains(status) {
+                // Drops the changes held since the start.
+                guard let itemID else { return [.control(type: "item.completed.file_change.\(status)")] }
+                return [.toolResult(id: itemID, content: "file_change \(status)", isError: true)]
+            }
+            let changes = fileChangeEvents(from: item, toolUseID: itemID)
+            guard !changes.isEmpty else { return [.control(type: "item.completed.file_change")] }
+            guard let itemID else { return changes }
+            // The changes again, for a completion with no start, then the
+            // result that commits whatever the item holds; the recorder keeps
+            // one per path. Empty content adds no transcript row.
+            return changes + [.toolResult(id: itemID, content: "", isError: false)]
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             // Every agent message is one keyed final, kept in order with the
@@ -186,9 +202,12 @@ public enum CodexStreamEventParser {
         return summary.isEmpty ? "command_execution completed" : summary
     }
 
+    /// A completed item in one of these states changed nothing on disk.
+    private static let failedItemStatuses: Set<String> = ["failed", "declined", "rejected", "cancelled", "canceled", "error"]
+
     /// One file change per entry of `changes[]`, where Codex lists them; an
     /// item that names its path directly is one change.
-    private static func fileChangeEvents(from item: [String: Any]) -> [AgentEvent] {
+    private static func fileChangeEvents(from item: [String: Any], toolUseID: String? = nil) -> [AgentEvent] {
         let pathKeys = ["path", "file_path", "filePath", "filename", "name"]
         let kindKeys = ["kind", "change_type", "changeType"]
         let entries = (item["changes"] as? [[String: Any]]).flatMap { $0.isEmpty ? nil : $0 } ?? [item]
@@ -197,7 +216,8 @@ public enum CodexStreamEventParser {
             let kind = string(in: entry, keys: kindKeys)
                 ?? string(in: item, keys: kindKeys + ["status"])
                 ?? "modified"
-            return .fileChange(path: path, kind: kind, summary: textValue(in: entry) ?? textValue(in: item))
+            let summary = textValue(in: entry) ?? textValue(in: item)
+            return .fileChange(path: path, kind: kind, summary: summary, toolUseID: toolUseID)
         }
     }
 
