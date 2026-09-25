@@ -253,6 +253,12 @@ worker compared — replays each, saves and exports the result, and only then
 removes it. Anything that changed the folder between the interruption and that
 launch is attributed to the interrupted run, since nothing on disk tells the
 two apart. Writing a run's baseline removes any other the task left behind.
+The task folder is provider-writable, so a baseline is read only up to its
+size limit, only as a regular file, and only when it names the folder it sits
+in and every path in it is one a walk could have produced. Every window's
+startup awaits the same recovery. A store rebuilt from workspace mirrors
+settles the runs and requests it imported in flight as soon as the import
+lands, so recovery compares them rather than skipping them as live.
 
 **Tests.**
 
@@ -297,6 +303,11 @@ two apart. Writing a run's baseline removes any other the task left behind.
     1 new, 2 edited` is its subtitle. Only the latest turn starts expanded.
   - A file appears under every turn that touched it, so a turn's list is
     complete. Clicking opens the current version; removed files are dimmed.
+  - An open turn shows its first 100 files and a "Show all N files" button:
+    the panel's lazy list holds the whole view as one row, so every row
+    shown is built at once.
+  - Relative tool paths resolve where the task runs (its pinned repository
+    or worktree), then in the workspace folder, which older runs ran in.
   - Turns before snapshot capture show new files only, recovered from
     `Artifact.createdAt`, and say so.
 - **Thread.** Each answer's changed-files button opens that turn's files, not
@@ -350,7 +361,9 @@ two apart. Writing a run's baseline removes any other the task left behind.
 
 Proposed:
 
-- "Turn N" is the Nth thing the user asked, with the goal counting as 1.
+- "Turn N" is the Nth thing the user asked, with the goal counting as 1. A
+  plan-created task records its ask as a plan message with the goal's text;
+  that message is turn 1, as the thread shows it once.
 - A run belongs to the message it was launched for (the `user.message` event's
   `run` link). If there is no link, it belongs to the latest ask before the run
   started. This keeps retries and plan steps in their ask's turn.

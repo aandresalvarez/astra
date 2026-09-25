@@ -181,6 +181,39 @@ struct TaskFileTurnsTests {
         #expect(entries?.map(\.displayPath) == ["api/Sources/App.swift"])
     }
 
+    @Test("A plan-created task's ask is its goal, so it counts once, as turn 1")
+    func goalEchoedByAPlanMessageIsOneTurn() {
+        let input = makeInput(
+            requests: [
+                TaskFileTurnsInput.Request(text: " Write the plan\n", requestedAt: at(1), runID: nil, isPlanMessage: true),
+                request("Next", at: 100)
+            ],
+            runs: [
+                run(at: 10, changes: [change("plan.md", .discovered, at: 11)]),
+                run(at: 110, changes: [change("next.md", .discovered, at: 111)])
+            ]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
+
+        #expect(turns.map(\.number) == [2, 1])
+        #expect(turns.map(\.request) == ["Next", " Write the plan\n"])
+    }
+
+    @Test("A relative path resolves where the task runs, then in the workspace folder")
+    func relativePathsResolveAgainstTheExecutionDirectory() {
+        var input = makeInput(runs: [run(at: 10, changes: [
+            TaskFileTurnsInput.Change(path: "Sources/App.swift", kind: .edit, timestamp: at(11)),
+            TaskFileTurnsInput.Change(path: ".astra/tasks/T1/plan.md", kind: .write, timestamp: at(12))
+        ])])
+        input.executionPath = "/repos/api"
+
+        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+
+        #expect(entries?.map(\.path) == [Self.folder + "/plan.md", "/repos/api/Sources/App.swift"])
+        #expect(entries?.map(\.displayPath) == ["plan.md", "api/Sources/App.swift"])
+    }
+
     @Test("A running turn shows before it has changed anything")
     func runningTurnIsListed() {
         let input = makeInput(
@@ -306,6 +339,15 @@ struct ShelfFileTurnsPresentationTests {
 
         let byRequest = ShelfFileTurnsPresentation.visibleTurns(turns, matching: "refresh")
         #expect(byRequest.first?.entries.count == 2)
+    }
+
+    @Test("An open turn shows its first hundred files until the user asks for all of them")
+    func openTurnShowsAPreviewOfItsFiles() {
+        let turn = makeTurn(entries: (0..<150).map { entry("out/\($0).csv", .new) })
+
+        #expect(ShelfFileTurnsPresentation.shownEntries(of: turn, showsAll: false).count == 100)
+        #expect(ShelfFileTurnsPresentation.shownEntries(of: turn, showsAll: true).count == 150)
+        #expect(ShelfFileTurnsPresentation.showAllTitle(for: turn) == "Show all 150 files")
     }
 
     private func makeTurn(

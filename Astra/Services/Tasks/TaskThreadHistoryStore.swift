@@ -84,6 +84,7 @@ actor TaskThreadHistoryStore {
         taskID: UUID,
         taskFolder: String,
         workspacePath: String,
+        executionPath: String? = nil,
         additionalRoots: [String] = [],
         pendingRuns: [TaskFileTurnsReader.PendingRun] = []
     ) throws -> [TaskFileTurn] {
@@ -91,6 +92,7 @@ actor TaskThreadHistoryStore {
             taskID: taskID,
             taskFolder: taskFolder,
             workspacePath: workspacePath,
+            executionPath: executionPath,
             additionalRoots: additionalRoots,
             pendingRuns: pendingRuns,
             modelContext: makeContext()

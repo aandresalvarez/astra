@@ -85,17 +85,43 @@ extension TaskFolderRunSnapshot {
         }
     }
 
+    /// The task folder is provider-writable, so nothing in the file is taken
+    /// on trust: the read stops past `maximumBaselineBytes`, and a baseline
+    /// that names a folder other than the one it sits in, or a path outside
+    /// it, is unusable. Recovery walks the folder the baseline names and
+    /// records removals under its paths, so either would let a run's record
+    /// claim files it never saw.
     static func loadBaseline(at url: URL, runID: UUID) -> BaselineLoad {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return .missing }
-        guard let size = (attributes[.size] as? NSNumber)?.intValue, size <= maximumBaselineBytes,
-              let data = try? Data(contentsOf: url),
+        let taskFolder = url.deletingLastPathComponent().deletingLastPathComponent()
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let data = try? HostFileAccessBroker().readData(
+                  at: url,
+                  maxBytes: maximumBaselineBytes + 1,
+                  keeping: .prefix,
+                  intent: .astraManagedStorage(root: taskFolder)
+              ),
+              data.count <= maximumBaselineBytes,
               let persisted = try? JSONDecoder().decode(PersistedBaseline.self, from: data),
               persisted.version == PersistedBaseline.currentVersion,
               persisted.runID == runID,
-              persisted.entries.count <= entryLimit else {
+              TaskOutputArtifactPathPolicy.ResolvedRoot(persisted.taskFolder).standardized
+                  == TaskOutputArtifactPathPolicy.ResolvedRoot(taskFolder.path).standardized,
+              persisted.entries.count <= entryLimit,
+              persisted.entries.keys.allSatisfy(isWalkablePath) else {
             return .unreadable
         }
         return .loaded(TaskFolderRunSnapshot(root: .init(persisted.taskFolder), entries: persisted.entries))
+    }
+
+    /// A key a walk could have produced: relative, with no empty, `.`, or
+    /// `..` component, and one the Files shelf would show.
+    static func isWalkablePath(_ path: String) -> Bool {
+        let isContained = !path.isEmpty && path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy {
+            !$0.isEmpty && $0 != "." && $0 != ".."
+        }
+        return isContained &&
+            TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(path, context: .taskFolder) != nil
     }
 
     static func removeBaseline(at url: URL) {
@@ -178,7 +204,9 @@ extension TaskFolderRunSnapshot {
     private static func recover(_ run: TaskRun, task: AgentTask, baselineURL: URL) async -> RecoveryOutcome {
         let runID = run.id
         let recordedJSON = run.fileChangesJSON
-        let executionPath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        // Where the run's tools resolved relative paths, unless it ran in an
+        // isolated copy that is gone by now.
+        let executionPath = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         let runStartedAt = run.startedAt
         let started = Date()
         let outcome = await Task.detached(priority: .utility) { () -> Result<Observation, ObservationSkip> in

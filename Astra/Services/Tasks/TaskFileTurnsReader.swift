@@ -29,6 +29,7 @@ enum TaskFileTurnsReader {
         taskID: UUID,
         taskFolder: String,
         workspacePath: String,
+        executionPath: String? = nil,
         additionalRoots: [String] = [],
         pendingRuns: [PendingRun] = [],
         modelContext: ModelContext
@@ -69,7 +70,12 @@ enum TaskFileTurnsReader {
             goal: task.goal,
             createdAt: task.createdAt,
             requests: messages.map {
-                TaskFileTurnsInput.Request(text: $0.payload, requestedAt: $0.timestamp, runID: $0.run?.id)
+                TaskFileTurnsInput.Request(
+                    text: $0.payload,
+                    requestedAt: $0.timestamp,
+                    runID: $0.run?.id,
+                    isPlanMessage: $0.type == planUserMessage
+                )
             },
             runs: overlaying(pendingRuns, on: runs.map { run in
                 TaskFileTurnsInput.Run(
@@ -85,6 +91,7 @@ enum TaskFileTurnsReader {
             indexedFiles: artifacts.map { TaskFileTurnsInput.IndexedFile(path: $0.path, indexedAt: $0.createdAt) },
             taskFolder: taskFolder,
             workspacePath: workspacePath,
+            executionPath: executionPath,
             inheritedTaskFolders: inheritedTaskFolders,
             additionalRoots: additionalRoots
         )

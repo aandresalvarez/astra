@@ -25,6 +25,8 @@ struct ShelfFileTurnsView: View {
     @State private var hasLoaded = false
     /// Turns whose expansion the user flipped from the default.
     @State private var flippedTurns: Set<Int> = []
+    /// Turns showing every file rather than the first `entryPreviewLimit`.
+    @State private var fullyShownTurns: Set<Int> = []
 
     private struct RefreshKey: Equatable {
         let taskID: UUID
@@ -121,8 +123,27 @@ struct ShelfFileTurnsView: View {
             .accessibilityIdentifier("FilesShelfTurn-\(turn.number)")
 
             if isExpanded {
-                ForEach(turn.entries) { entry in
+                // The panel's lazy list holds this view as one row, so every
+                // row here is built at once; a bulk run's thousands of files
+                // wait for the user to ask for them.
+                let showsAll = fullyShownTurns.contains(turn.number)
+                ForEach(ShelfFileTurnsPresentation.shownEntries(of: turn, showsAll: showsAll)) { entry in
                     entryRow(entry)
+                }
+                if !showsAll, turn.entries.count > ShelfFileTurnsPresentation.entryPreviewLimit {
+                    Button {
+                        fullyShownTurns.insert(turn.number)
+                    } label: {
+                        Text(ShelfFileTurnsPresentation.showAllTitle(for: turn))
+                            .font(Stanford.caption(11).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                            .padding(.leading, 43)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("FilesShelfTurnShowAll-\(turn.number)")
                 }
             }
         }
@@ -254,6 +275,7 @@ struct ShelfFileTurnsView: View {
             taskID: task.id,
             taskFolder: access.taskFolder,
             workspacePath: access.effectiveWorkspacePath,
+            executionPath: access.codeWorkingDirectory,
             additionalRoots: additionalRoots,
             pendingRuns: pendingRuns
         )) ?? []
@@ -273,6 +295,17 @@ struct ShelfFileTurnsView: View {
 /// can pin them.
 enum ShelfFileTurnsPresentation {
     static let newFilesOnlyNote = "Older turns list new files only."
+
+    /// Rows an open turn shows before "Show all".
+    static let entryPreviewLimit = 100
+
+    static func shownEntries(of turn: TaskFileTurn, showsAll: Bool) -> ArraySlice<TaskFileTurn.Entry> {
+        showsAll ? turn.entries[...] : turn.entries.prefix(entryPreviewLimit)
+    }
+
+    static func showAllTitle(for turn: TaskFileTurn) -> String {
+        "Show all \(turn.entries.count) files"
+    }
 
     /// The first line the user wrote; a message that was only attachments
     /// reads as such.

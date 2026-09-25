@@ -167,6 +167,56 @@ struct TaskFolderRunSnapshotRecoveryTests {
         }
     }
 
+    @Test("A baseline that names another folder, or a path outside its own, is not loaded")
+    func forgedBaselineIsNotLoaded() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        try FileManager.default.createDirectory(
+            at: fixture.baselineURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let entry = TaskFolderRunSnapshot.Entry(
+            size: 1, modifiedAt: nil, statusChangedAt: nil, fileIdentifier: nil, contentFingerprint: nil
+        )
+        let forgeries: [(folder: String, key: String)] = [
+            (fixture.workspace.path, "plan.md"),
+            (fixture.folder.path, "../../outside.md"),
+            (fixture.folder.path, "/etc/hosts"),
+            (fixture.folder.path, "outputs/turn_001.md")
+        ]
+        for forgery in forgeries {
+            let persisted = TaskFolderRunSnapshot.PersistedBaseline(
+                version: TaskFolderRunSnapshot.PersistedBaseline.currentVersion,
+                runID: fixture.run.id,
+                taskFolder: forgery.folder,
+                entries: [forgery.key: entry]
+            )
+            try JSONEncoder().encode(persisted).write(to: fixture.baselineURL)
+            guard case .unreadable = TaskFolderRunSnapshot.loadBaseline(at: fixture.baselineURL, runID: fixture.run.id) else {
+                Issue.record("Expected \(forgery) to be unreadable")
+                continue
+            }
+        }
+        #expect(TaskFolderRunSnapshot.isWalkablePath("reports/q3.csv"))
+    }
+
+    @Test("A baseline that is not a regular file is not opened")
+    func baselineThatIsNotAFileIsNotOpened() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        try FileManager.default.createDirectory(
+            at: fixture.baselineURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        // Opening a FIFO for reading would block until something writes it.
+        #expect(mkfifo(fixture.baselineURL.path, 0o600) == 0)
+
+        guard case .unreadable = TaskFolderRunSnapshot.loadBaseline(at: fixture.baselineURL, runID: fixture.run.id) else {
+            Issue.record("Expected a FIFO baseline to be unreadable")
+            return
+        }
+    }
+
     @Test("A persisted baseline reads back exactly, fingerprints and times included")
     func persistedBaselineRoundTrips() async throws {
         let fixture = try makeFixture()

@@ -49,6 +49,8 @@ struct TaskFileTurnsInput: Sendable {
         let requestedAt: Date
         /// The run this message launched, when the runtime linked one.
         let runID: UUID?
+        /// A plan-created task records the user's ask as a plan message.
+        var isPlanMessage = false
     }
 
     struct Change: Sendable {
@@ -78,8 +80,12 @@ struct TaskFileTurnsInput: Sendable {
     let runs: [Run]
     let indexedFiles: [IndexedFile]
     let taskFolder: String
-    /// The directory runs execute in; relative tool paths resolve against it.
+    /// The task's workspace folder.
     let workspacePath: String
+    /// Where the task's runs execute when that is not the workspace folder:
+    /// the repository or worktree it is pinned to. Relative tool paths
+    /// resolve against it first, and its files are listed with its name.
+    var executionPath: String?
     /// The folders of the tasks this one was forked from, nearest first. A
     /// fork copies its source's runs as they were, so their paths name those
     /// folders; the same relative path is this task's copy of the file.
@@ -98,14 +104,21 @@ enum TaskFileTurns {
         _ input: TaskFileTurnsInput,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> [TaskFileTurn] {
-        let requests = [TaskFileTurnsInput.Request(text: input.goal, requestedAt: input.createdAt, runID: nil)]
-            + input.requests.sorted { $0.requestedAt < $1.requestedAt }
+        // A plan-created task already holds its goal as a plan message; the
+        // thread shows the ask once, and it is one turn here too.
+        let trimmedGoal = input.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let goalIsARequest = input.requests.contains {
+            $0.isPlanMessage && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedGoal
+        }
+        let goal = TaskFileTurnsInput.Request(text: input.goal, requestedAt: input.createdAt, runID: nil)
+        let requests = (goalIsARequest ? [] : [goal]) + input.requests.sorted { $0.requestedAt < $1.requestedAt }
         let runs = input.runs.sorted { $0.startedAt < $1.startedAt }
         let runsByTurn = Dictionary(grouping: runs) { turnIndex(for: $0, in: requests) }
         let paths = PathClassifier(
             taskFolder: input.taskFolder,
             inheritedTaskFolders: input.inheritedTaskFolders,
             workspacePath: input.workspacePath,
+            executionPath: input.executionPath,
             additionalRoots: input.additionalRoots
         )
         let indexedByRun = indexedFilesWithoutARunRecord(input.indexedFiles, runs: runs, paths: paths)
@@ -282,13 +295,22 @@ enum TaskFileTurns {
         }
 
         private let taskFolderPath: String
-        private let workspacePath: String
+        /// What a relative path is resolved against, in order: where the task
+        /// runs, then the workspace folder, which older runs ran in.
+        private let resolutionBases: [String]
         private let roots: [Root]
         private var cache: [String: ClassifiedPath?] = [:]
 
-        init(taskFolder: String, inheritedTaskFolders: [String], workspacePath: String, additionalRoots: [String]) {
+        init(
+            taskFolder: String,
+            inheritedTaskFolders: [String],
+            workspacePath: String,
+            executionPath: String?,
+            additionalRoots: [String]
+        ) {
             self.taskFolderPath = taskFolder
-            self.workspacePath = workspacePath
+            let executionPath = executionPath.flatMap { $0.isEmpty || $0 == workspacePath ? nil : $0 }
+            self.resolutionBases = [executionPath, workspacePath].compactMap { $0 }
             let task = TaskOutputArtifactPathPolicy.ResolvedRoot(taskFolder)
             let workspace = TaskOutputArtifactPathPolicy.ResolvedRoot(workspacePath)
             // The task folders sit inside the workspace, so they are tried first.
@@ -302,9 +324,10 @@ enum TaskFileTurns {
                 keyPrefix: "workspace",
                 displayPrefix: ""
             ))
-            for path in additionalRoots {
+            var added: Set<String> = [workspace.standardized]
+            for path in additionalRoots + [executionPath].compactMap({ $0 }) {
                 let root = TaskOutputArtifactPathPolicy.ResolvedRoot(path)
-                guard root.standardized != workspace.standardized else { continue }
+                guard added.insert(root.standardized).inserted else { continue }
                 roots.append(Root(
                     root: root,
                     context: .workspace,
@@ -324,14 +347,22 @@ enum TaskFileTurns {
         }
 
         private func uncachedClassify(_ path: String) -> ClassifiedPath? {
-            // Older Claude runs recorded paths relative to the workspace, and
-            // `URL(fileURLWithPath:)` would resolve those against the app's own
-            // working directory instead.
-            let absolute = TaskArtifactPathNormalizer.normalizedPath(
-                path,
-                workspacePath: workspacePath,
-                taskFolder: taskFolderPath
-            )
+            // Providers record some paths relative to where they ran, and
+            // `URL(fileURLWithPath:)` would resolve those against the app's
+            // own working directory instead.
+            let isAbsolute = path.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/")
+            for base in isAbsolute ? [""] : resolutionBases {
+                let absolute = TaskArtifactPathNormalizer.normalizedPath(
+                    path,
+                    workspacePath: base,
+                    taskFolder: taskFolderPath
+                )
+                if let classified = classify(absolute: absolute) { return classified }
+            }
+            return nil
+        }
+
+        private func classify(absolute: String) -> ClassifiedPath? {
             guard absolute.hasPrefix("/") else { return nil }
             let standardized = URL(fileURLWithPath: absolute).standardizedFileURL.path
             for root in roots {
