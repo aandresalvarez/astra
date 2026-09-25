@@ -1245,7 +1245,10 @@ enum AgentEventRecorder {
                 "agent_id": taskId
             ])
 
-        case .teammateCompleted(let taskId, let name):
+        case .teammateCompleted(let taskId, let parsedName):
+            // A completion frame rarely carries the description its start
+            // was named from, so the started event owns the name.
+            let name = startedTeammateName(agentId: taskId, taskID: task.id, modelContext: modelContext) ?? parsedName
             modelContext.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.Team.agentCompleted,
@@ -1274,5 +1277,25 @@ enum AgentEventRecorder {
         case .teamMessage(let from, let to, let content):
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Team.message, payload: content, run: run, agentName: from, agentId: to))
         }
+    }
+
+    /// The name this task's latest `team.agent.started` event gave the agent
+    /// with `agentId`, or nil when that start was never recorded.
+    @MainActor
+    private static func startedTeammateName(agentId: String, taskID: UUID, modelContext: ModelContext) -> String? {
+        guard !agentId.isEmpty else { return nil }
+        let startedType = TaskEventTypes.Team.agentStarted.rawValue
+        var descriptor = FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> { event in
+                event.type == startedType && event.agentId == agentId && event.task?.id == taskID
+            },
+            sortBy: [
+                SortDescriptor(\TaskEvent.timestamp, order: .reverse),
+                SortDescriptor(\TaskEvent.id, order: .reverse)
+            ]
+        )
+        descriptor.fetchLimit = 1
+        guard let name = (try? modelContext.fetch(descriptor).first)?.agentName, !name.isEmpty else { return nil }
+        return name
     }
 }
