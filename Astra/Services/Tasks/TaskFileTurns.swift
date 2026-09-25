@@ -78,7 +78,14 @@ struct TaskFileTurnsInput: Sendable {
     let runs: [Run]
     let indexedFiles: [IndexedFile]
     let taskFolder: String
+    /// The directory runs execute in; relative tool paths resolve against it.
     let workspacePath: String
+    /// The folders of the tasks this one was forked from, nearest first. A
+    /// fork copies its source's runs as they were, so their paths name those
+    /// folders; the same relative path is this task's copy of the file.
+    var inheritedTaskFolders: [String] = []
+    /// The workspace's other folders the Files shelf browses.
+    var additionalRoots: [String] = []
 }
 
 enum TaskFileTurns {
@@ -95,7 +102,12 @@ enum TaskFileTurns {
             + input.requests.sorted { $0.requestedAt < $1.requestedAt }
         let runs = input.runs.sorted { $0.startedAt < $1.startedAt }
         let runsByTurn = Dictionary(grouping: runs) { turnIndex(for: $0, in: requests) }
-        let paths = PathClassifier(taskFolder: input.taskFolder, workspacePath: input.workspacePath)
+        let paths = PathClassifier(
+            taskFolder: input.taskFolder,
+            inheritedTaskFolders: input.inheritedTaskFolders,
+            workspacePath: input.workspacePath,
+            additionalRoots: input.additionalRoots
+        )
         let indexedByRun = indexedFilesWithoutARunRecord(input.indexedFiles, runs: runs, paths: paths)
 
         var touchedBefore = Set<String>()
@@ -259,17 +271,49 @@ enum TaskFileTurns {
     /// workspace, by the Files shelf's rules — and names each relative to the
     /// folder that holds it.
     private final class PathClassifier {
+        private struct Root {
+            let root: TaskOutputArtifactPathPolicy.ResolvedRoot
+            let context: TaskOutputArtifactPathPolicy.RelativePathContext
+            /// Where a file found under this root is opened from: this task's
+            /// own folder, even for a path a forked-from task recorded.
+            let home: String
+            let keyPrefix: String
+            let displayPrefix: String
+        }
+
         private let taskFolderPath: String
         private let workspacePath: String
-        private let taskFolder: TaskOutputArtifactPathPolicy.ResolvedRoot
-        private let workspace: TaskOutputArtifactPathPolicy.ResolvedRoot
+        private let roots: [Root]
         private var cache: [String: ClassifiedPath?] = [:]
 
-        init(taskFolder: String, workspacePath: String) {
+        init(taskFolder: String, inheritedTaskFolders: [String], workspacePath: String, additionalRoots: [String]) {
             self.taskFolderPath = taskFolder
             self.workspacePath = workspacePath
-            self.taskFolder = .init(taskFolder)
-            self.workspace = .init(workspacePath)
+            let task = TaskOutputArtifactPathPolicy.ResolvedRoot(taskFolder)
+            let workspace = TaskOutputArtifactPathPolicy.ResolvedRoot(workspacePath)
+            // The task folders sit inside the workspace, so they are tried first.
+            var roots = ([taskFolder] + inheritedTaskFolders).map {
+                Root(root: .init($0), context: .taskFolder, home: task.standardized, keyPrefix: "task", displayPrefix: "")
+            }
+            roots.append(Root(
+                root: workspace,
+                context: .workspace,
+                home: workspace.standardized,
+                keyPrefix: "workspace",
+                displayPrefix: ""
+            ))
+            for path in additionalRoots {
+                let root = TaskOutputArtifactPathPolicy.ResolvedRoot(path)
+                guard root.standardized != workspace.standardized else { continue }
+                roots.append(Root(
+                    root: root,
+                    context: .workspace,
+                    home: root.standardized,
+                    keyPrefix: "root:\(root.standardized)",
+                    displayPrefix: (root.standardized as NSString).lastPathComponent + "/"
+                ))
+            }
+            self.roots = roots.filter { !$0.root.isEmpty }
         }
 
         func classify(_ path: String) -> ClassifiedPath? {
@@ -290,20 +334,18 @@ enum TaskFileTurns {
             )
             guard absolute.hasPrefix("/") else { return nil }
             let standardized = URL(fileURLWithPath: absolute).standardizedFileURL.path
-            // The task folder sits inside the workspace, so it is tried first.
-            for (root, context, prefix) in [
-                (taskFolder, TaskOutputArtifactPathPolicy.RelativePathContext.taskFolder, "task"),
-                (workspace, .workspace, "workspace")
-            ] where !root.isEmpty {
-                guard let relative = TaskOutputArtifactPathPolicy.relativePath(standardized, under: root) else { continue }
+            for root in roots {
+                guard let relative = TaskOutputArtifactPathPolicy.relativePath(standardized, under: root.root) else {
+                    continue
+                }
                 guard let visible = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
                     relative,
-                    context: context
+                    context: root.context
                 ) else { return nil }
                 return ClassifiedPath(
-                    key: "\(prefix):\(visible)",
-                    path: root.standardized + "/" + visible,
-                    displayPath: visible
+                    key: "\(root.keyPrefix):\(visible)",
+                    path: root.home + "/" + visible,
+                    displayPath: root.displayPrefix + visible
                 )
             }
             // A temporary file, a sibling workspace, anything else on the

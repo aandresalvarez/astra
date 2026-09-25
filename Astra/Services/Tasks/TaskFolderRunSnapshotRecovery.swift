@@ -31,6 +31,11 @@ extension TaskFolderRunSnapshot {
 
     static let baselineFilePrefix = "task_folder_baseline_"
 
+    /// Larger than any baseline a walk within `entryLimit` writes. The task
+    /// folder is provider-writable, so a file past this is read as unusable
+    /// rather than loaded.
+    static let maximumBaselineBytes = 32 * 1_024 * 1_024
+
     static func baselineURL(taskFolder: String, runID: UUID) -> URL {
         URL(fileURLWithPath: taskFolder, isDirectory: true)
             .appendingPathComponent("diagnostics", isDirectory: true)
@@ -55,7 +60,9 @@ extension TaskFolderRunSnapshot {
 
     /// Also removes every other baseline in the folder. A task runs one turn
     /// at a time, so any other is left from a run that ended without cleaning
-    /// up — its recovery failed, or it was superseded before a relaunch.
+    /// up, and once this run changes the folder, comparing against it would
+    /// attribute this run's changes to that one. So a baseline recovery put
+    /// off for the next launch is superseded by the next run of its task.
     static func writeBaseline(_ baseline: TaskFolderRunSnapshot, runID: UUID) -> Bool {
         let url = baselineURL(taskFolder: baseline.root.standardized, runID: runID)
         let directory = url.deletingLastPathComponent()
@@ -79,11 +86,13 @@ extension TaskFolderRunSnapshot {
     }
 
     static func loadBaseline(at url: URL, runID: UUID) -> BaselineLoad {
-        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
-        guard let data = try? Data(contentsOf: url),
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return .missing }
+        guard let size = (attributes[.size] as? NSNumber)?.intValue, size <= maximumBaselineBytes,
+              let data = try? Data(contentsOf: url),
               let persisted = try? JSONDecoder().decode(PersistedBaseline.self, from: data),
               persisted.version == PersistedBaseline.currentVersion,
-              persisted.runID == runID else {
+              persisted.runID == runID,
+              persisted.entries.count <= entryLimit else {
             return .unreadable
         }
         return .loaded(TaskFolderRunSnapshot(root: .init(persisted.taskFolder), entries: persisted.entries))
@@ -160,7 +169,8 @@ extension TaskFolderRunSnapshot {
         case recovered
         /// Nothing this baseline could ever tell: unreadable, or another run's.
         case unusable
-        /// The folder could not be walked this time; the next launch tries again.
+        /// The folder could not be walked this time; the next launch tries
+        /// again, unless a later run of the task supersedes the baseline first.
         case retryLater
     }
 

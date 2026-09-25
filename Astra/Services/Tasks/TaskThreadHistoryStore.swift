@@ -84,12 +84,14 @@ actor TaskThreadHistoryStore {
         taskID: UUID,
         taskFolder: String,
         workspacePath: String,
+        additionalRoots: [String] = [],
         pendingRuns: [TaskFileTurnsReader.PendingRun] = []
     ) throws -> [TaskFileTurn] {
         guard let input = try TaskFileTurnsReader.input(
             taskID: taskID,
             taskFolder: taskFolder,
             workspacePath: workspacePath,
+            additionalRoots: additionalRoots,
             pendingRuns: pendingRuns,
             modelContext: makeContext()
         ) else { return [] }

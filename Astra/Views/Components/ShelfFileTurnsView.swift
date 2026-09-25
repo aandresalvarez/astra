@@ -17,6 +17,8 @@ struct ShelfFileTurnsView: View {
     var onOpenGeneratedFile: ((String) -> Void)?
     /// Changes when the user asks Browse files to refresh.
     var refreshToken = 0
+    /// Browse files' "Show hidden paths": off hides dot-named files and folders.
+    var showsHiddenPaths = false
 
     @Environment(\.modelContext) private var modelContext
     @State private var turns: [TaskFileTurn] = []
@@ -31,7 +33,11 @@ struct ShelfFileTurnsView: View {
     }
 
     var body: some View {
-        let visible = ShelfFileTurnsPresentation.visibleTurns(turns, matching: searchText)
+        let visible = ShelfFileTurnsPresentation.visibleTurns(
+            turns,
+            matching: searchText,
+            showsHiddenPaths: showsHiddenPaths
+        )
         VStack(alignment: .leading, spacing: 0) {
             if !hasLoaded {
                 HStack(spacing: 8) {
@@ -240,12 +246,15 @@ struct ShelfFileTurnsView: View {
             .filter { $0.task?.id == task.id }
             .map(TaskFileTurnsReader.PendingRun.init)
         let access = TaskWorkspaceAccess(task: task)
+        let additionalRoots = ([task.workspace?.primaryPath].compactMap { $0 } + (task.workspace?.additionalPaths ?? []))
+            .filter { !$0.isEmpty && $0 != access.effectiveWorkspacePath }
         let store = TaskThreadHistoryStore(container: modelContext.container)
         let started = Date()
         let loaded = (try? await store.fileTurns(
             taskID: task.id,
             taskFolder: access.taskFolder,
             workspacePath: access.effectiveWorkspacePath,
+            additionalRoots: additionalRoots,
             pendingRuns: pendingRuns
         )) ?? []
         guard !Task.isCancelled else { return }
@@ -327,22 +336,28 @@ enum ShelfFileTurnsPresentation {
     }
 
     /// Turns with a file whose path matches, showing only the matches; a
-    /// request whose text matches keeps all of its files.
-    static func visibleTurns(_ turns: [TaskFileTurn], matching searchText: String) -> [TaskFileTurn] {
+    /// request whose text matches keeps all of its files. Without
+    /// `showsHiddenPaths`, dot-named files and folders are left out, as the
+    /// Folders organization leaves them out.
+    static func visibleTurns(
+        _ turns: [TaskFileTurn],
+        matching searchText: String,
+        showsHiddenPaths: Bool = true
+    ) -> [TaskFileTurn] {
+        let shown = showsHiddenPaths ? turns : turns.compactMap { turn -> TaskFileTurn? in
+            let entries = turn.entries.filter { entry in
+                !entry.displayPath.split(separator: "/").contains { $0.hasPrefix(".") }
+            }
+            guard !entries.isEmpty || turn.isRunning else { return nil }
+            return turn.replacingEntries(entries)
+        }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return turns }
-        return turns.compactMap { turn in
+        guard !query.isEmpty else { return shown }
+        return shown.compactMap { turn in
             if turn.request.localizedCaseInsensitiveContains(query) { return turn }
             let matches = turn.entries.filter { $0.displayPath.localizedCaseInsensitiveContains(query) }
             guard !matches.isEmpty else { return nil }
-            return TaskFileTurn(
-                number: turn.number,
-                request: turn.request,
-                requestedAt: turn.requestedAt,
-                isRunning: turn.isRunning,
-                entries: matches,
-                listsNewFilesOnly: turn.listsNewFilesOnly
-            )
+            return turn.replacingEntries(matches)
         }
     }
 
@@ -353,4 +368,17 @@ enum ShelfFileTurnsPresentation {
         formatter.doesRelativeDateFormatting = true
         return formatter
     }()
+}
+
+private extension TaskFileTurn {
+    func replacingEntries(_ entries: [Entry]) -> TaskFileTurn {
+        TaskFileTurn(
+            number: number,
+            request: request,
+            requestedAt: requestedAt,
+            isRunning: isRunning,
+            entries: entries,
+            listsNewFilesOnly: listsNewFilesOnly
+        )
+    }
 }

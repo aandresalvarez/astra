@@ -155,6 +155,32 @@ struct TaskFileTurnsTests {
         #expect(entries?.map(\.displayPath) == ["answer.md"])
     }
 
+    @Test("A fork's copied runs name the source task's folder; their files open from the fork's")
+    func forkedHistoryMapsOntoTheForksFolder() {
+        var input = makeInput(runs: [run(at: 10, changes: [
+            TaskFileTurnsInput.Change(path: "/ws/.astra/tasks/PARENT/plan.md", kind: .write, timestamp: at(11))
+        ])])
+        input.inheritedTaskFolders = ["/ws/.astra/tasks/PARENT"]
+
+        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+
+        #expect(entries?.map(\.path) == [Self.folder + "/plan.md"])
+        #expect(entries?.map(\.displayPath) == ["plan.md"])
+    }
+
+    @Test("Files under the workspace's additional folders are listed under that folder's name")
+    func additionalWorkspaceRootsAreBrowsable() {
+        var input = makeInput(runs: [run(at: 10, changes: [
+            TaskFileTurnsInput.Change(path: "/repos/api/Sources/App.swift", kind: .edit, timestamp: at(11))
+        ])])
+        input.additionalRoots = ["/repos/api"]
+
+        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+
+        #expect(entries?.map(\.path) == ["/repos/api/Sources/App.swift"])
+        #expect(entries?.map(\.displayPath) == ["api/Sources/App.swift"])
+    }
+
     @Test("A running turn shows before it has changed anything")
     func runningTurnIsListed() {
         let input = makeInput(
@@ -250,6 +276,21 @@ struct ShelfFileTurnsPresentationTests {
     func titleIsTheFirstLine() {
         #expect(ShelfFileTurnsPresentation.title(for: makeTurn(request: "\n  Fix the README\nand more")) == "Fix the README")
         #expect(ShelfFileTurnsPresentation.title(for: makeTurn(request: "Attached files:\n- /tmp/a.png")) == "Attached files")
+    }
+
+    @Test("Hidden files stay out unless Show hidden paths is on, as in Folders")
+    func hiddenFilesFollowThePreference() {
+        let turns = [
+            makeTurn(number: 2, entries: [entry(".env", .new)]),
+            makeTurn(number: 1, entries: [entry("config/.secrets/key.md", .edited), entry("plan.md", .new)])
+        ]
+
+        let hidden = ShelfFileTurnsPresentation.visibleTurns(turns, matching: "", showsHiddenPaths: false)
+        #expect(hidden.map(\.number) == [1])
+        #expect(hidden.first?.entries.map(\.displayPath) == ["plan.md"])
+
+        let shown = ShelfFileTurnsPresentation.visibleTurns(turns, matching: "", showsHiddenPaths: true)
+        #expect(shown.map { $0.entries.count } == [1, 2])
     }
 
     @Test("Search keeps matching files, or every file of a request whose text matches")

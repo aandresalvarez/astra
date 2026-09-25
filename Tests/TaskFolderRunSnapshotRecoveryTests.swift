@@ -148,6 +148,25 @@ struct TaskFolderRunSnapshotRecoveryTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.baselineURL.path))
     }
 
+    @Test("A baseline file past the size limit is read as unusable, not loaded")
+    func oversizedBaselineIsNotLoaded() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        try FileManager.default.createDirectory(
+            at: fixture.baselineURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        #expect(FileManager.default.createFile(atPath: fixture.baselineURL.path, contents: Data()))
+        let handle = try FileHandle(forWritingTo: fixture.baselineURL)
+        try handle.truncate(atOffset: UInt64(TaskFolderRunSnapshot.maximumBaselineBytes + 1))
+        try handle.close()
+
+        guard case .unreadable = TaskFolderRunSnapshot.loadBaseline(at: fixture.baselineURL, runID: fixture.run.id) else {
+            Issue.record("Expected an oversized baseline to be unreadable")
+            return
+        }
+    }
+
     @Test("A persisted baseline reads back exactly, fingerprints and times included")
     func persistedBaselineRoundTrips() async throws {
         let fixture = try makeFixture()

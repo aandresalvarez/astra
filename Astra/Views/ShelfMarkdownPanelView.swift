@@ -427,11 +427,12 @@ struct ShelfMarkdownPanelView: View {
                 fileNavigatorListSurface {
                     ShelfFileTurnsView(
                         task: task,
-                        searchText: fileSearchText,
+                        searchText: appliedFileSearchText,
                         selectedPath: session.fileURL?.path,
                         onOpen: openTurnFile,
                         onOpenGeneratedFile: onOpenGeneratedFile,
-                        refreshToken: fileIndex.revision
+                        refreshToken: fileIndex.revision,
+                        showsHiddenPaths: showHiddenWorkspacePaths
                     )
                     .id(task.id)
                 }

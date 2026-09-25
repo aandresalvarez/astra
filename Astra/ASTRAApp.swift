@@ -888,7 +888,9 @@ public struct ASTRAApp: App {
         }
 
         if !skipWorkspaceRecovery {
-            WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContext)
+            workspaceRecoveryAfterLaunch = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+                modelContext: modelContext
+            )
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
         // (runtime.loadPluginCatalog()), which runs synchronously in
@@ -914,6 +916,9 @@ public struct ASTRAApp: App {
     }
 
     @MainActor private static var hasRecoveredTaskFolderSnapshots = false
+    /// Rebuilding workspaces from their mirrors, when the store has none; the
+    /// tasks it imports may hold baselines to recover.
+    @MainActor private static var workspaceRecoveryAfterLaunch: Task<Void, Never>?
 
     /// Compares every task-folder baseline a run left behind — interrupted by
     /// a crash, or cancelled by a quit before its worker compared — after
@@ -932,6 +937,7 @@ public struct ASTRAApp: App {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased()
             )
+        await workspaceRecoveryAfterLaunch?.value
         await TaskFolderRunSnapshot.recoverPersistedBaselines(
             modelContext: modelContext,
             autoExportWorkspaces: !skipWorkspaceRecovery

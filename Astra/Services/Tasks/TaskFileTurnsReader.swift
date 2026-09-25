@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 /// Reads a task's whole history into `TaskFileTurnsInput`: every run, not the
 /// thread's window of recent ones, because turn numbers count the whole task.
@@ -28,6 +29,7 @@ enum TaskFileTurnsReader {
         taskID: UUID,
         taskFolder: String,
         workspacePath: String,
+        additionalRoots: [String] = [],
         pendingRuns: [PendingRun] = [],
         modelContext: ModelContext
     ) throws -> TaskFileTurnsInput? {
@@ -53,6 +55,16 @@ enum TaskFileTurnsReader {
         artifactDescriptor.propertiesToFetch = [\.path, \.createdAt]
         let artifacts = try modelContext.fetch(artifactDescriptor)
 
+        var inheritedTaskFolders: [String] = []
+        var visited: Set<UUID> = [taskID]
+        var ancestorID = task.forkedFromID
+        while let id = ancestorID, visited.insert(id).inserted {
+            inheritedTaskFolders.append(WorkspaceFileLayout.readableTaskFolder(workspacePath: workspacePath, taskID: id))
+            var ancestorDescriptor = FetchDescriptor<AgentTask>(predicate: #Predicate<AgentTask> { $0.id == id })
+            ancestorDescriptor.fetchLimit = 1
+            ancestorID = try modelContext.fetch(ancestorDescriptor).first?.forkedFromID
+        }
+
         return TaskFileTurnsInput(
             goal: task.goal,
             createdAt: task.createdAt,
@@ -72,7 +84,9 @@ enum TaskFileTurnsReader {
             }),
             indexedFiles: artifacts.map { TaskFileTurnsInput.IndexedFile(path: $0.path, indexedAt: $0.createdAt) },
             taskFolder: taskFolder,
-            workspacePath: workspacePath
+            workspacePath: workspacePath,
+            inheritedTaskFolders: inheritedTaskFolders,
+            additionalRoots: additionalRoots
         )
     }
 

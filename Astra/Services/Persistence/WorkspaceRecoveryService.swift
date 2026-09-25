@@ -506,12 +506,15 @@ public enum WorkspaceRecoveryService {
         return recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
     }
 
+    /// The returned task finishes when any import has; startup awaits it before
+    /// anything that reads the imported tasks, such as snapshot recovery.
+    @discardableResult
     public static func recoverMissingWorkspacesAfterLaunch(
         modelContext: ModelContext,
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
-    ) {
+    ) -> Task<Void, Never> {
         Task { @MainActor in
             if extraRoots.isEmpty,
                includeDefaultRoots,
