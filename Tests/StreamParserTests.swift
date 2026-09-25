@@ -253,12 +253,14 @@ struct StreamParserTests {
         {"type":"system","subtype":"task_completed","task_id":"task-1","description":"pro-agent: done"}
         """
         let parsed = StreamEventParser.parse(line: json)
-        guard case .teammateCompleted(let taskId, let name) = parsed else {
+        guard case .teammateCompleted(let taskId, let name, let status) = parsed else {
             Issue.record("Expected .teammateCompleted, got \(String(describing: parsed))")
             return
         }
         #expect(taskId == "task-1")
         #expect(name == "pro-agent")
+        // task_completed carries no status; the frame itself says it completed.
+        #expect(status == .completed)
     }
 
     @Test("TeamCreate tool_use parsed as teamCreated")
@@ -386,13 +388,39 @@ struct StreamParserTests {
         {"type":"system","subtype":"task_notification","task_id":"a64fbccb35b9bec59","status":"completed","summary":"Write haiku about mountains","uuid":"uuid-3"}
         """
         let parsed = StreamEventParser.parse(line: json)
-        guard case .teammateCompleted(let taskId, let name) = parsed else {
+        guard case .teammateCompleted(let taskId, let name, let status) = parsed else {
             Issue.record("Expected .teammateCompleted for task_notification, got \(String(describing: parsed))")
             return
         }
         #expect(taskId == "a64fbccb35b9bec59")
         // No description, so named like task_started: by task id.
         #expect(name == "a64fbccb35b9bec59")
+        #expect(status == .completed)
+    }
+
+    @Test("task_notification carries its status, and never turns failure into success")
+    func taskNotificationStatus() throws {
+        // Claude Code's SDK schema: status is "completed", "failed" or "stopped".
+        let cases: [(status: String?, expected: TeammateCompletionStatus)] = [
+            ("completed", .completed),
+            ("failed", .failed),
+            ("stopped", .stopped),
+            ("Failed", .failed),
+            ("killed", .unrecognized("killed")),
+            (nil, .completed)
+        ]
+        for (status, expected) in cases {
+            let statusField = status.map { ",\"status\":\"\($0)\"" } ?? ""
+            let json = """
+            {"type":"system","subtype":"task_notification","task_id":"t-status"\(statusField),"output_file":"","summary":"The subagent could not finish."}
+            """
+            guard case .teammateCompleted(let taskId, _, let parsedStatus) = StreamEventParser.parse(line: json) else {
+                Issue.record("Expected .teammateCompleted for status \(status ?? "nil")")
+                continue
+            }
+            #expect(taskId == "t-status")
+            #expect(parsedStatus == expected, "status \(status ?? "nil")")
+        }
     }
 
     @Test("task_notification's summary is the subagent's answer, never its name")
@@ -407,7 +435,7 @@ struct StreamParserTests {
         {"type":"system","subtype":"task_notification","task_id":"a613e2b53651b7b23","tool_use_id":"toolu_01YUZV3AuQdnA5AN1Uay89Nd","status":"completed","output_file":"/tmp/claude/tasks/a613e2b53651b7b23.output","summary":"\(summary)","usage":{"total_tokens":39805,"tool_uses":1,"duration_ms":4579},"uuid":"uuid-4"}
         """
         let parsed = StreamEventParser.parse(line: json)
-        guard case .teammateCompleted(let taskId, let name) = parsed else {
+        guard case .teammateCompleted(let taskId, let name, _) = parsed else {
             Issue.record("Expected .teammateCompleted for task_notification, got \(String(describing: parsed))")
             return
         }
@@ -419,7 +447,7 @@ struct StreamParserTests {
         let described = """
         {"type":"system","subtype":"task_notification","task_id":"t1","description":"research-agent: Find all references","status":"completed","summary":"\(summary)"}
         """
-        guard case .teammateCompleted(_, let describedName) = StreamEventParser.parse(line: described) else {
+        guard case .teammateCompleted(_, let describedName, _) = StreamEventParser.parse(line: described) else {
             Issue.record("Expected .teammateCompleted for a described task_notification")
             return
         }

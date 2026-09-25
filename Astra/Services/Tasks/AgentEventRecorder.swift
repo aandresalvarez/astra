@@ -975,8 +975,8 @@ enum AgentEventRecorder {
             return [.astraProtocol(event)]
         case .teammateStarted(let taskId, let name, let prompt):
             return [.teamEvent(.teammateStarted(taskId: taskId, name: name, prompt: prompt))]
-        case .teammateCompleted(let taskId, let name):
-            return [.teamEvent(.teammateCompleted(taskId: taskId, name: name))]
+        case .teammateCompleted(let taskId, let name, let status):
+            return [.teamEvent(.teammateCompleted(taskId: taskId, name: name, status: status))]
         case .teamCreated(let name, let description):
             return [.teamEvent(.teamCreated(name: name, description: description))]
         case .teamDeleted(let name):
@@ -992,8 +992,8 @@ enum AgentEventRecorder {
         switch teamEvent {
         case .teammateStarted(let taskId, let name, let prompt):
             return .teammateStarted(taskId: taskId, name: name, prompt: prompt)
-        case .teammateCompleted(let taskId, let name):
-            return .teammateCompleted(taskId: taskId, name: name)
+        case .teammateCompleted(let taskId, let name, let status):
+            return .teammateCompleted(taskId: taskId, name: name, status: status)
         case .teamCreated(let name, let description):
             return .teamCreated(name: name, description: description)
         case .teamDeleted(let name):
@@ -1250,22 +1250,33 @@ enum AgentEventRecorder {
                 "agent_id": taskId
             ])
 
-        case .teammateCompleted(let taskId, let parsedName):
+        case .teammateCompleted(let taskId, let parsedName, let status):
             // A completion frame rarely carries the description its start
             // was named from, so the started event owns the name.
             let name = startedTeammateName(agentId: taskId, taskID: task.id, modelContext: modelContext) ?? parsedName
+            // `team.agent.completed` marks the end of the subagent's run
+            // whatever its outcome; the payload and audit say which outcome.
+            // The audit is team-scoped: a `task.*` verdict here would be read
+            // as the parent task's, which can still succeed after this.
+            let (outcome, level): (String, LogLevel) = switch status {
+            case .completed: ("finished", .info)
+            case .failed: ("failed", .warning)
+            case .stopped: ("stopped", .info)
+            case .unrecognized(let value): ("ended with status \(value)", .warning)
+            }
             modelContext.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.Team.agentCompleted,
-                payload: "\(name) finished",
+                payload: "\(name) \(outcome)",
                 run: run,
                 agentName: name,
                 agentId: taskId
             ))
-            AppLogger.audit(.taskCompleted, category: "Worker", taskID: task.id, fields: [
+            AppLogger.audit(.teamAgentEnded, category: "Worker", taskID: task.id, fields: [
                 "team_event": "teammate_completed",
-                "agent_id": taskId
-            ])
+                "agent_id": taskId,
+                "status": status.providerValue
+            ], level: level)
 
         case .teamCreated(let name, let description):
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Team.created, payload: "Team '\(name)' created: \(description)", run: run, teamName: name))

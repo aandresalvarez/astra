@@ -2177,8 +2177,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return nonEmpty(content).map { textSignature(prefix: "tool.result", text: $0) }
         case .teammateStarted(_, let name, let prompt):
             return "teammate.start:\(name):\(textSignature(prefix: "prompt", text: prompt))"
-        case .teammateCompleted(_, let name):
-            return "teammate.done:\(name)"
+        case .teammateCompleted(_, let name, let status):
+            return "teammate.done:\(name):\(status.providerValue)"
         case .teamCreated(let name, let description):
             return "team.created:\(name):\(textSignature(prefix: "description", text: description))"
         case .teamDeleted(let name):
@@ -2218,7 +2218,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         case .result(let t, _, _, _, _, _, _): return textSignature(prefix: "result", text: t ?? "")
         case .systemInit: return "init"
         case .teammateStarted(_, let name, _): return "teammate.start:\(name)"
-        case .teammateCompleted(_, let name): return "teammate.done:\(name)"
+        case .teammateCompleted(_, let name, let status): return "teammate.done:\(name):\(status.providerValue)"
         case .teamCreated(let name, _): return "team.created:\(name)"
         case .teamDeleted(let name): return "team.deleted:\(name)"
         case .teamMessage(let from, let to, let content): return textSignature(prefix: "team.msg:\(from)->\(to)", text: content)
