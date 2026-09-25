@@ -913,6 +913,31 @@ public struct ASTRAApp: App {
         )
     }
 
+    @MainActor private static var hasRecoveredTaskFolderSnapshots = false
+
+    /// Compares every task-folder baseline a run left behind — interrupted by
+    /// a crash, or cancelled by a quit before its worker compared — after
+    /// `runDeferredStartupWork` has settled orphaned runs and before the queue
+    /// replays recovered turns: a new run on the same task would otherwise
+    /// change its folder mid-comparison, or replace its baseline.
+    @MainActor
+    public static func recoverTaskFolderSnapshots(modelContext: ModelContext) async {
+        guard !hasRecoveredTaskFolderSnapshots else { return }
+        hasRecoveredTaskFolderSnapshots = true
+        let arguments = ProcessInfo.processInfo.arguments
+        guard !arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
+        let skipWorkspaceRecovery = arguments.contains("--skip-workspace-recovery") ||
+            ["1", "true", "yes"].contains(
+                ProcessInfo.processInfo.environment["ASTRA_SKIP_WORKSPACE_RECOVERY"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            )
+        await TaskFolderRunSnapshot.recoverPersistedBaselines(
+            modelContext: modelContext,
+            autoExportWorkspaces: !skipWorkspaceRecovery
+        )
+    }
+
     /// Guards `runDeferredStartupMigrations`. Separate from
     /// `hasRunDeferredStartupWork` because the two run at different points in
     /// the caller's sequence.

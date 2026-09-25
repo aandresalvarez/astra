@@ -11,8 +11,9 @@ import ASTRAPersistence
 ///
 /// It sits in the task folder's `diagnostics/`, which the Files shelf and the
 /// snapshot itself never show, one file per run. The worker writes it after
-/// the pre-run walk, `recordChanges` removes it when the run ends normally,
-/// and `recoverInterruptedRuns` replays and removes it at the next launch.
+/// the pre-run walk and removes it once the run's changes are saved
+/// (`settleBaseline`); any left behind are replayed at the next launch by
+/// `recoverPersistedBaselines`, before the queue starts.
 extension TaskFolderRunSnapshot {
     struct PersistedBaseline: Codable {
         static let currentVersion = 1
@@ -92,62 +93,143 @@ extension TaskFolderRunSnapshot {
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// The runs that left a baseline to replay; one `stat` each, so recovery
-    /// is only scheduled when there is something to recover.
+    /// Removes the run's baseline once what it compared is durable: the run
+    /// observed its task folder and has nothing left unsaved. Until then the
+    /// baseline stays, so a crash before the save leaves recovery something to
+    /// replay at the next launch.
     @MainActor
-    static func runsWithPersistedBaseline(_ runs: [TaskRun]) -> [TaskRun] {
-        runs.filter { run in
-            guard let task = run.task else { return false }
-            let url = baselineURL(taskFolder: TaskWorkspaceAccess(task: task).taskFolder, runID: run.id)
-            return FileManager.default.fileExists(atPath: url.path)
+    static func settleBaseline(_ outcome: RecordOutcome, task: AgentTask, run: TaskRun) async {
+        guard let baselineURL = outcome.baselineURL, outcome.observed, !run.hasChanges else { return }
+        await Task.detached(priority: .utility) { removeBaseline(at: baselineURL) }.value
+    }
+
+    /// Tasks changed this recently are searched for baselines at launch. A
+    /// baseline left in an older task stays until that task runs again.
+    static let recoveryLookback: TimeInterval = 30 * 24 * 60 * 60
+
+    /// Replays every baseline a run left behind, before the queue starts: a
+    /// run interrupted by a crash, and a run a quit or a cancel marked done
+    /// before its worker got to compare. Each is compared with its task
+    /// folder as it is now, the changes are appended and saved (and exported,
+    /// when `autoExportWorkspaces`), and only then is the baseline removed.
+    /// Anything that changed the folder between the interruption and this
+    /// launch is attributed to that run: nothing on disk tells the two apart.
+    @MainActor
+    static func recoverPersistedBaselines(
+        modelContext: ModelContext,
+        autoExportWorkspaces: Bool,
+        now: Date = Date()
+    ) async {
+        let cutoff = now.addingTimeInterval(-recoveryLookback)
+        let tasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>(
+            predicate: #Predicate<AgentTask> { $0.updatedAt >= cutoff }
+        ))) ?? []
+        let folders = tasks.map { TaskWorkspaceAccess(task: $0).taskFolder }
+        let found = await Task.detached(priority: .utility) {
+            folders.enumerated().flatMap { index, folder in
+                persistedBaselines(inTaskFolder: folder).map { (taskIndex: index, runID: $0.runID, url: $0.url) }
+            }
+        }.value
+        guard !found.isEmpty else { return }
+
+        var settled: [(url: URL, workspace: Workspace?)] = []
+        var discarded: [URL] = []
+        for baseline in found {
+            let task = tasks[baseline.taskIndex]
+            guard let run = task.runs.first(where: { $0.id == baseline.runID }) else {
+                discarded.append(baseline.url) // Its run is gone.
+                continue
+            }
+            // A live worker owns its own comparison.
+            guard run.status != .running else { continue }
+            switch await recover(run, task: task, baselineURL: baseline.url) {
+            case .recovered:
+                settled.append((baseline.url, task.workspace))
+            case .unusable:
+                discarded.append(baseline.url)
+            case .retryLater:
+                continue
+            }
+        }
+        let saved = saveRecovered(settled.map(\.workspace), modelContext: modelContext, autoExport: autoExportWorkspaces)
+        let removable = discarded + (saved ? settled.map(\.url) : [])
+        await Task.detached(priority: .utility) { removable.forEach(removeBaseline(at:)) }.value
+    }
+
+    private enum RecoveryOutcome {
+        case recovered
+        /// Nothing this baseline could ever tell: unreadable, or another run's.
+        case unusable
+        /// The folder could not be walked this time; the next launch tries again.
+        case retryLater
+    }
+
+    @MainActor
+    private static func recover(_ run: TaskRun, task: AgentTask, baselineURL: URL) async -> RecoveryOutcome {
+        let runID = run.id
+        let recordedJSON = run.fileChangesJSON
+        let executionPath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        let runStartedAt = run.startedAt
+        let started = Date()
+        let outcome = await Task.detached(priority: .utility) { () -> Result<Observation, ObservationSkip> in
+            guard case .loaded(let before) = loadBaseline(at: baselineURL, runID: runID) else {
+                return .failure(.unreadableBaseline)
+            }
+            return observe(
+                since: before,
+                recordedJSON: recordedJSON,
+                executionPath: executionPath,
+                runStartedAt: runStartedAt,
+                runEndedAt: started
+            )
+        }.value
+        switch outcome {
+        case .success(let observation):
+            run.appendHostFileChanges(observation.records)
+            logObservation(observation, task: task, run: run, started: started, recovered: true)
+            return .recovered
+        case .failure(let skip):
+            logSkipped(task: task, run: run, reason: skip.rawValue, recovered: true)
+            return skip == .unreadableBaseline ? .unusable : .retryLater
         }
     }
 
-    /// Compares each interrupted run's persisted baseline with its task folder
-    /// as it is now, appends what changed, and removes the baseline — an
-    /// unreadable one too. Anything that changed the folder after the crash
-    /// and before this launch is attributed to the interrupted run: nothing
-    /// on disk tells the two apart.
     @MainActor
-    static func recoverInterruptedRuns(_ runs: [TaskRun], modelContext: ModelContext) async {
-        var recoveredCount = 0
-        for run in runs {
-            guard let task = run.task else { continue }
-            let access = TaskWorkspaceAccess(task: task)
-            let url = baselineURL(taskFolder: access.taskFolder, runID: run.id)
-            let runID = run.id
-            let recordedJSON = run.fileChangesJSON
-            let executionPath = access.effectiveWorkspacePath
-            let runStartedAt = run.startedAt
-            let started = Date()
-            let outcome = await Task.detached(priority: .utility) { () -> Result<Observation, ObservationSkip>? in
-                let load = loadBaseline(at: url, runID: runID)
-                if case .missing = load { return nil }
-                defer { removeBaseline(at: url) }
-                guard case .loaded(let before) = load else { return .failure(.unreadableBaseline) }
-                return observe(
-                    since: before,
-                    recordedJSON: recordedJSON,
-                    executionPath: executionPath,
-                    runStartedAt: runStartedAt,
-                    runEndedAt: started
-                )
-            }.value
-            switch outcome {
-            case nil:
-                continue
-            case .failure(let skip):
-                logSkipped(task: task, run: run, reason: skip.rawValue, recovered: true)
-            case .success(let observation):
-                run.appendHostFileChanges(observation.records)
-                logObservation(observation, task: task, run: run, started: started, recovered: true)
-                recoveredCount += 1
-            }
+    private static func saveRecovered(_ workspaces: [Workspace?], modelContext: ModelContext, autoExport: Bool) -> Bool {
+        guard !workspaces.isEmpty else { return true }
+        let auditFields = ["operation": "recover_run_snapshots"]
+        guard autoExport else {
+            return WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext, auditFields: auditFields)
         }
-        guard recoveredCount > 0 else { return }
-        _ = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-            modelContext: modelContext,
-            auditFields: ["operation": "recover_interrupted_run_snapshots"]
-        )
+        // Export each workspace the recovery touched, so its JSON mirror
+        // carries the recovered changes too; one save covers them all.
+        var seen = Set<UUID>()
+        var saved = true
+        for workspace in workspaces {
+            guard let workspace else { continue }
+            guard seen.insert(workspace.id).inserted else { continue }
+            saved = WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: workspace,
+                modelContext: modelContext,
+                auditFields: auditFields
+            ) && saved
+        }
+        return seen.isEmpty
+            ? WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext, auditFields: auditFields)
+            : saved
+    }
+
+    /// The baselines in one task folder's `diagnostics/`, by run id.
+    static func persistedBaselines(inTaskFolder taskFolder: String) -> [(runID: UUID, url: URL)] {
+        let directory = URL(fileURLWithPath: taskFolder, isDirectory: true)
+            .appendingPathComponent("diagnostics", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.compactMap { name in
+            guard name.hasPrefix(baselineFilePrefix), name.hasSuffix(".json"),
+                  let runID = UUID(uuidString: String(name.dropFirst(baselineFilePrefix.count).dropLast(5))) else {
+                return nil
+            }
+            return (runID, directory.appendingPathComponent(name))
+        }
     }
 }

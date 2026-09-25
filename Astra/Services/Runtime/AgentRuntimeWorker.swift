@@ -1182,7 +1182,7 @@ final class AgentRuntimeWorker {
                 runStart: startTime
             )
         }
-        await TaskFolderRunSnapshot.recordChanges(
+        let taskFolderRecord = await TaskFolderRunSnapshot.recordChanges(
             since: taskFolderBeforeRun,
             task: task,
             run: run,
@@ -1519,6 +1519,7 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             handoffDiscoveredFiles: handoffDiscoveredFiles
         )
+        await TaskFolderRunSnapshot.settleBaseline(taskFolderRecord, task: task, run: run)
         isRunning = false
     }
     nonisolated static func durableFailureStopReason(category: AgentRuntimeFailureCategory?) -> TaskRunStopReason {

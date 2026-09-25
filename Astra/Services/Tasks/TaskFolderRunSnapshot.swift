@@ -272,6 +272,14 @@ extension TaskFolderRunSnapshot {
     /// tool event keep that richer record and are not repeated.
     /// `executionPath` is the provider's working directory, which relative
     /// tool paths are relative to.
+    /// What `recordChanges` did, for `settleBaseline` once the run is saved.
+    struct RecordOutcome {
+        static let skipped = RecordOutcome(records: [], observed: false, baselineURL: nil)
+        let records: [StoredFileChange]
+        let observed: Bool
+        let baselineURL: URL?
+    }
+
     @MainActor
     @discardableResult
     static func recordChanges(
@@ -280,10 +288,10 @@ extension TaskFolderRunSnapshot {
         run: TaskRun,
         runStartedAt: Date,
         executionPath: String
-    ) async -> [StoredFileChange] {
+    ) async -> RecordOutcome {
         guard let before else {
             logSkipped(task: task, run: run, reason: "no_baseline")
-            return []
+            return .skipped
         }
         let started = Date()
         let recordedJSON = run.fileChangesJSON
@@ -291,9 +299,7 @@ extension TaskFolderRunSnapshot {
         // A bulk run can leave tens of thousands of entries to compare and
         // sort, so only the bounded result comes back to the main actor.
         let outcome = await Task.detached(priority: .userInitiated, operation: {
-            // The run ended here, so the copy kept for crash recovery is done.
-            defer { removeBaseline(at: baselineURL) }
-            return observe(
+            observe(
                 since: before,
                 recordedJSON: recordedJSON,
                 executionPath: executionPath,
@@ -307,11 +313,11 @@ extension TaskFolderRunSnapshot {
             observation = observed
         case .failure(let skip):
             logSkipped(task: task, run: run, reason: skip.rawValue)
-            return []
+            return RecordOutcome(records: [], observed: false, baselineURL: baselineURL)
         }
         run.appendHostFileChanges(observation.records)
         logObservation(observation, task: task, run: run, started: started)
-        return observation.records
+        return RecordOutcome(records: observation.records, observed: true, baselineURL: baselineURL)
     }
 
     @MainActor

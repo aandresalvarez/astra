@@ -80,11 +80,17 @@ actor TaskThreadHistoryStore {
 
     /// The task's turns that changed files, newest first. Unlike the pages
     /// above, this reads every run: turn numbers count the whole task.
-    func fileTurns(taskID: UUID, taskFolder: String, workspacePath: String) throws -> [TaskFileTurn] {
+    func fileTurns(
+        taskID: UUID,
+        taskFolder: String,
+        workspacePath: String,
+        pendingRuns: [TaskFileTurnsReader.PendingRun] = []
+    ) throws -> [TaskFileTurn] {
         guard let input = try TaskFileTurnsReader.input(
             taskID: taskID,
             taskFolder: taskFolder,
             workspacePath: workspacePath,
+            pendingRuns: pendingRuns,
             modelContext: makeContext()
         ) else { return [] }
         return TaskFileTurns.build(input)

@@ -139,26 +139,36 @@ enum TaskFileTurns {
         return requests.lastIndex { $0.requestedAt <= run.startedAt } ?? 0
     }
 
-    /// Files the index saw that no run recorded, each given to the run it
-    /// appeared during or just after.
+    /// Files the index saw appear with no run record of that appearance, each
+    /// given to the run it appeared during or just after. A run record of the
+    /// path from that run or an earlier one already covers it; one from a
+    /// later run does not, since that run only edited or removed what an
+    /// earlier turn made.
     private static func indexedFilesWithoutARunRecord(
         _ indexedFiles: [TaskFileTurnsInput.IndexedFile],
         runs: [TaskFileTurnsInput.Run],
         paths: PathClassifier
     ) -> [UUID: [TaskFileTurnsInput.IndexedFile]] {
-        let recorded = Set(runs.flatMap { run in run.changes.compactMap { paths.classify($0.path)?.key } })
-        var firstIndexed: [String: TaskFileTurnsInput.IndexedFile] = [:]
+        var firstRecordedAt: [String: Date] = [:]
+        for run in runs {
+            for change in run.changes {
+                guard let key = paths.classify(change.path)?.key else { continue }
+                firstRecordedAt[key] = min(firstRecordedAt[key] ?? run.startedAt, run.startedAt)
+            }
+        }
+        var firstIndexed: [String: (key: String, file: TaskFileTurnsInput.IndexedFile)] = [:]
         for file in indexedFiles {
-            guard let key = paths.classify(file.path)?.key, !recorded.contains(key) else { continue }
-            if let existing = firstIndexed[key], existing.indexedAt <= file.indexedAt { continue }
-            firstIndexed[key] = file
+            guard let key = paths.classify(file.path)?.key else { continue }
+            if let existing = firstIndexed[key], existing.file.indexedAt <= file.indexedAt { continue }
+            firstIndexed[key] = (key, file)
         }
         var byRun: [UUID: [TaskFileTurnsInput.IndexedFile]] = [:]
-        for file in firstIndexed.values {
+        for (key, file) in firstIndexed.values {
             guard let run = runs.last(where: { $0.startedAt <= file.indexedAt }),
                   file.indexedAt <= (run.completedAt ?? .distantFuture).addingTimeInterval(indexingGrace) else {
                 continue
             }
+            if let recordedAt = firstRecordedAt[key], recordedAt <= run.startedAt { continue }
             byRun[run.id, default: []].append(file)
         }
         return byRun
@@ -245,8 +255,9 @@ enum TaskFileTurns {
         let displayPath: String
     }
 
-    /// Keeps the files a user would browse — the Files shelf's rules — and
-    /// names each relative to the folder that holds it.
+    /// Keeps the files a user would browse — under the task folder or the
+    /// workspace, by the Files shelf's rules — and names each relative to the
+    /// folder that holds it.
     private final class PathClassifier {
         private let taskFolderPath: String
         private let workspacePath: String
@@ -295,11 +306,9 @@ enum TaskFileTurns {
                     displayPath: visible
                 )
             }
-            return ClassifiedPath(
-                key: "path:\(standardized)",
-                path: standardized,
-                displayPath: (standardized as NSString).abbreviatingWithTildeInPath
-            )
+            // A temporary file, a sibling workspace, anything else on the
+            // host: not a file Browse files would list.
+            return nil
         }
     }
 }

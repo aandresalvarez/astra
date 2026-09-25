@@ -10,8 +10,8 @@ import ASTRAPersistence
 @Suite("Task folder run snapshot recovery")
 @MainActor
 struct TaskFolderRunSnapshotRecoveryTests {
-    @Test("A run's baseline is on disk while it runs and gone once the run is compared")
-    func baselineLivesForTheLengthOfTheRun() async throws {
+    @Test("A run's baseline stays until the changes it compared are saved")
+    func baselineLivesUntilTheRunIsSaved() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanUp() }
         try write("v1", to: fixture.folder, "plan.md")
@@ -19,15 +19,23 @@ struct TaskFolderRunSnapshotRecoveryTests {
         let before = await TaskFolderRunSnapshot.capture(for: fixture.task)
         await TaskFolderRunSnapshot.persistBaseline(before, task: fixture.task, run: fixture.run)
         #expect(FileManager.default.fileExists(atPath: fixture.baselineURL.path))
+        try write("rows", to: fixture.folder, "report.csv")
 
-        await TaskFolderRunSnapshot.recordChanges(
+        let outcome = await TaskFolderRunSnapshot.recordChanges(
             since: before,
             task: fixture.task,
             run: fixture.run,
             runStartedAt: fixture.run.startedAt,
             executionPath: fixture.workspace.path
         )
+        #expect(outcome.observed)
+        // Compared but unsaved: a crash now would lose the changes, so the
+        // baseline is what recovery would replay.
+        await TaskFolderRunSnapshot.settleBaseline(outcome, task: fixture.task, run: fixture.run)
+        #expect(FileManager.default.fileExists(atPath: fixture.baselineURL.path))
 
+        try fixture.container.mainContext.save()
+        await TaskFolderRunSnapshot.settleBaseline(outcome, task: fixture.task, run: fixture.run)
         #expect(!FileManager.default.fileExists(atPath: fixture.baselineURL.path))
     }
 
@@ -45,11 +53,14 @@ struct TaskFolderRunSnapshotRecoveryTests {
         try FileManager.default.removeItem(at: fixture.folder.appendingPathComponent("stale.md"))
         try write("rows", to: fixture.folder, "report.csv")
 
-        let summary = TaskRunLifecycleService.recoverOrphanedRunningRuns(
+        TaskRunLifecycleService.recoverOrphanedRunningRuns(
             modelContext: fixture.container.mainContext,
             autoExportWorkspaces: false
         )
-        await summary.folderSnapshotRecovery?.value
+        await TaskFolderRunSnapshot.recoverPersistedBaselines(
+            modelContext: fixture.container.mainContext,
+            autoExportWorkspaces: false
+        )
 
         #expect(fixture.run.status == .cancelled)
         let kinds = Dictionary(uniqueKeysWithValues: fixture.run.allFileChanges.map {
@@ -57,6 +68,48 @@ struct TaskFolderRunSnapshotRecoveryTests {
         })
         #expect(kinds == ["plan.md": .modified, "report.csv": .discovered, "stale.md": .removed])
         #expect(!FileManager.default.fileExists(atPath: fixture.baselineURL.path))
+    }
+
+    @Test("A run a quit cancelled before its worker compared is recovered at the next launch")
+    func runCancelledBeforeItsComparisonIsRecovered() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        let before = await TaskFolderRunSnapshot.capture(for: fixture.task)
+        await TaskFolderRunSnapshot.persistBaseline(before, task: fixture.task, run: fixture.run)
+        try write("rows", to: fixture.folder, "report.csv")
+        // Quitting cancels the run and saves that, then the app exits before
+        // the worker gets to compare: the next launch finds it already done.
+        TaskRunLifecycleService.cancelTask(
+            fixture.task,
+            modelContext: fixture.container.mainContext,
+            source: .queueStopped
+        )
+        try fixture.container.mainContext.save()
+
+        await TaskFolderRunSnapshot.recoverPersistedBaselines(
+            modelContext: fixture.container.mainContext,
+            autoExportWorkspaces: false
+        )
+
+        #expect(fixture.run.allFileChanges.map { URL(fileURLWithPath: $0.path).lastPathComponent } == ["report.csv"])
+        #expect(!FileManager.default.fileExists(atPath: fixture.baselineURL.path))
+    }
+
+    @Test("A baseline whose run no longer exists is removed at launch")
+    func baselineOfADeletedRunIsRemoved() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        let before = try #require(await TaskFolderRunSnapshot.capture(for: fixture.task))
+        let deletedRunID = UUID()
+        #expect(TaskFolderRunSnapshot.writeBaseline(before, runID: deletedRunID))
+        let orphan = TaskFolderRunSnapshot.baselineURL(taskFolder: fixture.folder.path, runID: deletedRunID)
+
+        await TaskFolderRunSnapshot.recoverPersistedBaselines(
+            modelContext: fixture.container.mainContext,
+            autoExportWorkspaces: false
+        )
+
+        #expect(!FileManager.default.fileExists(atPath: orphan.path))
     }
 
     @Test("Writing a baseline removes the ones earlier runs of the task left behind")
@@ -84,8 +137,12 @@ struct TaskFolderRunSnapshotRecoveryTests {
             withIntermediateDirectories: true
         )
         try "{not json".write(to: fixture.baselineURL, atomically: true, encoding: .utf8)
+        fixture.run.status = .cancelled
 
-        await TaskFolderRunSnapshot.recoverInterruptedRuns([fixture.run], modelContext: fixture.container.mainContext)
+        await TaskFolderRunSnapshot.recoverPersistedBaselines(
+            modelContext: fixture.container.mainContext,
+            autoExportWorkspaces: false
+        )
 
         #expect(fixture.run.allFileChanges.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: fixture.baselineURL.path))

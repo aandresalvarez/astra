@@ -244,13 +244,15 @@ recorder stores a tool's file change when the tool is called, before its
 result says whether it succeeded, so the write is no proof the file existed
 and no deletion is inferred from it. A run whose change record cannot be
 decoded is skipped rather than rewritten. A run interrupted by a crash or quit
-is compared at the next launch instead: the worker keeps the pre-run baseline
-in the task folder's `diagnostics/` for the length of the run (content
-fingerprints are SHA-256, so they compare across launches), and
-`recoverOrphanedRunningRuns` replays it for each run it interrupts and removes
-it. Anything that changed the folder between the crash and that launch is
-attributed to the interrupted run, since nothing on disk tells the two apart.
-Writing a run's baseline removes any other the task left behind.
+is compared at the next launch instead. The worker keeps the pre-run baseline
+in the task folder's `diagnostics/` until the run's changes are saved (content
+fingerprints are SHA-256, so they compare across launches). At launch, before
+the queue replays any turn, ASTRA looks for baselines in tasks updated in the
+last 30 days — a run a crash interrupted, or one a quit cancelled before its
+worker compared — replays each, saves and exports the result, and only then
+removes it. Anything that changed the folder between the interruption and that
+launch is attributed to the interrupted run, since nothing on disk tells the
+two apart. Writing a run's baseline removes any other the task left behind.
 
 **Tests.**
 

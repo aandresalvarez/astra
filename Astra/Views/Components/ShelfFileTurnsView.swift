@@ -15,6 +15,8 @@ struct ShelfFileTurnsView: View {
     let onOpen: (String) -> Void
     /// Routes HTML and SQL to the Browser and Query shelves, as Folders does.
     var onOpenGeneratedFile: ((String) -> Void)?
+    /// Changes when the user asks Browse files to refresh.
+    var refreshToken = 0
 
     @Environment(\.modelContext) private var modelContext
     @State private var turns: [TaskFileTurn] = []
@@ -25,6 +27,7 @@ struct ShelfFileTurnsView: View {
     private struct RefreshKey: Equatable {
         let taskID: UUID
         let updatedAt: Date
+        let refreshToken: Int
     }
 
     var body: some View {
@@ -57,7 +60,9 @@ struct ShelfFileTurnsView: View {
             }
         }
         // `updatedAt` moves whenever a run records a change or finishes.
-        .task(id: RefreshKey(taskID: task.id, updatedAt: task.updatedAt)) { await reload() }
+        .task(id: RefreshKey(taskID: task.id, updatedAt: task.updatedAt, refreshToken: refreshToken)) {
+            await reload()
+        }
         .accessibilityIdentifier("FilesShelfTurnsList")
     }
 
@@ -227,23 +232,21 @@ struct ShelfFileTurnsView: View {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
         }
-        // The store is read directly, and the recorder mutates runs in the
-        // main context without saving while a turn streams.
-        if modelContext.hasChanges {
-            _ = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "file_turns_pre_read_save"],
-                auditsSuccess: false
-            )
-        }
+        // The store is read directly, and a streaming run records its tool
+        // changes in the main context unsaved; those runs are handed over as
+        // they are rather than saving everything the context holds.
+        let pendingRuns = (modelContext.insertedModelsArray + modelContext.changedModelsArray)
+            .compactMap { $0 as? TaskRun }
+            .filter { $0.task?.id == task.id }
+            .map(TaskFileTurnsReader.PendingRun.init)
         let access = TaskWorkspaceAccess(task: task)
         let store = TaskThreadHistoryStore(container: modelContext.container)
         let started = Date()
         let loaded = (try? await store.fileTurns(
             taskID: task.id,
             taskFolder: access.taskFolder,
-            workspacePath: access.effectiveWorkspacePath
+            workspacePath: access.effectiveWorkspacePath,
+            pendingRuns: pendingRuns
         )) ?? []
         guard !Task.isCancelled else { return }
         turns = loaded

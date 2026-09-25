@@ -499,7 +499,7 @@ struct TaskFolderRunSnapshotTests {
             run: fixture.run,
             runStartedAt: Date().addingTimeInterval(-5),
             executionPath: fixture.folder.path
-        )
+        ).records
 
         let byName = Dictionary(uniqueKeysWithValues: stored.map { (URL(fileURLWithPath: $0.path).lastPathComponent, $0.kind) })
         #expect(byName == ["plan.md": .modified, "rows.csv": .discovered, "stale.md": .removed])

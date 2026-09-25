@@ -125,6 +125,36 @@ struct TaskFileTurnsTests {
         #expect(turns.last?.listsNewFilesOnly == false)
     }
 
+    @Test("A file an older turn created keeps that turn when a later run edits it")
+    func laterEditDoesNotEraseAnIndexedCreation() {
+        let input = makeInput(
+            requests: [request("Tweak it", at: 100)],
+            runs: [
+                run(at: 10, endsAt: 20, changes: []),
+                run(at: 110, endsAt: 120, changes: [change("report.md", .modified, at: 115)])
+            ],
+            indexedFiles: [indexed("report.md", at: 21)]
+        )
+
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
+
+        #expect(turns.map(\.number) == [2, 1])
+        #expect(turns.map { $0.entries.map(\.change) } == [[.edited], [.new]])
+    }
+
+    @Test("A tool path outside the task folder and the workspace is not listed")
+    func pathsOutsideTheBrowsableRootsAreLeftOut() {
+        let input = makeInput(runs: [run(at: 10, changes: [
+            TaskFileTurnsInput.Change(path: "/tmp/scratch.md", kind: .write, timestamp: at(11)),
+            TaskFileTurnsInput.Change(path: "/other-workspace/notes.md", kind: .write, timestamp: at(11)),
+            change("answer.md", .write, at: 12)
+        ])])
+
+        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+
+        #expect(entries?.map(\.displayPath) == ["answer.md"])
+    }
+
     @Test("A running turn shows before it has changed anything")
     func runningTurnIsListed() {
         let input = makeInput(
@@ -299,5 +329,41 @@ struct TaskFileTurnsStoreTests {
         #expect(turns.map(\.number) == [2, 1])
         #expect(turns.map(\.request) == ["Add a row", "Write the report"])
         #expect(turns.map { $0.entries.map(\.change) } == [[.edited], [.new]])
+    }
+
+    @Test("A streaming run's unsaved changes are read from the main context, without saving it")
+    func unsavedRunChangesAreOverlaid() async throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        // Autosave would save between the awaits below and hide whether the
+        // read saved anything.
+        context.autosaveEnabled = false
+        let workspace = Workspace(name: "Turns", primaryPath: "/ws")
+        let task = AgentTask(title: "Report", goal: "Write the report", workspace: workspace)
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        run.appendFileChange(StoredFileChange(path: folder + "/draft.md", changeType: "Write", content: "x"))
+        #expect(context.hasChanges)
+
+        let store = TaskThreadHistoryStore(container: container)
+        let saved = try await store.fileTurns(taskID: task.id, taskFolder: folder, workspacePath: "/ws")
+        let overlaid = try await store.fileTurns(
+            taskID: task.id,
+            taskFolder: folder,
+            workspacePath: "/ws",
+            pendingRuns: [TaskFileTurnsReader.PendingRun(run)]
+        )
+
+        #expect(saved.flatMap(\.entries).isEmpty)
+        #expect(overlaid.first?.entries.map(\.displayPath) == ["draft.md"])
+        #expect(context.hasChanges)
     }
 }
