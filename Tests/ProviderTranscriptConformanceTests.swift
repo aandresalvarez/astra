@@ -409,6 +409,30 @@ struct ProviderTranscriptConformanceTests {
         #expect(ProviderStreamTruth.copilotToolRole("tool.execution_progress", [:]) == nil)
     }
 
+    @Test("Fixture truth reads tool names, message items and step states as the runtime does")
+    func truthReadsEveryRuntimeShape() throws {
+        func fixture(_ runtime: AgentRuntimeID) throws -> ProviderStreamFixture {
+            try #require(ProviderStreamFixture.all.first { $0.runtime == runtime })
+        }
+        let copilot = ProviderStreamTruth(fixture: try fixture(.copilotCLI), frames: [
+            #"{"type":"tool.use","tool":{"name":"fetch"}}"#
+        ])
+        #expect(copilot.toolNames == ["fetch"])
+
+        let codex = ProviderStreamTruth(fixture: try fixture(.codexCLI), frames: [
+            #"{"type":"item.completed","item":{"type":"message","content":[{"text":"First."}]}}"#,
+            #"{"type":"item.completed","item":{"kind":"Assistant_Message","text":"Second."}}"#
+        ])
+        #expect(codex.messages == ["First.", "Second."])
+
+        let antigravity = ProviderStreamTruth(fixture: try fixture(.antigravityCLI), frames: [
+            #"{"event":"Step_Update","step_update":{"step_index":1,"step_type":"TOOL","state":"active","tool_info":{"name":"run_command"}}}"#,
+            #"{"event":"step_update","step_update":{"step_index":1,"step_type":"tool","state":"error"}}"#
+        ])
+        #expect(antigravity.toolNames == ["run_command"])
+        #expect(antigravity.toolResultOutcomes == ["failure"])
+    }
+
     @Test("A multiplicity known issue covers only its exact defect")
     func multiplicityKnownIssuesAreExact() {
         let extra = ProviderStreamKnownIssue.oneExtraCopy("one extra copy") { $0 == "Done." }
@@ -793,7 +817,10 @@ struct ProviderStreamTruth {
                         let failed = explicitError ?? success.map { !$0 } ?? false
                         toolResultOutcomes.append(failed ? "failure" : "success")
                     case .use:
-                        let name = ["tool", "toolName", "name"].lazy.compactMap { field($0, as: String.self) }.first ?? "tool"
+                        // A tool can also arrive as `{"tool": {"name": …}}`.
+                        let flatName: String? = ["tool", "toolName", "name"].lazy.compactMap { field($0, as: String.self) }.first
+                        let nestedName: String? = field("tool", as: [String: Any].self)?["name"] as? String
+                        let name = flatName ?? nestedName ?? "tool"
                         appendTool(name)
                         if name == "apply_patch", let patch = field("arguments", as: String.self) {
                             writtenPaths += Self.patchedPaths(in: patch)
@@ -802,21 +829,24 @@ struct ProviderStreamTruth {
                 }
             case .codexCLI:
                 let item = frame["item"] as? [String: Any]
-                if type == "item.completed", item?["type"] as? String == "agent_message",
-                   let text = item?["text"] as? String {
+                // Item types are read as the runtime reads them: `type` or
+                // `kind`, any case; three of them are assistant messages.
+                let itemType = item.flatMap(Self.codexItemType)
+                if type == "item.completed", ["agent_message", "message", "assistant_message"].contains(itemType),
+                   let text = item.flatMap(Self.codexText) {
                     appendMessage(text)
                 } else if type == "thread.started" {
                     sessionID = frame["thread_id"] as? String
-                } else if type == "item.started", item?["type"] as? String == "command_execution" {
+                } else if type == "item.started", itemType == "command_execution" {
                     appendTool("command_execution")
-                } else if type == "item.completed", item?["type"] as? String == "command_execution" {
+                } else if type == "item.completed", itemType == "command_execution" {
                     let exitCode = item?["exit_code"] as? Int
                     toolResultOutcomes.append(exitCode == nil || exitCode == 0 ? "success" : "failure")
                 } else if type == "turn.completed", let reported = frame["usage"] as? [String: Any] {
                     // Codex's input_tokens already include cached_input_tokens:
                     // its own total_tokens is input_tokens + output_tokens.
                     usage = (int(reported["input_tokens"]), int(reported["output_tokens"]))
-                } else if type == "item.completed", item?["type"] as? String == "file_change",
+                } else if type == "item.completed", itemType == "file_change",
                           let changes = item?["changes"] as? [[String: Any]] {
                     writtenPaths += changes.compactMap { $0["path"] as? String }
                 } else if let item, Self.isGenericCodexToolItem(item) {
@@ -883,18 +913,25 @@ struct ProviderStreamTruth {
                     }
                 }
             case .antigravityCLI:
-                if frame["event"] as? String == "init" {
+                // Cased as the runtime reads them: events and step types
+                // lowercased, states uppercased.
+                let event = (frame["event"] as? String)?.lowercased()
+                if event == "init" {
                     sessionID = frame["conversation_id"] as? String
                 }
-                if frame["event"] as? String == "result",
+                if event == "result",
                    let reported = (frame["result"] as? [String: Any])?["usage"] as? [String: Any] {
                     // input_tokens already count cached reads (total_tokens = input + output).
                     usage = (int(reported["input_tokens"]), int(reported["output_tokens"]))
                 }
-                guard frame["event"] as? String == "step_update",
+                guard event == "step_update",
                       let step = frame["step_update"] as? [String: Any],
                       let index = step["step_index"] as? Int else { continue }
-                if step["step_type"] as? String == "agent_response" {
+                let stepType = (step["step_type"] as? String)?.lowercased()
+                let state = (step["state"] as? String)?.uppercased()
+                let info = step["tool_info"] as? [String: Any]
+                let toolName: String = step["tool_name"] as? String ?? info?["name"] as? String ?? "tool"
+                if stepType == "agent_response" {
                     let delta = step["text_delta"] as? String ?? ""
                     if let position = antigravityMessageIndex[index] {
                         rawMessages[position] += delta
@@ -902,12 +939,12 @@ struct ProviderStreamTruth {
                         antigravityMessageIndex[index] = rawMessages.count
                         appendMessage(delta)
                     }
-                } else if step["step_type"] as? String == "tool", ["DONE", "ERROR"].contains(step["state"] as? String) {
-                    toolResultOutcomes.append(step["state"] as? String == "DONE" ? "success" : "failure")
-                } else if step["step_type"] as? String == "tool", step["state"] as? String == "ACTIVE" {
-                    appendTool(step["tool_name"] as? String ?? "tool")
-                    let parameters = (step["tool_info"] as? [String: Any])?["parameters"] as? [String: Any]
-                    if step["tool_name"] as? String == "write_to_file", let path = parameters?["TargetFile"] as? String {
+                } else if stepType == "tool", state == "DONE" || state == "ERROR" {
+                    toolResultOutcomes.append(state == "DONE" ? "success" : "failure")
+                } else if stepType == "tool", state == "ACTIVE" {
+                    appendTool(toolName)
+                    let parameters = info?["parameters"] as? [String: Any]
+                    if toolName == "write_to_file", let path = parameters?["TargetFile"] as? String {
                         writtenPaths.append(path)
                     }
                 }
@@ -1007,8 +1044,35 @@ struct ProviderStreamTruth {
     /// A Codex item the stream reports as a tool call other than a command:
     /// its type names a tool, or it carries a `tool` / `name`. Messages,
     /// reasoning, file changes and commands are read on their own.
+    static func codexItemType(_ item: [String: Any]) -> String? {
+        ["type", "kind"].lazy.compactMap { key -> String? in
+            let value = (item[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value?.isEmpty == false ? value?.lowercased() : nil
+        }.first
+    }
+
+    /// CodexStreamEventParser.textValue: the first nonempty text field, then
+    /// nested objects, then content and summary parts joined.
+    static func codexText(_ object: [String: Any]) -> String? {
+        for key in ["text", "delta", "message", "content", "output", "error", "summary", "aggregated_output"] {
+            if let value = (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        for key in ["item", "data", "message", "delta", "content"] {
+            if let nested = object[key] as? [String: Any], let text = codexText(nested) { return text }
+        }
+        for key in ["content", "summary"] {
+            if let parts = object[key] as? [[String: Any]] {
+                let text = parts.compactMap(codexText).joined()
+                if !text.isEmpty { return text }
+            }
+        }
+        return nil
+    }
+
     static func isGenericCodexToolItem(_ item: [String: Any]) -> Bool {
-        let type = (item["type"] as? String ?? "").lowercased()
+        let type = codexItemType(item) ?? ""
         let ownShapes = ["agent_message", "message", "assistant_message", "file_change", "command_execution"]
         guard !ownShapes.contains(type), !type.contains("reasoning"), !type.contains("error") else { return false }
         return type.contains("tool") || item["tool"] != nil || item["name"] != nil
