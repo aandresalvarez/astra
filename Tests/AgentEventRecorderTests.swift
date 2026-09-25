@@ -659,6 +659,52 @@ struct AgentEventRecorderTests {
         #expect(fixture.task.artifacts.isEmpty)
     }
 
+    @Test("A batch of Claude results keeps the successful write beside a denied one")
+    func claudeMixedDenialBatchKeepsTheSuccessfulWrite() throws {
+        let fixture = try makeToolFixture()
+        record(.toolUse(name: "Write", id: "tool_ok", input: ["file_path": "/tmp/kept.md", "content": "x"]), in: fixture)
+        record(.toolUse(name: "Write", id: "tool_denied", input: ["file_path": "/tmp/denied.md", "content": "y"]), in: fixture)
+        // The successful result comes first, so a line-wide reading would
+        // name its call as the denied one.
+        let line = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_ok","content":"File created successfully at: /tmp/kept.md"},{"type":"tool_result","tool_use_id":"tool_denied","is_error":true,"content":"Permission denied"}]}}"#
+        let parsed = StreamEventParser.parseAll(line: line)
+        for event in parsed {
+            record(event, in: fixture)
+        }
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: fixture.state,
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext,
+            processExitedCleanly: true
+        )
+
+        #expect(fixture.run.fileChanges.map(\.path) == ["/tmp/kept.md"])
+        #expect(parsed.contains {
+            if case .permissionDenied(let tool, _) = $0 { return tool == "tool_denied" }
+            return false
+        })
+    }
+
+    @Test("A write left without a result is dropped when the provider reported the turn failed")
+    func unresolvedToolFileChangesAreDroppedAfterAReportedFailure() throws {
+        let fixture = try makeToolFixture()
+        record(.toolUse(name: "Write", id: "tool-w", input: ["file_path": "/tmp/failed.md", "content": "x"]), in: fixture)
+        // Codex reports a failed turn and still exits 0.
+        fixture.state.recordAgentReportedError(for: fixture.run)
+
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: fixture.state,
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext,
+            processExitedCleanly: true
+        )
+
+        #expect(fixture.run.fileChanges.isEmpty)
+        #expect(fixture.task.artifacts.isEmpty)
+    }
+
     @Test("A Claude Edit keeps its diff when its result succeeds and is dropped when it fails")
     func claudeEditFollowsItsResult() throws {
         let fixture = try makeToolFixture()

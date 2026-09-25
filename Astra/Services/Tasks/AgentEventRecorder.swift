@@ -1101,9 +1101,11 @@ enum AgentEventRecorder {
     /// clean exit the provider dropped the result, and a real write is likelier
     /// than a failure whose error the stream swallowed, so they are kept.
     /// After a stop ASTRA forced — a timeout, a cancel, a policy stop, a
-    /// budget limit — the call may never have run, so they are dropped; the
-    /// task-folder comparison still records what actually changed on disk.
-    /// Call once the run's events are drained.
+    /// budget limit — the call may never have run, so they are dropped, and
+    /// so they are when the provider reported the turn failed, even with a
+    /// clean exit (Codex exits 0 after one). The task-folder comparison still
+    /// records what actually changed on disk. Call once the run's events are
+    /// drained.
     @MainActor
     static func commitUnresolvedFileChanges(
         recordingState: AgentEventRecordingState,
@@ -1116,6 +1118,10 @@ enum AgentEventRecorder {
         guard !unresolved.isEmpty else { return }
         guard processExitedCleanly else {
             logDroppedFileChanges(unresolved.count, reason: "no_result_after_forced_stop", task: task)
+            return
+        }
+        guard !recordingState.agentReportedError(for: run) else {
+            logDroppedFileChanges(unresolved.count, reason: "no_result_after_reported_failure", task: task)
             return
         }
         for change in unresolved {
