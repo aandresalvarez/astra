@@ -780,6 +780,28 @@ struct AgentEventRecorderTests {
         #expect(try paths(after: [completed]) == ["/tmp/a.md"])
     }
 
+    @Test("A Codex completion's details replace what its start announced")
+    func codexCompletionReplacesTheStartedChange() throws {
+        let fixture = try makeToolFixture()
+        for line in [
+            #"{"type":"item.started","item":{"id":"i1","type":"file_change","path":"/tmp/a.md","kind":"add","summary":"Applying patch"}}"#,
+            #"{"type":"item.completed","item":{"id":"i1","type":"file_change","path":"/tmp/a.md","kind":"update","summary":"Updated the summary table","status":"completed"}}"#
+        ] {
+            for event in CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true) {
+                AgentEventRecorder.recordCodexEvent(
+                    event,
+                    to: fixture.task,
+                    run: fixture.run,
+                    modelContext: fixture.container.mainContext,
+                    recordingState: fixture.state
+                )
+            }
+        }
+
+        #expect(fixture.run.fileChanges.count == 1)
+        #expect(fixture.run.fileChanges.first?.content == "Updated the summary table")
+    }
+
     @Test("A denial drops exactly the held call it ruled out, even among parallel calls of one tool")
     func denialByToolNameDropsOnlyAnUnambiguousCall() throws {
         // A denied result that carries both `name` and `tool_use_id`: the

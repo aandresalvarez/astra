@@ -128,8 +128,18 @@ final class AgentEventRecordingState {
         return toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"]
     }
 
+    /// A later announcement of the same call and path — Codex repeats the
+    /// change on the item's completion — replaces the earlier one in place,
+    /// so the version the call finished with is the one recorded. Claude's
+    /// repeated edits to one path each carry their own call id, so all stay.
     func holdFileChange(_ change: PendingFileChange, toolUseID: String, run: TaskRun) {
-        pendingFileChanges.append((run.id, toolUseID, change))
+        if let index = pendingFileChanges.firstIndex(where: {
+            $0.runID == run.id && $0.toolUseID == toolUseID && $0.change.path == change.path
+        }) {
+            pendingFileChanges[index].change = change
+        } else {
+            pendingFileChanges.append((run.id, toolUseID, change))
+        }
     }
 
     /// The changes held for one tool call, removed from the pending set.
