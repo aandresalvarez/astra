@@ -187,7 +187,10 @@ let package = Package(
             ],
             path: "Tests",
             exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "HostControlCrashHarness", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"],
-            resources: [.copy("Fixtures/feedback-only-v12-htf3-empty.store")]
+            resources: [
+                .copy("Fixtures/feedback-only-v12-htf3-empty.store"),
+                .copy("Fixtures/ProviderStreams")
+            ]
         ),
         .testTarget(
             name: "MailToolSupportTests",

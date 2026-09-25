@@ -240,7 +240,7 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
             break
         case .thinking:
             thinkingEventCount += 1
-        case .text:
+        case .text, .assistantMessage:
             textEventCount += 1
         case .toolUse:
             toolUseEventCount += 1
