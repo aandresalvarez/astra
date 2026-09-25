@@ -200,6 +200,33 @@ struct TaskFolderRunSnapshotRecoveryTests {
         #expect(TaskFolderRunSnapshot.isWalkablePath("reports/q3.csv"))
     }
 
+    @Test("A diagnostics folder replaced by a symlink is never written, listed, or cleaned through")
+    func symlinkedDiagnosticsFolderIsNotFollowed() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        let elsewhere = fixture.workspace.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        // A file there with this run's baseline name, which recovery would
+        // otherwise read as unusable and remove.
+        let decoy = elsewhere.appendingPathComponent(fixture.baselineURL.lastPathComponent)
+        try "{not json".write(to: decoy, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: fixture.baselineURL.deletingLastPathComponent(),
+            withDestinationURL: elsewhere
+        )
+        fixture.run.status = .cancelled
+        let before = try #require(await TaskFolderRunSnapshot.capture(for: fixture.task))
+
+        #expect(!TaskFolderRunSnapshot.writeBaseline(before, runID: UUID()))
+        await TaskFolderRunSnapshot.recoverPersistedBaselines(
+            modelContext: fixture.container.mainContext,
+            autoExportWorkspaces: false
+        )
+        TaskFolderRunSnapshot.removeBaseline(at: fixture.baselineURL)
+
+        #expect(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path) == [decoy.lastPathComponent])
+    }
+
     @Test("A baseline that is not a regular file is not opened")
     func baselineThatIsNotAFileIsNotOpened() throws {
         let fixture = try makeFixture()

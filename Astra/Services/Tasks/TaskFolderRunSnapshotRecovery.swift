@@ -67,7 +67,12 @@ extension TaskFolderRunSnapshot {
         let url = baselineURL(taskFolder: baseline.root.standardized, runID: runID)
         let directory = url.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // Created only where nothing is: anything already there must be a
+            // real directory, which `isBaselineDirectory` checks below.
+            if (try? FileManager.default.attributesOfItem(atPath: directory.path)) == nil {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            }
+            guard isBaselineDirectory(directory, taskFolder: baseline.root.standardized) else { return false }
             let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
             for name in names where name.hasPrefix(baselineFilePrefix) && name != url.lastPathComponent {
                 try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
@@ -125,7 +130,21 @@ extension TaskFolderRunSnapshot {
     }
 
     static func removeBaseline(at url: URL) {
+        let directory = url.deletingLastPathComponent()
+        guard isBaselineDirectory(directory, taskFolder: directory.deletingLastPathComponent().path) else { return }
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Whether `directory` is a real directory inside `taskFolder`. The task
+    /// folder is provider-writable and ASTRA is not sandboxed, so a
+    /// `diagnostics/` a provider replaced with a symlink could send a baseline
+    /// write, or a removal, anywhere on the host: nothing here follows one.
+    static func isBaselineDirectory(_ directory: URL, taskFolder: String) -> Bool {
+        // `attributesOfItem` does not follow a symlink in the last component.
+        guard (try? FileManager.default.attributesOfItem(atPath: directory.path))?[.type] as? FileAttributeType
+            == .typeDirectory else { return false }
+        let root = URL(fileURLWithPath: taskFolder, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL.path
+        return directory.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root + "/")
     }
 
     /// Removes the run's baseline once what it compared is durable: the run
@@ -261,6 +280,7 @@ extension TaskFolderRunSnapshot {
     static func persistedBaselines(inTaskFolder taskFolder: String) -> [(runID: UUID, url: URL)] {
         let directory = URL(fileURLWithPath: taskFolder, isDirectory: true)
             .appendingPathComponent("diagnostics", isDirectory: true)
+        guard isBaselineDirectory(directory, taskFolder: taskFolder) else { return [] }
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
         return names.compactMap { name in
             guard name.hasPrefix(baselineFilePrefix), name.hasSuffix(".json"),
