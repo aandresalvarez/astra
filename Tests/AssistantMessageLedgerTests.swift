@@ -207,6 +207,7 @@ struct AssistantMessageLedgerTests {
         #expect(streamed.count == 1)
         #expect(!streamed[0].payload.contains(secret))
         #expect(!streamed[0].payload.contains(String(secret[..<half])))
+        #expect(!streamed[0].payload.contains(String(secret[half...])))
         #expect(!harness.run.output.contains(secret))
 
         harness.final("claude:msg_A#0", "key=\(secret) is fine")
@@ -240,6 +241,31 @@ struct AssistantMessageLedgerTests {
         let rows = try harness.responseRows().filter { !$0.payload.hasPrefix("key=") && $0.payload != "k" }
         #expect(rows.map(\.payload).joined() == "abcdefgh [redacted] end")
         #expect(rows.allSatisfy { !$0.payload.isEmpty })
+    }
+
+    @Test("A secret streamed across several deltas and rows never reaches a row, whole or in part")
+    func secretsStreamedAcrossRowsAreRedacted() throws {
+        let harness = try Harness(rowCap: 16)
+        let secret = "sk-test-0123456789abcdefghijklmnopqrstuv"
+        let taskID = harness.task.id
+        RunSecretRedactionScope.beginRun(taskID: taskID)
+        defer {
+            RunSecretRedactionScope.endRun(taskID: taskID)
+            RunSecretRedactionScope.forget(taskID: taskID)
+        }
+        RunSecretRedactionScope.register(taskID: taskID, secrets: [secret])
+        let characters = Array(secret)
+
+        // The secret crosses into a second row, then a delta ends partway
+        // through it and the next one completes it.
+        harness.delta("claude:msg_A#0", "0123456789 " + String(characters[..<9]))
+        harness.delta("claude:msg_A#0", String(characters[9..<25]))
+        #expect(try harness.responseRows().map(\.payload).joined() == "0123456789 [redacted]")
+        harness.delta("claude:msg_A#0", String(characters[25...]) + " end")
+
+        let rows = try harness.responseRows()
+        #expect(rows.map(\.payload).joined() == "0123456789 [redacted] end")
+        #expect(rows.allSatisfy { $0.payload.count <= 16 })
     }
 
     @Test("A streamed Claude reply with short lines is recorded once, end to end")
