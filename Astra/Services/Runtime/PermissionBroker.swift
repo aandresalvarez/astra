@@ -139,6 +139,23 @@ enum PermissionBroker {
         return sanitized
     }
 
+    /// The one-run grants that still hold when the same request pauses again.
+    ///
+    /// "Allow once" consents for the user's request, not for one launch
+    /// attempt, so access carries to the next attempt. Content-bound approvals
+    /// do not: a git publish or a staged connector change authorizes one exact
+    /// payload and is spent when used (see `isReusableForTaskScope`).
+    static func oneRunGrantsCarriedWithinRequest(_ grants: [PermissionGrant]) -> [PermissionGrant] {
+        sanitizeGrants(grants).filter { grant in
+            switch grant {
+            case .gitPublish, .connectorMutation:
+                return false
+            default:
+                return true
+            }
+        }
+    }
+
     static func permissionGrant(fromProviderString value: String) -> PermissionGrant? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
