@@ -601,17 +601,22 @@ OUTSIDE_PATH_PATTERN = re.compile(
     # A local file URL reads the disk however its slashes look.
     r"|(?i:\bfile:(?=/))"
 )
-ENV_DUMP_PATTERN = re.compile(r"(?:^|[\s;&|\"'])(?:env|printenv|set|export)(?:$|[\s;&|\"'])")
+# Every builtin that lists variables when given no names: `declare -x` and
+# `typeset -p` print the environment as surely as `env` does.
+ENV_DUMP_PATTERN = re.compile(
+    r"(?:^|[\s;&|\"'])(?:env|printenv|set|export|declare|typeset|readonly|compgen)(?:$|[\s;&|\"'])"
+)
 # `cd` with no directory, or `-`, moves to $HOME or the previous directory: a
 # path that never appears in the arguments. Options (`-L`, `-P`, `-e`, `-@`,
 # zsh's `-q` / `-s`) may come before the missing directory.
 # A redirection (`2>&1`, `>/dev/null`, `&>log`) is not a directory either.
 REDIRECTION = r"(?:\s*\d*(?:&>>?|>>?&?|<&?|<<<?)\s*(?:&?\d+-?|\"[^\"]*\"|'[^']*'|[^\s;&|)`}\"']+))"
-# After the options, the command ends (a separator, or the quote that closes
-# an `eval` / `sh -c` script right after `cd`); a quote after whitespace opens
-# a quoted directory operand instead.
+# After the options, the command ends (a separator, a `#` comment, or the
+# quote that closes an `eval` / `sh -c` script right after `cd`); a quote
+# after whitespace opens a quoted directory operand instead.
+COMMAND_END = r"(?:\s*(?=$|[;&|)`}\n])|\s+(?=#))"
 DIRECTORY_JUMP_PATTERN = re.compile(
-    r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?" + REDIRECTION + r"*(?:\s*(?=$|[;&|)`}\n])|(?=[\"']))"
+    r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--?)?" + REDIRECTION + r"*(?:" + COMMAND_END + r"|(?=[\"']))"
 )
 
 
@@ -677,7 +682,7 @@ def unquoted(command):
 EXPANSION = r"(?:\$(?:[A-Za-z_]\w*|[0-9@*#?!$-]|\{[^}]*\}|\([^)]*\))|`[^`]*`)"
 EMPTYABLE_DIRECTORY_PATTERN = re.compile(
     r"\b(?:cd|chdir)(?:\s+-[A-Za-z@]+)*(?:\s+--)?((?:\s+" + EXPANSION + r"+)+)"
-    + REDIRECTION + r"*\s*(?=$|[;&|)`}\n\"'])"
+    + REDIRECTION + r"*(?:" + COMMAND_END + r"|(?=[\"']))"
 )
 
 
