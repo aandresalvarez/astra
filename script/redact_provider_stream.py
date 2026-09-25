@@ -570,9 +570,10 @@ EXECUTABLE_PATTERN = re.compile(
 )
 # What may precede a command in a shell command string: its start, a
 # separator or subshell opener, or the quote (single, double or `$'`) that
-# opens a script `eval` or `sh -c` runs. A quote anywhere else opens an
-# ordinary argument, such as the text `echo "cd"` prints.
-SHELL_SCRIPT_OPENER = r"(?:\beval|\b(?:ba|z|da|k|fi)?sh(?:\s+-[A-Za-z]+)*\s+-[A-Za-z]*c[A-Za-z]*)\s+\$?[\"']"
+# opens a script `eval` or `sh -c` runs (unquoted too: `sh -c cd\;cat x`). A
+# quote anywhere else opens an ordinary argument, such as the text
+# `echo "cd"` prints.
+SHELL_SCRIPT_OPENER = r"(?:\beval|\b(?:ba|z|da|k|fi)?sh(?:\s+-[A-Za-z]+)*\s+-[A-Za-z]*c[A-Za-z]*)\s+\$?[\"']?"
 COMMAND_POSITION_PREFIX = re.compile(r"(?:^|[;&|(`\n{]|\$\(|" + SHELL_SCRIPT_OPENER + r")\s*$")
 # Where an executable path is exempt from the path rule: the start of the
 # command string (the opening quote of its JSON form) or after a separator. A
@@ -665,6 +666,35 @@ def runs_variable_as_command(command):
         before = before[:-1] if before.endswith(("\"", "'")) else before
         before = before[:GLUED_WORD_PREFIX.search(before).start()]
         if at_command_position(before):
+            return True
+    return False
+
+
+# A shell, or `source` / `.`, whose script the audit cannot read: fed on
+# standard input (`bash <<< 'cd; cat x'`, a heredoc, `… | sh`, `< file`), by
+# process substitution (`. <(printf cd)`), or by xargs as `-c`'s missing
+# operand. Such a script can run a bare `cd` and read $HOME, so it is refused.
+SHELL_OR_SOURCE = re.compile(
+    r"(?<![\w.\-/])(?:[\w.\-]*/)*(?:ba|z|da|k|fi|c|tc)?sh(?![\w.\-])|(?<![\w.\-/])(?:source|\.)(?=\s)"
+)
+SCRIPT_FLAG = r"(?:^|\s)-[A-Za-z]*c[A-Za-z]*"
+
+
+def runs_unreadable_script(command):
+    for match in SHELL_OR_SOURCE.finditer(command):
+        before = command[:match.start()]
+        from_xargs = re.search(r"\bxargs\b[^;&|\n]*$", before)
+        if not (at_command_position(before) or from_xargs):
+            continue
+        simple = re.match(r"[^;&|\n)]*", command[match.end():]).group(0)
+        if re.search(SCRIPT_FLAG + r"(?=\s|$)", simple):
+            # `sh -c` with nothing after it takes its script from xargs.
+            if re.search(SCRIPT_FLAG + r"\s*$", simple):
+                return True
+            continue
+        prefix = COMMAND_PREFIX_WORDS.search(before)
+        piped = re.search(r"(?:^|[^|])\|&?\s*$", before[:prefix.start()] if prefix else before)
+        if piped or from_xargs or "<" in simple:
             return True
     return False
 
@@ -839,6 +869,7 @@ def audit_frame(number, frame):
             or any(jumps_directory(command) or jumps_directory(unquoted(command)) for command in commands)
             or any(PARENT_OF_WORKSPACE_PATTERN.search(command) for command in commands)
             or any(runs_variable_as_command(command) or runs_variable_as_command(unquoted(command)) for command in commands)
+            or any(runs_unreadable_script(command) or runs_unreadable_script(unquoted(command)) for command in commands)
         )
         if reached or any(has_escaped_bytes(command) for command in commands):
             findings.append(f"line {number}: {name} {arguments[:160]}")
