@@ -90,7 +90,11 @@ public enum CodexStreamEventParser {
             return [commandToolUseEvent(from: item)]
         }
         if itemType == "file_change" {
-            return [fileChangeEvent(from: item) ?? .control(type: "item.started.file_change")]
+            // Emitted at the start so the policy guard sees the path before the
+            // patch lands. The item id makes the recorder hold it until the
+            // completion says whether the patch applied.
+            let itemID = string(in: item, keys: ["id", "call_id", "callId"])
+            return [fileChangeEvent(from: item, toolUseID: itemID) ?? .control(type: "item.started.file_change")]
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             return [.control(type: "item.started.\(itemType)")]
@@ -115,7 +119,21 @@ public enum CodexStreamEventParser {
             return [.toolResult(id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item))]
         }
         if itemType == "file_change" {
-            return [fileChangeEvent(from: item) ?? .control(type: "item.completed.file_change")]
+            let itemID = string(in: item, keys: ["id", "call_id", "callId"])
+            if let status = string(in: item, keys: ["status"])?.lowercased(),
+               failedItemStatuses.contains(status) {
+                // Drops the change held since the start.
+                guard let itemID else { return [.control(type: "item.completed.file_change.\(status)")] }
+                return [.toolResult(id: itemID, content: "file_change \(status)", isError: true)]
+            }
+            guard let change = fileChangeEvent(from: item, toolUseID: itemID) else {
+                return [.control(type: "item.completed.file_change")]
+            }
+            guard let itemID else { return [change] }
+            // The change again, for a completion with no start, then the
+            // result that commits whatever the item holds; the recorder keeps
+            // one per path. Empty content adds no transcript row.
+            return [change, .toolResult(id: itemID, content: "", isError: false)]
         }
         if itemType == "agent_message" || itemType == "message" || itemType == "assistant_message" {
             return [.completed(summary: textValue(in: item))]
@@ -162,12 +180,15 @@ public enum CodexStreamEventParser {
         return summary.isEmpty ? "command_execution completed" : summary
     }
 
-    private static func fileChangeEvent(from item: [String: Any]) -> AgentEvent? {
+    /// A completed item in one of these states changed nothing on disk.
+    private static let failedItemStatuses: Set<String> = ["failed", "declined", "rejected", "cancelled", "canceled", "error"]
+
+    private static func fileChangeEvent(from item: [String: Any], toolUseID: String? = nil) -> AgentEvent? {
         guard let path = string(in: item, keys: ["path", "file_path", "filePath", "filename", "name"]) else {
             return nil
         }
         let kind = string(in: item, keys: ["kind", "change_type", "changeType", "status"]) ?? "modified"
-        return .fileChange(path: path, kind: kind, summary: textValue(in: item))
+        return .fileChange(path: path, kind: kind, summary: textValue(in: item), toolUseID: toolUseID)
     }
 
     private static func usageEvent(from object: [String: Any]) -> AgentEvent? {

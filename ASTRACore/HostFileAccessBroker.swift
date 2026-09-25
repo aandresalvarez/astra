@@ -128,7 +128,8 @@ public struct HostFileAccessBroker {
         at url: URL,
         includingPropertiesForKeys keys: [URLResourceKey]? = nil,
         options mask: FileManager.DirectoryEnumerationOptions = [],
-        intent: HostFileAccessIntent
+        intent: HostFileAccessIntent,
+        errorHandler: ((URL, any Error) -> Bool)? = nil
     ) -> FileManager.DirectoryEnumerator? {
         guard !shouldSkip(url, intent: intent) else {
             return nil
@@ -137,7 +138,8 @@ public struct HostFileAccessBroker {
         guard let enumerator = fileManager.enumerator(
             at: url,
             includingPropertiesForKeys: requestedKeys,
-            options: mask
+            options: mask,
+            errorHandler: errorHandler
         ) else {
             return nil
         }

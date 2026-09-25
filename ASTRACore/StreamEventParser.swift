@@ -315,9 +315,12 @@ public enum StreamEventParser {
             let denialKeywords = ["permission denied", "not allowed", "user denied",
                                   "rejected by user", "tool was blocked", "user rejected"]
             if denialKeywords.contains(where: { lower.contains($0) }) {
+                if let batch = mixedDenialBatchEvents(in: data, denialKeywords: denialKeywords) {
+                    return .recognized(batch)
+                }
                 let tool = extractDeniedTool(from: line) ?? "unknown"
                 let reason = extractDenialReason(from: line)
-                return .recognized([.permissionDenied(tool: tool, reason: reason)])
+                return .recognized([.permissionDenied(tool: tool, reason: reason)] + deniedToolCallMarkers(in: data))
             }
             if let userEvent = try? JSONDecoder().decode(StreamUserEvent.self, from: data),
                let blocks = userEvent.message?.content {
@@ -488,6 +491,46 @@ public enum StreamEventParser {
         return desc
     }
 
+    /// A batch of results with a denial among them, read one result at a
+    /// time: the denied calls as denials, the rest as the results they are.
+    /// Read as one line-wide denial, the batch would lose its successful
+    /// results, and the denial would name the first call in it, whichever
+    /// that was. Nil for a single result, or a batch with no error result
+    /// that reads as a denial, which keep the line-wide reading.
+    private static func mixedDenialBatchEvents(in data: Data, denialKeywords: [String]) -> [ParsedEvent]? {
+        guard let blocks = (try? JSONDecoder().decode(StreamUserEvent.self, from: data))?.message?.content else {
+            return nil
+        }
+        let results = blocks.filter { $0.type == "tool_result" }
+        func isDenial(_ block: StreamToolResultBlock) -> Bool {
+            let text = block.textContent.lowercased()
+            return block.is_error == true && denialKeywords.contains { text.contains($0) }
+        }
+        guard results.count > 1, results.contains(where: isDenial) else { return nil }
+        return results.flatMap { block -> [ParsedEvent] in
+            let id = block.tool_use_id ?? ""
+            let text = block.textContent
+            guard isDenial(block) else {
+                return text.isEmpty ? [] : [.toolResult(toolId: id, content: text, isError: block.is_error ?? false)]
+            }
+            let tool = extractDeniedTool(from: text) ?? (id.isEmpty ? "unknown" : id)
+            let denial = ParsedEvent.permissionDenied(tool: tool, reason: text)
+            return id.isEmpty ? [denial] : [denial, .control(type: ToolCallDenialMarker.controlType(forToolUseID: id))]
+        }
+    }
+
+    /// One `ToolCallDenialMarker` per denied tool_result the line carries.
+    private static func deniedToolCallMarkers(in data: Data) -> [ParsedEvent] {
+        guard let blocks = (try? JSONDecoder().decode(StreamUserEvent.self, from: data))?.message?.content else {
+            return []
+        }
+        return blocks.compactMap { block in
+            guard block.type == "tool_result", block.is_error == true,
+                  let id = block.tool_use_id, !id.isEmpty else { return nil }
+            return .control(type: ToolCallDenialMarker.controlType(forToolUseID: id))
+        }
+    }
+
     private static func extractDeniedTool(from line: String) -> String? {
         for key in ["name", "tool", "toolName", "tool_use_id", "toolUseId"] {
             let pattern = "\"\(key)\"\\s*:\\s*\"([^\"]+)\""
@@ -551,5 +594,24 @@ public enum StreamEventParser {
         default:
             return nil
         }
+    }
+}
+
+/// Which tool call a denial ruled out. The denial event itself names the
+/// tool (`permissionDenied(tool:)` prefers a `name` to the call id, since the
+/// approval flow needs the tool), so the call id rides beside it as a
+/// `control` event, and the recorder drops exactly the change that call
+/// announced — even among parallel calls of the same tool.
+public enum ToolCallDenialMarker {
+    static let prefix = "tool_call_denied:"
+
+    public static func controlType(forToolUseID id: String) -> String {
+        prefix + id
+    }
+
+    public static func toolUseID(fromControlType type: String) -> String? {
+        guard type.hasPrefix(prefix) else { return nil }
+        let id = String(type.dropFirst(prefix.count))
+        return id.isEmpty ? nil : id
     }
 }

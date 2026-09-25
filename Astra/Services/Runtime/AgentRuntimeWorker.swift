@@ -1045,6 +1045,8 @@ final class AgentRuntimeWorker {
                 workspacePath: executionPath
             )
         }
+        let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
+        await TaskFolderRunSnapshot.persistBaseline(taskFolderBeforeRun, task: task, run: run)
         let capabilityScope = capabilityResolutionSnapshot.providerLaunch
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
@@ -1150,6 +1152,13 @@ final class AgentRuntimeWorker {
             }
         }
         await pendingEvents.drainAll()
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: recordingState,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            processExitedCleanly: result.exitCode == 0 && !result.stoppedByASTRA && !cancellationRequested
+        )
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
             homeDirectory: launchSettings.homeDirectory,
             task: task,
@@ -1180,6 +1189,13 @@ final class AgentRuntimeWorker {
                 runStart: startTime
             )
         }
+        let taskFolderRecord = await TaskFolderRunSnapshot.recordChanges(
+            since: taskFolderBeforeRun,
+            task: task,
+            run: run,
+            runStartedAt: startTime,
+            executionPath: executionPath
+        )
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
@@ -1510,6 +1526,7 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             handoffDiscoveredFiles: handoffDiscoveredFiles
         )
+        await TaskFolderRunSnapshot.settleBaseline(taskFolderRecord, task: task, run: run)
         isRunning = false
     }
     nonisolated static func durableFailureStopReason(category: AgentRuntimeFailureCategory?) -> TaskRunStopReason {
