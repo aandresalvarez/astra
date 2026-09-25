@@ -730,16 +730,84 @@ struct AgentEventRecorderTests {
         #expect(fixture.run.fileChanges.map(\.path) == ["/tmp/codex.md"])
     }
 
-    @Test("Codex records a file change only once its item completes, and not when it failed")
-    func codexFileChangesWaitForASuccessfulCompletion() {
-        func parsed(_ line: String) -> [AgentEvent] { CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true) }
-        func isFileChange(_ events: [AgentEvent]) -> Bool {
-            events.contains { if case .fileChange = $0 { true } else { false } }
+    @Test("A Codex patch is visible at its start and recorded only when it completes")
+    func codexFileChangesFollowTheirCompletion() throws {
+        let started = #"{"type":"item.started","item":{"id":"i1","type":"file_change","path":"/tmp/a.md","kind":"add","status":"in_progress"}}"#
+        let failed = #"{"type":"item.completed","item":{"id":"i1","type":"file_change","path":"/tmp/a.md","kind":"add","status":"failed"}}"#
+        let completed = #"{"type":"item.completed","item":{"id":"i1","type":"file_change","path":"/tmp/a.md","kind":"add","status":"completed"}}"#
+
+        // The policy guard reads the start, so the path must be on it.
+        let startEvents = CodexCLIRuntime.parseAgentEvents(line: started, parsesJSONLines: true)
+        guard case .fileChange(let path, _, _, _, _, let toolUseID) = startEvents.first else {
+            Issue.record("Expected the started patch to surface as a file change")
+            return
+        }
+        #expect(path == "/tmp/a.md")
+        #expect(toolUseID == "i1")
+
+        func paths(after lines: [String], drain: Bool = false) throws -> [String] {
+            let fixture = try makeToolFixture()
+            for line in lines {
+                for event in CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true) {
+                    AgentEventRecorder.recordCodexEvent(
+                        event,
+                        to: fixture.task,
+                        run: fixture.run,
+                        modelContext: fixture.container.mainContext,
+                        recordingState: fixture.state
+                    )
+                }
+            }
+            if drain {
+                AgentEventRecorder.commitUnresolvedFileChanges(
+                    recordingState: fixture.state,
+                    task: fixture.task,
+                    run: fixture.run,
+                    modelContext: fixture.container.mainContext
+                )
+            }
+            return fixture.run.fileChanges.map(\.path)
         }
 
-        #expect(!isFileChange(parsed(#"{"type":"item.started","item":{"id":"i1","type":"file_change","path":"a.md","kind":"add","status":"in_progress"}}"#)))
-        #expect(!isFileChange(parsed(#"{"type":"item.completed","item":{"id":"i1","type":"file_change","path":"a.md","kind":"add","status":"failed"}}"#)))
-        #expect(isFileChange(parsed(#"{"type":"item.completed","item":{"id":"i1","type":"file_change","path":"a.md","kind":"add","status":"completed"}}"#)))
+        #expect(try paths(after: [started]).isEmpty)
+        #expect(try paths(after: [started, failed], drain: true).isEmpty)
+        #expect(try paths(after: [started, completed]) == ["/tmp/a.md"])
+        #expect(try paths(after: [completed]) == ["/tmp/a.md"])
+    }
+
+    @Test("A denial naming the tool drops the held call only when it is the one call of that tool")
+    func denialByToolNameDropsOnlyAnUnambiguousCall() throws {
+        // A denied result that carries both `name` and `tool_use_id`: the
+        // parser reports the name.
+        let denied = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_w","name":"Write","is_error":true,"content":"Permission denied"}]}}"#
+        func write(_ id: String, _ path: String) -> ParsedEvent {
+            .toolUse(name: "Write", id: id, input: ["file_path": path, "content": "x"])
+        }
+
+        let single = try makeToolFixture()
+        record(write("tool_w", "/tmp/denied.md"), in: single)
+        for parsed in StreamEventParser.parseAll(line: denied) { record(parsed, in: single) }
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: single.state,
+            task: single.task,
+            run: single.run,
+            modelContext: single.container.mainContext
+        )
+        #expect(single.run.fileChanges.isEmpty)
+
+        // Two held Writes: the name alone cannot say which was denied, so
+        // neither is dropped rather than risk dropping the wrong one.
+        let ambiguous = try makeToolFixture()
+        record(write("tool_w", "/tmp/one.md"), in: ambiguous)
+        record(write("tool_x", "/tmp/two.md"), in: ambiguous)
+        for parsed in StreamEventParser.parseAll(line: denied) { record(parsed, in: ambiguous) }
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: ambiguous.state,
+            task: ambiguous.task,
+            run: ambiguous.run,
+            modelContext: ambiguous.container.mainContext
+        )
+        #expect(ambiguous.run.fileChanges.count == 2)
     }
 
     private struct ToolFixture {

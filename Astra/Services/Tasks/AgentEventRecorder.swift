@@ -15,6 +15,7 @@ final class AgentEventRecordingState {
     /// clobbering output assembled from streamed `.text` deltas.
     private var runsWithCompletedOutput: Set<UUID> = []
     private var toolUseEvidenceByRunAndID: [String: String] = [:]
+    private var toolNamesByRunAndID: [String: String] = [:]
     private var runsWithProviderStart: Set<UUID> = []
     /// Runs whose provider stream said the turn itself failed.
     private var runsWithAgentReportedError: Set<UUID> = []
@@ -116,9 +117,10 @@ final class AgentEventRecordingState {
         }
     }
 
-    func recordToolUse(id: String, evidence: String, run: TaskRun) {
+    func recordToolUse(id: String, name: String, evidence: String, run: TaskRun) {
         guard !id.isEmpty else { return }
         toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"] = evidence
+        toolNamesByRunAndID["\(run.id.uuidString)#\(id)"] = name
     }
 
     func toolUseEvidence(id: String, run: TaskRun) -> String? {
@@ -134,6 +136,20 @@ final class AgentEventRecordingState {
     func takePendingFileChanges(toolUseID: String, run: TaskRun) -> [PendingFileChange] {
         guard !toolUseID.isEmpty else { return [] }
         return takePendingFileChanges { $0.runID == run.id && $0.toolUseID == toolUseID }
+    }
+
+    /// The changes a permission denial rules out. Claude's parser names the
+    /// call by its tool-use id when that is all the result carries, but by
+    /// the tool's name when both are there; a name only settles which call
+    /// was denied when exactly one held call used that tool. Otherwise
+    /// nothing is dropped, and the change is kept like any unresolved one.
+    func takePendingFileChangesDenied(tool: String, run: TaskRun) -> [PendingFileChange] {
+        let byID = takePendingFileChanges(toolUseID: tool, run: run)
+        guard byID.isEmpty else { return byID }
+        let heldIDs = Set(pendingFileChanges.filter { $0.runID == run.id }.map(\.toolUseID))
+        let named = heldIDs.filter { toolNamesByRunAndID["\(run.id.uuidString)#\($0)"] == tool }
+        guard named.count == 1, let id = named.first else { return [] }
+        return takePendingFileChanges(toolUseID: id, run: run)
     }
 
     /// Every change still held for the run, in the order the calls came.
@@ -616,7 +632,7 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
             let payload = "Using tool: \(name)\(suffix)"
-            recordingState?.recordToolUse(id: id, evidence: payload, run: run)
+            recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run)
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run))
 
         case .toolResult(let toolID, let content, let isError):
@@ -673,11 +689,9 @@ enum AgentEventRecorder {
 
         case .permissionRequested(let tool, let reason):
             recordingState?.breakConversationCoalescing(for: run)
-            // Claude reports a denied call as a denial carrying its tool-use id
-            // rather than as an error result; the change it announced never
-            // happened. A denial naming a tool rather than a call matches
-            // nothing held.
-            if let dropped = recordingState?.takePendingFileChanges(toolUseID: tool, run: run), !dropped.isEmpty {
+            // Claude reports a denied call as a denial rather than as an error
+            // result; the change it announced never happened.
+            if let dropped = recordingState?.takePendingFileChangesDenied(tool: tool, run: run), !dropped.isEmpty {
                 logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
             }
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionDenied, payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
