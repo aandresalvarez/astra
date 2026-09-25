@@ -317,7 +317,7 @@ public enum StreamEventParser {
             if denialKeywords.contains(where: { lower.contains($0) }) {
                 let tool = extractDeniedTool(from: line) ?? "unknown"
                 let reason = extractDenialReason(from: line)
-                return .recognized([.permissionDenied(tool: tool, reason: reason)])
+                return .recognized([.permissionDenied(tool: tool, reason: reason)] + deniedToolCallMarkers(in: data))
             }
             if let userEvent = try? JSONDecoder().decode(StreamUserEvent.self, from: data),
                let blocks = userEvent.message?.content {
@@ -488,6 +488,18 @@ public enum StreamEventParser {
         return desc
     }
 
+    /// One `ToolCallDenialMarker` per denied tool_result the line carries.
+    private static func deniedToolCallMarkers(in data: Data) -> [ParsedEvent] {
+        guard let blocks = (try? JSONDecoder().decode(StreamUserEvent.self, from: data))?.message?.content else {
+            return []
+        }
+        return blocks.compactMap { block in
+            guard block.type == "tool_result", block.is_error == true,
+                  let id = block.tool_use_id, !id.isEmpty else { return nil }
+            return .control(type: ToolCallDenialMarker.controlType(forToolUseID: id))
+        }
+    }
+
     private static func extractDeniedTool(from line: String) -> String? {
         for key in ["name", "tool", "toolName", "tool_use_id", "toolUseId"] {
             let pattern = "\"\(key)\"\\s*:\\s*\"([^\"]+)\""
@@ -551,5 +563,24 @@ public enum StreamEventParser {
         default:
             return nil
         }
+    }
+}
+
+/// Which tool call a denial ruled out. The denial event itself names the
+/// tool (`permissionDenied(tool:)` prefers a `name` to the call id, since the
+/// approval flow needs the tool), so the call id rides beside it as a
+/// `control` event, and the recorder drops exactly the change that call
+/// announced — even among parallel calls of the same tool.
+public enum ToolCallDenialMarker {
+    static let prefix = "tool_call_denied:"
+
+    public static func controlType(forToolUseID id: String) -> String {
+        prefix + id
+    }
+
+    public static func toolUseID(fromControlType type: String) -> String? {
+        guard type.hasPrefix(prefix) else { return nil }
+        let id = String(type.dropFirst(prefix.count))
+        return id.isEmpty ? nil : id
     }
 }

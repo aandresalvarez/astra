@@ -576,8 +576,12 @@ enum AgentEventRecorder {
         recordingState: AgentEventRecordingState? = nil
     ) {
         switch event {
-        case .control:
-            break
+        case .control(let type):
+            if let toolUseID = ToolCallDenialMarker.toolUseID(fromControlType: type),
+               let dropped = recordingState?.takePendingFileChanges(toolUseID: toolUseID, run: run),
+               !dropped.isEmpty {
+                logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
+            }
 
         case .started(let sessionID, let model):
             if let sessionID {
@@ -1083,20 +1087,27 @@ enum AgentEventRecorder {
         ], level: .debug)
     }
 
-    /// Records the tool file changes whose result never arrived — the process
-    /// exited, or the provider dropped the result. A change is kept rather
-    /// than lost: a real write without a result is likelier than a failure
-    /// whose error the stream swallowed. Call once the run's events are
-    /// drained.
+    /// Settles the tool file changes whose result never arrived. After a
+    /// clean exit the provider dropped the result, and a real write is likelier
+    /// than a failure whose error the stream swallowed, so they are kept.
+    /// After a stop ASTRA forced — a timeout, a cancel, a policy stop, a
+    /// budget limit — the call may never have run, so they are dropped; the
+    /// task-folder comparison still records what actually changed on disk.
+    /// Call once the run's events are drained.
     @MainActor
     static func commitUnresolvedFileChanges(
         recordingState: AgentEventRecordingState,
         task: AgentTask,
         run: TaskRun,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        processExitedCleanly: Bool
     ) {
         let unresolved = recordingState.takeUnresolvedFileChanges(for: run)
         guard !unresolved.isEmpty else { return }
+        guard processExitedCleanly else {
+            logDroppedFileChanges(unresolved.count, reason: "no_result_after_forced_stop", task: task)
+            return
+        }
         for change in unresolved {
             appendFileChange(change, task: task, run: run, modelContext: modelContext)
         }

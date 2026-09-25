@@ -651,7 +651,8 @@ struct AgentEventRecorderTests {
             recordingState: fixture.state,
             task: fixture.task,
             run: fixture.run,
-            modelContext: fixture.container.mainContext
+            modelContext: fixture.container.mainContext,
+            processExitedCleanly: true
         )
 
         #expect(fixture.run.fileChanges.isEmpty)
@@ -683,7 +684,8 @@ struct AgentEventRecorderTests {
             recordingState: fixture.state,
             task: fixture.task,
             run: fixture.run,
-            modelContext: fixture.container.mainContext
+            modelContext: fixture.container.mainContext,
+            processExitedCleanly: true
         )
 
         #expect(fixture.run.fileChanges.map(\.path) == ["/tmp/late.md"])
@@ -692,7 +694,8 @@ struct AgentEventRecorderTests {
             recordingState: fixture.state,
             task: fixture.task,
             run: fixture.run,
-            modelContext: fixture.container.mainContext
+            modelContext: fixture.container.mainContext,
+            processExitedCleanly: true
         )
         #expect(fixture.run.fileChanges.count == 1)
     }
@@ -710,7 +713,8 @@ struct AgentEventRecorderTests {
             recordingState: fixture.state,
             task: fixture.task,
             run: fixture.run,
-            modelContext: fixture.container.mainContext
+            modelContext: fixture.container.mainContext,
+            processExitedCleanly: true
         )
 
         #expect(fixture.run.fileChanges.map(\.newString) == ["v2", "v3"])
@@ -763,7 +767,8 @@ struct AgentEventRecorderTests {
                     recordingState: fixture.state,
                     task: fixture.task,
                     run: fixture.run,
-                    modelContext: fixture.container.mainContext
+                    modelContext: fixture.container.mainContext,
+                    processExitedCleanly: true
                 )
             }
             return fixture.run.fileChanges.map(\.path)
@@ -775,7 +780,7 @@ struct AgentEventRecorderTests {
         #expect(try paths(after: [completed]) == ["/tmp/a.md"])
     }
 
-    @Test("A denial naming the tool drops the held call only when it is the one call of that tool")
+    @Test("A denial drops exactly the held call it ruled out, even among parallel calls of one tool")
     func denialByToolNameDropsOnlyAnUnambiguousCall() throws {
         // A denied result that carries both `name` and `tool_use_id`: the
         // parser reports the name.
@@ -791,12 +796,13 @@ struct AgentEventRecorderTests {
             recordingState: single.state,
             task: single.task,
             run: single.run,
-            modelContext: single.container.mainContext
+            modelContext: single.container.mainContext,
+            processExitedCleanly: true
         )
         #expect(single.run.fileChanges.isEmpty)
 
-        // Two held Writes: the name alone cannot say which was denied, so
-        // neither is dropped rather than risk dropping the wrong one.
+        // Two held Writes: the name alone cannot say which was denied, but
+        // the call id riding beside the denial does.
         let ambiguous = try makeToolFixture()
         record(write("tool_w", "/tmp/one.md"), in: ambiguous)
         record(write("tool_x", "/tmp/two.md"), in: ambiguous)
@@ -805,9 +811,27 @@ struct AgentEventRecorderTests {
             recordingState: ambiguous.state,
             task: ambiguous.task,
             run: ambiguous.run,
-            modelContext: ambiguous.container.mainContext
+            modelContext: ambiguous.container.mainContext,
+            processExitedCleanly: true
         )
-        #expect(ambiguous.run.fileChanges.count == 2)
+        #expect(ambiguous.run.fileChanges.map(\.path) == ["/tmp/two.md"])
+    }
+
+    @Test("Held writes are dropped, not kept, when ASTRA forced the provider to stop")
+    func unresolvedToolFileChangesAreDroppedAfterAForcedStop() throws {
+        let fixture = try makeToolFixture()
+        record(.toolUse(name: "Write", id: "tool-w", input: ["file_path": "/tmp/halfway.md", "content": "x"]), in: fixture)
+
+        AgentEventRecorder.commitUnresolvedFileChanges(
+            recordingState: fixture.state,
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.container.mainContext,
+            processExitedCleanly: false
+        )
+
+        #expect(fixture.run.fileChanges.isEmpty)
+        #expect(fixture.task.artifacts.isEmpty)
     }
 
     private struct ToolFixture {

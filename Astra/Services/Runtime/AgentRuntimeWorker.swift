@@ -1154,7 +1154,10 @@ final class AgentRuntimeWorker {
             recordingState: recordingState,
             task: task,
             run: run,
-            modelContext: modelContext
+            modelContext: modelContext,
+            processExitedCleanly: (result.exitCode == 0 || result.terminatedAfterTerminalProgress)
+                && !result.timedOut && !result.policyViolation && !result.policyApprovalRequired
+                && !cancellationRequested
         )
         runtimeAdapter.recordPostProcessEvents(context: AgentRuntimePostProcessContext(
             homeDirectory: launchSettings.homeDirectory,
