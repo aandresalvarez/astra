@@ -284,6 +284,7 @@ public enum TaskEventTypes {
     private static let conversationTypes: Set<TaskEventType> = [
         Conversation.userMessage,
         Conversation.agentResponse,
+        Conversation.assistantMessage,
         Conversation.agentThinking,
         Conversation.planUserMessage,
         Conversation.planAssistantMessage,

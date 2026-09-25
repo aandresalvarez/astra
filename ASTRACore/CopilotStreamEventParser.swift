@@ -121,6 +121,11 @@ public enum CopilotStreamEventParser {
 
         guard let data = trimmed.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) else {
+            // A frame whose JSON broke (Copilot's own `******` masking breaks
+            // its escaping) is a diagnostic, never answer text.
+            if trimmed.hasPrefix("{\"") {
+                return [.unknown(provider: "copilot", type: "malformed_json", raw: trimmed)]
+            }
             return parsePlainTextAgentEvents(line: trimmed)
         }
         guard let object = json as? [String: Any] else {
@@ -261,7 +266,11 @@ public enum CopilotStreamEventParser {
         if isToolUse(normalized, object: object) {
             let name = toolName(in: object)
             let id = toolID(in: object)
-            return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: object, toolName: name))]
+            let use = AgentEvent.toolUse(name: name, id: id, inputSummary: inputSummary(in: object, toolName: name))
+            // apply_patch names its files in the patch itself.
+            guard name == "apply_patch",
+                  let patch = argumentText(in: object) else { return [use] }
+            return [use] + patchedFileChanges(in: patch)
         }
 
         if isToolResult(normalized, object: object) {
@@ -726,6 +735,30 @@ public enum CopilotStreamEventParser {
             return false
         }
         return keys.contains { payload[$0] != nil }
+    }
+
+    /// The raw `arguments` / `input` of a tool frame when it is a string, as
+    /// apply_patch sends its patch.
+    private static func argumentText(in object: [String: Any]) -> String? {
+        for container in [object, payloadObject(in: object)].compactMap({ $0 }) {
+            for key in ["arguments", "input", "args"] {
+                if let text = container[key] as? String { return text }
+            }
+        }
+        return nil
+    }
+
+    /// One file change per `*** Add File:` / `*** Update File:` / `*** Delete
+    /// File:` header of an apply_patch patch.
+    private static func patchedFileChanges(in patch: String) -> [AgentEvent] {
+        let headers = [("*** Add File: ", "add"), ("*** Update File: ", "update"), ("*** Delete File: ", "delete")]
+        return patch.components(separatedBy: "\n").compactMap { line in
+            for (header, kind) in headers where line.hasPrefix(header) {
+                let path = String(line.dropFirst(header.count)).trimmingCharacters(in: .whitespaces)
+                return path.isEmpty ? nil : .fileChange(path: path, kind: kind, summary: nil)
+            }
+            return nil
+        }
     }
 
     /// `copilot:<messageId>`, shared by a message's deltas and its final copy.

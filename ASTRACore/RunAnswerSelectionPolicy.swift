@@ -103,6 +103,9 @@ extension RunAnswerSelectionPolicy {
         public let answer: [[UUID]]
         /// The last work event before the answer: what the answer follows.
         public let anchor: UUID?
+        /// Every main-agent message of the run in order, each as its rows:
+        /// the full response the answer was chosen from.
+        public var messages: [[UUID]] = []
     }
 
     /// The answer of one run, from its events in order. `nil` for a run
@@ -175,12 +178,16 @@ extension RunAnswerSelectionPolicy {
             }
         }
         let answer = answerMessageIDs(in: steps)
+        let allMessages = steps.compactMap { step -> [UUID]? in
+            guard case .message(let id, _, let subagent) = step, !subagent else { return nil }
+            return rowsByMessage[id]
+        }
         guard let first = answer.first,
               let firstPosition = order.firstIndex(where: { $0.message == first }) else {
-            return Selection(answer: [], anchor: nil)
+            return Selection(answer: [], anchor: nil, messages: allMessages)
         }
         let anchor = order[..<firstPosition].last { $0.kind == .work }?.eventID
-        return Selection(answer: answer.compactMap { rowsByMessage[$0] }, anchor: anchor)
+        return Selection(answer: answer.compactMap { rowsByMessage[$0] }, anchor: anchor, messages: allMessages)
     }
 
     /// `agent.message`, the record a keyed run writes per message.

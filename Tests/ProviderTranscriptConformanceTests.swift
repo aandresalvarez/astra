@@ -576,11 +576,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             model: "gpt-5",
             // Narration that carries toolRequests is keyed by messageId like
             // any message, so its final copy no longer repeats its deltas.
-            knownIssues: [
-                .fileChangesRecorded: .items("apply_patch writes are not recorded as file changes (plan phase 4)") {
-                    $0 == "answer.md"
-                }
-            ],
+            knownIssues: [:],
             notExercised: [
                 .failedToolResultsRecorded: "no tool call in this capture fails",
                 .usageRecorded: "the capture has no session.shutdown frame, the only one with token totals"
@@ -601,15 +597,7 @@ struct ProviderStreamFixture: CustomTestStringConvertible, Sendable {
             runtime: .cursorCLI,
             executableName: "cursor-agent",
             model: "composer-2.5-fast",
-            knownIssues: [
-                .toolCallsRecorded: .items("tool_call frames are not parsed (plan phase 4)") {
-                    ["readToolCall", "editToolCall"].contains($0)
-                },
-                .toolResultsRecorded: .items("tool_call completions are not parsed (plan phase 4)") { $0 == "success" },
-                .fileChangesRecorded: .items("editToolCall writes are not parsed (plan phase 4)") {
-                    $0 == "answer.md"
-                }
-            ],
+            knownIssues: [:],
             notExercised: [.failedToolResultsRecorded: "no tool call in this capture fails"]
         ),
         ProviderStreamFixture(

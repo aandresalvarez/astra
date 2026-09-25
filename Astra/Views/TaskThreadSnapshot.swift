@@ -550,6 +550,9 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
     let displayText: String
     let progressMessages: [TaskRunProgressMessage]
     let rawText: String
+    /// Every main-agent message of the run, joined at message boundaries: the
+    /// full response the answer was chosen from.
+    private(set) var fullText = ""
 
     static let empty = TaskRunOutputPresentation(displayText: "", progressMessages: [], rawText: "")
 
@@ -557,6 +560,12 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         self.displayText = displayText
         self.progressMessages = progressMessages
         self.rawText = rawText
+    }
+
+    /// Whether the full response holds more than the answer shows.
+    var hasMoreThanDisplayText: Bool {
+        let key: (String) -> String = { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        return !fullText.isEmpty && key(fullText) != key(displayText)
     }
 
     var hasDisplayText: Bool {
@@ -632,6 +641,13 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         displayText = keyed != nil
             ? finalText
             : TaskRunAnswerPresentationPolicy.presentation(normalizedText: finalText).answerText
+        // The full response, for "Show full response": whole messages joined
+        // at their boundaries, or an older run's rows as they were recorded.
+        let allMessages = (selection?.messages ?? []).map { rows in rows.compactMap { rowsByID[$0]?.payload }.joined() }
+        let full = keyed != nil
+            ? TaskRunAnswerPresentationPolicy.presentation(messages: allMessages).answerText
+            : Self.joinResponsePayloads(responseEvents)
+        fullText = full.utf8.count <= Self.maximumFinalAnswerPresentationBytes ? full : ""
         let finalIDs = Set(finalResponseEvents.map(\.id))
         progressMessages = Self.progressMessages(from: responseEvents.filter { !finalIDs.contains($0.id) })
         try cancellationCheck()

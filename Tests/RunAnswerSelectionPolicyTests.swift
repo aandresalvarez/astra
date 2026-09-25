@@ -162,6 +162,39 @@ struct RunAnswerSelectionPolicyTests {
         #expect(TaskRunAnswerPresentationPolicy.presentation(rawText: emptySection).answerText.hasPrefix("Long answer text"))
     }
 
+    // MARK: - Full response
+
+    @MainActor
+    @Test("The full response holds every main-agent message; it is offered only when it says more")
+    func fullResponseCoversEveryMessage() throws {
+        let task = AgentTask(title: "T", goal: "G")
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.completedAt = Date(timeIntervalSince1970: 100)
+        var clock = 0.0
+        func add(_ type: String, _ payload: String) -> TaskEvent {
+            let event = TaskEvent(task: task, type: type, payload: payload, run: run)
+            event.timestamp = Date(timeIntervalSince1970: clock)
+            clock += 1
+            return event
+        }
+        let narration = add("agent.response", "I'll read the question first.")
+        let read = add("tool.use", "Using tool: Read: q.txt")
+        let answer = add("agent.response", "Here is the reply.")
+        let records = [("k:0", narration), ("k:1", answer)].map { key, row in
+            add("agent.message", TaskEvent.payloadString(AssistantMessageRecord(key: key, rows: [row.id], subagent: false)))
+        }
+        let snapshot = TaskThreadSnapshot(goal: "G", createdAt: Date(), events: [narration, read, answer] + records, runs: [run])
+        let presentation = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+
+        #expect(presentation.displayText == "Here is the reply.")
+        #expect(presentation.fullText == "I'll read the question first.\n\nHere is the reply.")
+        #expect(presentation.hasMoreThanDisplayText)
+
+        let only = TaskThreadSnapshot(goal: "G", createdAt: Date(), events: [read, answer, records[1]], runs: [run])
+        #expect(!only.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))).hasMoreThanDisplayText)
+    }
+
     // MARK: - Compaction
 
     @MainActor
