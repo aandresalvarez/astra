@@ -281,6 +281,40 @@ extension HeadlessChatScenarioTests {
         #expect(run.status == .completed)
     }
 
+    @Test("A file a tool wrote and a command deleted in the same run is recorded as removed")
+    func runRecordsRemovalOfAFileItWroteAndDeleted() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Draft and discard", model: "claude-sonnet-4-6")
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let folder = Self.shQuoteSandboxPath(taskFolder)
+        // `draft.md`'s Write is confirmed by its result; `notes.md`'s has none
+        // and is committed when the events drain, before the folder is compared.
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"draft-session","model":"claude-sonnet-4-6"}'
+            printf 'draft' > \(folder)/draft.md
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_draft","name":"Write","input":{"file_path":"\(taskFolder)/draft.md","content":"draft"}}]}}'
+            printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_draft","is_error":false,"content":"File created"}]}}'
+            printf 'notes' > \(folder)/notes.md
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_notes","name":"Write","input":{"file_path":"\(taskFolder)/notes.md","content":"notes"}}]}}'
+            rm \(folder)/draft.md \(folder)/notes.md
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Discarded","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        let recorded = run.allFileChanges.map { "\(URL(fileURLWithPath: $0.path).lastPathComponent) \($0.kind.rawValue)" }
+        #expect(recorded == ["draft.md Write", "notes.md Write", "draft.md removed", "notes.md removed"])
+        #expect(run.fileChanges.count == 2)
+    }
+
     @Test("Fake Antigravity chat completes through the worker without UI")
     func fakeAntigravityChatCompletes() async throws {
         let harness = try HeadlessChatHarness()
