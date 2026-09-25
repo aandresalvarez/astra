@@ -48,7 +48,7 @@ struct ProviderTranscriptConformanceTests {
             : {}
         defer { restoreStructuredOutput() }
 
-        let task = harness.makeTask(runtime: fixture.runtime, goal: "Draft a short reply to Dana", model: fixture.model)
+        let liveTask = harness.makeTask(runtime: fixture.runtime, goal: "Draft a short reply to Dana", model: fixture.model)
         // The captures contain real Write / apply_patch / run_command calls. A
         // restricted policy would stop the replay at the first one; the
         // transcript contract is independent of permission enforcement.
@@ -57,8 +57,15 @@ struct ProviderTranscriptConformanceTests {
             executablePath: executablePath,
             permissionPolicy: .autonomous
         )
-        _ = await harness.execute(task: task, worker: worker)
+        _ = await harness.execute(task: liveTask, worker: worker)
 
+        // The contract is about durable state: what reopening the task shows.
+        // The harness swallows a failed save, so save here, and read the task
+        // back through a fresh context rather than the objects that recorded it.
+        try harness.context.save()
+        let taskID = liveTask.id
+        let durableContext = ModelContext(harness.container)
+        let task = try #require(try durableContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })).first)
         let run = try #require(task.runs.first)
         let output = run.output
         let collapsedOutput = collapsed(output)
@@ -375,6 +382,15 @@ struct ProviderTranscriptConformanceTests {
         #expect(messageCount("Done with work", in: "DoneDone with work", among: messages) == 1)
         #expect(messageCount("Done", in: "Done with work", among: messages) == 0)
         #expect(messageCount("Done", in: "DoneDoneDone with work", among: messages) == 2)
+    }
+
+    @Test("Line endings are normalized; spaces and tabs within a line are compared exactly")
+    func horizontalWhitespaceIsExact() {
+        #expect(collapsed("a\r\nb") == collapsed("a\nb"))
+        #expect(collapsed("a  \n\n b") == "a  b")
+        #expect(collapsed("a  b") != collapsed("a b"))
+        #expect(collapsed("a\tb") != collapsed("a b"))
+        #expect(lineStructure("  x\t y  \r\n\n\n z") == "  x\t y\n\n z")
     }
 
     @Test("Two messages reversed in one text are out of order; a missing second copy is not")
@@ -861,9 +877,8 @@ struct ProviderStreamTruth {
                     func total(_ keys: [String]) -> Int {
                         entries.reduce(0) { sum, entry in
                             let usage = entry["usage"] as? [String: Any]
-                            let value = keys.lazy.compactMap { usage?[$0] as? NSNumber }.first
-                                ?? keys.lazy.compactMap { entry[$0] as? NSNumber }.first
-                            return sum + (value?.intValue ?? 0)
+                            let value: Int? = usage.flatMap { Self.copilotInt($0, keys: keys) } ?? Self.copilotInt(entry, keys: keys)
+                            return sum + (value ?? 0)
                         }
                     }
                     usage = (
@@ -1061,7 +1076,7 @@ struct ProviderStreamTruth {
         for (earlier, later) in zip(messages, messages.dropFirst()) {
             let lastLine = earlier.components(separatedBy: "\n").last ?? ""
             let firstLine = later.components(separatedBy: "\n").first ?? ""
-            boundaryJoins.append(Set([collapsed(lastLine + firstLine), collapsed(lastLine + " " + firstLine)]))
+            boundaryJoins.append(Set([lineText(lastLine + firstLine), lineText(lastLine + " " + firstLine)]))
         }
 
         // The drafted reply is the message with the scenario's own heading
@@ -1226,6 +1241,16 @@ struct ProviderStreamTruth {
         return text.isEmpty ? nil : text
     }
 
+    /// CopilotStreamEventParser.intValue: a number (a fraction truncated) or
+    /// a numeric string.
+    static func copilotInt(_ object: [String: Any], keys: [String]) -> Int? {
+        for key in keys {
+            if let number = object[key] as? NSNumber { return number.intValue }
+            if let text = object[key] as? String, let value = Int(text) { return value }
+        }
+        return nil
+    }
+
     static func copilotPayload(_ object: [String: Any]) -> [String: Any]? {
         object["data"] as? [String: Any] ?? object["payload"] as? [String: Any]
     }
@@ -1249,15 +1274,28 @@ struct ProviderStreamTruth {
     }
 }
 
+/// Text compared across line breaks. CRLF and CR read as LF, each run of line
+/// breaks (with the spaces ending the line before it) reads as one space, and
+/// the ends are trimmed. Spaces and tabs within a line, the next line's
+/// indentation included, are compared exactly: a recorder that turned them
+/// into something else would change the text people read.
 private func collapsed(_ text: String) -> String {
-    text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+    text.replacingOccurrences(of: "\r\n?", with: "\n", options: .regularExpression)
+        .replacingOccurrences(of: "[ \t]*\n(?:[ \t]*\n)*", with: " ", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-/// Whitespace collapsed within each line, line breaks kept, and any run of
+/// One line as compared: its trailing whitespace (and a CR) dropped, its
+/// indentation and inner spacing kept.
+private func lineText(_ line: String) -> String {
+    line.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+}
+
+/// Each line as `lineText` compares it, line breaks kept, and any run of
 /// blank lines reduced to one paragraph break.
 private func lineStructure(_ text: String) -> String {
     var lines: [String] = []
-    for line in text.components(separatedBy: "\n").map(collapsed) {
+    for line in text.components(separatedBy: "\n").map(lineText) {
         if line.isEmpty, lines.last?.isEmpty ?? true { continue }
         lines.append(line)
     }
@@ -1477,7 +1515,7 @@ private func workspaceRelative(_ path: String, roots: [String]) -> String {
 private func lineCounts(_ text: String) -> [String: Int] {
     var counts: [String: Int] = [:]
     for line in text.components(separatedBy: "\n") {
-        let key = collapsed(line)
+        let key = lineText(line)
         // A lone `>` is a quote block's blank line: part of the paragraph
         // structure, so it is counted like any other line.
         guard !key.isEmpty else { continue }
