@@ -202,8 +202,40 @@ public enum AgentEvent: Sendable, Equatable {
 /// `local_agent`/`in_process_teammate` system lifecycle events).
 public enum AgentTeamEvent: Sendable, Equatable {
     case teammateStarted(taskId: String, name: String, prompt: String)
-    case teammateCompleted(taskId: String, name: String)
+    case teammateCompleted(taskId: String, name: String, status: TeammateCompletionStatus)
     case teamCreated(name: String, description: String)
     case teamDeleted(name: String)
     case teamMessage(from: String, to: String, content: String)
+}
+
+/// How a subagent's run ended. Claude Code's SDK schema gives a
+/// `task_notification` frame's `status` as `completed`, `failed` or
+/// `stopped`; a frame without one (`task_completed` never has one) completed.
+public enum TeammateCompletionStatus: Sendable, Equatable {
+    case completed
+    case failed
+    case stopped
+    /// A status this build does not know, kept verbatim so it is never
+    /// mistaken for success.
+    case unrecognized(String)
+
+    public init(providerStatus: String?) {
+        let value = String((providerStatus ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
+        switch value.lowercased() {
+        case "", "completed": self = .completed
+        case "failed": self = .failed
+        case "stopped": self = .stopped
+        default: self = .unrecognized(value)
+        }
+    }
+
+    /// The provider's word for this status.
+    public var providerValue: String {
+        switch self {
+        case .completed: "completed"
+        case .failed: "failed"
+        case .stopped: "stopped"
+        case .unrecognized(let value): value
+        }
+    }
 }

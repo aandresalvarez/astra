@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftData
 import Testing
 import ASTRAModels
@@ -972,7 +973,7 @@ struct AgentEventRecorderTests {
         }
         #expect(task.events.contains { $0.type == "team.agent.started" && $0.agentId == "agent-1" })
 
-        let completed = ParsedEvent.teammateCompleted(taskId: "agent-1", name: "pro-agent")
+        let completed = ParsedEvent.teammateCompleted(taskId: "agent-1", name: "pro-agent", status: .completed)
         for agentEvent in AgentEventRecorder.agentEvents(from: completed) {
             AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
         }
@@ -1019,6 +1020,70 @@ struct AgentEventRecorderTests {
         #expect(unmatched.agentName == "b7c1d2e3f4a5b6c7d")
         #expect(unmatched.payload == "b7c1d2e3f4a5b6c7d finished")
         #expect(!completed.contains { ($0.agentName ?? "").contains("Dana") || $0.payload.contains("Dana") })
+    }
+
+    @Test("A failed or stopped subagent is recorded as failed or stopped, not finished")
+    func subagentEndStatusIsRecordedTruthfully() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Subagents", goal: "Fan out three subagents")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        // `emit` posts each entry synchronously on the logging thread, so every
+        // audit line below is collected before `recordClaudeEvent` returns.
+        let auditLines = OSAllocatedUnfairLock(initialState: [LogEntry]())
+        let taskID = task.id
+        let observer = NotificationCenter.default.addObserver(
+            forName: .appLoggerDidAppendEntry, object: nil, queue: nil
+        ) { notification in
+            guard let entry = notification.userInfo?["entry"] as? LogEntry, entry.taskID == taskID else { return }
+            auditLines.withLock { $0.append(entry) }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        func record(_ line: String) {
+            for parsed in StreamEventParser.parseAll(line: line) {
+                for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+                    AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+                }
+            }
+        }
+
+        let outcomes = ["completed", "failed", "stopped", "killed"]
+        for status in outcomes {
+            record("""
+            {"type":"system","subtype":"task_started","task_id":"agent-\(status)","description":"\(status)-agent: Investigate","task_type":"local_agent","prompt":"Investigate"}
+            """)
+            record("""
+            {"type":"system","subtype":"task_notification","task_id":"agent-\(status)","status":"\(status)","output_file":"","summary":"Partial findings before the end."}
+            """)
+        }
+
+        let completed = task.events.filter { $0.type == TaskEventTypes.Team.agentCompleted.rawValue }
+        #expect(completed.count == outcomes.count)
+        func payload(for status: String) -> String? {
+            completed.first { $0.agentId == "agent-\(status)" }?.payload
+        }
+        #expect(payload(for: "completed") == "completed-agent finished")
+        #expect(payload(for: "failed") == "failed-agent failed")
+        #expect(payload(for: "stopped") == "stopped-agent stopped")
+        #expect(payload(for: "killed") == "killed-agent ended with status killed")
+
+        let teammateAudits = auditLines.withLock { $0 }.filter { $0.message.contains("team_event=teammate_completed") }
+        func audit(for status: String) -> LogEntry? {
+            teammateAudits.first { $0.message.contains("agent_id=agent-\(status) ") }
+        }
+        #expect(audit(for: "completed")?.message.hasPrefix("task.completed ") == true)
+        #expect(audit(for: "completed")?.message.contains("status=completed") == true)
+        #expect(audit(for: "failed")?.message.hasPrefix("task.failed ") == true)
+        #expect(audit(for: "failed")?.message.contains("status=failed") == true)
+        #expect(audit(for: "failed")?.logLevel == .warning)
+        #expect(audit(for: "stopped")?.message.hasPrefix("task.cancelled ") == true)
+        #expect(audit(for: "stopped")?.message.contains("status=stopped") == true)
+        #expect(audit(for: "killed")?.message.hasPrefix("task.status_changed ") == true)
+        #expect(audit(for: "killed")?.message.contains("status=killed") == true)
     }
 }
 

@@ -205,7 +205,7 @@ public enum ParsedEvent {
     case usage(totalInputTokens: Int, totalOutputTokens: Int)
     case result(text: String?, costUSD: Double?, totalInputTokens: Int, totalOutputTokens: Int, durationMs: Int?, numTurns: Int?, isError: Bool)
     case teammateStarted(taskId: String, name: String, prompt: String)
-    case teammateCompleted(taskId: String, name: String)
+    case teammateCompleted(taskId: String, name: String, status: TeammateCompletionStatus)
     case teamCreated(name: String, description: String)
     case teamDeleted(name: String)
     case teamMessage(from: String, to: String, content: String)
@@ -268,7 +268,8 @@ public enum StreamEventParser {
                 let name = extractAgentName(from: baseEvent.description) ?? baseEvent.task_id ?? "teammate"
                 return .recognized([.teammateCompleted(
                     taskId: baseEvent.task_id ?? "",
-                    name: name
+                    name: name,
+                    status: TeammateCompletionStatus(providerStatus: baseEvent.status)
                 )])
             }
             if baseEvent.subtype == "init" {
