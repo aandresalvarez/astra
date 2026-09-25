@@ -1075,15 +1075,19 @@ struct AgentEventRecorderTests {
         func audit(for status: String) -> LogEntry? {
             teammateAudits.first { $0.message.contains("agent_id=agent-\(status) ") }
         }
-        #expect(audit(for: "completed")?.message.hasPrefix("task.completed ") == true)
+        // Team-scoped, never a `task.*` verdict: diagnostics would read that as
+        // the parent task's, and the lead can still succeed.
+        #expect(teammateAudits.count == outcomes.count)
+        #expect(teammateAudits.allSatisfy { $0.message.hasPrefix("team.agent.ended ") })
         #expect(audit(for: "completed")?.message.contains("status=completed") == true)
-        #expect(audit(for: "failed")?.message.hasPrefix("task.failed ") == true)
+        #expect(audit(for: "completed")?.logLevel == .info)
         #expect(audit(for: "failed")?.message.contains("status=failed") == true)
         #expect(audit(for: "failed")?.logLevel == .warning)
-        #expect(audit(for: "stopped")?.message.hasPrefix("task.cancelled ") == true)
         #expect(audit(for: "stopped")?.message.contains("status=stopped") == true)
-        #expect(audit(for: "killed")?.message.hasPrefix("task.status_changed ") == true)
+        #expect(audit(for: "stopped")?.logLevel == .info)
         #expect(audit(for: "killed")?.message.contains("status=killed") == true)
+        #expect(audit(for: "killed")?.logLevel == .warning)
+        #expect(!auditLines.withLock { $0 }.contains { $0.message.hasPrefix("task.") })
     }
 }
 

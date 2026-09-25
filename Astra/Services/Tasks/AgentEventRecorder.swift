@@ -1251,11 +1251,13 @@ enum AgentEventRecorder {
             let name = startedTeammateName(agentId: taskId, taskID: task.id, modelContext: modelContext) ?? parsedName
             // `team.agent.completed` marks the end of the subagent's run
             // whatever its outcome; the payload and audit say which outcome.
-            let (outcome, auditEvent, level): (String, AuditEvent, LogLevel) = switch status {
-            case .completed: ("finished", .taskCompleted, .info)
-            case .failed: ("failed", .taskFailed, .warning)
-            case .stopped: ("stopped", .taskCancelled, .info)
-            case .unrecognized(let value): ("ended with status \(value)", .taskStatusChanged, .warning)
+            // The audit is team-scoped: a `task.*` verdict here would be read
+            // as the parent task's, which can still succeed after this.
+            let (outcome, level): (String, LogLevel) = switch status {
+            case .completed: ("finished", .info)
+            case .failed: ("failed", .warning)
+            case .stopped: ("stopped", .info)
+            case .unrecognized(let value): ("ended with status \(value)", .warning)
             }
             modelContext.insert(TaskEvent(
                 task: task,
@@ -1265,7 +1267,7 @@ enum AgentEventRecorder {
                 agentName: name,
                 agentId: taskId
             ))
-            AppLogger.audit(auditEvent, category: "Worker", taskID: task.id, fields: [
+            AppLogger.audit(.teamAgentEnded, category: "Worker", taskID: task.id, fields: [
                 "team_event": "teammate_completed",
                 "agent_id": taskId,
                 "status": status.providerValue

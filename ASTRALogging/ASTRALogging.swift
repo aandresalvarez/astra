@@ -100,6 +100,10 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case workerSessionCleared = "worker.session_cleared"
     case workerPermissionDenied = "worker.permission_denied"
     case workerEnvironmentInjected = "worker.environment_injected"
+    /// A subagent's run ended; its `status` field says how. Deliberately not
+    /// `task.completed` / `task.failed`: those are the parent task's verdict,
+    /// and a lead can recover from a failed subagent and still succeed.
+    case teamAgentEnded = "team.agent.ended"
     case runtimeCommandPlanned = "runtime.command_planned"
     case runtimeModelSelection = "runtime.model_selection"
     case runtimeModelAvailability = "runtime.model_availability"
