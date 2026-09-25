@@ -20,12 +20,20 @@ struct TaskFileTurn: Identifiable, Equatable, Sendable {
     struct Entry: Identifiable, Equatable, Sendable {
         var id: String { path }
         let path: String
-        /// Relative to the task folder or workspace that holds it.
-        let displayPath: String
+        /// Relative to the folder that holds it: the task folder, the
+        /// workspace, or one of the workspace's other folders.
+        let pathInRoot: String
+        /// That folder's name, for a file outside the task folder and the
+        /// workspace folder.
+        var rootName: String?
         let change: Change
         let changedAt: Date
         /// False for a removed file, and for one a later turn removed.
         let exists: Bool
+
+        var displayPath: String {
+            rootName.map { "\($0)/\(pathInRoot)" } ?? pathInRoot
+        }
     }
 
     var id: Int { number }
@@ -88,8 +96,12 @@ struct TaskFileTurnsInput: Sendable {
     var executionPath: String?
     /// The folders of the tasks this one was forked from, nearest first. A
     /// fork copies its source's runs as they were, so their paths name those
-    /// folders; the same relative path is this task's copy of the file.
+    /// folders, and a file there that no fork copied is one it shares.
     var inheritedTaskFolders: [String] = []
+    /// What each fork in the chain copied, source path to copy, the fork
+    /// nearest the first task first: a copied file opens from its copy, as
+    /// the Files shelf opens it.
+    var forkCopies: [[String: String]] = []
     /// The workspace's other folders the Files shelf browses.
     var additionalRoots: [String] = []
 }
@@ -119,7 +131,8 @@ enum TaskFileTurns {
             inheritedTaskFolders: input.inheritedTaskFolders,
             workspacePath: input.workspacePath,
             executionPath: input.executionPath,
-            additionalRoots: input.additionalRoots
+            additionalRoots: input.additionalRoots,
+            forkCopies: input.forkCopies
         )
         let indexedByRun = indexedFilesWithoutARunRecord(input.indexedFiles, runs: runs, paths: paths)
 
@@ -259,7 +272,8 @@ enum TaskFileTurns {
                 }
                 return TaskFileTurn.Entry(
                     path: path.file.path,
-                    displayPath: path.file.displayPath,
+                    pathInRoot: path.file.pathInRoot,
+                    rootName: path.file.rootName,
                     change: change,
                     changedAt: path.changedAt,
                     exists: change != .removed && fileExists(path.file.path)
@@ -277,7 +291,8 @@ enum TaskFileTurns {
         /// reported it from.
         let key: String
         let path: String
-        let displayPath: String
+        let pathInRoot: String
+        let rootName: String?
     }
 
     /// Keeps the files a user would browse — under the task folder or the
@@ -287,14 +302,12 @@ enum TaskFileTurns {
         private struct Root {
             let root: TaskOutputArtifactPathPolicy.ResolvedRoot
             let context: TaskOutputArtifactPathPolicy.RelativePathContext
-            /// Where a file found under this root is opened from: this task's
-            /// own folder, even for a path a forked-from task recorded.
-            let home: String
             let keyPrefix: String
-            let displayPrefix: String
+            let rootName: String?
         }
 
         private let taskFolderPath: String
+        private let forkCopies: [[String: String]]
         /// What a relative path is resolved against, in order: where the task
         /// runs, then the workspace folder, which older runs ran in.
         private let resolutionBases: [String]
@@ -306,24 +319,23 @@ enum TaskFileTurns {
             inheritedTaskFolders: [String],
             workspacePath: String,
             executionPath: String?,
-            additionalRoots: [String]
+            additionalRoots: [String],
+            forkCopies: [[String: String]]
         ) {
             self.taskFolderPath = taskFolder
+            self.forkCopies = forkCopies
             let executionPath = executionPath.flatMap { $0.isEmpty || $0 == workspacePath ? nil : $0 }
             self.resolutionBases = [executionPath, workspacePath].compactMap { $0 }
-            let task = TaskOutputArtifactPathPolicy.ResolvedRoot(taskFolder)
             let workspace = TaskOutputArtifactPathPolicy.ResolvedRoot(workspacePath)
-            // The task folders sit inside the workspace, so they are tried first.
-            var roots = ([taskFolder] + inheritedTaskFolders).map {
-                Root(root: .init($0), context: .taskFolder, home: task.standardized, keyPrefix: "task", displayPrefix: "")
+            // The task folders sit inside the workspace, so they are tried
+            // first. A source task's file is a different file from this
+            // task's at the same relative path.
+            var roots = [Root(root: .init(taskFolder), context: .taskFolder, keyPrefix: "task", rootName: nil)]
+            roots += inheritedTaskFolders.map {
+                let root = TaskOutputArtifactPathPolicy.ResolvedRoot($0)
+                return Root(root: root, context: .taskFolder, keyPrefix: "task@\(root.standardized)", rootName: nil)
             }
-            roots.append(Root(
-                root: workspace,
-                context: .workspace,
-                home: workspace.standardized,
-                keyPrefix: "workspace",
-                displayPrefix: ""
-            ))
+            roots.append(Root(root: workspace, context: .workspace, keyPrefix: "workspace", rootName: nil))
             var added: Set<String> = [workspace.standardized]
             for path in additionalRoots + [executionPath].compactMap({ $0 }) {
                 let root = TaskOutputArtifactPathPolicy.ResolvedRoot(path)
@@ -331,9 +343,8 @@ enum TaskFileTurns {
                 roots.append(Root(
                     root: root,
                     context: .workspace,
-                    home: root.standardized,
                     keyPrefix: "root:\(root.standardized)",
-                    displayPrefix: (root.standardized as NSString).lastPathComponent + "/"
+                    rootName: (root.standardized as NSString).lastPathComponent
                 ))
             }
             self.roots = roots.filter { !$0.root.isEmpty }
@@ -364,7 +375,11 @@ enum TaskFileTurns {
 
         private func classify(absolute: String) -> ClassifiedPath? {
             guard absolute.hasPrefix("/") else { return nil }
-            let standardized = URL(fileURLWithPath: absolute).standardizedFileURL.path
+            var standardized = URL(fileURLWithPath: absolute).standardizedFileURL.path
+            // Oldest fork first, so a copy of a copy lands on the newest one.
+            for copies in forkCopies {
+                if let copy = copies[standardized] { standardized = copy }
+            }
             for root in roots {
                 guard let relative = TaskOutputArtifactPathPolicy.relativePath(standardized, under: root.root) else {
                     continue
@@ -375,8 +390,9 @@ enum TaskFileTurns {
                 ) else { return nil }
                 return ClassifiedPath(
                     key: "\(root.keyPrefix):\(visible)",
-                    path: root.home + "/" + visible,
-                    displayPath: root.displayPrefix + visible
+                    path: root.root.standardized + "/" + visible,
+                    pathInRoot: visible,
+                    rootName: root.rootName
                 )
             }
             // A temporary file, a sibling workspace, anything else on the

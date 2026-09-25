@@ -327,9 +327,12 @@ lands, so recovery compares them rather than skipping them as live.
     keystroke; it needs a cheap key first.
   - Git publication, deliverable checks, and `ValidationService` stay on tool
     evidence.
-  - A fork keeps the parent's paths for observed edits and removals (its
-    manifest maps artifacts only), so the ledger matches them by path relative
-    to the task folder.
+  - A fork keeps the parent's paths for observed edits and removals. A
+    shared-files fork reads those files where they are, and a file-copy fork
+    copies them to `fork_sources/<kind>/`, so the ledger opens a copied path
+    from the copy its manifest records and any other from the source folder,
+    as the Files shelf does. The fork copies runs but not artifact rows, so
+    the ledger also reads each source's rows up to the fork.
 
 - **Task Files list.**
   - Rows get a quiet subtitle, `Turn 3 · Today 2:14 PM`. The tooltip shows the

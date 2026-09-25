@@ -155,17 +155,28 @@ struct TaskFileTurnsTests {
         #expect(entries?.map(\.displayPath) == ["answer.md"])
     }
 
-    @Test("A fork's copied runs name the source task's folder; their files open from the fork's")
-    func forkedHistoryMapsOntoTheForksFolder() {
-        var input = makeInput(runs: [run(at: 10, changes: [
-            TaskFileTurnsInput.Change(path: "/ws/.astra/tasks/PARENT/plan.md", kind: .write, timestamp: at(11))
-        ])])
-        input.inheritedTaskFolders = ["/ws/.astra/tasks/PARENT"]
+    @Test("A fork's copied runs open the source's files it shares, and the copies it made")
+    func forkedHistoryOpensSharedFilesAndCopies() {
+        let parent = "/ws/.astra/tasks/PARENT"
+        var input = makeInput(requests: [request("Revise the plan", at: 50)], runs: [
+            run(at: 10, changes: [
+                TaskFileTurnsInput.Change(path: parent + "/plan.md", kind: .write, timestamp: at(11)),
+                TaskFileTurnsInput.Change(path: parent + "/data.csv", kind: .write, timestamp: at(12))
+            ]),
+            // The fork's own run writes a file of its own at the same name.
+            run(at: 100, changes: [change("plan.md", .write, at: 101)])
+        ])
+        input.inheritedTaskFolders = [parent]
+        input.forkCopies = [[parent + "/data.csv": Self.folder + "/fork_sources/artifact/data.csv"]]
 
-        let entries = TaskFileTurns.build(input, fileExists: { _ in true }).first?.entries
+        let turns = TaskFileTurns.build(input, fileExists: { _ in true })
 
-        #expect(entries?.map(\.path) == [Self.folder + "/plan.md"])
-        #expect(entries?.map(\.displayPath) == ["plan.md"])
+        #expect(turns.last?.entries.map(\.path) == [
+            Self.folder + "/fork_sources/artifact/data.csv",
+            parent + "/plan.md"
+        ])
+        #expect(turns.first?.entries.map(\.path) == [Self.folder + "/plan.md"])
+        #expect(turns.first?.entries.map(\.change) == [.new])
     }
 
     @Test("Files under the workspace's additional folders are listed under that folder's name")
@@ -326,6 +337,20 @@ struct ShelfFileTurnsPresentationTests {
         #expect(shown.map { $0.entries.count } == [1, 2])
     }
 
+    @Test("A configured folder whose own name starts with a dot still shows its files")
+    func dotNamedRootKeepsItsFiles() {
+        let entries = [
+            TaskFileTurn.Entry(path: "/work/.repo/Sources/App.swift", pathInRoot: "Sources/App.swift", rootName: ".repo",
+                               change: .edited, changedAt: Date(), exists: true),
+            TaskFileTurn.Entry(path: "/work/.repo/.env", pathInRoot: ".env", rootName: ".repo",
+                               change: .edited, changedAt: Date(), exists: true)
+        ]
+
+        let visible = ShelfFileTurnsPresentation.visibleTurns([makeTurn(entries: entries)], matching: "", showsHiddenPaths: false)
+
+        #expect(visible.first?.entries.map(\.displayPath) == [".repo/Sources/App.swift"])
+    }
+
     @Test("Search keeps matching files, or every file of a request whose text matches")
     func searchFiltersByPathOrRequest() {
         let turns = [
@@ -367,7 +392,7 @@ struct ShelfFileTurnsPresentationTests {
     }
 
     private func entry(_ path: String, _ change: TaskFileTurn.Change) -> TaskFileTurn.Entry {
-        TaskFileTurn.Entry(path: "/t/" + path, displayPath: path, change: change, changedAt: Date(), exists: true)
+        TaskFileTurn.Entry(path: "/t/" + path, pathInRoot: path, change: change, changedAt: Date(), exists: true)
     }
 }
 
@@ -412,6 +437,50 @@ struct TaskFileTurnsStoreTests {
         #expect(turns.map(\.number) == [2, 1])
         #expect(turns.map(\.request) == ["Add a row", "Write the report"])
         #expect(turns.map { $0.entries.map(\.change) } == [[.edited], [.new]])
+    }
+
+    @Test("A fork's older turns come from its source's index, up to when it was forked")
+    func forkReadsItsSourcesIndexUpToTheFork() async throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Turns", primaryPath: "/ws")
+        let source = AgentTask(title: "Report", goal: "Write the report", workspace: workspace)
+        let sourceFolder = TaskWorkspaceAccess(task: source).taskFolder
+        let sourceRun = TaskRun(task: source)
+        sourceRun.status = .completed
+        sourceRun.completedAt = sourceRun.startedAt.addingTimeInterval(30)
+        let indexed = Artifact(task: source, type: "CSV", path: sourceFolder + "/report.csv")
+        indexed.createdAt = sourceRun.startedAt.addingTimeInterval(20)
+
+        let fork = AgentTask(title: "Report", goal: "Write the report", workspace: workspace)
+        fork.forkedFromID = source.id
+        fork.createdAt = sourceRun.startedAt.addingTimeInterval(120)
+        // The fork copies the run, times and all, but not the artifact row.
+        let copiedRun = TaskRun(task: fork)
+        copiedRun.status = .completed
+        copiedRun.startedAt = sourceRun.startedAt
+        copiedRun.completedAt = sourceRun.completedAt
+        // Indexed after the fork: the source's work, not the fork's.
+        let later = Artifact(task: source, type: "Markdown", path: sourceFolder + "/later.md")
+        later.createdAt = fork.createdAt.addingTimeInterval(60)
+        for model in [workspace, source, sourceRun, indexed, fork, copiedRun, later] as [any PersistentModel] {
+            context.insert(model)
+        }
+        try context.save()
+
+        let turns = try await TaskThreadHistoryStore(container: container).fileTurns(
+            taskID: fork.id,
+            taskFolder: TaskWorkspaceAccess(task: fork).taskFolder,
+            workspacePath: "/ws"
+        )
+
+        #expect(turns.map(\.number) == [1])
+        #expect(turns.first?.entries.map(\.path) == [sourceFolder + "/report.csv"])
+        #expect(turns.first?.listsNewFilesOnly == true)
     }
 
     @Test("A streaming run's unsaved changes are read from the main context, without saving it")

@@ -370,8 +370,9 @@ enum ShelfFileTurnsPresentation {
 
     /// Turns with a file whose path matches, showing only the matches; a
     /// request whose text matches keeps all of its files. Without
-    /// `showsHiddenPaths`, dot-named files and folders are left out, as the
-    /// Folders organization leaves them out.
+    /// `showsHiddenPaths`, dot-named files and folders inside each root are
+    /// left out, as the Folders organization leaves them out; a configured
+    /// root whose own name starts with a dot is not.
     static func visibleTurns(
         _ turns: [TaskFileTurn],
         matching searchText: String,
@@ -379,7 +380,7 @@ enum ShelfFileTurnsPresentation {
     ) -> [TaskFileTurn] {
         let shown = showsHiddenPaths ? turns : turns.compactMap { turn -> TaskFileTurn? in
             let entries = turn.entries.filter { entry in
-                !entry.displayPath.split(separator: "/").contains { $0.hasPrefix(".") }
+                !entry.pathInRoot.split(separator: "/").contains { $0.hasPrefix(".") }
             }
             guard !entries.isEmpty || turn.isRunning else { return nil }
             return turn.replacingEntries(entries)
