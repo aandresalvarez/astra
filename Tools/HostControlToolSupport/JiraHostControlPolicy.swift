@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import MCPServerKit
 
 // Typed Jira access held on the host: the shape of every request the broker is
@@ -139,6 +140,7 @@ enum JiraRequestPolicy {
                 path: "/rest/api/3/issue/\(issueKey)/comment",
                 queryItems: [
                     URLQueryItem(name: "maxResults", value: String(maxResults(from: arguments["max_results"]))),
+                    URLQueryItem(name: "startAt", value: String(try startAt(from: arguments["start_at"]))),
                     URLQueryItem(name: "orderBy", value: "created")
                 ]
             )
@@ -268,6 +270,17 @@ enum JiraRequestPolicy {
         return min(max(raw ?? 20, 1), 100)
     }
 
+    static func startAt(from value: Any?) throws -> Int {
+        guard let value else { return 0 }
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let integer = Int(number.stringValue),
+              integer >= 0 else {
+            throw JiraRequestPolicyError("jira get_comments start_at must be a non-negative integer")
+        }
+        return integer
+    }
+
     private static func nextPageToken(from value: Any?) throws -> String? {
         guard let raw = value else { return nil }
         guard let token = clean(raw as? String),
@@ -289,6 +302,24 @@ enum JiraRequestPolicy {
             of: #"^[A-Z][A-Z0-9_]+-[1-9][0-9]*$"#,
             options: [.regularExpression]
         ) != nil
+    }
+}
+
+enum JiraCommentPagination {
+    static func marker(body: String, requestedStartAt: Int) -> String? {
+        guard let data = body.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let comments = payload["comments"] as? [Any],
+              let totalNumber = payload["total"] as? NSNumber,
+              CFGetTypeID(totalNumber) != CFBooleanGetTypeID(),
+              let total = Int(totalNumber.stringValue),
+              total >= 0 else {
+            return nil
+        }
+        let (nextStartAt, overflow) = requestedStartAt.addingReportingOverflow(comments.count)
+        guard !overflow else { return nil }
+        guard nextStartAt < total else { return nil }
+        return "comments_complete: false\nnext_start_at: \(nextStartAt)"
     }
 }
 

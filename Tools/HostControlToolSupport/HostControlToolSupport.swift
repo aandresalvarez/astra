@@ -1110,11 +1110,15 @@ public final class HostControlMCPServer {
             configuration: configuration,
             outputByteLimit: processLimits.outputByteLimit
         )
+        let commentPaginationMarker = operation == "get_comments"
+            ? JiraCommentPagination.marker(body: response.body, requestedStartAt: (try? JiraRequestPolicy.startAt(from: arguments["start_at"])) ?? 0)
+            : nil
+        let responseText = commentPaginationMarker.map { formattedResponse.text + "\n" + $0 } ?? formattedResponse.text
         diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(request.diagnosticPath)", result: response.diagnosticResult)
         return .result([
             "content": [[
                 "type": "text",
-                "text": formattedResponse.text
+                "text": responseText
             ]],
             "isError": response.isError || formattedResponse.bodyTruncated
         ])
@@ -1354,6 +1358,7 @@ public final class HostControlMCPServer {
                     "issue_key": ["type": "string", "description": "For get_issue and get_comments: Jira issue key, for example ASTRA-123."],
                     "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
                     "max_results": ["type": "number", "description": "For search_jql and get_comments: maximum result count from 1 to 100. Defaults to 20."],
+                    "start_at": ["type": "integer", "minimum": 0, "description": "For get_comments: zero-based comment offset. Defaults to 0; use next_start_at from an incomplete response to fetch the next page."],
                     "next_page_token": ["type": "string", "description": "For search_jql: opaque Jira nextPageToken returned by a previous page."],
                     "project_key": ["type": "string", "description": "For propose_issue: destination project key, for example STAR."],
                     "issue_type": ["type": "string", "description": "For propose_issue: issue type name as configured in the project, for example Bug."],
