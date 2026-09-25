@@ -360,10 +360,20 @@ struct ProviderTranscriptConformanceTests {
         #expect(messageCount("Done", in: "DoneDoneDone with work", among: messages) == 2)
     }
 
-    @Test("Two messages reversed in one text are out of order")
+    @Test("Two messages reversed in one text are out of order; a missing second copy is not")
     func reversedMessagesAreOutOfOrder() {
         #expect(outOfOrderMessages(in: "Second. First.", messages: ["First.", "Second."]) == ["Second."])
         #expect(outOfOrderMessages(in: "First. Second.", messages: ["First.", "Second."]).isEmpty)
+        #expect(outOfOrderMessages(in: "Done. Then.", messages: ["Done.", "Then.", "Done."]).isEmpty)
+    }
+
+    @Test("Generic Codex tool items are tool calls in the fixture truth")
+    func genericCodexToolItemsAreToolCalls() {
+        #expect(ProviderStreamTruth.isGenericCodexToolItem(["type": "mcp_tool_call", "name": "fetch"]))
+        #expect(ProviderStreamTruth.isGenericCodexToolItem(["type": "web_search", "name": "search"]))
+        #expect(!ProviderStreamTruth.isGenericCodexToolItem(["type": "command_execution", "command": "ls"]))
+        #expect(!ProviderStreamTruth.isGenericCodexToolItem(["type": "agent_message", "text": "Hi"]))
+        #expect(!ProviderStreamTruth.isGenericCodexToolItem(["type": "error", "message": "warning"]))
     }
 
     @Test("Copilot frame types are read from every discriminator and envelope, as the runtime reads them")
@@ -677,6 +687,8 @@ struct ProviderStreamTruth {
         var rawMessages: [String] = []
         var rawSequence: [RawStep] = []
         var antigravityMessageIndex: [Int: Int] = [:]
+        // Codex tool items already counted as started, by item id.
+        var codexStartedTools = Set<String>()
         // Cursor's last full assistant frame, which the next one may repeat.
         var cursorSnapshot = ""
         func appendMessage(_ text: String) {
@@ -809,6 +821,18 @@ struct ProviderStreamTruth {
                 } else if type == "item.completed", item?["type"] as? String == "file_change",
                           let changes = item?["changes"] as? [[String: Any]] {
                     writtenPaths += changes.compactMap { $0["path"] as? String }
+                } else if let item, Self.isGenericCodexToolItem(item) {
+                    // Any other tool item (an MCP call, a web search): one
+                    // call when it starts, one result when it completes.
+                    let id = item["id"] as? String ?? ""
+                    if type == "item.started" || (type == "item.completed" && !codexStartedTools.contains(id)) {
+                        codexStartedTools.insert(id)
+                        appendTool(["name", "tool", "tool_name", "toolName"].lazy.compactMap { item[$0] as? String }.first ?? "tool")
+                    }
+                    if type == "item.completed" {
+                        let failed = (item["status"] as? String)?.lowercased() == "failed" || item["error"] != nil
+                        toolResultOutcomes.append(failed ? "failure" : "success")
+                    }
                 }
             case .cursorCLI:
                 // Cursor's last assistant frame repeats the previous message
@@ -977,6 +1001,16 @@ struct ProviderStreamTruth {
         return isResult ? .result : nil
     }
 
+    /// A Codex item the stream reports as a tool call other than a command:
+    /// its type names a tool, or it carries a `tool` / `name`. Messages,
+    /// reasoning, file changes and commands are read on their own.
+    static func isGenericCodexToolItem(_ item: [String: Any]) -> Bool {
+        let type = (item["type"] as? String ?? "").lowercased()
+        let ownShapes = ["agent_message", "message", "assistant_message", "file_change", "command_execution"]
+        guard !ownShapes.contains(type), !type.contains("reasoning"), !type.contains("error") else { return false }
+        return type.contains("tool") || item["tool"] != nil || item["name"] != nil
+    }
+
     static func copilotPayload(_ object: [String: Any]) -> [String: Any]? {
         object["data"] as? [String: Any] ?? object["payload"] as? [String: Any]
     }
@@ -1055,11 +1089,16 @@ private func nonOverlappingRanges(of needle: String, in text: String) -> [Range<
 private func outOfOrderMessages(in text: String, messages: [String]) -> [String] {
     var cursor = text.startIndex
     var outOfOrder: [String] = []
+    var rankByNeedle: [String: Int] = [:]
     for message in messages {
         let needle = collapsed(message)
+        // The k-th copy of a text is out of order only if the text has at
+        // least k copies; a missing copy belongs to the multiplicity checks.
+        let rank = rankByNeedle[needle, default: 0]
+        rankByNeedle[needle] = rank + 1
         if let match = text.range(of: needle, range: cursor..<text.endIndex) {
             cursor = match.upperBound
-        } else if text.contains(needle) {
+        } else if nonOverlappingRanges(of: needle, in: text).count > rank {
             outOfOrder.append(String(message.prefix(60)))
         }
     }
