@@ -153,26 +153,41 @@ enum AssistantMessageRecording {
         modelContext: ModelContext,
         cap: Int
     ) {
-        if let row = ledger.entries[index].rows.last, row.payload.count + text.count <= cap {
-            // The payload already went through `TaskEvent`'s redacting
-            // initializer, so the append redacts across the seam itself.
-            let redacted = RunSecretRedactionScope.redactedAppend(
-                existing: row.payload,
-                addition: text,
-                taskID: task.id
-            )
-            if redacted.dropFromExisting > 0 {
-                row.payload.removeLast(redacted.dropFromExisting)
-            }
-            row.payload += redacted.append
-            if movesForward {
-                row.timestamp = Date()
-            }
-            task.updatedAt = Date()
-            TaskThreadChangeNotifier.post(taskID: task.id, source: "assistant_message_delta")
-            return
+        // Redact the whole addition in one pass, across the seam with the row
+        // it continues, before it is placed or split: split first, a secret
+        // straddling a row boundary matches in neither half. The last row
+        // already went through `TaskEvent`'s redacting initializer, so only
+        // its tail can join a match.
+        let last = ledger.entries[index].rows.last
+        let redacted = RunSecretRedactionScope.redactedAppend(
+            existing: last?.payload ?? "",
+            addition: text,
+            taskID: task.id
+        )
+        if let last, redacted.dropFromExisting > 0 {
+            last.payload.removeLast(redacted.dropFromExisting)
         }
-        for chunk in chunks(of: text, cap: cap) {
+        var pieces = chunks(of: redacted.append, cap: cap)[...]
+        if let last {
+            var continued: String?
+            if last.payload.count + redacted.append.count <= cap {
+                continued = redacted.append
+                pieces = []
+            } else if last.payload.isEmpty, let first = pieces.first {
+                // The seam took the whole row: refill it rather than leave it empty.
+                continued = first
+                pieces = pieces.dropFirst()
+            }
+            if let continued {
+                last.payload += continued
+                if movesForward {
+                    last.timestamp = Date()
+                }
+                task.updatedAt = Date()
+                TaskThreadChangeNotifier.post(taskID: task.id, source: "assistant_message_delta")
+            }
+        }
+        for chunk in pieces {
             let row = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.agentResponse, payload: chunk, run: run)
             TaskEventInsertionService.insert(row, into: modelContext)
             ledger.update(index) { $0.rows.append(row) }
