@@ -1213,6 +1213,9 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
     let sandboxPathAccess: String?
     let connectorCredentialDisplayName: String?
     let connectorCredentialCount: Int
+    /// How many connectors the request names; the launch gate asks for all of
+    /// a launch's connectors at once, so one request can name several.
+    let connectorCredentialConnectorCount: Int
 
     init(payload: String) {
         let decoded = PermissionApprovalEventPayload.decoded(from: payload)
@@ -1221,9 +1224,14 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         if case .connectorCredentials(_, let displayName, let labels) = decoded?.request {
             connectorCredentialDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
             connectorCredentialCount = max(labels.count, 1)
+            connectorCredentialConnectorCount = max(
+                ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: labels).count,
+                1
+            )
         } else {
             connectorCredentialDisplayName = nil
             connectorCredentialCount = 0
+            connectorCredentialConnectorCount = 0
         }
         if case .sandboxPath(_, let access, _) = decoded?.request {
             sandboxPathAccess = access.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1321,7 +1329,9 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return "Network access needs permission"
         case .credential:
             if let connectorCredentialContext {
-                return "\(connectorCredentialContext.connectorName) connector needs permission"
+                return connectorCredentialConnectorCount > 1
+                    ? "\(connectorCredentialContext.connectorName) connectors need permission"
+                    : "\(connectorCredentialContext.connectorName) connector needs permission"
             }
             return "Connector credentials need permission"
         case .sandboxPath:
@@ -1360,7 +1370,8 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         case .credential:
             if let connectorCredentialContext {
                 let noun = connectorCredentialContext.credentialCount == 1 ? "credential" : "credentials"
-                return "ASTRA wants to expose \(connectorCredentialContext.credentialCount) configured \(noun) from the \(connectorCredentialContext.connectorName) connector to this task's agent process."
+                let connectorNoun = connectorCredentialConnectorCount > 1 ? "connectors" : "connector"
+                return "ASTRA wants to expose \(connectorCredentialContext.credentialCount) configured \(noun) from the \(connectorCredentialContext.connectorName) \(connectorNoun) to this task's agent process."
             }
             return "ASTRA wants to use configured connector credentials for this task."
         case .sandboxPath:
@@ -1386,7 +1397,9 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return "Allow once for this run"
         }
         if case .credential = accessKind {
-            return "Allow this connector for task"
+            return connectorCredentialConnectorCount > 1
+                ? "Allow these connectors for task"
+                : "Allow this connector for task"
         }
         switch shellRoot {
         case "gh":
