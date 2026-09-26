@@ -192,7 +192,7 @@ final class PluginCatalog {
                 • Status: operation status
                 • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
                 • Get issue: operation get_issue with issue_key — returns the ticket description and reporter alongside its status fields
-                • Get comments: operation get_comments with issue_key and optional max_results, oldest first
+                • Get comments: operation get_comments with issue_key, optional max_results, and zero-based start_at (defaults to 0), oldest first. When next_start_at is present, use that value for another call; an absent next_start_at means there are no more comments.
                 • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
 
                 PROPOSING A NEW TICKET

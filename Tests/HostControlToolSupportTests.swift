@@ -262,6 +262,7 @@ struct HostControlToolSupportTests {
         let inputSchema = try #require(jiraSchema["inputSchema"] as? [String: Any])
         let properties = try #require(inputSchema["properties"] as? [String: Any])
         #expect(properties.keys.contains("issue_key"))
+        #expect(properties.keys.contains("start_at"))
         #expect(properties.keys.contains("jql"))
         #expect(properties.keys.contains("next_page_token"))
         #expect(!properties.keys.contains("method"))
@@ -793,7 +794,8 @@ struct HostControlToolSupportTests {
         let response = try call(server, id: 1, tool: "jira", arguments: [
             "operation": "get_comments",
             "issue_key": "ASTRA-123",
-            "max_results": 5
+            "max_results": 5,
+            "start_at": 40
         ])
 
         #expect(try resultText(response).contains("status_code: 200"))
@@ -801,6 +803,7 @@ struct HostControlToolSupportTests {
         #expect(url.path == "/rest/api/3/issue/ASTRA-123/comment")
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         #expect(components.queryItems?.first { $0.name == "maxResults" }?.value == "5")
+        #expect(components.queryItems?.first { $0.name == "startAt" }?.value == "40")
         #expect(components.queryItems?.first { $0.name == "orderBy" }?.value == "created")
     }
 
