@@ -670,6 +670,66 @@ struct CapabilityRailPresentationTests {
         #expect(decision.summary.contains("JIRA_API_TOKEN") == false)
     }
 
+    @Test("one approval naming two connectors highlights both capabilities")
+    func oneApprovalNamingTwoConnectorsHighlightsBothCapabilities() throws {
+        let workspace = Workspace(name: "JSL", primaryPath: "/tmp/jsl")
+        let jiraConnector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        let redcapConnector = Connector(
+            name: "REDCap",
+            serviceType: "redcap",
+            baseURL: "https://redcap.example.test/api/",
+            authMethod: "bearer"
+        )
+        jiraConnector.workspace = workspace
+        redcapConnector.workspace = workspace
+        let task = AgentTask(title: "Compare records", goal: "Compare Jira tickets with REDCap records", workspace: workspace)
+        let merged = try #require(ConnectorRuntimeProjection.CredentialApprovalRequest.merged([
+            .init(connectorID: jiraConnector.id, connectorName: "Jira-new", serviceType: "jira", labels: [
+                ConnectorRuntimeProjection.credentialLabel(for: jiraConnector, key: "JIRA_API_TOKEN"),
+                ConnectorRuntimeProjection.credentialLabel(for: jiraConnector, key: "JIRA_EMAIL")
+            ]),
+            .init(connectorID: redcapConnector.id, connectorName: "REDCap", serviceType: "redcap", labels: [
+                ConnectorRuntimeProjection.credentialLabel(for: redcapConnector, key: "REDCAP_API_TOKEN")
+            ])
+        ]))
+        let request = PermissionRequest.connectorCredentials(
+            connectorID: merged.connectorID,
+            displayName: merged.displayName,
+            labels: merged.labels
+        )
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: request,
+            reason: "Connector credential access requires approval.",
+            grants: PermissionBroker.approvalGrants(for: request)
+        )
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+        let jira = railItem(name: "Jira", connectorNames: ["Jira-new"])
+        let redcap = railItem(name: "REDCap", connectorNames: ["REDCap"])
+
+        let attentions = CapabilityRuntimePermissionAttention.pending(for: task)
+        let items = CapabilityRuntimePermissionAttention.applying(
+            attentions,
+            to: [jira, redcap],
+            connectors: [jiraConnector, redcapConnector]
+        )
+
+        #expect(merged.displayName == "Jira-new and REDCap connector credentials (3 configured credentials)")
+        #expect(attentions.count == 2)
+        #expect(items[0].presentation.rowSubtitle == "Jira-new: permission to use 2 configured credentials for this task")
+        #expect(items[1].presentation.rowSubtitle == "REDCap: permission to use 1 configured credential for this task")
+
+        let decision = RuntimePermissionDecisionPresentation(payload: payload)
+        #expect(decision.title == "Jira-new and REDCap connectors need permission")
+        #expect(decision.summary == "ASTRA wants to expose 3 configured credentials from the Jira-new and REDCap connectors to this task's agent process.")
+        #expect(decision.allowSimilarLabel == "Allow these connectors for task")
+    }
+
     @Test("connector origin selects one capability when connector names collide")
     func connectorOriginSelectsOneCapabilityWhenConnectorNamesCollide() {
         let workspace = Workspace(name: "Shared", primaryPath: "/tmp/shared")

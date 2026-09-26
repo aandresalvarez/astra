@@ -1,0 +1,7 @@
+{"type":"model.call_failure","data":{"errorType":"quota","message":"You have exceeded your monthly quota (Request ID: [redacted])","statusCode":402,"errorCode":"quota_exceeded"}}
+{"type":"session.error","data":{"errorType":"quota","message":"You have exceeded your monthly quota (Request ID: [redacted])","statusCode":402,"errorCode":"quota_exceeded"}}
+{"type":"model.call_failure","data":{"errorType":"quota","message":"You have exceeded your monthly quota (Request ID: [redacted])","statusCode":402,"errorCode":"quota_exceeded"}}
+{"type":"session.error","data":{"errorType":"quota","message":"You have exceeded your monthly quota (Request ID: [redacted])","statusCode":402,"errorCode":"quota_exceeded"}}
+{"type":"model.call_failure","data":{"errorType":"quota","message":"You have exceeded your monthly quota (Request ID: [redacted])","statusCode":402,"errorCode":"quota_exceeded"}}
+{"type":"session.error","data":{"errorType":"quota","message":"You have exceeded your monthly quota (Request ID: [redacted])","statusCode":402,"errorCode":"quota_exceeded"}}
+{"type":"subagent.failed","data":{"error":"402 You have exceeded your monthly quota"}}

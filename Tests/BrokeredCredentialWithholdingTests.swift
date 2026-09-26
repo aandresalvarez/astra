@@ -368,6 +368,142 @@ struct BrokeredCredentialApprovalLoopTests {
         #expect(fixture.task.status == .completed)
     }
 
+    /// The dock shows one decision and "Allow similar" grants exactly that one
+    /// before closing the rest. When one run left an offer per connector, the
+    /// user approved the connector on the card, the other offer was closed
+    /// with no grant, and that connector was sealed again on the next run.
+    @Test("Two sealed connectors in one run raise one offer, and one approval grants both")
+    func twoSealedConnectorsInOneRunRaiseOneOfferThatGrantsBoth() async throws {
+        let fixture = try Fixture()
+        let run = fixture.finishedRun()
+        // A turn that names neither connector: the run reaches both and may
+        // unseal neither.
+        let server = fixture.brokerServer(taskID: fixture.task.id, runID: run.id, turn: Fixture.unrelatedTurn)
+        for (id, tool) in [(1, "jira"), (2, "redcap")] {
+            let text = try brokerResultText(try brokerCall(server, id: id, tool: tool, arguments: ["operation": "status"]))
+            #expect(text.contains("credentials_withheld: true"))
+        }
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context
+        )
+
+        let expectedLabels: Set<String> = [
+            Fixture.jiraCredentialLabel(fixture.jiraConnector.id),
+            Fixture.redcapCredentialLabel(fixture.redcapConnector.id)
+        ]
+        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: fixture.task).count == 1)
+        #expect(Set(TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: fixture.task))
+            == Set(expectedLabels.map { PermissionGrant.credential(label: $0) }))
+
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: fixture.context,
+            taskQueue: TaskQueue(poolSize: 0)
+        )
+        await coordinator.approveSimilarRuntimePermissionForTask(fixture.task)?.value
+
+        #expect(Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: fixture.task,
+            runtime: .claudeCode
+        )).isSuperset(of: expectedLabels))
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+        #expect(fixture.task.status == .completed)
+
+        // And the next launch unseals both, with nothing left to explain.
+        let next = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
+            task: fixture.task,
+            runtime: .claudeCode,
+            capabilityScope: fixture.scope(for: Fixture.unrelatedTurn),
+            requiredTools: ["jira", "redcap"],
+            secretStore: fixture.store
+        )
+        #expect(next.values.contains(Fixture.jiraSecret))
+        #expect(next.values.contains(Fixture.redcapSecret))
+        #expect(next[withheldMarkerEnvironmentKey] == nil)
+    }
+
+    /// The same drop across runs: an offer the user has not answered is still
+    /// open when the next run seals another connector. Two open offers again
+    /// means one is approved without being shown and the other closed with
+    /// nothing, so the earlier offer has to travel in the new one.
+    @Test("An offer an earlier run left open joins the next run's offer instead of being dropped")
+    func anOfferAnEarlierRunLeftOpenJoinsTheNextOffer() async throws {
+        let fixture = try Fixture()
+        // The first run names Jira, so only REDCap is sealed. The user leaves
+        // the offer where it is.
+        let first = fixture.finishedRun()
+        _ = try brokerCall(
+            fixture.brokerServer(taskID: fixture.task.id, runID: first.id),
+            id: 1,
+            tool: "redcap",
+            arguments: ["operation": "status"]
+        )
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: fixture.task,
+            run: first,
+            modelContext: fixture.context
+        )
+        // The next run names neither connector and calls Jira.
+        let second = fixture.finishedRun()
+        _ = try brokerCall(
+            fixture.brokerServer(taskID: fixture.task.id, runID: second.id, turn: Fixture.unrelatedTurn),
+            id: 1,
+            tool: "jira",
+            arguments: ["operation": "status"]
+        )
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: fixture.task,
+            run: second,
+            modelContext: fixture.context
+        )
+
+        let expectedLabels: Set<String> = [
+            Fixture.jiraCredentialLabel(fixture.jiraConnector.id),
+            Fixture.redcapCredentialLabel(fixture.redcapConnector.id)
+        ]
+        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: fixture.task).count == 1)
+        #expect(Set(TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: fixture.task))
+            == Set(expectedLabels.map { PermissionGrant.credential(label: $0) }))
+
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: fixture.context,
+            taskQueue: TaskQueue(poolSize: 0)
+        )
+        await coordinator.approveSimilarRuntimePermissionForTask(fixture.task)?.value
+
+        #expect(Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: fixture.task,
+            runtime: .claudeCode
+        )).isSuperset(of: expectedLabels))
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+    }
+
+    /// The per-connector id is what stops a second run from stacking another
+    /// copy of an offer in the dock. A combined offer has to keep answering
+    /// for every connector it carries, or each later run adds a card.
+    @Test("A later run that only calls already-offered connectors leaves the offer as it is")
+    func aLaterRunCallingOnlyOfferedConnectorsLeavesTheOfferAlone() throws {
+        let fixture = try Fixture()
+        for _ in 0..<2 {
+            let run = fixture.finishedRun()
+            let server = fixture.brokerServer(taskID: fixture.task.id, runID: run.id, turn: Fixture.unrelatedTurn)
+            for (id, tool) in [(1, "jira"), (2, "redcap")] {
+                _ = try brokerCall(server, id: id, tool: tool, arguments: ["operation": "status"])
+            }
+            RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+                task: fixture.task,
+                run: run,
+                modelContext: fixture.context
+            )
+        }
+
+        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: fixture.task).count == 1)
+        #expect(fixture.task.events.filter {
+            $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue
+        }.count == 1)
+    }
+
     /// One narrated connector and one reachable-only connector, wired the way a
     /// finished run leaves them: the run is over, the task is not waiting on
     /// anybody, and the broker held one of the two secrets back.
@@ -381,8 +517,14 @@ struct BrokeredCredentialApprovalLoopTests {
         let jiraConnector: Connector
         let redcapConnector: Connector
         let jiraTurn = "check the open Jira issues for this sprint"
+        /// Names neither connector, so a run on it can reach both and unseal neither.
+        static let unrelatedTurn = "summarize what changed since last week"
         static let jiraSecret = "jira-secret-token-value"
         static let redcapSecret = "redcap-secret-token-value"
+
+        static func jiraCredentialLabel(_ id: UUID) -> String {
+            "connector:\(id.uuidString):JIRA_API_TOKEN"
+        }
 
         static func redcapCredentialLabel(_ id: UUID) -> String {
             "connector:\(id.uuidString):REDCAP_API_TOKEN"
@@ -409,11 +551,11 @@ struct BrokeredCredentialApprovalLoopTests {
         /// The broker as the run actually saw it: REDCap in the manifest with
         /// its route, its secret withheld, and the observer that turns a tool
         /// call into the narration the launch never had.
-        func brokerServer(taskID: UUID, runID: UUID) -> HostControlMCPServer {
+        func brokerServer(taskID: UUID, runID: UUID, turn: String? = nil) -> HostControlMCPServer {
             let environment = HostControlBrokerSessionRegistry.brokeredConnectorEnvironment(
                 task: task,
                 runtime: .claudeCode,
-                capabilityScope: scope(for: jiraTurn),
+                capabilityScope: scope(for: turn ?? jiraTurn),
                 requiredTools: ["jira", "redcap"],
                 secretStore: store
             )

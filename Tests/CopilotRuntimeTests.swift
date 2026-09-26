@@ -2070,6 +2070,12 @@ struct CopilotWorkerExecutionTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "quota-failure",
+            withExtension: "jsonl",
+            subdirectory: "ProviderStreams/copilot"
+        ))
+        let fixture = try String(contentsOf: fixtureURL, encoding: .utf8)
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
@@ -2080,7 +2086,9 @@ struct CopilotWorkerExecutionTests {
           echo "copilot fake 1.0"
           exit 0
         fi
-        printf '%s\\n' 'Error: model gpt-5 is not available for this organization and OPENAI_API_KEY=sk-test-secret for person@example.invalid' >&2
+        cat <<'ASTRA_COPILOT_EVENTS'
+        \(fixture)
+        ASTRA_COPILOT_EVENTS
         exit 1
         """
         try script.write(to: binURL, atomically: true, encoding: .utf8)
@@ -2111,11 +2119,10 @@ struct CopilotWorkerExecutionTests {
         let run = try #require(task.runs.first)
         #expect(run.status == .failed)
         #expect(run.exitCode == 1)
-        let errorEvent = try #require(task.events.first { $0.type == "error" })
-        #expect(errorEvent.payload.contains("could not use model `gpt-5`"))
-        #expect(errorEvent.payload.contains("Provider error:"))
-        #expect(!errorEvent.payload.contains("sk-test-secret"))
-        #expect(!errorEvent.payload.contains("person@example.invalid"))
+        let errorEvent = try #require(task.events.first { $0.type == "error" && $0.payload.contains("Provider error:") })
+        #expect(errorEvent.payload.contains("Copilot monthly quota exceeded"))
+        #expect(errorEvent.payload.contains("HTTP 402") && run.output.isEmpty,
+                "provider diagnostics stay separate from the assistant transcript")
     }
 
     @Test("Approved plan precreates nested task artifact parents before Copilot launch")

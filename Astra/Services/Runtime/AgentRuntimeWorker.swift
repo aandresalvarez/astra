@@ -1226,7 +1226,11 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime,
             model: task.model,
             exitCode: result.exitCode,
-            rawError: result.error, runOutput: run.output,
+            rawError: result.error,
+            runOutput: [run.output, result.providerFailureOutput]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n"),
             providerVersion: result.providerVersion,
             stream: streamSnapshot,
             timedOut: result.timedOut,

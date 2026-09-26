@@ -1077,6 +1077,7 @@ final class AgentRuntimeProcessRunner {
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
                     error: error.isEmpty ? nil : error,
+                    providerFailureOutput: monitor.providerFailureOutput,
                     providerVersion: plan.providerVersion,
                     policyViolation: monitor.policyViolation,
                     policyViolationMessage: monitor.policyViolationMessage,

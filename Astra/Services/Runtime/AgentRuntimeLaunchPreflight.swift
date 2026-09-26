@@ -264,7 +264,12 @@ enum AgentRuntimeLaunchPreflight {
                 .joined(separator: ",")
             AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: warningFields, level: .warning, fieldMaxLength: 240)
         }
-        if let credentialRequest = credentialProjection.unapprovedCredentialApprovalRequests().first {
+        // Every unapproved connector in one request, never one per launch: an
+        // approval must cover the whole launch, or the next launch pauses on a
+        // connector the user was never shown.
+        if let credentialRequest = ConnectorRuntimeProjection.CredentialApprovalRequest.merged(
+            credentialProjection.unapprovedCredentialApprovalRequests()
+        ) {
             return finishPreLaunchCredentialApprovalRequest(
                 task: task,
                 run: run,
@@ -367,11 +372,14 @@ enum AgentRuntimeLaunchPreflight {
             providerDetail: credentialRequest.displayName,
             grants: grants
         )
+        let connectorIDs = ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: credentialRequest.labels)
         let fields: [String: String] = [
             "source": "connector_credential_egress",
             "phase": phase.rawValue,
             "runtime": runtime.rawValue,
             "connector_id": credentialRequest.connectorID.uuidString,
+            "connector_ids": connectorIDs.map(\.uuidString).joined(separator: ","),
+            "connector_count": String(max(connectorIDs.count, 1)),
             "connector_name": credentialRequest.connectorName,
             "credential_label_count": String(credentialRequest.labels.count),
             "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.connectorCredentialApprovalRequired.rawValue,

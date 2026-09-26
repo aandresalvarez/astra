@@ -3,6 +3,7 @@ import Foundation
 struct AgentProcessResult {
     let exitCode: Int
     let error: String?
+    let providerFailureOutput: String?
     let providerVersion: String?
     let policyViolation: Bool
     let policyViolationMessage: String?
@@ -22,6 +23,7 @@ struct AgentProcessResult {
     init(
         exitCode: Int,
         error: String? = nil,
+        providerFailureOutput: String? = nil,
         providerVersion: String? = nil,
         policyViolation: Bool = false,
         policyViolationMessage: String? = nil,
@@ -46,6 +48,7 @@ struct AgentProcessResult {
         // completion and kept the truncation invisible.
         self.exitCode = terminatedAfterTerminalProgress ? 0 : exitCode
         self.error = error
+        self.providerFailureOutput = providerFailureOutput
         self.providerVersion = providerVersion
         self.policyViolation = policyViolation
         self.policyViolationMessage = policyViolationMessage
