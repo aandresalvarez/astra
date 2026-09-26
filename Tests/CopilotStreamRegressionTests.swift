@@ -5,6 +5,34 @@ import ASTRACore
 
 @Suite("Copilot Stream Regressions")
 struct CopilotStreamRegressionTests {
+    @Test("Captured Copilot quota frames parse as provider failure output")
+    func capturedQuotaFailuresParseAsProviderFailures() throws {
+        let fixtureURL = try #require(Bundle.module.url(
+            forResource: "quota-failure",
+            withExtension: "jsonl",
+            subdirectory: "ProviderStreams/copilot"
+        ))
+        let lines = try String(contentsOf: fixtureURL, encoding: .utf8)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+        let events = lines.flatMap(CopilotStreamEventParser.parseAgentEvents(line:))
+        let failures = events.compactMap { event -> String? in
+            if case .failed(let message) = event { return message }
+            return nil
+        }
+        let processFailures = lines.flatMap(CopilotStreamEventParser.parseAll(line:)).compactMap { event -> String? in
+            if case .result(let text, _, _, _, _, _, let isError) = event, isError {
+                return text
+            }
+            return nil
+        }
+
+        #expect(failures.count == 7)
+        #expect(failures.filter { $0.contains("HTTP 402") }.count == 6)
+        #expect(failures.allSatisfy { $0.localizedCaseInsensitiveContains("quota") })
+        #expect(processFailures == failures)
+    }
+
     @Test("Assistant idle remains transient", arguments: [false, true])
     func assistantIdleRemainsTransient(aborted: Bool) throws {
         let line = try jsonLine([

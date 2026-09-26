@@ -377,6 +377,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     private var _estimatedTokens: Int = 0
     private var _turnCount: Int = 0
+    private var _providerFailureOutput = ""
     private var _budgetExceeded: Bool = false
     private var _budgetWarning: Bool = false
     private var _finalReportedBudgetExceededAfterCompletion: Bool = false
@@ -487,6 +488,11 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
     var estimatedTokens: Int { lock.lock(); defer { lock.unlock() }; return _estimatedTokens }
     var turnCount: Int { lock.lock(); defer { lock.unlock() }; return _turnCount }
+    var providerFailureOutput: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _providerFailureOutput.isEmpty ? nil : _providerFailureOutput
+    }
     var budgetExceeded: Bool { lock.lock(); defer { lock.unlock() }; return _budgetExceeded }
     var budgetWarning: Bool { lock.lock(); defer { lock.unlock() }; return _budgetWarning }
     var finalReportedBudgetExceededAfterCompletion: Bool { lock.lock(); defer { lock.unlock() }; return _finalReportedBudgetExceededAfterCompletion }
@@ -675,7 +681,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return recordRuntimeStop(reason: stop.reason, message: stop.message, process: process)
         }
 
-        if case .result = parsed {
+        if case .result(let text, _, _, _, _, _, let isError) = parsed {
+            if isError, let text {
+                appendProviderFailureOutput(text)
+            }
             _turnCount += 1
             if maxTurns > 0 && _turnCount >= maxTurns {
                 AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: taskID, fields: [
@@ -803,6 +812,20 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         }
 
         return false
+    }
+
+    /// Retain bounded provider error text for the exit-time failure classifier.
+    /// It remains separate from assistant output, which is the user's transcript.
+    private func appendProviderFailureOutput(_ text: String) {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty,
+              !_providerFailureOutput.contains(message),
+              _providerFailureOutput.count < 4_000 else { return }
+        if !_providerFailureOutput.isEmpty {
+            _providerFailureOutput += "\n"
+        }
+        let remaining = max(0, 4_000 - _providerFailureOutput.count)
+        _providerFailureOutput += String(message.prefix(remaining))
     }
 
     private func rememberToolUse(name: String, id: String, input: [String: Any]?) {

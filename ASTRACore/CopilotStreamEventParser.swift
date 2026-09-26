@@ -145,6 +145,14 @@ public enum CopilotStreamEventParser {
             return events(from: payload, raw: raw, keyed: keyed)
         }
 
+        // These Copilot frames carry provider failures inside the stream. Handle
+        // them before the broad `session.*` metadata case below, so an empty
+        // stderr does not hide quota, auth, or rate-limit details from the run
+        // failure classifier.
+        if ["model.call_failure", "session.error", "subagent.failed"].contains(normalized) {
+            return [.failed(message: failureMessage(in: object, raw: raw))]
+        }
+
         if normalized == "session.shutdown",
            let events = sessionShutdownEvents(from: object) {
             return events
@@ -482,6 +490,19 @@ public enum CopilotStreamEventParser {
             return text
         }
         return nil
+    }
+
+    private static func failureMessage(in object: [String: Any], raw: String) -> String {
+        let message = firstStringIncludingPayload(
+            in: object,
+            keys: ["message", "error", "reason", "detail"]
+        )
+            ?? nestedStringIncludingPayload(object, path: ["error", "message"])
+            ?? raw
+        guard let statusCode = intValueIncludingPayload(in: object, keys: ["statusCode", "status_code", "httpStatus"]) else {
+            return message
+        }
+        return "HTTP \(statusCode): \(message)"
     }
 
     private static func sessionEvent(from object: [String: Any], type: String, raw: String) -> [AgentEvent] {
