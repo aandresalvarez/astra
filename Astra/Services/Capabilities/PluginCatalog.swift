@@ -371,11 +371,11 @@ final class PluginCatalog {
             name: "GitHub Workflow",
             icon: "chevron.left.forwardslash.chevron.right",
             iconDescriptor: .brand("github", fallbackSystemName: "chevron.left.forwardslash.chevron.right"),
-            description: "Inspect issues, PRs, and CI from your workspace",
+            description: "Inspect GitHub work and prepare PR reviews for approved posting",
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.2.0",
+            version: "2.3.0",
             setupGuide: """
             Connect your workspace to GitHub using ASTRA's host-control \
             GitHub tool. This capability does not use a stored GitHub \
@@ -385,6 +385,7 @@ final class PluginCatalog {
             What you can do:
             • List and search issues and pull requests
             • Read PR diffs, review comments, and CI status
+            • Prepare a PR review with summary and inline comments for ASTRA to post after your approval
             • Check workflow runs and deployment status
 
             Setup:
@@ -396,9 +397,9 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "GitHub Agent",
                 icon: "chevron.left.forwardslash.chevron.right",
-                description: "Inspect issues, PRs, and CI via ASTRA host-control GitHub",
-                allowedTools: ["Read", "Glob", "Grep"],
-                disallowedTools: ["Write", "Edit", "Bash"],
+                description: "Inspect GitHub and prepare review proposals via ASTRA host-control GitHub",
+                allowedTools: ["Read", "Glob", "Grep", "Write"],
+                disallowedTools: ["Edit", "Bash"],
                 customTools: [],
                 behaviorInstructions: """
                 You are a GitHub integration agent. Use the ASTRA host-control route shown for this run. The broker is always read-only; never attempt to use it for mutations. When the effective policy makes native Bash available, normal developer `git`/`gh` commands may be used only for an explicit user-requested branch, commit, push, or draft-PR workflow. Otherwise, do not use direct `gh`, browser clicks, or raw GitHub API calls to bypass the broker.
@@ -434,6 +435,8 @@ final class PluginCatalog {
 
                 RULES
                 • The host-control capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs through it.
+                • Use `Write` only to create the task-folder review proposal described here; do not edit repository files through this inspection skill.
+                • If the user explicitly asks to post a review on an existing PR, prepare a GitHub Create Review JSON payload as `pr<NUMBER>_review.json` in the task folder. Include `commit_id`, `event` (`COMMENT` or `REQUEST_CHANGES`), `body`, and any inline `comments` with `path`, `line`, `side`, and `body`. Use a new filename such as `pr<NUMBER>_review_2.json` for a later, separate review. ASTRA will show the exact payload and require the user to press Post review. A saved file is a proposal, not a posted review; report it as pending until ASTRA records the GitHub receipt.
                 • In Ask, GitHub writes require ASTRA's confirmed typed publication workflow. In Auto, native developer tools may perform an explicitly requested normal branch/commit/push/draft-PR workflow when Bash is available.
                 • Never merge, force-push, delete branches or repositories, change secrets, or modify repository administration through this inspection capability.
                 • Use `--json` for structured output; do not use `--jq` or `-q` because ASTRA's host-control GitHub broker rejects jq filters.

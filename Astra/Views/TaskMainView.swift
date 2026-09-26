@@ -264,6 +264,7 @@ struct TaskMainView: View {
     @State var pendingForkRequest: PendingTaskForkRequest?
     @State var forkCreationError: String?
     @State private var gitPublishProposal: GitPullRequestPublishProposal?
+    @State private var githubReviewPublication = TaskGitHubReviewPublicationState()
     @State private var connectorMutationReview = TaskConnectorMutationReviewState()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
@@ -522,6 +523,15 @@ struct TaskMainView: View {
                 onCancel: { gitPublishProposal = nil }
             )
         }
+        .taskGitHubReviewPublication(
+            state: githubReviewPublication,
+            task: task,
+            modelContext: modelContext,
+            onResolved: {
+                threadViewModel.refreshSnapshot(for: task)
+                recomputeDecisionOutcomes()
+            }
+        )
         .taskConnectorMutationReview(
             state: connectorMutationReview,
             task: task,
@@ -3574,6 +3584,7 @@ struct TaskMainView: View {
             pendingReviewState: pendingTaskReviewState,
             runtimePermission: runtimePermissionState,
             hasGitPublishRequest: shouldOfferGitPublishReview,
+            githubReviewPath: decisionOutcomeCache.githubReviewPath,
             pendingConnectorMutationTargets: decisionOutcomeCache.pendingConnectorMutationTargets,
             executableApprovedPlan: executableApprovedPlan,
             skipPermissions: taskSkipPermissions,
@@ -3930,6 +3941,9 @@ struct TaskMainView: View {
             approveSimilarRuntimePermissionForTask()
         case .reviewGitPublish:
             prepareGitPublishProposal()
+        case .reviewGitHubReview:
+            guard let path = decisionOutcomeCache.githubReviewPath else { return }
+            githubReviewPublication.prepare(task: task, filePath: path, modelContext: modelContext)
         case .reviewConnectorMutation:
             connectorMutationReview.prepare(task: task, modelContext: modelContext)
         case .approveCorrection:

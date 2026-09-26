@@ -19,6 +19,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case allowOnce
     case allowSimilar
     case reviewGitPublish
+    case reviewGitHubReview
     case reviewConnectorMutation
     case approveResult
     case dismissReview
@@ -88,6 +89,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var runtimePermissionAllowSimilarLabel: String?
         var canApproveSimilarRuntimePermission: Bool
         var hasGitPublishRequest: Bool = false
+        var githubReviewPath: String?
         /// Destinations of the connector mutations waiting for review, e.g.
         /// `["STAR / Bug"]`. Empty means none pending. Scope only — the ticket
         /// body is in the staged file and is read in the review sheet, not
@@ -165,6 +167,10 @@ struct TaskDecisionDockPresentation: Equatable {
 
         if context.hasGitPublishRequest {
             return gitPublishPresentation(context)
+        }
+
+        if context.githubReviewPath != nil {
+            return gitHubReviewPresentation(context)
         }
 
         // After publication, before the advisory surfaces. A staged mutation
@@ -295,6 +301,22 @@ struct TaskDecisionDockPresentation: Equatable {
                 context.canRetry ? action(.retry, title: "Retry agent", systemImage: "arrow.clockwise") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
+            overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
+            prefersExpandedDetails: true
+        )
+    }
+
+    private static func gitHubReviewPresentation(_ context: Context) -> TaskDecisionDockPresentation {
+        TaskDecisionDockPresentation(
+            id: "github-review-approval",
+            icon: "text.bubble.fill",
+            tone: .attention,
+            title: "GitHub review ready to post",
+            summary: "Review the summary and inline comments before ASTRA posts them to the pull request.",
+            metrics: metrics(context),
+            details: details(context),
+            primaryAction: action(.reviewGitHubReview, title: "Review comments", systemImage: "text.bubble"),
+            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
             overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
@@ -1037,6 +1059,7 @@ private extension TaskDecisionDockActionKind {
              .allowOnce,
              .allowSimilar,
              .reviewGitPublish,
+             .reviewGitHubReview,
              .reviewConnectorMutation,
              .approveResult,
              .dismissReview,

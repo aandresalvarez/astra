@@ -288,10 +288,8 @@ final class TaskLifecycleCoordinator {
         }
 
         if let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
-           TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
-            task: task,
-            run: latestRun
-           ) != nil {
+           TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: latestRun) != nil
+            || GitHubReviewPublicationRequirement.isPending(task: task) {
             let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
                 task: task,
                 run: latestRun
