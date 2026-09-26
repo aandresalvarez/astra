@@ -345,6 +345,176 @@ struct TaskLifecycleResumeTests {
         #expect(task.status == .pendingUser)
     }
 
+    // "Allow once" is consent for the user's request, not for one launch
+    // attempt. A request that pauses again must keep what the user already
+    // allowed for it, or two connectors take turns asking forever.
+    @Test("Allow once keeps the credentials approved earlier for the same request")
+    func allowOnceKeepsCredentialsApprovedEarlierForTheSameRequest() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let (workspace, task) = makeCredentialChainTask(in: env)
+        // The user allowed Jira once; the relaunch then paused on REDCap.
+        try recordPausedRelaunch(in: env, task: task, carrying: [Self.jiraGrant], thenAsking: Self.redcapGrant)
+
+        let continuation = env.coordinator.approveTask(task)
+        await Task.yield()
+        let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: env.context).last)
+        env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
+        await continuation?.value
+
+        #expect(try Set(oneRunGrants(of: request, in: task)) == [Self.jiraGrant, Self.redcapGrant])
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: .claudeCode).isEmpty)
+    }
+
+    @Test("Allow similar keeps one-time credentials approved earlier for the same request")
+    func allowSimilarKeepsOneTimeCredentialsApprovedEarlierForTheSameRequest() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let (workspace, task) = makeCredentialChainTask(in: env)
+        try recordPausedRelaunch(in: env, task: task, carrying: [Self.jiraGrant], thenAsking: Self.redcapGrant)
+
+        let continuation = env.coordinator.approveSimilarRuntimePermissionForTask(task)
+        await Task.yield()
+        let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: env.context).last)
+        env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
+        await continuation?.value
+
+        // REDCap becomes task-scoped; Jira stays exactly as the user allowed it:
+        // once, for this request.
+        #expect(try oneRunGrants(of: request, in: task) == [Self.jiraGrant])
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: .claudeCode) == [Self.redcapLabel])
+    }
+
+    @Test("Allow once does not carry an earlier request's grants into a new request")
+    func allowOnceDoesNotCarryAnEarlierRequestsGrants() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+        let (workspace, task) = makeCredentialChainTask(in: env)
+
+        // An earlier request allowed Jira once and then ran to completion.
+        guard case .success(let earlier) = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: "ASTRA approved one-time runtime permission for this run: the requested tool.",
+            executionPolicy: PermissionBroker.executionPolicy(forRuntime: .claudeCode, grants: [Self.jiraGrant]),
+            for: task,
+            into: env.context
+        ) else {
+            Issue.record("Could not submit the earlier permission resume")
+            return
+        }
+        let earlierRequest = try #require(try TaskTurnRequestRepository.request(id: earlier.requestID, in: env.context))
+        let earlierRun = TaskRun(task: task)
+        earlierRun.status = .completed
+        earlierRun.completedAt = Date()
+        env.context.insert(earlierRun)
+        TaskTurnRequestStateMachine.transition(earlierRequest, to: .admitted)
+        TaskTurnRequestStateMachine.transition(earlierRequest, to: .running, runID: earlierRun.id)
+        TaskTurnRequestStateMachine.transition(earlierRequest, to: .completed)
+
+        // The user then asked something new, and that request paused on REDCap.
+        guard case .success(let followUp) = ExecutionRequestSubmissionService.submitFollowUp(
+            message: "Now pull the REDCap records",
+            for: task,
+            into: env.context
+        ) else {
+            Issue.record("Could not submit the follow-up")
+            return
+        }
+        try recordPause(in: env, task: task, requestID: followUp.requestID, asking: Self.redcapGrant)
+
+        let continuation = env.coordinator.approveTask(task)
+        await Task.yield()
+        let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: env.context).last)
+        env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
+        await continuation?.value
+
+        #expect(try oneRunGrants(of: request, in: task) == [Self.redcapGrant])
+    }
+
+    private static let jiraLabel = "connector:11111111-1111-1111-1111-111111111111:JIRA_API_TOKEN"
+    private static let redcapLabel = "connector:22222222-2222-2222-2222-222222222222:REDCAP_API_TOKEN"
+    private static let jiraGrant = PermissionGrant.credential(label: jiraLabel)
+    private static let redcapGrant = PermissionGrant.credential(label: redcapLabel)
+
+    private func makeCredentialChainTask(in env: Environment) -> (Workspace, AgentTask) {
+        let workspace = Workspace(name: "Credential Chain", primaryPath: env.root)
+        let task = AgentTask(
+            title: "Credential Chain",
+            goal: "Compare the Jira tickets with the REDCap records",
+            workspace: workspace
+        )
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        env.context.insert(workspace)
+        env.context.insert(task)
+        return (workspace, task)
+    }
+
+    /// What a pre-launch credential pause leaves behind when it happens on a
+    /// relaunch: the relaunch's own request (a permission resume carrying the
+    /// grants already allowed once), the run it paused, and the new open request.
+    private func recordPausedRelaunch(
+        in env: Environment,
+        task: AgentTask,
+        carrying carried: [PermissionGrant],
+        thenAsking asking: PermissionGrant
+    ) throws {
+        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: "ASTRA approved one-time runtime permission for this run: the requested tool.",
+            executionPolicy: PermissionBroker.executionPolicy(forRuntime: .claudeCode, grants: carried),
+            for: task,
+            into: env.context
+        ) else {
+            Issue.record("Could not submit the relaunch request")
+            return
+        }
+        try recordPause(in: env, task: task, requestID: submission.requestID, asking: asking)
+    }
+
+    private func recordPause(
+        in env: Environment,
+        task: AgentTask,
+        requestID: UUID,
+        asking: PermissionGrant
+    ) throws {
+        let request = try #require(try TaskTurnRequestRepository.request(id: requestID, in: env.context))
+        let pausedRun = TaskRun(task: task)
+        pausedRun.status = .failed
+        pausedRun.stopReason = "permission_approval_required"
+        pausedRun.completedAt = Date()
+        env.context.insert(pausedRun)
+        TaskTurnRequestStateMachine.transition(
+            request,
+            to: .failed,
+            runID: pausedRun.id,
+            terminalReason: "permission_approval_required"
+        )
+        guard case .credential(let label) = asking else {
+            Issue.record("The fixture only asks for credentials")
+            return
+        }
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .credential(label: label),
+            reason: "Connector credential egress requires user approval.",
+            grants: [asking]
+        )
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+        env.context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+            payload: payload,
+            run: pausedRun
+        ))
+        task.status = .pendingUser
+        try env.context.save()
+    }
+
+    private func oneRunGrants(of request: TaskTurnRequest, in task: AgentTask) throws -> [PermissionGrant] {
+        let source = try #require(task.events.first { $0.id == request.sourceEventID })
+        let payload = try #require(ExecutionRequestSubmissionService.decodeSourcePayload(source))
+        return (payload.executionPolicyOverride?.permissionGrants ?? [])
+            .sorted { $0.displayName < $1.displayName }
+    }
+
     @Test("Resume preserves a queue-recorded .failed instead of reverting over it")
     func resumePreservesQueueRecordedFailure() async throws {
         let env = try makeEnvironment()

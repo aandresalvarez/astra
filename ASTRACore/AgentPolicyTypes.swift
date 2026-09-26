@@ -972,6 +972,9 @@ public enum PermissionRequest: Codable, Equatable, Sendable {
     case fileWrite(path: String, toolName: String?)
     case network(url: String, toolName: String?)
     case credential(label: String)
+    /// `labels` is authoritative and may span several connectors: the launch
+    /// gate asks for every connector a launch needs at once. `connectorID`
+    /// then names only the first; read the rest from the labels.
     case connectorCredentials(connectorID: UUID, displayName: String, labels: [String])
     case sandboxPath(path: String, access: String, toolName: String?)
     case providerNativePrompt(toolName: String, context: String?)
