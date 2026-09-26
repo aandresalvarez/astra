@@ -482,9 +482,14 @@ final class TaskLifecycleCoordinator {
                 .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
             scopeDescription: "task-scoped runtime permission for similar requests in this task"
         )
+        // What the user already allowed once for this request stays allowed:
+        // approving the rest for the task must not revoke it.
+        let heldGrants = oneRunGrantsHeldByPausedRequest(for: task)
         guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
             message: resumeMessage,
-            executionPolicy: .default,
+            executionPolicy: heldGrants.isEmpty
+                ? .default
+                : PermissionBroker.executionPolicy(forRuntime: runtime, grants: heldGrants),
             for: task,
             into: modelContext,
             prepare: applyApprovalMutation,
@@ -530,7 +535,10 @@ final class TaskLifecycleCoordinator {
             }
         }
 
-        let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
+        let executionPolicy = PermissionBroker.executionPolicy(
+            forRuntime: runtime,
+            grants: oneRunGrantsHeldByPausedRequest(for: task) + approvedGrants
+        )
         guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
             message: resumeMessage,
             executionPolicy: executionPolicy,
@@ -584,6 +592,29 @@ final class TaskLifecycleCoordinator {
 
     private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
         TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
+    }
+
+    /// What the user already allowed once for the request that is paused now.
+    ///
+    /// Those grants travel only inside the relaunch's own execution request, so
+    /// when the relaunch pauses again the next approval has to carry them
+    /// forward or they are lost: production task 06E0814E alternated between
+    /// two connectors for twelve approvals that way. Only the paused request's
+    /// own relaunch counts. A new message is a new request that starts with
+    /// nothing carried, which is what keeps an old approval from being replayed.
+    private func oneRunGrantsHeldByPausedRequest(for task: AgentTask) -> [PermissionGrant] {
+        guard let pausedRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
+              pausedRun.typedStopReason == .permissionApprovalRequired,
+              let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext),
+              let request = requests.last(where: { $0.runID == pausedRun.id }),
+              let sourceEvent = task.events.first(where: { $0.id == request.sourceEventID }),
+              sourceEvent.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
+              let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent) else {
+            return []
+        }
+        return PermissionBroker.oneRunGrantsCarriedWithinRequest(
+            source.executionPolicyOverride?.permissionGrants ?? []
+        )
     }
 
     private static func latestRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {

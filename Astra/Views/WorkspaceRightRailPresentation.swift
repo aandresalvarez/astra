@@ -66,24 +66,43 @@ struct CapabilityRuntimePermissionAttention: Equatable {
 
     static func pending(for task: AgentTask?) -> [CapabilityRuntimePermissionAttention] {
         guard let task else { return [] }
-        return TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).compactMap { payload in
-            guard let decoded = PermissionApprovalEventPayload.decoded(from: payload) else { return nil }
+        return TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).flatMap {
+            payload -> [CapabilityRuntimePermissionAttention] in
+            guard let decoded = PermissionApprovalEventPayload.decoded(from: payload) else { return [] }
             switch decoded.request {
             case .connectorCredentials(let connectorID, let displayName, let labels):
-                return CapabilityRuntimePermissionAttention(
-                    connectorID: connectorID,
-                    requestDisplayName: displayName,
-                    credentialCount: max(labels.count, 1)
-                )
+                // One request can name several connectors — the launch gate asks
+                // for every connector a launch needs at once — so mark each one.
+                let labelsByConnector = Dictionary(grouping: labels) {
+                    ConnectorRuntimeProjection.connectorID(fromCredentialLabel: $0) ?? connectorID
+                }
+                guard !labelsByConnector.isEmpty else {
+                    return [CapabilityRuntimePermissionAttention(
+                        connectorID: connectorID,
+                        requestDisplayName: displayName,
+                        credentialCount: 1
+                    )]
+                }
+                return labelsByConnector
+                    .sorted { $0.key.uuidString < $1.key.uuidString }
+                    .map { id, connectorLabels in
+                        CapabilityRuntimePermissionAttention(
+                            connectorID: id,
+                            requestDisplayName: displayName,
+                            credentialCount: connectorLabels.count
+                        )
+                    }
             case .credential(let label):
-                guard let connectorID = connectorID(fromCredentialLabel: label) else { return nil }
-                return CapabilityRuntimePermissionAttention(
+                guard let connectorID = ConnectorRuntimeProjection.connectorID(fromCredentialLabel: label) else {
+                    return []
+                }
+                return [CapabilityRuntimePermissionAttention(
                     connectorID: connectorID,
                     requestDisplayName: "Connector credentials",
                     credentialCount: 1
-                )
+                )]
             default:
-                return nil
+                return []
             }
         }
     }
@@ -144,12 +163,6 @@ struct CapabilityRuntimePermissionAttention: Equatable {
                     .localizedCaseInsensitiveCompare(connectorName) == .orderedSame
             }
         }
-    }
-
-    private static func connectorID(fromCredentialLabel label: String) -> UUID? {
-        let parts = label.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
-        guard parts.count == 3, parts[0] == "connector" else { return nil }
-        return UUID(uuidString: String(parts[1]))
     }
 }
 

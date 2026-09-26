@@ -354,6 +354,9 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         case .modelUnavailable:
             return "\(runtime.displayName) could not use model `\(model)`. The model may be unavailable for this account, organization policy, CLI version, quota tier, or provider configuration."
         case .quotaExceeded:
+            if runtime == .copilotCLI {
+                return "Copilot monthly quota exceeded. Check your GitHub Copilot plan or wait for the quota to reset."
+            }
             return "\(runtime.displayName) was blocked by quota or billing limits for the selected model."
         case .rateLimited:
             return "\(runtime.displayName) was rate limited by the provider for the selected model."
