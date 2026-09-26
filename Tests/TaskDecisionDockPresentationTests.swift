@@ -19,6 +19,18 @@ struct TaskDecisionDockPresentationTests {
         #expect(!actionTitles(presentation).contains("Approve result"))
     }
 
+    @Test("completed task with a prepared GitHub review offers posting approval")
+    func completedTaskOffersGitHubReview() throws {
+        var input = context(status: .completed)
+        input.githubReviewPath = "/tmp/pr1139_review.json"
+
+        let presentation = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(presentation.id == "github-review-approval")
+        #expect(presentation.primaryAction?.kind == .reviewGitHubReview)
+        #expect(presentation.primaryAction?.title == "Review comments")
+    }
+
     @Test("Staged connector mutation takes the dock with a typed review action")
     func stagedConnectorMutationUsesTypedReviewAction() throws {
         var input = context(status: .completed)
