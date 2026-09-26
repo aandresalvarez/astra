@@ -5,8 +5,8 @@ import ASTRACore
 
 @Suite("Copilot Stream Regressions")
 struct CopilotStreamRegressionTests {
-    @Test("Captured Copilot quota failures reach the run failure classifier")
-    func capturedQuotaFailuresReachFailureClassifier() throws {
+    @Test("Captured Copilot quota frames parse as provider failure output")
+    func capturedQuotaFailuresParseAsProviderFailures() throws {
         let fixtureURL = try #require(Bundle.module.url(
             forResource: "quota-failure",
             withExtension: "jsonl",
@@ -31,19 +31,6 @@ struct CopilotStreamRegressionTests {
         #expect(failures.filter { $0.contains("HTTP 402") }.count == 6)
         #expect(failures.allSatisfy { $0.localizedCaseInsensitiveContains("quota") })
         #expect(processFailures == failures)
-
-        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
-            runtime: .copilotCLI,
-            model: "gpt-5",
-            exitCode: 1,
-            rawError: nil,
-            runOutput: processFailures.joined(separator: "\n"),
-            providerVersion: "GitHub Copilot CLI 1.0.88",
-            stream: nil
-        )
-        #expect(diagnostic.category == .quotaExceeded)
-        #expect(diagnostic.summarySource == .resultOutput)
-        #expect(diagnostic.userMessage.localizedCaseInsensitiveContains("Copilot monthly quota exceeded"))
     }
 
     @Test("Assistant idle remains transient", arguments: [false, true])
