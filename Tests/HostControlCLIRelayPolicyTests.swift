@@ -52,6 +52,12 @@ struct HostControlCLIRelayPolicyTests {
             )
         }
         #expect(!HostControlCLIRelayPolicy.allows("astra-host-control jira --operation add-comment --issue-key ASTRA-1"))
+        #expect(HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation get-comments --issue-key ASTRA-1 --start-at 20"
+        ))
+        #expect(!HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation get-comments --issue-key ASTRA-1 --start-at -1"
+        ))
     }
 
     @Test("Relay does not carry issue proposals")

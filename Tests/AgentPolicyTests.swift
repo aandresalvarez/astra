@@ -1674,6 +1674,7 @@ struct RunPermissionManifestTests {
                     && descriptor.allowedInputKeys.contains("issue_key")
                     && descriptor.allowedInputKeys.contains("jql")
                     && descriptor.allowedInputKeys.contains("next_page_token")
+                    && descriptor.allowedInputKeys.contains("start_at")
                     && !descriptor.allowedInputKeys.contains("method")
                     && !descriptor.allowedInputKeys.contains("path")
                     && !descriptor.allowedInputKeys.contains("body")
