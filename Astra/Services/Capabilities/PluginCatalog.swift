@@ -375,7 +375,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.3.0",
+            version: "2.4.0",
             setupGuide: """
             Connect your workspace to GitHub using ASTRA's host-control \
             GitHub tool. This capability does not use a stored GitHub \
@@ -398,7 +398,7 @@ final class PluginCatalog {
                 name: "GitHub Agent",
                 icon: "chevron.left.forwardslash.chevron.right",
                 description: "Inspect GitHub and prepare review proposals via ASTRA host-control GitHub",
-                allowedTools: ["Read", "Glob", "Grep", "Write"],
+                allowedTools: ["Read", "Glob", "Grep"],
                 disallowedTools: ["Edit", "Bash"],
                 customTools: [],
                 behaviorInstructions: """
@@ -435,7 +435,7 @@ final class PluginCatalog {
 
                 RULES
                 • The host-control capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs through it.
-                • Use `Write` only to create the task-folder review proposal described here; do not edit repository files through this inspection skill.
+                • In Ask, request the normal one-run Write approval to create only the task-folder review proposal. This skill does not grant broad Write access. Do not edit repository files through this inspection skill.
                 • If the user explicitly asks to post a review on an existing PR, prepare a GitHub Create Review JSON payload as `pr<NUMBER>_review.json` in the task folder. Include `commit_id`, `event` (`COMMENT` or `REQUEST_CHANGES`), `body`, and any inline `comments` with `path`, `line`, `side`, and `body`. Use a new filename such as `pr<NUMBER>_review_2.json` for a later, separate review. ASTRA will show the exact payload and require the user to press Post review. A saved file is a proposal, not a posted review; report it as pending until ASTRA records the GitHub receipt.
                 • In Ask, GitHub writes require ASTRA's confirmed typed publication workflow. In Auto, native developer tools may perform an explicitly requested normal branch/commit/push/draft-PR workflow when Bash is available.
                 • Never merge, force-push, delete branches or repositories, change secrets, or modify repository administration through this inspection capability.
@@ -458,8 +458,8 @@ final class PluginCatalog {
             governance: .builtInApproved(
                 riskLevel: .high,
                 dataAccess: [.workspaceFiles, .externalService, .network],
-                externalEffects: [.readOnly],
-                policyNotes: "GitHub inspection uses ASTRA host-control mediated gh commands and remains read-only. Ask uses a confirmed typed publication workflow for writes; Auto may separately grant provider-native developer tools. Browser mutations and destructive/admin operations are not part of this built-in capability."
+                externalEffects: [.readOnly, .externalAPIWrite],
+                policyNotes: "GitHub inspection uses ASTRA host-control mediated gh commands and remains read-only. Review proposal files require normal Write approval in Ask. ASTRA posts the review to GitHub only after showing the exact payload and receiving explicit approval. Browser mutations and destructive/admin operations are not part of this built-in capability."
             )
         ),
 

@@ -282,10 +282,16 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(package.version == "2.3.0")
-        #expect(skill.allowedTools.contains("Write"))
+        #expect(package.version == "2.4.0")
+        #expect(!skill.allowedTools.contains("Write"))
+        #expect(!skill.disallowedTools.contains("Write"))
+        let subagentGrants = PermissionPolicy.restricted.subAgentPermissions(allowedTools: skill.allowedTools)
+        let subagentAllowed = subagentGrants.first?["allow"] as? [String] ?? []
+        #expect(!subagentAllowed.contains("Write(*)"))
+        #expect(AgentPolicy.preset(.review).askFirstTools.contains("Write"))
         #expect(skill.behaviorInstructions.contains("pr<NUMBER>_review.json"))
         #expect(skill.behaviorInstructions.contains("press Post review"))
+        #expect(package.governance.externalEffects.contains(.externalAPIWrite))
     }
 
     @Test("MCP smoke test bundled capability declares governed MCP server")

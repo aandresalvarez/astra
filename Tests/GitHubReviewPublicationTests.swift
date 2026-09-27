@@ -17,6 +17,11 @@ struct GitHubReviewPublicationTests {
         var replacementOnNextGet: (URL, Data)?
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
+            guard let hostnameIndex = arguments.firstIndex(of: "--hostname"),
+                  arguments.indices.contains(hostnameIndex + 1),
+                  arguments[hostnameIndex + 1] == "github.com" else {
+                throw NSError(domain: "WrongGitHubHost", code: 1)
+            }
             if arguments.contains("POST") {
                 guard let inputIndex = arguments.firstIndex(of: "--input") else {
                     throw NSError(domain: "Test", code: 1)
@@ -197,13 +202,24 @@ struct GitHubReviewPublicationTests {
     func targetComesFromPostingRequest() async throws {
         let fixture = try makeFixture(goal: "Review https://github.com/example/repo/pull/11")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
-        fixture.context.insert(TaskEvent(
+        let posting = TaskEvent(
             task: fixture.task,
             eventType: TaskEventTypes.Conversation.userMessage,
             payload: "Post comments to https://github.com/example/repo/pull/12",
             run: nil
-        ))
+        )
+        posting.timestamp = Date(timeIntervalSince1970: 1_000)
+        fixture.context.insert(posting)
+        let followUp = TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "yes",
+            run: nil
+        )
+        followUp.timestamp = Date(timeIntervalSince1970: 1_001)
+        fixture.context.insert(followUp)
         try fixture.context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
         let proposal = try await GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI())
             .prepare(task: fixture.task, filePath: fixture.file.path)
         #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
@@ -286,6 +302,63 @@ struct GitHubReviewPublicationTests {
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review this GitHub PR and add tests"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Do not post this PR review"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review the PR without posting comments"))
+    }
+
+    @Test("unrelated follow-ups preserve posting intent until cancellation or receipt")
+    func postingIntentSurvivesFollowUps() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let task = AgentTask(
+            title: "Review",
+            goal: "Post the PR review comments https://github.com/example/repo/pull/12"
+        )
+        context.insert(task)
+        let followUp = TaskEvent(
+            task: task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "yes", run: nil
+        )
+        followUp.timestamp = Date(timeIntervalSince1970: 1_000)
+        context.insert(followUp)
+        try context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: task))
+
+        let cancellation = TaskEvent(
+            task: task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Do not post the PR review comments", run: nil
+        )
+        cancellation.timestamp = Date(timeIntervalSince1970: 1_001)
+        context.insert(cancellation)
+        try context.save()
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: task))
+
+        let newRequest = TaskEvent(
+            task: task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Please post the PR review comments", run: nil
+        )
+        newRequest.timestamp = Date(timeIntervalSince1970: 1_002)
+        context.insert(newRequest)
+        try context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: task))
+
+        let receipt = TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: GitHubReviewPublicationEventTypes.receipt,
+            payload: GitHubReviewPublicationRecord(
+                proposalID: "review", filePath: "/tmp/review.json",
+                pullRequestURL: "https://github.com/example/repo/pull/12",
+                reviewURL: "https://github.com/example/repo/pull/12#pullrequestreview-42",
+                reviewID: 42
+            ),
+            run: nil
+        )
+        receipt.timestamp = Date(timeIntervalSince1970: 1_003)
+        context.insert(receipt)
+        try context.save()
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: task))
     }
 
     @Test("a PR publication receipt does not complete a task still awaiting review comments")

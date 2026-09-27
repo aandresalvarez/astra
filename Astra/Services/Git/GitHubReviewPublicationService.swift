@@ -61,35 +61,61 @@ enum GitHubReviewPublicationEventTypes {
     static let indeterminate = "github.review.indeterminate"
 }
 
-/// The latest user request, rather than the task's original goal, determines
-/// whether posting a review is still owed. A local JSON artifact is not proof
-/// of that external result.
+/// Durable user messages can request or cancel publication. Unrelated later
+/// messages do not erase an unresolved posting request.
 enum GitHubReviewPublicationRequirement {
+    private static let publicationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:post|posting|publish|publishing|submit|submitting|add|adding|send|sending|leave|leaving)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
+    )
+
+    struct PostingRequest {
+        let text: String
+        let timestamp: Date?
+    }
+
     static func isPending(task: AgentTask) -> Bool {
-        let latestRequest = task.events
-            .filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue }
-            .max { $0.timestamp < $1.timestamp }
-        let requestText = latestRequest?.payload ?? task.goal
-        guard requestsPublication(in: requestText),
+        guard let request = postingRequest(task: task),
               task.goal.range(of: "github.com/", options: .caseInsensitive) != nil
-                || requestText.range(of: #"\b(pr|pull request|github)\b"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+                || request.text.range(of: #"\b(pr|pull request|github)\b"#, options: [.regularExpression, .caseInsensitive]) != nil else {
             return false
         }
         return !task.events.contains { event in
             event.type == GitHubReviewPublicationEventTypes.receipt
-                && (latestRequest.map { event.timestamp >= $0.timestamp } ?? true)
+                && (request.timestamp.map { event.timestamp >= $0 } ?? true)
         }
     }
 
+    static func postingRequest(task: AgentTask) -> PostingRequest? {
+        let latestIntent = task.events
+            .filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue
+                && publicationIntent(in: $0.payload) != nil }
+            .max { lhs, rhs in
+                lhs.timestamp == rhs.timestamp
+                    ? lhs.id.uuidString < rhs.id.uuidString
+                    : lhs.timestamp < rhs.timestamp
+            }
+        if let latestIntent {
+            guard publicationIntent(in: latestIntent.payload) == .publish else { return nil }
+            return PostingRequest(text: latestIntent.payload, timestamp: latestIntent.timestamp)
+        }
+        guard publicationIntent(in: task.goal) == .publish else { return nil }
+        return PostingRequest(text: task.goal, timestamp: nil)
+    }
+
     static func requestsPublication(in request: String) -> Bool {
+        publicationIntent(in: request) == .publish
+    }
+
+    private enum Intent { case publish, cancel }
+
+    private static func publicationIntent(in request: String) -> Intent? {
         let lower = request.lowercased()
         // Bind the publishing verb to the review object. A request to add
         // tests while reviewing a PR must not become permission to post.
-        let pattern = #"\b(?:post|publish|submit|add|send|leave)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        guard let regex = publicationRegex else { return nil }
         let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
-        return regex.matches(in: lower, range: range).contains { match in
-            guard let matchRange = Range(match.range, in: lower) else { return false }
+        return regex.matches(in: lower, range: range).last.flatMap { match in
+            guard let matchRange = Range(match.range, in: lower) else { return nil }
             let prefix = lower[..<matchRange.lowerBound]
             let clause = String(prefix.suffix(64))
                 .components(separatedBy: CharacterSet(charactersIn: ".!?;\n"))
@@ -98,6 +124,7 @@ enum GitHubReviewPublicationRequirement {
             let words = clause.split(whereSeparator: { $0.isWhitespace }).suffix(4)
             let lead = words.joined(separator: " ")
             return lead.range(of: #"\b(?:do not|don't|dont|never|without|no|not)\b"#, options: .regularExpression) == nil
+                ? .publish : .cancel
         }
     }
 }
@@ -292,7 +319,7 @@ final class GitHubReviewPublicationService {
         do {
             let output = try await cli.run(
                 at: task.executionRootPath ?? task.workspace?.primaryPath ?? "",
-                arguments: ["api", proposal.endpoint, "--method", "POST", "--input", inputURL.path],
+                arguments: ["api", proposal.endpoint, "--hostname", "github.com", "--method", "POST", "--input", inputURL.path],
                 label: "Post reviewed GitHub pull request review"
             )
             let responseDecoder = JSONDecoder()
@@ -465,11 +492,7 @@ final class GitHubReviewPublicationService {
     }
 
     private static func target(for task: AgentTask) throws -> Target {
-        let latestRequest = task.events
-            .filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue }
-            .max { $0.timestamp < $1.timestamp }
-        if let request = latestRequest?.payload,
-           GitHubReviewPublicationRequirement.requestsPublication(in: request),
+        if let request = GitHubReviewPublicationRequirement.postingRequest(task: task)?.text,
            request.range(of: "https://github.com/", options: .caseInsensitive) != nil {
             return try target(from: request)
         }
@@ -524,7 +547,7 @@ final class GitHubReviewPublicationService {
     private func pullRequestMetadata(task: AgentTask, target: Target) async throws -> PullRequestMetadata {
         let output = try await cli.run(
             at: task.executionRootPath ?? task.workspace?.primaryPath ?? "",
-            arguments: ["api", "repos/\(target.repository)/pulls/\(target.number)", "--method", "GET"],
+            arguments: ["api", "repos/\(target.repository)/pulls/\(target.number)", "--hostname", "github.com", "--method", "GET"],
             label: "Check GitHub pull request review target"
         )
         let decoder = JSONDecoder()
