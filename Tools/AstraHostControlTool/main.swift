@@ -367,7 +367,7 @@ private enum AstraHostControlBrokerCLI {
             arguments,
             allowed: [
                 "--operation", "--alias", "--issue-key", "--jql",
-                "--max-results", "--next-page-token", "--timeout-seconds"
+                "--max-results", "--start-at", "--next-page-token", "--timeout-seconds"
             ]
         )
         var output: [String: Any] = [:]
@@ -385,6 +385,11 @@ private enum AstraHostControlBrokerCLI {
         if let value = values["--max-results"], let parsed = Int(value), parsed > 0 {
             output["max_results"] = parsed
         } else if values["--max-results"] != nil {
+            throw HostControlBrokerCLIError.invalidArguments
+        }
+        if let value = values["--start-at"], let parsed = Int(value), parsed >= 0 {
+            output["start_at"] = parsed
+        } else if values["--start-at"] != nil {
             throw HostControlBrokerCLIError.invalidArguments
         }
         if let value = values["--timeout-seconds"],
@@ -509,7 +514,7 @@ private enum AstraHostControlBrokerCLI {
 
     private static let usage = """
     Usage:
-      astra-host-control jira --operation status|search-jql|get-issue|get-comments [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N]
+      astra-host-control jira --operation status|search-jql|get-issue|get-comments [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N] [--start-at N]
       astra-host-control redcap --operation status|project|metadata|user|record|report [--alias NAME] [--fields A,B] [--forms A,B] [--records 1,2] [--report-id N] [--raw-or-label raw|label]
       astra-host-control ssh --alias NAME
       astra-host-control github|gcloud|bq -- ARGUMENT...

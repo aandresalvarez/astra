@@ -43,7 +43,7 @@ enum HostControlCLIRelayPolicy {
             arguments,
             allowed: [
                 "--operation", "--alias", "--issue-key", "--jql",
-                "--max-results", "--next-page-token", "--timeout-seconds"
+                "--max-results", "--start-at", "--next-page-token", "--timeout-seconds"
             ]
         ) else {
             return false
@@ -67,6 +67,10 @@ enum HostControlCLIRelayPolicy {
         }
         if let value = options["--max-results"],
            Int(value).map({ $0 > 0 }) != true {
+            return false
+        }
+        if let value = options["--start-at"],
+           Int(value).map({ $0 >= 0 }) != true {
             return false
         }
         return validPositiveDouble(options["--timeout-seconds"])

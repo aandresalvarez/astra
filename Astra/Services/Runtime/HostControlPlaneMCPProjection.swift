@@ -495,7 +495,7 @@ enum HostControlPlaneMCPProjection {
         case "ssh":
             return ["alias", "timeout_seconds"]
         case "jira":
-            return ["operation", "alias", "issue_key", "jql", "max_results", "next_page_token", "timeout_seconds"]
+            return ["operation", "alias", "issue_key", "jql", "max_results", "start_at", "next_page_token", "timeout_seconds"]
         case "redcap":
             return ["operation", "alias", "fields", "forms", "records", "report_id", "raw_or_label", "timeout_seconds"]
         default:
