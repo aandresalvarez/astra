@@ -14,6 +14,7 @@ struct GitHubReviewProposal: Identifiable {
     let pullRequestNumber: Int
     let pullRequestURL: String
     let payload: GitHubReviewPayload
+    let validatedData: Data
 
     var endpoint: String { "repos/\(repository)/pulls/\(pullRequestNumber)/reviews" }
 }
@@ -69,14 +70,34 @@ enum GitHubReviewPublicationRequirement {
             .filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue }
             .max { $0.timestamp < $1.timestamp }
         let requestText = latestRequest?.payload ?? task.goal
-        let lower = requestText.lowercased()
-        let asksToPost = lower.range(of: #"\b(post|publish|submit|add)\b"#, options: .regularExpression) != nil
-        let namesReview = lower.range(of: #"\b(comments?|review)\b"#, options: .regularExpression) != nil
-        let namesPullRequest = lower.range(of: #"\b(pr|pull request|github)\b"#, options: .regularExpression) != nil
-        guard asksToPost && namesReview && namesPullRequest else { return false }
+        guard requestsPublication(in: requestText),
+              task.goal.range(of: "github.com/", options: .caseInsensitive) != nil
+                || requestText.range(of: #"\b(pr|pull request|github)\b"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+            return false
+        }
         return !task.events.contains { event in
             event.type == GitHubReviewPublicationEventTypes.receipt
                 && (latestRequest.map { event.timestamp >= $0.timestamp } ?? true)
+        }
+    }
+
+    static func requestsPublication(in request: String) -> Bool {
+        let lower = request.lowercased()
+        // Bind the publishing verb to the review object. A request to add
+        // tests while reviewing a PR must not become permission to post.
+        let pattern = #"\b(?:post|publish|submit|add|send|leave)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
+        return regex.matches(in: lower, range: range).contains { match in
+            guard let matchRange = Range(match.range, in: lower) else { return false }
+            let prefix = lower[..<matchRange.lowerBound]
+            let clause = String(prefix.suffix(64))
+                .components(separatedBy: CharacterSet(charactersIn: ".!?;\n"))
+                .last ?? ""
+            // Negation is scoped to the same short phrase as the verb.
+            let words = clause.split(whereSeparator: { $0.isWhitespace }).suffix(4)
+            let lead = words.joined(separator: " ")
+            return lead.range(of: #"\b(?:do not|don't|dont|never|without|no|not)\b"#, options: .regularExpression) == nil
         }
     }
 }
@@ -86,6 +107,7 @@ enum GitHubReviewPublicationError: LocalizedError {
     case alreadyDispatched
     case staleHead
     case uncertain
+    case receiptPersistenceFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -96,6 +118,8 @@ enum GitHubReviewPublicationError: LocalizedError {
             "The pull request has changed since these comments were prepared. Recheck the diff and prepare a new review."
         case .uncertain:
             "ASTRA sent the review request but could not confirm the result. Check the pull request on GitHub before trying again."
+        case .receiptPersistenceFailed(let reviewURL):
+            "GitHub confirmed the review at \(reviewURL), but ASTRA could not save its receipt. Check GitHub before continuing; ASTRA will not resend this file."
         }
     }
 }
@@ -134,10 +158,16 @@ final class GitHubReviewPublicationService {
     private static let maximumPayloadBytes = 256 * 1024
     private let modelContext: ModelContext
     private let cli: any GitHubReviewCLI
+    private let saveReceipt: ((AgentTask, ModelContext) throws -> Void)?
 
-    init(modelContext: ModelContext, cli: any GitHubReviewCLI = NativeGitHubReviewCLI()) {
+    init(
+        modelContext: ModelContext,
+        cli: any GitHubReviewCLI = NativeGitHubReviewCLI(),
+        saveReceipt: ((AgentTask, ModelContext) throws -> Void)? = nil
+    ) {
         self.modelContext = modelContext
         self.cli = cli
+        self.saveReceipt = saveReceipt
     }
 
     static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
@@ -157,12 +187,33 @@ final class GitHubReviewPublicationService {
         }
     }
 
+    func prepareFirstAvailable(task: AgentTask, filePaths: [String]) async throws -> GitHubReviewProposal {
+        var lastUnusable: Error?
+        for path in filePaths where GitHubReviewArtifactPolicy.isReviewFile(path)
+            && !Self.hasDispatched(task: task, filePath: path) {
+            do {
+                return try await prepare(task: task, filePath: path)
+            } catch let error as GitHubReviewPublicationError {
+                lastUnusable = error
+            }
+        }
+        throw lastUnusable ?? GitHubReviewPublicationError.invalid("No review proposal is available to post.")
+    }
+
     func prepare(task: AgentTask, filePath: String) async throws -> GitHubReviewProposal {
         guard !Self.hasDispatched(task: task, filePath: filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
-        let (data, payload) = try readPayload(task: task, filePath: filePath)
-        let target = try Self.target(from: task.goal)
+        let data: Data
+        let payload: GitHubReviewPayload
+        do {
+            (data, payload) = try readPayload(task: task, filePath: filePath)
+        } catch let error as GitHubReviewPublicationError {
+            throw error
+        } catch {
+            throw GitHubReviewPublicationError.invalid("The review file could not be read as valid JSON.")
+        }
+        let target = try Self.target(for: task)
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent.lowercased()
         let expectedPrefix = "pr\(target.number)_review"
         if fileName != "github_review.json",
@@ -187,7 +238,8 @@ final class GitHubReviewPublicationService {
             repository: target.repository,
             pullRequestNumber: target.number,
             pullRequestURL: target.url,
-            payload: payload
+            payload: payload,
+            validatedData: data
         )
     }
 
@@ -202,13 +254,12 @@ final class GitHubReviewPublicationService {
         guard current.id == proposal.id, current.digest == proposal.digest else {
             throw GitHubReviewPublicationError.invalid("The review file changed after you opened it. Review the new content before posting.")
         }
-        let (data, _) = try readPayload(task: task, filePath: proposal.filePath)
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
         let inputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-github-review-\(UUID().uuidString).json")
-        try data.write(to: inputURL, options: [.atomic])
+        try current.validatedData.write(to: inputURL, options: [.atomic])
         defer { try? FileManager.default.removeItem(at: inputURL) }
         let run = task.runs.max(by: { $0.startedAt < $1.startedAt })
         let dispatched = GitHubReviewPublicationRecord(
@@ -237,6 +288,7 @@ final class GitHubReviewPublicationService {
             throw error
         }
 
+        let response: ReviewResponse
         do {
             let output = try await cli.run(
                 at: task.executionRootPath ?? task.workspace?.primaryPath ?? "",
@@ -245,55 +297,15 @@ final class GitHubReviewPublicationService {
             )
             let responseDecoder = JSONDecoder()
             responseDecoder.keyDecodingStrategy = .convertFromSnakeCase
-            let response = try responseDecoder.decode(ReviewResponse.self, from: Data(output.utf8))
+            response = try responseDecoder.decode(ReviewResponse.self, from: Data(output.utf8))
             let expectedState = proposal.payload.event == "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "COMMENTED"
             guard response.id > 0,
-                  response.htmlUrl.hasPrefix(proposal.pullRequestURL + "#pullrequestreview-"),
+                  Self.matchesReviewURL(response.htmlUrl, proposal: proposal, reviewID: response.id),
                   response.state == expectedState,
                   response.commitId.caseInsensitiveCompare(proposal.payload.commitId) == .orderedSame,
                   response.submittedAt != nil else {
                 throw GitHubReviewPublicationError.uncertain
             }
-            let receipt = GitHubReviewPublicationRecord(
-                proposalID: proposal.id,
-                filePath: proposal.filePath,
-                pullRequestURL: proposal.pullRequestURL,
-                reviewURL: response.htmlUrl,
-                reviewID: response.id
-            )
-            let completesRequestedReview = GitHubReviewPublicationRequirement.isPending(task: task)
-            modelContext.insert(TaskEvent.structuredPayloadEvent(
-                task: task,
-                type: GitHubReviewPublicationEventTypes.receipt,
-                payload: receipt,
-                run: run
-            ))
-            modelContext.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.System.info,
-                payload: "Posted GitHub review: \(response.htmlUrl)",
-                run: run
-            ))
-            if completesRequestedReview, task.status == .pendingUser, let run {
-                modelContext.insert(TaskEvent(
-                    task: task,
-                    eventType: TaskEventTypes.Task.approved,
-                    payload: "Posted GitHub review: \(response.htmlUrl)",
-                    run: run
-                ))
-                _ = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
-                    task: task,
-                    run: run,
-                    modelContext: modelContext
-                )
-            }
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "github_review_receipt", "review_id": String(response.id)]
-            )
-            return receipt
         } catch {
             modelContext.insert(TaskEvent.structuredPayloadEvent(
                 task: task,
@@ -314,6 +326,65 @@ final class GitHubReviewPublicationService {
                 auditFields: ["operation": "github_review_outcome_indeterminate"]
             )
             throw GitHubReviewPublicationError.uncertain
+        }
+
+        let receipt = GitHubReviewPublicationRecord(
+            proposalID: proposal.id,
+            filePath: proposal.filePath,
+            pullRequestURL: proposal.pullRequestURL,
+            reviewURL: response.htmlUrl,
+            reviewID: response.id
+        )
+        let persistedEventIDs = Set(task.events.map(\.id))
+        let priorState = TaskStateMachine.ExternalOutcomeReceiptSnapshot(task: task, run: run)
+        do {
+            let completesRequestedReview = GitHubReviewPublicationRequirement.isPending(task: task)
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
+                task: task,
+                type: GitHubReviewPublicationEventTypes.receipt,
+                payload: receipt,
+                run: run
+            ))
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: "Posted GitHub review: \(response.htmlUrl)",
+                run: run
+            ))
+            if completesRequestedReview, task.status == .pendingUser,
+               run?.typedStopReason == .externalOutcomePending, let run {
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.Task.approved,
+                    payload: "Posted GitHub review: \(response.htmlUrl)",
+                    run: run
+                ))
+                _ = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+            }
+            if let saveReceipt {
+                try saveReceipt(task, modelContext)
+            } else {
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: task.workspace,
+                    modelContext: modelContext,
+                    taskID: task.id,
+                    auditFields: ["operation": "github_review_receipt", "review_id": String(response.id)]
+                )
+            }
+            return receipt
+        } catch {
+            // Dispatch was saved before the network call. A failed receipt save
+            // must not leave uncommitted receipt/completion state in memory.
+            modelContext.rollback()
+            task.events.removeAll { !persistedEventIDs.contains($0.id) }
+            TaskStateMachine.restoreFailedExternalOutcomeReceipt(
+                task: task, run: run, snapshot: priorState
+            )
+            throw GitHubReviewPublicationError.receiptPersistenceFailed(response.htmlUrl)
         }
     }
 
@@ -393,9 +464,21 @@ final class GitHubReviewPublicationService {
         let url: String
     }
 
+    private static func target(for task: AgentTask) throws -> Target {
+        let latestRequest = task.events
+            .filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue }
+            .max { $0.timestamp < $1.timestamp }
+        if let request = latestRequest?.payload,
+           GitHubReviewPublicationRequirement.requestsPublication(in: request),
+           request.range(of: "https://github.com/", options: .caseInsensitive) != nil {
+            return try target(from: request)
+        }
+        return try target(from: task.goal)
+    }
+
     private static func target(from goal: String) throws -> Target {
-        let pattern = #"https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)(?=$|[\s/#?.,)])"#
-        let regex = try NSRegularExpression(pattern: pattern)
+        let pattern = #"https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)(?![A-Za-z0-9])"#
+        let regex = try NSRegularExpression(pattern: pattern, options: .caseInsensitive)
         let range = NSRange(goal.startIndex..<goal.endIndex, in: goal)
         let matches = regex.matches(in: goal, range: range)
         guard matches.count == 1, let match = matches.first,
@@ -423,6 +506,19 @@ final class GitHubReviewPublicationService {
         let state: String
         let commitId: String
         let submittedAt: String?
+    }
+
+    private static func matchesReviewURL(
+        _ reviewURL: String,
+        proposal: GitHubReviewProposal,
+        reviewID: Int
+    ) -> Bool {
+        guard let actual = URLComponents(string: reviewURL),
+              let expected = URLComponents(string: proposal.pullRequestURL) else { return false }
+        return actual.scheme?.lowercased() == "https"
+            && actual.host?.lowercased() == "github.com"
+            && actual.path.caseInsensitiveCompare(expected.path) == .orderedSame
+            && actual.fragment == "pullrequestreview-\(reviewID)"
     }
 
     private func pullRequestMetadata(task: AgentTask, target: Target) async throws -> PullRequestMetadata {

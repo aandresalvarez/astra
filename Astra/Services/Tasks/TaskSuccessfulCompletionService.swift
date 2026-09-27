@@ -45,16 +45,19 @@ enum TaskSuccessfulCompletionService {
         return true
     }
 
-    /// Re-runs non-publication completion gates after a durable external
-    /// outcome receipt. User approval authorizes the reviewed publication; it
-    /// does not authorize bypassing missing deliverables.
+    /// Re-runs every remaining completion gate after a durable external
+    /// outcome receipt. A PR receipt cannot bypass a pending review receipt,
+    /// and a review receipt cannot bypass a pending PR publication.
     @MainActor
     static func applyAfterRequiredExternalOutcome(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext
     ) -> Bool {
-        let decision = TaskCompletionPolicy.decideAfterRequiredExternalOutcome(
+        if let reason = run.typedStopReason, reason != .externalOutcomePending {
+            return false
+        }
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
             task: task,
             run: run
         )
@@ -67,6 +70,7 @@ enum TaskSuccessfulCompletionService {
             )
             return false
         }
+        guard run.typedStopReason == .externalOutcomePending else { return false }
 
         let completedAt = Date()
         run.recordExternalOutcomeCompleted(at: completedAt)

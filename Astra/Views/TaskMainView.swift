@@ -3942,8 +3942,12 @@ struct TaskMainView: View {
         case .reviewGitPublish:
             prepareGitPublishProposal()
         case .reviewGitHubReview:
-            guard let path = decisionOutcomeCache.githubReviewPath else { return }
-            githubReviewPublication.prepare(task: task, filePath: path, modelContext: modelContext)
+            guard decisionOutcomeCache.githubReviewPath != nil else { return }
+            githubReviewPublication.prepare(
+                task: task,
+                filePaths: decisionArtifactPathsCache,
+                modelContext: modelContext
+            )
         case .reviewConnectorMutation:
             connectorMutationReview.prepare(task: task, modelContext: modelContext)
         case .approveCorrection:

@@ -316,7 +316,10 @@ struct TaskDecisionDockPresentation: Equatable {
             metrics: metrics(context),
             details: details(context),
             primaryAction: action(.reviewGitHubReview, title: "Review comments", systemImage: "text.bubble"),
-            secondaryActions: [firstArtifactAction(context)].compactMap { $0 },
+            secondaryActions: [
+                context.canRetry ? action(.retry, title: "Retry agent", systemImage: "arrow.clockwise") : nil,
+                firstArtifactAction(context)
+            ].compactMap { $0 },
             overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )

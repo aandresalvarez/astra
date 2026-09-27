@@ -9,7 +9,7 @@ final class TaskGitHubReviewPublicationState {
     var preparationError: String?
     private(set) var isPreparing = false
 
-    func prepare(task: AgentTask, filePath: String, modelContext: ModelContext) {
+    func prepare(task: AgentTask, filePaths: [String], modelContext: ModelContext) {
         guard !isPreparing else { return }
         isPreparing = true
         preparationError = nil
@@ -17,7 +17,7 @@ final class TaskGitHubReviewPublicationState {
             defer { isPreparing = false }
             do {
                 proposal = try await GitHubReviewPublicationService(modelContext: modelContext)
-                    .prepare(task: task, filePath: filePath)
+                    .prepareFirstAvailable(task: task, filePaths: filePaths)
             } catch {
                 preparationError = error.localizedDescription
             }

@@ -36,6 +36,26 @@ enum TaskStateMachine {
         }
     }
 
+    struct ExternalOutcomeReceiptSnapshot {
+        let taskStatus: TaskStatus
+        let taskCompletedAt: Date?
+        let taskUpdatedAt: Date
+        let taskUnreadAt: Date?
+        let runStatus: RunStatus?
+        let runStopReason: String?
+        let runCompletedAt: Date?
+
+        init(task: AgentTask, run: TaskRun?) {
+            taskStatus = task.status
+            taskCompletedAt = task.completedAt
+            taskUpdatedAt = task.updatedAt
+            taskUnreadAt = task.unreadAt
+            runStatus = run?.status
+            runStopReason = run?.stopReason
+            runCompletedAt = run?.completedAt
+        }
+    }
+
     struct TransitionResult: Equatable {
         let from: TaskStatus
         let to: TaskStatus
@@ -45,6 +65,27 @@ enum TaskStateMachine {
 
     static func snapshot(_ task: AgentTask) -> Snapshot {
         Snapshot(task: task)
+    }
+
+    static func restoreFailedExternalOutcomeReceipt(
+        task: AgentTask,
+        run: TaskRun?,
+        snapshot: ExternalOutcomeReceiptSnapshot
+    ) {
+        task.status = snapshot.taskStatus
+        task.completedAt = snapshot.taskCompletedAt
+        task.updatedAt = snapshot.taskUpdatedAt
+        task.unreadAt = snapshot.taskUnreadAt
+        if let run, let runStatus = snapshot.runStatus, let stopReason = snapshot.runStopReason {
+            run.status = runStatus
+            run.stopReason = stopReason
+            run.completedAt = snapshot.runCompletedAt
+        }
+        AppLogger.audit(.taskStatusChanged, category: "TaskState", taskID: task.id, fields: [
+            "intent": "external_outcome_receipt_save_failed",
+            "to": snapshot.taskStatus.rawValue,
+            "result": "restored"
+        ], level: .warning)
     }
 
     @discardableResult

@@ -29,7 +29,7 @@ struct GitHubReviewPublicationSheet: View {
                     ForEach(proposal.payload.comments.indices, id: \.self) { index in
                         let comment = proposal.payload.comments[index]
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("\(comment.path):\(comment.line) · \(comment.side)")
+                            Text(Self.position(for: comment))
                                 .font(.system(size: 12, design: .monospaced).weight(.semibold))
                             Text(comment.body)
                                 .font(Stanford.body(13))
@@ -87,6 +87,14 @@ struct GitHubReviewPublicationSheet: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    static func position(for comment: GitHubReviewPayload.Comment) -> String {
+        let end = "\(comment.path):\(comment.line) · \(comment.side)"
+        guard let startLine = comment.startLine, let startSide = comment.startSide else {
+            return end
+        }
+        return "\(comment.path):\(startLine) · \(startSide) → \(comment.line) · \(comment.side)"
     }
 
     private func publish() {

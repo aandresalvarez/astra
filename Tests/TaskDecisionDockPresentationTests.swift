@@ -31,6 +31,16 @@ struct TaskDecisionDockPresentationTests {
         #expect(presentation.primaryAction?.title == "Review comments")
     }
 
+    @Test("a failed task keeps Retry alongside a prepared GitHub review")
+    func failedTaskKeepsRetryWithGitHubReview() throws {
+        var input = context(status: .failed)
+        input.githubReviewPath = "/tmp/pr1139_review.json"
+
+        let presentation = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(presentation.primaryAction?.kind == .reviewGitHubReview)
+        #expect(presentation.secondaryActions.contains { $0.kind == .retry })
+    }
+
     @Test("Staged connector mutation takes the dock with a typed review action")
     func stagedConnectorMutationUsesTypedReviewAction() throws {
         var input = context(status: .completed)
