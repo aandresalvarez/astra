@@ -14,6 +14,7 @@ import ASTRAModels
 struct TaskDecisionOutcomeCache: Equatable {
     var hasGitPublishRequest = false
     var pendingConnectorMutationTargets: [String] = []
+    var githubReviewPath: String?
 }
 
 extension TaskMainView {
@@ -31,7 +32,8 @@ extension TaskMainView {
             String(task.updatedAt.timeIntervalSince1970),
             "\(threadViewModel.appliedSnapshotRevision)",
             latestRun?.id.uuidString ?? "none",
-            latestRun?.status.rawValue ?? "none"
+            latestRun?.status.rawValue ?? "none",
+            decisionArtifactPathsCache.joined(separator: ",")
         ].joined(separator: "|")
     }
 
@@ -63,6 +65,12 @@ extension TaskMainView {
         }
         let pendingMutations = try? ConnectorMutationRequirementResolver.pendingMutations(taskID: task.id, in: modelContext)
         outcomes.pendingConnectorMutationTargets = (pendingMutations ?? []).map(\.target)
+        if task.status != .running, task.status != .queued,
+           let reviewPath = GitHubReviewPublicationService.pendingCandidatePath(
+            task: task, filePaths: decisionArtifactPathsCache
+           ) {
+            outcomes.githubReviewPath = reviewPath
+        }
         decisionOutcomeCache = outcomes
     }
 }

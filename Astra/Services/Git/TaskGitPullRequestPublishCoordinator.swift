@@ -203,7 +203,7 @@ final class TaskGitPullRequestPublishCoordinator {
                 payload: "Published draft pull request #\(receipt.pullRequestNumber): \(receipt.pullRequestURL)",
                 run: run
             ))
-            _ = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+            _ = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
                 task: task,
                 run: run,
                 modelContext: modelContext

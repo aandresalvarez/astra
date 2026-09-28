@@ -137,6 +137,16 @@ enum TaskCompletionPolicy {
             return remainingGateDecision
         }
 
+        if GitHubReviewPublicationRequirement.isPending(task: task) {
+            return .block(
+                gate: .requiredExternalOutcome,
+                stopReason: .externalOutcomePending,
+                userVisibleMessage: GitHubReviewPublicationRequirement.unresolvedTargetMessage(task: task)
+                    ?? "The review text is ready. Review and post the GitHub comments to finish this task.",
+                auditFields: ["outcome_kind": "github_pull_request_review", "run_id": run.id.uuidString]
+            )
+        }
+
         let pendingPublication = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
             task: task,
             run: run

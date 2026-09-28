@@ -116,6 +116,7 @@ enum GitOperationIntentDetector {
         let negations: Set<String> = ["avoid", "dont", "never", "no", "not", "skip", "without"]
         let metadataActions: Set<String> = ["check", "find", "inspect", "list", "review", "show", "summarize", "view"]
         let actionBoundaries: Set<String> = ["after", "and", "then"]
+        let reviewObjects: Set<String> = ["review", "comment", "comments"]
 
         for actionIndex in tokens.indices where publicationActions.contains(tokens[actionIndex]) {
             if tokens[actionIndex] == "open", actionIndex > tokens.startIndex {
@@ -146,7 +147,13 @@ enum GitOperationIntentDetector {
                 let phraseStart = min(actionIndex, objectIndex)
                 let phraseEnd = max(actionIndex, objectIndex)
                 let phraseIsNegated = tokens[phraseStart...phraseEnd].contains { negations.contains($0) }
-                if !phraseIsNegated {
+                let reviewBetween = tokens[phraseStart...phraseEnd].contains { reviewObjects.contains($0) }
+                let afterObject = objectIndex + (tokens[objectIndex] == "pull" ? 2 : 1)
+                let reviewAfterObject = tokens.indices.contains(afterObject)
+                    && reviewObjects.contains(tokens[afterObject])
+                let postsExistingReview = ["publish", "published", "publishing", "submit", "submitted", "submitting"]
+                    .contains(tokens[actionIndex]) && (reviewBetween || reviewAfterObject)
+                if !phraseIsNegated && !postsExistingReview {
                     return true
                 }
             }

@@ -303,7 +303,7 @@ struct TaskCompletionPolicyTests {
     }
 
     @Test("Artifact-first Ask completion queues and later presents the PR gate")
-    func artifactApprovalRechecksQueuedPullRequestOutcome() throws {
+    func artifactApprovalRechecksQueuedPullRequestOutcome() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("artifact-pr-gate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -322,7 +322,7 @@ struct TaskCompletionPolicyTests {
         context.insert(task)
         context.insert(run)
 
-        let completed = TaskSuccessfulCompletionService.apply(
+        let completed = await TaskSuccessfulCompletionService.apply(
             task: task,
             run: run,
             modelContext: context,
@@ -359,7 +359,7 @@ struct TaskCompletionPolicyTests {
     }
 
     @Test("publication receipt cannot complete a task whose deliverable is missing")
-    func publicationReceiptDoesNotBypassMissingDeliverable() throws {
+    func publicationReceiptDoesNotBypassMissingDeliverable() async throws {
         let container = try makeContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Completion", primaryPath: NSTemporaryDirectory())
@@ -374,7 +374,7 @@ struct TaskCompletionPolicyTests {
         context.insert(run)
         try context.save()
 
-        let completed = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+        let completed = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
             task: task,
             run: run,
             modelContext: context
@@ -386,7 +386,7 @@ struct TaskCompletionPolicyTests {
     }
 
     @Test("publication receipt completes the run and clears the pending external outcome")
-    func publicationReceiptClearsExternalOutcomeStopReason() throws {
+    func publicationReceiptClearsExternalOutcomeStopReason() async throws {
         let container = try makeContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Completion", primaryPath: NSTemporaryDirectory())
@@ -402,7 +402,7 @@ struct TaskCompletionPolicyTests {
         context.insert(run)
         try context.save()
 
-        let completed = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+        let completed = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
             task: task,
             run: run,
             modelContext: context
