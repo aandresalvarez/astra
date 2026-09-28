@@ -268,7 +268,7 @@ struct FeedbackReportView: View {
                 .font(Stanford.body(13))
                 .frame(minHeight: 58)
                 .padding(6)
-                .background(Color(nsColor: .textBackgroundColor))
+                .background(Stanford.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .accessibilityIdentifier(id)
         }

@@ -153,7 +153,7 @@ struct ConfigureView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(.bar)
+            .background(Stanford.canvasBackground)
 
             Divider()
 
@@ -261,7 +261,7 @@ struct ConfigureView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(.bar)
+            .background(Stanford.canvasBackground)
 
             Divider()
 
@@ -587,7 +587,7 @@ struct CapabilityCreationWizardView: View {
                             .foregroundStyle(Stanford.cardinalRed)
                         }
                         .padding(10)
-                        .background(Color(nsColor: .controlBackgroundColor))
+                        .background(Stanford.fog)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
@@ -649,7 +649,7 @@ struct CapabilityCreationWizardView: View {
                                     .foregroundStyle(selected ? ConfigureTab.tools.color : Color.secondary.opacity(0.45))
                             }
                             .padding(10)
-                            .background(Color(nsColor: .controlBackgroundColor))
+                            .background(Stanford.fog)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
@@ -696,7 +696,7 @@ struct CapabilityCreationWizardView: View {
                         .font(Stanford.ui(13, design: .monospaced))
                         .frame(minHeight: 70)
                         .padding(6)
-                        .background(Color(nsColor: .textBackgroundColor))
+                        .background(Stanford.cardBackground)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderRest, lineWidth: 1))
                 }
@@ -736,7 +736,7 @@ struct CapabilityCreationWizardView: View {
                     .font(Stanford.ui(13, design: .monospaced))
                     .frame(minHeight: 160)
                     .padding(6)
-                    .background(Color(nsColor: .textBackgroundColor))
+                    .background(Stanford.cardBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderRest, lineWidth: 1))
             }
@@ -857,7 +857,7 @@ struct CapabilityCreationWizardView: View {
                                     .foregroundStyle(isSelected(item) ? ConfigureTab.capabilities.color : Color.secondary.opacity(0.45))
                             }
                             .padding(10)
-                            .background(Color(nsColor: .controlBackgroundColor))
+                            .background(Stanford.fog)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         .buttonStyle(.plain)
@@ -877,7 +877,7 @@ struct CapabilityCreationWizardView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(10)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Stanford.fog)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 

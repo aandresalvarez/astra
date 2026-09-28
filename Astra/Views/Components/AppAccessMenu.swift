@@ -131,7 +131,7 @@ private struct AppAccessAvailableUpdateButton: View {
                 .font(Stanford.ui(14, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 34, height: 34)
-                .background(Circle().fill(Color.accentColor))
+                .background(Circle().fill(Stanford.interactive))
         }
         .buttonStyle(.plain)
         .help(appUpdateController.statusMessage ?? "Install the available ASTRA update")
@@ -258,7 +258,7 @@ private struct AppAccessUpdateCheckRow: View {
         if presentation.showsProgress {
             ProgressView()
                 .controlSize(.small)
-                .tint(Color.accentColor)
+                .tint(Stanford.interactive)
         } else {
             Image(systemName: presentation.systemImageName)
                 .font(Stanford.ui(13, weight: .medium))
@@ -271,7 +271,7 @@ private struct AppAccessUpdateCheckRow: View {
         case .standard:
             return Stanford.coolGrey
         case .accent:
-            return Color.accentColor
+            return Stanford.interactive
         case .success:
             return Stanford.paloAltoGreen
         case .warning:

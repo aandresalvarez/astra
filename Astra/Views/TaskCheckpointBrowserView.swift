@@ -267,7 +267,7 @@ struct TaskCheckpointBrowserSheet: View {
             }
             .padding(.vertical, 8)
         }
-        .background(.regularMaterial.opacity(0.35))
+        .background(Color.primary.opacity(Stanford.fillSoft))
     }
 
     private func checkpointRow(_ summary: TaskCheckpointSummary) -> some View {

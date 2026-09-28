@@ -178,7 +178,7 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Stanford.fog)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)

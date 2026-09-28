@@ -811,7 +811,7 @@ struct KanbanBoardView: View {
                 emptyKanbanMessage
             } else {
                 ScrollView(.horizontal, showsIndicators: true) {
-                    AdaptiveGlassContainer(spacing: 12) {
+                    Group {
                         HStack(alignment: .top, spacing: 12) {
                             ForEach(visibleCategories) { category in
                                 let categoryTasks = tasksFor(category)
@@ -1025,7 +1025,7 @@ struct KanbanBoardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 28)
         .padding(.horizontal, 18)
-        .liquidSurface(cornerRadius: 12, fallbackFill: Color.primary.opacity(0.025), fallbackStrokeOpacity: Stanford.strokeSubtle)
+        .cardSurface(cornerRadius: 12, fill: Color.primary.opacity(0.025), strokeOpacity: Stanford.strokeSubtle)
     }
 }
 
@@ -1202,7 +1202,7 @@ struct KanbanColumnView: View {
                                             .font(Stanford.ui(12, weight: .semibold))
                                             .foregroundStyle(.secondary)
                                             .frame(width: 24, height: 24)
-                                            .background(Color(nsColor: .windowBackgroundColor).opacity(0.94))
+                                            .background(Stanford.canvasBackground.opacity(0.94))
                                             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                                             .overlay(
                                                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -1358,7 +1358,7 @@ struct KanbanColumnView: View {
             LinearGradient(
                 colors: [
                     Color.clear,
-                    Color(nsColor: .windowBackgroundColor).opacity(0.9)
+                    Stanford.canvasBackground.opacity(0.9)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -1375,7 +1375,7 @@ struct KanbanColumnView: View {
             .padding(.horizontal, 10)
             .padding(.bottom, 8)
             .frame(maxWidth: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor).opacity(0.94))
+            .background(Stanford.canvasBackground.opacity(0.94))
         }
         .allowsHitTesting(false)
     }
@@ -1441,7 +1441,7 @@ struct KanbanColumnView: View {
         .frame(maxWidth: min(density.columnWidth(for: category) - 28, 260))
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.94))
+                .fill(Stanford.canvasBackground.opacity(0.94))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
