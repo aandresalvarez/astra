@@ -20,12 +20,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .build
@@ -66,12 +66,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .build
@@ -85,11 +85,11 @@ jobs:
 
   whitespace:
     name: Whitespace
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 

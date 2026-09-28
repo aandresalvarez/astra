@@ -1749,7 +1749,7 @@ struct ArchitectureFitnessTests {
         #expect(prePushScript.contains("origin/main...HEAD"))
         #expect(prePushScript.contains("git diff-tree --check --no-commit-id --root -r HEAD"))
         #expect(prePushScript.contains("changed_paths"))
-        #expect(ciWorkflow.contains("actions/cache@v4"))
+        #expect(ciWorkflow.contains("actions/cache@v5"))
         #expect(ciWorkflow.contains("script/prepush.sh"))
         #expect(ciWorkflow.contains("Focused Swift tests"))
         #expect(ciWorkflow.contains("Full Swift test suite"))
