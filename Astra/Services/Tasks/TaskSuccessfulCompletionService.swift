@@ -61,11 +61,20 @@ enum TaskSuccessfulCompletionService {
     static func applyAfterRequiredExternalOutcome(
         task: AgentTask,
         run: TaskRun,
-        modelContext: ModelContext
-    ) -> Bool {
+        modelContext: ModelContext,
+        reviewOriginURL: (String) async -> String? = { path in
+            await GitService.shared.getRemoteOriginURL(at: path)
+        }
+    ) async -> Bool {
         if let reason = run.typedStopReason, reason != .externalOutcomePending {
             return false
         }
+        await GitHubReviewPublicationRequirement.bindOriginTargetIfNeeded(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            originURL: reviewOriginURL
+        )
         let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
             task: task,
             run: run

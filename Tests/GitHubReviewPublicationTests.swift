@@ -336,6 +336,62 @@ struct GitHubReviewPublicationTests {
         #expect(!GitHubReviewPublicationRequirement.isPending(task: fixture.task))
     }
 
+    @Test("manual approval resolves an origin target before completing a paused task")
+    func manualApprovalBindsOriginTarget() async throws {
+        let fixture = try makeFixture(goal: "Review the changes")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = TaskRun(task: fixture.task)
+        run.recordExternalOutcomePending()
+        fixture.task.status = .pendingUser
+        fixture.context.insert(run)
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on PR #12",
+            run: run
+        ))
+        try fixture.context.save()
+
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: fixture.context,
+            taskQueue: TaskQueue(),
+            reviewOriginURL: { _ in "https://github.com/example/repo" }
+        )
+        let approval = try #require(coordinator.approveTask(fixture.task))
+        await approval.value
+        #expect(fixture.task.status == .pendingUser)
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        #expect(fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.targetBound })
+        #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.Task.approved.rawValue })
+    }
+
+    @Test("a separate external receipt rechecks an origin-backed review")
+    func externalReceiptBindsOriginTarget() async throws {
+        let fixture = try makeFixture(goal: "Review the changes")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = TaskRun(task: fixture.task)
+        run.recordExternalOutcomePending()
+        fixture.task.status = .pendingUser
+        fixture.context.insert(run)
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on PR #12",
+            run: run
+        ))
+        try fixture.context.save()
+
+        let completed = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            reviewOriginURL: { _ in "https://github.com/example/repo" }
+        )
+        #expect(!completed)
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        #expect(fixture.task.status == .pendingUser)
+    }
+
     @Test("a review request does not also queue draft PR creation")
     func reviewDoesNotQueueDraftPR() async throws {
         let fixture = try makeFixture(goal: "Publish this PR review https://github.com/example/repo/pull/12")
@@ -576,7 +632,7 @@ struct GitHubReviewPublicationTests {
     }
 
     @Test("a PR publication receipt does not complete a task still awaiting review comments")
-    func publicationReceiptRechecksReviewRequirement() throws {
+    func publicationReceiptRechecksReviewRequirement() async throws {
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
@@ -614,9 +670,10 @@ struct GitHubReviewPublicationTests {
         context.insert(publicationReceipt)
         try context.save()
 
-        #expect(!TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+        let blockedBeforeReview = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
             task: task, run: run, modelContext: context
-        ))
+        )
+        #expect(!blockedBeforeReview)
         #expect(task.status != .completed)
 
         context.insert(TaskEvent.structuredPayloadEvent(
@@ -631,13 +688,14 @@ struct GitHubReviewPublicationTests {
             run: run
         ))
         try context.save()
-        #expect(TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+        let completedAfterReview = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
             task: task, run: run, modelContext: context
-        ))
+        )
+        #expect(completedAfterReview)
     }
 
     @Test("a validation pause cannot be cleared by posting a GitHub review")
-    func validationPauseRemainsPending() throws {
+    func validationPauseRemainsPending() async throws {
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,
@@ -651,9 +709,10 @@ struct GitHubReviewPublicationTests {
         context.insert(run)
         try context.save()
 
-        #expect(!TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+        let completed = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
             task: task, run: run, modelContext: context
-        ))
+        )
+        #expect(!completed)
         #expect(run.typedStopReason == .validationContractFailed)
         #expect(task.status != .completed)
     }

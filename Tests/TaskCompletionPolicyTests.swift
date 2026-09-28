@@ -359,7 +359,7 @@ struct TaskCompletionPolicyTests {
     }
 
     @Test("publication receipt cannot complete a task whose deliverable is missing")
-    func publicationReceiptDoesNotBypassMissingDeliverable() throws {
+    func publicationReceiptDoesNotBypassMissingDeliverable() async throws {
         let container = try makeContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Completion", primaryPath: NSTemporaryDirectory())
@@ -374,7 +374,7 @@ struct TaskCompletionPolicyTests {
         context.insert(run)
         try context.save()
 
-        let completed = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+        let completed = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
             task: task,
             run: run,
             modelContext: context
@@ -386,7 +386,7 @@ struct TaskCompletionPolicyTests {
     }
 
     @Test("publication receipt completes the run and clears the pending external outcome")
-    func publicationReceiptClearsExternalOutcomeStopReason() throws {
+    func publicationReceiptClearsExternalOutcomeStopReason() async throws {
         let container = try makeContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Completion", primaryPath: NSTemporaryDirectory())
@@ -402,7 +402,7 @@ struct TaskCompletionPolicyTests {
         context.insert(run)
         try context.save()
 
-        let completed = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+        let completed = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
             task: task,
             run: run,
             modelContext: context

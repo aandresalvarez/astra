@@ -8,10 +8,18 @@ import ASTRAPersistence
 final class TaskLifecycleCoordinator {
     let modelContext: ModelContext
     let taskQueue: TaskQueue
+    private let reviewOriginURL: (String) async -> String?
 
-    init(modelContext: ModelContext, taskQueue: TaskQueue) {
+    init(
+        modelContext: ModelContext,
+        taskQueue: TaskQueue,
+        reviewOriginURL: @escaping (String) async -> String? = { path in
+            await GitService.shared.getRemoteOriginURL(at: path)
+        }
+    ) {
         self.modelContext = modelContext
         self.taskQueue = taskQueue
+        self.reviewOriginURL = reviewOriginURL
     }
 
     /// Canonical follow-up message sent when the user resumes a previously
@@ -287,7 +295,24 @@ final class TaskLifecycleCoordinator {
             return nil
         }
 
-        if let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
+        let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        if let latestRun, GitHubReviewPublicationRequirement.needsOriginTargetBinding(task: task) {
+            let expectedStatus = task.status
+            return Task { @MainActor in
+                await GitHubReviewPublicationRequirement.bindOriginTargetIfNeeded(
+                    task: task, run: latestRun, modelContext: self.modelContext,
+                    originURL: self.reviewOriginURL
+                )
+                guard task.status == expectedStatus else { return }
+                self.finishApprovalAfterReviewTargetResolution(task, latestRun: latestRun)
+            }
+        }
+        finishApprovalAfterReviewTargetResolution(task, latestRun: latestRun)
+        return nil
+    }
+
+    private func finishApprovalAfterReviewTargetResolution(_ task: AgentTask, latestRun: TaskRun?) {
+        if let latestRun,
            TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task, run: latestRun) != nil
             || GitHubReviewPublicationRequirement.isPending(task: task) {
             let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
@@ -305,7 +330,7 @@ final class TaskLifecycleCoordinator {
                     workspace: task.workspace,
                     modelContext: modelContext
                 )
-                return nil
+                return
             }
         }
 
@@ -323,7 +348,6 @@ final class TaskLifecycleCoordinator {
         )
         modelContext.insert(event)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        return nil
     }
 
     private func recordValidationOverrideIfNeeded(for task: AgentTask) -> Bool {

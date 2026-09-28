@@ -220,6 +220,14 @@ enum GitHubReviewPublicationRequirement {
             .first
     }
 
+    static func needsOriginTargetBinding(task: AgentTask) -> Bool {
+        guard let request = postingRequest(task: task) else { return false }
+        return GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) == nil
+            && boundTarget(task: task, request: request) == nil
+            && request.text.range(of: "github.com/", options: .caseInsensitive) == nil
+            && GitHubReviewTargetResolver.shorthandNumber(in: request.text) != nil
+    }
+
     @MainActor
     static func bindOriginTargetIfNeeded(
         task: AgentTask,
@@ -229,10 +237,8 @@ enum GitHubReviewPublicationRequirement {
             await GitService.shared.getRemoteOriginURL(at: path)
         }
     ) async {
-        guard let request = postingRequest(task: task),
-              GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) == nil,
-              request.text.range(of: "github.com/", options: .caseInsensitive) == nil,
-              boundTarget(task: task, request: request) == nil,
+        guard needsOriginTargetBinding(task: task),
+              let request = postingRequest(task: task),
               let number = GitHubReviewTargetResolver.shorthandNumber(in: request.text),
               let path = task.executionRootPath ?? task.workspace?.primaryPath,
               let origin = await originURL(path),
@@ -606,7 +612,7 @@ final class GitHubReviewPublicationService {
                     payload: "Posted GitHub review: \(response.htmlUrl)",
                     run: run
                 ))
-                _ = TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+                _ = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
                     task: task,
                     run: run,
                     modelContext: modelContext
