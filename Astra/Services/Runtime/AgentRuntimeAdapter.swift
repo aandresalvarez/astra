@@ -923,7 +923,7 @@ struct RuntimeReadinessProbeContext {
         missingDetail: String,
         installHint: String,
         timeout overrideTimeout: TimeInterval? = nil,
-        timedOutState: RuntimeReadinessState = .blocked,
+        timedOutState: RuntimeReadinessState = .warning,
         timedOutRemediation: String? = nil
     ) async -> RuntimeExecutableCheckResult {
         guard let executable, !executable.isEmpty, isExecutable(executable) else {
@@ -949,7 +949,7 @@ struct RuntimeReadinessProbeContext {
                     title: title,
                     detail: processFailureDetail(result, timeout: effectiveTimeout),
                     state: timedOutState,
-                    remediation: timedOutRemediation ?? "Verify the configured path: \(executable)"
+                    remediation: timedOutRemediation ?? "No answer in time is usually transient: click Check Again, or verify the configured path: \(executable)"
                 )
             )
         }
@@ -1625,6 +1625,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             args: ["auth", "status"],
             environment: claudeProviderEnvironment(for: configuration)
         )
+        if let unanswered = RuntimeReadinessCheck.inconclusiveProbe(
+            id: "claude-auth", title: "Claude authentication", result: result, timeout: probes.timeout
+        ) { return unanswered }
 
         guard result.isSuccess else {
             return RuntimeReadinessCheck(
@@ -1674,6 +1677,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             path: gcloudPath,
             args: ["auth", "application-default", "print-access-token", "--quiet"]
         )
+        if let unanswered = RuntimeReadinessCheck.inconclusiveProbe(
+            id: "vertex-adc", title: "Vertex ADC credentials", result: result, timeout: probes.timeout
+        ) { return unanswered }
 
         guard result.isSuccess else {
             return RuntimeReadinessCheck(
@@ -2816,121 +2822,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
         return result
-    }
-
-    private func antigravityLiveAccountCheck(
-        executable: String,
-        providerHomeDirectory: String,
-        authMode: AntigravityAuthMode,
-        probes: RuntimeReadinessProbeContext
-    ) async -> RuntimeReadinessCheck {
-        let timeoutSeconds: TimeInterval = 30
-        let args = [
-            "--print",
-            "Reply with ASTRA_READY only.",
-            "--print-timeout",
-            "\(Int(timeoutSeconds))s",
-            "--sandbox"
-        ]
-        var extraVars: [String: String] = [
-            "NO_COLOR": "1",
-            "AGY_CLI_HIDE_ACCOUNT_INFO": "1",
-        ]
-        let parentTerm = ProcessInfo.processInfo.environment["TERM"]
-        extraVars["TERM"] = parentTerm ?? "xterm-256color"
-        let environment = AntigravityCLIRuntime.probeEnvironment(
-            mode: authMode,
-            providerHomeDirectory: providerHomeDirectory,
-            extraVariables: extraVars
-        )
-
-        let result = await probes.run(
-            path: executable,
-            args: args,
-            timeout: timeoutSeconds,
-            environment: environment
-        )
-        guard result.isSuccess else {
-            return RuntimeReadinessCheck(
-                id: "antigravity-account",
-                title: "Antigravity account",
-                detail: antigravityLiveAccountFailureDetail(result, timeoutSeconds: timeoutSeconds),
-                state: .blocked,
-                remediation: authMode != .adc
-                    ? "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
-                    : "Confirm `gcloud auth application-default login` (and `set-quota-project`) are set up, then click Check Again."
-            )
-        }
-        guard antigravityReadinessOutputContainsReadyLine(result.stdout) else {
-            return RuntimeReadinessCheck(
-                id: "antigravity-account",
-                title: "Antigravity account",
-                detail: antigravityLiveAccountEmptySuccessDetail(result),
-                state: .blocked,
-                remediation: "Run `agy --print 'Reply with ASTRA_READY only.' --print-timeout 30s --sandbox` in Terminal and confirm it prints ASTRA_READY."
-            )
-        }
-
-        return RuntimeReadinessCheck(
-            id: "antigravity-account",
-            title: "Antigravity account",
-            detail: "Live non-interactive check completed with `agy --print --sandbox`.",
-            state: .ready,
-            remediation: nil
-        )
-    }
-
-    private func antigravityReadinessOutputContainsReadyLine(_ stdout: String) -> Bool {
-        stdout
-            .components(separatedBy: .newlines)
-            .contains { line in
-                line.trimmingCharacters(in: .whitespacesAndNewlines) == "ASTRA_READY"
-            }
-    }
-
-    private func antigravityLiveAccountEmptySuccessDetail(_ result: RunResult) -> String {
-        let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        if stdout.isEmpty && stderr.isEmpty {
-            return "Live Antigravity check exited successfully but produced no ASTRA_READY output."
-        }
-        let evidence = RuntimeReadinessRedactor.redacted(stdout.isEmpty ? stderr : stdout)
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return "Live Antigravity check exited successfully but did not print ASTRA_READY: \(String(evidence.prefix(180)))"
-    }
-
-    private func antigravityAccountDeferredCheck() -> RuntimeReadinessCheck {
-        RuntimeReadinessCheck(
-            id: "antigravity-account",
-            title: "Antigravity account",
-            detail: "CLI is available. Run Check Again in Settings for a live non-interactive account check.",
-            state: .ready,
-            remediation: nil
-        )
-    }
-
-    private func antigravityLiveAccountFailureDetail(
-        _ result: RunResult,
-        timeoutSeconds: TimeInterval
-    ) -> String {
-        switch result.outcome {
-        case .launchFailed(let reason):
-            return "Could not launch live Antigravity check: \(RuntimeReadinessRedactor.redacted(reason))"
-        case .timedOut:
-            return "Timed out after \(Int(timeoutSeconds))s during live Antigravity check."
-        case .cancelled:
-            return "Live Antigravity check was cancelled."
-        case .exited(let code):
-            let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
-            let sanitized = RuntimeReadinessRedactor.redacted(evidence)
-                .replacingOccurrences(of: "\n", with: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !sanitized.isEmpty else {
-                return "Live Antigravity check exited with status \(code)."
-            }
-            return "Live Antigravity check exited with status \(code): \(String(sanitized.prefix(180)))"
-        }
     }
 }
 

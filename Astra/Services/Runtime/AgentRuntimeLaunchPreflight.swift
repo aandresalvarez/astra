@@ -548,9 +548,11 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        report: RuntimeReadinessReport
+        report: RuntimeReadinessReport,
+        cachedAge: TimeInterval? = nil
     ) -> AgentRuntimeLaunchPreflightResult {
         let blockedChecks = report.checks.filter { $0.state == .blocked }
+        let warningChecks = report.checks.filter { $0.state == .warning }
         let runtime = registeredLaunchRuntime(task: task, run: run)
         var fields: [String: String] = [
             "source": "runtime_readiness_preflight",
@@ -559,10 +561,26 @@ enum AgentRuntimeLaunchPreflight {
             "readiness_state": report.state.rawValue,
             "blocked_check_count": String(blockedChecks.count)
         ]
+        if let cachedAge {
+            fields["readiness_source"] = "cache"
+            fields["readiness_cache_age_s"] = String(Int(cachedAge))
+        }
+        if !warningChecks.isEmpty {
+            // An unanswered probe proceeds to launch, so say so where a later
+            // provider failure can be traced back to it.
+            fields["warning_check_ids"] = warningChecks.map(\.id).joined(separator: ",")
+            fields["warning_detail"] = warningChecks[0].detail
+        }
 
         guard let blocked = blockedChecks.first else {
             fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.runtimeReadinessPassed.rawValue
-            AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: fields, level: .debug)
+            AppLogger.audit(
+                .taskStarted,
+                category: "Worker",
+                taskID: task.id,
+                fields: fields,
+                level: warningChecks.isEmpty ? .debug : .warning
+            )
             return AgentRuntimeLaunchPreflightResult(
                 status: .runtimeReadinessPassed,
                 phase: phase,
@@ -598,15 +616,24 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: RunPhase,
         configuration: RuntimeReadinessConfiguration,
-        readinessService: RuntimeReadinessService = RuntimeReadinessService()
+        readinessService: RuntimeReadinessService = RuntimeReadinessService(),
+        verdictCache: RuntimeLaunchReadinessCache? = nil
     ) async -> Bool {
-        let report = await readinessService.check(configuration: configuration)
+        let cached = await verdictCache?.hit(for: configuration)
+        let report: RuntimeReadinessReport
+        if let cached {
+            report = cached.report
+        } else {
+            report = await readinessService.check(configuration: configuration)
+            await verdictCache?.record(report, for: configuration)
+        }
         return preflightRuntimeReadinessBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: phase,
-            report: report
+            report: report,
+            cachedAge: cached?.age
         ).didPass
     }
 

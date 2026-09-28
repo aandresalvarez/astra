@@ -744,7 +744,9 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            configuration: runtimeReadinessConfiguration(for: selectedRuntime), readinessService: runtimeReadinessService
+            configuration: runtimeReadinessConfiguration(for: selectedRuntime),
+            readinessService: runtimeReadinessService,
+            verdictCache: launchReadinessCache
         ) else {
             isRunning = false
             return
@@ -2126,6 +2128,9 @@ final class AgentRuntimeWorker {
     var validationModel: String = "claude-haiku-4-5-20251001"
 
     var runtimeReadinessService = RuntimeReadinessService()
+    /// Remembers a recent fully-ready launch verdict. Nil unless production
+    /// composition opts in (`AppRuntimeController`), so tests never share one.
+    var launchReadinessCache: RuntimeLaunchReadinessCache?
     /// Backs the capability-prerequisite preflight (e.g. `gh auth status`
     /// for the GitHub capability). A fresh `PreflightCache` is constructed
     /// from this per launch (see the call site below) so a retry after the
