@@ -66,10 +66,9 @@ extension TaskMainView {
         let pendingMutations = try? ConnectorMutationRequirementResolver.pendingMutations(taskID: task.id, in: modelContext)
         outcomes.pendingConnectorMutationTargets = (pendingMutations ?? []).map(\.target)
         if task.status != .running, task.status != .queued,
-           let reviewPath = decisionArtifactPathsCache.first(where: {
-            GitHubReviewArtifactPolicy.isReviewFile($0)
-                && !GitHubReviewPublicationService.hasDispatched(task: task, filePath: $0)
-        }) {
+           let reviewPath = GitHubReviewPublicationService.pendingCandidatePath(
+            task: task, filePaths: decisionArtifactPathsCache
+           ) {
             outcomes.githubReviewPath = reviewPath
         }
         decisionOutcomeCache = outcomes

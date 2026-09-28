@@ -225,15 +225,77 @@ struct GitHubReviewPublicationTests {
         #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
     }
 
+    @Test("a shorthand PR request uses the repository in the task goal")
+    func resolvesShorthandFromGoalRepository() async throws {
+        let fixture = try makeFixture(goal: "Review https://github.com/example/repo")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on PR #12",
+            run: nil
+        ))
+        try fixture.context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        let proposal = try await GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI())
+            .prepare(task: fixture.task, filePath: fixture.file.path)
+        #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
+    }
+
+    @Test("a numbered review file can complete a repository-only task target")
+    func resolvesNumberedFileFromGoalRepository() async throws {
+        let fixture = try makeFixture(goal: "Review https://github.com/example/repo")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let service = GitHubReviewPublicationService(
+            modelContext: fixture.context,
+            cli: FakeCLI(),
+            originURL: { _ in nil }
+        )
+        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
+        #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
+    }
+
+    @Test("a shorthand PR request uses the workspace origin when the goal has no repository")
+    func resolvesShorthandFromOrigin() async throws {
+        let fixture = try makeFixture(goal: "Review the changes")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on PR #12",
+            run: nil
+        ))
+        try fixture.context.save()
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        let service = GitHubReviewPublicationService(
+            modelContext: fixture.context,
+            cli: FakeCLI(),
+            originURL: { _ in "https://github.com/example/repo" }
+        )
+        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
+        #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
+    }
+
     @Test("an invalid earlier artifact does not hide a later valid proposal")
     func skipsUnusableCandidate() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let bad = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_review_old.json")
         try Data("{bad json".utf8).write(to: bad)
-        let proposal = try await GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI())
+        let service = GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI())
+        let proposal = try await service
             .prepareFirstAvailable(task: fixture.task, filePaths: [bad.path, fixture.file.path])
         #expect(proposal.filePath == fixture.file.path)
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: bad.path))
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(
+            task: fixture.task, filePaths: [bad.path, fixture.file.path]
+        ) == fixture.file.path)
+        _ = try await service.publish(task: fixture.task, proposal: proposal)
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(
+            task: fixture.task, filePaths: [bad.path, fixture.file.path]
+        ) == nil)
+        let persistedTask = try #require(ModelContext(fixture.container).fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(GitHubReviewPublicationService.hasDismissed(task: persistedTask, filePath: bad.path))
     }
 
     @Test("changed PR head or edited payload stops publication before dispatch")
@@ -357,6 +419,44 @@ struct GitHubReviewPublicationTests {
         )
         receipt.timestamp = Date(timeIntervalSince1970: 1_003)
         context.insert(receipt)
+        try context.save()
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: task))
+    }
+
+    @Test("pronoun cancellation clears a pending review without removing unrelated follow-ups")
+    func pronounCancellation() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Review", goal: "Post the review on https://github.com/example/repo/pull/12")
+        context.insert(task)
+        let cancel = TaskEvent(
+            task: task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "don't post it", run: nil
+        )
+        cancel.timestamp = Date(timeIntervalSince1970: 1_000)
+        context.insert(cancel)
+        try context.save()
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: task))
+
+        let newRequest = TaskEvent(
+            task: task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Please post the review", run: nil
+        )
+        newRequest.timestamp = Date(timeIntervalSince1970: 1_001)
+        context.insert(newRequest)
+        try context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: task))
+
+        let cancelAgain = TaskEvent(
+            task: task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "cancel that", run: nil
+        )
+        cancelAgain.timestamp = Date(timeIntervalSince1970: 1_002)
+        context.insert(cancelAgain)
         try context.save()
         #expect(!GitHubReviewPublicationRequirement.isPending(task: task))
     }
