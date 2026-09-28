@@ -88,16 +88,38 @@ struct RuntimeReadinessInconclusiveProbeTests {
         #expect(report.state == .warning)
     }
 
-    @Test("An Antigravity live check that cannot start or is cancelled warns")
-    func unstartedOrCancelledLiveCheckWarns() async throws {
-        for live in [
-            RunResult(outcome: .launchFailed("posix_spawn failed"), stdout: "", stderr: ""),
-            RunResult(outcome: .cancelled, stdout: "", stderr: "")
-        ] {
-            let report = await antigravityReport(live: live)
-            let account = try #require(report.checks.first { $0.id == "antigravity-account" })
-            #expect(account.state == .warning)
-        }
+    @Test("An Antigravity live check that cannot start warns")
+    func unstartedLiveCheckWarns() async throws {
+        let report = await antigravityReport(
+            live: RunResult(outcome: .launchFailed("posix_spawn failed"), stdout: "", stderr: "")
+        )
+
+        let account = try #require(report.checks.first { $0.id == "antigravity-account" })
+        #expect(account.state == .warning)
+    }
+
+    /// A cancelled probe means the task was Stop-ped, not that the probe was
+    /// slow. Warning would let the launch proceed after the user cancelled, and
+    /// nothing between the preflight and the provider process re-checks.
+    @Test("A cancelled probe blocks the launch instead of warning")
+    func cancelledProbeBlocks() async throws {
+        let cancelled = RunResult(outcome: .cancelled, stdout: "", stderr: "")
+
+        let antigravity = await antigravityReport(live: cancelled)
+        let account = try #require(antigravity.checks.first { $0.id == "antigravity-account" })
+        #expect(account.state == .blocked)
+        #expect(account.detail.contains("cancelled"))
+        #expect(antigravity.state == .blocked)
+
+        let runner = StubBinaryRunner()
+        await runner.setResponse(forKey: "/opt/claude --version", result: ok("1.2.3\n"))
+        await runner.setResponse(forKey: "/opt/claude auth status", result: cancelled)
+        let claude = await service(runner, binaries: ["claude": "/opt/claude"]).check(
+            configuration: configuration(.claudeCode)
+        )
+        let auth = try #require(claude.checks.first { $0.id == "claude-auth" })
+        #expect(auth.state == .blocked)
+        #expect(claude.state == .blocked)
     }
 
     @Test("A definite Antigravity failure under ADC still blocks and names gcloud")

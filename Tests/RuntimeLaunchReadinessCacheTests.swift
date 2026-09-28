@@ -235,6 +235,21 @@ struct LaunchReadinessPreflightCacheTests {
         #expect(cached.auditFields["readiness_cache_age_s"] == "42")
     }
 
+    /// The review finding: a Stop pressed while the probe runs must not let the
+    /// provider process start afterwards.
+    @Test("A cancelled probe never lets the launch proceed")
+    func cancelledProbeNeverLetsTheLaunchProceed() async throws {
+        let fixture = try fixture()
+        let runner = StubBinaryRunner()
+        let service = await service(runner, live: RunResult(outcome: .cancelled, stdout: "", stderr: ""))
+        let cache = RuntimeLaunchReadinessCache()
+
+        #expect(await launch(fixture, service: service, cache: cache) == false)
+        #expect(fixture.task.status == .failed)
+        #expect(fixture.run.stopReason == "runtime_readiness_failed")
+        #expect(await cache.hit(for: readinessConfiguration()) == nil)
+    }
+
     @Test("A definite block still fails the launch")
     func definiteBlockStillFailsTheLaunch() async throws {
         let fixture = try fixture()
