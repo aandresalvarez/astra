@@ -50,7 +50,7 @@ concurrency:
 jobs:
   validate:
     name: Validate release tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Only run push-triggered jobs for a tag's initial creation.
     # github.event.created is false for both tag deletions and forced
@@ -72,7 +72,7 @@ jobs:
       build: ${{ steps.version.outputs.build }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           # fetch-depth: 0 alone doesn't guarantee tags come along on every
@@ -86,7 +86,7 @@ jobs:
         # would still get signed with the real Developer ID cert and
         # published as a real release -- bypassing the review/CI gate that
         # protected main is supposed to enforce. This whole job runs on a
-        # plain ubuntu-latest runner with no `environment:` and no secrets
+        # plain ubuntu-24.04 runner with no `environment:` and no secrets
         # -- a malformed or unmerged tag fails here, before the `release`
         # job below ever reaches its environment gate or touches the
         # Developer ID cert, notary credentials, or Sparkle key. Splitting
@@ -396,7 +396,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -433,7 +433,7 @@ jobs:
           fi
 
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .build

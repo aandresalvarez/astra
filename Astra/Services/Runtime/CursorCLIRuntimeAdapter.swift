@@ -121,6 +121,9 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let result = await probes.run(path: executable, args: ["status"])
+        if let unanswered = RuntimeReadinessCheck.inconclusiveProbe(
+            id: "cursor-account", title: "Cursor account", result: result, timeout: probes.timeout
+        ) { return unanswered }
         guard result.isSuccess else {
             return RuntimeReadinessCheck(
                 id: "cursor-account",
