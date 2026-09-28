@@ -511,6 +511,9 @@ struct ComposerToolbar: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
+        // A borderless Menu is greedy: without this it splits the toolbar's spare
+        // width with the Spacer and the chip stretches to ~half the composer.
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, compact ? 9 : ComposerToolbarPresentation.chipHorizontalPadding)
         .padding(.vertical, ComposerToolbarPresentation.chipVerticalPadding)
         .background(runtimePillBackground)
