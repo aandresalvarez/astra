@@ -303,7 +303,7 @@ struct TaskCompletionPolicyTests {
     }
 
     @Test("Artifact-first Ask completion queues and later presents the PR gate")
-    func artifactApprovalRechecksQueuedPullRequestOutcome() throws {
+    func artifactApprovalRechecksQueuedPullRequestOutcome() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("artifact-pr-gate-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -322,7 +322,7 @@ struct TaskCompletionPolicyTests {
         context.insert(task)
         context.insert(run)
 
-        let completed = TaskSuccessfulCompletionService.apply(
+        let completed = await TaskSuccessfulCompletionService.apply(
             task: task,
             run: run,
             modelContext: context,

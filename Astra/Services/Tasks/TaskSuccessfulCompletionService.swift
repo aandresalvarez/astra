@@ -11,8 +11,17 @@ enum TaskSuccessfulCompletionService {
         run: TaskRun,
         modelContext: ModelContext,
         successPayload: String,
-        permissionPolicy: PermissionPolicy
-    ) -> Bool {
+        permissionPolicy: PermissionPolicy,
+        reviewOriginURL: (String) async -> String? = { path in
+            await GitService.shared.getRemoteOriginURL(at: path)
+        }
+    ) async -> Bool {
+        await GitHubReviewPublicationRequirement.bindOriginTargetIfNeeded(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            originURL: reviewOriginURL
+        )
         if permissionPolicy != .autonomous {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
                 task: task,

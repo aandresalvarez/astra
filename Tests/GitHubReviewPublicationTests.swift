@@ -12,6 +12,7 @@ struct GitHubReviewPublicationTests {
 
     private actor FakeCLI: GitHubReviewCLI {
         var head = GitHubReviewPublicationTests.head
+        var pullRequestState = "open"
         var postedPayloads: [Data] = []
         var responseURL = "https://github.com/example/repo/pull/12#pullrequestreview-42"
         var replacementOnNextGet: (URL, Data)?
@@ -33,10 +34,11 @@ struct GitHubReviewPublicationTests {
                 replacementOnNextGet = nil
                 try data.write(to: url, options: .atomic)
             }
-            return "{\"state\":\"open\",\"head\":{\"sha\":\"\(head)\"}}"
+            return "{\"state\":\"\(pullRequestState)\",\"head\":{\"sha\":\"\(head)\"}}"
         }
 
         func setHead(_ value: String) { head = value }
+        func setPullRequestState(_ value: String) { pullRequestState = value }
         func replaceOnNextGet(_ url: URL, with data: Data) { replacementOnNextGet = (url, data) }
         func postCount() -> Int { postedPayloads.count }
         func postedPayload() -> Data? { postedPayloads.first }
@@ -242,6 +244,27 @@ struct GitHubReviewPublicationTests {
         #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
     }
 
+    @Test("a shorthand PR request can name its repository directly")
+    func resolvesShorthandFromRequestRepository() async throws {
+        let fixture = try makeFixture(goal: "Review the changes")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on PR #12 in https://github.com/example/repo",
+            run: nil
+        ))
+        try fixture.context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        let service = GitHubReviewPublicationService(
+            modelContext: fixture.context,
+            cli: FakeCLI(),
+            originURL: { _ in nil }
+        )
+        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
+        #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
+    }
+
     @Test("a numbered review file can complete a repository-only task target")
     func resolvesNumberedFileFromGoalRepository() async throws {
         let fixture = try makeFixture(goal: "Review https://github.com/example/repo")
@@ -276,6 +299,67 @@ struct GitHubReviewPublicationTests {
         #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
     }
 
+    @Test("completion binds an origin-backed target before the review gate")
+    func originTargetIsDurableBeforeCompletion() async throws {
+        let fixture = try makeFixture(goal: "Review the changes")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = TaskRun(task: fixture.task)
+        fixture.context.insert(run)
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on PR #12",
+            run: run
+        ))
+        try fixture.context.save()
+
+        let completed = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .restricted,
+            reviewOriginURL: { _ in "https://github.com/example/repo" }
+        )
+        try fixture.context.save()
+        #expect(!completed)
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        #expect(fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.targetBound })
+        let service = GitHubReviewPublicationService(
+            modelContext: fixture.context,
+            cli: FakeCLI(),
+            originURL: { _ in nil }
+        )
+        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
+        #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
+        _ = try await service.publish(task: fixture.task, proposal: proposal)
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+    }
+
+    @Test("a review request does not also queue draft PR creation")
+    func reviewDoesNotQueueDraftPR() async throws {
+        let fixture = try makeFixture(goal: "Publish this PR review https://github.com/example/repo/pull/12")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = TaskRun(task: fixture.task)
+        fixture.context.insert(run)
+        #expect(!AskGitPullRequestWorkflowPolicy.isActive(
+            task: fixture.task, permissionPolicy: .restricted, contextText: ""
+        ))
+        let completed = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .restricted
+        )
+        try fixture.context.save()
+        #expect(!completed)
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        #expect(!fixture.task.events.contains {
+            $0.type == TaskExternalOutcomeEventTypes.publicationRequested
+        })
+    }
+
     @Test("an invalid earlier artifact does not hide a later valid proposal")
     func skipsUnusableCandidate() async throws {
         let fixture = try makeFixture()
@@ -296,6 +380,22 @@ struct GitHubReviewPublicationTests {
         ) == nil)
         let persistedTask = try #require(ModelContext(fixture.container).fetch(FetchDescriptor<AgentTask>()).first)
         #expect(GitHubReviewPublicationService.hasDismissed(task: persistedTask, filePath: bad.path))
+    }
+
+    @Test("a closed pull request proposal is removed from the ready cache")
+    func dismissesClosedPullRequest() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let cli = FakeCLI()
+        await cli.setPullRequestState("closed")
+        let service = GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            try await service.prepareFirstAvailable(task: fixture.task, filePaths: [fixture.file.path])
+        }
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(
+            task: fixture.task, filePaths: [fixture.file.path]
+        ) == nil)
     }
 
     @Test("changed PR head or edited payload stops publication before dispatch")
@@ -340,6 +440,20 @@ struct GitHubReviewPublicationTests {
         let blocked = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
         #expect(blocked.gate == .requiredExternalOutcome)
         #expect(blocked.shouldBlockCompletion)
+
+        context.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: GitHubReviewPublicationEventTypes.receipt,
+            payload: GitHubReviewPublicationRecord(
+                proposalID: "other-review", filePath: "/tmp/other-review.json",
+                pullRequestURL: "https://github.com/example/repo/pull/11",
+                reviewURL: "https://github.com/example/repo/pull/11#pullrequestreview-41",
+                reviewID: 41
+            ),
+            run: run
+        ))
+        try context.save()
+        #expect(TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run).shouldBlockCompletion)
 
         context.insert(TaskEvent.structuredPayloadEvent(
             task: task,

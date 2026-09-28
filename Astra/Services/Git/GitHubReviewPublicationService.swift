@@ -60,11 +60,19 @@ private struct GitHubReviewUnusableArtifactRecord: Codable {
     let reason: String
 }
 
+private struct GitHubReviewBoundTargetRecord: Codable {
+    let requestEventID: UUID?
+    let requestDigest: String
+    let repository: String
+    let number: Int
+}
+
 enum GitHubReviewPublicationEventTypes {
     static let dispatched = "github.review.dispatched"
     static let receipt = "github.review.receipt"
     static let indeterminate = "github.review.indeterminate"
     static let unusable = "github.review.unusable"
+    static let targetBound = "github.review.target-bound"
 }
 
 private enum GitHubReviewTargetResolver {
@@ -121,7 +129,12 @@ private enum GitHubReviewTargetResolver {
 
     static func durableTarget(task: AgentTask, request: String?) -> Target? {
         if let request, request.range(of: "github.com/", options: .caseInsensitive) != nil {
-            return pullRequest(in: request)
+            if let target = pullRequest(in: request) { return target }
+            if let number = shorthandNumber(in: request),
+               let repository = repository(in: request) {
+                return Target(repository: repository, number: number)
+            }
+            return nil
         }
         if let request, let number = shorthandNumber(in: request),
            let repository = repository(in: task.goal) {
@@ -144,22 +157,29 @@ enum GitHubReviewPublicationRequirement {
     struct PostingRequest {
         let text: String
         let timestamp: Date?
+        let eventID: UUID?
     }
 
     static func isPending(task: AgentTask) -> Bool {
         guard let request = postingRequest(task: task),
-              GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) != nil else {
+              let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
+                ?? boundTarget(task: task, request: request) else {
             return false
         }
         return !task.events.contains { event in
-            event.type == GitHubReviewPublicationEventTypes.receipt
-                && (request.timestamp.map { event.timestamp >= $0 } ?? true)
+            guard event.type == GitHubReviewPublicationEventTypes.receipt,
+                  (request.timestamp.map { event.timestamp >= $0 } ?? true),
+                  let data = event.payload.data(using: .utf8),
+                  let receipt = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
+                return false
+            }
+            return receipt.pullRequestURL.caseInsensitiveCompare(target.url) == .orderedSame
         }
     }
 
     static func postingRequest(task: AgentTask) -> PostingRequest? {
         var current = publicationIntent(in: task.goal) == .publish
-            ? PostingRequest(text: task.goal, timestamp: nil) : nil
+            ? PostingRequest(text: task.goal, timestamp: nil, eventID: nil) : nil
         let messages = task.events
             .filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue }
             .sorted { lhs, rhs in
@@ -170,7 +190,7 @@ enum GitHubReviewPublicationRequirement {
         for message in messages {
             switch publicationIntent(in: message.payload) {
             case .publish:
-                current = PostingRequest(text: message.payload, timestamp: message.timestamp)
+                current = PostingRequest(text: message.payload, timestamp: message.timestamp, eventID: message.id)
             case .cancel:
                 current = nil
             case nil:
@@ -180,6 +200,60 @@ enum GitHubReviewPublicationRequirement {
             }
         }
         return current
+    }
+
+    fileprivate static func boundTarget(task: AgentTask, request: PostingRequest) -> GitHubReviewTargetResolver.Target? {
+        task.events
+            .filter { $0.type == GitHubReviewPublicationEventTypes.targetBound }
+            .sorted { $0.timestamp > $1.timestamp }
+            .compactMap { event -> GitHubReviewTargetResolver.Target? in
+                guard let data = event.payload.data(using: .utf8),
+                      let record = try? JSONDecoder().decode(GitHubReviewBoundTargetRecord.self, from: data),
+                      record.requestEventID == request.eventID,
+                      record.requestDigest == requestDigest(request.text),
+                      record.number > 0,
+                      GitHubReviewTargetResolver.repository(in: "https://github.com/\(record.repository)") == record.repository else {
+                    return nil
+                }
+                return GitHubReviewTargetResolver.Target(repository: record.repository, number: record.number)
+            }
+            .first
+    }
+
+    @MainActor
+    static func bindOriginTargetIfNeeded(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        originURL: (String) async -> String? = { path in
+            await GitService.shared.getRemoteOriginURL(at: path)
+        }
+    ) async {
+        guard let request = postingRequest(task: task),
+              GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) == nil,
+              request.text.range(of: "github.com/", options: .caseInsensitive) == nil,
+              boundTarget(task: task, request: request) == nil,
+              let number = GitHubReviewTargetResolver.shorthandNumber(in: request.text),
+              let path = task.executionRootPath ?? task.workspace?.primaryPath,
+              let origin = await originURL(path),
+              let repository = GitService.githubRepositoryArgument(from: origin),
+              repository.hasPrefix("github.com/") else { return }
+        let record = GitHubReviewBoundTargetRecord(
+            requestEventID: request.eventID,
+            requestDigest: requestDigest(request.text),
+            repository: String(repository.dropFirst("github.com/".count)),
+            number: number
+        )
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: GitHubReviewPublicationEventTypes.targetBound,
+            payload: record,
+            run: run
+        ))
+    }
+
+    private static func requestDigest(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     static func requestsPublication(in request: String) -> Bool {
@@ -396,7 +470,7 @@ final class GitHubReviewPublicationService {
         }
         let metadata = try await pullRequestMetadata(task: task, target: target)
         guard metadata.state.lowercased() == "open" else {
-            throw GitHubReviewPublicationError.invalid("The target pull request is no longer open.")
+            throw GitHubReviewPublicationError.unusableArtifact("The target pull request is no longer open.")
         }
         guard metadata.head.sha.caseInsensitiveCompare(payload.commitId) == .orderedSame else {
             throw GitHubReviewPublicationError.staleHead
@@ -632,8 +706,10 @@ final class GitHubReviewPublicationService {
     }
 
     private func target(for task: AgentTask, filePath: String) async throws -> GitHubReviewTargetResolver.Target {
-        let request = GitHubReviewPublicationRequirement.postingRequest(task: task)?.text
-        if let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request) {
+        let postingRequest = GitHubReviewPublicationRequirement.postingRequest(task: task)
+        let request = postingRequest?.text
+        if let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request)
+            ?? postingRequest.flatMap({ GitHubReviewPublicationRequirement.boundTarget(task: task, request: $0) }) {
             return target
         }
         if let request, request.range(of: "github.com/", options: .caseInsensitive) != nil {

@@ -37,6 +37,23 @@ struct GitPullRequestPublicationIntentTests {
     }
 
     @Test(
+        "posting a review on an existing PR does not request a draft PR",
+        arguments: [
+            "Publish this PR review",
+            "Publish the review on PR #12",
+            "Submit the PR review comments"
+        ]
+    )
+    func existingReviewIntentDoesNotCreatePR(text: String) {
+        #expect(!detect(text))
+    }
+
+    @Test("a separate authoring request still creates a PR")
+    func separateAuthoringIntentSurvivesReviewWording() {
+        #expect(detect("Create a PR and publish its review"))
+    }
+
+    @Test(
         "negated PR authoring does not request publication",
         arguments: [
             "Do not create a pull request",

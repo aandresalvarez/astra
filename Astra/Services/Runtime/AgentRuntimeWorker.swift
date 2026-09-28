@@ -1355,7 +1355,7 @@ final class AgentRuntimeWorker {
                     // Frozen on launchTask, same as the budget above.
                     switch executionTask.validationStrategy {
                     case .manual:
-                        let completed = TaskSuccessfulCompletionService.apply(
+                        let completed = await TaskSuccessfulCompletionService.apply(
                             task: task,
                             run: run,
                             modelContext: modelContext,
@@ -1387,7 +1387,7 @@ final class AgentRuntimeWorker {
                         )
                         switch testResult {
                         case .passed(let details):
-                            _ = TaskSuccessfulCompletionService.apply(
+                            _ = await TaskSuccessfulCompletionService.apply(
                                 task: task,
                                 run: run,
                                 modelContext: modelContext,
@@ -1421,7 +1421,7 @@ final class AgentRuntimeWorker {
                         )
                         switch aiResult {
                         case .passed(let details):
-                            _ = TaskSuccessfulCompletionService.apply(
+                            _ = await TaskSuccessfulCompletionService.apply(
                                 task: task,
                                 run: run,
                                 modelContext: modelContext,
@@ -1439,7 +1439,7 @@ final class AgentRuntimeWorker {
                         }
                     }
                 } else {
-                    let completed = TaskSuccessfulCompletionService.apply(
+                    let completed = await TaskSuccessfulCompletionService.apply(
                         task: task,
                         run: run,
                         modelContext: modelContext,
