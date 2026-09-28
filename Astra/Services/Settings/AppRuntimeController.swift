@@ -20,10 +20,17 @@ final class AppRuntimeController {
         pluginCatalog: PluginCatalog? = nil,
         preflightCache: PreflightCache? = nil
     ) {
-        self.taskQueue = taskQueue ?? TaskQueue(poolSize: poolSize)
+        self.taskQueue = taskQueue ?? TaskQueue(poolSize: poolSize, workerFactory: Self.makeProductionWorker)
         self.taskScheduler = taskScheduler ?? TaskScheduler()
         self.pluginCatalog = pluginCatalog ?? PluginCatalog()
         self.preflightCache = preflightCache ?? PreflightCache()
+    }
+
+    /// The one place a worker opts into the shared launch-readiness cache.
+    private static func makeProductionWorker() -> AgentRuntimeWorker {
+        let worker = AgentRuntimeWorker()
+        worker.launchReadinessCache = .shared
+        return worker
     }
 
     func applySettings(

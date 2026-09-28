@@ -584,7 +584,7 @@ struct RuntimeReadinessServiceTests {
             result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
         )
         await runner.setResponse(
-            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 25s --sandbox",
             result: RunResult(outcome: .exited(code: 0), stdout: "ASTRA_READY\n", stderr: "")
         )
 
@@ -614,7 +614,7 @@ struct RuntimeReadinessServiceTests {
             StubBinaryRunner.Call(path: "/opt/agy", args: ["--version"]),
             StubBinaryRunner.Call(
                 path: "/opt/agy",
-                args: ["--print", "Reply with ASTRA_READY only.", "--print-timeout", "30s", "--sandbox"]
+                args: ["--print", "Reply with ASTRA_READY only.", "--print-timeout", "25s", "--sandbox"]
             )
         ])
     }
@@ -632,7 +632,7 @@ struct RuntimeReadinessServiceTests {
             result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
         )
         await runner.setResponse(
-            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 25s --sandbox",
             result: RunResult(outcome: .exited(code: 0), stdout: "ASTRA_READY\n", stderr: "")
         )
 
@@ -660,15 +660,17 @@ struct RuntimeReadinessServiceTests {
         #expect(accountCheckEnvironment["AGY_ADC_AUTH"] == "true")
     }
 
-    @Test("Antigravity diagnostic readiness blocks when live check exits zero without output")
-    func antigravityDiagnosticReadinessBlocksOnEmptySuccessfulLiveCheck() async {
+    /// `agy` exits 0 with nothing on stdout when its own print timeout fires, so
+    /// silence proves nothing about the account and must not block a launch.
+    @Test("Antigravity diagnostic readiness warns when live check exits zero without output")
+    func antigravityDiagnosticReadinessWarnsOnEmptySuccessfulLiveCheck() async {
         let runner = StubBinaryRunner()
         await runner.setResponse(
             forKey: "/opt/agy --version",
             result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
         )
         await runner.setResponse(
-            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 25s --sandbox",
             result: RunResult(outcome: .exited(code: 0), stdout: "", stderr: "")
         )
 
@@ -690,11 +692,10 @@ struct RuntimeReadinessServiceTests {
             vertexHaikuModel: ""
         ))
 
-        #expect(report.state == .blocked)
+        #expect(report.state == .warning)
         let account = report.checks.first { $0.id == "antigravity-account" }
-        #expect(account?.state == .blocked)
-        #expect(account?.detail.contains("produced no ASTRA_READY output") == true)
-        #expect(account?.remediation?.contains("agy --print") == true)
+        #expect(account?.state == .warning)
+        #expect(account?.detail.contains("printed nothing") == true)
     }
 
     @Test("Antigravity diagnostic readiness requires an exact ready line")
@@ -705,7 +706,7 @@ struct RuntimeReadinessServiceTests {
             result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
         )
         await runner.setResponse(
-            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 25s --sandbox",
             result: RunResult(
                 outcome: .exited(code: 0),
                 stdout: "diagnostic: did not print ASTRA_READY\n",
@@ -745,7 +746,7 @@ struct RuntimeReadinessServiceTests {
             result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
         )
         await runner.setResponse(
-            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 30s --sandbox",
+            forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 25s --sandbox",
             result: RunResult(
                 outcome: .exited(code: 1),
                 stdout: "",

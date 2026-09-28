@@ -169,6 +169,9 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let result = await probes.run(path: executable, args: ["login", "status"])
+        if let unanswered = RuntimeReadinessCheck.inconclusiveProbe(
+            id: "codex-account", title: "Codex account", result: result, timeout: probes.timeout
+        ) { return unanswered }
         guard result.isSuccess else {
             return RuntimeReadinessCheck(
                 id: "codex-account",

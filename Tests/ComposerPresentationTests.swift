@@ -47,6 +47,23 @@ struct ComposerPresentationTests {
         #expect(ComposerToolbarPresentation.permissionModeUsesFlatChrome == true)
     }
 
+    /// The provider/model chip once stretched to about half the composer: a
+    /// borderless Menu is greedy and shared the toolbar's spare width with the
+    /// Spacer. A hosted NSHostingView cannot reproduce that (the chip measures
+    /// the same with and without the modifier), so this pins the shape of the
+    /// chain instead; the behaviour is checked in ASTRA Dev.app.
+    @Test("provider and model chip hugs its label instead of stretching")
+    func runtimeChipHugsItsLabel() throws {
+        let source = try sourceFile("Astra/Views/Components/ComposerToolbar.swift")
+        let start = try #require(source.range(of: "private func providerModelPill"))
+        let end = try #require(source.range(of: "private var compatibleRuntimes", range: start.upperBound..<source.endIndex))
+        let chip = String(source[start.lowerBound..<end.lowerBound])
+
+        let fit = try #require(chip.range(of: ".fixedSize(horizontal: true, vertical: false)"))
+        let padding = try #require(chip.range(of: ".padding(.horizontal"))
+        #expect(fit.lowerBound < padding.lowerBound, "fit the Menu before padding and chrome are applied")
+    }
+
     @Test("composer keeps Auto separate from execution sandbox state")
     func composerSeparatesAutoFromExecutionSandbox() {
         #expect(ComposerToolbarPresentation.permissionModeLabel(for: .autonomous) == "Auto")

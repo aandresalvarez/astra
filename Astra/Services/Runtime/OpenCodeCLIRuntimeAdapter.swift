@@ -121,6 +121,9 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let result = await probes.run(path: executable, args: ["auth", "list"])
+        if let unanswered = RuntimeReadinessCheck.inconclusiveProbe(
+            id: "opencode-account", title: "OpenCode account", result: result, timeout: probes.timeout
+        ) { return unanswered }
         guard result.isSuccess else {
             return RuntimeReadinessCheck(
                 id: "opencode-account",
