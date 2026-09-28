@@ -84,6 +84,23 @@ struct GitHubReviewPublicationTests {
         }
     }
 
+    @Test("reversed multiline comments are rejected before dispatch")
+    func rejectsReversedMultilineComment() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let invalid = Data("""
+            {"event":"COMMENT","commit_id":"\(Self.head)","body":"Summary","comments":[{"path":"src/main.swift","start_line":14,"start_side":"RIGHT","line":12,"side":"RIGHT","body":"Fix this."}]}
+            """.utf8)
+        try invalid.write(to: fixture.file)
+        let cli = FakeCLI()
+        let service = GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            try await service.prepare(task: fixture.task, filePath: fixture.file.path)
+        }
+        #expect(!GitHubReviewPublicationService.hasDispatched(task: fixture.task, filePath: fixture.file.path))
+        #expect(await cli.postCount() == 0)
+    }
+
     @Test("review is posted once from exactly the approved bytes and leaves a receipt")
     func publishesOnce() async throws {
         let fixture = try makeFixture()
@@ -227,9 +244,9 @@ struct GitHubReviewPublicationTests {
         #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
     }
 
-    @Test("a shorthand PR request uses the repository in the task goal")
+    @Test("a shorthand PR request strips a clone URL suffix from the task goal")
     func resolvesShorthandFromGoalRepository() async throws {
-        let fixture = try makeFixture(goal: "Review https://github.com/example/repo")
+        let fixture = try makeFixture(goal: "Review https://github.com/example/repo.git")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         fixture.context.insert(TaskEvent(
             task: fixture.task,
@@ -533,6 +550,7 @@ struct GitHubReviewPublicationTests {
         #expect(GitHubReviewPublicationRequirement.requestsPublication(in: "Publish this review"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review this GitHub PR and add tests"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Do not post this PR review"))
+        #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Please post no comments on this PR"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review the PR without posting comments"))
     }
 

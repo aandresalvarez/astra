@@ -109,9 +109,12 @@ private enum GitHubReviewTargetResolver {
 
     private static func repository(from match: NSTextCheckingResult, in text: String) -> String? {
         guard let ownerRange = Range(match.range(at: 1), in: text),
-              let repoRange = Range(match.range(at: 2), in: text),
-              text[repoRange] != ".", text[repoRange] != ".." else { return nil }
-        return "\(text[ownerRange])/\(text[repoRange])"
+              let repoRange = Range(match.range(at: 2), in: text) else { return nil }
+        let rawRepository = String(text[repoRange])
+        let repository = rawRepository.lowercased().hasSuffix(".git")
+            ? String(rawRepository.dropLast(4)) : rawRepository
+        guard repository != ".", repository != "..", !repository.isEmpty else { return nil }
+        return "\(text[ownerRange])/\(repository)"
     }
 
     static func shorthandNumber(in text: String) -> Int? {
@@ -282,15 +285,19 @@ enum GitHubReviewPublicationRequirement {
         let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
         return regex.matches(in: lower, range: range).last.flatMap { match in
             guard let matchRange = Range(match.range, in: lower) else { return nil }
-            let prefix = lower[..<matchRange.lowerBound]
-            let clause = String(prefix.suffix(64))
-                .components(separatedBy: CharacterSet(charactersIn: ".!?;\n"))
-                .last ?? ""
-            // Negation is scoped to the same short phrase as the verb.
-            let words = clause.split(whereSeparator: { $0.isWhitespace }).suffix(4)
-            let lead = words.joined(separator: " ")
-            return lead.range(of: #"\b(?:do not|don't|dont|never|without|no|not)\b"#, options: .regularExpression) == nil
-                ? .publish : .cancel
+        let prefix = lower[..<matchRange.lowerBound]
+        let clause = String(prefix.suffix(64))
+            .components(separatedBy: CharacterSet(charactersIn: ".!?;\n"))
+            .last ?? ""
+        // Negation is scoped to the same short phrase as the verb.
+        let words = clause.split(whereSeparator: { $0.isWhitespace }).suffix(4)
+        let lead = words.joined(separator: " ")
+        let matchedClause = String(lower[matchRange])
+        let negationPattern = #"\b(?:do not|don't|dont|never|without|no|not)\b"#
+        let negatedBeforeVerb = lead.range(of: negationPattern, options: .regularExpression) != nil
+        let negatedBetweenVerbAndObject = matchedClause.range(of: negationPattern, options: .regularExpression) != nil
+        return !negatedBeforeVerb && !negatedBetweenVerbAndObject
+            ? .publish : .cancel
         }
     }
 }
@@ -705,6 +712,7 @@ final class GitHubReviewPublicationService {
                   comment.body.utf8.count <= 65_536,
                   (comment.startLine == nil && comment.startSide == nil)
                     || (comment.startLine != nil && comment.startSide != nil && comment.startLine! > 0
+                        && comment.startLine! <= comment.line
                         && ["LEFT", "RIGHT"].contains(comment.startSide!)) else {
                 throw GitHubReviewPublicationError.invalid("An inline comment has an invalid path, line, side, or body.")
             }
