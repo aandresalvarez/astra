@@ -141,7 +141,8 @@ enum TaskCompletionPolicy {
             return .block(
                 gate: .requiredExternalOutcome,
                 stopReason: .externalOutcomePending,
-                userVisibleMessage: "The review text is ready. Review and post the GitHub comments to finish this task.",
+                userVisibleMessage: GitHubReviewPublicationRequirement.unresolvedTargetMessage(task: task)
+                    ?? "The review text is ready. Review and post the GitHub comments to finish this task.",
                 auditFields: ["outcome_kind": "github_pull_request_review", "run_id": run.id.uuidString]
             )
         }

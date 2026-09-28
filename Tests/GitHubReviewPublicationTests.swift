@@ -155,7 +155,7 @@ struct GitHubReviewPublicationTests {
         #expect(await cli.postedPayload() == fixture.data)
     }
 
-    @Test("a confirmed post with a failed receipt save is not marked indeterminate")
+    @Test("a confirmed post recovers its receipt after the first save fails")
     func confirmedPostWithReceiptSaveFailure() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -177,19 +177,18 @@ struct GitHubReviewPublicationTests {
             saveReceipt: { _, _ in throw NSError(domain: "SaveFailure", code: 1) }
         )
         let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
-        await #expect(throws: GitHubReviewPublicationError.self) {
-            try await service.publish(task: fixture.task, proposal: proposal)
-        }
+        let receipt = try await service.publish(task: fixture.task, proposal: proposal)
         #expect(await cli.postCount() == 1)
+        #expect(receipt.reviewID == 42)
         #expect(GitHubReviewPublicationService.hasDispatched(task: fixture.task, filePath: fixture.file.path))
-        #expect(!fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.receipt })
+        #expect(fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.receiptRecovery })
         #expect(!fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.indeterminate })
-        #expect(fixture.task.status == .pendingUser)
-        #expect(run.typedStopReason == .externalOutcomePending)
+        #expect(fixture.task.status == .completed)
+        #expect(run.typedStopReason == .completed)
         try fixture.context.save()
         let persistedTask = try #require(ModelContext(fixture.container).fetch(FetchDescriptor<AgentTask>()).first)
-        #expect(persistedTask.status == .pendingUser)
-        #expect(!persistedTask.events.contains { $0.type == GitHubReviewPublicationEventTypes.receipt })
+        #expect(persistedTask.status == .completed)
+        #expect(persistedTask.events.contains { $0.type == GitHubReviewPublicationEventTypes.receiptRecovery })
     }
 
     @Test("canonical GitHub repository casing still yields a confirmed receipt")
@@ -351,6 +350,33 @@ struct GitHubReviewPublicationTests {
         #expect(proposal.pullRequestURL == "https://github.com/example/repo/pull/12")
         _ = try await service.publish(task: fixture.task, proposal: proposal)
         #expect(!GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+    }
+
+    @Test("an unresolved GitHub origin keeps the requested review as a completion gate")
+    func unresolvedOriginKeepsReviewGate() async throws {
+        let fixture = try makeFixture(goal: "Review the changes")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = TaskRun(task: fixture.task)
+        fixture.context.insert(run)
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on PR #12",
+            run: run
+        ))
+        let completed = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .restricted,
+            reviewOriginURL: { _ in nil }
+        )
+        try fixture.context.save()
+        #expect(!completed)
+        #expect(GitHubReviewPublicationRequirement.hasUnresolvedTarget(task: fixture.task))
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        #expect(fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.targetUnresolved })
     }
 
     @Test("manual approval resolves an origin target before completing a paused task")
@@ -645,6 +671,33 @@ struct GitHubReviewPublicationTests {
         )
         cancelAgain.timestamp = Date(timeIntervalSince1970: 1_002)
         context.insert(cancelAgain)
+        try context.save()
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: task))
+    }
+
+    @Test("plan-mode messages can request and cancel GitHub review publication")
+    func planModePublicationIntent() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Review", goal: "Review https://github.com/example/repo/pull/12")
+        context.insert(task)
+        context.insert(TaskEvent(
+            task: task,
+            type: TaskPlanConversationEventTypes.userMessage,
+            payload: "Post the PR review comments"
+        ))
+        try context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: task))
+
+        context.insert(TaskEvent(
+            task: task,
+            type: TaskPlanConversationEventTypes.userMessage,
+            payload: "Do not post the PR review comments"
+        ))
         try context.save()
         #expect(!GitHubReviewPublicationRequirement.isPending(task: task))
     }

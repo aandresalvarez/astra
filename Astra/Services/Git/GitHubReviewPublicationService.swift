@@ -67,12 +67,20 @@ private struct GitHubReviewBoundTargetRecord: Codable {
     let number: Int
 }
 
+private struct GitHubReviewUnresolvedTargetRecord: Codable {
+    let requestEventID: UUID?
+    let requestDigest: String
+    let reason: String
+}
+
 enum GitHubReviewPublicationEventTypes {
     static let dispatched = "github.review.dispatched"
     static let receipt = "github.review.receipt"
     static let indeterminate = "github.review.indeterminate"
     static let unusable = "github.review.unusable"
     static let targetBound = "github.review.target-bound"
+    static let targetUnresolved = "github.review.target-unresolved"
+    static let receiptRecovery = "github.review.receipt-recovery"
 }
 
 private enum GitHubReviewTargetResolver {
@@ -164,13 +172,14 @@ enum GitHubReviewPublicationRequirement {
     }
 
     static func isPending(task: AgentTask) -> Bool {
-        guard let request = postingRequest(task: task),
-              let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
+        guard let request = postingRequest(task: task) else { return false }
+        guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {
-            return false
+            return hasUnresolvedTarget(task: task, request: request)
         }
         return !task.events.contains { event in
-            guard event.type == GitHubReviewPublicationEventTypes.receipt,
+            guard [GitHubReviewPublicationEventTypes.receipt,
+                   GitHubReviewPublicationEventTypes.receiptRecovery].contains(event.type),
                   (request.timestamp.map { event.timestamp >= $0 } ?? true),
                   let data = event.payload.data(using: .utf8),
                   let receipt = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
@@ -184,7 +193,10 @@ enum GitHubReviewPublicationRequirement {
         var current = publicationIntent(in: task.goal) == .publish
             ? PostingRequest(text: task.goal, timestamp: nil, eventID: nil) : nil
         let messages = task.events
-            .filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue }
+            .filter {
+                $0.type == TaskEventTypes.Conversation.userMessage.rawValue
+                    || $0.type == TaskPlanConversationEventTypes.userMessage
+            }
             .sorted { lhs, rhs in
                 lhs.timestamp == rhs.timestamp
                     ? lhs.id.uuidString < rhs.id.uuidString
@@ -223,6 +235,24 @@ enum GitHubReviewPublicationRequirement {
             .first
     }
 
+    static func hasUnresolvedTarget(task: AgentTask, request: PostingRequest? = nil) -> Bool {
+        guard let request = request ?? postingRequest(task: task) else { return false }
+        return task.events.contains { event in
+            guard event.type == GitHubReviewPublicationEventTypes.targetUnresolved,
+                  let data = event.payload.data(using: .utf8),
+                  let record = try? JSONDecoder().decode(GitHubReviewUnresolvedTargetRecord.self, from: data) else {
+                return false
+            }
+            return record.requestEventID == request.eventID
+                && record.requestDigest == requestDigest(request.text)
+        }
+    }
+
+    static func unresolvedTargetMessage(task: AgentTask) -> String? {
+        guard hasUnresolvedTarget(task: task) else { return nil }
+        return "ASTRA is waiting for a GitHub target. Add a full pull request URL or reconnect this workspace to its GitHub repository, then ask ASTRA to post the review again."
+    }
+
     static func needsOriginTargetBinding(task: AgentTask) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
         return GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) == nil
@@ -234,19 +264,37 @@ enum GitHubReviewPublicationRequirement {
     @MainActor
     static func bindOriginTargetIfNeeded(
         task: AgentTask,
-        run: TaskRun,
+        run: TaskRun?,
         modelContext: ModelContext,
         originURL: (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
         }
-    ) async {
+    ) async -> Bool {
         guard needsOriginTargetBinding(task: task),
               let request = postingRequest(task: task),
-              let number = GitHubReviewTargetResolver.shorthandNumber(in: request.text),
-              let path = task.executionRootPath ?? task.workspace?.primaryPath,
-              let origin = await originURL(path),
-              let repository = GitService.githubRepositoryArgument(from: origin),
-              repository.hasPrefix("github.com/") else { return }
+              let number = GitHubReviewTargetResolver.shorthandNumber(in: request.text) else { return false }
+        let path = task.executionRootPath ?? task.workspace?.primaryPath
+        let origin: String?
+        if let path {
+            origin = await originURL(path)
+        } else {
+            origin = nil
+        }
+        let repository = origin.flatMap(GitService.githubRepositoryArgument(from:))
+        guard let repository, repository.hasPrefix("github.com/") else {
+            guard !hasUnresolvedTarget(task: task, request: request) else { return false }
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
+                task: task,
+                type: GitHubReviewPublicationEventTypes.targetUnresolved,
+                payload: GitHubReviewUnresolvedTargetRecord(
+                    requestEventID: request.eventID,
+                    requestDigest: requestDigest(request.text),
+                    reason: "The workspace GitHub origin could not be resolved."
+                ),
+                run: run
+            ))
+            return true
+        }
         let record = GitHubReviewBoundTargetRecord(
             requestEventID: request.eventID,
             requestDigest: requestDigest(request.text),
@@ -259,6 +307,7 @@ enum GitHubReviewPublicationRequirement {
             payload: record,
             run: run
         ))
+        return true
     }
 
     private static func requestDigest(_ text: String) -> String {
@@ -409,7 +458,9 @@ final class GitHubReviewPublicationService {
 
     static func hasReceipt(task: AgentTask, run: TaskRun) -> Bool {
         task.events.contains { event in
-            event.run?.id == run.id && event.type == GitHubReviewPublicationEventTypes.receipt
+            event.run?.id == run.id
+                && [GitHubReviewPublicationEventTypes.receipt,
+                    GitHubReviewPublicationEventTypes.receiptRecovery].contains(event.type)
         }
     }
 
@@ -472,6 +523,20 @@ final class GitHubReviewPublicationService {
             throw GitHubReviewPublicationError.unusableArtifact(error.localizedDescription)
         } catch {
             throw GitHubReviewPublicationError.unusableArtifact("The review file could not be read as valid JSON.")
+        }
+        let targetBindingChanged = await GitHubReviewPublicationRequirement.bindOriginTargetIfNeeded(
+            task: task,
+            run: task.runs.max(by: { $0.startedAt < $1.startedAt }),
+            modelContext: modelContext,
+            originURL: originURL
+        )
+        if targetBindingChanged {
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "github_review_target_resolution"]
+            )
         }
         let target = try await target(for: task, filePath: filePath)
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent.lowercased()
@@ -637,14 +702,50 @@ final class GitHubReviewPublicationService {
             }
             return receipt
         } catch {
-            // Dispatch was saved before the network call. A failed receipt save
-            // must not leave uncommitted receipt/completion state in memory.
+            // Dispatch was saved before the network call. Retry the confirmed
+            // receipt in its own event so a transient receipt transaction
+            // failure does not strand an already-posted review.
             modelContext.rollback()
             task.events.removeAll { !persistedEventIDs.contains($0.id) }
             TaskStateMachine.restoreFailedExternalOutcomeReceipt(
                 task: task, run: run, snapshot: priorState
             )
-            throw GitHubReviewPublicationError.receiptPersistenceFailed(response.htmlUrl)
+            let recoveryEvent = TaskEvent.structuredPayloadEvent(
+                task: task,
+                type: GitHubReviewPublicationEventTypes.receiptRecovery,
+                payload: receipt,
+                run: run
+            )
+            modelContext.insert(recoveryEvent)
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: "GitHub confirmed the review at \(response.htmlUrl). ASTRA saved a recovery receipt after the first receipt save failed.",
+                run: run
+            ))
+            if let run {
+                _ = await TaskSuccessfulCompletionService.applyAfterRequiredExternalOutcome(
+                    task: task,
+                    run: run,
+                    modelContext: modelContext
+                )
+            }
+            do {
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: task.workspace,
+                    modelContext: modelContext,
+                    taskID: task.id,
+                    auditFields: ["operation": "github_review_receipt_recovery", "review_id": String(response.id)]
+                )
+                return receipt
+            } catch {
+                modelContext.rollback()
+                task.events.removeAll { !persistedEventIDs.contains($0.id) }
+                TaskStateMachine.restoreFailedExternalOutcomeReceipt(
+                    task: task, run: run, snapshot: priorState
+                )
+                throw GitHubReviewPublicationError.receiptPersistenceFailed(response.htmlUrl)
+            }
         }
     }
 
@@ -725,6 +826,12 @@ final class GitHubReviewPublicationService {
         if let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request)
             ?? postingRequest.flatMap({ GitHubReviewPublicationRequirement.boundTarget(task: task, request: $0) }) {
             return target
+        }
+        if let postingRequest,
+           GitHubReviewPublicationRequirement.hasUnresolvedTarget(task: task, request: postingRequest) {
+            throw GitHubReviewPublicationError.invalid(
+                "The workspace GitHub origin could not be resolved. Add a full pull request URL or reconnect this workspace to GitHub."
+            )
         }
         if let request, request.range(of: "github.com/", options: .caseInsensitive) != nil {
             throw GitHubReviewPublicationError.invalid("The posting request must contain one valid GitHub pull request URL.")
