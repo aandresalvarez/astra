@@ -631,6 +631,214 @@ struct ConnectorMutationCoordinatorTests {
         #expect(stillPending.map(\.stagedPayloadPath) == [second.stagedPayloadPath])
     }
 
+    // MARK: - Ticket-scoped operations
+
+    /// A comment goes to the ticket it names, by a route ASTRA rebuilt from its
+    /// own template: the only thing the envelope contributed is the key.
+    @Test("An approved comment is sent to its ticket and receipted with a link to it")
+    func approvedCommentIsSentToItsTicket() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal(
+            operation: "add_comment",
+            requestPath: "/rest/api/2/issue/SS-617/comment",
+            target: "SS-617 · public comment",
+            summary: "Hi Atousa, thank you for reaching out",
+            body: ["body": "Hi Atousa,\n\nThank you for reaching out."]
+        )
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(
+                statusCode: 201,
+                body: #"{"id":"10042","self":"https://jira.commit.test/rest/api/2/issue/10001/comment/10042"}"#
+            )
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        #expect(proposal.requestMethod == "POST")
+        #expect(proposal.destinationURL == "https://jira.commit.test/rest/api/2/issue/SS-617/comment")
+
+        let receipt = try await coordinator.send(task: fixture.task, proposal: proposal)
+
+        let request = try #require(sender.requests.first)
+        #expect(request.url.absoluteString == "https://jira.commit.test/rest/api/2/issue/SS-617/comment")
+        #expect(request.method == "POST")
+        #expect(request.body == proposal.requestBody)
+        // Not a created ticket: the answer names no key, and the link is to the
+        // ticket the comment went to, focused on the comment itself.
+        #expect(receipt.createdKey == nil)
+        #expect(receipt.createdURL == "https://jira.commit.test/browse/SS-617?focusedCommentId=10042")
+        #expect(receipt.operation == "add_comment")
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+    }
+
+    /// Jira answers an edit with `204 No Content`, so there is no body to read a
+    /// ticket out of. The route is what says which ticket, and success does not
+    /// depend on there being anything in the answer.
+    @Test("An approved update is sent as a PUT and an empty answer is a success")
+    func approvedUpdateIsSentAsAPut() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal(
+            operation: "update_issue",
+            requestMethod: "PUT",
+            requestPath: "/rest/api/2/issue/STAR-7",
+            target: "STAR-7 · update summary",
+            summary: "Update summary on STAR-7",
+            body: ["fields": ["summary": "Age filter missing on cost"]]
+        )
+        let sender = RecordingSender(response: ConnectorMutationHTTPResponse(statusCode: 204, body: ""))
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let receipt = try await coordinator.send(task: fixture.task, proposal: proposal)
+
+        let request = try #require(sender.requests.first)
+        #expect(request.method == "PUT")
+        #expect(request.url.absoluteString == "https://jira.commit.test/rest/api/2/issue/STAR-7")
+        #expect(receipt.statusCode == 204)
+        #expect(receipt.createdKey == nil)
+        #expect(receipt.createdURL == "https://jira.commit.test/browse/STAR-7")
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+    }
+
+    @Test("An approved transition is sent to the ticket's transitions route")
+    func approvedTransitionIsSentToTheTransitionsRoute() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal(
+            operation: "transition_issue",
+            requestPath: "/rest/api/2/issue/SS-617/transitions",
+            target: "SS-617 · transition 21",
+            summary: "Move SS-617 to “Waiting for customer” (transition 21)",
+            body: ["transition": ["id": "21"]]
+        )
+        let sender = RecordingSender(response: ConnectorMutationHTTPResponse(statusCode: 204, body: ""))
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        _ = try await coordinator.send(task: fixture.task, proposal: proposal)
+
+        let request = try #require(sender.requests.first)
+        #expect(request.method == "POST")
+        #expect(request.url.absoluteString == "https://jira.commit.test/rest/api/2/issue/SS-617/transitions")
+    }
+
+    /// The envelope may fill exactly one segment, and only with something shaped
+    /// like a ticket key. Everything else in the path is ASTRA's.
+    @Test("A ticket route with anything but a ticket key in it is never sent")
+    func malformedTicketRouteIsNeverSent() throws {
+        let fixture = try Fixture()
+        let expected = "POST /rest/api/2/issue/{issue}/comment"
+        let rewrites = [
+            "/rest/api/2/issue/SS-617/../../user/comment",
+            "/rest/api/2/issue/../user/comment",
+            "/rest/api/2/issue/ss-617/comment",
+            "/rest/api/2/issue/SS-617%2F..%2Fuser/comment",
+            "/rest/api/2/issue/SS-617/comment/extra",
+            "/rest/api/2/issue//comment",
+            "/rest/api/3/issue/SS-617/comment",
+            "/rest/api/2/issue/SS-617/attachments"
+        ]
+
+        for path in rewrites {
+            let pending = try fixture.stageProposal(
+                operation: "add_comment",
+                requestPath: path,
+                target: "SS-617 · public comment",
+                body: ["body": "x"]
+            )
+            let sender = RecordingSender()
+            #expect(
+                throws: ConnectorMutationCoordinatorError.routeMismatch(staged: "POST \(path)", expected: expected),
+                "\(path) was accepted"
+            ) {
+                try fixture.coordinator(sender: sender).prepare(task: fixture.task, pending: pending)
+            }
+            #expect(sender.requests.isEmpty)
+        }
+    }
+
+    @Test("A method that disagrees with ASTRA's route is never sent")
+    func disagreeingMethodIsNeverSent() throws {
+        let fixture = try Fixture()
+        // Right path, wrong verb: a rewritten envelope turning a comment into a delete.
+        let pending = try fixture.stageProposal(
+            operation: "add_comment",
+            requestMethod: "DELETE",
+            requestPath: "/rest/api/2/issue/SS-617/comment",
+            target: "SS-617 · public comment",
+            body: ["body": "x"]
+        )
+
+        #expect(
+            throws: ConnectorMutationCoordinatorError.routeMismatch(
+                staged: "DELETE /rest/api/2/issue/SS-617/comment",
+                expected: "POST /rest/api/2/issue/{issue}/comment"
+            )
+        ) {
+            try fixture.coordinator().prepare(task: fixture.task, pending: pending)
+        }
+    }
+
+    /// The dock and the sheet print the target as the destination. It is written
+    /// by the same party that could rewrite the path, so a label naming one ticket
+    /// above a request to another is refused rather than shown.
+    @Test("A target that names another ticket than the route is refused")
+    func targetNamingAnotherTicketIsRefused() throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal(
+            operation: "add_comment",
+            requestPath: "/rest/api/2/issue/SS-617/comment",
+            target: "SS-999 · public comment",
+            body: ["body": "x"]
+        )
+
+        #expect(
+            throws: ConnectorMutationCoordinatorError.targetMismatch(
+                target: "SS-999 · public comment", issueKey: "SS-617"
+            )
+        ) {
+            try fixture.coordinator().prepare(task: fixture.task, pending: pending)
+        }
+    }
+
+    /// The reviewer reads what will be sent. For prose that has to be the prose,
+    /// not the JSON string it is stored in — and the audience has to be stated
+    /// either way, because on a service desk "public" is what an unmarked comment is.
+    @Test("The review shows a comment as readable text with who can see it")
+    func reviewShowsACommentAsReadableText() throws {
+        let fixture = try Fixture()
+        let publicPending = try fixture.stageProposal(
+            operation: "add_comment",
+            requestPath: "/rest/api/2/issue/SS-617/comment",
+            target: "SS-617 · public comment",
+            body: ["body": "Line one\n\nLine two"]
+        )
+        let internalPending = try fixture.stageProposal(
+            operation: "add_comment",
+            requestPath: "/rest/api/2/issue/SS-617/comment",
+            target: "SS-617 · internal comment",
+            body: [
+                "body": "Note",
+                "properties": [["key": "sd.public.comment", "value": ["internal": true]]]
+            ]
+        )
+
+        let publicFields = try fixture.coordinator().prepare(task: fixture.task, pending: publicPending).fields
+        let internalFields = try fixture.coordinator().prepare(task: fixture.task, pending: internalPending).fields
+
+        #expect(publicFields.first { $0.id == "comment" }?.value == "Line one\n\nLine two")
+        let publicAudience = try #require(publicFields.first { $0.id == "visibility" }?.value)
+        #expect(publicAudience.contains("including the customer"))
+        let internalAudience = try #require(internalFields.first { $0.id == "visibility" }?.value)
+        #expect(internalAudience.contains("Internal only"))
+        // The readable fields sit before the staged-file details, and the raw
+        // body is still what the sheet prints beneath them.
+        let ids = publicFields.map(\.id)
+        #expect(try #require(ids.firstIndex(of: "comment")) < #require(ids.firstIndex(of: "staged-path")))
+    }
+
     // MARK: - Fixture
 
     @MainActor
@@ -697,7 +905,15 @@ struct ConnectorMutationCoordinatorTests {
         /// test is the envelope production produces.
         func stageProposal(
             operation: String = "create_issue",
+            requestMethod: String = "POST",
             requestPath: String = "/rest/api/2/issue",
+            target: String = "STAR / Bug",
+            summary: String = "Age filter missing on three domains",
+            body: [String: Any] = ["fields": [
+                "project": ["key": "STAR"],
+                "issuetype": ["name": "Bug"],
+                "summary": "Age filter missing on three domains"
+            ]],
             connectorAlias: String = "jira"
         ) throws -> TaskStagedConnectorMutation {
             try FileManager.default.createDirectory(
@@ -720,15 +936,11 @@ struct ConnectorMutationCoordinatorTests {
                 serviceType: "jira",
                 operation: operation,
                 connector: hostConnector,
-                target: "STAR / Bug",
-                summary: "Age filter missing on three domains",
-                requestMethod: "POST",
+                target: target,
+                summary: summary,
+                requestMethod: requestMethod,
                 requestPath: requestPath,
-                body: ["fields": [
-                    "project": ["key": "STAR"],
-                    "issuetype": ["name": "Bug"],
-                    "summary": "Age filter missing on three domains"
-                ]],
+                body: body,
                 configuration: HostControlToolConfiguration(
                     taskFolder: taskFolder,
                     runID: "run-1",

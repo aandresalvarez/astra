@@ -1033,24 +1033,25 @@ public final class HostControlMCPServer {
                 ]],
                 "isError": !status.ready
             ])
-        case "get_issue", "search_jql", "get_comments":
+        case "get_issue", "search_jql", "get_comments", "get_transitions":
             return handleJiraReadRequest(operation: operation, connector: connector, arguments: arguments)
-        case "propose_issue":
-            return handleJiraIssueProposal(connector: connector, arguments: arguments)
+        case _ where JiraHostControlOperations.proposalOperations.contains(operation):
+            return handleJiraProposal(operation: operation, connector: connector, arguments: arguments)
         default:
             return .error(code: -32602, message: "Unsupported Jira operation '\(operation)'")
         }
     }
 
     /// Checks the connector can authenticate, then hands off to
-    /// `JiraIssueProposalPolicy`, which composes and stages the payload without
+    /// `JiraProposalPolicy`, which composes and stages the payload without
     /// reaching the network.
     ///
     /// Readiness is checked here, before staging rather than after, because a
     /// proposal composed against a connector that cannot authenticate is one
     /// the user would read and approve and only then discover was never
     /// sendable.
-    private func handleJiraIssueProposal(
+    private func handleJiraProposal(
+        operation: String,
         connector: HostControlConnector,
         arguments: [String: Any]
     ) -> MCPServerReply {
@@ -1058,7 +1059,7 @@ public final class HostControlMCPServer {
         guard status.ready else {
             diagnosticsRecorder?.record(
                 toolName: "jira",
-                summary: "jira propose_issue \(connector.alias) blocked: \(status.blockedDiagnosticReason)",
+                summary: "jira \(operation) \(connector.alias) blocked: \(status.blockedDiagnosticReason)",
                 result: nil
             )
             return .result([
@@ -1066,7 +1067,8 @@ public final class HostControlMCPServer {
                 "isError": true
             ])
         }
-        return JiraIssueProposalPolicy.stage(
+        return JiraProposalPolicy.stage(
+            operation: operation,
             arguments: arguments,
             connector: connector,
             configuration: configuration,
@@ -1341,38 +1343,7 @@ public final class HostControlMCPServer {
     }
 
     private func jiraSchema() -> [String: Any] {
-        let description = """
-            Use typed ASTRA-projected Jira connector operations on the host. Reads return data \
-            directly. The one write, propose_issue, only stages a ticket for the user to approve — \
-            this tool never posts to Jira and never exposes the credential, so do not fall back to \
-            curl or a script.
-            """
-        return [
-            "name": "jira",
-            "description": description,
-            "inputSchema": [
-                "type": "object",
-                "properties": [
-                    "operation": ["type": "string", "description": "status, get_issue, search_jql, get_comments, or propose_issue. Defaults to status."],
-                    "alias": ["type": "string", "description": "Connector alias, or its id. Optional when one Jira connector is projected and required when more than one is: ASTRA refuses the call rather than choosing a tenant for you, and names the aliases in scope."],
-                    "issue_key": ["type": "string", "description": "For get_issue and get_comments: Jira issue key, for example ASTRA-123."],
-                    "jql": ["type": "string", "description": "For search_jql: Jira Query Language expression."],
-                    "max_results": ["type": "number", "description": "For search_jql and get_comments: maximum result count from 1 to 100. Defaults to 20."],
-                    "start_at": ["type": "integer", "minimum": 0, "description": "For get_comments: zero-based comment offset. Defaults to 0; use next_start_at from an incomplete response to fetch the next page."],
-                    "next_page_token": ["type": "string", "description": "For search_jql: opaque Jira nextPageToken returned by a previous page."],
-                    "project_key": ["type": "string", "description": "For propose_issue: destination project key, for example STAR."],
-                    "issue_type": ["type": "string", "description": "For propose_issue: issue type name as configured in the project, for example Bug."],
-                    "summary": ["type": "string", "description": "For propose_issue: single-line ticket title, at most 255 characters."],
-                    "description": ["type": "string", "description": "For propose_issue: ticket body as Jira wiki markup, at most 32768 characters. Jira renders it; do not send Atlassian Document Format JSON."],
-                    "priority": ["type": "string", "description": "For propose_issue: optional priority name, for example Highest."],
-                    "labels": ["type": "array", "items": ["type": "string"], "description": "For propose_issue: optional labels, at most 20. Each must be a single word without spaces."],
-                    "assignee_account_id": ["type": "string", "description": "For propose_issue: optional Jira account id to assign."],
-                    "parent_key": ["type": "string", "description": "For propose_issue: optional parent issue key, for example STAR-123."],
-                    "timeout_seconds": ["type": "number", "description": timeoutDescription(kind: "request")]
-                ],
-                "additionalProperties": false
-            ]
-        ]
+        JiraToolSchema.definition(timeoutDescription: timeoutDescription(kind: "request"))
     }
 
     private func timeoutDescription(kind: String) -> String {

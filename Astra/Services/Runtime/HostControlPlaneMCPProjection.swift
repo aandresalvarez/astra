@@ -478,8 +478,8 @@ enum HostControlPlaneMCPProjection {
             return "Use configured workspace SSH aliases on the host through ASTRA without accepting provider-supplied remote commands."
         case "jira":
             return "Use typed Jira connector operations through ASTRA's host control-plane bridge. "
-                + "Reads return data; propose_issue only stages a ticket in the task directory for the "
-                + "user to approve, and never posts to Jira."
+                + "Reads return data; propose_issue, propose_comment, propose_update and propose_transition "
+                + "only stage a change in the task directory for the user to approve, and never post to Jira."
         case "redcap":
             return "Use typed, read-only REDCap connector operations through ASTRA's host control-plane bridge. "
                 + "Record and report exports are written to a file in the task directory, not returned inline."
@@ -495,7 +495,19 @@ enum HostControlPlaneMCPProjection {
         case "ssh":
             return ["alias", "timeout_seconds"]
         case "jira":
-            return ["operation", "alias", "issue_key", "jql", "max_results", "start_at", "next_page_token", "timeout_seconds"]
+            // Every field a Jira proposal carries has to be listed, or the runtime
+            // guard stops the run at the first proposal: an observed input key
+            // outside this list is a policy violation, however well-formed the
+            // broker would have found the call. `body` is deliberately absent from
+            // the tool's vocabulary — it is on the guard's list of raw-HTTP keys —
+            // which is why a comment's text is `comment`.
+            return [
+                "operation", "alias", "issue_key", "jql", "max_results", "start_at", "next_page_token",
+                "project_key", "issue_type", "summary", "description", "priority", "labels",
+                "assignee_account_id", "parent_key",
+                "comment", "visibility", "transition_id", "transition_name", "resolution",
+                "timeout_seconds"
+            ]
         case "redcap":
             return ["operation", "alias", "fields", "forms", "records", "report_id", "raw_or_label", "timeout_seconds"]
         default:

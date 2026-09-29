@@ -43,7 +43,8 @@ enum HostControlCLIRelayPolicy {
             arguments,
             allowed: [
                 "--operation", "--alias", "--issue-key", "--jql",
-                "--max-results", "--start-at", "--next-page-token", "--timeout-seconds"
+                "--max-results", "--start-at", "--next-page-token", "--timeout-seconds",
+                "--arguments-file"
             ]
         ) else {
             return false
@@ -52,17 +53,34 @@ enum HostControlCLIRelayPolicy {
         let operation = (options["--operation"] ?? "status")
             .replacingOccurrences(of: "-", with: "_")
             .lowercased()
-        // Reads only, and `propose_issue` is left out on purpose — this list is
-        // narrower than the broker's, unlike REDCap's below, which reads its
-        // list from the broker.
-        //
-        // A proposal is a ticket body the user is going to read and approve. As
-        // a shell argument it would arrive through `shellTokens`, which rejects
-        // newlines, `$` and backticks, so any real description fails; the ones
-        // that survive are the ones mangled into a single line. The MCP tool
-        // takes the same content as structured arguments. There is nothing this
-        // route could add except a worse copy of the payload.
-        guard ["status", "search_jql", "get_issue", "get_comments"].contains(operation) else {
+
+        // Both lists come from the broker, as REDCap's does below. This policy,
+        // the broker, and the `astra-host-control` parser have to agree on which
+        // operations exist, and a hand-written copy here is how a proposal the
+        // broker offers becomes one the agent is denied at the shell.
+        if JiraHostControlOperations.proposalOperations.contains(operation) {
+            // A proposal is a ticket body or comment the user is going to read
+            // and approve. As a shell argument it would arrive through
+            // `shellTokens`, which rejects newlines, `$` and backticks, so any
+            // real text fails and the survivors are the ones mangled into a
+            // single line. So the fields travel in a JSON file the agent
+            // wrote, and the command carries only that file's *name*.
+            //
+            // Nothing else is accepted next to it: the file is the payload, and
+            // a second source for the same field would leave the user
+            // reviewing whichever one won. The name is a bare file name, so
+            // there is no path here for a traversal to hide in; the broker
+            // resolves it under the task folder and refuses anything else.
+            guard let file = options["--arguments-file"],
+                  JiraHostControlOperations.isValidArgumentsFileName(file),
+                  Set(options.keys).isSubset(of: ["--operation", "--alias", "--arguments-file", "--timeout-seconds"]) else {
+                return false
+            }
+            return validPositiveDouble(options["--timeout-seconds"])
+        }
+
+        guard JiraHostControlOperations.readOperations.contains(operation),
+              options["--arguments-file"] == nil else {
             return false
         }
         if let value = options["--max-results"],

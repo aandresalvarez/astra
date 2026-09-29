@@ -126,7 +126,7 @@ enum AgentPromptConnectorContextBuilder {
             \(connectorAPIGuidance(
                 dockerRouted: dockerRouted,
                 usesHostControlCLIRelay: usesHostControlCLIRelay
-            ))\(routedMutableService ? "\n\n" + HostControlPlanePromptGuidance.mutationUnderReviewContract : "")
+            ))\(routedMutableService ? "\n\n" + HostControlPlanePromptGuidance.mutationUnderReviewContract(usesHostControlCLIRelay: usesHostControlCLIRelay) : "")
             """,
             sourcePointers: connectorSourcePointers(capabilityScope.reachableConnectors)
         )
@@ -270,8 +270,12 @@ enum AgentPromptConnectorContextBuilder {
                 return #"astra-host-control jira --operation status --alias "\#(alias)""#
                     + "\n  Runtime example (reads): "
                     + #"astra-host-control jira --operation search-jql --alias "\#(alias)" --jql "project = KEY" --max-results 1"#
+                    // Writes are staged, never sent, and the fields travel in a
+                    // file: this line names the file, not the ticket text.
+                    + "\n  Runtime example (stage a write for the user to approve; the fields are a JSON object in a .json file in the task output folder): "
+                    + #"astra-host-control jira --operation propose-comment --alias "\#(alias)" --arguments-file jira_comment.json"#
             }
-            return #"mcp__astra_host__jira with {"operation":"status","alias":"\#(alias)"}; for reads use {"operation":"search_jql","alias":"\#(alias)","jql":"project = KEY","max_results":1}"#
+            return #"mcp__astra_host__jira with {"operation":"status","alias":"\#(alias)"}; for reads use {"operation":"search_jql","alias":"\#(alias)","jql":"project = KEY","max_results":1}; to stage a comment for the user to approve use {"operation":"propose_comment","alias":"\#(alias)","issue_key":"KEY-1","comment":"text","visibility":"public"}"#
         }
         guard let baseURL = runtimeURLBase(
             bindings: bindings,

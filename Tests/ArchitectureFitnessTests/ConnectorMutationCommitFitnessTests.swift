@@ -71,12 +71,23 @@ struct ConnectorMutationCommitFitnessTests {
         // be copied across from the envelope that declared them.
         for derived in [
             "requestMethod: definition.method",
-            "requestPath: definition.path",
-            "path: definition.path"
+            "definition.resolvedPath(forStagedPath:",
+            "requestPath: path",
+            "path: path"
         ] {
             #expect(
                 resolved.contains(derived),
                 "resolveProposal no longer derives the route from ASTRA's table (\(derived))."
+            )
+        }
+
+        // The envelope's own path may only be an argument to the derivation. A
+        // ticket-scoped route takes one segment from it, validated, and nothing
+        // else — copying the string across would give the rest of the path back.
+        for copied in ["requestPath: staged.requestPath", "path: staged.requestPath"] {
+            #expect(
+                !resolved.contains(copied),
+                "resolveProposal builds the proposal from the envelope's own path (\(copied))."
             )
         }
 

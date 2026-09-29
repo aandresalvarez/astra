@@ -60,17 +60,43 @@ struct HostControlCLIRelayPolicyTests {
         ))
     }
 
-    @Test("Relay does not carry issue proposals")
-    func relayDoesNotCarryIssueProposals() {
-        // The broker supports propose_issue; this route deliberately does not.
-        // A ticket body is content the user reviews, and squeezing it through
-        // shell quoting either mangles it or is rejected outright. The MCP tool
-        // takes it as structured arguments.
+    @Test("Relay carries proposals only as a named arguments file")
+    func relayCarriesProposalsOnlyThroughAnArgumentsFile() {
+        // A ticket body or comment is prose the user reviews, and squeezing it
+        // through shell quoting either mangles it or is rejected outright. So the
+        // fields travel in a JSON file and the command carries only its name.
+        for operation in ["propose-issue", "propose-comment", "propose-update", "propose-transition"] {
+            #expect(
+                HostControlCLIRelayPolicy.allows(
+                    "astra-host-control jira --operation \(operation) --alias jira_new --arguments-file jira_proposal.json"
+                ),
+                "Relay rejects \(operation) with an arguments file"
+            )
+            #expect(
+                !HostControlCLIRelayPolicy.allows("astra-host-control jira --operation \(operation) --alias jira_new"),
+                "\(operation) without a file has nothing to stage"
+            )
+        }
+        // Content is never accepted next to the file, or as options on its own.
+        #expect(!HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation propose-comment --issue-key ASTRA-1 --arguments-file c.json"
+        ))
         #expect(!HostControlCLIRelayPolicy.allows(
             "astra-host-control jira --operation propose-issue --project-key STAR"
         ))
+        // A name, never a path.
         #expect(!HostControlCLIRelayPolicy.allows(
-            "astra-host-control jira --operation propose_issue --summary Broken"
+            "astra-host-control jira --operation propose-comment --arguments-file ../c.json"
+        ))
+        #expect(!HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation propose-comment --arguments-file /tmp/c.json"
+        ))
+        // Reads take no file, and get-transitions is a read.
+        #expect(!HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation get-issue --issue-key ASTRA-1 --arguments-file c.json"
+        ))
+        #expect(HostControlCLIRelayPolicy.allows(
+            "astra-host-control jira --operation get-transitions --issue-key ASTRA-1"
         ))
     }
 }

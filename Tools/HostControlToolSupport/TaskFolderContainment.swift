@@ -152,6 +152,99 @@ enum TaskFolderContainment {
         return Array(parts.prefix(rootParts.count)) == rootParts
     }
 
+    /// Reads one regular file that sits directly in the task folder, and nothing
+    /// else, returning at most `byteLimit` bytes.
+    ///
+    /// This broker is not sandboxed to the task folder and the folder is
+    /// agent-writable, so a read of a name the agent chose is a read of whatever
+    /// the agent can make that name point at. Every rule below closes one way of
+    /// making it point somewhere else:
+    ///
+    /// - **A bare name, no separator.** Nothing to traverse with, and no
+    ///   subdirectory that could itself be a link.
+    /// - **`O_NOFOLLOW` through a descriptor for the folder.** A symlink named
+    ///   `proposal.json` fails the open instead of being followed, and the open
+    ///   is relative to a descriptor, so renaming the folder between check and
+    ///   read changes nothing.
+    /// - **A regular file with one link.** A hard link cannot be told from a copy
+    ///   by name, so a file with a second name is refused: it may be another
+    ///   directory's content that the agent could not read by path.
+    /// - **Bounded while reading.** A size check alone is a snapshot; the loop
+    ///   asks for one byte more than allowed and refuses if it gets it, which also
+    ///   covers a file that grows between the stat and the read.
+    static func readRegularFile(
+        named name: String,
+        beneath root: URL,
+        byteLimit: Int,
+        refusal: String,
+        makeError: (String) -> Error
+    ) throws -> Data {
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else {
+            throw makeError("ASTRA will only \(refusal) named directly in the task folder, not by path")
+        }
+        let directoryDescriptor = root.path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard directoryDescriptor >= 0 else {
+            throw makeError(
+                "ASTRA could not open the task folder to \(refusal): \(String(cString: strerror(errno)))"
+            )
+        }
+        defer { close(directoryDescriptor) }
+
+        let descriptor = name.withCString {
+            openat(directoryDescriptor, $0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else {
+            switch errno {
+            case ENOENT:
+                throw makeError("\(name) does not exist in the task folder")
+            case ELOOP:
+                throw makeError(
+                    "\(name) is a symbolic link. ASTRA will not \(refusal) through it, because it can "
+                        + "point outside the task folder."
+                )
+            default:
+                throw makeError("\(name) could not be opened: \(String(cString: strerror(errno)))")
+            }
+        }
+        defer { close(descriptor) }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            throw makeError("\(name) could not be inspected: \(String(cString: strerror(errno)))")
+        }
+        guard (status.st_mode & S_IFMT) == S_IFREG else {
+            throw makeError("\(name) is not a regular file")
+        }
+        guard status.st_nlink == 1 else {
+            throw makeError(
+                "\(name) has more than one hard link, so ASTRA cannot tell where its content lives. "
+                    + "Refusing to \(refusal) from it."
+            )
+        }
+        guard status.st_size <= off_t(byteLimit) else {
+            throw makeError("\(name) is larger than the \(byteLimit)-byte limit")
+        }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while data.count <= byteLimit {
+            let wanted = min(buffer.count, byteLimit + 1 - data.count)
+            let count = read(descriptor, &buffer, wanted)
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw makeError("\(name) could not be read: \(String(cString: strerror(errno)))")
+            }
+            if count == 0 { break }
+            data.append(buffer, count: count)
+        }
+        guard data.count <= byteLimit else {
+            throw makeError("\(name) is larger than the \(byteLimit)-byte limit")
+        }
+        return data
+    }
+
     private static func directory(
         named name: String,
         beneath root: URL,
