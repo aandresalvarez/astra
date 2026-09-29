@@ -257,6 +257,8 @@ struct ConnectorPreflightServiceTests {
         #expect(payload.grants == [.credential(label: expectedLabel)])
         #expect(payload.displayMessage.contains(expectedLabel) == false)
         #expect(RuntimePermissionDecisionPresentation(payload: approvalEvent.payload).title == "Jira connector needs permission")
+        // A launch pause is not an offer: the run it resumes is waiting on it.
+        #expect(RuntimePermissionDecisionPresentation(payload: approvalEvent.payload).isConnectorCredentialOffer == false)
     }
 
     @Test("Launch preflight groups connector credentials into one redacted approval")

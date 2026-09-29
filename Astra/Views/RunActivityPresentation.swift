@@ -176,6 +176,10 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
     /// A connector's saved credentials rather than a shell, file or network
     /// permission: the one kind Auto never dismisses on the user's behalf.
     let isConnectorCredentialRequest: Bool
+    /// A sealed connector the agent reached for after its run: recorded at the
+    /// run boundary, pausing nothing, so there is no run for "Allow once" to
+    /// resume. Read from the request's own id, which is durable.
+    let isConnectorCredentialOffer: Bool
 
     init(payload: String) {
         let approval = RuntimePermissionApprovalText(payload: payload)
@@ -188,6 +192,8 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
         compactAuditSummary = approval.compactSummary
         allowSimilarLabel = approval.allowSimilarLabel
         isConnectorCredentialRequest = approval.isConnectorCredentialRequest
+        isConnectorCredentialOffer = PermissionApprovalEventPayload.decoded(from: payload)?.requestID?
+            .hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true
     }
 }
 

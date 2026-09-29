@@ -349,6 +349,9 @@ struct BrokeredCredentialApprovalLoopTests {
             modelContext: fixture.context
         )
         #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+        // The dock must know this is an offer: "Allow once" has no run to resume
+        // here and grants nothing, so the dock leads with the task-scoped approval.
+        #expect(TaskRuntimePermissionState.build(task: fixture.task).decision?.isConnectorCredentialOffer == true)
 
         let coordinator = TaskLifecycleCoordinator(
             modelContext: fixture.context,

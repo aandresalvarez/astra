@@ -136,6 +136,7 @@ enum TaskDecisionDockContextBuilder {
             canApproveSimilarRuntimePermission: input.runtimePermission.canApproveSimilarForTask,
             isAutoPermissionMode: input.skipPermissions,
             runtimePermissionIsConnectorCredential: input.runtimePermission.decision?.isConnectorCredentialRequest ?? false,
+            runtimePermissionIsOffer: input.runtimePermission.decision?.isConnectorCredentialOffer ?? false,
             hasGitPublishRequest: input.hasGitPublishRequest,
             githubReviewPath: input.githubReviewPath,
             pendingConnectorMutationTargets: input.pendingConnectorMutationTargets,

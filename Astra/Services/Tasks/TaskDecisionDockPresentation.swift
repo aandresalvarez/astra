@@ -91,6 +91,9 @@ struct TaskDecisionDockPresentation: Equatable {
         /// The task runs in Auto: the user opted out of per-action prompts.
         var isAutoPermissionMode: Bool = false
         var runtimePermissionIsConnectorCredential: Bool = false
+        /// Nothing is paused: the run is over and the request only asks to unseal
+        /// a connector for the next one.
+        var runtimePermissionIsOffer: Bool = false
         var hasGitPublishRequest: Bool = false
         var githubReviewPath: String?
         /// Destinations of the connector mutations waiting for review, e.g.
@@ -125,13 +128,17 @@ struct TaskDecisionDockPresentation: Equatable {
         /// that), so the most it can do is not repeat it. "Allow once" lives only
         /// in the run it resumes, so it asks again on every turn and every Retry;
         /// the task-scoped approval leads instead. Without one there is nothing
-        /// to lead with.
+        /// to lead with. An offer leads with it in every mode, because "Allow once"
+        /// has no run to resume there: it approved the task and granted nothing.
         var prefersTaskScopedRuntimePermission: Bool {
-            isAutoPermissionMode && runtimePermissionIsConnectorCredential && canApproveSimilarRuntimePermission
+            (isAutoPermissionMode || runtimePermissionIsOffer)
+                && runtimePermissionIsConnectorCredential
+                && canApproveSimilarRuntimePermission
         }
     }
 
     static let taskScopedPermissionScope = "Scope: this task. Allow once covers only this run."
+    static let offeredConnectorPermissionScope = "Scope: this task, from the next run on."
 
     var id: String
     var icon: String
@@ -253,7 +260,9 @@ struct TaskDecisionDockPresentation: Equatable {
             TaskDecisionDockDetail(
                 id: "permission.scope",
                 title: "Permission scope",
-                summary: leadsWithTaskScope ? taskScopedPermissionScope : (context.runtimePermissionScope ?? ""),
+                summary: leadsWithTaskScope
+                    ? (context.runtimePermissionIsOffer ? offeredConnectorPermissionScope : taskScopedPermissionScope)
+                    : (context.runtimePermissionScope ?? ""),
                 systemImage: "scope",
                 tone: .attention
             ),
@@ -306,7 +315,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 systemImage: "lock.open.fill",
                 help: context.runtimePermissionAllowSimilarLabel ?? "Allow for the rest of this task."
             )
-            let allowOnce = context.canApprove
+            let allowOnce = context.canApprove && !context.runtimePermissionIsOffer
                 ? action(
                     .allowOnce,
                     title: "Allow once",

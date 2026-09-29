@@ -576,6 +576,54 @@ struct TaskDecisionDockPresentationTests {
         #expect(autoShell.primaryAction?.kind == .allowOnce)
     }
 
+    /// A finished run left this request: nothing is paused, so "Allow once" only
+    /// ever approved the task and granted nothing. Only the task-scoped approval
+    /// records the grant the next run reads, so it leads in every mode.
+    @Test("An offer leads with the task-scoped approval in Ask too, and has no Allow once")
+    func offerLeadsWithTaskScopeInAskAndOffersNoAllowOnce() throws {
+        var input = connectorCredentialContext(isAuto: false)
+        input.runtimePermissionIsOffer = true
+
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(dock.primaryAction?.kind == .allowSimilar)
+        #expect(dock.primaryAction?.title == "Allow for this task")
+        #expect(dock.secondaryActions.map(\.kind) == [.retry])
+        #expect(!actionTitles(dock).contains { $0.hasPrefix("Allow once") })
+        let scope = dock.details.first { $0.id == "permission.scope" }?.summary
+        #expect(scope == TaskDecisionDockPresentation.offeredConnectorPermissionScope)
+    }
+
+    @Test("An offer is still answered once when no task-scoped approval exists")
+    func offerWithoutATaskScopedApprovalKeepsTheOneRunApproval() throws {
+        var input = connectorCredentialContext(isAuto: false)
+        input.runtimePermissionIsOffer = true
+        input.canApproveSimilarRuntimePermission = false
+
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(dock.primaryAction?.kind == .allowOnce)
+    }
+
+    @Test("The dock builder recognises an offer by its request id, and a launch pause as not one")
+    func builderRecognisesOffersFromTheRequestID() throws {
+        let offerID = BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: [Self.jiraConnectorID])
+        let offer = TaskRuntimePermissionState.build(events: [
+            .init(type: "permission.approval.requested", payload: connectorCredentialPayload(requestID: offerID), timestamp: Date())
+        ])
+        #expect(offer.decision?.isConnectorCredentialOffer == true)
+        let dock = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(offer, isAuto: false)))
+        #expect(dock.primaryAction?.kind == .allowSimilar)
+        #expect(!actionTitles(dock).contains { $0.hasPrefix("Allow once") })
+
+        let pause = TaskRuntimePermissionState.build(events: [
+            .init(type: "permission.approval.requested", payload: connectorCredentialPayload(), timestamp: Date())
+        ])
+        #expect(pause.decision?.isConnectorCredentialOffer == false)
+        let pauseDock = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(pause, isAuto: false)))
+        #expect(pauseDock.primaryAction?.kind == .allowOnce)
+    }
+
     private func connectorCredentialContext(isAuto: Bool) -> TaskDecisionDockPresentation.Context {
         var input = context(status: .pendingUser)
         input.hasRuntimePermissionRequest = true
@@ -592,7 +640,7 @@ struct TaskDecisionDockPresentationTests {
     private static let jiraConnectorID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
     private static let redcapConnectorID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
 
-    private func connectorCredentialPayload() -> String {
+    private func connectorCredentialPayload(requestID: String? = nil) -> String {
         let request = PermissionRequest.connectorCredentials(
             connectorID: Self.jiraConnectorID,
             displayName: "Jira-new and REDCap connector credentials (3 configured credentials)",
@@ -606,7 +654,8 @@ struct TaskDecisionDockPresentationTests {
             providerID: .claudeCode,
             request: request,
             reason: "Connector credential egress requires explicit first-use approval.",
-            grants: PermissionBroker.approvalGrants(for: request)
+            grants: PermissionBroker.approvalGrants(for: request),
+            requestID: requestID
         )
     }
 
