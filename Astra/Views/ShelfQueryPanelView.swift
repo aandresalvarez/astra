@@ -1690,7 +1690,7 @@ private struct QueryResultHeader: View {
             }
         }
         .font(Stanford.caption(11))
-        .background(.thinMaterial)
+        .background(Stanford.cardBackground.overlay(Color.primary.opacity(Stanford.fillSoft)))
         .overlay(alignment: .leading) {
             QueryResultColumnDividers(widths: widths, opacity: Stanford.strokeRest)
         }

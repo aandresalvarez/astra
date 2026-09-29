@@ -474,8 +474,8 @@ struct MarkdownTextView: View, Equatable {
             if showsOverflowCue {
                 LinearGradient(
                     colors: [
-                        Color(nsColor: .windowBackgroundColor).opacity(0),
-                        Color(nsColor: .windowBackgroundColor).opacity(0.84)
+                        Stanford.canvasBackground.opacity(0),
+                        Stanford.canvasBackground.opacity(0.84)
                     ],
                     startPoint: .leading,
                     endPoint: .trailing

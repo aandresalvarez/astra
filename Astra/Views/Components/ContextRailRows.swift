@@ -259,20 +259,3 @@ enum RailStringList {
         .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 }
-
-extension View {
-    /// Card chrome shared by the rail's floating sections and the row components
-    /// above. Lives here, with the rows it dresses, rather than in a feature view
-    /// file so the extracted components don't implicitly depend on that file.
-    func railCard(
-        cornerRadius: CGFloat = Stanford.railCardCornerRadius,
-        fill: Color = Color(nsColor: .windowBackgroundColor),
-        strokeOpacity: Double = Stanford.strokeSubtle
-    ) -> some View {
-        liquidSurface(
-            cornerRadius: cornerRadius,
-            fallbackFill: fill,
-            fallbackStrokeOpacity: strokeOpacity
-        )
-    }
-}

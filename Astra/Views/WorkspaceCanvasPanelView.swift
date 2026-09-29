@@ -217,7 +217,7 @@ struct WorkspaceCanvasPanelView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .frame(minHeight: Stanford.density(36), alignment: .center)
-        .background(.bar)
+        .background(Stanford.canvasBackground)
     }
 
     @ViewBuilder
@@ -768,10 +768,10 @@ struct WorkspaceCanvasPanelView: View {
             }
             .padding(18)
             .frame(maxWidth: 300)
-            .liquidSurface(
+            .cardSurface(
                 cornerRadius: Stanford.radiusLarge,
-                fallbackFill: Stanford.cardBackground,
-                fallbackStrokeOpacity: Stanford.strokeRest
+                fill: Stanford.cardBackground,
+                strokeOpacity: Stanford.strokeRest
             )
             .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 7)
             .padding(.horizontal, 16)
@@ -791,10 +791,10 @@ struct WorkspaceCanvasPanelView: View {
             }
             .padding(18)
             .frame(maxWidth: 240)
-            .liquidSurface(
+            .cardSurface(
                 cornerRadius: Stanford.radiusLarge,
-                fallbackFill: Stanford.cardBackground,
-                fallbackStrokeOpacity: Stanford.strokeRest
+                fill: Stanford.cardBackground,
+                strokeOpacity: Stanford.strokeRest
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

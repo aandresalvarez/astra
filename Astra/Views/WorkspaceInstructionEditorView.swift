@@ -24,6 +24,7 @@ struct WorkspaceInstructionEditorView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
 
         let textView = NSTextView()
+        textView.selectedTextAttributes = Stanford.textSelectionAttributes
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.importsGraphics = false
@@ -197,7 +198,7 @@ private enum MarkdownSourceHighlighting {
             ]
 
         case .listMarker:
-            return [.font: codeFont, .foregroundColor: NSColor.controlAccentColor]
+            return [.font: codeFont, .foregroundColor: Stanford.interactiveNSColor]
 
         case .divider:
             return [.foregroundColor: NSColor.separatorColor]

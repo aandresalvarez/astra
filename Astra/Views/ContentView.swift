@@ -3165,8 +3165,8 @@ private struct ContentDetailAreaView: View {
         }
         .frame(width: width)
         .frame(maxHeight: .infinity)
-        // Keep the shelf material below the titlebar so toolbar commands sit on window chrome.
-        .background(.bar)
+        // Keep the shelf fill below the titlebar so toolbar commands sit on window chrome.
+        .background(Stanford.canvasBackground)
         .overlay(alignment: .leading) {
             ZStack(alignment: .leading) {
                 Rectangle()
