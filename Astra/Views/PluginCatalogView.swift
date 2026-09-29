@@ -44,10 +44,9 @@ struct PluginCatalogView: View {
     var catalog: PluginCatalog
     var focus: CatalogFocus = .all
     var presentation: CapabilityManagementPresentation = .modal
-    var focusedPackageID: String?
+    @Binding var selectedPackageID: String?
     var onInstall: ((PluginPackage) -> Void)?
     var onCatalogChanged: (() -> Void)?
-    var onPackageFocusChanged: ((String?) -> Void)?
     var onEditElement: ((ConfigureTab, UUID) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
@@ -76,7 +75,6 @@ struct PluginCatalogView: View {
     @State private var showCreateWizard = false
     @State private var importReview: CapabilityImportReview?
     @State private var importError: String?
-    @State private var selectedPackageID: String?
     @State private var showMCPInstallTargetSheet = false
     @State private var pastedMCPInstallTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
@@ -157,23 +155,17 @@ struct PluginCatalogView: View {
         }
     }
 
-    private var activeFocusedPackageID: String? {
-        selectedPackageID ?? focusedPackageID
-    }
-
     private func focusedPackage(in packages: [PluginPackage]) -> PluginPackage? {
-        guard let activeFocusedPackageID else { return nil }
-        return packages.first { $0.id == activeFocusedPackageID }
+        guard let selectedPackageID else { return nil }
+        return packages.first { $0.id == selectedPackageID }
     }
 
     private func openPackageEditor(_ packageID: String) {
         selectedPackageID = packageID
-        onPackageFocusChanged?(packageID)
     }
 
     private func closePackageEditor() {
         selectedPackageID = nil
-        onPackageFocusChanged?(nil)
     }
 
     var body: some View {
@@ -182,7 +174,7 @@ struct PluginCatalogView: View {
         VStack(spacing: 0) {
             if let package = focusedPackage(in: state.focusedPackages) {
                 packageEditorScreen(package)
-            } else if activeFocusedPackageID != nil {
+            } else if selectedPackageID != nil {
                 missingFocusedPackageScreen
             } else {
                 if !isEmbedded {
@@ -226,7 +218,6 @@ struct PluginCatalogView: View {
         )
         .onAppear {
             refreshApprovalRecords()
-            selectedPackageID = focusedPackageID
             if catalog.packages.isEmpty {
                 catalog.loadApprovedCapabilities()
                 onCatalogChanged?()
@@ -247,9 +238,6 @@ struct PluginCatalogView: View {
         }
         .onDisappear {
             cancelApprovalRecordsRefresh()
-        }
-        .onChange(of: focusedPackageID) { _, newValue in
-            selectedPackageID = newValue
         }
         .sheet(isPresented: $showCreateWizard) {
             CapabilityCreationWizardView(workspace: workspace) { package, enableHere, sourceURL in
@@ -279,8 +267,7 @@ struct PluginCatalogView: View {
                 onCancel: { mcpInstallRequest = nil },
                 onInstalled: { package in
                     mcpInstallRequest = nil
-                    selectedPackageID = package.id
-                    onPackageFocusChanged?(package.id)
+                    openPackageEditor(package.id)
                 }
             )
         }
@@ -1061,8 +1048,7 @@ struct PluginCatalogView: View {
         }
         do {
             let result = try CapabilityPackageImporter().importValidatedPackage(report)
-            selectedPackageID = result.package.id
-            onPackageFocusChanged?(result.package.id)
+            openPackageEditor(result.package.id)
             importReview = nil
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
                 "source": "import_json",
@@ -1121,7 +1107,7 @@ struct PluginCatalogView: View {
     private func removeCapabilityPackage(_ package: PluginPackage) {
         do {
             _ = try CapabilityCatalogActionService().remove(package, modelContext: modelContext)
-            if activeFocusedPackageID == package.id {
+            if selectedPackageID == package.id {
                 closePackageEditor()
             }
         } catch {
