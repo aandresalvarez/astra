@@ -95,6 +95,7 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
 
             applyHoldingPriorityIfNeeded()
             fadeSystemDivider()
+            paintSidebarColumn()
             enforceReadableSidebarWidth()
         }
 
@@ -124,6 +125,8 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
                     // Show/hide transitions can rebuild the divider while only
                     // the sidebar pane's frame changes.
                     self?.fadeSystemDivider()
+                    self?.paintSidebarColumn()
+                    self?.paintSidebarColumn()
                     self?.enforceReadableSidebarWidth()
                 }
             ]
@@ -176,6 +179,15 @@ struct SidebarSplitViewGuard: NSViewRepresentable {
             let faded = SidebarSplitDivider.fadeSystemDividers(in: splitView)
             if faded > 0 {
                 AppLogger.info("sidebar_system_divider_faded count=\(faded)", category: "UI")
+            }
+        }
+
+        /// Covers the column's system material, titlebar band included, with the
+        /// sidebar token (see `SidebarColumnBacking`); a no-op once installed.
+        private func paintSidebarColumn() {
+            guard let sidebarSubview = observedSidebarSubview else { return }
+            if SidebarColumnBacking.install(in: sidebarSubview) {
+                AppLogger.info("sidebar_column_backing_installed", category: "UI")
             }
         }
 

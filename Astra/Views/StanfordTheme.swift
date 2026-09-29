@@ -11,7 +11,7 @@ enum Stanford {
     // Every brand color exposes a dark-mode sibling tuned for contrast on
     // dark backgrounds. Rule of thumb: pump saturation by ~15% and
     // brightness by ~25% so the color reads as "the same hue" to the
-    // eye without getting muddy against Color(nsColor: .windowBackgroundColor).
+    // eye without getting muddy against the canvas (`canvasBackground`).
     //
     // Light hexes are the official Stanford Identity values; dark hexes
     // were picked by eye to pair with a typical macOS dark window.
@@ -34,7 +34,7 @@ enum Stanford {
     /// text actually sits. Used as the dark-mode contrast reference in tests
     /// (a real surface, not pure black, which would be misleadingly lenient
     /// for light-on-dark text).
-    static let warmCanvasDarkHex: UInt = 0x1E1E1E
+    static let warmCanvasDarkHex: UInt = cardBackgroundDarkHex
     static let readingText = Color(
         light: readingTextLightHex,  // warm charcoal for long-form reading
         dark:  readingTextDarkHex    // warm off-white tuned for dark surfaces
@@ -70,10 +70,12 @@ enum Stanford {
         light: 0x0098DB,
         dark:  0x5CB8E8
     )
-    static let lagunita = Color(
-        light: 0x007C92,
-        dark:  0x4AB5C9
-    )
+    static let lagunitaLightHex: UInt = 0x007C92
+    static let lagunitaDarkHex: UInt = 0x4AB5C9
+    /// `NSColor` twin of `lagunita`, for AppKit views that would otherwise fall back
+    /// to the user's System Settings accent (syntax colors, text selection).
+    static let lagunitaNSColor = NSColor.stanford(light: lagunitaLightHex, dark: lagunitaDarkHex)
+    static let lagunita = Color(nsColor: lagunitaNSColor)
     static let poppy = Color(
         light: 0xE98300,
         dark:  0xFFA84D
@@ -130,6 +132,10 @@ enum Stanford {
     // `cardinalRed` is reserved for the brand mark and genuine errors;
     // `sky` remains available as `statusInfo`.
     static let interactive = lagunita
+    static let interactiveNSColor = lagunitaNSColor
+    /// Selected-text fill for `NSTextView`, whose default is the system accent.
+    static let textSelectionNSColor = NSColor.stanford(light: lagunitaLightHex, dark: lagunitaDarkHex, opacity: 0.30)
+    static var textSelectionAttributes: [NSAttributedString.Key: Any] { [.backgroundColor: textSelectionNSColor] }
     static let scrim = Color.black
     static let focusRing = lagunita
     static let link = lagunita
@@ -371,16 +377,45 @@ enum Stanford {
     static var inspectorLabelWidth: CGFloat { density(72) }
 
     // MARK: - Backgrounds
-    static let fog = Color(nsColor: .controlBackgroundColor)
-    static let panelBackground = Color(nsColor: .windowBackgroundColor)
-    static let cardBackground = Color(nsColor: .textBackgroundColor)
-    static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
+    //
+    // The window canvas and the sidebar are fixed colors, not "whatever macOS
+    // paints". `windowBackgroundColor` takes the wallpaper's tint and the
+    // sidebar's source-list vibrancy samples whatever sits behind the window,
+    // so one build drew the dark canvas as #282828, #3A3A3A and #414141 and the
+    // sidebar warm on one Mac and cool on another. The values below are the
+    // reference render; ThemeTests pins them and the AA contrast of the text
+    // tokens against them. That contrast bounds the sidebar: `textTertiary`
+    // only clears 4.5:1 on a dark surface at or below #282828 and a light one
+    // at or above #EFEFEF, so the sidebar sits one quiet step toward each
+    // pole (darker in dark mode, lighter in light) instead of lifting away
+    // from the canvas. Cards and fields are fixed too: the values macOS 26 resolves
+    // `textBackgroundColor` / `controlBackgroundColor` to, pinned so an older macOS
+    // (whose values differ) draws the same UI. Panels, header bars and the shelf
+    // use the canvas; floating menus and overlays use the card surface. Nothing in
+    // `Astra/Views` reads a system background or a `Material` (ThemeTests scans).
+    static let canvasBackgroundLightHex: UInt = 0xEFEFEF
+    static let canvasBackgroundDarkHex: UInt = 0x282828
+    static let sidebarBackgroundLightHex: UInt = 0xF4F4F4
+    static let sidebarBackgroundDarkHex: UInt = 0x242424
+    static let cardBackgroundLightHex: UInt = 0xFFFFFF
+    static let cardBackgroundDarkHex: UInt = 0x1E1E1E
+    /// `NSColor` twin of `canvasBackground`, for AppKit owners such as the window.
+    static let canvasNSColor = NSColor.stanford(light: canvasBackgroundLightHex, dark: canvasBackgroundDarkHex)
+    static let canvasBackground = Color(nsColor: canvasNSColor)
+    /// `NSColor` twin of `sidebarBackground`, for the AppKit column backing.
+    static let sidebarNSColor = NSColor.stanford(light: sidebarBackgroundLightHex, dark: sidebarBackgroundDarkHex)
+    static let sidebarBackground = Color(nsColor: sidebarNSColor)
+    /// Sheets and panels sit on the same canvas as the detail column.
+    static let panelBackground = canvasBackground
+    static let cardNSColor = NSColor.stanford(light: cardBackgroundLightHex, dark: cardBackgroundDarkHex)
+    static let cardBackground = Color(nsColor: cardNSColor)
+    /// Control and field wells; the same fixed surface as a card.
+    static let fog = cardBackground
 
     // MARK: - Composer Surface
     //
-    // The chat canvas is whatever macOS paints for the detail column, not
-    // `cardBackground`, so an opaque composer fill read as a white slab in
-    // light mode and a dark hole in dark mode. A translucent white wash lifts
+    // The chat canvas is `canvasBackground`, not `cardBackground`, so an opaque
+    // composer fill reads as a white slab in light mode and a dark hole in dark mode. A translucent white wash lifts
     // the composer one quiet step above the canvas in BOTH appearances;
     // keyboard focus is carried by the lagunita stroke, not by the fill.
     static let composerSurface = Color(light: 0xFFFFFF, dark: 0xFFFFFF, opacity: 0.5, darkOpacity: 0.05)
@@ -409,7 +444,16 @@ extension Color {
     /// dynamic color on our behalf. `darkOpacity` overrides `opacity` in
     /// .dark mode, for washes that need a different strength per appearance.
     init(light: UInt, dark: UInt, opacity: Double = 1.0, darkOpacity: Double? = nil) {
-        let dynamic = NSColor(name: nil) { appearance in
+        self.init(nsColor: .stanford(light: light, dark: dark, opacity: opacity, darkOpacity: darkOpacity))
+    }
+}
+
+extension NSColor {
+    /// The dynamic `NSColor` behind `Color(light:dark:)`, exposed so AppKit
+    /// owners (the window background) resolve the same value the SwiftUI
+    /// surfaces do, per appearance, at draw time.
+    static func stanford(light: UInt, dark: UInt, opacity: Double = 1.0, darkOpacity: Double? = nil) -> NSColor {
+        NSColor(name: nil) { appearance in
             let wantsDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             let hex = wantsDark ? dark : light
             return NSColor(
@@ -419,7 +463,6 @@ extension Color {
                 alpha:   CGFloat(wantsDark ? (darkOpacity ?? opacity) : opacity)
             )
         }
-        self.init(nsColor: dynamic)
     }
 }
 
@@ -503,38 +546,21 @@ extension View {
         modifier(StanfordCardStyle())
     }
 
-    @ViewBuilder
-    func liquidSurface(
+    /// A flat card: `fill` under a hairline stroke, identical on every macOS
+    /// version. This replaced Liquid Glass, which drew a translucent slab on
+    /// macOS 26 and a near-empty wash on earlier versions.
+    func cardSurface(
         cornerRadius: CGFloat = 10,
-        interactive: Bool = false,
-        fallbackFill: Color = Color(nsColor: .windowBackgroundColor),
-        fallbackStrokeOpacity: Double = Stanford.strokeSubtle
+        fill: Color = Stanford.cardBackground,
+        strokeOpacity: Double = Stanford.strokeSubtle
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-
-        if #available(macOS 26.0, *) {
-            if interactive {
-                glassEffect(.regular.interactive(), in: shape)
-            } else {
-                glassEffect(.regular, in: shape)
-            }
-        } else {
-            background(shape.fill(fallbackFill))
-                .overlay {
-                    if fallbackStrokeOpacity > 0 {
-                        shape.stroke(Color.primary.opacity(fallbackStrokeOpacity), lineWidth: 1)
-                    }
+        return background(shape.fill(fill))
+            .overlay {
+                if strokeOpacity > 0 {
+                    shape.stroke(Color.primary.opacity(strokeOpacity), lineWidth: 1)
                 }
-        }
-    }
-
-    @ViewBuilder
-    func backgroundExtensionEffectIfAvailable(isEnabled: Bool = true) -> some View {
-        if #available(macOS 26.0, *), isEnabled {
-            backgroundExtensionEffect()
-        } else {
-            self
-        }
+            }
     }
 
     func softHorizontalTransition(height: CGFloat = 10) -> some View {
@@ -553,25 +579,5 @@ struct SoftHorizontalTransition: View {
         )
         .frame(height: height)
         .allowsHitTesting(false)
-    }
-}
-
-struct AdaptiveGlassContainer<Content: View>: View {
-    let spacing: CGFloat?
-    let content: Content
-
-    init(spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
-        self.spacing = spacing
-        self.content = content()
-    }
-
-    var body: some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) {
-                content
-            }
-        } else {
-            content
-        }
     }
 }

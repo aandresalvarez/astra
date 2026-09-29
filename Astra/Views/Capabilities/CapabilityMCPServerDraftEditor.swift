@@ -84,8 +84,9 @@ struct CapabilityMCPServerDraftEditor: View {
             TextEditor(text: text)
                 .font(Stanford.ui(13, design: .monospaced))
                 .frame(minHeight: minHeight)
+                .scrollContentBackground(.hidden)
                 .padding(6)
-                .background(Color(nsColor: .textBackgroundColor))
+                .background(Stanford.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderRest, lineWidth: 1))
         }

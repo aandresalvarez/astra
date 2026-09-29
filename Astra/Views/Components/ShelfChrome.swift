@@ -2,10 +2,10 @@ import SwiftUI
 
 /// One chrome system for every shelf panel (Files, Query, Browser).
 ///
-/// Surfaces: the shelf container paints `.bar` once (`ContentView`). Toolbars,
-/// tab strips, docked navigators, and status bars sit on it with no fill of
-/// their own, separated by `Divider()`; only a pane floating over content
-/// repeats the material, as `floatingSurface`. Documents, editors, and
+/// Surfaces: the shelf container paints `Stanford.canvasBackground` once
+/// (`ContentView`). Toolbars, tab strips, docked navigators, and status bars sit
+/// on it with no fill of their own, separated by `Divider()`; only a pane
+/// floating over content repeats the fill, as `floatingSurface`. Documents, editors, and
 /// results use `contentSurface`; cards inside them use `raisedSurface`.
 /// Interaction fills come from Stanford's fill scale and borders from its
 /// stroke scale, so a control reads the same in every shelf.
@@ -19,8 +19,8 @@ enum ShelfChrome {
     static let contentSurface = Stanford.cardBackground.opacity(0.45)
     static let raisedSurface = Stanford.cardBackground
     /// A pane that floats over shelf content (the unpinned file navigator)
-    /// carries its own material, since it covers the document beneath it.
-    static let floatingSurface: Material = .bar
+    /// carries its own opaque fill, since it covers the document beneath it.
+    static let floatingSurface = Stanford.canvasBackground
 }
 
 /// Toolbar icon (or short label) button, shared by every shelf toolbar.

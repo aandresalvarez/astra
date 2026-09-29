@@ -123,6 +123,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         // Extend content behind toolbar (Finder/Mail pattern); astraHiddenToolbarBackground() covers full-screen.
         window.styleMask.insert(.fullSizeContentView)
         window.titlebarAppearsTransparent = true
+        // Fixed canvas, not the wallpaper-tinted default, so the strip behind the toolbar matches the detail column.
+        window.backgroundColor = Stanford.canvasNSColor
 
         // Collapse title bar + toolbar into a single row so there's no empty strip above the toolbar items.
         window.toolbarStyle = .unified
