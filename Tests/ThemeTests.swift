@@ -298,6 +298,7 @@ struct ThemeTests {
             #"\.(controlAccentColor|selectedTextBackgroundColor|selectedContentBackgroundColor)"#,
             #"Color\.accentColor"#,
             #"\.(ultraThin|thin|regular|thick|ultraThick)Material\b|\.background\(\.bar\)"#,
+            #":\s*Material\b|\bMaterial\s*=|=\s*\.bar\b"#,
             #"glassEffect|GlassEffectContainer|backgroundExtensionEffect|NSVisualEffectView"#
         ].joined(separator: "|"))
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
