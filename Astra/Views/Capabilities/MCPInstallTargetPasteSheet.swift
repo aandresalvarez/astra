@@ -46,7 +46,7 @@ struct MCPInstallTargetPasteSheet: View {
                     .font(Stanford.ui(12, design: .monospaced))
                     .scrollContentBackground(.hidden)
                     .padding(8)
-                    .background(Color(nsColor: .textBackgroundColor))
+                    .background(Stanford.cardBackground)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)

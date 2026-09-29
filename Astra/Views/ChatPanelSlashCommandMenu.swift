@@ -102,7 +102,7 @@ struct ChatPanelSlashCommandMenu: View {
         }
         .padding(.vertical, SlashCommandMenuPresentation.menuVerticalPadding)
         .frame(maxWidth: SlashCommandMenuPresentation.maxWidth)
-        .background(.regularMaterial)
+        .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)

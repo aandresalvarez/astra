@@ -1995,7 +1995,7 @@ private struct ShelfSyntaxHighlightedTextView: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        let textView = NSTextView()
+        let textView = NSTextView(); textView.selectedTextAttributes = Stanford.textSelectionAttributes
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = true
@@ -2154,7 +2154,7 @@ private struct ShelfTextEditorView: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        let textView = NSTextView()
+        let textView = NSTextView(); textView.selectedTextAttributes = Stanford.textSelectionAttributes
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.isSelectable = true
@@ -2279,7 +2279,7 @@ private struct SelectableMarkdownDocumentView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
 
-        let textView = NSTextView()
+        let textView = NSTextView(); textView.selectedTextAttributes = Stanford.textSelectionAttributes
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = true
@@ -2357,7 +2357,7 @@ private enum MarkdownShelfTextRenderer {
                     color: .labelColor,
                     lineSpacing: 3,
                     paragraphSpacing: 10,
-                    background: NSColor.textBackgroundColor.withAlphaComponent(0.22)
+                    background: Stanford.cardNSColor.withAlphaComponent(0.22)
                 )
             case .table:
                 let tableText = MarkdownTextView.monospacedTableText(block.content)

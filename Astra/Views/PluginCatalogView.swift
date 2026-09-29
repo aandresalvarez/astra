@@ -413,7 +413,7 @@ struct PluginCatalogView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(.bar)
+            .background(Stanford.canvasBackground)
 
             Divider()
 
@@ -475,7 +475,7 @@ struct PluginCatalogView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.bar)
+        .background(Stanford.canvasBackground)
     }
 
     // MARK: - Search
@@ -515,7 +515,7 @@ struct PluginCatalogView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Stanford.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
@@ -1560,10 +1560,10 @@ struct PluginCatalogView: View {
                     .controlSize(.small)
                 }
                 .padding(10)
-                .liquidSurface(
+                .cardSurface(
                     cornerRadius: Stanford.railCompactCardCornerRadius,
-                    fallbackFill: Color.primary.opacity(0.018),
-                    fallbackStrokeOpacity: Stanford.strokeSubtle
+                    fill: Color.primary.opacity(0.018),
+                    strokeOpacity: Stanford.strokeSubtle
                 )
             }
         }
@@ -2455,7 +2455,7 @@ struct PluginInstallSheet: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Stanford.fog)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)

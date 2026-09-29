@@ -27,7 +27,7 @@ struct GoogleWorkspaceOAuthConfigurationSection: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(Stanford.fog)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)

@@ -200,6 +200,163 @@ struct ThemeTests {
         }
     }
 
+    /// The sRGB hex and alpha a token resolves to under `appearance`.
+    private func resolvedHexAndAlpha(_ color: Color, _ appearance: NSAppearance.Name) -> (hex: UInt, alpha: CGFloat)? {
+        var result: (UInt, CGFloat)?
+        NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+            guard let c = NSColor(color).usingColorSpace(.sRGB) else { return }
+            func byte(_ v: CGFloat) -> UInt { UInt((v * 255).rounded()) }
+            result = ((byte(c.redComponent) << 16) | (byte(c.greenComponent) << 8) | byte(c.blueComponent), c.alphaComponent)
+        }
+        return result
+    }
+
+    @Test("Canvas, sidebar and card surfaces are fixed opaque colors, not system-painted")
+    func canvasAndSidebarAreFixedSurfaces() {
+        // `windowBackgroundColor` is wallpaper-tinted and the sidebar vibrancy samples
+        // what is behind the window, so the same build drew a #282828, #3A3A3A or
+        // #414141 dark canvas. These tokens must resolve to one value per appearance.
+        let expected: [(String, Color, NSAppearance.Name, UInt)] = [
+            ("canvas", Stanford.canvasBackground, .aqua, Stanford.canvasBackgroundLightHex),
+            ("canvas", Stanford.canvasBackground, .darkAqua, Stanford.canvasBackgroundDarkHex),
+            ("panel", Stanford.panelBackground, .aqua, Stanford.canvasBackgroundLightHex),
+            ("panel", Stanford.panelBackground, .darkAqua, Stanford.canvasBackgroundDarkHex),
+            ("sidebar", Stanford.sidebarBackground, .aqua, Stanford.sidebarBackgroundLightHex),
+            ("sidebar", Stanford.sidebarBackground, .darkAqua, Stanford.sidebarBackgroundDarkHex),
+            ("card", Stanford.cardBackground, .aqua, Stanford.cardBackgroundLightHex),
+            ("card", Stanford.cardBackground, .darkAqua, Stanford.cardBackgroundDarkHex),
+            ("fog", Stanford.fog, .aqua, Stanford.cardBackgroundLightHex),
+            ("fog", Stanford.fog, .darkAqua, Stanford.cardBackgroundDarkHex)
+        ]
+        for (name, color, appearance, hex) in expected {
+            guard let resolved = resolvedHexAndAlpha(color, appearance) else {
+                Issue.record("Could not resolve \(name) in \(appearance)")
+                continue
+            }
+            #expect(resolved.hex == hex, "\(name) in \(appearance) is #\(String(resolved.hex, radix: 16, uppercase: true))")
+            #expect(resolved.alpha == 1, "\(name) in \(appearance) must be opaque")
+        }
+        #expect(Stanford.canvasBackgroundLightHex != Stanford.sidebarBackgroundLightHex)
+        #expect(Stanford.canvasBackgroundDarkHex != Stanford.sidebarBackgroundDarkHex)
+    }
+
+    @Test("Secondary and tertiary text clear AA on the canvas, sidebar and card surfaces")
+    func textClearsAAOnChromeSurfaces() {
+        // The tokens were tuned on the card surface; the canvas and sidebar are now
+        // fixed too, so the same 4.5:1 floor is pinned against them. This is what
+        // keeps the sidebar from drifting toward mid-grey.
+        let surfaces: [(String, UInt, UInt)] = [
+            ("canvas", Stanford.canvasBackgroundLightHex, Stanford.canvasBackgroundDarkHex),
+            ("sidebar", Stanford.sidebarBackgroundLightHex, Stanford.sidebarBackgroundDarkHex),
+            ("card", Stanford.cardBackgroundLightHex, Stanford.cardBackgroundDarkHex)
+        ]
+        for (name, light, dark) in surfaces {
+            #expect(contrastRatio(Stanford.readingTextLightHex, light) >= 4.5, "reading text on light \(name)")
+            #expect(contrastRatio(Stanford.readingTextDarkHex, dark) >= 4.5, "reading text on dark \(name)")
+            #expect(contrastRatio(Stanford.textSecondaryLightHex, light) >= 4.5, "secondary on light \(name)")
+            #expect(contrastRatio(Stanford.textSecondaryDarkHex, dark) >= 4.5, "secondary on dark \(name)")
+            #expect(contrastRatio(Stanford.textTertiaryLightHex, light) >= 4.5, "tertiary on light \(name)")
+            #expect(contrastRatio(Stanford.textTertiaryDarkHex, dark) >= 4.5, "tertiary on dark \(name)")
+        }
+    }
+
+    @MainActor
+    @Test("Docked and floating sidebar surfaces paint the sidebar token")
+    func sidebarSurfacePaintsTheToken() throws {
+        let styles: [SidebarSurface<Color>.Style] = [.docked, .floating]
+        let appearances: [(NSAppearance.Name, UInt)] = [
+            (.aqua, Stanford.sidebarBackgroundLightHex),
+            (.darkAqua, Stanford.sidebarBackgroundDarkHex)
+        ]
+        for style in styles {
+            for (appearance, hex) in appearances {
+                let size = NSSize(width: 240, height: 160)
+                let host = NSHostingView(rootView: SidebarSurface(style: style, width: size.width) { Color.clear }
+                    .frame(width: size.width, height: size.height))
+                host.appearance = NSAppearance(named: appearance)
+                host.frame = NSRect(origin: .zero, size: size)
+                host.layoutSubtreeIfNeeded()
+                let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: rep)
+                // Sample inside the surface, clear of the trailing hairline and the shadow.
+                let color = try #require(rep.colorAt(x: 80, y: 80)?.usingColorSpace(.sRGB))
+                func byte(_ v: CGFloat) -> UInt { UInt((v * 255).rounded()) }
+                let painted = (byte(color.redComponent) << 16) | (byte(color.greenComponent) << 8) | byte(color.blueComponent)
+                #expect(painted == hex, "\(style) in \(appearance) painted #\(String(painted, radix: 16, uppercase: true))")
+            }
+        }
+    }
+
+    @Test("Views draw from Stanford tokens, not wallpaper-, OS- or accent-dependent sources")
+    func viewsDoNotReadSystemPaintedSurfaces() throws {
+        // Each pattern is a way the same build rendered differently per Mac: a tinted or
+        // OS-versioned system background, a translucent material, macOS 26 Liquid Glass,
+        // or the user's System Settings accent. Surfaces come from `Stanford` tokens and
+        // accents from `Stanford.interactive` / `lagunitaNSColor`.
+        let banned = try NSRegularExpression(pattern: [
+            #"\.(windowBackgroundColor|underPageBackgroundColor|textBackgroundColor|controlBackgroundColor)"#,
+            #"\.(controlAccentColor|selectedTextBackgroundColor|selectedContentBackgroundColor)"#,
+            #"Color\.accentColor"#,
+            #"\.(ultraThin|thin|regular|thick|ultraThick)Material\b|\.background\(\.bar\)"#,
+            #":\s*Material\b|\bMaterial\s*=|=\s*\.bar\b"#,
+            #"glassEffect|GlassEffectContainer|backgroundExtensionEffect|NSVisualEffectView"#
+        ].joined(separator: "|"))
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        // `SidebarColumnBacking` looks up the system sidebar material only to cover it.
+        let sources = FileManager.default.enumerator(at: root.appendingPathComponent("Astra"), includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" && $0.lastPathComponent != "SidebarColumnBacking.swift" } ?? []
+        var violations: [String] = []
+        for file in sources {
+            let lines = try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() {
+                let code = line.components(separatedBy: "//").first ?? line
+                if banned.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)) != nil {
+                    violations.append("\(file.lastPathComponent):\(index + 1)  \(line.trimmingCharacters(in: .whitespaces).prefix(100))")
+                }
+            }
+        }
+        #expect(violations.isEmpty, "Use a Stanford surface or accent token:\n\(violations.joined(separator: "\n"))")
+    }
+
+    @Test("A TextEditor painted with the card token hides its own scroll background")
+    func textEditorsHideTheirScrollBackground() throws {
+        // TextEditor's scroll view fills with a system color over `.background`, so the token
+        // showed only in the padding rim and the editable area stayed OS-dependent.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sources = FileManager.default.enumerator(at: root.appendingPathComponent("Astra"), includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        var violations: [String] = []
+        for file in sources {
+            let lines = try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() where line.contains("TextEditor(") {
+                // The modifier chain runs to the next editor, or 14 lines.
+                let rest = lines[(index + 1)..<min(index + 15, lines.count)]
+                let chain = rest.prefix { !$0.contains("TextEditor(") }.joined(separator: "\n")
+                if chain.contains(".background(Stanford.cardBackground)"), !chain.contains(".scrollContentBackground(.hidden)") {
+                    violations.append("\(file.lastPathComponent):\(index + 1)")
+                }
+            }
+        }
+        #expect(violations.isEmpty, "Add .scrollContentBackground(.hidden) before the token background:\n\(violations.joined(separator: "\n"))")
+    }
+
+    @Test("The interaction accent reaches AppKit text views as the same lagunita hue")
+    func interactionAccentReachesAppKit() {
+        for (appearance, hex) in [(NSAppearance.Name.aqua, Stanford.lagunitaLightHex), (.darkAqua, Stanford.lagunitaDarkHex)] {
+            guard let accent = resolvedHexAndAlpha(Stanford.interactive, appearance) else {
+                Issue.record("Could not resolve interactive in \(appearance)")
+                continue
+            }
+            #expect(accent.hex == hex)
+            var selection: NSColor?
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                selection = (Stanford.textSelectionAttributes[.backgroundColor] as? NSColor)?.usingColorSpace(.sRGB)
+            }
+            #expect(abs((selection?.alphaComponent ?? 0) - 0.30) < 0.01, "selection is a 30% wash in \(appearance)")
+            #expect(Stanford.interactiveNSColor === Stanford.lagunitaNSColor)
+        }
+    }
+
     @Test("Borders, dividers, and hairlines stay on the stroke scale")
     func bordersStayOnTheStrokeScale() throws {
         // Borders drifted to 12 neutral strengths, a warm sandstone family,

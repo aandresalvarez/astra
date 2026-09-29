@@ -17,6 +17,7 @@ struct SQLQueryEditorView: NSViewRepresentable {
         scrollView.autohidesScrollers = true
 
         let textView = NSTextView()
+        textView.selectedTextAttributes = Stanford.textSelectionAttributes
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.importsGraphics = false
@@ -174,7 +175,7 @@ private enum SQLQueryHighlighting {
         case .word where SQLSyntaxTokenizer.isKeyword(token.text):
             return [
                 .font: keywordFont,
-                .foregroundColor: NSColor.controlAccentColor
+                .foregroundColor: Stanford.interactiveNSColor
             ]
         case .stringLiteral:
             return [.foregroundColor: NSColor.systemGreen]

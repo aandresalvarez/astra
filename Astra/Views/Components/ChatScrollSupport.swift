@@ -150,7 +150,7 @@ struct ChatJumpToLatestButton: View {
             .foregroundStyle(Stanford.lagunita)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .background(.ultraThickMaterial)
+            .background(Stanford.cardBackground)
             .clipShape(Capsule())
             .overlay(
                 Capsule()
