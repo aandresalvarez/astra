@@ -248,8 +248,8 @@ private func safeCredentialApprovalDisplayMessage(from decoded: PermissionApprov
     return [
         "Permission requested for tool: Connector credentials. ASTRA paused before allowing this run to continue.",
         "What ASTRA observed: Connector credential request.",
-        "Why approval is needed: Connector credential egress requires explicit first-use approval before ASTRA injects configured connector credentials into the provider environment.",
-        "What allowing does: Allows ASTRA to expose the approved connector \(noun) to this run, then restarts the provider from the stopped point.",
+        "Why approval is needed: A connector's saved credentials need your first-use approval before ASTRA uses them for this task.",
+        "What allowing does: Allows ASTRA to use the approved connector \(noun) in this run, then restarts the provider from the stopped point.",
         "What to check: Allow only if this task should use this connector's configured credentials."
     ].joined(separator: "\n")
 }
@@ -1381,7 +1381,7 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             if let connectorCredentialContext {
                 let noun = connectorCredentialContext.credentialCount == 1 ? "credential" : "credentials"
                 let connectorNoun = connectorCredentialConnectorCount > 1 ? "connectors" : "connector"
-                return "ASTRA wants to expose \(connectorCredentialContext.credentialCount) configured \(noun) from the \(connectorCredentialContext.connectorName) \(connectorNoun) to this task's agent process."
+                return "ASTRA wants to use \(connectorCredentialContext.credentialCount) saved \(noun) from the \(connectorCredentialContext.connectorName) \(connectorNoun) for this task."
             }
             return "ASTRA wants to use configured connector credentials for this task."
         case .sandboxPath:

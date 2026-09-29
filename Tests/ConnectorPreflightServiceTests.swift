@@ -335,7 +335,7 @@ struct ConnectorPreflightServiceTests {
         #expect(payload.displayMessage.contains("JIRA_EMAIL") == false)
         #expect(payload.displayMessage.contains("connector:\(connector.id.uuidString)") == false)
         #expect(presentation.decision.title == "Jira-new connector needs permission")
-        #expect(presentation.decision.summary == "ASTRA wants to expose 2 configured credentials from the Jira-new connector to this task's agent process.")
+        #expect(presentation.decision.summary == "ASTRA wants to use 2 saved credentials from the Jira-new connector for this task.")
         #expect(presentation.rawPayload?.contains("JIRA_API_TOKEN") == false)
         #expect(presentation.rawPayload?.contains("connector:\(connector.id.uuidString)") == false)
 

@@ -624,11 +624,29 @@ struct TaskDecisionDockPresentationTests {
         #expect(pauseDock.primaryAction?.kind == .allowOnce)
     }
 
+    /// Jira and REDCap are brokered: their tokens stay inside ASTRA and are
+    /// stripped from the agent's environment. The prompt cannot know the service
+    /// from the request alone, so it says only what is true of every connector.
+    @Test("Connector credential copy says ASTRA uses the credentials, never that the agent is handed them")
+    func credentialCopyNeverClaimsExposure() {
+        let payload = connectorCredentialPayload()
+        let approval = RuntimePermissionApprovalText(payload: payload)
+        let decision = RuntimePermissionDecisionPresentation(payload: payload)
+
+        #expect(decision.summary == "ASTRA wants to use 3 saved credentials from the Jira-new and REDCap connectors for this task.")
+        for copy in [approval.payload, decision.summary, decision.check, decision.scope] {
+            let lowered = copy.lowercased()
+            for claim in ["expose", "inject", "provider environment", "agent process"] {
+                #expect(!lowered.contains(claim), "\(claim) in: \(copy)")
+            }
+        }
+    }
+
     private func connectorCredentialContext(isAuto: Bool) -> TaskDecisionDockPresentation.Context {
         var input = context(status: .pendingUser)
         input.hasRuntimePermissionRequest = true
         input.runtimePermissionTitle = "Jira-new and REDCap connectors need permission"
-        input.runtimePermissionSummary = "ASTRA wants to expose 3 configured credentials."
+        input.runtimePermissionSummary = "ASTRA wants to use 3 saved credentials for this task."
         input.runtimePermissionScope = "Scope: one time for this run."
         input.runtimePermissionAllowSimilarLabel = "Allow these connectors for task"
         input.canApproveSimilarRuntimePermission = true

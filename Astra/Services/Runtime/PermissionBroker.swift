@@ -373,7 +373,7 @@ enum PermissionBroker {
                 return false
             }.count
             let noun = count == 1 ? "credential" : "credentials"
-            return "Allows ASTRA to expose the approved connector \(noun) to this run, then restarts the provider from the stopped point."
+            return "Allows ASTRA to use the approved connector \(noun) in this run, then restarts the provider from the stopped point."
         }
         if case .sandboxPath(_, let access, _) = request {
             let safeAccess = safeDisplayField(access, limit: 64) ?? "requested"
