@@ -335,6 +335,8 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.readiness.messages == [
             "Jira: missing Keychain value: JIRA_EMAIL, JIRA_API_TOKEN"
         ])
+        #expect(state.connectorsNeedingAttention.map(\.id) == [connector.id])
+        #expect(state.attentionMessages(for: connector) == state.readiness.messages)
     }
 
     @Test("package state treats enabled linked connector as ready when keychain values load")
@@ -374,6 +376,8 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.isEnabled)
         #expect(state.readiness.level == .ready)
         #expect(state.readiness.messages == ["Ready"])
+        #expect(state.connectorsNeedingAttention.isEmpty)
+        #expect(state.attentionMessages(for: connector).isEmpty)
     }
 
     @Test("package state prefers origin metadata over name matches")
@@ -459,6 +463,31 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.linkedConnectors.isEmpty)
         #expect(state.readiness.level == .needsAttention)
         #expect(state.readiness.messages == ["Jira: connector not active for this workspace"])
+        #expect(state.connectorsNeedingAttention.isEmpty)
+    }
+
+    @Test("package state points setup at the linked connector when it is disabled")
+    @MainActor
+    func packageStatePointsAtDisabledConnector() throws {
+        let workspace = Workspace(name: "Disabled Jira Connector", primaryPath: "/tmp/disabled-jira-connector")
+        let connector = Connector(name: "Jira", serviceType: "jira", authMethod: "none")
+        connector.isGlobal = true
+        let skill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        skill.isGlobal = true
+        skill.connectors = [connector]
+        workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
+
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [skill],
+            globalConnectors: [connector]
+        )
+        let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+
+        #expect(state.readiness.messages == ["Jira: connector not active for this workspace"])
+        #expect(state.connectorsNeedingAttention.map(\.id) == [connector.id])
+        #expect(state.attentionMessages(for: connector) == state.readiness.messages)
     }
 
     @Test("package state links configured connectors by non-custom service type")
