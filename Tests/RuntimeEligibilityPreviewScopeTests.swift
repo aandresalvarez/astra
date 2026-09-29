@@ -44,10 +44,14 @@ struct RuntimeEligibilityPreviewScopeTests {
         return (task, container, root)
     }
 
-    private func request(for task: AgentTask) -> RuntimeEligibilityPreviewRequest {
-        let readiness = Dictionary(
+    private func request(
+        for task: AgentTask,
+        selectedReadiness: RuntimeReadinessState = .ready
+    ) -> RuntimeEligibilityPreviewRequest {
+        var readiness = Dictionary(
             uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) }
         )
+        readiness[task.resolvedRuntimeID] = selectedReadiness
         return .existingTask(
             task: task,
             messageText: "Summarize what you found",
@@ -58,6 +62,60 @@ struct RuntimeEligibilityPreviewScopeTests {
             readinessStates: readiness,
             eventRevision: 0
         )
+    }
+
+    @Test("An inconclusive provider check does not disable the selected composer")
+    func warningReadinessCanSubmitWhenAdmissionPasses() async throws {
+        let environment = try makeEnvironment()
+        let container = environment.container
+        defer {
+            _ = container
+            try? FileManager.default.removeItem(at: environment.root)
+        }
+
+        let warningRequest = request(for: environment.task, selectedReadiness: .warning)
+        let warningSnapshot = try #require(
+            await warningRequest.evaluate(candidateRuntimes: [warningRequest.selectedRuntime])
+        )
+        #expect(warningSnapshot.selectedCandidate.isEligible)
+        let warningState = RuntimeEligibilityPreviewState.evaluated(
+            signature: warningRequest.signature,
+            snapshot: warningSnapshot
+        )
+        #expect(RuntimeEligibilitySubmissionPolicy.canExecute(
+            hasInput: true,
+            runtime: warningRequest.selectedRuntime,
+            readinessStates: [.claudeCode: .warning],
+            previewState: warningState,
+            signature: warningRequest.signature
+        ))
+
+        let blockedRequest = request(for: environment.task, selectedReadiness: .blocked)
+        let blockedSnapshot = try #require(
+            await blockedRequest.evaluate(candidateRuntimes: [blockedRequest.selectedRuntime])
+        )
+        #expect(!blockedSnapshot.selectedCandidate.isEligible)
+
+        let workspace = try #require(environment.task.workspace)
+        let newTaskRequest = RuntimeEligibilityPreviewRequest.newTask(
+            draftTask: nil,
+            workspace: workspace,
+            selectedSkills: [],
+            attachedFiles: [],
+            acceptedTurn: "Summarize this folder",
+            requestedRuntime: .claudeCode,
+            runtimeExplicitlySelected: false,
+            selectedPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            skipPermissions: false,
+            defaultModel: "test-model",
+            defaultBudget: 1_000,
+            providerSettings: .headlessScenario,
+            readinessStates: [.claudeCode: .warning]
+        )
+        let newTaskSnapshot = try #require(
+            await newTaskRequest.evaluate(candidateRuntimes: [.claudeCode])
+        )
+        #expect(newTaskSnapshot.selectedCandidate.isEligible)
     }
 
     @Test("The typing pass scores only the runtime the composer would launch")

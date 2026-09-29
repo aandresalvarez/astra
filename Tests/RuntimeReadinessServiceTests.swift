@@ -858,8 +858,8 @@ struct RuntimeReadinessServiceTests {
         #expect(states.values.allSatisfy { $0 == .blocked })
     }
 
-    @Test("readyRuntimes with partial states excludes providers missing from the dict")
-    func readyRuntimesWithPartialStatesExcludesMissingProviders() {
+    @Test("usableRuntimes with partial states excludes providers missing from the dict")
+    func usableRuntimesWithPartialStatesExcludesMissingProviders() {
         // Simulates what happens when withTaskGroup's for-await exits early after task
         // cancellation: only the checks that completed before cancellation appear in the dict.
         let partialStates: [AgentRuntimeID: RuntimeReadinessState] = [
@@ -868,16 +868,16 @@ struct RuntimeReadinessServiceTests {
             // their subprocess checks returned.
         ]
 
-        let ready = RuntimeProviderAvailabilityService.readyRuntimes(from: partialStates)
-        #expect(ready == [.claudeCode])
+        let usable = RuntimeProviderAvailabilityService.usableRuntimes(from: partialStates)
+        #expect(usable == [.claudeCode])
 
         // The count-based guard in refreshRuntimeAvailability detects this as a partial result
         // and rejects it, preventing the incomplete list from reaching runtimeReadinessStates.
         #expect(partialStates.count != AgentRuntimeAdapterRegistry.runtimeIDs.count)
     }
 
-    @Test("Provider availability exposes only ready runtimes")
-    func providerAvailabilityExposesOnlyReadyRuntimes() async {
+    @Test("Provider availability exposes runtimes without a confirmed blocker")
+    func providerAvailabilityExposesUsableRuntimes() async {
         let runner = StubBinaryRunner()
         await runner.setResponse(
             forKey: "/opt/copilot --version",
@@ -910,7 +910,20 @@ struct RuntimeReadinessServiceTests {
 
         #expect(states[.claudeCode] == .blocked)
         #expect(states[.copilotCLI] == .ready)
-        #expect(RuntimeProviderAvailabilityService.readyRuntimes(from: states) == [.copilotCLI])
+        #expect(RuntimeProviderAvailabilityService.usableRuntimes(from: states) == [.copilotCLI])
+    }
+
+    @Test("An inconclusive probe remains usable while a confirmed blocker does not")
+    func warningAvailabilityAllowsLaunch() {
+        let states: [AgentRuntimeID: RuntimeReadinessState] = [
+            .cursorCLI: .warning,
+            .claudeCode: .blocked,
+            .codexCLI: .ready
+        ]
+
+        #expect(RuntimeProviderAvailabilityService.usableRuntimes(from: states) == [.codexCLI, .cursorCLI])
+        #expect(RuntimeReadinessState.warning.allowsTaskLaunch)
+        #expect(!RuntimeReadinessState.blocked.allowsTaskLaunch)
     }
 
     /// The CLI, the auth status and ADC are all healthy here — the only thing

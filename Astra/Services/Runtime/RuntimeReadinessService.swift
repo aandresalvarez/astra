@@ -5,6 +5,10 @@ enum RuntimeReadinessState: String, Sendable, Equatable {
     case ready
     case warning
     case blocked
+
+    /// A warning means a probe was inconclusive, so the launch preflight may
+    /// still try the provider. Only a confirmed blocker prevents submission.
+    var allowsTaskLaunch: Bool { self != .blocked }
 }
 
 enum RuntimeReadinessScope: Sendable, Equatable {

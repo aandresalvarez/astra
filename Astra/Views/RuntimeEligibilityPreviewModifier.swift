@@ -89,7 +89,7 @@ enum RuntimeEligibilitySubmissionPolicy {
             return []
         }
         return runtimes.filter {
-            readinessStates[$0] == .ready
+            readinessStates[$0]?.allowsTaskLaunch == true
                 && snapshot.candidates[$0]?.isEligible == true
         }
     }
@@ -102,7 +102,7 @@ enum RuntimeEligibilitySubmissionPolicy {
         signature: String?
     ) -> Bool {
         guard hasInput,
-              readinessStates[runtime] == .ready,
+              readinessStates[runtime]?.allowsTaskLaunch == true,
               let snapshot = previewState.currentSnapshot(for: signature) else {
             return false
         }
@@ -306,7 +306,7 @@ struct RuntimeEligibilityPreviewRequest {
             phase: .run,
             candidateRuntimes: candidateRuntimes ?? AgentRuntimeAdapterRegistry.runtimeIDs,
             isRuntimeUsable: { runtime, _ in
-                readinessStates[runtime] == .ready
+                readinessStates[runtime]?.allowsTaskLaunch == true
             }
         )
     }
