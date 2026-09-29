@@ -267,6 +267,7 @@ struct FeedbackReportView: View {
             TextEditor(text: text)
                 .font(Stanford.body(13))
                 .frame(minHeight: 58)
+                .scrollContentBackground(.hidden)
                 .padding(6)
                 .background(Stanford.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))

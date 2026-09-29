@@ -317,6 +317,28 @@ struct ThemeTests {
         #expect(violations.isEmpty, "Use a Stanford surface or accent token:\n\(violations.joined(separator: "\n"))")
     }
 
+    @Test("A TextEditor painted with the card token hides its own scroll background")
+    func textEditorsHideTheirScrollBackground() throws {
+        // TextEditor's scroll view fills with a system color over `.background`, so the token
+        // showed only in the padding rim and the editable area stayed OS-dependent.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sources = FileManager.default.enumerator(at: root.appendingPathComponent("Astra"), includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        var violations: [String] = []
+        for file in sources {
+            let lines = try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() where line.contains("TextEditor(") {
+                // The modifier chain runs to the next editor, or 14 lines.
+                let rest = lines[(index + 1)..<min(index + 15, lines.count)]
+                let chain = rest.prefix { !$0.contains("TextEditor(") }.joined(separator: "\n")
+                if chain.contains(".background(Stanford.cardBackground)"), !chain.contains(".scrollContentBackground(.hidden)") {
+                    violations.append("\(file.lastPathComponent):\(index + 1)")
+                }
+            }
+        }
+        #expect(violations.isEmpty, "Add .scrollContentBackground(.hidden) before the token background:\n\(violations.joined(separator: "\n"))")
+    }
+
     @Test("The interaction accent reaches AppKit text views as the same lagunita hue")
     func interactionAccentReachesAppKit() {
         for (appearance, hex) in [(NSAppearance.Name.aqua, Stanford.lagunitaLightHex), (.darkAqua, Stanford.lagunitaDarkHex)] {
