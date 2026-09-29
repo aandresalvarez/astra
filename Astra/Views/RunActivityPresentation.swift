@@ -173,6 +173,13 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
     let grantSummary: String?
     let compactAuditSummary: String
     let allowSimilarLabel: String
+    /// A connector's saved credentials rather than a shell, file or network
+    /// permission: the one kind Auto never dismisses on the user's behalf.
+    let isConnectorCredentialRequest: Bool
+    /// A sealed connector the agent reached for after its run: recorded at the
+    /// run boundary, pausing nothing, so there is no run for "Allow once" to
+    /// resume. Read from the request's own id, which is durable.
+    let isConnectorCredentialOffer: Bool
 
     init(payload: String) {
         let approval = RuntimePermissionApprovalText(payload: payload)
@@ -184,6 +191,9 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
         grantSummary = approval.approvalGrant
         compactAuditSummary = approval.compactSummary
         allowSimilarLabel = approval.allowSimilarLabel
+        isConnectorCredentialRequest = approval.isConnectorCredentialRequest
+        isConnectorCredentialOffer = PermissionApprovalEventPayload.decoded(from: payload)?.requestID?
+            .hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true
     }
 }
 
@@ -238,8 +248,8 @@ private func safeCredentialApprovalDisplayMessage(from decoded: PermissionApprov
     return [
         "Permission requested for tool: Connector credentials. ASTRA paused before allowing this run to continue.",
         "What ASTRA observed: Connector credential request.",
-        "Why approval is needed: Connector credential egress requires explicit first-use approval before ASTRA injects configured connector credentials into the provider environment.",
-        "What allowing does: Allows ASTRA to expose the approved connector \(noun) to this run, then restarts the provider from the stopped point.",
+        "Why approval is needed: A connector's saved credentials need your first-use approval before ASTRA uses them for this task.",
+        "What allowing does: Allows ASTRA to use the approved connector \(noun) in this run, then restarts the provider from the stopped point.",
         "What to check: Allow only if this task should use this connector's configured credentials."
     ].joined(separator: "\n")
 }
@@ -1371,7 +1381,7 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             if let connectorCredentialContext {
                 let noun = connectorCredentialContext.credentialCount == 1 ? "credential" : "credentials"
                 let connectorNoun = connectorCredentialConnectorCount > 1 ? "connectors" : "connector"
-                return "ASTRA wants to expose \(connectorCredentialContext.credentialCount) configured \(noun) from the \(connectorCredentialContext.connectorName) \(connectorNoun) to this task's agent process."
+                return "ASTRA wants to use \(connectorCredentialContext.credentialCount) saved \(noun) from the \(connectorCredentialContext.connectorName) \(connectorNoun) for this task."
             }
             return "ASTRA wants to use configured connector credentials for this task."
         case .sandboxPath:
@@ -1413,6 +1423,11 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         default:
             return "Allow similar for this task"
         }
+    }
+
+    var isConnectorCredentialRequest: Bool {
+        if case .credential = accessKind { return true }
+        return false
     }
 
     private var connectorCredentialContext: (connectorName: String, credentialCount: Int)? {

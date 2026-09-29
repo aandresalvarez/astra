@@ -666,7 +666,7 @@ struct CapabilityRailPresentationTests {
 
         let decision = RuntimePermissionDecisionPresentation(payload: payload)
         #expect(decision.title == "Jira-new connector needs permission")
-        #expect(decision.summary == "ASTRA wants to expose 2 configured credentials from the Jira-new connector to this task's agent process.")
+        #expect(decision.summary == "ASTRA wants to use 2 saved credentials from the Jira-new connector for this task.")
         #expect(decision.summary.contains("JIRA_API_TOKEN") == false)
     }
 
@@ -726,7 +726,7 @@ struct CapabilityRailPresentationTests {
 
         let decision = RuntimePermissionDecisionPresentation(payload: payload)
         #expect(decision.title == "Jira-new and REDCap connectors need permission")
-        #expect(decision.summary == "ASTRA wants to expose 3 configured credentials from the Jira-new and REDCap connectors to this task's agent process.")
+        #expect(decision.summary == "ASTRA wants to use 3 saved credentials from the Jira-new and REDCap connectors for this task.")
         #expect(decision.allowSimilarLabel == "Allow these connectors for task")
     }
 

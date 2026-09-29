@@ -368,7 +368,7 @@ enum AgentRuntimeLaunchPreflight {
         let payload = PermissionBroker.approvalPayloadString(
             providerID: runtime,
             request: request,
-            reason: "Connector credential egress requires explicit first-use approval before ASTRA injects configured connector credentials into the provider environment.",
+            reason: "A connector's saved credentials need your first-use approval before ASTRA uses them for this task.",
             providerDetail: credentialRequest.displayName,
             grants: grants
         )
