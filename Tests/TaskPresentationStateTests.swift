@@ -4,6 +4,25 @@ import ASTRAModels
 
 @Suite("TaskPresentationState")
 struct TaskPresentationStateTests {
+    /// A run that stops to ask permission is recorded as failed, but it is waiting
+    /// on the user. Task 2A0E30EC showed eight "Failed" rows for what were eight
+    /// questions.
+    @Test("a run paused for permission is not labelled Failed")
+    func runPausedForPermissionIsNotLabelledFailed() {
+        let paused = TaskRun(task: AgentTask(title: "t", goal: "g"))
+        paused.status = .failed
+        paused.typedStopReason = .permissionApprovalRequired
+
+        #expect(TaskPresentationState.failedRunLabel(stopReason: paused.stopReason) == "Paused for permission")
+    }
+
+    @Test("every other failed run keeps the Failed label")
+    func otherFailedRunsKeepTheFailedLabel() {
+        for reason in ["", "provider_process_failed", "timeout", "runtime_launch_blocked"] {
+            #expect(TaskPresentationState.failedRunLabel(stopReason: reason) == "Failed")
+        }
+    }
+
     @Test("review presentation separates run outcome from closure state")
     func reviewPresentationSeparatesRunOutcomeFromClosureState() {
         let finished = TaskPresentationState.reviewPresentation(status: .completed, isClosed: false)

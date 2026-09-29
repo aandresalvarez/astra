@@ -2393,7 +2393,7 @@ struct TaskMainView: View {
         }
         switch run.status {
         case .completed: return TaskPresentationState.reviewPresentation(status: .completed, isClosed: false).runOutcomeLabel
-        case .failed: return "Failed"
+        case .failed: return TaskPresentationState.failedRunLabel(stopReason: run.stopReason)
         case .cancelled: return "Cancelled"
         case .budgetExceeded: return "Over budget"
         case .timeout: return "Timed out"
@@ -3533,7 +3533,7 @@ struct TaskMainView: View {
     private func runStatusLabel(_ run: TaskRunSnapshot) -> String {
         switch run.status {
         case .completed: return "Completed"
-        case .failed: return "Failed"
+        case .failed: return TaskPresentationState.failedRunLabel(stopReason: run.stopReason)
         case .cancelled: return "Cancelled"
         case .budgetExceeded: return "Budget exceeded"
         case .running: return "Running"

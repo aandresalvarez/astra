@@ -42,6 +42,16 @@ enum TaskPresentationState {
     static let closeAnywayActionTitle = "Close anyway"
     static let closeWithoutRunningPlanActionTitle = "Close without running plan"
     static let reopenTaskActionTitle = "Reopen task"
+    static let pausedForPermissionRunLabel = "Paused for permission"
+
+    /// What to call a run recorded as failed. A run that stopped to ask for
+    /// permission is recorded that way too (`permission_approval_required`), but
+    /// nothing went wrong: it is waiting on the user, or was and has since been
+    /// answered. Calling it "Failed" makes a single approval read as a stack of
+    /// failures.
+    static func failedRunLabel(stopReason: String) -> String {
+        stopReason == TaskRunStopReason.permissionApprovalRequired.rawValue ? pausedForPermissionRunLabel : "Failed"
+    }
 
     static func statusColor(for status: TaskStatus) -> String {
         TaskStatusPresentation.color(for: status.rawValue)
