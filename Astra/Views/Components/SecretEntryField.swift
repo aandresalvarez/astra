@@ -41,18 +41,26 @@ enum SecretEntryPresentation {
 /// `SecretEntryFitnessTests` fails the build if one reappears.
 struct SecretEntryField: View {
     private let prompt: String
+    private let hidesValuesNotTyped: Bool
     @Binding private var text: String
     @State private var isRevealed: Bool
     @FocusState private var isFocused: Bool
 
+    /// `hidesValuesNotTyped`: a value that is already there when the field
+    /// appears, or arrives while nobody is typing, came out of storage (a setup
+    /// copied from another workspace), not from the keyboard. Only what the
+    /// person types is shown by default; pass `false` for identifiers.
     init(
         _ prompt: String,
         text: Binding<String>,
-        startsRevealed: Bool = SecretEntryPresentation.startsRevealed
+        startsRevealed: Bool = SecretEntryPresentation.startsRevealed,
+        hidesValuesNotTyped: Bool = true
     ) {
         self.prompt = prompt
+        self.hidesValuesNotTyped = hidesValuesNotTyped
         self._text = text
-        self._isRevealed = State(initialValue: startsRevealed)
+        let prefilled = hidesValuesNotTyped && !text.wrappedValue.isEmpty
+        self._isRevealed = State(initialValue: startsRevealed && !prefilled)
     }
 
     var body: some View {
@@ -64,6 +72,11 @@ struct SecretEntryField: View {
                 // address; `SecureField` never allowed either.
                 .autocorrectionDisabled()
                 .focused($isFocused)
+                .onChange(of: text) { old, new in
+                    if hidesValuesNotTyped, isRevealed, !isFocused, old.isEmpty, !new.isEmpty {
+                        isRevealed = false
+                    }
+                }
 
             Button {
                 isRevealed.toggle()

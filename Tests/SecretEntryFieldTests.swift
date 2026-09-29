@@ -2,6 +2,7 @@ import Testing
 @testable import ASTRA
 import AppKit
 import SwiftUI
+import Observation
 
 /// The behavioural half of the secret-entry rule; the source scan that stops a
 /// bare `SecureField` reappearing is `SecretEntryFitnessTests`.
@@ -43,10 +44,46 @@ struct SecretEntryFieldTests {
 
     @Test("By default the typed value renders in a plain text field")
     func defaultRendersAPlainTextField() {
-        let controls = renderedControls(SecretEntryField("value", text: .constant("jane@example.com")))
+        let controls = renderedControls(SecretEntryField("value", text: .constant("")))
 
         #expect(controls.plain == 1, "expected one plain text field, found \(controls)")
         #expect(controls.secure == 0, "the default must not mask what is being typed, found \(controls)")
+    }
+
+    @Test("A value that was already stored starts hidden")
+    func aStoredValueStartsHidden() {
+        let controls = renderedControls(SecretEntryField("value", text: .constant("ATATT3xFfGF0stored")))
+
+        #expect(controls.secure == 1, "a token copied from storage must not appear in the clear, found \(controls)")
+        #expect(controls.plain == 0, "found \(controls)")
+    }
+
+    @Test("An identifier that was already stored may start visible")
+    func aStoredIdentifierMayStartVisible() {
+        let controls = renderedControls(
+            SecretEntryField("value", text: .constant("jane@example.com"), hidesValuesNotTyped: false)
+        )
+
+        #expect(controls.plain == 1, "found \(controls)")
+        #expect(controls.secure == 0, "found \(controls)")
+    }
+
+    @Test("A value that arrives while nobody is typing is hidden")
+    func aValueThatArrivesWithoutTypingIsHidden() {
+        // "Copy setup from another workspace" fills the field from the Keychain.
+        let box = ArrivingValue()
+        let host = host(ArrivingField(box: box))
+        #expect(controls(in: host).plain == 1, "an empty field starts visible")
+
+        box.value = "ATATT3xFfGF0copied"
+        for _ in 0..<5 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            host.layoutSubtreeIfNeeded()
+        }
+
+        let after = controls(in: host)
+        #expect(after.secure == 1, "a copied token must be hidden once it arrives, found \(after)")
+        #expect(after.plain == 0, "found \(after)")
     }
 
     @Test("Hidden, the same field renders as a secure field")
@@ -61,14 +98,31 @@ struct SecretEntryFieldTests {
 
     // MARK: - Hosting
 
+    @Observable
+    final class ArrivingValue {
+        var value = ""
+    }
+
+    struct ArrivingField: View {
+        let box: ArrivingValue
+
+        var body: some View {
+            SecretEntryField("value", text: Binding(get: { box.value }, set: { box.value = $0 }))
+        }
+    }
+
     private struct RenderedControls: CustomStringConvertible {
         var plain = 0
         var secure = 0
         var description: String { "plain=\(plain) secure=\(secure)" }
     }
 
-    /// Hosts `view`, lays it out, and counts the text controls SwiftUI built.
     private func renderedControls<V: View>(_ view: V) -> RenderedControls {
+        controls(in: host(view))
+    }
+
+    /// Hosts `view` in a window and lays it out.
+    private func host<V: View>(_ view: V) -> NSHostingView<some View> {
         let host = NSHostingView(rootView: view.frame(width: 320))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 360, height: 80),
@@ -78,7 +132,18 @@ struct SecretEntryFieldTests {
         )
         window.contentView = host
         host.layoutSubtreeIfNeeded()
+        retainedWindows.append(window)
+        return host
+    }
 
+    private var retainedWindows: [NSWindow] {
+        get { Self.windows }
+        nonmutating set { Self.windows = newValue }
+    }
+    private static var windows: [NSWindow] = []
+
+    /// Counts the text controls SwiftUI built.
+    private func controls(in host: NSView) -> RenderedControls {
         var controls = RenderedControls()
         func visit(_ node: NSView) {
             if node is NSSecureTextField {
