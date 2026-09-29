@@ -108,6 +108,17 @@ struct AstraLeadingCommandBar: View {
         // when the title bar height changes. `nil` height = intrinsic, until the
         // coordinator supplies the measurement.
         .frame(width: commandBarWidth, height: titleBarHeight, alignment: .leading)
+        // The sidebar's trailing hairline across the titlebar band. `SidebarSurface`
+        // draws it for the body, but SwiftUI content starts below the titlebar and a
+        // line drawn beneath the titlebar's backdrop view is blurred away. This bar
+        // sits above that view and ends exactly at the sidebar edge.
+        .overlay(alignment: .trailing) {
+            if !isSidebarHidden {
+                Rectangle()
+                    .fill(Stanford.separator)
+                    .frame(width: 1)
+            }
+        }
     }
 
     private var leadingCommands: some View {
