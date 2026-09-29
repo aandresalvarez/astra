@@ -2792,14 +2792,13 @@ struct PluginInstallSheet: View {
     private func credentialField(for hint: PluginConnector.CredentialHint) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             setupFieldHeader(for: hint.key)
-            SecureField(CapabilitySetupPresentation.credentialPlaceholder(for: hint), text: Binding(
+            SecretEntryField(CapabilitySetupPresentation.credentialPlaceholder(for: hint), text: Binding(
                 get: { credentialValues[hint.key] ?? "" },
                 set: {
                     credentialValues[hint.key] = $0
                     resetValidation()
                 }
             ))
-            .textFieldStyle(.roundedBorder)
             .font(Stanford.body(13))
             .help(hint.hint)
         }

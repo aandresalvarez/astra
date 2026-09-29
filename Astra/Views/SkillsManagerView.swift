@@ -697,8 +697,7 @@ struct SkillEditorView: View {
                                     .textFieldStyle(.roundedBorder)
                                     .font(Stanford.ui(13, design: .monospaced))
                                     .frame(width: 140)
-                                SecureField("value", text: $newEnvValue)
-                                    .textFieldStyle(.roundedBorder)
+                                SecretEntryField("value", text: $newEnvValue)
                                     .font(Stanford.ui(13, design: .monospaced))
                                     .onSubmit { addEnvVar() }
                                 Button("Save secret") { addEnvVar() }
