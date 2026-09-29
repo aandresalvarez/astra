@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import ASTRACore
 import ASTRAModels
@@ -475,6 +476,181 @@ struct TaskDecisionDockPresentationTests {
         let dock = try #require(presentation)
         #expect(dock.title == "Policy blocked")
         #expect(dock.summary.contains("Retry with broader policy permissions"))
+    }
+
+    // MARK: - Connector credential prompts in Auto
+
+    /// Auto does not dismiss a connector's credential prompt, so the only thing
+    /// it can do for the user is not repeat it. "Allow once" lives in the run it
+    /// resumes: production task 2A0E30EC asked eight times, and a follow-up or a
+    /// Retry asks again even once each prompt covers every connector.
+    @Test("Auto leads a connector credential prompt with the task-scoped approval")
+    func autoLeadsConnectorCredentialPromptWithTaskScope() throws {
+        let dock = try #require(TaskDecisionDockPresentation.build(connectorCredentialContext(isAuto: true)))
+
+        #expect(dock.id == "runtime-permission")
+        #expect(dock.primaryAction?.kind == .allowSimilar)
+        #expect(dock.primaryAction?.title == "Allow for this task")
+        // The tooltip keeps the request's own wording.
+        #expect(dock.primaryAction?.help == "Allow these connectors for task")
+        #expect(dock.secondaryActions.map(\.kind) == [.retry, .allowOnce])
+        #expect(dock.secondaryActions.last?.title == "Allow once")
+        let scope = dock.details.first { $0.id == "permission.scope" }?.summary
+        #expect(scope == TaskDecisionDockPresentation.taskScopedPermissionScope)
+    }
+
+    @Test("Ask keeps the one-run approval first for the same connector credential prompt")
+    func askKeepsOneRunApprovalFirstForConnectorCredentials() throws {
+        let dock = try #require(TaskDecisionDockPresentation.build(connectorCredentialContext(isAuto: false)))
+
+        #expect(dock.primaryAction?.kind == .allowOnce)
+        #expect(dock.primaryAction?.title == "Allow once & continue")
+        #expect(dock.secondaryActions.map(\.kind) == [.retry, .allowSimilar])
+        #expect(dock.secondaryActions.last?.title == "Allow similar")
+        let scope = dock.details.first { $0.id == "permission.scope" }?.summary
+        #expect(scope == "Scope: one time for this run.")
+    }
+
+    @Test("Auto keeps the one-run approval first for a request that is not a connector credential")
+    func autoKeepsOneRunApprovalFirstForOtherRequests() throws {
+        var input = connectorCredentialContext(isAuto: true)
+        input.runtimePermissionIsConnectorCredential = false
+
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(dock.primaryAction?.kind == .allowOnce)
+        #expect(dock.primaryAction?.title == "Allow once & continue")
+        #expect(dock.secondaryActions.map(\.kind) == [.retry, .allowSimilar])
+    }
+
+    /// Nothing to lead with: a request with no reusable grant (content-bound, or
+    /// a sandbox path) can only be answered once, in any mode.
+    @Test("Auto keeps the one-run approval first when no task-scoped approval exists")
+    func autoKeepsOneRunApprovalFirstWithoutATaskScopedApproval() throws {
+        var input = connectorCredentialContext(isAuto: true)
+        input.canApproveSimilarRuntimePermission = false
+
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(!input.prefersTaskScopedRuntimePermission)
+        #expect(dock.primaryAction?.kind == .allowOnce)
+        #expect(dock.secondaryActions.map(\.kind) == [.retry])
+    }
+
+    @Test("Auto still leads with the task-scoped approval when there is no one-run handler")
+    func autoLeadsWithTaskScopeWithoutAOneRunHandler() throws {
+        var input = connectorCredentialContext(isAuto: true)
+        input.canApprove = false
+
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+
+        #expect(dock.primaryAction?.kind == .allowSimilar)
+        #expect(dock.secondaryActions.map(\.kind) == [.retry])
+        #expect(!actionTitles(dock).contains("Allow once"))
+    }
+
+    /// The label is derived from the request itself, so the flag cannot drift
+    /// from what the dock is actually asking about.
+    @Test("The dock builder reads the Auto flag and the request kind from the real payload")
+    func builderMarksConnectorCredentialRequestsFromThePayload() throws {
+        let credentials = TaskRuntimePermissionState.build(events: [
+            .init(type: "permission.approval.requested", payload: connectorCredentialPayload(), timestamp: Date())
+        ])
+        #expect(credentials.decision?.isConnectorCredentialRequest == true)
+        #expect(credentials.canApproveSimilarForTask)
+
+        let auto = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(credentials, isAuto: true)))
+        #expect(auto.title == "Jira-new and REDCap connectors need permission")
+        #expect(auto.primaryAction?.kind == .allowSimilar)
+        #expect(auto.primaryAction?.title == "Allow for this task")
+        #expect(auto.primaryAction?.help == "Allow these connectors for task")
+
+        let ask = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(credentials, isAuto: false)))
+        #expect(ask.primaryAction?.kind == .allowOnce)
+
+        let shell = TaskRuntimePermissionState.build(events: [
+            .init(type: "permission.approval.requested", payload: shellCommandPayload(), timestamp: Date())
+        ])
+        #expect(shell.decision?.isConnectorCredentialRequest == false)
+        let autoShell = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(shell, isAuto: true)))
+        #expect(autoShell.primaryAction?.kind == .allowOnce)
+    }
+
+    private func connectorCredentialContext(isAuto: Bool) -> TaskDecisionDockPresentation.Context {
+        var input = context(status: .pendingUser)
+        input.hasRuntimePermissionRequest = true
+        input.runtimePermissionTitle = "Jira-new and REDCap connectors need permission"
+        input.runtimePermissionSummary = "ASTRA wants to expose 3 configured credentials."
+        input.runtimePermissionScope = "Scope: one time for this run."
+        input.runtimePermissionAllowSimilarLabel = "Allow these connectors for task"
+        input.canApproveSimilarRuntimePermission = true
+        input.runtimePermissionIsConnectorCredential = true
+        input.isAutoPermissionMode = isAuto
+        return input
+    }
+
+    private static let jiraConnectorID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+    private static let redcapConnectorID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+
+    private func connectorCredentialPayload() -> String {
+        let request = PermissionRequest.connectorCredentials(
+            connectorID: Self.jiraConnectorID,
+            displayName: "Jira-new and REDCap connector credentials (3 configured credentials)",
+            labels: [
+                ConnectorRuntimeProjection.credentialLabel(connectorID: Self.jiraConnectorID, key: "JIRA_API_TOKEN"),
+                ConnectorRuntimeProjection.credentialLabel(connectorID: Self.jiraConnectorID, key: "JIRA_EMAIL"),
+                ConnectorRuntimeProjection.credentialLabel(connectorID: Self.redcapConnectorID, key: "REDCAP_API_TOKEN")
+            ]
+        )
+        return PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: request,
+            reason: "Connector credential egress requires explicit first-use approval.",
+            grants: PermissionBroker.approvalGrants(for: request)
+        )
+    }
+
+    private func shellCommandPayload() -> String {
+        let request = PermissionRequest.shell(command: "gh pr list", toolName: "Bash")
+        return PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: request,
+            reason: "The shell command is outside the current policy.",
+            grants: PermissionBroker.approvalGrants(for: request)
+        )
+    }
+
+    private func dockBuilderInput(
+        _ runtimePermission: TaskRuntimePermissionState,
+        isAuto: Bool
+    ) -> TaskDecisionDockContextBuilder.Input {
+        TaskDecisionDockContextBuilder.Input(
+            status: .pendingUser,
+            isClosed: false,
+            review: TaskPresentationState.reviewPresentation(status: .pendingUser, isClosed: false),
+            mission: nil,
+            verification: nil,
+            pendingReviewState: .none,
+            runtimePermission: runtimePermission,
+            executableApprovedPlan: nil,
+            skipPermissions: isAuto,
+            canOpenPlan: false,
+            isPlanCanvasVisible: false,
+            canRunApprovedPlan: false,
+            latestRunHasNoUsableResult: false,
+            completedTaskNeedsArtifactAttention: false,
+            canCancel: true,
+            canRun: true,
+            canApprove: true,
+            canRetry: true,
+            canResume: false,
+            canToggleDone: true,
+            hasProviderSession: false,
+            failureReason: nil,
+            launchBlock: nil,
+            artifactPaths: [],
+            extraDetails: []
+        )
     }
 
     private func context(

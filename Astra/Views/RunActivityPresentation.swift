@@ -173,6 +173,9 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
     let grantSummary: String?
     let compactAuditSummary: String
     let allowSimilarLabel: String
+    /// A connector's saved credentials rather than a shell, file or network
+    /// permission: the one kind Auto never dismisses on the user's behalf.
+    let isConnectorCredentialRequest: Bool
 
     init(payload: String) {
         let approval = RuntimePermissionApprovalText(payload: payload)
@@ -184,6 +187,7 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
         grantSummary = approval.approvalGrant
         compactAuditSummary = approval.compactSummary
         allowSimilarLabel = approval.allowSimilarLabel
+        isConnectorCredentialRequest = approval.isConnectorCredentialRequest
     }
 }
 
@@ -1413,6 +1417,11 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         default:
             return "Allow similar for this task"
         }
+    }
+
+    var isConnectorCredentialRequest: Bool {
+        if case .credential = accessKind { return true }
+        return false
     }
 
     private var connectorCredentialContext: (connectorName: String, credentialCount: Int)? {

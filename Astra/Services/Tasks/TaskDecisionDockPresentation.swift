@@ -88,6 +88,9 @@ struct TaskDecisionDockPresentation: Equatable {
         var runtimePermissionCommandPreview: String?
         var runtimePermissionAllowSimilarLabel: String?
         var canApproveSimilarRuntimePermission: Bool
+        /// The task runs in Auto: the user opted out of per-action prompts.
+        var isAutoPermissionMode: Bool = false
+        var runtimePermissionIsConnectorCredential: Bool = false
         var hasGitPublishRequest: Bool = false
         var githubReviewPath: String?
         /// Destinations of the connector mutations waiting for review, e.g.
@@ -117,7 +120,18 @@ struct TaskDecisionDockPresentation: Equatable {
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
+
+        /// Auto never dismisses a connector's credential prompt (a test pins
+        /// that), so the most it can do is not repeat it. "Allow once" lives only
+        /// in the run it resumes, so it asks again on every turn and every Retry;
+        /// the task-scoped approval leads instead. Without one there is nothing
+        /// to lead with.
+        var prefersTaskScopedRuntimePermission: Bool {
+            isAutoPermissionMode && runtimePermissionIsConnectorCredential && canApproveSimilarRuntimePermission
+        }
     }
+
+    static let taskScopedPermissionScope = "Scope: this task. Allow once covers only this run."
 
     var id: String
     var icon: String
@@ -233,12 +247,13 @@ struct TaskDecisionDockPresentation: Equatable {
     }
 
     private static func runtimePermissionPresentation(_ context: Context) -> TaskDecisionDockPresentation {
+        let leadsWithTaskScope = context.prefersTaskScopedRuntimePermission
         var dockDetails = details(context)
         appendIfPresent(
             TaskDecisionDockDetail(
                 id: "permission.scope",
                 title: "Permission scope",
-                summary: context.runtimePermissionScope ?? "",
+                summary: leadsWithTaskScope ? taskScopedPermissionScope : (context.runtimePermissionScope ?? ""),
                 systemImage: "scope",
                 tone: .attention
             ),
@@ -255,6 +270,7 @@ struct TaskDecisionDockPresentation: Equatable {
             ),
             to: &dockDetails
         )
+        let approvals = runtimePermissionApprovalActions(context)
 
         return TaskDecisionDockPresentation(
             id: "runtime-permission",
@@ -264,23 +280,54 @@ struct TaskDecisionDockPresentation: Equatable {
             summary: context.runtimePermissionSummary ?? "The provider needs one-time permission before it can continue.",
             metrics: metrics(context),
             details: dockDetails,
-            primaryAction: context.canApprove
-                ? action(.allowOnce, title: "Allow once & continue", systemImage: "lock.open.fill")
-                : nil,
+            primaryAction: approvals.primary,
             secondaryActions: [
                 context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
-                context.canApproveSimilarRuntimePermission
-                    ? action(
-                        .allowSimilar,
-                        title: "Allow similar",
-                        systemImage: "checkmark.shield",
-                        help: context.runtimePermissionAllowSimilarLabel ?? "Allow similar requests for this task."
-                    )
-                    : nil
+                approvals.alternative
             ].compactMap { $0 },
             overflowActions: closeOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
+    }
+
+    /// The two ways to answer a runtime-permission request, in the order the
+    /// dock shows them. Ordinarily the one-run approval leads. When the task
+    /// prefers task scope, the approval that outlives the run leads instead, and
+    /// its title names the scope because the click now reaches past the run it
+    /// resumes; the tooltip keeps the request's own wording ("Allow these
+    /// connectors for task").
+    private static func runtimePermissionApprovalActions(
+        _ context: Context
+    ) -> (primary: TaskDecisionDockAction?, alternative: TaskDecisionDockAction?) {
+        if context.prefersTaskScopedRuntimePermission {
+            let allowForTask = action(
+                .allowSimilar,
+                title: "Allow for this task",
+                systemImage: "lock.open.fill",
+                help: context.runtimePermissionAllowSimilarLabel ?? "Allow for the rest of this task."
+            )
+            let allowOnce = context.canApprove
+                ? action(
+                    .allowOnce,
+                    title: "Allow once",
+                    systemImage: "lock.open",
+                    help: "Allow only this run. The next message or Retry asks again."
+                )
+                : nil
+            return (allowForTask, allowOnce)
+        }
+        let allowOnce = context.canApprove
+            ? action(.allowOnce, title: "Allow once & continue", systemImage: "lock.open.fill")
+            : nil
+        let allowSimilar = context.canApproveSimilarRuntimePermission
+            ? action(
+                .allowSimilar,
+                title: "Allow similar",
+                systemImage: "checkmark.shield",
+                help: context.runtimePermissionAllowSimilarLabel ?? "Allow similar requests for this task."
+            )
+            : nil
+        return (allowOnce, allowSimilar)
     }
 
     private static func gitPublishPresentation(_ context: Context) -> TaskDecisionDockPresentation {
