@@ -128,9 +128,11 @@ struct RuntimeProviderAvailabilityService {
         return states
     }
 
-    static func readyRuntimes(
+    static func usableRuntimes(
         from states: [AgentRuntimeID: RuntimeReadinessState]
     ) -> [AgentRuntimeID] {
-        AgentRuntimeAdapterRegistry.runtimeIDs.filter { states[$0] == .ready }
+        let runtimes = AgentRuntimeAdapterRegistry.runtimeIDs
+        return runtimes.filter { states[$0] == .ready }
+            + runtimes.filter { states[$0] == .warning }
     }
 }

@@ -937,7 +937,7 @@ struct ComposerToolbar: View {
         guard let displayedRuntime else {
             return "No ready provider. Finish CLI setup before running a task."
         }
-        guard runtimeReadinessStates[displayedRuntime] == .ready else {
+        guard runtimeReadinessStates[displayedRuntime]?.allowsTaskLaunch == true else {
             return "\(displayedRuntime.displayName) needs setup before it can run this turn."
         }
         return RuntimeBudgetPresentation.runtimeStatusHelp(
@@ -975,7 +975,7 @@ struct ComposerToolbar: View {
         if selectedRuntimeBlockReason != nil {
             return "\(shortRuntimeName(displayedRuntime)) not compatible"
         }
-        guard runtimeReadinessStates[displayedRuntime] == .ready else {
+        guard runtimeReadinessStates[displayedRuntime]?.allowsTaskLaunch == true else {
             return "\(shortRuntimeName(displayedRuntime)) needs setup"
         }
         let modelPart = displayedRuntime == resolvedRuntime ? shortModelDisplayName(model) : "Ready"
@@ -1015,14 +1015,14 @@ struct ComposerToolbar: View {
     }
 
     private func runtimeIsSelectable(_ runtime: AgentRuntimeID) -> Bool {
-        guard runtimeReadinessStates[runtime] == .ready else { return false }
+        guard runtimeReadinessStates[runtime]?.allowsTaskLaunch == true else { return false }
         guard let snapshot = currentRuntimeEligibilitySnapshot else { return true }
         return snapshot.candidates[runtime]?.isEligible == true
     }
 
     private func runtimeMenuReason(for runtime: AgentRuntimeID) -> String? {
         guard !runtimeReadinessStates.isEmpty else { return "checking setup" }
-        guard runtimeReadinessStates[runtime] == .ready else { return "needs setup" }
+        guard runtimeReadinessStates[runtime]?.allowsTaskLaunch == true else { return "needs setup" }
         guard let candidate = currentRuntimeEligibilitySnapshot?.candidates[runtime],
               !candidate.isEligible else {
             return nil
@@ -1080,7 +1080,7 @@ struct ComposerToolbar: View {
     }
 
     private var selectedProviderReadinessHelp: String {
-        guard runtimeReadinessStates[resolvedRuntime] == .ready else {
+        guard runtimeReadinessStates[resolvedRuntime]?.allowsTaskLaunch == true else {
             return "\(resolvedRuntime.displayName) needs setup before it can run a request."
         }
         return "Enter a request to check which providers can execute it."
@@ -1090,7 +1090,7 @@ struct ComposerToolbar: View {
         _ runtime: AgentRuntimeID,
         includeRuntime: Bool
     ) -> String {
-        guard runtimeReadinessStates[runtime] == .ready else {
+        guard runtimeReadinessStates[runtime]?.allowsTaskLaunch == true else {
             return "\(shortRuntimeName(runtime)) needs setup"
         }
         return includeRuntime
