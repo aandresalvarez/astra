@@ -212,14 +212,14 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(package.version == "2.4.0")
+        #expect(package.version == "2.5.0")
         #expect(package.description.contains("credential broker"))
         // The capability can now end in a created ticket, so the effect list has
         // to say so — declaring .readOnly here would be the understatement the
         // governance surface exists to prevent.
         #expect(package.governance.externalEffects == [.ticketMutation])
         #expect(package.governance.policyNotes.contains("not projected into provider environments"))
-        #expect(package.governance.policyNotes.contains("cannot send one"))
+        #expect(package.governance.policyNotes.contains("cannot send them"))
         #expect(skill.behaviorInstructions.contains("ASTRA HOST-CONTROL"))
         #expect(skill.allowedTools.contains("Bash"))
         #expect(skill.behaviorInstructions.contains("Shell is permitted only to invoke that exact broker command"))
@@ -233,7 +233,28 @@ struct PluginCatalogBuiltInTests {
         #expect(skill.behaviorInstructions.contains("next_page_token"))
         #expect(!skill.behaviorInstructions.contains("If /myself returns 401/403, stop"))
         #expect(skill.behaviorInstructions.contains("Do not request raw method, path, or body inputs"))
-        #expect(skill.behaviorInstructions.contains("Do not update, comment on, transition, delete"))
+        #expect(skill.behaviorInstructions.contains("Do not delete tickets or change them any other way"))
+    }
+
+    /// The catalog has two copies of every built-in — the bundled JSON and the
+    /// in-code fallback — and the fallback has silently drifted from the bundle
+    /// before. A Jira change edits both, so this is what says they still agree.
+    @Test("The bundled Jira package and its in-code fallback are the same package")
+    func jiraBundledAndFallbackAgree() throws {
+        let bundled = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let fallback = try #require(PluginCatalog.fallbackBuiltInPackages.first { $0.id == "jira-workflow" })
+        let bundledSkill = try #require(bundled.skills.first)
+        let fallbackSkill = try #require(fallback.skills.first)
+
+        #expect(bundled.version == fallback.version)
+        #expect(bundled.description == fallback.description)
+        #expect(bundled.setupGuide == fallback.setupGuide)
+        #expect(bundled.governance.policyNotes == fallback.governance.policyNotes)
+        #expect(bundled.governance.externalEffects == fallback.governance.externalEffects)
+        #expect(bundledSkill.description == fallbackSkill.description)
+        #expect(bundledSkill.behaviorInstructions == fallbackSkill.behaviorInstructions)
+        #expect(bundledSkill.allowedTools == fallbackSkill.allowedTools)
+        #expect(bundledSkill.disallowedTools == fallbackSkill.disallowedTools)
     }
 
     /// The failure this capability actually produced: the agent could not file a
@@ -245,11 +266,17 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(skill.behaviorInstructions.contains("operation propose_issue"))
+        #expect(skill.behaviorInstructions.contains("propose_issue — a new ticket"))
+        #expect(skill.behaviorInstructions.contains("propose_comment — a comment on an existing ticket"))
+        #expect(skill.behaviorInstructions.contains("propose_update"))
+        #expect(skill.behaviorInstructions.contains("propose_transition"))
+        #expect(skill.behaviorInstructions.contains("operation get_transitions"))
+        #expect(skill.behaviorInstructions.contains("visibility is required"))
+        #expect(skill.behaviorInstructions.contains("--arguments-file"))
         #expect(skill.behaviorInstructions.contains("sent: false"))
         #expect(skill.behaviorInstructions.contains("That is success, not a failure"))
         #expect(skill.behaviorInstructions.contains("Never write a script, curl command, or set of instructions"))
-        #expect(skill.behaviorInstructions.contains("say the ticket cannot be filed and stop"))
+        #expect(skill.behaviorInstructions.contains("say the change cannot be made and stop"))
         #expect(!skill.behaviorInstructions.contains("READ-ONLY OPERATIONS"))
     }
 

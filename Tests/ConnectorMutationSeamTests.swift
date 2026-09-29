@@ -45,15 +45,42 @@ struct ConnectorMutationSeamTests {
     /// asks the user to authorize.
     @Test("Everything the broker stages is something ASTRA can send")
     func everyStagedOperationHasACommitRoute() {
-        let staged = JiraIssueProposalPolicy.stagedOperation
+        let proposals: [any JiraStagedProposal] = [
+            JiraIssueProposal(
+                projectKey: "STAR", issueType: "Bug", summary: "s", description: nil, priority: nil,
+                labels: [], assigneeAccountID: nil, parentKey: nil
+            ),
+            JiraCommentProposal(issueKey: "STAR-1", comment: "c", visibility: .public),
+            JiraIssueUpdateProposal(
+                issueKey: "STAR-1", newSummary: "s", description: nil, priority: nil,
+                labels: nil, assigneeAccountID: nil
+            ),
+            JiraTransitionProposal(issueKey: "STAR-1", transitionID: "21", transitionName: "Done", resolution: nil)
+        ]
 
-        #expect(
-            ConnectorMutationOperations.definition(serviceType: "jira", operation: staged) != nil,
-            """
-            The Jira broker stages '\(staged)' but ConnectorMutationOperations has \
-            no route for it, so an approved proposal cannot be sent.
-            """
-        )
+        for proposal in proposals {
+            let definition = ConnectorMutationOperations.definition(
+                serviceType: "jira", operation: proposal.stagedOperation
+            )
+            #expect(
+                definition != nil,
+                """
+                The Jira broker stages '\(proposal.stagedOperation)' but ConnectorMutationOperations has \
+                no route for it, so an approved proposal cannot be sent.
+                """
+            )
+            // The route the broker declares has to be the one ASTRA derives, or
+            // every approval of this operation ends in a route mismatch.
+            #expect(definition?.method == proposal.requestMethod, "\(proposal.stagedOperation): method")
+            #expect(
+                definition?.resolvedPath(forStagedPath: proposal.requestPath) == proposal.requestPath,
+                "\(proposal.stagedOperation): path"
+            )
+            #expect(
+                definition?.target(proposal.target, namesTheTicketIn: proposal.requestPath) == true,
+                "\(proposal.stagedOperation): target"
+            )
+        }
     }
 
     /// Not a style rule. Every entry here is a URL the app will POST to with a
@@ -64,9 +91,9 @@ struct ConnectorMutationSeamTests {
     @Test("Commit routes are absolute paths on the connector's own host")
     func commitRoutesAreWellFormed() {
         for definition in ConnectorMutationOperations.all {
-            #expect(definition.path.hasPrefix("/"), "\(definition.operation): path is not absolute")
-            #expect(!definition.path.contains(".."), "\(definition.operation): path contains traversal")
-            #expect(!definition.path.contains("://"), "\(definition.operation): path names a host")
+            #expect(definition.pathTemplate.hasPrefix("/"), "\(definition.operation): path is not absolute")
+            #expect(!definition.pathTemplate.contains(".."), "\(definition.operation): path contains traversal")
+            #expect(!definition.pathTemplate.contains("://"), "\(definition.operation): path names a host")
             #expect(
                 definition.serviceType == definition.serviceType.lowercased(),
                 "\(definition.serviceType): lookups lowercase the service type, so the table must too"

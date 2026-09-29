@@ -204,6 +204,64 @@ struct BrokeredConnectorPromptTests {
         #expect(!redcapPrompt.contains("Writes through host control-plane connectors are staged, not sent"))
     }
 
+    /// The reported failure: "can you send the answer using Jira?" on a runtime
+    /// whose only route is the CLI relay. The prompt named the MCP spelling of the
+    /// one proposal that existed, the agent had no such tool, and it concluded the
+    /// change was impossible. Each transport is told about its own route, all four
+    /// proposals are named, and "send" is defined as "propose".
+    @Test("The propose contract names the route the run has, for every Jira write")
+    func mutationContractNamesTheRouteTheRunHas() throws {
+        let container = try makeBrokeredConnectorPromptContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Jira Routes", primaryPath: "/tmp/jira-routes")
+        let jira = Connector(
+            name: "Support Jira",
+            serviceType: "jira",
+            connectorDescription: "Support Jira",
+            baseURL: "https://support.example.atlassian.net",
+            authMethod: "basic"
+        )
+        jira.workspace = workspace
+        jira.configKeys = ["JIRA_BASE_URL", "JIRA_PROJECTS"]
+        jira.configValues = ["https://support.example.atlassian.net", "SS"]
+        let mcpTask = AgentTask(
+            title: "Reply", goal: "Reply to Jira ticket SS-617", workspace: workspace, runtime: .claudeCode
+        )
+        let relayTask = AgentTask(
+            title: "Reply", goal: "Reply to Jira ticket SS-617", workspace: workspace, runtime: .cursorCLI
+        )
+        for model in [workspace, jira, mcpTask, relayTask] as [any PersistentModel] {
+            context.insert(model)
+        }
+        try context.save()
+
+        let mcpPrompt = AgentPromptBuilder.buildPrompt(for: mcpTask)
+        let relayPrompt = AgentPromptBuilder.buildPrompt(for: relayTask)
+
+        for operation in ["propose_issue", "propose_comment", "propose_update", "propose_transition"] {
+            #expect(mcpPrompt.contains(operation), "MCP prompt does not name \(operation)")
+        }
+        for operation in ["propose-issue", "propose-comment", "propose-update", "propose-transition"] {
+            #expect(relayPrompt.contains(operation), "CLI-relay prompt does not name \(operation)")
+        }
+        // A request to send is a request to propose, said in the prompt itself.
+        #expect(mcpPrompt.contains("that is a request to propose it"))
+        #expect(relayPrompt.contains("that is a request to propose it"))
+
+        // Each run is told about exactly one route.
+        #expect(mcpPrompt.contains("Call them on `mcp__astra_host__jira`"))
+        #expect(!mcpPrompt.contains("--arguments-file"))
+        #expect(relayPrompt.contains("pass only its name with `--arguments-file`"))
+        #expect(!relayPrompt.contains("Call them on `mcp__astra_host__jira`"))
+        // The example the relay run copies is a command the relay will accept.
+        let example = try #require(
+            relayPrompt.components(separatedBy: .newlines)
+                .compactMap { line in line.range(of: "astra-host-control jira --operation propose-").map { String(line[$0.lowerBound...]) } }
+                .first
+        )
+        #expect(HostControlCLIRelayPolicy.allows(example), "Relay rejects its own write example: \(example)")
+    }
+
     /// The containment guarantee the proposal seam is built on top of.
     ///
     /// Staging a ticket adds a write path to the Jira capability, and the whole

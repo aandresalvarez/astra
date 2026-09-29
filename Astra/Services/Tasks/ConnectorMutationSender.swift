@@ -1,27 +1,96 @@
 import Foundation
+import HostControlToolSupport
 
 /// The mutations ASTRA knows how to commit, and the exact route each one takes.
 ///
 /// The staged envelope declares a method and a path, but this is the authority
 /// and the envelope is checked against it. That ordering matters: the staging
 /// directory is agent-writable, so a trusted `requestPath` would let a rewritten
-/// envelope aim an authenticated POST anywhere on the connector's host. Deriving
-/// the route here means the worst a rewritten envelope can do is disagree, and
-/// disagreement is refused.
+/// envelope aim an authenticated request anywhere on the connector's host.
+/// Deriving the route here means the worst a rewritten envelope can do is
+/// disagree, and disagreement is refused.
 ///
 /// It is also the allowlist. An operation absent from this table cannot be
 /// committed at all, which is what keeps "ASTRA can mutate" from meaning "ASTRA
 /// can perform whatever the broker wrote down".
+///
+/// A route may name one ticket. `{issue}` marks the single path segment the
+/// envelope is allowed to fill, and it can fill it only with a well-formed issue
+/// key — so the ticket is data the envelope supplies, and everything around it is
+/// ASTRA's. There is deliberately no other placeholder: a second one would be a
+/// second place for an envelope to write into the URL.
 enum ConnectorMutationOperations {
     struct Definition: Equatable, Sendable {
         let serviceType: String
         let operation: String
         let method: String
-        let path: String
+        let pathTemplate: String
+
+        static let issuePlaceholder = "{issue}"
+
+        /// The path ASTRA will send to for a staged request, or `nil` when the
+        /// staged path is not this operation's route.
+        ///
+        /// Built from `pathTemplate` and the validated key, never copied from the
+        /// envelope: the two are equal when this returns a value, and taking the
+        /// template's own segments is what keeps that a property of the code and
+        /// not of a comparison somebody could later loosen.
+        func resolvedPath(forStagedPath stagedPath: String) -> String? {
+            let template = pathTemplate.split(separator: "/", omittingEmptySubsequences: false)
+            let staged = stagedPath.split(separator: "/", omittingEmptySubsequences: false)
+            guard template.count == staged.count else { return nil }
+            var resolved: [String] = []
+            for (expected, actual) in zip(template, staged) {
+                if expected == Self.issuePlaceholder {
+                    // The one definition of a well-formed key lives with the
+                    // broker that composes them, so the two cannot drift.
+                    guard JiraHostControlOperations.isValidIssueKey(String(actual)) else { return nil }
+                } else if expected != actual {
+                    return nil
+                }
+                resolved.append(String(actual))
+            }
+            return resolved.joined(separator: "/")
+        }
+
+        /// The ticket a resolved path addresses, when the route is ticket-scoped.
+        func issueKey(inResolvedPath path: String) -> String? {
+            let template = pathTemplate.split(separator: "/", omittingEmptySubsequences: false)
+            let resolved = path.split(separator: "/", omittingEmptySubsequences: false)
+            guard template.count == resolved.count,
+                  let index = template.firstIndex(of: Substring(Self.issuePlaceholder)) else {
+                return nil
+            }
+            return String(resolved[index])
+        }
+
+        /// Whether the staged `target` names the ticket the route goes to.
+        ///
+        /// The target is what the dock row and the sheet print as the
+        /// destination, and it is written by the same party that could rewrite
+        /// the path. Without this check a proposal could read "STAR-1 · comment"
+        /// above a request to STAR-2. Routes that name no ticket have nothing to
+        /// disagree with.
+        func target(_ target: String, namesTheTicketIn resolvedPath: String) -> Bool {
+            guard let key = issueKey(inResolvedPath: resolvedPath) else { return true }
+            return target == key || target.hasPrefix(key + " ")
+        }
     }
 
     static let all: [Definition] = [
-        Definition(serviceType: "jira", operation: "create_issue", method: "POST", path: "/rest/api/2/issue")
+        Definition(serviceType: "jira", operation: "create_issue", method: "POST", pathTemplate: "/rest/api/2/issue"),
+        Definition(
+            serviceType: "jira", operation: "add_comment", method: "POST",
+            pathTemplate: "/rest/api/2/issue/\(Definition.issuePlaceholder)/comment"
+        ),
+        Definition(
+            serviceType: "jira", operation: "update_issue", method: "PUT",
+            pathTemplate: "/rest/api/2/issue/\(Definition.issuePlaceholder)"
+        ),
+        Definition(
+            serviceType: "jira", operation: "transition_issue", method: "POST",
+            pathTemplate: "/rest/api/2/issue/\(Definition.issuePlaceholder)/transitions"
+        )
     ]
 
     static func definition(serviceType: String, operation: String) -> Definition? {

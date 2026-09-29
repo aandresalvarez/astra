@@ -3,14 +3,15 @@ import CoreFoundation
 import MCPServerKit
 
 // Typed Jira access held on the host: the shape of every request the broker is
-// allowed to compose, and the one operation that composes a request it is not
-// allowed to send.
+// allowed to send, and the validators the proposals share.
 //
 // Split out of `HostControlToolSupport.swift` when `propose_issue` landed. The
 // read gate and the proposal gate have to be read side by side to see that they
 // are the same idiom — enumerate what is allowed, refuse the rest — and that
 // only one of them produces something with a body. Buried a thousand lines into
-// the server they were not readable as a pair.
+// the server they were not readable as a pair. The proposals themselves — the
+// writes an agent may compose and ASTRA stages for review — live in
+// `JiraProposalPolicy.swift`; only their field validators are here.
 //
 // What stays in the server: the HTTP client, the response types, and the
 // readiness check, because sending is the server's job and this file's whole
@@ -144,12 +145,29 @@ enum JiraRequestPolicy {
                     URLQueryItem(name: "orderBy", value: "created")
                 ]
             )
+        case "get_transitions":
+            guard let issueKey = clean(arguments["issue_key"] as? String),
+                  isValidIssueKey(issueKey) else {
+                throw JiraRequestPolicyError("jira get_transitions requires an issue_key such as ASTRA-123")
+            }
+            // What `propose_transition` has to name. Transition ids belong to a
+            // project's workflow, so there is no list to hardcode and no way to
+            // guess one — the agent asks the ticket which moves it offers.
+            return JiraHTTPRequest(
+                method: "GET",
+                path: "/rest/api/3/issue/\(issueKey)/transitions",
+                queryItems: []
+            )
         default:
             throw JiraRequestPolicyError("Unsupported Jira operation '\(operation)'")
         }
     }
 
-    /// The arguments `propose_issue` accepts. Default-deny on *names*, matching
+    /// Routing and timing, accepted alongside every proposal's own fields. They
+    /// steer the call and never appear in a staged payload.
+    private static let routingArgumentKeys: Set<String> = ["operation", "alias", "timeout_seconds"]
+
+    /// The fields `propose_issue` accepts. Default-deny on *names*, matching
     /// how every other operation in this module is gated: an argument that is
     /// not on this list is refused rather than dropped.
     ///
@@ -157,91 +175,160 @@ enum JiraRequestPolicy {
     /// `fields` map — security level, custom fields, watchers — and an agent
     /// that sets one and is silently ignored will report the ticket as filed
     /// with a restriction it does not have. Refusing says so.
-    private static let proposalArgumentKeys: Set<String> = [
-        "operation", "alias", "timeout_seconds",
+    static let issueProposalFields: Set<String> = [
         "project_key", "issue_type", "summary", "description",
         "priority", "labels", "assignee_account_id", "parent_key"
     ]
+
+    /// Refuses any argument the proposal does not declare, naming what it does.
+    static func refuseUnknownArguments(
+        _ arguments: [String: Any],
+        fields: Set<String>,
+        operation: String
+    ) throws {
+        let unknown = Set(arguments.keys).subtracting(fields.union(routingArgumentKeys)).sorted()
+        guard unknown.isEmpty else {
+            throw JiraRequestPolicyError(
+                "jira \(operation) does not accept \(unknown.joined(separator: ", ")). "
+                    + "Supported fields: \(fields.sorted().joined(separator: ", "))"
+            )
+        }
+    }
 
     /// Validates a `create_issue` payload the agent composed. Builds no request
     /// and reaches no network: the caller stages the result and returns a
     /// digest.
     static func issueProposal(arguments: [String: Any]) throws -> JiraIssueProposal {
-        let unknown = Set(arguments.keys).subtracting(proposalArgumentKeys).sorted()
-        guard unknown.isEmpty else {
-            throw JiraRequestPolicyError(
-                "jira propose_issue does not accept \(unknown.joined(separator: ", ")). "
-                    + "Supported fields: \(proposalArgumentKeys.subtracting(["operation", "alias", "timeout_seconds"]).sorted().joined(separator: ", "))"
-            )
-        }
-        guard let projectKey = clean(arguments["project_key"] as? String),
+        let operation = "propose_issue"
+        try refuseUnknownArguments(arguments, fields: issueProposalFields, operation: operation)
+        guard let projectKey = try presentString(arguments["project_key"], field: "project_key", operation: operation),
               projectKey.range(of: #"^[A-Z][A-Z0-9_]{1,9}$"#, options: [.regularExpression]) != nil else {
             throw JiraRequestPolicyError("jira propose_issue requires a project_key such as STAR")
         }
         // Issue types are configured per project, so there is no value list to
         // check against — only a shape. Same for priority.
-        let issueType = try label(arguments["issue_type"], field: "issue_type", limit: 50, required: true) ?? ""
-        // Jira's own summary limit. Enforced here so the failure is a message
-        // the agent can act on rather than a 400 after the user approved it.
-        guard let summary = clean(arguments["summary"] as? String),
-              summary.count <= 255,
-              !summary.contains("\n"), !summary.contains("\r") else {
-            throw JiraRequestPolicyError("jira propose_issue requires a single-line summary of up to 255 characters")
-        }
-        var description: String?
-        if let raw = clean(arguments["description"] as? String) {
-            guard raw.count <= 32_768 else {
-                throw JiraRequestPolicyError("jira propose_issue description must be at most 32768 characters")
-            }
-            description = raw
-        }
-        let labels = try labels(from: arguments["labels"])
-        var parentKey: String?
-        if let raw = clean(arguments["parent_key"] as? String) {
-            guard isValidIssueKey(raw) else {
-                throw JiraRequestPolicyError("jira propose_issue parent_key must be an issue key such as STAR-123")
-            }
-            parentKey = raw
-        }
-        var assignee: String?
-        if let raw = clean(arguments["assignee_account_id"] as? String) {
-            guard raw.range(of: #"^[A-Za-z0-9:_-]{1,128}$"#, options: [.regularExpression]) != nil else {
-                throw JiraRequestPolicyError("jira propose_issue assignee_account_id must be a Jira account id")
-            }
-            assignee = raw
-        }
+        let issueType = try label(
+            arguments["issue_type"], field: "issue_type", limit: 50, required: true, operation: operation
+        ) ?? ""
         return JiraIssueProposal(
             projectKey: projectKey,
             issueType: issueType,
-            summary: summary,
-            description: description,
-            priority: try label(arguments["priority"], field: "priority", limit: 50, required: false),
-            labels: labels,
-            assigneeAccountID: assignee,
-            parentKey: parentKey
+            summary: try singleLineSummary(arguments["summary"], operation: operation, required: true) ?? "",
+            description: try boundedText(arguments["description"], field: "description", operation: operation),
+            priority: try label(
+                arguments["priority"], field: "priority", limit: 50, required: false, operation: operation
+            ),
+            labels: try labels(from: arguments["labels"], operation: operation) ?? [],
+            assigneeAccountID: try assigneeAccountID(arguments["assignee_account_id"], operation: operation),
+            parentKey: try issueKey(arguments["parent_key"], field: "parent_key", operation: operation, required: false)
         )
     }
 
-    private static func label(_ value: Any?, field: String, limit: Int, required: Bool) throws -> String? {
-        guard let cleaned = clean(value as? String) else {
+    /// A string argument, or `nil` when the agent left it out.
+    ///
+    /// A value of the wrong *type* is refused rather than treated as absent.
+    /// Reading `value as? String` alone turns `summary: 42` into "no summary",
+    /// and on an update that is a field the agent asked to change and the user
+    /// reviewed a proposal without.
+    static func presentString(_ value: Any?, field: String, operation: String) throws -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        guard let string = value as? String else {
+            throw JiraRequestPolicyError("jira \(operation) \(field) must be a string")
+        }
+        return clean(string)
+    }
+
+    static func label(
+        _ value: Any?,
+        field: String,
+        limit: Int,
+        required: Bool,
+        operation: String
+    ) throws -> String? {
+        guard let cleaned = try presentString(value, field: field, operation: operation) else {
             if required {
-                throw JiraRequestPolicyError("jira propose_issue requires \(field)")
+                throw JiraRequestPolicyError("jira \(operation) requires \(field)")
             }
             return nil
         }
         guard cleaned.count <= limit, !cleaned.contains("\n"), !cleaned.contains("\r") else {
-            throw JiraRequestPolicyError("jira propose_issue \(field) must be a single line of up to \(limit) characters")
+            throw JiraRequestPolicyError("jira \(operation) \(field) must be a single line of up to \(limit) characters")
         }
         return cleaned
     }
 
-    private static func labels(from value: Any?) throws -> [String] {
-        guard let value else { return [] }
+    /// Jira's own summary limit. Enforced here so the failure is a message the
+    /// agent can act on rather than a 400 after the user approved it.
+    static func singleLineSummary(_ value: Any?, operation: String, required: Bool) throws -> String? {
+        guard let summary = try presentString(value, field: "summary", operation: operation) else {
+            if required {
+                throw JiraRequestPolicyError("jira \(operation) requires a single-line summary of up to 255 characters")
+            }
+            return nil
+        }
+        guard summary.count <= 255, !summary.contains("\n"), !summary.contains("\r") else {
+            throw JiraRequestPolicyError(
+                required
+                    ? "jira \(operation) requires a single-line summary of up to 255 characters"
+                    : "jira \(operation) summary must be a single line of up to 255 characters"
+            )
+        }
+        return summary
+    }
+
+    /// Prose the user will read and Jira will render: a description or a
+    /// comment. Bounded to what Jira itself accepts.
+    static func boundedText(
+        _ value: Any?,
+        field: String,
+        operation: String,
+        required: Bool = false
+    ) throws -> String? {
+        guard let text = try presentString(value, field: field, operation: operation) else {
+            if required {
+                throw JiraRequestPolicyError("jira \(operation) requires \(field)")
+            }
+            return nil
+        }
+        guard text.count <= 32_768 else {
+            throw JiraRequestPolicyError("jira \(operation) \(field) must be at most 32768 characters")
+        }
+        return text
+    }
+
+    static func assigneeAccountID(_ value: Any?, operation: String) throws -> String? {
+        guard let raw = try presentString(value, field: "assignee_account_id", operation: operation) else {
+            return nil
+        }
+        guard raw.range(of: #"^[A-Za-z0-9:_-]{1,128}$"#, options: [.regularExpression]) != nil else {
+            throw JiraRequestPolicyError("jira \(operation) assignee_account_id must be a Jira account id")
+        }
+        return raw
+    }
+
+    static func issueKey(_ value: Any?, field: String, operation: String, required: Bool) throws -> String? {
+        guard let raw = try presentString(value, field: field, operation: operation) else {
+            if required {
+                throw JiraRequestPolicyError("jira \(operation) requires an \(field) such as STAR-123")
+            }
+            return nil
+        }
+        guard isValidIssueKey(raw) else {
+            throw JiraRequestPolicyError("jira \(operation) \(field) must be an issue key such as STAR-123")
+        }
+        return raw
+    }
+
+    /// `nil` when the agent left `labels` out, and an empty array when it sent
+    /// one — on an update those are different requests, "leave the labels
+    /// alone" and "remove every label".
+    static func labels(from value: Any?, operation: String) throws -> [String]? {
+        guard let value, !(value is NSNull) else { return nil }
         guard let raw = value as? [Any] else {
-            throw JiraRequestPolicyError("jira propose_issue labels must be an array of strings")
+            throw JiraRequestPolicyError("jira \(operation) labels must be an array of strings")
         }
         guard raw.count <= 20 else {
-            throw JiraRequestPolicyError("jira propose_issue accepts at most 20 labels")
+            throw JiraRequestPolicyError("jira \(operation) accepts at most 20 labels")
         }
         return try raw.map { element in
             // Jira silently rejects a label containing a space, so a
@@ -250,7 +337,7 @@ enum JiraRequestPolicy {
             guard let label = clean(element as? String),
                   label.range(of: #"^[A-Za-z0-9_.:-]{1,255}$"#, options: [.regularExpression]) != nil else {
                 throw JiraRequestPolicyError(
-                    "jira propose_issue labels must each be a single word of letters, digits, or _.:- characters"
+                    "jira \(operation) labels must each be a single word of letters, digits, or _.:- characters"
                 )
             }
             return label
@@ -292,12 +379,12 @@ enum JiraRequestPolicy {
         return token
     }
 
-    private static func clean(_ value: String?) -> String? {
+    static func clean(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func isValidIssueKey(_ value: String) -> Bool {
+    static func isValidIssueKey(_ value: String) -> Bool {
         value.range(
             of: #"^[A-Z][A-Z0-9_]+-[1-9][0-9]*$"#,
             options: [.regularExpression]
@@ -328,100 +415,5 @@ struct JiraRequestPolicyError: LocalizedError {
 
     init(_ message: String) {
         errorDescription = message
-    }
-}
-
-/// Composes and stages a `create_issue` payload. Reaches no network.
-///
-/// The operation the agent calls is named for what this process does —
-/// propose — and the staged envelope is named for what the app will do,
-/// `create_issue`. They are kept distinct because the agent's grant covers the
-/// first and only the user's approval covers the second, and a single name for
-/// both is how that distinction gets lost.
-enum JiraIssueProposalPolicy {
-    static let serviceType = "jira"
-    static let operation = "propose_issue"
-
-    /// What the app is being asked to do, which is not what the agent did.
-    static let stagedOperation = "create_issue"
-
-    static func stage(
-        arguments: [String: Any],
-        connector: HostControlConnector,
-        configuration: HostControlToolConfiguration,
-        diagnostics: HostControlToolDiagnosticsRecorder?
-    ) -> MCPServerReply {
-        let proposal: JiraIssueProposal
-        do {
-            proposal = try JiraRequestPolicy.issueProposal(arguments: arguments)
-        } catch {
-            return .error(code: -32602, message: error.localizedDescription)
-        }
-
-        let staged: ConnectorMutationStaging.StagedConnectorMutation
-        do {
-            staged = try ConnectorMutationStaging.stage(
-                serviceType: serviceType,
-                operation: stagedOperation,
-                connector: connector,
-                target: proposal.target,
-                summary: proposal.summary,
-                requestMethod: proposal.requestMethod,
-                requestPath: proposal.requestPath,
-                body: proposal.body,
-                configuration: configuration
-            )
-        } catch {
-            // No inline fallback and no send. Failing to stage is not a reason
-            // to do the write here instead.
-            return .result([
-                "content": [[
-                    "type": "text",
-                    "text": "Jira proposal could not be staged: \(error.localizedDescription)"
-                ]],
-                "isError": true
-            ])
-        }
-
-        diagnostics?.record(
-            toolName: "jira",
-            summary: "jira \(operation) \(proposal.target) staged \(staged.digest)",
-            result: nil
-        )
-        return .result([
-            "content": [[
-                "type": "text",
-                "text": formatted(staged, proposal: proposal, configuration: configuration)
-            ]],
-            "isError": false
-        ])
-    }
-
-    private static func formatted(
-        _ staged: ConnectorMutationStaging.StagedConnectorMutation,
-        proposal: JiraIssueProposal,
-        configuration: HostControlToolConfiguration
-    ) -> String {
-        var lines = [
-            "staged_operation: \(stagedOperation)",
-            "target: \(staged.target)",
-            "summary: \(configuration.redacted(proposal.summary, includingSecretFragments: false))",
-            "description_bytes: \(proposal.description?.utf8.count ?? 0)"
-        ]
-        if !proposal.labels.isEmpty {
-            lines.append("labels: \(proposal.labels.joined(separator: ", "))")
-        }
-        let note = """
-            note: nothing was sent. ASTRA will ask the user to review this exact payload and, if \
-            they approve, will post it using the connector credential. Read the staged file if you \
-            need to check what you composed. Do not retry this call and do not attempt the write \
-            another way — a second proposal is a second thing for the user to approve, not a \
-            faster one.
-            """
-        lines.append("staged_path: \(staged.path)")
-        lines.append("request_digest: \(staged.digest)")
-        lines.append("sent: false")
-        lines.append(note)
-        return lines.joined(separator: "\n")
     }
 }

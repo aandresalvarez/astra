@@ -12,6 +12,7 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case unreadableStagedPayload(String)
     case unsupportedOperation(serviceType: String, operation: String)
     case routeMismatch(staged: String, expected: String)
+    case targetMismatch(target: String, issueKey: String)
     case connectorNotFound(String)
     case connectorServiceMismatch(expected: String, found: String)
     case connectorChangedSinceReview(reviewed: String, now: String)
@@ -37,6 +38,9 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
         case let .routeMismatch(staged, expected):
             "The staged request targets \(staged), but ASTRA sends \(operationDescription(expected)) "
                 + "for this operation. Refusing to send."
+        case let .targetMismatch(target, issueKey):
+            "This proposal is labelled \u{201C}\(target)\u{201D}, but its request goes to \(issueKey). "
+                + "Refusing to describe it as one thing and send it as another."
         case let .connectorNotFound(id):
             "The connector this proposal was composed against (\(id)) no longer exists."
         case let .connectorServiceMismatch(expected, found):
@@ -272,7 +276,12 @@ struct ConnectorMutationProposal: Equatable, Identifiable {
             ConnectorMutationReviewField(id: "operation", label: "ASTRA will perform", value: operation, isMonospaced: true),
             ConnectorMutationReviewField(id: "endpoint", label: "ASTRA will send to", value: "\(requestMethod) \(destinationURL)", isMonospaced: true),
             ConnectorMutationReviewField(id: "target", label: "Destination", value: target, isMonospaced: false),
-            ConnectorMutationReviewField(id: "summary", label: "Summary", value: summary, isMonospaced: false),
+            ConnectorMutationReviewField(id: "summary", label: "Summary", value: summary, isMonospaced: false)
+        ]
+        // Read out of the bytes that will be sent, not out of anything the
+        // envelope says about them.
+        + ConnectorMutationReviewContent.fields(operation: operation, requestBody: requestBody)
+        + [
             ConnectorMutationReviewField(id: "staged-path", label: "Staged file", value: stagedPayloadPath, isMonospaced: true),
             ConnectorMutationReviewField(id: "digest", label: "Payload digest", value: requestDigest, isMonospaced: true)
         ]
@@ -386,14 +395,26 @@ final class ConnectorMutationCoordinator {
         }
         // The envelope declared a route; this is where it has to agree with the
         // one ASTRA derived. A rewritten path cannot redirect the credential.
+        //
+        // The path that is used from here on is `path` — rebuilt from ASTRA's
+        // template, with at most one segment (a ticket key, validated) taken
+        // from the envelope. The envelope's own string is only ever an argument
+        // to that derivation.
         let stagedRoute = "\(staged.requestMethod.uppercased()) \(staged.requestPath)"
-        let expectedRoute = "\(definition.method) \(definition.path)"
-        guard stagedRoute == expectedRoute else {
+        let expectedRoute = "\(definition.method) \(definition.pathTemplate)"
+        guard staged.requestMethod.uppercased() == definition.method,
+              let path = definition.resolvedPath(forStagedPath: staged.requestPath) else {
             throw ConnectorMutationCoordinatorError.routeMismatch(staged: stagedRoute, expected: expectedRoute)
+        }
+        guard definition.target(staged.target, namesTheTicketIn: path) else {
+            throw ConnectorMutationCoordinatorError.targetMismatch(
+                target: staged.target,
+                issueKey: definition.issueKey(inResolvedPath: path) ?? path
+            )
         }
 
         let connector = try resolveConnector(staged)
-        guard let url = Self.url(baseURL: connector.baseURL, path: definition.path) else {
+        guard let url = Self.url(baseURL: connector.baseURL, path: path) else {
             throw ConnectorMutationCoordinatorError.invalidBaseURL(connector.baseURL)
         }
         try Self.requireProtectedTransport(connector)
@@ -407,7 +428,7 @@ final class ConnectorMutationCoordinator {
             target: staged.target,
             summary: staged.summary,
             requestMethod: definition.method,
-            requestPath: definition.path,
+            requestPath: path,
             stagedPayloadPath: staged.path,
             requestDigest: staged.digest,
             byteCount: staged.byteCount,
@@ -708,11 +729,25 @@ final class ConnectorMutationCoordinator {
         baseURL: URL
     ) -> ConnectorMutationReceipt {
         let object = (try? JSONSerialization.jsonObject(with: Data(response.body.utf8))) as? [String: Any]
-        let key = (object?["key"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        let browseURL = key.flatMap { key -> String? in
+        // A created issue names itself in the response. A comment, an update and
+        // a transition act on a ticket the proposal already addressed, and their
+        // answers are a comment record or an empty `204` — so the ticket comes
+        // from the route, which ASTRA derived and the user read, rather than
+        // from a body that may not exist.
+        let createdKey = (object?["key"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let routeKey = ConnectorMutationOperations
+            .definition(serviceType: proposal.serviceType, operation: proposal.operation)?
+            .issueKey(inResolvedPath: proposal.requestPath)
+        let commentID = proposal.operation == "add_comment"
+            ? (object?["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            : nil
+        let browseURL = (createdKey ?? routeKey).flatMap { key -> String? in
             var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
             components?.path = "/browse/\(key)"
             components?.query = nil
+            if let commentID {
+                components?.queryItems = [URLQueryItem(name: "focusedCommentId", value: commentID)]
+            }
             return components?.url?.absoluteString
         }
         return ConnectorMutationReceipt(
@@ -723,7 +758,7 @@ final class ConnectorMutationCoordinator {
             target: proposal.target,
             destinationURL: proposal.destinationURL,
             statusCode: response.statusCode,
-            createdKey: key,
+            createdKey: createdKey,
             createdURL: browseURL ?? (object?["self"] as? String)
         )
     }

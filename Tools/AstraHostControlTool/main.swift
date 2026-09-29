@@ -367,18 +367,39 @@ private enum AstraHostControlBrokerCLI {
             arguments,
             allowed: [
                 "--operation", "--alias", "--issue-key", "--jql",
-                "--max-results", "--start-at", "--next-page-token", "--timeout-seconds"
+                "--max-results", "--start-at", "--next-page-token", "--timeout-seconds",
+                "--arguments-file"
             ]
         )
         var output: [String: Any] = [:]
         let operation = (values["--operation"] ?? "status")
             .replacingOccurrences(of: "-", with: "_")
             .lowercased()
-        guard ["status", "get_issue", "search_jql", "get_comments"].contains(operation) else {
+        // Both lists are read from the broker. This parser, the broker, and the
+        // app's shell policy have to agree on which operations exist, and a
+        // third hand-written copy is how they stop agreeing.
+        let isProposal = JiraHostControlOperations.proposalOperations.contains(operation)
+        guard isProposal || JiraHostControlOperations.readOperations.contains(operation) else {
             throw HostControlBrokerCLIError.invalidArguments
         }
         output["operation"] = operation
         copy("--alias", to: "alias", from: values, into: &output)
+        if isProposal {
+            // A proposal's fields travel in one JSON file, not as options. A
+            // ticket body is prose with newlines, quotes and backticks, and
+            // none of that survives shell quoting or the relay's tokenizer.
+            // Everything else the operation takes is in the file, so no other
+            // content option is accepted here — a second source for the same
+            // field would leave the user reviewing whichever one won.
+            guard let file = values["--arguments-file"],
+                  JiraHostControlOperations.isValidArgumentsFileName(file),
+                  Set(values.keys).isSubset(of: ["--operation", "--alias", "--arguments-file", "--timeout-seconds"]) else {
+                throw HostControlBrokerCLIError.invalidArguments
+            }
+            output[JiraHostControlOperations.argumentsFileKey] = file
+        } else if values["--arguments-file"] != nil {
+            throw HostControlBrokerCLIError.invalidArguments
+        }
         copy("--issue-key", to: "issue_key", from: values, into: &output)
         copy("--jql", to: "jql", from: values, into: &output)
         copy("--next-page-token", to: "next_page_token", from: values, into: &output)
@@ -514,7 +535,8 @@ private enum AstraHostControlBrokerCLI {
 
     private static let usage = """
     Usage:
-      astra-host-control jira --operation status|search-jql|get-issue|get-comments [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N] [--start-at N]
+      astra-host-control jira --operation status|search-jql|get-issue|get-comments|get-transitions [--alias NAME] [--jql JQL] [--issue-key KEY] [--max-results N] [--start-at N]
+      astra-host-control jira --operation propose-issue|propose-comment|propose-update|propose-transition [--alias NAME] --arguments-file NAME.json
       astra-host-control redcap --operation status|project|metadata|user|record|report [--alias NAME] [--fields A,B] [--forms A,B] [--records 1,2] [--report-id N] [--raw-or-label raw|label]
       astra-host-control ssh --alias NAME
       astra-host-control github|gcloud|bq -- ARGUMENT...
@@ -522,6 +544,11 @@ private enum AstraHostControlBrokerCLI {
     redcap record and report write their rows to a file under the task
     directory and print only a receipt; nothing subject-level is returned on
     stdout.
+
+    jira propose-* stage a change for the user to review; nothing is sent.
+    NAME.json is a JSON object in the task folder holding the operation's
+    fields, the same ones the MCP tool takes (for example issue_key, comment
+    and visibility for propose-comment). It is a file name, not a path.
     """
 }
 

@@ -145,11 +145,11 @@ final class PluginCatalog {
             name: "Jira Workflow",
             icon: "list.bullet.clipboard",
             iconDescriptor: .brand("jira", fallbackSystemName: "list.bullet.clipboard"),
-            description: "Search and read Jira through ASTRA's credential broker, and propose tickets for you to approve",
+            description: "Search and read Jira through ASTRA's credential broker, and propose ticket changes for you to approve",
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.4.0",
+            version: "2.5.0",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
             to read ticket metadata from your Jira instance through ASTRA's \
@@ -160,9 +160,10 @@ final class PluginCatalog {
             • Search tickets by project, sprint, status, or assignee
             • Read ticket summaries, status, assignee, priority, project, and issue type
             • Summarize sprint progress and blockers
-            • Have the agent draft a new ticket, then review the exact body \
-            and let ASTRA file it — the agent never holds the credential and \
-            never posts anything itself
+            • Have the agent draft a new ticket, a comment or reply, a field \
+            update, or a status change, then review the exact payload and \
+            decide when ASTRA sends it — the agent never holds the credential \
+            and never posts anything itself
 
             Setup:
             • Base URL — your Jira instance (e.g. https://company.atlassian.net)
@@ -173,9 +174,9 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "Jira Agent",
                 icon: "list.bullet.clipboard",
-                description: "Search and read Jira tickets, and stage new ones for approval, via typed operations",
+                description: "Search and read Jira tickets, and stage new tickets, comments, updates and status moves for approval, via typed operations",
                 allowedTools: ["Read", "Glob", "Grep", "Bash"],
-                disallowedTools: ["Write", "Edit"],
+                disallowedTools: ["Edit"],
                 customTools: [],
                 behaviorInstructions: """
                 You are a Jira integration agent. Use only ASTRA's typed Jira host-control tool.
@@ -193,13 +194,20 @@ final class PluginCatalog {
                 • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
                 • Get issue: operation get_issue with issue_key — returns the ticket description and reporter alongside its status fields
                 • Get comments: operation get_comments with issue_key, optional max_results, and zero-based start_at (defaults to 0), oldest first. When next_start_at is present, use that value for another call; an absent next_start_at means there are no more comments.
+                • Get transitions: operation get_transitions with issue_key — lists the status moves the ticket offers now, each with the id and name propose_transition needs
                 • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
 
-                PROPOSING A NEW TICKET
-                • Filing a ticket is a two-step flow: you compose it, the user approves it, and ASTRA posts it. You never post and you never see the credential.
-                • Use operation propose_issue with project_key, issue_type, and summary, plus optional description, priority, labels, assignee_account_id, and parent_key. Write description as Jira wiki markup, not Atlassian Document Format JSON.
+                PROPOSING CHANGES
+                • Every write is a two-step flow: you compose it, the user reviews the exact payload and decides whether and when it is sent, and ASTRA posts it. You never post and you never see the credential.
+                • When the user asks you to file, send, reply, comment, update, or move a ticket, that is a request to propose it. Stage it with the matching operation below and tell the user it is waiting for their review. Do not say a change cannot be made when one of these operations covers it.
+                • propose_issue — a new ticket: project_key, issue_type, and summary, plus optional description, priority, labels, assignee_account_id, and parent_key.
+                • propose_comment — a comment on an existing ticket: issue_key, comment, and visibility. visibility is required: public is seen by everyone who can see the ticket, including the customer on a Jira Service Management ticket; internal is visible to agents only. When it is unclear which the user wants for a reply, ask before proposing.
+                • propose_update — edit an existing ticket: issue_key plus at least one of summary, description, priority, labels (the list replaces the whole label set), and assignee_account_id.
+                • propose_transition — move an existing ticket to another status: issue_key, plus the transition_id and transition_name that get_transitions returned for it, and resolution when the transition requires one.
+                • Write description and comment as Jira wiki markup, not Atlassian Document Format JSON.
+                • Over the MCP route pass these fields as arguments. Over the CLI relay, write the same fields as a JSON object to a .json file in the task output folder (for example jira_comment_SS-617.json) and invoke astra-host-control jira --operation propose-comment --alias ALIAS --arguments-file jira_comment_SS-617.json, using propose-issue, propose-comment, propose-update, or propose-transition. Pass only the file's name, never a path. In Ask, request the normal single-use Write approval to create only that file.
                 • The reply reports sent: false and a staged path. That is success, not a failure. Stop there and tell the user the proposal is waiting for their review; do not retry the call and do not offer to send it another way.
-                • Never write a script, curl command, or set of instructions that would have the user or anyone else post the ticket with an API token. That moves a credential ASTRA is holding for you into a shell, which is the exact outcome this capability exists to prevent. If propose_issue is unavailable, say the ticket cannot be filed and stop.
+                • Never write a script, curl command, or set of instructions that would have the user or anyone else post the change with an API token. That moves a credential ASTRA is holding for you into a shell, which is the exact outcome this capability exists to prevent. If a propose operation is unavailable, say the change cannot be made and stop.
 
                 If ASTRA does not attach either Jira host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct REST credential use.
 
@@ -210,7 +218,7 @@ final class PluginCatalog {
                 • When summarizing a sprint, group by status (To Do / In Progress / Done)
 
                 RULES
-                • propose_issue is the only write, and it only stages. Do not update, comment on, transition, delete, or otherwise mutate existing Jira tickets with this capability
+                • propose_issue, propose_comment, propose_update, and propose_transition are the only writes, and they only stage. Do not delete tickets or change them any other way with this capability
                 • Default searches to the selected connector's configured project keys unless told otherwise
                 • Use JQL for complex queries
                 • Handle pagination for large result sets by passing returned nextPageToken values as next_page_token
@@ -244,7 +252,7 @@ final class PluginCatalog {
                 // move with it — no write leaves ASTRA without the user reading
                 // the exact payload first.
                 externalEffects: [.ticketMutation],
-                policyNotes: "Jira reads are typed ASTRA host-control operations. The agent can stage a new ticket but cannot send one: ASTRA posts it only after the user reviews the exact payload, and refuses if those bytes changed after review. Keychain-backed credentials remain inside ASTRA's broker and are not projected into provider environments."
+                policyNotes: "Jira reads are typed ASTRA host-control operations. The agent can stage new tickets, comments, field updates and status moves but cannot send them: ASTRA posts each only after the user reviews the exact payload and decides to send it, and refuses if those bytes changed after review. Keychain-backed credentials remain inside ASTRA's broker and are not projected into provider environments."
             )
         ),
 
