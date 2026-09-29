@@ -4009,7 +4009,7 @@ struct WorkspaceSetupForm: View {
             VStack(alignment: .leading, spacing: 8) {
                 capabilityTextField("Base URL", prompt: "https://company.atlassian.net", text: $draft.capabilityConfiguration.jiraBaseURL)
                 capabilityTextField("Email", prompt: "you@example.com", text: $draft.capabilityConfiguration.jiraEmail)
-                capabilitySecureField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.jiraAPIToken)
+                capabilitySecretField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.jiraAPIToken)
                 capabilityTextField("Project keys", prompt: "ENG, OPS", text: $draft.capabilityConfiguration.jiraProjects)
             }
         case OnboardingCapabilitySetup.githubPackageID:
@@ -4043,7 +4043,7 @@ struct WorkspaceSetupForm: View {
         case OnboardingCapabilitySetup.redcapPackageID:
             VStack(alignment: .leading, spacing: 8) {
                 capabilityTextField("API URL", prompt: OnboardingCapabilityConfiguration.defaultRedcapAPIURL, text: $draft.capabilityConfiguration.redcapAPIURL)
-                capabilitySecureField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.redcapAPIToken)
+                capabilitySecretField("API token", prompt: "Stored in Keychain", text: $draft.capabilityConfiguration.redcapAPIToken)
             }
         default:
             EmptyView()
@@ -4137,14 +4137,13 @@ struct WorkspaceSetupForm: View {
         }
     }
 
-    private func capabilitySecureField(_ label: String, prompt: String, text: Binding<String>) -> some View {
+    private func capabilitySecretField(_ label: String, prompt: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
                 .font(Stanford.caption(10).weight(.semibold))
                 .foregroundStyle(Stanford.coolGrey)
                 .textCase(.uppercase)
-            SecureField(prompt, text: text)
-                .textFieldStyle(.roundedBorder)
+            SecretEntryField(prompt, text: text)
                 .font(Stanford.ui(12))
         }
     }

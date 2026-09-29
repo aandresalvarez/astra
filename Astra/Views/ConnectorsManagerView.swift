@@ -469,6 +469,16 @@ struct ConnectorEditorView: View {
                                                 .font(Stanford.ui(13, design: .monospaced))
                                                 .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
                                                 .lineLimit(1)
+                                        } else if inKeychain, SecretEntryPresentation.isIdentifierKey(key),
+                                                  let identity = KeychainService.load(key: key, connector: connector),
+                                                  !identity.isEmpty {
+                                            // An address or login is not a secret: show it so a
+                                            // typo is visible after saving, not only while typing.
+                                            Text(identity)
+                                                .font(Stanford.ui(13, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                         } else {
                                             HStack(spacing: 4) {
                                                 Text(String(repeating: "\u{2022}", count: 12))
@@ -488,10 +498,9 @@ struct ConnectorEditorView: View {
                                         Spacer()
 
                                         if editingCredentialKey == key {
-                                            SecureField("value", text: $replacementCredentialValue)
-                                                .textFieldStyle(.roundedBorder)
+                                            SecretEntryField("value", text: $replacementCredentialValue)
                                                 .font(Stanford.ui(12, design: .monospaced))
-                                                .frame(maxWidth: 220)
+                                                .frame(maxWidth: 260)
                                                 .onSubmit { saveCredentialReplacement(for: key) }
 
                                             Button("Save") {
@@ -544,8 +553,7 @@ struct ConnectorEditorView: View {
                                     .textFieldStyle(.roundedBorder)
                                     .font(Stanford.ui(13, design: .monospaced))
                                     .frame(width: 140)
-                                SecureField("value", text: $newCredValue)
-                                    .textFieldStyle(.roundedBorder)
+                                SecretEntryField("value", text: $newCredValue)
                                     .font(Stanford.ui(13, design: .monospaced))
                                     .onSubmit { addCredential() }
                                 Button("Store secret") { addCredential() }
