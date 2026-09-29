@@ -82,17 +82,40 @@ struct CapabilityPackageState {
             return .inactive
         }
 
-        let activeConnectorIDs = Set(capabilities.activeConnectors.map(\.id))
-        let activeLinkedConnectors = linkedConnectors
-            .filter { connector in
-                activeConnectorIDs.contains(connector.id) || isConnectorEnabled(connector)
-            }
-        let messages = missingPackageConnectorMessages(activeLinkedConnectors: activeLinkedConnectors)
-            + activeLinkedConnectors.flatMap(readinessMessages(for:))
+        let activeConnectors = activeLinkedConnectors
+        let messages = missingPackageConnectorMessages(activeLinkedConnectors: activeConnectors)
+            + activeConnectors.flatMap(readinessMessages(for:))
 
         return messages.isEmpty
             ? .ready
             : CapabilityReadiness(level: .needsAttention, messages: messages)
+    }
+
+    var connectorsNeedingAttention: [Connector] {
+        linkedConnectors.filter { !attentionMessages(for: $0).isEmpty }
+    }
+
+    func attentionMessages(for connector: Connector) -> [String] {
+        guard isEnabled else { return [] }
+
+        let activeConnectors = activeLinkedConnectors
+        let missingConnectorMessages = package.connectors.compactMap { requiredConnector -> String? in
+            guard CapabilityRuntimeResourceMatcher.connectorMatches(requiredConnector, connector: connector),
+                  !activeConnectors.contains(where: {
+                      CapabilityRuntimeResourceMatcher.connectorMatches(requiredConnector, connector: $0)
+                  }) else { return nil }
+            return missingConnectorMessage(for: requiredConnector)
+        }
+        let credentialMessages = activeConnectors.contains(where: { $0.id == connector.id })
+            ? readinessMessages(for: connector) : []
+        return missingConnectorMessages + credentialMessages
+    }
+
+    private var activeLinkedConnectors: [Connector] {
+        let activeConnectorIDs = Set(capabilities.activeConnectors.map(\.id))
+        return linkedConnectors.filter { connector in
+            activeConnectorIDs.contains(connector.id) || isConnectorEnabled(connector)
+        }
     }
 
     private func isSkillEnabled(_ skill: Skill) -> Bool {
@@ -195,9 +218,13 @@ struct CapabilityPackageState {
                 CapabilityRuntimeResourceMatcher.connectorMatches(packageConnector, connector: connector)
             }
             guard !hasActiveConnector else { return nil }
-            let name = packageConnector.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            return "\(name.isEmpty ? package.name : name): connector not active for this workspace"
+            return missingConnectorMessage(for: packageConnector)
         }
+    }
+
+    private func missingConnectorMessage(for connector: PluginConnector) -> String {
+        let name = connector.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(name.isEmpty ? package.name : name): connector not active for this workspace"
     }
 
     private func uniqueSkills(_ skills: [Skill]) -> [Skill] {
