@@ -75,6 +75,7 @@ final class RuntimeSetupModel: ObservableObject {
     var copyToPasteboard: (String) -> Void
     private let defaults: UserDefaults
     private let runtimes: [AgentRuntimeID]
+    private let availabilityCache: RuntimeReadinessStateCache
 
     private var refreshTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
@@ -103,7 +104,8 @@ final class RuntimeSetupModel: ObservableObject {
         checkReadiness: ((RuntimeReadinessConfiguration) async -> RuntimeReadinessReport)? = nil,
         installer: RuntimeCLIInstaller = RuntimeCLIInstaller(),
         authRunner: RuntimeAuthSessionRunner = RuntimeAuthSessionRunner(),
-        copyToPasteboard: ((String) -> Void)? = nil
+        copyToPasteboard: ((String) -> Void)? = nil,
+        availabilityCache: RuntimeReadinessStateCache = .shared
     ) {
         self.runtimes = runtimes
         self.defaults = defaults
@@ -117,6 +119,7 @@ final class RuntimeSetupModel: ObservableObject {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(command, forType: .string)
         }
+        self.availabilityCache = availabilityCache
         self.selectedRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(
             rawValue: defaults.string(forKey: AppStorageKeys.defaultRuntimeID)
         )
@@ -442,9 +445,12 @@ final class RuntimeSetupModel: ObservableObject {
         let configuration = makeReadinessConfiguration()
         let report = await checkReadiness(configuration)
         guard generation == readinessGeneration, !Task.isCancelled else { return }
+        await availabilityCache.removeAll()
+        guard generation == readinessGeneration, !Task.isCancelled else { return }
         readinessReport = report
         readinessReportRuntime = configuration.runtime
         foldReadinessIntoAuthState(report, runtime: configuration.runtime)
+        RuntimeProviderSettingsStore.bumpRevision(defaults: defaults)
     }
 
     /// For manual-recheck providers (Antigravity), the live readiness

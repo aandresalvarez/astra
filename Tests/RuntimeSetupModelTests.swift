@@ -57,7 +57,8 @@ private func makeModel(
     authProbeResponses: [String: RunResult] = [:],
     report: RuntimeReadinessReport = readyReport,
     launcher: any TerminalCommandLaunching = SilentLauncher(),
-    copied: CopiedCommands = CopiedCommands()
+    copied: CopiedCommands = CopiedCommands(),
+    availabilityCache: RuntimeReadinessStateCache = RuntimeReadinessStateCache()
 ) async -> RuntimeSetupModel {
     let probeStub = StubBinaryRunner()
     for (key, result) in authProbeResponses {
@@ -79,7 +80,8 @@ private func makeModel(
         checkReadiness: { _ in report },
         installer: RuntimeCLIInstaller(runner: StubBinaryRunner(), detectExecutable: { _ in "" }),
         authRunner: authRunner,
-        copyToPasteboard: { copied.append($0) }
+        copyToPasteboard: { copied.append($0) },
+        availabilityCache: availabilityCache
     )
 }
 
@@ -101,6 +103,34 @@ private func waitUntil(
 @MainActor
 @Suite("Runtime Setup Model")
 struct RuntimeSetupModelTests {
+
+    @Test("A completed setup check invalidates composer readiness")
+    func setupCheckRefreshesComposerReadiness() async {
+        let defaults = makeDefaults()
+        let availabilityCache = RuntimeReadinessStateCache()
+        let configuration = RuntimeProviderAvailabilityConfiguration(
+            claudePath: "/bin/claude",
+            copilotPath: "",
+            claudeProvider: .anthropic,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: ""
+        )
+        await availabilityCache.store([.claudeCode: .blocked], for: configuration)
+        let model = await makeModel(
+            defaults: defaults,
+            statuses: [:],
+            availabilityCache: availabilityCache
+        )
+
+        await model.refreshReadiness()
+
+        #expect(model.readinessReport?.state == .ready)
+        #expect(defaults.integer(forKey: AppStorageKeys.runtimeProviderSettingsRevision) == 1)
+        #expect(await availabilityCache.states(for: configuration, maxAge: 300) == nil)
+    }
 
     @Test("Refresh probes every runtime and keeps machine-readable auth state per row")
     func refreshProbesBinariesAndAuth() async {

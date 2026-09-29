@@ -69,7 +69,9 @@ enum RuntimeProviderSettingsStore {
             .joined(separator: "\u{1F}")
     }
 
-    private static func bumpRevision(defaults: UserDefaults) {
+    /// Setup checks use this signal too: composers must recheck readiness
+    /// after sign-in even when no executable path changed.
+    static func bumpRevision(defaults: UserDefaults) {
         defaults.set(defaults.integer(forKey: AppStorageKeys.runtimeProviderSettingsRevision) + 1,
                      forKey: AppStorageKeys.runtimeProviderSettingsRevision)
     }

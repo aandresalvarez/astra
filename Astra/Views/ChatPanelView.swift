@@ -1089,10 +1089,10 @@ struct ChatPanelView: View {
     }
 
     private func alignDefaultRuntimeWithAvailability() {
-        let readyRuntimes = RuntimeProviderAvailabilityService.readyRuntimes(from: runtimeReadinessStates)
-        if !composerRuntimeExplicitlySelected, !readyRuntimes.isEmpty {
+        let usableRuntimes = RuntimeProviderAvailabilityService.usableRuntimes(from: runtimeReadinessStates)
+        if !composerRuntimeExplicitlySelected, !usableRuntimes.isEmpty {
             let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
-            if !readyRuntimes.contains(runtime), let replacement = readyRuntimes.first {
+            if !usableRuntimes.contains(runtime), let replacement = usableRuntimes.first {
                 defaultRuntimeID = replacement.rawValue
             }
         }
