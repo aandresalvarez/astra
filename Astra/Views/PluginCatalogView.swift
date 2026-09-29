@@ -28,6 +28,7 @@ private struct CapabilityConfigurationLink: Identifiable {
     let subtitle: String
     let icon: String
     let color: Color
+    let attentionMessages: [String]
 }
 
 private struct CapabilityImportReview: Identifiable {
@@ -1244,31 +1245,22 @@ struct PluginCatalogView: View {
 
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 14) {
-                capabilityDetailStatusSummary(package)
-                capabilityAdminReviewSection(package)
+                capabilityDetailStatusSummary(package, state: state)
 
-                // Show local checks first when the package declares prerequisites.
+                if enabled, onEditElement != nil {
+                    capabilityConfigurationLinks(state)
+                }
+
+                // Keep prerequisite checks beside the configuration actions.
                 if !package.prerequisites.isEmpty {
                     prerequisiteSection(package)
                 }
 
+                capabilityAdminReviewSection(package)
                 capabilityDetailOverview(package)
 
                 if !detailSections.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Capability contents")
-                                .font(Stanford.caption(11).weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .textCase(.uppercase)
-
-                            Spacer()
-
-                            Text(capabilityContentsSummary(package))
-                                .font(Stanford.caption(10))
-                                .foregroundStyle(.tertiary)
-                        }
-
+                    DisclosureGroup {
                         VStack(spacing: 0) {
                             ForEach(detailSections) { section in
                                 capabilityDetailSectionRows(section)
@@ -1280,11 +1272,16 @@ struct PluginCatalogView: View {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .stroke(Stanford.borderSubtle, lineWidth: 1)
                         }
+                    } label: {
+                        HStack {
+                            Text("Capability contents")
+                                .font(Stanford.caption(11).weight(.semibold))
+                            Spacer()
+                            Text(capabilityContentsSummary(package))
+                                .font(Stanford.caption(10))
+                                .foregroundStyle(.tertiary)
+                        }
                     }
-                }
-
-                if enabled, onEditElement != nil {
-                    capabilityConfigurationLinks(state)
                 }
 
                 capabilityRemovalSection(package)
@@ -1312,8 +1309,7 @@ struct PluginCatalogView: View {
             "Source \(package.author)",
             "Version v\(package.version)",
             "Approval \(capabilityApprovalLabel(governance.approvalStatus))",
-            "Risk \(capabilityRiskLabel(governance.riskLevel))",
-            requiresSetupFlow(package) ? "Setup required" : "Setup ready"
+            "Risk \(capabilityRiskLabel(governance.riskLevel))"
         ]
 
         return Text(values.joined(separator: "  ·  "))
@@ -1323,15 +1319,20 @@ struct PluginCatalogView: View {
             .help(values.joined(separator: "\n"))
     }
 
-    private func capabilityDetailStatusSummary(_ package: PluginPackage) -> some View {
+    private func capabilityDetailStatusSummary(
+        _ package: PluginPackage,
+        state: CapabilityPackageState
+    ) -> some View {
         let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-        let summary = capabilityRowMetadata(package, needsSetup: requiresSetupFlow(package))
-        let messages = decision.blockerMessages + decision.warnings.map(\.message)
+        let setupMessages = state.readiness.level == .needsAttention ? state.readiness.messages : []
+        let messages = setupMessages + decision.blockerMessages + decision.warnings.map(\.message)
 
         return VStack(alignment: .leading, spacing: 6) {
-            Text(summary)
-                .font(Stanford.caption(12).weight(.semibold))
-                .foregroundStyle(capabilityRowMetadataColor(package, needsSetup: requiresSetupFlow(package)))
+            if !setupMessages.isEmpty {
+                Text("Needs setup")
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(Stanford.poppy)
+            }
 
             if !messages.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
@@ -1700,15 +1701,14 @@ struct PluginCatalogView: View {
     @ViewBuilder
     private func capabilityConfigurationLinks(_ state: CapabilityPackageState) -> some View {
         let links = capabilityConfigurationLinkItems(state)
+        let attentionCount = links.filter { !$0.attentionMessages.isEmpty }.count
 
         if !links.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                SubtleDivider()
-
                 // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
                 // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
                 HStack(alignment: .top) {
-                    Text("Configure resources")
+                    Text(attentionCount > 0 ? "Setup actions" : "Configure resources")
                         .font(Stanford.caption(11).weight(.semibold))
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
@@ -1718,10 +1718,12 @@ struct PluginCatalogView: View {
                     // P4a: a lone editable resource is already rendered expanded
                     // below, so a bare "1 editable" count names nothing worth
                     // counting. Show the count only when it summarizes 2+ items.
-                    if links.count > 1 {
-                        Text("\(links.count) editable")
+                    if attentionCount > 0 || links.count > 1 {
+                        Text(attentionCount > 0
+                             ? "\(attentionCount) \(attentionCount == 1 ? "needs" : "need") setup"
+                             : "\(links.count) editable")
                             .font(Stanford.caption(10))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(attentionCount > 0 ? Stanford.poppy : Color.secondary)
                     }
                 }
 
@@ -1748,7 +1750,8 @@ struct PluginCatalogView: View {
                 title: skill.name.isEmpty ? "Untitled Skill" : skill.name,
                 subtitle: "Instructions and permissions",
                 icon: skill.icon,
-                color: ConfigureTab.skills.color
+                color: ConfigureTab.skills.color,
+                attentionMessages: []
             )
         }
 
@@ -1759,7 +1762,8 @@ struct PluginCatalogView: View {
                 title: connector.name.isEmpty ? "Untitled Connector" : connector.name,
                 subtitle: "Account and service",
                 icon: connector.icon,
-                color: ConfigureTab.connectors.color
+                color: ConfigureTab.connectors.color,
+                attentionMessages: state.attentionMessages(for: connector)
             )
         }
 
@@ -1770,11 +1774,13 @@ struct PluginCatalogView: View {
                 title: tool.name.isEmpty ? "Untitled Tool" : tool.name,
                 subtitle: "Local command",
                 icon: tool.icon,
-                color: ConfigureTab.tools.color
+                color: ConfigureTab.tools.color,
+                attentionMessages: []
             )
         }
 
-        return skillLinks + connectorLinks + toolLinks
+        let links = connectorLinks + toolLinks + skillLinks
+        return links.filter { !$0.attentionMessages.isEmpty } + links.filter(\.attentionMessages.isEmpty)
     }
 
     private func capabilityConfigurationLinkCard(_ link: CapabilityConfigurationLink) -> some View {
@@ -1794,10 +1800,10 @@ struct PluginCatalogView: View {
                         .font(Stanford.caption(11).weight(.semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(link.subtitle)
+                    Text(link.attentionMessages.first ?? link.subtitle)
                         .font(Stanford.caption(10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .foregroundStyle(link.attentionMessages.isEmpty ? Color.secondary : Stanford.poppy)
+                        .lineLimit(2)
                 }
 
                 Spacer(minLength: 0)
@@ -1805,11 +1811,11 @@ struct PluginCatalogView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "square.and.pencil")
                         .font(Stanford.ui(11, weight: .semibold))
-                    Text("Edit")
+                    Text(link.attentionMessages.isEmpty ? "Edit" : "Fix")
                         .font(Stanford.caption(10).weight(.semibold))
                 }
                 .foregroundStyle(Stanford.lagunita)
-                .help("Edit \(link.title)")
+                .help("Configure \(link.title)")
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 8)
