@@ -469,6 +469,16 @@ struct ConnectorEditorView: View {
                                                 .font(Stanford.ui(13, design: .monospaced))
                                                 .foregroundStyle(value.isEmpty ? .tertiary : .secondary)
                                                 .lineLimit(1)
+                                        } else if inKeychain, SecretEntryPresentation.isIdentifierKey(key),
+                                                  let identity = KeychainService.load(key: key, connector: connector),
+                                                  !identity.isEmpty {
+                                            // An address or login is not a secret: show it so a
+                                            // typo is visible after saving, not only while typing.
+                                            Text(identity)
+                                                .font(Stanford.ui(13, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                         } else {
                                             HStack(spacing: 4) {
                                                 Text(String(repeating: "\u{2022}", count: 12))

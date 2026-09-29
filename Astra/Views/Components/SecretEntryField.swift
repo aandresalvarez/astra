@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRACore
 
 /// How a credential is shown while someone is typing it.
 ///
@@ -7,9 +8,21 @@ import SwiftUI
 /// check by eye: Jira keeps `JIRA_EMAIL` beside its API token as a Keychain
 /// "secret" although it is an address, and a typo in it surfaced only when the
 /// save was refused or the connection test failed. This is about what is being
-/// typed right now; stored values stay masked behind each section's own eye.
+/// typed right now; stored values stay masked behind each section's own eye,
+/// except identifiers such as that email (`isIdentifierKey`).
 enum SecretEntryPresentation {
     static let startsRevealed = true
+
+    /// Whether a stored value is an identity, not a credential: an address or
+    /// a login name, which the person needs to read back to know it was saved
+    /// right. Decided from the key name, and never for a name that also says
+    /// token, secret, password and so on (`RunSecretRedaction` owns that list),
+    /// so `JIRA_EMAIL` reads in the clear while `JIRA_EMAIL_TOKEN` stays masked.
+    static func isIdentifierKey(_ key: String) -> Bool {
+        let upper = key.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !RunSecretRedaction.isSecretKey(upper) else { return false }
+        return ["EMAIL", "USERNAME"].contains { upper == $0 || upper.hasSuffix("_" + $0) }
+    }
 
     static func toggleSystemImage(isRevealed: Bool) -> String {
         isRevealed ? "eye.slash" : "eye"

@@ -29,6 +29,18 @@ struct SecretEntryFieldTests {
         #expect(SecretEntryPresentation.toggleHelp(isRevealed: false) == "Show value")
     }
 
+    @Test("Only identifiers read back in the clear once stored")
+    func onlyIdentifiersReadBackInTheClear() {
+        for key in ["JIRA_EMAIL", "EMAIL", "jira_email", " JIRA_EMAIL ", "SSH_USERNAME", "USERNAME"] {
+            #expect(SecretEntryPresentation.isIdentifierKey(key), "\(key) is an identity and should be readable")
+        }
+        // A credential stays masked, including one whose name merely mentions an email.
+        for key in ["JIRA_API_TOKEN", "JIRA_EMAIL_TOKEN", "EMAIL_PASSWORD", "USERNAME_SECRET",
+                    "REDCAP_API_TOKEN", "SSH_PRIVATE_KEY", "EMAILS", "JIRA_PROJECTS", ""] {
+            #expect(!SecretEntryPresentation.isIdentifierKey(key), "\(key) must stay masked")
+        }
+    }
+
     @Test("By default the typed value renders in a plain text field")
     func defaultRendersAPlainTextField() {
         let controls = renderedControls(SecretEntryField("value", text: .constant("jane@example.com")))
