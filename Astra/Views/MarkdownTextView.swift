@@ -21,8 +21,9 @@ struct MarkdownTextView: View, Equatable {
     let maxContentWidth: CGFloat?
     let onSuggestedNextStep: ((String) -> Void)?
     let isSelectable: Bool
-    @State private var blocks: [MarkdownBlock] = []
+    @State private var renderDocument: RenderDocument
     @State private var skippedSuggestionIDs: Set<UUID> = []
+    private var blocks: [MarkdownBlock] { renderDocument.blocks }
 
     /// `.equatable()` skips unchanged bubbles; closure *presence* affects rendering (Cluster 4).
     static func == (lhs: MarkdownTextView, rhs: MarkdownTextView) -> Bool {
@@ -42,7 +43,9 @@ struct MarkdownTextView: View, Equatable {
         self.maxContentWidth = maxContentWidth
         self.onSuggestedNextStep = onSuggestedNextStep
         self.isSelectable = isSelectable
-        _blocks = State(initialValue: Self.cachedParse(text))
+        _renderDocument = State(initialValue: Self.cachedRenderDocument(
+            text, includesSuggestions: onSuggestedNextStep != nil
+        ))
     }
 
     var body: some View {
@@ -50,7 +53,7 @@ struct MarkdownTextView: View, Equatable {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                 markdownBlockView(
                     block,
-                    suggestedNextActions: suggestedNextActions(for: block, at: index)
+                    suggestedNextActions: renderDocument.suggestions[block.id] ?? []
                 )
                     .frame(maxWidth: maxWidth(for: block), alignment: .leading)
                     .padding(.top, topSpacing(for: block, previous: index > 0 ? blocks[index - 1] : nil))
@@ -60,8 +63,11 @@ struct MarkdownTextView: View, Equatable {
         .tint(Stanford.link)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: text) { _, newText in
-            blocks = Self.cachedParse(newText)
+            renderDocument = Self.cachedRenderDocument(newText, includesSuggestions: onSuggestedNextStep != nil)
             skippedSuggestionIDs.removeAll(keepingCapacity: true)
+        }
+        .onChange(of: onSuggestedNextStep != nil) { _, includesSuggestions in
+            renderDocument = Self.cachedRenderDocument(text, includesSuggestions: includesSuggestions)
         }
     }
 
@@ -227,46 +233,35 @@ struct MarkdownTextView: View, Equatable {
         }
     }
 
-    private func suggestedNextActions(for block: MarkdownBlock, at index: Int) -> [SuggestedNextAction] {
-        guard onSuggestedNextStep != nil else { return [] }
-        return Self.suggestedNextActions(for: block, at: index, in: blocks)
-    }
-
     static func suggestedNextActions(in blocks: [MarkdownBlock]) -> [SuggestedNextAction] {
-        blocks.enumerated().flatMap { index, block in
-            suggestedNextActions(for: block, at: index, in: blocks)
-        }
+        let suggestions = suggestedNextActionsByBlock(in: blocks)
+        return blocks.flatMap { suggestions[$0.id] ?? [] }
     }
 
-    static func suggestedNextActions(for block: MarkdownBlock, at index: Int, in blocks: [MarkdownBlock]) -> [SuggestedNextAction] {
-        switch block.kind {
-        case .listItem(let depth, _):
-            guard depth == 0,
-                  isInsideSuggestedNextStepsSection(index: index, blocks: blocks),
-                  let title = normalizedSuggestedAction(block.content) else {
-                return []
+    /// One forward pass, rather than walking back to the nearest heading for
+    /// every list item. Ordinary long lists used to do quadratic render work.
+    private static func suggestedNextActionsByBlock(in blocks: [MarkdownBlock]) -> [UUID: [SuggestedNextAction]] {
+        var inNextStepsSection = false
+        var suggestions: [UUID: [SuggestedNextAction]] = [:]
+        for block in blocks {
+            switch block.kind {
+            case .heading:
+                let heading = block.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                inNextStepsSection = heading == "next steps" || heading == "suggested next steps"
+            case .divider:
+                inNextStepsSection = false
+            case .listItem(let depth, _) where depth == 0 && inNextStepsSection:
+                if let title = normalizedSuggestedAction(block.content) {
+                    suggestions[block.id] = [SuggestedNextAction(title: title)]
+                }
+            case .text:
+                let actions = inlineSuggestedNextActions(from: block.content)
+                if !actions.isEmpty { suggestions[block.id] = actions }
+            default:
+                break
             }
-            return [SuggestedNextAction(title: title)]
-
-        case .text:
-            return inlineSuggestedNextActions(from: block.content)
-
-        default:
-            return []
         }
-    }
-
-    private static func isInsideSuggestedNextStepsSection(index: Int, blocks: [MarkdownBlock]) -> Bool {
-        guard index > 0 else { return false }
-        for priorIndex in stride(from: index - 1, through: 0, by: -1) {
-            let prior = blocks[priorIndex]
-            if case .heading = prior.kind {
-                let heading = prior.content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                return heading == "next steps" || heading == "suggested next steps"
-            }
-            if case .divider = prior.kind { return false }
-        }
-        return false
+        return suggestions
     }
 
     private static func inlineSuggestedNextActions(from content: String) -> [SuggestedNextAction] {
@@ -340,16 +335,20 @@ struct MarkdownTextView: View, Equatable {
         return value
     }
 
-    private final class MarkdownBlockCacheEntry {
+    /// Immutable projection of the source text. Cache eviction only costs a
+    /// rebuild; the text and callback presence remain its complete inputs.
+    final class RenderDocument {
         let blocks: [MarkdownBlock]
+        let suggestions: [UUID: [SuggestedNextAction]]
 
-        init(blocks: [MarkdownBlock]) {
+        init(blocks: [MarkdownBlock], suggestions: [UUID: [SuggestedNextAction]]) {
             self.blocks = blocks
+            self.suggestions = suggestions
         }
     }
 
-    private static let parseCache: NSCache<NSString, MarkdownBlockCacheEntry> = {
-        let cache = NSCache<NSString, MarkdownBlockCacheEntry>()
+    private static let parseCache: NSCache<NSString, RenderDocument> = {
+        let cache = NSCache<NSString, RenderDocument>()
         cache.countLimit = 500
         // Streaming feeds the cache one growing prefix per snapshot tick;
         // bound by source size so live turns can't pin hundreds of copies.
@@ -357,15 +356,27 @@ struct MarkdownTextView: View, Equatable {
         return cache
     }()
 
-    private static func cachedParse(_ text: String) -> [MarkdownBlock] {
-        let prepared = MarkdownRenderPreparation.prepareForDisplay(text)
-        let key = NSString(string: prepared)
+    static func cachedRenderDocument(_ text: String, includesSuggestions: Bool) -> RenderDocument {
+        // Lookup before normalization: reconstructing this view evaluates its
+        // State initial value even when SwiftUI retains the existing state.
+        // Normalizing before lookup spent ~10 ms per unchanged 33 KB view.
+        let key = NSString(string: "\(includesSuggestions ? "suggestions" : "plain"):\(text)")
         if let cached = parseCache.object(forKey: key) {
-            return cached.blocks
+            return cached
         }
-        let blocks = parsePrepared(prepared)
-        parseCache.setObject(MarkdownBlockCacheEntry(blocks: blocks), forKey: key, cost: prepared.utf16.count)
-        return blocks
+        let document = PerformanceTelemetry.measure(
+            "markdown_render_prepare",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: ["includes_suggestions": String(includesSuggestions)],
+            resultFields: { ["block_count": String($0.blocks.count)] }
+        ) {
+            let prepared = MarkdownRenderPreparation.prepareForDisplay(text)
+            let blocks = parsePrepared(prepared)
+            return RenderDocument(blocks: blocks, suggestions: includesSuggestions
+                                  ? suggestedNextActionsByBlock(in: blocks) : [:])
+        }
+        parseCache.setObject(document, forKey: key, cost: key.length)
+        return document
     }
 
     // MARK: - Code Block
