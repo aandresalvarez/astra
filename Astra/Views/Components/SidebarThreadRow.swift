@@ -72,10 +72,18 @@ struct SidebarThreadRow: View {
     var contentLeadingPadding: CGFloat = 0
     var attemptCount: Int = 1
     var subtitle: String?
-    /// Durable turn-admission state supplied by the sidebar projection. It is
-    /// intentionally optional so callers that do not have a request snapshot
-    /// retain the historic task-status presentation.
-    var activity: TaskActivityPresentation?
+    /// Observe the durable requests, rather than retaining an activity value
+    /// inside a parent row closure. A request leaving the active query still
+    /// updates this row through its model reference. No extra fetch is needed.
+    var requests: [TaskTurnRequest] = []
+
+    var activity: TaskActivityPresentation {
+        TaskActivityPresentation.resolve(
+            taskID: task.id,
+            taskStatus: task.status,
+            requests: requests.map(\.snapshot)
+        )
+    }
     /// Optional context shown when hovering the title. Pinned tasks use this
     /// for workspace identity instead of spending a second line on it.
     var titleHelp: String?
@@ -145,7 +153,7 @@ struct SidebarThreadRow: View {
     /// no longer renders as a second line, so the glyph has to speak.
     private var statusGlyphDescription: String {
         if showsUnreadDot { return "Unread result" }
-        if let description = activity?.sidebarDescription { return description }
+        if let description = activity.sidebarDescription { return description }
         switch task.status {
         case .running:        return "Running"
         case .pendingUser:    return "Needs input"
@@ -163,7 +171,7 @@ struct SidebarThreadRow: View {
     }
 
     private var presentationSubtitle: String? {
-        guard let activitySubtitle = activity?.sidebarSubtitle else { return subtitle }
+        guard let activitySubtitle = activity.sidebarSubtitle else { return subtitle }
         guard let subtitle, !subtitle.isEmpty else { return activitySubtitle }
         return "\(subtitle) · \(activitySubtitle)"
     }
@@ -312,7 +320,7 @@ struct SidebarThreadRow: View {
 
     @ViewBuilder
     private var statusGlyph: some View {
-        if let activity, activity.kind != .idle {
+        if activity.kind != .idle {
             switch activity.kind {
             case .idle:
                 EmptyView()

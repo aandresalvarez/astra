@@ -29,6 +29,9 @@ struct WorkspacePackageImportSheetPresentation {
 
     init() {}
 
+    /// True while a review sheet is up or another is waiting its turn.
+    var isActive: Bool { presented != nil || !queued.isEmpty }
+
     /// Enqueues one or more requests (e.g. every `.astra-share` file from a
     /// single selection). Presents immediately when idle; otherwise
     /// dismisses the current sheet and promotes this batch ahead of the

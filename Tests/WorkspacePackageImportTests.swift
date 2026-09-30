@@ -906,6 +906,22 @@ struct WorkspacePackageImportSheetPresentationTests {
         WorkspacePackageImportRequest(url: URL(fileURLWithPath: "/tmp/\(name).astra-share"))
     }
 
+    @Test("the sheet is active while one is presented or queued, and idle otherwise")
+    func isActiveTracksPresentedAndQueued() {
+        var sheet = WorkspacePackageImportSheetPresentation()
+        #expect(!sheet.isActive)
+
+        sheet.request([request("first"), request("second")])
+        #expect(sheet.isActive)
+
+        sheet.presented = nil
+        #expect(sheet.isActive, "a queued review keeps it active between sheets")
+
+        sheet.sheetDismissed()
+        sheet.presented = nil
+        #expect(!sheet.isActive)
+    }
+
     @Test("a request while idle presents immediately")
     func requestWhileIdlePresentsImmediately() {
         var sheet = WorkspacePackageImportSheetPresentation()
