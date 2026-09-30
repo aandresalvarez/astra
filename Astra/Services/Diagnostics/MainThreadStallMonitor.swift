@@ -36,6 +36,12 @@ import ASTRACore
 /// Neither is a backtrace; together they turn "the main thread wedged" into a
 /// starting point a log search can act on.
 ///
+/// **Whose stall it was.** Everything above describes ASTRA. A main thread that
+/// is paged back in, or starved of a core by a build on the same machine,
+/// stalls in exactly the same way and names no code of ours. The report also
+/// carries `SystemPressureSnapshot` — load, memory pressure, swap, this
+/// process's page-ins — so that case can be read off the line.
+///
 /// The monitor is diagnostic only. It never interrupts, kills, or unwinds
 /// anything — a watchdog that acts on its own reading is a second failure mode.
 final class MainThreadStallMonitor: @unchecked Sendable {
@@ -277,6 +283,7 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         heartbeatAtDetection: UInt64
     ) {
         let memory = Self.memoryFootprint()
+        let pressure = SystemPressureSnapshot.current()
         // Two independent signs that the label stopped being about this stall,
         // checked after the memory syscall because that is the longest thing
         // between detection and this line.
@@ -315,7 +322,8 @@ final class MainThreadStallMonitor: @unchecked Sendable {
                 seconds: seconds,
                 memory: memory,
                 activity: activity,
-                phase: validated
+                phase: validated,
+                pressure: pressure
             )
         )
     }
@@ -330,7 +338,8 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         seconds: Double,
         memory: (residentMegabytes: Int, footprintMegabytes: Int),
         activity: CFRunLoopActivity,
-        phase: MainThreadPhase.Snapshot?
+        phase: MainThreadPhase.Snapshot?,
+        pressure: SystemPressureSnapshot? = nil
     ) -> [String: String] {
         var fields = [
             "stalled_s": String(format: "%.1f", seconds),
@@ -340,6 +349,11 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         ]
         if let phase {
             fields.merge(phase.telemetryFields) { _, new in new }
+        }
+        // Whether the machine, not just this process, was struggling. The
+        // two are separable only when both are on the same line.
+        if let pressure {
+            fields.merge(pressure.telemetryFields) { _, new in new }
         }
         return fields
     }
