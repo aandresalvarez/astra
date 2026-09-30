@@ -968,8 +968,24 @@ struct ContentView: View {
             ))
     }
 
-    var body: some View {
+    /// The new-task workspace switcher's hooks, in their own layer so `body`'s
+    /// modifier chain stays within what the compiler can type-check.
+    private var rootLayoutWithNewTaskSwitcher: some View {
         rootLayoutWithFeedbackChrome
+            .environment(\.newTaskComposerWorkspaceID, sceneSelection.newTaskComposerWorkspaceID)
+            .environment(\.newTaskWorkspaceSwitcher, NewTaskWorkspaceSwitcher(
+                workspaces: workspaces,
+                select: { sceneSelection.retargetComposer(to: $0) },
+                createWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); createWorkspace() },
+                importWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); importWorkspace(); sceneSelection.setComposerWorkspaceFlow(packageImportPresentation.isActive) }
+            ))
+            .onChange(of: packageImportPresentation.isActive) {
+                endComposerWorkspaceFlowUnlessReviewing()
+            }
+    }
+
+    var body: some View {
+        rootLayoutWithNewTaskSwitcher
         .modifier(ScreenTransitionReadinessObserver(coordinator: screenTransitionCoordinator))
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
@@ -1149,9 +1165,6 @@ struct ContentView: View {
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
         }
-        .onChange(of: packageImportPresentation.isActive) {
-            endComposerWorkspaceFlowUnlessReviewing()
-        }
         .onChange(of: pendingExternalRouteID) {
             handlePendingExternalRoute()
         }
@@ -1167,13 +1180,6 @@ struct ContentView: View {
         // for the matching FocusedValueKey definitions.
         .focusedSceneValue(\.newWorkspaceAction, { createWorkspace() })
         .focusedSceneValue(\.importWorkspaceAction, { importWorkspace() })
-        .environment(\.newTaskComposerWorkspaceID, sceneSelection.newTaskComposerWorkspaceID)
-        .environment(\.newTaskWorkspaceSwitcher, NewTaskWorkspaceSwitcher(
-            workspaces: workspaces,
-            select: { sceneSelection.retargetComposer(to: $0) },
-            createWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); createWorkspace() },
-            importWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); importWorkspace(); endComposerWorkspaceFlowUnlessReviewing() }
-        ))
         .sheet(isPresented: onboardingSheetBinding) {
             OnboardingWizardView(
                 hasCompletedOnboarding: onboardingCompletionBinding,

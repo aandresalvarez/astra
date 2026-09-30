@@ -203,6 +203,64 @@ struct SceneSelectionComposerRetargetTests {
         #expect(!model.isInComposerWorkspaceFlow)
     }
 
+    @Test("A mixed import re-arms the flow for its package reviews after the legacy half lands")
+    func mixedImportReArmsForPackageReviews() {
+        let first = workspace("First")
+        let legacy = workspace("Legacy")
+        let packaged = workspace("Packaged")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: true
+        )
+
+        model.beginComposerWorkspaceFlow()
+        model.apply(coordinator.importWorkspace(legacy))
+        #expect(model.consumeComposerRetarget(for: legacy.id))
+        #expect(!model.isInComposerWorkspaceFlow)
+
+        // A package review is still queued, so the caller puts the flow back.
+        model.setComposerWorkspaceFlow(true)
+        model.apply(coordinator.importWorkspace(packaged))
+
+        #expect(model.consumeComposerRetarget(for: packaged.id))
+        #expect(model.isComposingTask)
+    }
+
+    @Test("Replacing the selected workspace keeps the composer even though its id is unchanged")
+    func replacedWorkspaceWithTheSameIDKeepsTheComposer() {
+        let original = workspace("Original")
+        let replacement = Workspace(name: "Original", primaryPath: original.primaryPath)
+        replacement.id = original.id
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: original)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: original, isComposingTask: true
+        )
+
+        model.beginComposerWorkspaceFlow()
+        model.apply(coordinator.importWorkspace(replacement))
+
+        #expect(model.selectedWorkspace === replacement)
+        #expect(model.isComposingTask)
+        #expect(model.consumeComposerRetarget(for: replacement.id))
+    }
+
+    @Test("Restoring the same workspace object never consumes the flow")
+    func restoringTheSameObjectKeepsTheFlowOpen() {
+        let first = workspace("First")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: true
+        )
+
+        model.beginComposerWorkspaceFlow()
+        model.apply(coordinator.restore(workspace: first))
+
+        #expect(model.isInComposerWorkspaceFlow)
+    }
+
     @Test("A flow that ends without selecting anything does not affect a later selection")
     func cancelledFlowDoesNotLeak() {
         let first = workspace("First")

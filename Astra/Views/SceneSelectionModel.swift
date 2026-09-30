@@ -141,6 +141,14 @@ final class SceneSelectionModel: ObservableObject {
 
     var isInComposerWorkspaceFlow: Bool { keepsComposerThroughWorkspaceFlow }
 
+    /// Re-arms or ends the flow after a step of it has run. A mixed import
+    /// selects its legacy half at once, which consumes the marker, while its
+    /// package reviews are still to come, so the caller sets it back to whether
+    /// reviews remain.
+    func setComposerWorkspaceFlow(_ isActive: Bool) {
+        keepsComposerThroughWorkspaceFlow = isActive
+    }
+
     func endComposerWorkspaceFlow() {
         keepsComposerThroughWorkspaceFlow = false
     }
@@ -176,10 +184,12 @@ final class SceneSelectionModel: ObservableObject {
         let previousSelectedWorkspaceApp = selectedWorkspaceApp
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
         let preserveWorkspaceAppSurface = shouldPreserveWorkspaceAppSurface(for: update)
+        // By identity, not id: a Replace import re-creates the selected workspace
+        // under the same id as a new model object, and that is still a change.
         let keepsComposer = keepsComposerThroughWorkspaceFlow
             && update.selectedTask == nil
             && update.selectedWorkspace != nil
-            && update.selectedWorkspace?.id != selectedWorkspace?.id
+            && update.selectedWorkspace !== selectedWorkspace
 
         selectedWorkspace = update.selectedWorkspace
         selectedTask = update.selectedTask
