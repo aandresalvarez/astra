@@ -104,7 +104,7 @@ struct ChatPanelView: View {
     @State private var planGenerationTask: Task<Void, Never>?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
-    @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
+    @State var capabilitySnapshot = ComposerCapabilitySnapshot.empty
     @State var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     @State var runtimeEligibilityPreviewState = RuntimeEligibilityPreviewState.idle
     // Random per session; a live-cycling prompt mutated while the user was reading it.
@@ -485,10 +485,11 @@ struct ChatPanelView: View {
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignDefaultModelWithRuntime() }
         .onChange(of: workspace?.id) {
-            initializeComposerPolicyFromDefaults()
+            // The policy defaults are global, so an in-place workspace switch
+            // keeps whatever level the user picked for this composer.
             loadSSHConnections()
             excludedSkillIDs = []
-            capabilitySnapshot = .empty
+            if !isCapabilitySnapshotCurrent { capabilitySnapshot = .empty }
         }
     }
 
@@ -1171,7 +1172,7 @@ struct ChatPanelView: View {
     /// Send message → start or continue the provider-assisted conversation
     private func sendMessage() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty else { return }
+        guard !input.isEmpty, isCapabilitySnapshotCurrent else { return }
 
         // Check for slash commands — route through the provider conversation with context
         let lower = input.lowercased()

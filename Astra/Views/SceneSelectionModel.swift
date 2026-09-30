@@ -30,6 +30,7 @@ final class SceneSelectionModel: ObservableObject {
     @Published private(set) var isComposingWorkspaceApp = false
     @Published private(set) var isComposingTask = false
     private var retargetedComposerWorkspaceID: UUID?
+    private var keepsComposerThroughWorkspaceFlow = false
 
     var activeSurface: SceneSelectionSurface {
         if let selectedTask {
@@ -115,6 +116,18 @@ final class SceneSelectionModel: ObservableObject {
         composeTask(workspace: workspace)
     }
 
+    /// Marks that the workspace create or import the composer's switcher started
+    /// will select a workspace: `apply` then keeps the composer (and its draft)
+    /// open on it instead of leaving for that workspace's home. The flow ends
+    /// when that selection lands, or when the sheet or panel closes without one.
+    func beginComposerWorkspaceFlow() {
+        keepsComposerThroughWorkspaceFlow = true
+    }
+
+    func endComposerWorkspaceFlow() {
+        keepsComposerThroughWorkspaceFlow = false
+    }
+
     /// True once for the workspace a `retargetComposer` just selected.
     func consumeComposerRetarget(for workspaceID: UUID?) -> Bool {
         defer { retargetedComposerWorkspaceID = nil }
@@ -146,10 +159,18 @@ final class SceneSelectionModel: ObservableObject {
         let previousSelectedWorkspaceApp = selectedWorkspaceApp
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
         let preserveWorkspaceAppSurface = shouldPreserveWorkspaceAppSurface(for: update)
+        let keepsComposer = keepsComposerThroughWorkspaceFlow
+            && update.selectedTask == nil
+            && update.selectedWorkspace != nil
+            && update.selectedWorkspace?.id != selectedWorkspace?.id
 
         selectedWorkspace = update.selectedWorkspace
         selectedTask = update.selectedTask
-        isComposingTask = update.isComposingTask
+        isComposingTask = update.isComposingTask || keepsComposer
+        if keepsComposer {
+            keepsComposerThroughWorkspaceFlow = false
+            retargetedComposerWorkspaceID = update.selectedWorkspace?.id
+        }
         if !preserveWorkspaceAppSurface {
             selectedWorkspaceApp = nil
             isComposingWorkspaceApp = false

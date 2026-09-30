@@ -418,10 +418,17 @@ extension View {
 }
 
 extension ChatPanelView {
+    /// False while the composer waits for the capability snapshot of a workspace
+    /// it was just switched to: submitting then would persist no skills, and
+    /// none of that workspace's instructions or tools, on the task.
+    var isCapabilitySnapshotCurrent: Bool {
+        capabilitySnapshot.workspaceID == workspace?.id
+    }
+
     var selectedComposerRuntimeCanExecuteRequest: Bool {
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         return RuntimeEligibilitySubmissionPolicy.canExecute(
-            hasInput: hasInput,
+            hasInput: hasInput && isCapabilitySnapshotCurrent,
             runtime: runtime,
             readinessStates: runtimeReadinessStates,
             previewState: runtimeEligibilityPreviewState,

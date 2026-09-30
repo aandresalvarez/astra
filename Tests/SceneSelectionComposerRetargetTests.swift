@@ -89,6 +89,96 @@ struct SceneSelectionComposerRetargetTests {
         #expect(!model.consumeComposerRetarget(for: first.id))
     }
 
+    // MARK: - Create / import from the switcher
+
+    @Test("A workspace imported from the switcher keeps the composer open on it")
+    func importedWorkspaceKeepsTheComposer() {
+        let first = workspace("First")
+        let imported = workspace("Imported")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: true
+        )
+
+        model.beginComposerWorkspaceFlow()
+        model.apply(coordinator.importWorkspace(imported))
+
+        #expect(model.isComposingTask)
+        #expect(model.selectedWorkspace?.id == imported.id)
+        #expect(model.consumeComposerRetarget(for: imported.id))
+    }
+
+    @Test("A workspace created from the implicit composer of an empty workspace also keeps composing")
+    func createdWorkspaceKeepsTheImplicitComposer() {
+        let first = workspace("First")
+        let created = workspace("Created")
+        let model = SceneSelectionModel()
+        model.openWorkspace(first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: false
+        )
+
+        model.beginComposerWorkspaceFlow()
+        model.apply(coordinator.create(workspace: created))
+
+        #expect(model.isComposingTask)
+        #expect(model.activeSurface == .taskComposer(created.id))
+        #expect(model.consumeComposerRetarget(for: created.id))
+    }
+
+    @Test("Without the flow marker an import is not exempt from the composer-exit rule")
+    func importWithoutTheFlowIsNotExempt() {
+        let first = workspace("First")
+        let imported = workspace("Imported")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: true
+        )
+
+        model.apply(coordinator.importWorkspace(imported))
+
+        // The workspace-change observer leaves the composer for any change the
+        // token does not cover, so a missing token is what the old behavior was.
+        #expect(!model.consumeComposerRetarget(for: imported.id))
+    }
+
+    @Test("A flow that ends without selecting anything does not affect a later selection")
+    func cancelledFlowDoesNotLeak() {
+        let first = workspace("First")
+        let later = workspace("Later")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: true
+        )
+
+        model.beginComposerWorkspaceFlow()
+        model.endComposerWorkspaceFlow()
+        model.apply(coordinator.importWorkspace(later))
+
+        #expect(!model.consumeComposerRetarget(for: later.id))
+    }
+
+    @Test("Restoring the current workspace during a flow does not consume it")
+    func restoreDuringFlowKeepsTheMarker() {
+        let first = workspace("First")
+        let created = workspace("Created")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: true
+        )
+
+        model.beginComposerWorkspaceFlow()
+        model.apply(coordinator.restore(workspace: first))
+        model.apply(coordinator.create(workspace: created))
+
+        #expect(model.isComposingTask)
+        #expect(model.selectedWorkspace?.id == created.id)
+    }
+
     private func workspace(_ name: String) -> Workspace {
         Workspace(name: name, primaryPath: "/tmp/\(UUID().uuidString)")
     }

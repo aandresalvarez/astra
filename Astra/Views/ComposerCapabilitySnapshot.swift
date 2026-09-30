@@ -8,6 +8,11 @@ struct ComposerCapabilitySnapshot {
     static let empty = ComposerCapabilitySnapshot(availableSkills: [])
 
     let availableSkills: [Skill]
+    /// The workspace these skills were resolved for. `nil` both for "no
+    /// workspace" and for the empty placeholder a composer holds while it waits
+    /// for a newly selected workspace, which is why submission compares it with
+    /// the workspace on screen rather than treating empty as ready.
+    var workspaceID: UUID?
 
     func selectedSkills(excluding excludedSkillIDs: Set<UUID>) -> [Skill] {
         availableSkills.filter { !excludedSkillIDs.contains($0.id) }
@@ -35,7 +40,7 @@ enum ComposerCapabilitySnapshotBuilder {
             approvalRecords: approvalRecords,
             packPolicy: packPolicy
         )
-        return ComposerCapabilitySnapshot(availableSkills: capabilities.activeSkills)
+        return ComposerCapabilitySnapshot(availableSkills: capabilities.activeSkills, workspaceID: workspace.id)
     }
 }
 

@@ -1165,8 +1165,8 @@ struct ContentView: View {
         .environment(\.newTaskWorkspaceSwitcher, NewTaskWorkspaceSwitcher(
             workspaces: workspaces,
             select: { sceneSelection.retargetComposer(to: $0) },
-            createWorkspace: createWorkspace,
-            importWorkspace: importWorkspace
+            createWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); createWorkspace() },
+            importWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); importWorkspace(); sceneSelection.endComposerWorkspaceFlow() }
         ))
         .sheet(isPresented: onboardingSheetBinding) {
             OnboardingWizardView(
@@ -2300,6 +2300,7 @@ struct ContentView: View {
 
     private func resetNewWorkspaceDraft() {
         newWorkspaceDraft.clear()
+        sceneSelection.endComposerWorkspaceFlow()
     }
 
     private func restoreWorkspaceSelection() {
