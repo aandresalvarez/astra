@@ -2672,6 +2672,7 @@ struct ContentView: View {
         backfillThreadTitlesIfNeeded()
         refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()
+        sceneSelection.openLaunchComposerOnce()
         runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()
