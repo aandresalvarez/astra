@@ -1209,6 +1209,19 @@ struct WorkspaceRightRailView: View {
     private func openCapabilityConfiguration(_ item: RailCapabilityItem) {
         switch item.source {
         case .package(let package):
+            if item.readiness.level == .needsAttention,
+               let onOpenConfigureTab {
+                let state = CapabilityPackageState(
+                    package: package,
+                    workspace: workspace,
+                    capabilities: capabilities
+                )
+                let connectors = state.connectorsNeedingAttention
+                if item.readiness == state.readiness, connectors.count == 1 {
+                    onOpenConfigureTab(.connectors, connectors[0].id)
+                    return
+                }
+            }
             if let onOpenCapabilityPackage {
                 onOpenCapabilityPackage(package.id)
             } else {

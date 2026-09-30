@@ -4,9 +4,8 @@ import ASTRAModels
 
 struct CapabilitiesTabContent: View {
     var workspace: Workspace
-    var focusPackageID: String?
+    @Binding var selectedPackageID: String?
     var onCatalogChanged: () -> Void = {}
-    var onPackageFocusChanged: (String?) -> Void = { _ in }
     var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
 
     @State private var catalog = PluginCatalog()
@@ -17,9 +16,8 @@ struct CapabilitiesTabContent: View {
             catalog: catalog,
             focus: .all,
             presentation: .embedded,
-            focusedPackageID: focusPackageID,
+            selectedPackageID: $selectedPackageID,
             onCatalogChanged: onCatalogChanged,
-            onPackageFocusChanged: onPackageFocusChanged,
             onEditElement: onEditElement
         )
     }

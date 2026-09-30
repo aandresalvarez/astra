@@ -46,9 +46,9 @@ enum ConfigureTab: String, CaseIterable {
 
 struct ConfigureView: View {
     var workspace: Workspace
-    var initialTab: ConfigureTab = .capabilities
-    var focusItemID: UUID?
-    var focusCapabilityPackageID: String?
+    @Binding var selectedTab: ConfigureTab
+    @Binding var selectedFocusItemID: UUID?
+    @Binding var selectedFocusCapabilityPackageID: String?
     @Environment(\.dismiss) private var dismiss
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
     private var globalSkills: [Skill]
@@ -56,9 +56,6 @@ struct ConfigureView: View {
     private var globalConnectors: [Connector]
     @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
     private var globalTools: [LocalTool]
-    @State private var selectedTab: ConfigureTab = .capabilities
-    @State private var selectedFocusItemID: UUID?
-    @State private var selectedFocusCapabilityPackageID: String?
     @State private var libraryCapabilityPackages: [PluginPackage] = []
 
     private var capabilities: WorkspaceCapabilities {
@@ -162,9 +159,6 @@ struct ConfigureView: View {
         }
         .frame(minWidth: 1040, idealWidth: 1180, maxWidth: 1320, minHeight: 760, idealHeight: 880)
         .onAppear {
-            selectedTab = initialTab
-            selectedFocusItemID = focusItemID
-            selectedFocusCapabilityPackageID = focusCapabilityPackageID
             reloadCapabilityPackages()
         }
     }
@@ -188,9 +182,8 @@ struct ConfigureView: View {
         case .capabilities:
             CapabilitiesTabContent(
                 workspace: workspace,
-                focusPackageID: selectedFocusCapabilityPackageID,
+                selectedPackageID: $selectedFocusCapabilityPackageID,
                 onCatalogChanged: { reloadCapabilityPackages() },
-                onPackageFocusChanged: { selectedFocusCapabilityPackageID = $0 },
                 onEditElement: { tab, itemID in
                     selectedFocusItemID = itemID
                     selectedFocusCapabilityPackageID = nil

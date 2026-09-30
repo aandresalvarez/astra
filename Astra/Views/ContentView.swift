@@ -1010,9 +1010,9 @@ struct ContentView: View {
             if let ws = effectiveWorkspace {
                 ConfigureView(
                     workspace: ws,
-                    initialTab: configureInitialTab,
-                    focusItemID: configureFocusItemID,
-                    focusCapabilityPackageID: configureFocusCapabilityPackageID
+                    selectedTab: $configureInitialTab,
+                    selectedFocusItemID: $configureFocusItemID,
+                    selectedFocusCapabilityPackageID: $configureFocusCapabilityPackageID
                 )
             }
         }
