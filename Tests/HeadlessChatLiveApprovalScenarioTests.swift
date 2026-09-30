@@ -248,6 +248,9 @@ extension HeadlessChatScenarioTests {
         #expect(stdin.contains("Push the release branch"))
         #expect(stdin.contains("\"behavior\":\"allow\""))
         #expect(stdin.contains("\"request_id\":\"req-live-1\""))
+        let receipt = try #require(task.events.first { $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue })
+        #expect(PermissionRequestResolution.decode(from: receipt.payload)?.requestID == "req-live-1", "Receipt: \(receipt.payload)")
+        #expect(receipt.run?.id == task.runs.first?.id)
     }
 
     @Test("Claude live ask denial answers the process and lifts the pause")

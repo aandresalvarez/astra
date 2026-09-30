@@ -203,12 +203,27 @@ enum ExecutionRequestSubmissionService {
                 }
             } catch { return .failure(.persistenceFailed(String(describing: type(of: error)))) }
         }
+        let origin: TaskExecutionSourcePayloadV1?
+        do {
+            let request = try continuation.flatMap { binding in
+                try TaskTurnRequestRepository.requests(for: task, in: modelContext).last { $0.runID == binding.runID }
+            }
+            origin = request.flatMap { request in task.events.first { $0.id == request.sourceEventID } }
+                .flatMap(decodeSourcePayload)
+            if request?.kind == .planStep,
+               origin?.launchMode != .approvedPlan || origin?.planSnapshot == nil || origin?.planExecutionMode == nil {
+                return .failure(.emptySource)
+            }
+        } catch { return .failure(.persistenceFailed(String(describing: type(of: error)))) }
+        let resumesPlan = origin?.launchMode == .approvedPlan
         return submitInternal(
-            kind: .followUp,
+            kind: resumesPlan ? .planStep : .followUp,
             eventType: TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
             payload: TaskExecutionSourcePayloadV1(
-                launchMode: .continuation,
+                launchMode: resumesPlan ? .approvedPlan : .continuation,
                 message: message,
+                plan: resumesPlan ? origin?.planSnapshot : nil,
+                planExecutionMode: resumesPlan ? origin?.planExecutionMode : nil,
                 executionPolicy: executionPolicy,
                 permissionContinuation: continuation,
                 permissionApprovalID: approvalID
@@ -217,7 +232,10 @@ enum ExecutionRequestSubmissionService {
             modelContext: modelContext,
             at: date,
             persist: persist,
-            prepare: prepare,
+            prepare: {
+                prepare()
+                if resumesPlan { TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext) }
+            },
             rollback: rollback
         )
     }

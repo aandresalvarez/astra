@@ -1342,13 +1342,13 @@ final class AgentRuntimeProcessRunner {
             monitor.recordActivity()
             let response: String?
             switch outcome {
-            case .allow:
+            case .allow, .allowWithDeliveryReceipt:
                 response = ClaudeControlProtocol.allowResponse(for: control)
             case .deny(let message):
                 response = ClaudeControlProtocol.denyResponse(for: control, message: message)
             }
-            if let response {
-                process.writeStdinLine(response)
+            if let response, process.writeStdinLine(response), case .allowWithDeliveryReceipt(let receipt) = outcome {
+                await receipt()
             }
         }
     }

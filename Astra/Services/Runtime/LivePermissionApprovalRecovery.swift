@@ -5,7 +5,8 @@ import ASTRAModels
 import ASTRAPersistence
 
 /// A live approval is committed before the process-local control channel is
-/// answered. Its durable receipt covers the crash window before acknowledgement.
+/// answered. Only a receipt recorded after a successful stdin write closes
+/// the delivery crash window; a local decision event is not such a receipt.
 @MainActor
 enum LivePermissionApprovalRecovery {
     struct Commit: Codable {
@@ -25,6 +26,29 @@ enum LivePermissionApprovalRecovery {
             payload: commit, run: task.runs.first { $0.id == binding.runID }))
     }
 
+    @discardableResult
+    static func recordDelivery(requestID: String, toolName: String, task: AgentTask,
+                               run: TaskRun, modelContext: ModelContext,
+                               persist: (() throws -> Void)? = nil) -> Bool {
+        let event = TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalDelivered,
+            payload: PermissionRequestResolution(requestID: requestID, approved: true, toolName: toolName).payloadString,
+            run: run)
+        modelContext.insert(event)
+        do {
+            if let persist { try persist() }
+            else {
+                try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
+                    modelContext: modelContext, taskID: task.id, auditFields: ["operation": "live_approval_delivery"])
+            }
+            return true
+        } catch {
+            modelContext.delete(event)
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: task.id,
+                fields: ["operation": "live_approval_delivery", "result": "receipt_not_saved"], level: .error)
+            return false
+        }
+    }
+
     /// Startup calls this after orphaned runs and their original requests have
     /// been settled, before normal queue replay. Recovery never starts a provider.
     @discardableResult
@@ -42,14 +66,17 @@ enum LivePermissionApprovalRecovery {
                   let data = event.payload.data(using: .utf8),
                   let commit = try? JSONDecoder().decode(Commit.self, from: data),
                   task.resolvedRuntimeID == commit.runtime,
-                  (try? TaskPermissionContinuation.isCurrent(commit.binding, task: task, modelContext: modelContext)) == true else { continue }
-            let acknowledged = task.events.contains {
-                $0.type == "permission.request.resolved" && $0.run?.id == commit.binding.runID
+                  (try? TaskPermissionContinuation.isCurrent(commit.binding, task: task, modelContext: modelContext,
+                      recoveringRestart: true)) == true else { continue }
+            let delivered = task.events.contains {
+                !$0.isDeleted && $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue && $0.run?.id == commit.binding.runID
                     && $0.timestamp >= event.timestamp
                     && PermissionRequestResolution.decode(from: $0.payload)?.requestID == commit.requestID
                     && PermissionRequestResolution.decode(from: $0.payload)?.approved == true
             }
-            guard !acknowledged else { continue }
+            guard !delivered else { continue }
+            var binding = commit.binding
+            binding.mode = .relaunch
             let snapshot = ExecutionMutationSnapshot(task)
             let policy: AgentRuntimeExecutionPolicy = commit.taskScope && commit.grants.isEmpty
                 ? .default : PermissionBroker.executionPolicy(forRuntime: commit.runtime, grants: commit.grants)
@@ -57,7 +84,7 @@ enum LivePermissionApprovalRecovery {
                 PermissionBroker.resumeMessage(providerID: commit.runtime, grants: commit.grants), binding: commit.binding
             )
             let result = ExecutionRequestSubmissionService.submitPermissionResume(message: message, executionPolicy: policy,
-                for: task, into: modelContext, continuation: commit.binding, approvalID: commit.approvalID,
+                for: task, into: modelContext, continuation: binding, approvalID: commit.approvalID,
                 persist: autoExportWorkspaces ? nil : {
                     try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
                         modelContext: modelContext, taskID: task.id, auditFields: ["operation": "live_approval_recovery"])

@@ -41,10 +41,14 @@ enum PermissionApprovalResolutionService {
             return .failed
         }
         if stale {
-            TaskRuntimePermissionOpenRequestStore.resolveRequest(payload: payload, task: task)
+            closeRequest(payload: payload, approved: false, task: task, modelContext: modelContext)
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info,
                 payload: "This permission request is no longer current. No continuation was started."))
-            return save(task: task, modelContext: modelContext, persist: persist, snapshot: snapshot) ? .ignored : .failed
+            guard save(task: task, modelContext: modelContext, persist: persist, snapshot: snapshot) else { return .failed }
+            if let liveID {
+                InFlightPermissionCenter.shared.resolve(taskID: task.id, requestID: liveID, approved: false)
+            }
+            return .ignored
         }
         let shouldContinue = approval?.behavior != .futureUse
             && (binding != nil || liveID != nil || task.status == .pendingUser)
@@ -55,7 +59,7 @@ enum PermissionApprovalResolutionService {
                 _ = TaskRuntimePermissionGrants.record(grants: grants, providerID: runtime, task: task,
                     modelContext: modelContext, source: "approve_similar")
             }
-            TaskRuntimePermissionOpenRequestStore.resolveRequest(payload: payload, task: task)
+            closeRequest(payload: payload, approved: true, task: task, modelContext: modelContext)
             task.updatedAt = Date()
             task.markRead()
             let detail = taskScope ? " for this task" : ""
@@ -106,6 +110,15 @@ enum PermissionApprovalResolutionService {
             return .failed
         }
         return .queued(submission)
+    }
+
+    private static func closeRequest(payload: String, approved: Bool, task: AgentTask, modelContext: ModelContext) {
+        TaskRuntimePermissionOpenRequestStore.resolveRequest(payload: payload, task: task)
+        guard let approval = PermissionApprovalEventPayload.decoded(from: payload), let requestID = approval.requestID else { return }
+        let run = approval.continuation.flatMap { binding in task.runs.first { $0.id == binding.runID } }
+        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionRequestResolved,
+            payload: PermissionRequestResolution(requestID: requestID, approved: approved,
+                toolName: "Runtime permission").payloadString, run: run))
     }
 
     private static func save(task: AgentTask, modelContext: ModelContext, persist: (() throws -> Void)?, snapshot: ExecutionMutationSnapshot) -> Bool {

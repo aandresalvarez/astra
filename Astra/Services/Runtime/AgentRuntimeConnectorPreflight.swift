@@ -3,6 +3,16 @@ import SwiftData
 import ASTRACore
 import ASTRAModels
 
+extension AgentRuntimeWorker {
+    var connectorPreflightTestingOverride: (() async -> Bool)? {
+#if DEBUG
+        connectorPreflightOverrideForTesting
+#else
+        nil
+#endif
+    }
+}
+
 enum AgentRuntimeConnectorPreflight {
     static func passed(
         task: AgentTask,

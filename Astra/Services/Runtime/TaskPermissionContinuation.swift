@@ -55,10 +55,19 @@ enum TaskPermissionContinuation {
         return capture(task: task, run: run, modelContext: modelContext)
     }
 
-    static func isCurrent(_ binding: PermissionApprovalContinuation, task: AgentTask, modelContext: ModelContext) throws -> Bool {
-        guard !task.isDone, task.status != .cancelled,
+    static func isCurrent(_ binding: PermissionApprovalContinuation, task: AgentTask, modelContext: ModelContext,
+                          recoveringRestart: Bool = false) throws -> Bool {
+        guard !task.isDone,
               let run = task.runs.first(where: { $0.id == binding.runID }),
               !task.runs.contains(where: { $0.id != run.id && $0.startedAt > run.startedAt }) else { return false }
+        if task.status == .cancelled {
+            let interruption = task.events.filter {
+                $0.type == TaskEventTypes.Task.interrupted.rawValue || $0.type == TaskEventTypes.Task.cancelled.rawValue
+            }.max { $0.timestamp < $1.timestamp }
+            guard recoveringRestart, run.typedStopReason == .appRestarted,
+                  interruption?.type == TaskEventTypes.Task.interrupted.rawValue,
+                  interruption?.run?.id == run.id else { return false }
+        }
         // A queued user turn supersedes this request even before it gets a run.
         let requests = try TaskTurnRequestRepository.requests(for: task, in: modelContext)
         if let origin = requests.last(where: { $0.runID == run.id }),

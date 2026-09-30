@@ -306,7 +306,7 @@ enum TaskRuntimePermissionOpenRequestStore {
     }
 
     private static func compatibilityEvents(for task: AgentTask) -> [RuntimePermissionOpenState.Event] {
-        task.events.map {
+        task.events.filter { !$0.isDeleted }.map {
             RuntimePermissionOpenState.Event(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
         }
     }

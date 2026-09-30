@@ -769,7 +769,7 @@ final class AgentRuntimeWorker {
             capabilityWorkingDirectory: capabilityWorkingDirectory,
             mcpDetectExecutable: mcpServerExecutableDetector,
             mcpIsExecutableFile: mcpServerExecutableIsResolvable,
-            testingOverride: connectorPreflightOverrideForTesting
+            testingOverride: connectorPreflightTestingOverride
         ) else {
             isRunning = false
             return

@@ -163,7 +163,7 @@ struct PermissionApprovalContinuationTests {
         #expect(await first.value == false)
     }
 
-    @Test("Committed live decisions recover only until the provider acknowledges them")
+    @Test("Committed live decisions recover after real startup settlement unless delivery was recorded")
     func liveApprovalCrashWindow() throws {
         for acknowledged in [false, true] {
             let fixture = try Fixture()
@@ -173,12 +173,21 @@ struct PermissionApprovalContinuationTests {
             TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: fixture.task)
             LivePermissionApprovalRecovery.record(binding: binding, requestID: "live", runtime: .codexCLI,
                 grants: [.credential(label: fixture.label)], taskScope: false, task: fixture.task, modelContext: fixture.context)
-            if acknowledged {
-                fixture.context.insert(TaskEvent(task: fixture.task, type: "permission.request.resolved",
+            let run = try #require(fixture.task.runs.first)
+            run.status = .running
+            run.completedAt = nil
+            fixture.task.completedAt = nil
+            fixture.context.insert(TaskEvent(task: fixture.task, type: "permission.request.resolved",
                     payload: PermissionRequestResolution(requestID: "live", approved: true, toolName: "Jira").payloadString,
-                    run: fixture.task.runs.first))
+                    run: run))
+            if acknowledged {
+                #expect(LivePermissionApprovalRecovery.recordDelivery(requestID: "live", toolName: "Jira",
+                    task: fixture.task, run: run, modelContext: fixture.context, persist: { try fixture.context.save() }))
             }
             try fixture.context.save()
+            TaskRunLifecycleService.recoverOrphanedRunningRuns(modelContext: fixture.context, autoExportWorkspaces: false)
+            TaskTurnRequestRecoveryService.recoverInterruptedRequests(modelContext: fixture.context, autoExportWorkspaces: false)
+            #expect(fixture.task.status == .cancelled)
             #expect(LivePermissionApprovalRecovery.recover(modelContext: fixture.context, autoExportWorkspaces: false) == (acknowledged ? 0 : 1))
             #expect(LivePermissionApprovalRecovery.recover(modelContext: fixture.context, autoExportWorkspaces: false) == 0)
             #expect(fixture.task.events.filter { $0.type == "execution.request.permission_resume" }.count == (acknowledged ? 0 : 1))
@@ -233,7 +242,7 @@ struct PermissionApprovalContinuationTests {
     }
 
     @MainActor
-    private struct Fixture {
+    struct Fixture {
         let root: URL
         let storeURL: URL
         let container: ModelContainer
