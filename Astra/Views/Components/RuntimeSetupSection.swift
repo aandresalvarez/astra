@@ -8,6 +8,9 @@ import ASTRACore
 /// callout that rendered the same blocker in up to five places.
 struct RuntimeSetupSection: View {
     @ObservedObject var model: RuntimeSetupModel
+    /// Performs `RuntimeReadinessFixAction.switchAntigravityToADC`. Nil where
+    /// the host does not own the Antigravity sign-in setting (no button shown).
+    var onSwitchAntigravityToADC: (() -> Void)?
     @Environment(\.openURL) private var openURL
 
     @State private var showDetails = false
@@ -435,6 +438,12 @@ struct RuntimeSetupSection: View {
                         .foregroundStyle(readinessColor(for: check.state))
                         .lineLimit(2)
                         .textSelection(.enabled)
+                }
+                if check.fixAction == .switchAntigravityToADC, let onSwitchAntigravityToADC {
+                    Button("Switch to Google Cloud (ADC)", action: onSwitchAntigravityToADC)
+                        .font(Stanford.caption(11))
+                        .controlSize(.small)
+                        .padding(.top, 2)
                 }
             }
             Spacer(minLength: 0)

@@ -75,7 +75,7 @@ struct SettingsRuntimeTab: View {
             VStack(alignment: .leading, spacing: 20) {
                 settingsRuntimeHeader
 
-                RuntimeSetupSection(model: settingsRuntimeSetup)
+                RuntimeSetupSection(model: settingsRuntimeSetup, onSwitchAntigravityToADC: { antigravityAuthModeRaw = AntigravityAuthMode.adc.rawValue })
 
                 advancedProviderSettingsCard
 

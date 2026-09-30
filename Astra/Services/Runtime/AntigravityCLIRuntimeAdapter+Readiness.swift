@@ -52,6 +52,16 @@ extension AntigravityCLIRuntimeAdapter {
             return unanswered
         }
         guard result.isSuccess else {
+            if authMode != .adc, Self.antigravityOutputReportsIneligibleAccount(result.stderr + "\n" + result.stdout) {
+                return RuntimeReadinessCheck(
+                    id: "antigravity-account",
+                    title: title,
+                    detail: "Google rejected this account for Antigravity (consumer eligibility check failed). Workspace and enterprise accounts are usually rejected here.",
+                    state: .blocked,
+                    remediation: "Switch Sign-in method to Google Cloud (ADC), run `gcloud auth application-default login` and `gcloud auth application-default set-quota-project <project>`, then click Check Again.",
+                    fixAction: .switchAntigravityToADC
+                )
+            }
             return RuntimeReadinessCheck(
                 id: "antigravity-account",
                 title: title,
@@ -137,6 +147,16 @@ extension AntigravityCLIRuntimeAdapter {
 
     /// Only reached for a process that ran to completion and failed; a
     /// timeout, launch failure, or cancellation is handled before this.
+    /// `agy` prints "Your current account is not eligible for Antigravity" when
+    /// the consumer eligibility check rejects the signed-in Google account.
+    /// Matched on the full output, since the detail line is truncated and the
+    /// warning about the model alias can push this sentence past the cut.
+    static func antigravityOutputReportsIneligibleAccount(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        return lower.contains("not eligible for antigravity")
+            || lower.contains("eligibility check failed")
+    }
+
     private func antigravityLiveAccountFailureDetail(_ result: RunResult) -> String {
         let code = result.exitCode ?? -1
         let evidence = result.stderr.isEmpty ? result.stdout : result.stderr

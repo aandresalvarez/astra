@@ -16,12 +16,19 @@ enum RuntimeReadinessScope: Sendable, Equatable {
     case diagnostic
 }
 
+/// A one-click repair the UI can offer next to a blocked check. The service
+/// only names the fix; the view that owns the setting performs it.
+enum RuntimeReadinessFixAction: Sendable, Equatable {
+    case switchAntigravityToADC
+}
+
 struct RuntimeReadinessCheck: Identifiable, Sendable, Equatable {
     let id: String
     let title: String
     let detail: String
     let state: RuntimeReadinessState
     let remediation: String?
+    var fixAction: RuntimeReadinessFixAction? = nil
 }
 
 struct RuntimeReadinessReport: Sendable, Equatable {
