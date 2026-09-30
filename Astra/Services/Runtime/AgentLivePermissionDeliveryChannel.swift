@@ -27,6 +27,12 @@ final class AgentLivePermissionDeliveryChannel: @unchecked Sendable {
         providerTurnCompleted = true
     }
 
+    var observedProviderTurnCompletion: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return providerTurnCompleted
+    }
+
     /// Called after final stdout drain and before the worker settles the run.
     /// Exit codes, stream noise, and local decisions cannot acknowledge a turn.
     func recordAcknowledgements() async {

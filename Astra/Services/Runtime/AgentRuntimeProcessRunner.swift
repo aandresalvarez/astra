@@ -1124,7 +1124,9 @@ final class AgentRuntimeProcessRunner {
             monitor.startWatchdog(process: process)
         }
         await deliveryChannel.recordAcknowledgements()
-        return result
+        var acknowledgedResult = result
+        acknowledgedResult.providerTurnCompleted = deliveryChannel.observedProviderTurnCompletion
+        return acknowledgedResult
     }
 
     private static func runScopedUtilityProcess(

@@ -289,6 +289,7 @@ enum AgentEventCompactor {
              "permission.approval.delivered",
              "error",
              "task.completed",
+             "task.approved",
              "task.cancelled",
              "task.interrupted":
             return true

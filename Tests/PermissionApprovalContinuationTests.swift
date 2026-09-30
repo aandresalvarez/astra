@@ -314,12 +314,17 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
     let firstResult: AgentProcessResult
     let providerReportedError: Bool
     let failLiveDelivery: Bool
+    let providerCompletedWithoutReceipt: Bool
+    let liveAskToolName: String
     init(connectorID: UUID, firstResult: AgentProcessResult = .init(exitCode: 0),
-         providerReportedError: Bool = false, failLiveDelivery: Bool = false) {
+         providerReportedError: Bool = false, failLiveDelivery: Bool = false,
+         providerCompletedWithoutReceipt: Bool = false, liveAskToolName: String = "Bash") {
         self.connectorID = connectorID
         self.firstResult = firstResult
         self.providerReportedError = providerReportedError
         self.failLiveDelivery = failLiveDelivery
+        self.providerCompletedWithoutReceipt = providerCompletedWithoutReceipt
+        self.liveAskToolName = liveAskToolName
     }
     func cancel() {}
     func isHostControlBrokerAvailable() -> Bool { true }
@@ -338,9 +343,16 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
         launchCount += 1
         launchPolicies.append(executionPolicy)
         if launchCount == 1, failLiveDelivery {
-            let decision = await onInteractiveAsk?(.init(requestID: "failed-delivery", toolName: "Bash",
-                inputSummary: "npm install lodash", commandText: "npm install lodash", pathText: nil))
+            let decision = await onInteractiveAsk?(.init(requestID: "failed-delivery", toolName: liveAskToolName,
+                inputSummary: "Check ticket documentation",
+                commandText: liveAskToolName == "Bash" ? "npm install lodash" : nil, pathText: nil))
             #expect(decision?.isAllowed == true)
+            if providerCompletedWithoutReceipt {
+                onLine(#"{"type":"result","subtype":"success","is_error":false,"result":"Approved work completed","total_cost_usd":0,"duration_ms":10,"num_turns":1}"#, false)
+                var result = AgentProcessResult(exitCode: 0)
+                result.providerTurnCompleted = true
+                return result
+            }
             // The provider exits without accepting the response or invoking its
             // acknowledgement callback, after the user committed the approval.
             return AgentProcessResult(exitCode: 1)

@@ -45,6 +45,7 @@ enum LivePermissionApprovalRecovery {
     private struct PendingApproval {
         let task: AgentTask
         let commit: Commit
+        let delivered: Bool
     }
 
     static func record(binding: PermissionApprovalContinuation, requestID: String, runtime: AgentRuntimeID,
@@ -99,8 +100,9 @@ enum LivePermissionApprovalRecovery {
     /// the current worker and its resource lease have been released.
     @discardableResult
     static func recoverSettledRun(task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                                  providerTurnCompleted: Bool = false,
                                   autoExportWorkspaces: Bool = true) -> Int {
-        guard !task.isDeleted, !run.isDeleted, run.status != .running else { return 0 }
+        guard !providerTurnCompleted, !task.isDeleted, !run.isDeleted, run.status != .running else { return 0 }
         let events = task.events.filter {
             $0.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue && $0.run?.id == run.id
         }
@@ -127,15 +129,16 @@ enum LivePermissionApprovalRecovery {
                 return receipt.version == 1 && receipt.evidence == "provider_turn_completed"
                     && receipt.requestID == commit.requestID && receipt.approved
             }
-            guard !delivered else { continue }
             let key = BindingKey(taskID: task.id, runID: commit.binding.runID,
                 sourceEventID: commit.binding.sourceEventID, originalUserRequest: commit.binding.originalUserRequest,
                 runtime: commit.runtime.rawValue)
-            groups[key, default: []].append(PendingApproval(task: task, commit: commit))
+            groups[key, default: []].append(PendingApproval(task: task, commit: commit, delivered: delivered))
         }
         var submitted = 0
         for group in groups.values {
-            guard let first = group.first else { continue }
+            // Delivery decides whether recovery is necessary, not which
+            // already-approved authority belongs to this originating turn.
+            guard group.contains(where: { !$0.delivered }), let first = group.first else { continue }
             let task = first.task
             let commit = first.commit
             var binding = commit.binding

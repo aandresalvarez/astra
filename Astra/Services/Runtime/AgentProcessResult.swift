@@ -1,6 +1,9 @@
 import Foundation
 
 struct AgentProcessResult {
+    /// Process-local evidence from a terminal provider frame. Receipt-save
+    /// failures must not turn observed completion into failed delivery.
+    var providerTurnCompleted = false
     let exitCode: Int
     let error: String?
     let providerFailureOutput: String?

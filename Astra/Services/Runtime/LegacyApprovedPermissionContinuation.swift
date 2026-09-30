@@ -20,18 +20,22 @@ enum LegacyApprovedPermissionContinuation {
               approval.behavior != .futureUse,
               approval.requestID?.hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true,
               approval.providerID == task.resolvedRuntimeID,
-              task.events.contains(where: {
-                  $0.type == "task.approved" && $0.timestamp > event.timestamp
-                      && $0.payload.localizedCaseInsensitiveContains("runtime permission approved")
-              }),
               !task.events.contains(where: {
                   ($0.type.hasPrefix("execution.request.") && $0.timestamp > event.timestamp)
                       || ($0.type == "user.message" && $0.timestamp > run.startedAt)
               }) else { return nil }
+        let latestResolution = task.events.filter {
+            !$0.isDeleted && $0.type == TaskEventTypes.Tool.permissionRequestResolved.rawValue
+                && $0.timestamp >= event.timestamp
+                && PermissionRequestResolution.decode(from: $0.payload)?.requestID == approval.requestID
+        }.max { $0.timestamp < $1.timestamp }
+        guard latestResolution.flatMap({ PermissionRequestResolution.decode(from: $0.payload) })?.approved != false else { return nil }
         let labels = PermissionBroker.structuredApprovalGrants(from: event.payload).compactMap { grant -> String? in
             if case .credential(let label) = grant { return label }; return nil
         }
         let approved = Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: approval.providerID))
+        // The saved authority is the durable approval evidence, including for
+        // older tasks whose human-readable approval notice was compacted.
         guard !labels.isEmpty, labels.allSatisfy(approved.contains) else { return nil }
         return event
     }
