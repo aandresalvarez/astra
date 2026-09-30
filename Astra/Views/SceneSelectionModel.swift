@@ -103,14 +103,16 @@ final class SceneSelectionModel: ObservableObject {
         isComposingWorkspaceApp = false
     }
 
-    /// Moves the open task composer to another workspace without leaving it.
+    /// Moves the new-task composer to another workspace without leaving it. A
+    /// workspace with no tasks shows the composer without `isComposingTask`
+    /// being set, so this also establishes composition rather than requiring it.
     /// The scene's workspace-change observer treats every other change while
     /// composing as leaving the composer (a sidebar click), so this records the
     /// one change it must let through; `consumeComposerRetarget` reads it back.
     func retargetComposer(to workspace: Workspace) {
-        guard isComposingTask, selectedTask == nil, selectedWorkspace?.id != workspace.id else { return }
+        guard selectedTask == nil, selectedWorkspace?.id != workspace.id else { return }
         retargetedComposerWorkspaceID = workspace.id
-        selectedWorkspace = workspace
+        composeTask(workspace: workspace)
     }
 
     /// True once for the workspace a `retargetComposer` just selected.

@@ -488,6 +488,7 @@ struct ChatPanelView: View {
             initializeComposerPolicyFromDefaults()
             loadSSHConnections()
             excludedSkillIDs = []
+            capabilitySnapshot = .empty
         }
     }
 
