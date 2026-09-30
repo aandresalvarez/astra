@@ -75,6 +75,17 @@ struct NewTaskWorkspacePickerTests {
         #expect(next == [kept.id])
     }
 
+    @Test("A snapshot is stamped with its workspace only once that workspace's catalog is loaded")
+    func snapshotIsStampedAfterItsCatalogLoads() {
+        let current = UUID()
+        let previous = UUID()
+
+        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: current, catalogWorkspaceID: current) == current)
+        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: current, catalogWorkspaceID: previous) == nil)
+        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: current, catalogWorkspaceID: nil) == nil)
+        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: nil, catalogWorkspaceID: nil) == nil)
+    }
+
     @Test("A narrow pane shows fewer segments but always keeps the current workspace")
     func narrowRowKeepsTheCurrentWorkspace() {
         let ids = (0..<4).map { _ in UUID() }

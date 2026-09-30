@@ -67,9 +67,8 @@ struct NewTaskWorkspacePickerView: View {
             ForEach(segments) { workspace in
                 segment(workspace)
             }
-            if switcher.workspaces.count > segments.count {
-                moreButton
-            }
+            // Always present: the menu also carries New workspace… and Import….
+            moreButton
         }
         .padding(3)
         .background(
@@ -136,9 +135,9 @@ struct NewTaskWorkspacePickerView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("More workspaces")
+        .accessibilityLabel("All workspaces")
         .accessibilityIdentifier("NewTaskWorkspaceMore")
-        .help("More workspaces")
+        .help("All workspaces, new and import")
         .popover(isPresented: $isMenuPresented, arrowEdge: .bottom) {
             NewTaskWorkspaceMenu(
                 switcher: switcher,

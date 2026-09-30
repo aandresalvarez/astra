@@ -17,6 +17,15 @@ struct ComposerCapabilitySnapshot {
     func selectedSkills(excluding excludedSkillIDs: Set<UUID>) -> [Skill] {
         availableSkills.filter { !excludedSkillIDs.contains($0.id) }
     }
+
+    /// Whether the loader may stamp a snapshot with its workspace. The pack
+    /// policy and catalog it resolved against are cached per workspace, so until
+    /// the catalog refresh for this workspace has completed they belong to the
+    /// previous one, and stamping them would let a composer submit with the
+    /// wrong capabilities. `nil` (no workspace) is always ready.
+    static func stampedWorkspaceID(workspaceID: UUID?, catalogWorkspaceID: UUID?) -> UUID? {
+        workspaceID == catalogWorkspaceID ? workspaceID : nil
+    }
 }
 
 enum ComposerCapabilitySnapshotBuilder {
@@ -68,6 +77,8 @@ struct ComposerCapabilitySnapshotLoader: View {
     private var globalTools: [LocalTool]
 
     @State private var catalogSnapshot = ComposerCapabilityCatalogSnapshot.empty
+    /// The workspace `catalogSnapshot` was last refreshed for.
+    @State private var catalogWorkspaceID: UUID?
     @State private var catalogRefreshID = UUID()
     @State private var approvalRefreshID = UUID()
 
@@ -110,6 +121,7 @@ struct ComposerCapabilitySnapshotLoader: View {
     private func refreshCatalogSnapshot() async {
         let refreshID = UUID()
         let enabledPackIDs = workspace?.enabledPackIDs ?? []
+        let refreshWorkspaceID = workspace?.id
         catalogRefreshID = refreshID
 
         let loadTask = Task.detached(priority: .userInitiated) {
@@ -132,12 +144,13 @@ struct ComposerCapabilitySnapshotLoader: View {
 
         guard let snapshot, !Task.isCancelled, catalogRefreshID == refreshID else { return }
         catalogSnapshot = snapshot.withBuiltInsFallback()
+        catalogWorkspaceID = refreshWorkspaceID
         emitSnapshot()
     }
 
     @MainActor
     private func emitSnapshot() {
-        onSnapshotChange(ComposerCapabilitySnapshotBuilder.make(
+        var snapshot = ComposerCapabilitySnapshotBuilder.make(
             workspace: workspace,
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
@@ -145,7 +158,12 @@ struct ComposerCapabilitySnapshotLoader: View {
             packageDefinitions: catalogSnapshot.packages,
             approvalRecords: catalogSnapshot.approvalRecords,
             packPolicy: catalogSnapshot.packPolicy
-        ))
+        )
+        snapshot.workspaceID = ComposerCapabilitySnapshot.stampedWorkspaceID(
+            workspaceID: snapshot.workspaceID,
+            catalogWorkspaceID: catalogWorkspaceID
+        )
+        onSnapshotChange(snapshot)
     }
 
     private static func joinFields(_ fields: [String]) -> String {
