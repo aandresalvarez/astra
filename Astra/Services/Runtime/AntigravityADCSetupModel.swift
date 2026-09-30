@@ -88,23 +88,20 @@ final class AntigravityADCSetupModel: ObservableObject {
         isRunning = true
         result = nil
         progress = nil
-        let displayCommand = AntigravityADCSetupService.displayLoginCommand(
-            project: project.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
         setupTask = Task { [weak self] in
             let outcome = await operation { [weak self] phase in
-                await self?.handle(phase, displayCommand: displayCommand)
+                await self?.handle(phase)
             }
             await self?.finish(outcome)
         }
     }
 
-    private func handle(_ phase: AntigravityADCSetupPhase, displayCommand: String) {
+    private func handle(_ phase: AntigravityADCSetupPhase) {
         switch phase {
-        case .launched(.scriptedTerminal):
+        case .launched(.scriptedTerminal, _):
             progress = "Choose your Google account in the browser that opens from Terminal."
-        case .launched(.manualCopy):
-            copyToPasteboard(displayCommand)
+        case .launched(.manualCopy, let command):
+            copyToPasteboard(command)
             progress = "Command copied. Paste it into Terminal and finish signing in."
         case .waitingForSignIn(let elapsed):
             progress = "Waiting for Google Cloud sign-in… (\(elapsed)s)"
@@ -133,6 +130,8 @@ extension AntigravityADCSetupOutcome {
             return "Google Cloud credentials are set up and bill \(project)."
         case .quotaProjectFailed(let detail):
             return "Signed in, but gcloud could not use that project: \(detail) Ask the project's administrator to confirm your access."
+        case .gcloudUnavailable(let detail):
+            return detail
         case .timedOut:
             return "Sign-in did not finish within 5 minutes. Try again when you are ready."
         case .invalidProject(let message):

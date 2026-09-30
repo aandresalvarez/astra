@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The ADC half of Settings → Runtime → Antigravity: project field, what
@@ -19,11 +20,18 @@ struct AntigravityADCSetupPanel: View {
             statusLine
 
             if model.credentialStatus == .gcloudMissing {
-                if let url = Self.gcloudInstallURL {
+                HStack(spacing: 8) {
+                    if let url = Self.gcloudInstallURL {
+                        Button {
+                            openURL(url)
+                        } label: {
+                            Label("Install Google Cloud CLI", systemImage: "arrow.up.forward.square")
+                        }
+                    }
                     Button {
-                        openURL(url)
+                        model.refreshStatus()
                     } label: {
-                        Label("Install Google Cloud CLI", systemImage: "arrow.up.forward.square")
+                        Label("Check Again", systemImage: "arrow.clockwise")
                     }
                 }
             } else {
@@ -55,6 +63,10 @@ struct AntigravityADCSetupPanel: View {
             }
         }
         .onAppear { model.refreshStatus() }
+        // gcloud gets installed, or sign-in finishes, outside ASTRA: re-read on return.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if !model.isRunning { model.refreshStatus() }
+        }
     }
 
     @ViewBuilder

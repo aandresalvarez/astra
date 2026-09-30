@@ -27,6 +27,18 @@ private final class RecordingLauncher: TerminalCommandLaunching, @unchecked Send
     func openTerminalApp() {}
 }
 
+private final class DeniedLauncher: TerminalCommandLaunching, @unchecked Sendable {
+    func launchInTerminal(command _: String) throws {
+        throw TerminalLaunchError(reason: "Not authorized")
+    }
+    func openTerminalApp() {}
+}
+
+private actor PhaseLog {
+    private(set) var phases: [AntigravityADCSetupPhase] = []
+    func append(_ phase: AntigravityADCSetupPhase) { phases.append(phase) }
+}
+
 private struct ADCHome {
     let root: URL
 
@@ -173,5 +185,64 @@ struct AntigravityADCSetupServiceTests {
             return
         }
         #expect(detail.contains("serviceusage.services.use"))
+    }
+
+    @Test("The copy/paste fallback carries the resolved, quoted gcloud path")
+    func fallbackCommandUsesResolvedGcloudPath() async throws {
+        let home = try ADCHome()
+        defer { home.remove() }
+        let service = AntigravityADCSetupService(
+            homeDirectory: home.root.path,
+            launcher: DeniedLauncher(),
+            runner: StubBinaryRunner(),
+            detectExecutable: { $0 == "gcloud" ? "/Users/a b/google-cloud-sdk/bin/gcloud" : "" },
+            maxDuration: 3,
+            pollInterval: 3,
+            sleep: { _ in }
+        )
+        let log = PhaseLog()
+
+        _ = await service.setUp(project: "my-project") { await log.append($0) }
+
+        let expected = "'/Users/a b/google-cloud-sdk/bin/gcloud' auth application-default login --project='my-project'"
+        let phases = await log.phases
+        #expect(phases.contains(.launched(.manualCopy(reason: "Not authorized"), command: expected)))
+    }
+
+    @Test("A gcloud timeout or launch failure is not reported as a project permission error")
+    func nonExitFailuresAreClassifiedSeparately() async throws {
+        let home = try ADCHome()
+        defer { home.remove() }
+        let key = "/opt/gcloud auth application-default set-quota-project my-project"
+
+        for result in [
+            RunResult(outcome: .timedOut, stdout: "", stderr: ""),
+            RunResult(outcome: .launchFailed("no such file"), stdout: "", stderr: "")
+        ] {
+            let runner = StubBinaryRunner()
+            await runner.setResponse(forKey: key, result: result)
+            let outcome = await makeService(home: home, runner: runner).setQuotaProject("my-project")
+            guard case .gcloudUnavailable(let detail) = outcome else {
+                Issue.record("Expected gcloudUnavailable, got \(outcome)")
+                continue
+            }
+            #expect(!detail.contains("administrator"))
+        }
+    }
+
+    @Test("Cancelling during set-quota-project stays a silent cancel")
+    func cancelledQuotaProjectIsSilent() async throws {
+        let home = try ADCHome()
+        defer { home.remove() }
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/gcloud auth application-default set-quota-project my-project",
+            result: RunResult(outcome: .cancelled, stdout: "", stderr: "")
+        )
+
+        let outcome = await makeService(home: home, runner: runner).setQuotaProject("my-project")
+
+        #expect(outcome == .cancelled)
+        #expect(outcome.message == nil)
     }
 }

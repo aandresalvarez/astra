@@ -18,7 +18,10 @@ enum AntigravityADCStatus: Equatable, Sendable {
 }
 
 enum AntigravityADCSetupPhase: Equatable, Sendable {
-    case launched(RuntimeAuthLaunchMethod)
+    /// `command` is the exact command that was (or should be) run, built from
+    /// the resolved gcloud path, so the copy/paste fallback works even when
+    /// gcloud is not on the user's interactive shell PATH.
+    case launched(RuntimeAuthLaunchMethod, command: String)
     case waitingForSignIn(elapsed: Int)
     case settingQuotaProject
 }
@@ -28,6 +31,9 @@ enum AntigravityADCSetupOutcome: Equatable, Sendable {
     /// Sign-in finished but `set-quota-project` failed; `detail` is the
     /// sanitized gcloud message (usually a permission error on the project).
     case quotaProjectFailed(detail: String)
+    /// gcloud never produced an answer (timeout or launch failure), so this is
+    /// a local or network problem, not a project-permission one.
+    case gcloudUnavailable(detail: String)
     case timedOut
     case invalidProject(String)
     case gcloudMissing
@@ -107,10 +113,6 @@ struct AntigravityADCSetupService: Sendable {
         ].joined(separator: " ")
     }
 
-    static func displayLoginCommand(project: String) -> String {
-        "gcloud auth application-default login --project=\(project)"
-    }
-
     static func quotaProjectArguments(project: String) -> [String] {
         ["auth", "application-default", "set-quota-project", project]
     }
@@ -132,11 +134,11 @@ struct AntigravityADCSetupService: Sendable {
         let command = Self.loginCommand(gcloudPath: gcloud, project: project)
         do {
             try await launcher.launchInTerminal(command: command)
-            await onPhase(.launched(.scriptedTerminal))
+            await onPhase(.launched(.scriptedTerminal, command: command))
         } catch {
             let reason = (error as? TerminalLaunchError)?.reason ?? error.localizedDescription
             launcher.openTerminalApp()
-            await onPhase(.launched(.manualCopy(reason: reason)))
+            await onPhase(.launched(.manualCopy(reason: reason), command: command))
         }
         Self.log.info("adc setup launched")
 
@@ -177,6 +179,13 @@ struct AntigravityADCSetupService: Sendable {
             timeout: commandTimeout,
             environment: nil
         )
+        if result.cancelled || Task.isCancelled { return .cancelled }
+        if result.timedOut {
+            return .gcloudUnavailable(detail: "gcloud did not answer within \(Int(commandTimeout)) seconds. Check your network connection and try again.")
+        }
+        if case .launchFailed = result.outcome {
+            return .gcloudUnavailable(detail: "ASTRA could not start gcloud. Reinstall the Google Cloud CLI or check its path, then try again.")
+        }
         guard result.isSuccess else {
             let evidence = result.stderr.isEmpty ? result.stdout : result.stderr
             let sanitized = RuntimeReadinessRedactor.redacted(evidence)
