@@ -158,8 +158,22 @@ struct RuntimeSetupSection: View {
     private func signInOfferRow(_ runtime: AgentRuntimeID) -> some View {
         let remediation = model.remediation(for: runtime).auth
         let isUnverified = isReadyUnverified
+        // An ineligible Google account fails again on every Sign In, so the
+        // repair belongs here, beside the action it replaces.
+        let adcFix = model.runtimeBlockers.first { $0.fixAction == .switchAntigravityToADC }
 
         return VStack(alignment: .leading, spacing: 8) {
+            if adcFix != nil, let onSwitchAntigravityToADC {
+                Text("Google rejected this account for Antigravity, so signing in again will not help. Route through Google Cloud (ADC) instead; you'll also need `gcloud auth application-default login` and `set-quota-project` once, outside ASTRA.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.black)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(action: onSwitchAntigravityToADC) {
+                    Label("Switch to Google Cloud (ADC)", systemImage: "cloud.fill")
+                        .font(Stanford.caption(12).weight(.semibold))
+                }
+                .accessibilityLabel("Switch Antigravity to Google Cloud ADC sign-in")
+            }
             Text(isUnverified
                  ? "If you have not signed in to \(runtime.displayName) yet, do it now — the account is confirmed on your first task."
                  : "Sign in to \(runtime.displayName) to continue.")
@@ -438,12 +452,6 @@ struct RuntimeSetupSection: View {
                         .foregroundStyle(readinessColor(for: check.state))
                         .lineLimit(2)
                         .textSelection(.enabled)
-                }
-                if check.fixAction == .switchAntigravityToADC, let onSwitchAntigravityToADC {
-                    Button("Switch to Google Cloud (ADC)", action: onSwitchAntigravityToADC)
-                        .font(Stanford.caption(11))
-                        .controlSize(.small)
-                        .padding(.top, 2)
                 }
             }
             Spacer(minLength: 0)
