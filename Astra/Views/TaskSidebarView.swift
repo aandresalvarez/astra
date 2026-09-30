@@ -79,6 +79,7 @@ struct TaskSidebarContainerView: View {
             workspaces: workspaces,
             selectedWorkspace: $selectedWorkspace,
             taskActivities: taskActivities,
+            activityRequests: Dictionary(grouping: turnRequests, by: \.taskID),
             onNewTask: onNewTask,
             onRunQueue: onRunQueue,
             onRunTask: onRunTask,
@@ -371,9 +372,9 @@ struct TaskSidebarView: View {
     let taskQueue: TaskQueue
     let workspaces: [Workspace]
     @Binding var selectedWorkspace: Workspace?
-    /// Derived from `TaskTurnRequest` snapshots by the container. The sidebar
-    /// never mutates turn state and never needs an inverse on `AgentTask`.
+    /// Derived from request snapshots by the container; never mutates turn state.
     var taskActivities: [UUID: TaskActivityPresentation] = [:]
+    var activityRequests: [UUID: [TaskTurnRequest]] = [:]
     let onNewTask: () -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
@@ -435,6 +436,7 @@ struct TaskSidebarView: View {
     @State private var anchorTracker = WorkspaceSidebarAnchorTracker()
     @AppStorage(AppStorageKeys.showStarredWorkspacesOnly) private var showStarredWorkspacesOnly = false
     @AppStorage(AppStorageKeys.workspaceSidebarSortMode) private var workspaceSortModeRaw = WorkspaceSidebarSortMode.name.rawValue
+    @Environment(\.newTaskComposerWorkspaceID) private var newTaskComposerWorkspaceID
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
     @State private var taskIndex = SidebarTaskIndex.empty
@@ -922,7 +924,7 @@ struct TaskSidebarView: View {
                     isSelected: isSelected,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
-                    activity: taskActivities[task.id],
+                    requests: activityRequests[task.id] ?? [],
                     titleHelp: workspaceHoverHelp,
                     showsPinIndicator: false
                 )
@@ -1046,7 +1048,7 @@ struct TaskSidebarView: View {
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
                     subtitle: task.workspace?.name,
-                    activity: taskActivities[task.id]
+                    requests: activityRequests[task.id] ?? []
                 )
             }
             .buttonStyle(.plain)
@@ -1821,6 +1823,7 @@ struct TaskSidebarView: View {
     ) -> some View {
         WorkspaceRowActions(
             workspace: workspace,
+            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
             isRowHovered: isHovered,
             activityCounts: activityCounts,
             onNewTask: { startNewTask(in: workspace) },
@@ -1969,7 +1972,7 @@ struct TaskSidebarView: View {
                     isKeyboardFocused: isKeyboardFocused,
                     contentLeadingPadding: contentLeadingPadding,
                     attemptCount: attemptCount,
-                    activity: taskActivities[task.id]
+                    requests: activityRequests[task.id] ?? []
                 )
             }
             .buttonStyle(.plain)

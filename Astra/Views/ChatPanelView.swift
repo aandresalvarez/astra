@@ -46,6 +46,7 @@ struct ChatPanelView: View {
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.newTaskWorkspaceSwitcher) private var workspaceSwitcher
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State var messageText = ""
     @State private var messages: [ChatMessage] = []
@@ -103,7 +104,7 @@ struct ChatPanelView: View {
     @State private var planGenerationTask: Task<Void, Never>?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
-    @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
+    @State var capabilitySnapshot = ComposerCapabilitySnapshot.empty
     @State var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     @State var runtimeEligibilityPreviewState = RuntimeEligibilityPreviewState.idle
     // Random per session; a live-cycling prompt mutated while the user was reading it.
@@ -483,7 +484,13 @@ struct ChatPanelView: View {
         .onChange(of: claudeAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignDefaultModelWithRuntime() }
-        .onChange(of: workspace?.id) { initializeComposerPolicyFromDefaults() }
+        .onChange(of: workspace?.persistentModelID) {
+            // The policy defaults are global, so an in-place workspace switch
+            // keeps whatever level the user picked for this composer.
+            loadSSHConnections()
+            excludedSkillIDs = []
+            if !isCapabilitySnapshotCurrent { capabilitySnapshot = .empty }
+        }
     }
 
     // MARK: - Scroll behavior
@@ -574,28 +581,9 @@ struct ChatPanelView: View {
                 .lineLimit(2)
                 .frame(maxWidth: 720, minHeight: 84)
 
-            // The active workspace is already shown in the title bar subtitle
-            // and the right-hand "Workspace Context" panel; a third chip here
-            // was pure repetition, so the hero stays focused on the prompt.
-
-            HStack(spacing: 28) {
-                HStack(spacing: 5) {
-                    Image(systemName: "bolt.fill")
-                        .font(Stanford.ui(13))
-                    Text("Enter to run immediately")
-                        .font(Stanford.body(15))
-                }
-                .foregroundStyle(Stanford.lagunita)
-
-                HStack(spacing: 5) {
-                    Image(systemName: "switch.2")
-                        .font(Stanford.ui(13))
-                    Text("Enable Goal mode to refine first")
-                        .font(Stanford.body(15))
-                }
-                .foregroundStyle(Color.primary.opacity(0.65))
+            if draftToLoad == nil, draftTask == nil, let workspace, let workspaceSwitcher {
+                NewTaskWorkspacePickerView(current: workspace, switcher: workspaceSwitcher)
             }
-
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1184,7 +1172,7 @@ struct ChatPanelView: View {
     /// Send message → start or continue the provider-assisted conversation
     private func sendMessage() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty else { return }
+        guard !input.isEmpty, isCapabilitySnapshotCurrent else { return }
 
         // Check for slash commands — route through the provider conversation with context
         let lower = input.lowercased()
