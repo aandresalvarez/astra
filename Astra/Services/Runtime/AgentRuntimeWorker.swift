@@ -1327,7 +1327,8 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: payload, run: run)
             modelContext.insert(event)
-        } else if TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
+        } else if processSucceeded, !recordingState.agentReportedError(for: run),
+                  TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
         } else if processSucceeded,
                   runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
                   Self.applyEmptySuccessfulRunIfNeeded(

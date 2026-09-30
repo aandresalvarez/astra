@@ -252,7 +252,9 @@ enum BrokeredCredentialApprovalDiscovery {
         // closing the rest, so a second offer in the store is a connector the
         // user approves without ever being shown — and it stays sealed. Anything
         // an earlier run left open therefore travels in this offer too.
+        let currentConnectorIDs = Set(recorded.map(\.connectorID))
         let stillWaiting = records(stillWaitingIn: openOffers, excluding: granted, modelContext: modelContext)
+            .filter { !currentConnectorIDs.contains($0.connectorID) }
         recordOpenRequest(
             covering: stillWaiting + recorded,
             includesEarlierRuns: !stillWaiting.isEmpty,
@@ -309,10 +311,16 @@ enum BrokeredCredentialApprovalDiscovery {
             ),
             providerDetail: offer.connectorName,
             grants: PermissionBroker.approvalGrants(for: request),
-            requestID: BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: connectorIDs)
-        ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext))
+            requestID: BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: connectorIDs),
+            behavior: .futureUse
+        ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext), behavior: .futureUse)
         for requestID in replacedRequestIDs {
             TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: requestID, task: task)
+            if requestID != PermissionApprovalEventPayload.decoded(from: payload)?.requestID {
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionRequestResolved,
+                    payload: PermissionRequestResolution(requestID: requestID, approved: false,
+                        toolName: "Replaced connector offer").payloadString, run: run))
+            }
         }
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
         modelContext.insert(TaskEvent(

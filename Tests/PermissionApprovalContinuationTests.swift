@@ -306,11 +306,17 @@ private extension Result where Success == ExecutionRequestSubmissionService.Subm
 /// Exercises the complete worker/queue path while keeping provider and Jira
 /// traffic local. The first successful process exit leaves a real broker ledger
 /// record; the second launch must carry the approved credential grant.
-private final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
+final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
     let connectorID: UUID
     var launchCount = 0
     var continuationPrompt: String?
-    init(connectorID: UUID) { self.connectorID = connectorID }
+    let firstResult: AgentProcessResult
+    let providerReportedError: Bool
+    init(connectorID: UUID, firstResult: AgentProcessResult = .init(exitCode: 0), providerReportedError: Bool = false) {
+        self.connectorID = connectorID
+        self.firstResult = firstResult
+        self.providerReportedError = providerReportedError
+    }
     func cancel() {}
     func isHostControlBrokerAvailable() -> Bool { true }
 
@@ -341,7 +347,9 @@ private final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
         let event: [String: Any] = ["type": "assistant", "message": ["content": [["type": "text", "text": answer]]]]
         let data = try! JSONSerialization.data(withJSONObject: event)
         onLine(String(data: data, encoding: .utf8)!, false)
-        onLine(#"{"type":"result","subtype":"success","result":"Done","total_cost_usd":0,"duration_ms":10,"num_turns":1}"#, false)
-        return AgentProcessResult(exitCode: 0)
+        onLine(providerReportedError
+            ? #"{"type":"result","subtype":"success","is_error":true,"result":"Unrelated failure","total_cost_usd":0,"duration_ms":10,"num_turns":1}"#
+            : #"{"type":"result","subtype":"success","result":"Done","total_cost_usd":0,"duration_ms":10,"num_turns":1}"#, false)
+        return firstResult
     }
 }

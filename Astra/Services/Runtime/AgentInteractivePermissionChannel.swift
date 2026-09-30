@@ -20,12 +20,12 @@ struct AgentRuntimeInteractiveAskPlan: Equatable {
 /// user declined".
 enum InteractiveAskOutcome: Sendable, Equatable {
     case allow
-    case allowWithDeliveryReceipt(@Sendable () async -> Void)
+    case allowWithAcknowledgementReceipt(@Sendable () async -> Void)
     case deny(message: String)
 
     var isAllowed: Bool {
         switch self {
-        case .allow, .allowWithDeliveryReceipt: return true
+        case .allow, .allowWithAcknowledgementReceipt: return true
         case .deny: return false
         }
     }
@@ -477,7 +477,7 @@ extension AgentRuntimeWorker {
             guard approved else {
                 return .deny(message: "The user declined this action in ASTRA. Continue without it or propose an alternative.")
             }
-            return .allowWithDeliveryReceipt {
+            return .allowWithAcknowledgementReceipt {
                 await MainActor.run {
                     _ = LivePermissionApprovalRecovery.recordDelivery(requestID: ask.requestID,
                         toolName: ask.toolName, task: task, run: run, modelContext: modelContext)

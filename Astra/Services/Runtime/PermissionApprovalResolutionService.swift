@@ -20,6 +20,28 @@ enum PermissionApprovalResolutionService {
         heldGrants: [PermissionGrant] = [],
         persist: (() throws -> Void)? = nil
     ) -> Outcome {
+        let outcome = commitApproval(task: task, scope: scope, modelContext: modelContext,
+            heldGrants: heldGrants, persist: persist)
+        let result: String
+        switch outcome {
+        case .queued: result = "queued"
+        case .live: result = "live"
+        case .saved: result = "saved"
+        case .ignored, .failed: return outcome
+        }
+        AppLogger.audit(.taskApproved, category: "PermissionApproval", taskID: task.id,
+            fields: ["approval_scope": scope == .task ? "task" : "once",
+                "runtime": task.resolvedRuntimeID.rawValue, "outcome": result])
+        return outcome
+    }
+
+    private static func commitApproval(
+        task: AgentTask,
+        scope: Scope,
+        modelContext: ModelContext,
+        heldGrants: [PermissionGrant],
+        persist: (() throws -> Void)?
+    ) -> Outcome {
         guard let payload = TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: task),
               TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task) else { return .ignored }
         let snapshot = ExecutionMutationSnapshot(task)
@@ -84,7 +106,7 @@ enum PermissionApprovalResolutionService {
             // The process can die while persistence is in progress. Preserve
             // the already committed grant and submit a durable replacement run.
             TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
-            return approve(task: task, scope: scope, modelContext: modelContext, heldGrants: heldGrants, persist: persist)
+            return commitApproval(task: task, scope: scope, modelContext: modelContext, heldGrants: heldGrants, persist: persist)
         }
         let message = PermissionBroker.resumeMessage(
             providerID: runtime,

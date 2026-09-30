@@ -93,9 +93,10 @@ enum TaskPermissionContinuation {
         )
     }
 
-    static func attach(_ payload: String, continuation: PermissionApprovalContinuation) -> String {
+    static func attach(_ payload: String, continuation: PermissionApprovalContinuation,
+                       behavior: PermissionApprovalBehavior = .continueBlockedTurn) -> String {
         guard var decoded = PermissionApprovalEventPayload.decoded(from: payload) else { return payload }
-        decoded.behavior = .continueBlockedTurn
+        decoded.behavior = behavior
         decoded.continuation = continuation
         decoded.requestID = decoded.requestID ?? UUID().uuidString
         return decoded.encodedString() ?? payload
@@ -103,10 +104,22 @@ enum TaskPermissionContinuation {
 
     @discardableResult
     static func applyBlockingOutcomeIfNeeded(task: AgentTask, run: TaskRun, modelContext: ModelContext) -> Bool {
-        guard !task.isDone, task.status != .cancelled,
-              TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).contains(where: {
-                  binding(payload: $0, task: task, modelContext: modelContext)?.runID == run.id
-              }) else { return false }
+        guard !task.isDone, task.status != .cancelled else { return false }
+        let requests = TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).filter { payload in
+            if let approval = PermissionApprovalEventPayload.decoded(from: payload),
+               approval.behavior == .futureUse {
+                return approval.requestID?.hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true
+                    && approval.continuation?.runID == run.id
+            }
+            return binding(payload: payload, task: task, modelContext: modelContext)?.runID == run.id
+        }
+        guard !requests.isEmpty else { return false }
+        for payload in requests where PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .futureUse {
+            let promoted = attach(payload, continuation: capture(task: task, run: run, modelContext: modelContext))
+            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: promoted, task: task)
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+                payload: promoted, run: run))
+        }
         run.recordPermissionApprovalRequired()
         TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
         return true

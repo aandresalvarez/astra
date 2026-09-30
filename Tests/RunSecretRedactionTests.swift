@@ -22,6 +22,14 @@ struct RunSecretRedactionTests {
         #expect(secrets == [atlassianShaped])
         #expect(RunSecretRedaction.redact(#"{"approved":true}"#, secrets: secrets) == #"{"approved":true}"#)
         #expect(RunSecretRedaction.isSecretKey("AGY_ADC_AUTH_TOKEN"))
+        #expect(RunSecretRedaction.secretValues(in: ["AGY_ADC_AUTH": "false"]).isEmpty)
+        for key in ["AGY_ADC_AUTH", "CUSTOM_AGY_ADC_AUTH"] {
+            #expect(Skill.isSecretEnvironmentKey(key))
+            let credentials = RunSecretRedaction.secretValues(in: [key: atlassianShaped])
+            #expect(credentials == [atlassianShaped])
+            #expect(!RunSecretRedaction.redact(atlassianShaped, secrets: credentials).contains(atlassianShaped))
+        }
+        #expect(RunSecretRedaction.secretValues(in: ["CUSTOM_AGY_ADC_AUTH": "true"]) == ["true"])
     }
 
     // MARK: - Classification

@@ -59,8 +59,7 @@ public enum RunSecretRedaction {
     /// fragment redaction matches on eight bytes, so registering it would
     /// replace `/private` everywhere it appears — a transcript full of
     /// `[redacted]` file paths, protecting a socket path that is not a secret.
-    // AGY_ADC_AUTH selects Antigravity's ADC mode; it carries a boolean flag.
-    public static let nonCredentialKeyNames = ["PROJECT_KEY", "KEY_ID", "SSH_AUTH_SOCK", "AGY_ADC_AUTH"]
+    public static let nonCredentialKeyNames = ["PROJECT_KEY", "KEY_ID", "SSH_AUTH_SOCK"]
 
     /// Whether an exception above names *this* variable, rather than merely
     /// appearing somewhere inside its name.
@@ -99,6 +98,9 @@ public enum RunSecretRedaction {
         var values: [String] = []
         for (key, value) in environment where isSecretKey(key) {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Only the exact runtime selector with a boolean value is a flag.
+            // Custom credentials, including prefixed connector keys, stay secret.
+            if key == "AGY_ADC_AUTH", trimmed == "true" || trimmed == "false" { continue }
             guard trimmed.count >= minimumSecretLength else { continue }
             values.append(trimmed)
         }

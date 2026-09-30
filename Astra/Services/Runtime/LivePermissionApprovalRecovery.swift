@@ -5,8 +5,8 @@ import ASTRAModels
 import ASTRAPersistence
 
 /// A live approval is committed before the process-local control channel is
-/// answered. Only a receipt recorded after a successful stdin write closes
-/// the delivery crash window; a local decision event is not such a receipt.
+/// answered. Only observed provider turn completion closes the delivery crash
+/// window; local decisions and successful pipe writes are not acknowledgements.
 @MainActor
 enum LivePermissionApprovalRecovery {
     struct Commit: Codable {
@@ -16,6 +16,35 @@ enum LivePermissionApprovalRecovery {
         let grants: [PermissionGrant]
         let taskScope: Bool
         var approvalID: String { "\(binding.runID.uuidString):\(requestID)" }
+    }
+
+    private struct DeliveryReceipt: Codable {
+        let version: Int
+        let evidence: String
+        let requestID: String
+        let approved: Bool
+        let toolName: String
+
+        init(requestID: String, toolName: String) {
+            version = 1
+            evidence = "provider_turn_completed"
+            self.requestID = requestID
+            approved = true
+            self.toolName = toolName
+        }
+    }
+
+    private struct BindingKey: Hashable {
+        let taskID: UUID
+        let runID: UUID
+        let sourceEventID: UUID?
+        let originalUserRequest: String
+        let runtime: String
+    }
+
+    private struct PendingApproval {
+        let task: AgentTask
+        let commit: Commit
     }
 
     static func record(binding: PermissionApprovalContinuation, requestID: String, runtime: AgentRuntimeID,
@@ -30,8 +59,9 @@ enum LivePermissionApprovalRecovery {
     static func recordDelivery(requestID: String, toolName: String, task: AgentTask,
                                run: TaskRun, modelContext: ModelContext,
                                persist: (() throws -> Void)? = nil) -> Bool {
+        guard !task.isDeleted, !run.isDeleted else { return false }
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalDelivered,
-            payload: PermissionRequestResolution(requestID: requestID, approved: true, toolName: toolName).payloadString,
+            payload: TaskEvent.payloadString(DeliveryReceipt(requestID: requestID, toolName: toolName)),
             run: run)
         modelContext.insert(event)
         do {
@@ -60,31 +90,47 @@ enum LivePermissionApprovalRecovery {
             AppLogger.audit(.taskFailed, category: "Persistence", fields: ["operation": "live_approval_recovery_fetch"], level: .error)
             return 0
         }
-        var submitted = 0
-        for event in events {
-            guard let task = event.task,
+        // Validate every commit before creating any newer turn request. Recovery
+        // itself must not make another approval of the same binding look stale.
+        var groups: [BindingKey: [PendingApproval]] = [:]
+        for event in events.sorted(by: { $0.timestamp < $1.timestamp }) {
+            guard !event.isDeleted, let task = event.task,
                   let data = event.payload.data(using: .utf8),
                   let commit = try? JSONDecoder().decode(Commit.self, from: data),
                   task.resolvedRuntimeID == commit.runtime,
                   (try? TaskPermissionContinuation.isCurrent(commit.binding, task: task, modelContext: modelContext,
                       recoveringRestart: true)) == true else { continue }
             let delivered = task.events.contains {
-                !$0.isDeleted && $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue && $0.run?.id == commit.binding.runID
-                    && $0.timestamp >= event.timestamp
-                    && PermissionRequestResolution.decode(from: $0.payload)?.requestID == commit.requestID
-                    && PermissionRequestResolution.decode(from: $0.payload)?.approved == true
+                guard !$0.isDeleted, $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue,
+                      $0.run?.id == commit.binding.runID, $0.timestamp >= event.timestamp,
+                      case .success(let receipt) = $0.decodePayload(as: DeliveryReceipt.self) else { return false }
+                return receipt.version == 1 && receipt.evidence == "provider_turn_completed"
+                    && receipt.requestID == commit.requestID && receipt.approved
             }
             guard !delivered else { continue }
+            let key = BindingKey(taskID: task.id, runID: commit.binding.runID,
+                sourceEventID: commit.binding.sourceEventID, originalUserRequest: commit.binding.originalUserRequest,
+                runtime: commit.runtime.rawValue)
+            groups[key, default: []].append(PendingApproval(task: task, commit: commit))
+        }
+        var submitted = 0
+        for group in groups.values {
+            guard let first = group.first else { continue }
+            let task = first.task
+            let commit = first.commit
             var binding = commit.binding
             binding.mode = .relaunch
             let snapshot = ExecutionMutationSnapshot(task)
-            let policy: AgentRuntimeExecutionPolicy = commit.taskScope && commit.grants.isEmpty
-                ? .default : PermissionBroker.executionPolicy(forRuntime: commit.runtime, grants: commit.grants)
+            var seenGrants: Set<PermissionGrant> = []
+            let grants = group.flatMap { $0.commit.grants }.filter { seenGrants.insert($0).inserted }
+            let policy: AgentRuntimeExecutionPolicy = grants.isEmpty
+                ? .default : PermissionBroker.executionPolicy(forRuntime: commit.runtime, grants: grants)
             let message = TaskPermissionContinuation.resumeMessage(
-                PermissionBroker.resumeMessage(providerID: commit.runtime, grants: commit.grants), binding: commit.binding
+                PermissionBroker.resumeMessage(providerID: commit.runtime, grants: grants), binding: binding
             )
+            let approvalID = "live:\(binding.runID.uuidString):\(binding.sourceEventID?.uuidString ?? "legacy")"
             let result = ExecutionRequestSubmissionService.submitPermissionResume(message: message, executionPolicy: policy,
-                for: task, into: modelContext, continuation: binding, approvalID: commit.approvalID,
+                for: task, into: modelContext, continuation: binding, approvalID: approvalID,
                 persist: autoExportWorkspaces ? nil : {
                     try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
                         modelContext: modelContext, taskID: task.id, auditFields: ["operation": "live_approval_recovery"])
@@ -93,7 +139,12 @@ enum LivePermissionApprovalRecovery {
                     modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.approved,
                         payload: "Runtime permission approval recovered after restart. Continuation queued."))
                 }, rollback: { snapshot.restore(task, in: modelContext) })
-            if case .success = result { submitted += 1 }
+            if case .success = result {
+                submitted += 1
+                AppLogger.audit(.taskApproved, category: "PermissionApproval", taskID: task.id,
+                    fields: ["approval_scope": "recovered", "runtime": commit.runtime.rawValue,
+                        "outcome": "queued", "request_count": String(group.count)])
+            }
         }
         return submitted
     }
