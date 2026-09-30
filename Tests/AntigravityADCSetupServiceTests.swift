@@ -245,4 +245,22 @@ struct AntigravityADCSetupServiceTests {
         #expect(outcome == .cancelled)
         #expect(outcome.message == nil)
     }
+
+    @Test("A cancelled setup never runs set-quota-project, even if sign-in completes")
+    func cancelledSetupLeavesGcloudConfigAlone() async throws {
+        let home = try ADCHome()
+        defer { home.remove() }
+        let runner = StubBinaryRunner()
+        let launcher = RecordingLauncher {
+            home.writeCredentials(["type": "authorized_user", "refresh_token": "secret"])
+        }
+        let service = makeService(home: home, launcher: launcher, runner: runner)
+
+        let task = Task { await service.setUp(project: "my-project") { _ in } }
+        task.cancel()
+        let outcome = await task.value
+
+        #expect(outcome == .cancelled)
+        #expect(await runner.recordedCalls().isEmpty)
+    }
 }

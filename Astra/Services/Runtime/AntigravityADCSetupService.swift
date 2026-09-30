@@ -172,6 +172,8 @@ struct AntigravityADCSetupService: Sendable {
         }
         let gcloud = gcloudPath ?? detectExecutable("gcloud")
         guard !gcloud.isEmpty else { return .gcloudMissing }
+        // Never change the user's gcloud config after they cancelled or left.
+        if Task.isCancelled { return .cancelled }
 
         let result = await runner.run(
             path: gcloud,

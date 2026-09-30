@@ -63,6 +63,8 @@ struct AntigravityADCSetupPanel: View {
             }
         }
         .onAppear { model.refreshStatus() }
+        // Leaving the ADC route must not let a pending sign-in finish into set-quota-project.
+        .onDisappear { model.cancel() }
         // gcloud gets installed, or sign-in finishes, outside ASTRA: re-read on return.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if !model.isRunning { model.refreshStatus() }
