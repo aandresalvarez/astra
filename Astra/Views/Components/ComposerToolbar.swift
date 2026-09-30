@@ -115,6 +115,9 @@ struct ComposerToolbar: View {
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var globalDefaultPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var isPlusHovered = false
     @State private var isPolicySheetPresented = false
+    @State private var isModelSelectorPresented = false
+    @State private var modelSelectorOpenedAt: UInt64?
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         HStack(spacing: ComposerToolbarPresentation.controlSpacing) {
@@ -315,204 +318,21 @@ struct ComposerToolbar: View {
             style: .continuous
         )
 
-        return Menu {
-            Menu {
-                if currentRuntimeEligibilitySnapshot != nil {
-                    Section("Can execute this request") {
-                        if compatibleRuntimes.isEmpty {
-                            Text("No ready provider is compatible")
-                        } else {
-                            ForEach(compatibleRuntimes) { runtime in
-                                runtimeMenuButton(runtime)
-                            }
-                        }
-                    }
-                    if !unavailableRuntimes.isEmpty {
-                        Section("Unavailable for this request") {
-                            ForEach(unavailableRuntimes) { runtime in
-                                runtimeMenuButton(runtime)
-                            }
-                        }
-                    }
-                } else {
-                    ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
-                        runtimeMenuButton(runtime)
-                    }
-                }
-            } label: {
-                Label("Provider", systemImage: "server.rack")
+        return Button {
+            if !isModelSelectorPresented {
+                modelSelectorOpenedAt = DispatchTime.now().uptimeNanoseconds
             }
-
-            if let suggestedRuntime = compatibleSuggestedRuntime {
-                Button {
-                    onRuntimeChange?(suggestedRuntime.rawValue)
-                    onModelChange?(
-                        RuntimeModelAvailability.modelForRuntimeSwitch(
-                            currentModel: model,
-                            to: suggestedRuntime,
-                            cache: runtimeModelCache
-                        )
-                    )
-                } label: {
-                    Label("Switch to \(suggestedRuntime.displayName)", systemImage: "arrow.triangle.swap")
-                }
-            }
-
-            if resolvedRuntime == .antigravityCLI {
-                let groups = antigravityModelGroups
-                let selection = AntigravityCLIRuntime.currentSelection(model: model, groups: groups)
-                let selectedGroup = groups.first { $0.baseID == selection.baseID }
-
-                Menu {
-                    ForEach(groups, id: \.baseID) { group in
-                        Button {
-                            onModelChange?(AntigravityCLIRuntime.fullModelID(
-                                base: group.baseID,
-                                effort: group.baseID == selection.baseID ? selection.effort : group.preferredDefaultEffort,
-                                groups: groups
-                            ))
-                        } label: {
-                            HStack {
-                                Text(group.baseDisplayName)
-                                if group.baseID == selection.baseID {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Label("Model", systemImage: "cpu")
-                }
-
-                if let selectedGroup, !selectedGroup.sortedEfforts.isEmpty {
-                    Menu {
-                        ForEach(selectedGroup.sortedEfforts, id: \.self) { effort in
-                            Button {
-                                onModelChange?(AntigravityCLIRuntime.fullModelID(
-                                    base: selectedGroup.baseID,
-                                    effort: effort,
-                                    groups: groups
-                                ))
-                            } label: {
-                                HStack {
-                                    Text(effort.capitalized)
-                                    if selection.effort == effort {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Label(
-                            "Reasoning: \(selection.effort?.capitalized ?? "Default")",
-                            systemImage: "gauge.with.needle"
-                        )
-                    }
-                }
-            } else {
-                Menu {
-                    let candidates = runtimeModels(for: resolvedRuntime)
-                    let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmedModel.isEmpty, !candidates.contains(trimmedModel) {
-                        Label("Custom: \(modelPresentation(trimmedModel, runtime: resolvedRuntime).title)", systemImage: "pencil")
-                        Divider()
-                    }
-                    ForEach(candidates, id: \.self) { candidate in
-                        Button { onModelChange?(candidate) } label: {
-                            ModelMenuItemLabel(
-                                presentation: modelPresentation(candidate, runtime: resolvedRuntime),
-                                isSelected: model == candidate
-                            )
-                        }
-                    }
-                } label: {
-                    Label("Model", systemImage: "cpu")
-                }
-
-                if let reasoningEffortOptions, !reasoningEffortOptions.isEmpty {
-                    Menu {
-                        // `nil` is the supported way to say "let the provider
-                        // decide", and the label already reads "Default" for
-                        // it — without this entry a task that has ever been
-                        // given an explicit effort can never be handed back.
-                        Button { onReasoningEffortChange?(nil) } label: {
-                            HStack {
-                                Text("Default")
-                                if reasoningEffort == nil {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                        ForEach(reasoningEffortOptions, id: \.self) { option in
-                            Button { onReasoningEffortChange?(option) } label: {
-                                HStack {
-                                    Text(option.capitalized)
-                                    if reasoningEffort == option {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Label(
-                            "Reasoning: \((reasoningEffort ?? defaultReasoningEffort)?.capitalized ?? "Default")",
-                            systemImage: "gauge.with.needle"
-                        )
-                    }
-                }
-            }
-
-            if RuntimeBudgetPresentation.isEnabled(budget) {
-                Divider()
-
-                Menu {
-                    ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { preset in
-                        Button {
-                            onBudgetChange?(preset)
-                        } label: {
-                            HStack {
-                                Text(RuntimeBudgetPresentation.compactLabel(for: preset))
-                                if budget == preset {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                        .disabled(onBudgetChange == nil)
-                    }
-                } label: {
-                    Label(
-                        "Budget: \(RuntimeBudgetPresentation.compactLabel(for: budget))",
-                        systemImage: "gauge.with.needle"
-                    )
-                }
-
-                Menu {
-                    ForEach(BudgetEnforcementMode.allCases) { mode in
-                        Button {
-                            budgetEnforcementModeRaw = mode.rawValue
-                        } label: {
-                            HStack {
-                                Text(mode.label)
-                                if budgetEnforcementMode == mode {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                        .help(mode.helpText)
-                    }
-                } label: {
-                    Label("Enforcement: \(budgetEnforcementSummary)", systemImage: budgetEnforcementIcon)
-                }
-            }
+            isModelSelectorPresented.toggle()
         } label: {
             runtimeStatusLabel(style: .full)
                 .foregroundStyle(runtimePillColor)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        // A borderless Menu is greedy: without this it splits the toolbar's spare
-        // width with the Spacer and the chip stretches to ~half the composer.
+        .popover(isPresented: $isModelSelectorPresented, arrowEdge: .top) {
+            modelSelectorPopover
+        }
+        // The chip must hug its label: without this it splits the toolbar's spare
+        // width with the Spacer and stretches to ~half the composer.
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, compact ? 9 : ComposerToolbarPresentation.chipHorizontalPadding)
         .padding(.vertical, ComposerToolbarPresentation.chipVerticalPadding)
@@ -522,44 +342,178 @@ struct ComposerToolbar: View {
             shape.stroke(runtimePillStroke, lineWidth: 1)
         )
         .help(runtimeStatusHelp)
+        .accessibilityLabel("Provider and model")
+        .accessibilityValue(runtimeStatusText(includeRuntime: true))
     }
 
-    private var compatibleRuntimes: [AgentRuntimeID] {
-        RuntimeEligibilitySubmissionPolicy.providersThatCanExecute(
-            AgentRuntimeAdapterRegistry.runtimeIDs,
-            readinessStates: runtimeReadinessStates,
-            previewState: runtimeEligibilityPreviewState,
-            signature: runtimeEligibilityPreviewSignature
+    // MARK: - Model selector popover
+
+    private var modelSelectorCatalog: ModelSelectorCatalog {
+        ModelSelectorCatalog(
+            cache: runtimeModelCache,
+            currentRuntime: resolvedRuntime,
+            currentModel: model
         )
     }
 
-    private var unavailableRuntimes: [AgentRuntimeID] {
-        AgentRuntimeAdapterRegistry.runtimeIDs.filter { !runtimeIsSelectable($0) }
+    private var modelSelectorPopover: some View {
+        let catalog = modelSelectorCatalog
+        let providers = AgentRuntimeAdapterRegistry.runtimeIDs.map { runtime in
+            ModelSelectorProviderRow(
+                runtime: runtime,
+                title: runtime.displayName,
+                availability: ModelSelectorProviderAvailability.resolve(
+                    readinessKnown: !runtimeReadinessStates.isEmpty,
+                    allowsLaunch: runtimeReadinessStates[runtime]?.allowsTaskLaunch == true,
+                    blockedReason: runtimeBlockedReason(for: runtime)
+                ),
+                modelCount: catalog.modelCount(for: runtime),
+                isCurrent: runtime == resolvedRuntime
+            )
+        }
+        let suggestion = compatibleSuggestedRuntime.map { runtime in
+            ModelSelectorSuggestion(title: "Switch to \(runtime.displayName)") {
+                switchProvider(to: runtime)
+            }
+        }
+
+        return ModelSelectorPopover(
+            providers: providers,
+            catalog: catalog,
+            reasoningChoices: modelSelectorReasoningChoices,
+            suggestion: suggestion,
+            showsBudgetFooter: RuntimeBudgetPresentation.isEnabled(budget),
+            onSwitchProvider: { switchProvider(to: $0) },
+            onSelect: { runtime, modelID in
+                if runtime != resolvedRuntime {
+                    onRuntimeChange?(runtime.rawValue)
+                }
+                onModelChange?(modelID)
+                alignReasoningEffort(model: modelID, runtime: runtime)
+            },
+            onSetup: { openSettings() },
+            openedAt: modelSelectorOpenedAt,
+            budgetFooter: { budgetMenus }
+        )
     }
 
-    private func runtimeMenuButton(_ runtime: AgentRuntimeID) -> some View {
-        Button {
-            onRuntimeChange?(runtime.rawValue)
-            onModelChange?(
-                RuntimeModelAvailability.modelForRuntimeSwitch(
-                    currentModel: model,
-                    to: runtime,
-                    cache: runtimeModelCache
-                )
-            )
-        } label: {
-            HStack {
-                if let reason = runtimeMenuReason(for: runtime) {
-                    Text("\(runtime.displayName) - \(reason)")
-                } else {
-                    Text(runtime.displayName)
-                }
-                if resolvedRuntime == runtime {
-                    Image(systemName: "checkmark")
+    /// Makes `runtime` the selection with the model it resolves to, then keeps
+    /// the reasoning effort valid for that model.
+    private func switchProvider(to runtime: AgentRuntimeID) {
+        guard runtime != resolvedRuntime else { return }
+        let switchedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
+            currentModel: model,
+            to: runtime,
+            cache: runtimeModelCache
+        )
+        onRuntimeChange?(runtime.rawValue)
+        onModelChange?(switchedModel)
+        alignReasoningEffort(model: switchedModel, runtime: runtime)
+    }
+
+    /// Reasoning levels differ per model, so a pick made for the previous
+    /// model must be re-resolved for the new one on both composers: the task
+    /// composer's `onModelChange` only writes the model.
+    private func alignReasoningEffort(model newModel: String, runtime: AgentRuntimeID) {
+        let resolved = modelSelectorCatalog.resolvedReasoningEffort(
+            reasoningEffort,
+            model: newModel,
+            runtime: runtime
+        )
+        if resolved != reasoningEffort {
+            onReasoningEffortChange?(resolved)
+        }
+    }
+
+    /// Reasoning efforts for the model that is currently selected. Antigravity
+    /// encodes effort in the model id, every other provider keeps it separate.
+    private var modelSelectorReasoningChoices: [ModelSelectorReasoningChoice] {
+        if resolvedRuntime == .antigravityCLI {
+            let groups = antigravityModelGroups
+            let selection = AntigravityCLIRuntime.currentSelection(model: model, groups: groups)
+            guard let group = groups.first(where: { $0.baseID == selection.baseID }) else { return [] }
+            return group.sortedEfforts.map { effort in
+                ModelSelectorReasoningChoice(
+                    id: effort,
+                    title: effort.capitalized,
+                    isSelected: selection.effort == effort
+                ) {
+                    onModelChange?(AntigravityCLIRuntime.fullModelID(
+                        base: group.baseID,
+                        effort: effort,
+                        groups: groups
+                    ))
                 }
             }
         }
-        .disabled(!runtimeIsSelectable(runtime))
+
+        guard let options = reasoningEffortOptions, !options.isEmpty else { return [] }
+        // `nil` is the supported way to say "let the provider decide"; without
+        // this entry a task that has ever been given an explicit effort can
+        // never be handed back.
+        let providerDefault = ModelSelectorReasoningChoice(
+            id: "default",
+            title: "Default",
+            isSelected: reasoningEffort == nil
+        ) {
+            onReasoningEffortChange?(nil)
+        }
+        return [providerDefault] + options.map { option in
+            ModelSelectorReasoningChoice(
+                id: option,
+                title: option.capitalized,
+                isSelected: reasoningEffort == option
+            ) {
+                onReasoningEffortChange?(option)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var budgetMenus: some View {
+        Menu {
+            ForEach(TaskExecutionDefaults.budgetPresets, id: \.self) { preset in
+                Button {
+                    onBudgetChange?(preset)
+                } label: {
+                    HStack {
+                        Text(RuntimeBudgetPresentation.compactLabel(for: preset))
+                        if budget == preset {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                .disabled(onBudgetChange == nil)
+            }
+        } label: {
+            Text("Budget: \(RuntimeBudgetPresentation.compactLabel(for: budget))")
+        }
+
+        Menu {
+            ForEach(BudgetEnforcementMode.allCases) { mode in
+                Button {
+                    budgetEnforcementModeRaw = mode.rawValue
+                } label: {
+                    HStack {
+                        Text(mode.label)
+                        if budgetEnforcementMode == mode {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                .help(mode.helpText)
+            }
+        } label: {
+            Text("Enforcement: \(budgetEnforcementSummary)")
+        }
+    }
+
+    private func runtimeBlockedReason(for runtime: AgentRuntimeID) -> String? {
+        guard let candidate = currentRuntimeEligibilitySnapshot?.candidates[runtime],
+              !candidate.isEligible else {
+            return nil
+        }
+        return candidate.blockingReason ?? "Not compatible with this request."
     }
 
     private var runtimePillColor: Color {
@@ -569,9 +523,9 @@ struct ComposerToolbar: View {
         case .some(.pendingUser):
             return Stanford.poppy
         default:
-            // Running is conveyed by the spinner, not by tinting the model/budget
-            // metadata with the interactive accent — keep this label neutral.
-            return Stanford.coolGrey
+            // The chip is a control: it opens the provider and model selector,
+            // so it wears the interactive accent. Grey read as disabled.
+            return Stanford.lagunita
         }
     }
 
@@ -601,8 +555,13 @@ struct ComposerToolbar: View {
                     .controlSize(.mini)
                     .frame(width: 14, height: 14)
             } else {
-                Image(systemName: "cpu")
-                    .font(Stanford.ui(ComposerToolbarPresentation.chipIconSize))
+                // The provider's own mark, so the chip says which runtime is
+                // selected before its text is read.
+                ModelSelectorProviderIcon(
+                    runtime: resolvedRuntime,
+                    pointSize: ComposerToolbarPresentation.chipIconSize + 1
+                )
+                .frame(width: 13, height: 13)
             }
 
             switch style {
@@ -620,6 +579,12 @@ struct ComposerToolbar: View {
                     .frame(maxWidth: 180, alignment: .trailing)
             case .iconOnly:
                 EmptyView()
+            }
+
+            if style != .iconOnly {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Stanford.ui(8, weight: .semibold))
+                    .opacity(0.6)
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -866,14 +831,6 @@ struct ComposerToolbar: View {
         )
     }
 
-    private var defaultReasoningEffort: String? {
-        RuntimeModelAvailability.defaultReasoningEffort(
-            for: model,
-            runtime: resolvedRuntime,
-            cache: runtimeModelCache
-        )
-    }
-
     private var runtimeSettingsSnapshot: RuntimeSettingsSnapshot {
         RuntimeSettingsSnapshotStore.runtimeSnapshot(
             defaultRuntimeID: runtimeID,
@@ -1018,16 +975,6 @@ struct ComposerToolbar: View {
         guard runtimeReadinessStates[runtime]?.allowsTaskLaunch == true else { return false }
         guard let snapshot = currentRuntimeEligibilitySnapshot else { return true }
         return snapshot.candidates[runtime]?.isEligible == true
-    }
-
-    private func runtimeMenuReason(for runtime: AgentRuntimeID) -> String? {
-        guard !runtimeReadinessStates.isEmpty else { return "checking setup" }
-        guard runtimeReadinessStates[runtime]?.allowsTaskLaunch == true else { return "needs setup" }
-        guard let candidate = currentRuntimeEligibilitySnapshot?.candidates[runtime],
-              !candidate.isEligible else {
-            return nil
-        }
-        return candidate.blockingReason ?? "not compatible with this turn"
     }
 
     private func submitHelp(fallback: String) -> String {
