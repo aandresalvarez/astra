@@ -479,7 +479,7 @@ extension AgentRuntimeWorker {
             }
             return .allowWithDeliveryReceipt {
                 await MainActor.run {
-                    LivePermissionApprovalRecovery.recordDelivery(requestID: ask.requestID,
+                    _ = LivePermissionApprovalRecovery.recordDelivery(requestID: ask.requestID,
                         toolName: ask.toolName, task: task, run: run, modelContext: modelContext)
                 }
             }
