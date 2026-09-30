@@ -29,6 +29,7 @@ final class SceneSelectionModel: ObservableObject {
     @Published private(set) var selectedWorkspaceApp: WorkspaceApp?
     @Published private(set) var isComposingWorkspaceApp = false
     @Published private(set) var isComposingTask = false
+    private var retargetedComposerWorkspaceID: UUID?
 
     var activeSurface: SceneSelectionSurface {
         if let selectedTask {
@@ -100,6 +101,22 @@ final class SceneSelectionModel: ObservableObject {
         selectedWorkspaceApp = nil
         isComposingTask = true
         isComposingWorkspaceApp = false
+    }
+
+    /// Moves the open task composer to another workspace without leaving it.
+    /// The scene's workspace-change observer treats every other change while
+    /// composing as leaving the composer (a sidebar click), so this records the
+    /// one change it must let through; `consumeComposerRetarget` reads it back.
+    func retargetComposer(to workspace: Workspace) {
+        guard isComposingTask, selectedTask == nil, selectedWorkspace?.id != workspace.id else { return }
+        retargetedComposerWorkspaceID = workspace.id
+        selectedWorkspace = workspace
+    }
+
+    /// True once for the workspace a `retargetComposer` just selected.
+    func consumeComposerRetarget(for workspaceID: UUID?) -> Bool {
+        defer { retargetedComposerWorkspaceID = nil }
+        return workspaceID != nil && workspaceID == retargetedComposerWorkspaceID
     }
 
     func composeApp(workspace: Workspace? = nil) {

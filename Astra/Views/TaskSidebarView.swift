@@ -435,6 +435,7 @@ struct TaskSidebarView: View {
     @State private var anchorTracker = WorkspaceSidebarAnchorTracker()
     @AppStorage(AppStorageKeys.showStarredWorkspacesOnly) private var showStarredWorkspacesOnly = false
     @AppStorage(AppStorageKeys.workspaceSidebarSortMode) private var workspaceSortModeRaw = WorkspaceSidebarSortMode.name.rawValue
+    @Environment(\.newTaskComposerWorkspaceID) private var newTaskComposerWorkspaceID
     @AppStorage(AppStorageKeys.hasSeenNewTaskNudge) private var hasSeenNewTaskNudge = false
 
     @State private var taskIndex = SidebarTaskIndex.empty
@@ -1821,6 +1822,7 @@ struct TaskSidebarView: View {
     ) -> some View {
         WorkspaceRowActions(
             workspace: workspace,
+            isNewTaskTarget: newTaskComposerWorkspaceID == workspace.id,
             isRowHovered: isHovered,
             activityCounts: activityCounts,
             onNewTask: { startNewTask(in: workspace) },

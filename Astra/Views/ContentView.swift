@@ -1161,6 +1161,13 @@ struct ContentView: View {
         // for the matching FocusedValueKey definitions.
         .focusedSceneValue(\.newWorkspaceAction, { createWorkspace() })
         .focusedSceneValue(\.importWorkspaceAction, { importWorkspace() })
+        .environment(\.newTaskComposerWorkspaceID, isComposingTask ? effectiveWorkspaceID : nil)
+        .environment(\.newTaskWorkspaceSwitcher, NewTaskWorkspaceSwitcher(
+            workspaces: workspaces,
+            select: { sceneSelection.retargetComposer(to: $0) },
+            createWorkspace: createWorkspace,
+            importWorkspace: importWorkspace
+        ))
         .sheet(isPresented: onboardingSheetBinding) {
             OnboardingWizardView(
                 hasCompletedOnboarding: onboardingCompletionBinding,
@@ -2620,7 +2627,7 @@ struct ContentView: View {
             } else {
                 sceneSelection.openWorkspace(nil)
             }
-        } else if isComposingTask {
+        } else if isComposingTask, !sceneSelection.consumeComposerRetarget(for: selectedWorkspace?.id) {
             sceneSelection.openWorkspace(selectedWorkspace)
         }
         invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)

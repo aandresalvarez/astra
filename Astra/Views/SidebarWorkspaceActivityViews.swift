@@ -5,6 +5,8 @@ import ASTRAModels
 /// visible until hover swaps this slot for the available workspace actions.
 struct WorkspaceRowActions: View {
     let workspace: Workspace
+    /// True while the new-task composer is open on this workspace.
+    let isNewTaskTarget: Bool
     let isRowHovered: Bool
     let activityCounts: SidebarWorkspaceActivityCounts
     let onNewTask: () -> Void
@@ -30,12 +32,25 @@ struct WorkspaceRowActions: View {
 
     private var metadata: some View {
         HStack(spacing: 7) {
+            if isNewTaskTarget { newTaskTargetMark }
             if !activityCounts.isEmpty { WorkspaceActivityIndicator(counts: activityCounts) }
             if workspace.isStarred {
                 SidebarWorkspaceStarIcon(role: .workspaceStatus).accessibilityLabel("Starred")
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// The sidebar half of the new-task workspace switcher: the same pencil the
+    /// row's "new chat" button uses, tinted, so it reads as "a task starts here".
+    private var newTaskTargetMark: some View {
+        Image(systemName: "square.and.pencil")
+            .font(Stanford.ui(10, weight: .semibold))
+            .foregroundStyle(Stanford.lagunita)
+            .frame(width: 22, height: 18)
+            .background(Capsule().fill(Stanford.lagunita.opacity(Stanford.fillTint)))
+            .help("A new task will start in \(workspace.name)")
+            .accessibilityLabel("New task starts here")
     }
 
     private var actions: some View {
