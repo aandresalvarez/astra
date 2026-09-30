@@ -406,14 +406,14 @@ extension AgentRuntimeWorker {
 
             let request = PermissionBroker.providerNativePromptRequest(toolName: ask.toolName, context: ask.inputSummary)
             let grants = PermissionBroker.approvalGrants(for: request)
-            let payload = PermissionBroker.approvalPayloadString(
+            let payload = TaskPermissionContinuation.attach(PermissionBroker.approvalPayloadString(
                 providerID: runtime,
                 request: request,
                 reason: "The provider paused for permission before running this action.",
                 providerDetail: ask.inputSummary,
                 grants: grants,
                 requestID: ask.requestID
-            )
+            ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext, mode: .live))
             pendingEvents.add {
                 TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
                 let event = TaskEvent(

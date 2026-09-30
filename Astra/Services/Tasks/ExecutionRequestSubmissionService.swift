@@ -23,6 +23,8 @@ struct TaskExecutionSourcePayloadV1: Codable, Equatable, Sendable {
     let scheduleID: UUID?
     let sourceTaskID: UUID?
     let executionPolicyOverride: TaskExecutionPolicyOverrideV1?
+    let permissionContinuation: PermissionApprovalContinuation?
+    let permissionApprovalID: String?
 
     init(
         launchMode: TaskExecutionLaunchMode,
@@ -31,7 +33,9 @@ struct TaskExecutionSourcePayloadV1: Codable, Equatable, Sendable {
         planExecutionMode: TaskPlanExecutionMode? = nil,
         scheduleID: UUID? = nil,
         sourceTaskID: UUID? = nil,
-        executionPolicy: AgentRuntimeExecutionPolicy? = nil
+        executionPolicy: AgentRuntimeExecutionPolicy? = nil,
+        permissionContinuation: PermissionApprovalContinuation? = nil,
+        permissionApprovalID: String? = nil
     ) {
         version = 1
         self.launchMode = launchMode
@@ -42,6 +46,8 @@ struct TaskExecutionSourcePayloadV1: Codable, Equatable, Sendable {
         self.scheduleID = scheduleID
         self.sourceTaskID = sourceTaskID
         self.executionPolicyOverride = executionPolicy.map(TaskExecutionPolicyOverrideV1.init)
+        self.permissionContinuation = permissionContinuation
+        self.permissionApprovalID = permissionApprovalID
     }
 
     var planExecutionMode: TaskPlanExecutionMode? {
@@ -181,17 +187,31 @@ enum ExecutionRequestSubmissionService {
         for task: AgentTask,
         into modelContext: ModelContext,
         at date: Date = Date(),
+        continuation: PermissionApprovalContinuation? = nil,
+        approvalID: String? = nil,
         persist: (() throws -> Void)? = nil,
         prepare: () -> Void = {},
         rollback: () -> Void = {}
     ) -> Result<Submission, SubmissionError> {
-        submitInternal(
+        if let approvalID {
+            do {
+                if let existing = try TaskTurnRequestRepository.requests(for: task, in: modelContext).first(where: { request in
+                    task.events.first(where: { $0.id == request.sourceEventID })
+                        .flatMap(decodeSourcePayload)?.permissionApprovalID == approvalID
+                }) {
+                    return .success(Submission(requestID: existing.id, eventID: existing.sourceEventID, sequence: existing.sequence))
+                }
+            } catch { return .failure(.persistenceFailed(String(describing: type(of: error)))) }
+        }
+        return submitInternal(
             kind: .followUp,
             eventType: TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
             payload: TaskExecutionSourcePayloadV1(
                 launchMode: .continuation,
                 message: message,
-                executionPolicy: executionPolicy
+                executionPolicy: executionPolicy,
+                permissionContinuation: continuation,
+                permissionApprovalID: approvalID
             ),
             task: task,
             modelContext: modelContext,
@@ -353,6 +373,7 @@ enum ExecutionRequestSubmissionService {
             sourceEventType: eventType,
             sourcePayload: encoded,
             acceptedTurn: payload.message,
+            permissionContinuation: payload.permissionContinuation,
             task: task,
             modelContext: modelContext,
             at: date,
@@ -367,6 +388,7 @@ enum ExecutionRequestSubmissionService {
         sourceEventType: String,
         sourcePayload: String,
         acceptedTurn: String? = nil,
+        permissionContinuation: PermissionApprovalContinuation? = nil,
         attachmentPaths: [String] = [],
         task: AgentTask,
         modelContext: ModelContext,
@@ -386,7 +408,9 @@ enum ExecutionRequestSubmissionService {
         let event = TaskEvent(task: task, type: sourceEventType, payload: sourcePayload)
         event.timestamp = date
         let attachmentsEvent = TaskEvent.attachmentsEvent(for: event, paths: attachmentPaths)
-        let turnIntentSnapshot = TaskTurnIntentResolver.capture(
+        let turnIntentSnapshot = permissionContinuation.map {
+            TaskPermissionContinuation.turnIntent($0, task: task, sourceEventID: event.id, modelContext: modelContext)
+        } ?? TaskTurnIntentResolver.capture(
             for: task,
             sourceEventID: event.id,
             acceptedTurn: acceptedTurn,

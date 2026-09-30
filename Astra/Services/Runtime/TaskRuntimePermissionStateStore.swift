@@ -38,6 +38,21 @@ enum TaskRuntimePermissionOpenRequestStore {
         task.runtimePermissionOpenRequestsJSON = "[]"
     }
 
+    /// Resolve only the card the user approved, preserving independent asks.
+    static func resolveRequest(payload: String, task: AgentTask) {
+        if case .missing = typedState(for: task) {
+            // Materialize the legacy event-backed request before resolving it.
+            task.runtimePermissionOpenRequestsJSON = encode(openRequestPayloads(for: task).map {
+                entry(from: $0, requestedAt: Date())
+            })
+        }
+        let requestID = PermissionApprovalEventPayload.decoded(from: payload)?.requestID
+        task.runtimePermissionOpenRequestsJSON = encode(typedEntries(for: task).filter {
+            if let requestID { return $0.requestID != requestID }
+            return $0.payload != payload
+        })
+    }
+
     static func state(for task: AgentTask) -> TaskRuntimePermissionState {
         switch typedState(for: task) {
         case .available(let entries):

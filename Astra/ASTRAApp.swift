@@ -923,6 +923,7 @@ public struct ASTRAApp: App {
             modelContext: modelContext,
             autoExportWorkspaces: autoExportWorkspaces
         )
+        LivePermissionApprovalRecovery.recover(modelContext: modelContext, autoExportWorkspaces: autoExportWorkspaces)
     }
 
     /// One recovery for the process: every window's startup awaits the same

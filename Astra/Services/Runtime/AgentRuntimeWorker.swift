@@ -754,7 +754,7 @@ final class AgentRuntimeWorker {
 
         let capabilityPreflightCache = PreflightCache(checker: environmentHealthChecker)
         let capabilityWorkingDirectory = TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
-        guard await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunch(
+        guard await AgentRuntimeConnectorPreflight.passed(
             task: task,
             run: run,
             modelContext: modelContext,
@@ -768,7 +768,8 @@ final class AgentRuntimeWorker {
             preflightCache: capabilityPreflightCache,
             capabilityWorkingDirectory: capabilityWorkingDirectory,
             mcpDetectExecutable: mcpServerExecutableDetector,
-            mcpIsExecutableFile: mcpServerExecutableIsResolvable
+            mcpIsExecutableFile: mcpServerExecutableIsResolvable,
+            testingOverride: connectorPreflightOverrideForTesting
         ) else {
             isRunning = false
             return
@@ -1326,6 +1327,7 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: payload, run: run)
             modelContext.insert(event)
+        } else if TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
         } else if processSucceeded,
                   runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
                   Self.applyEmptySuccessfulRunIfNeeded(
@@ -1467,10 +1469,10 @@ final class AgentRuntimeWorker {
             run.status = .failed
             run.typedStopReason = .permissionApprovalRequired
             TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-            let payload = permissionApprovalRequestPayload(
+            let payload = TaskPermissionContinuation.attach(permissionApprovalRequestPayload(
                 diagnostic: failureDiagnostic,
                 result: result
-            )
+            ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext))
             TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalRequested, payload: payload, run: run)
             modelContext.insert(event)
@@ -2139,6 +2141,9 @@ final class AgentRuntimeWorker {
     /// to `InstantSuccessBinaryRunner` so the check never shells out to
     /// real host CLIs.
     var environmentHealthChecker = EnvironmentHealthChecker()
+#if DEBUG
+    var connectorPreflightOverrideForTesting: (() async -> Bool)?
+#endif
     /// Whether an MCP stdio server's resolved command path is executable
     /// (e.g. ~/.astra/tools/astra-host-control for the GitHub host-control
     /// server). Scenario tests override this so the capability preflight

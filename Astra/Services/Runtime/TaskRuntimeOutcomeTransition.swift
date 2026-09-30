@@ -59,13 +59,15 @@ enum TaskRuntimeOutcomeTransition {
             return
         }
 
+        let payload = TaskPermissionContinuation.attach(message,
+            continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext))
         run.recordPermissionApprovalRequired()
         TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: message, task: task)
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.Tool.permissionApprovalRequested,
-            payload: message,
+            payload: payload,
             run: run
         ))
     }

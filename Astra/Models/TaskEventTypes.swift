@@ -92,6 +92,7 @@ public enum TaskEventTypes {
         /// a `task.approved` (the deny path, and any provider whose answer
         /// resolves the same running process). Closes the open-request card.
         public static let permissionRequestResolved: TaskEventType = "permission.request.resolved"
+        public static let permissionLiveApprovalCommitted: TaskEventType = "permission.live_approval.committed"
         public static let permissionGrantTask: TaskEventType = "permission.grant.task"
     }
 
