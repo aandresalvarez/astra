@@ -221,7 +221,10 @@ struct MarkdownTextView: View, Equatable {
         guard let maxContentWidth else { return nil }
         switch block.kind {
         case .table:
-            return maxContentWidth
+            // Tables are data, not prose: the reading measure would clip them
+            // and force a horizontal scroll while the pane has room to spare.
+            // `tableView` hugs its content and scrolls only on real overflow.
+            return nil
         default:
             return maxContentWidth
         }
@@ -426,52 +429,24 @@ struct MarkdownTextView: View, Equatable {
         let columnWidths = Self.tableColumnWidths(table.rows, columnCount: table.columnCount)
         let numericColumns = Self.numericTableColumns(table.rows, columnCount: table.columnCount)
         let tableWidth = Self.tableRenderedWidth(columnWidths, columnCount: table.columnCount)
-        let showsOverflowCue = tableWidth > min(maxContentWidth ?? Stanford.chatParagraphMaxWidth, Stanford.chatParagraphMaxWidth)
 
-        return ZStack(alignment: .trailing) {
-            ScrollView(.horizontal, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIdx, cells in
-                        HStack(alignment: .top, spacing: 0) {
-                            ForEach(0..<table.columnCount, id: \.self) { colIdx in
-                                let cell = colIdx < cells.count ? cells[colIdx] : ""
-                                let alignment = numericColumns.contains(colIdx) ? MarkdownTableAlignment.trailing : table.alignment(for: colIdx)
-
-                                tableCellView(cell, rowIndex: rowIdx, alignment: alignment)
-                                    .frame(width: columnWidths[colIdx], alignment: alignment.frameAlignment)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                            }
-                        }
-                        // Column separators ride on the whole row, so they span
-                        // its tallest cell; a sibling in this top-aligned,
-                        // vertically unbounded HStack would size to a stub.
-                        .overlay(alignment: .leading) {
-                            // Each separator sits independently at its column's
-                            // trailing edge (cell width plus 12pt padding each
-                            // side), so none consumes width and pushes the next.
-                            ZStack(alignment: .leading) {
-                                ForEach(0..<max(table.columnCount - 1, 0), id: \.self) { colIdx in
-                                    SubtleDivider(axis: .vertical)
-                                        .offset(x: columnWidths.prefix(colIdx + 1).reduce(0, +) + CGFloat(colIdx + 1) * 24)
-                                }
-                            }
-                        }
-                        .background(rowIdx == 0 ? Stanford.fog.opacity(0.5) : (rowIdx % 2 == 0 ? Stanford.fog.opacity(0.2) : Color.clear))
-
-                        if rowIdx == 0 {
-                            SubtleDivider()
-                        } else if table.rows.count >= 5 && rowIdx < table.rows.count - 1 {
-                            SubtleDivider()
-                        }
-                    }
-                }
+        // `ViewThatFits` picks the first child whose ideal width fits the
+        // column, so a table that fits is drawn at its natural width (no empty
+        // border, no scrollbar) and only a genuinely wider one falls back to
+        // the horizontal scroller with its trailing fade cue.
+        return ViewThatFits(in: .horizontal) {
+            tableGrid(table, columnWidths: columnWidths, numericColumns: numericColumns, tableWidth: tableWidth)
                 .frame(width: tableWidth, alignment: .leading)
-                .padding(.bottom, 8)
-            }
-            .scrollIndicators(.visible)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderSubtle, lineWidth: 1))
 
-            if showsOverflowCue {
+            ZStack(alignment: .trailing) {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    tableGrid(table, columnWidths: columnWidths, numericColumns: numericColumns, tableWidth: tableWidth)
+                        .padding(.bottom, 8)
+                }
+                .scrollIndicators(.visible)
+
                 LinearGradient(
                     colors: [
                         Stanford.canvasBackground.opacity(0),
@@ -483,10 +458,56 @@ struct MarkdownTextView: View, Equatable {
                 .frame(width: 26)
                 .allowsHitTesting(false)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderSubtle, lineWidth: 1))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Stanford.borderSubtle, lineWidth: 1))
+    }
+
+    private func tableGrid(
+        _ table: MarkdownTable,
+        columnWidths: [CGFloat],
+        numericColumns: Set<Int>,
+        tableWidth: CGFloat
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIdx, cells in
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach(0..<table.columnCount, id: \.self) { colIdx in
+                        let cell = colIdx < cells.count ? cells[colIdx] : ""
+                        let alignment = numericColumns.contains(colIdx) ? MarkdownTableAlignment.trailing : table.alignment(for: colIdx)
+
+                        tableCellView(cell, rowIndex: rowIdx, alignment: alignment)
+                            .frame(width: columnWidths[colIdx], alignment: alignment.frameAlignment)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                    }
+                }
+                // Column separators ride on the whole row, so they span
+                // its tallest cell; a sibling in this top-aligned,
+                // vertically unbounded HStack would size to a stub.
+                .overlay(alignment: .leading) {
+                    // Each separator sits independently at its column's
+                    // trailing edge (cell width plus 12pt padding each
+                    // side), so none consumes width and pushes the next.
+                    ZStack(alignment: .leading) {
+                        ForEach(0..<max(table.columnCount - 1, 0), id: \.self) { colIdx in
+                            SubtleDivider(axis: .vertical)
+                                .offset(x: columnWidths.prefix(colIdx + 1).reduce(0, +) + CGFloat(colIdx + 1) * 24)
+                        }
+                    }
+                }
+                .background(rowIdx == 0 ? Stanford.fog.opacity(0.5) : (rowIdx % 2 == 0 ? Stanford.fog.opacity(0.2) : Color.clear))
+
+                if rowIdx == 0 {
+                    SubtleDivider()
+                } else if table.rows.count >= 5 && rowIdx < table.rows.count - 1 {
+                    SubtleDivider()
+                }
+            }
+        }
+        .frame(width: tableWidth, alignment: .leading)
     }
 
     @ViewBuilder
