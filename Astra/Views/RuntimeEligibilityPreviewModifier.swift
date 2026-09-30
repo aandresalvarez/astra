@@ -203,6 +203,10 @@ struct RuntimeEligibilityPreviewRequest {
         let readiness = readinessSignature(readinessStates)
         let signature = ([
             draftTask?.id.uuidString ?? "new",
+            // A switched composer keeps its draft and skills but not its workspace,
+            // and a Replace import gives the same id a new model (path, environment).
+            workspace?.id.uuidString ?? "none",
+            workspace.map { String(describing: $0.persistentModelID) } ?? "none",
             requestedRuntime.rawValue,
             String(runtimeExplicitlySelected),
             selectedPolicyLevelRaw,
@@ -418,10 +422,17 @@ extension View {
 }
 
 extension ChatPanelView {
+    /// False while the composer waits for the capability snapshot of a workspace
+    /// it was just switched to: submitting then would persist no skills, and
+    /// none of that workspace's instructions or tools, on the task.
+    var isCapabilitySnapshotCurrent: Bool {
+        capabilitySnapshot.workspaceModelID == workspace?.persistentModelID
+    }
+
     var selectedComposerRuntimeCanExecuteRequest: Bool {
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         return RuntimeEligibilitySubmissionPolicy.canExecute(
-            hasInput: hasInput,
+            hasInput: hasInput && isCapabilitySnapshotCurrent,
             runtime: runtime,
             readinessStates: runtimeReadinessStates,
             previewState: runtimeEligibilityPreviewState,
