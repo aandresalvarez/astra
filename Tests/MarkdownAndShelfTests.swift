@@ -59,6 +59,36 @@ struct MarkdownTextViewTests {
         #expect(first.runs.compactMap(\.link) == second.runs.compactMap(\.link))
     }
 
+    @MainActor
+    @Test("Wide tables use the pane width instead of the prose measure")
+    func wideTablesUseThePaneWidthInsteadOfTheProseMeasure() {
+        let longCell = String(repeating: "x", count: 60)
+        let source = """
+        | Area | Current | Required | Notes |
+        | --- | --- | --- | --- |
+        | one | \(longCell) | \(longCell) | \(longCell) |
+        | two | \(longCell) | \(longCell) | \(longCell) |
+        """
+        let host = NSHostingView(rootView: MarkdownTextView(text: source, maxContentWidth: Stanford.chatParagraphMaxWidth))
+        host.frame = NSRect(x: 0, y: 0, width: 1600, height: 600)
+        host.layoutSubtreeIfNeeded()
+
+        // Natural table width is well past the 720pt prose measure; with room
+        // to spare it must not be clipped to it.
+        #expect(host.fittingSize.width > Stanford.chatParagraphMaxWidth + 100)
+    }
+
+    @MainActor
+    @Test("Code blocks use the pane width instead of the prose measure")
+    func codeBlocksUseThePaneWidthInsteadOfTheProseMeasure() {
+        let source = "```bash\n" + String(repeating: "x", count: 200) + "\n```"
+        let host = NSHostingView(rootView: MarkdownTextView(text: source, maxContentWidth: Stanford.chatParagraphMaxWidth))
+        host.frame = NSRect(x: 0, y: 0, width: 1600, height: 600)
+        host.layoutSubtreeIfNeeded()
+
+        #expect(host.fittingSize.width > Stanford.chatParagraphMaxWidth + 100)
+    }
+
     @Test("Parser recognizes GitHub tables without outer pipes")
     func parserRecognizesGitHubTablesWithoutOuterPipes() {
         let source = """
