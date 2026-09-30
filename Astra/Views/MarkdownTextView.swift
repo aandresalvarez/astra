@@ -220,10 +220,11 @@ struct MarkdownTextView: View, Equatable {
     private func maxWidth(for block: MarkdownBlock) -> CGFloat? {
         guard let maxContentWidth else { return nil }
         switch block.kind {
-        case .table:
-            // Tables are data, not prose: the reading measure would clip them
-            // and force a horizontal scroll while the pane has room to spare.
-            // `tableView` hugs its content and scrolls only on real overflow.
+        case .table, .codeBlock:
+            // Tables and code are data, not prose: the reading measure would
+            // clip them and force a horizontal scroll while the pane has room
+            // to spare. `tableView` hugs its content and scrolls only on real
+            // overflow; code blocks fill the pane and scroll likewise.
             return nil
         default:
             return maxContentWidth

@@ -78,6 +78,17 @@ struct MarkdownTextViewTests {
         #expect(host.fittingSize.width > Stanford.chatParagraphMaxWidth + 100)
     }
 
+    @MainActor
+    @Test("Code blocks use the pane width instead of the prose measure")
+    func codeBlocksUseThePaneWidthInsteadOfTheProseMeasure() {
+        let source = "```bash\n" + String(repeating: "x", count: 200) + "\n```"
+        let host = NSHostingView(rootView: MarkdownTextView(text: source, maxContentWidth: Stanford.chatParagraphMaxWidth))
+        host.frame = NSRect(x: 0, y: 0, width: 1600, height: 600)
+        host.layoutSubtreeIfNeeded()
+
+        #expect(host.fittingSize.width > Stanford.chatParagraphMaxWidth + 100)
+    }
+
     @Test("Parser recognizes GitHub tables without outer pipes")
     func parserRecognizesGitHubTablesWithoutOuterPipes() {
         let source = """
