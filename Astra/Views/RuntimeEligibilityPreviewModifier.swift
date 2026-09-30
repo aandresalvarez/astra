@@ -203,8 +203,10 @@ struct RuntimeEligibilityPreviewRequest {
         let readiness = readinessSignature(readinessStates)
         let signature = ([
             draftTask?.id.uuidString ?? "new",
-            // A switched composer keeps its draft and skills but not its workspace.
+            // A switched composer keeps its draft and skills but not its workspace,
+            // and a Replace import gives the same id a new model (path, environment).
             workspace?.id.uuidString ?? "none",
+            workspace.map { String(describing: $0.persistentModelID) } ?? "none",
             requestedRuntime.rawValue,
             String(runtimeExplicitlySelected),
             selectedPolicyLevelRaw,
