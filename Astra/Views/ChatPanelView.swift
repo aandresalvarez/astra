@@ -484,7 +484,7 @@ struct ChatPanelView: View {
         .onChange(of: claudeAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignDefaultModelWithRuntime() }
-        .onChange(of: workspace?.id) {
+        .onChange(of: workspace?.persistentModelID) {
             // The policy defaults are global, so an in-place workspace switch
             // keeps whatever level the user picked for this composer.
             loadSSHConnections()

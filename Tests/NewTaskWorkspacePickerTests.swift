@@ -80,10 +80,33 @@ struct NewTaskWorkspacePickerTests {
         let current = UUID()
         let previous = UUID()
 
-        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: current, catalogWorkspaceID: current) == current)
-        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: current, catalogWorkspaceID: previous) == nil)
-        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: current, catalogWorkspaceID: nil) == nil)
-        #expect(ComposerCapabilitySnapshot.stampedWorkspaceID(workspaceID: nil, catalogWorkspaceID: nil) == nil)
+        #expect(ComposerCapabilitySnapshot.stampedIdentity(current, catalog: current) == current)
+        #expect(ComposerCapabilitySnapshot.stampedIdentity(current, catalog: previous) == nil)
+        #expect(ComposerCapabilitySnapshot.stampedIdentity(current, catalog: nil) == nil)
+        #expect(ComposerCapabilitySnapshot.stampedIdentity(UUID?.none, catalog: nil) == nil)
+    }
+
+    @MainActor
+    @Test("A workspace replaced under the same id is a different snapshot owner")
+    func replacedWorkspaceHasItsOwnModelIdentity() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let original = workspace("Original")
+        let replacement = Workspace(name: "Original", primaryPath: original.primaryPath)
+        replacement.id = original.id
+        context.insert(original)
+        context.insert(replacement)
+        try context.save()
+
+        #expect(original.id == replacement.id)
+        #expect(original.persistentModelID != replacement.persistentModelID)
+        let snapshot = ComposerCapabilitySnapshot(availableSkills: [], workspaceModelID: original.persistentModelID)
+        #expect(snapshot.workspaceModelID != replacement.persistentModelID)
+        withExtendedLifetime(container) {}
     }
 
     @Test("A narrow pane shows fewer segments but always keeps the current workspace")

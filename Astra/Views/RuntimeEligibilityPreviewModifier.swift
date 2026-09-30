@@ -424,7 +424,7 @@ extension ChatPanelView {
     /// it was just switched to: submitting then would persist no skills, and
     /// none of that workspace's instructions or tools, on the task.
     var isCapabilitySnapshotCurrent: Bool {
-        capabilitySnapshot.workspaceID == workspace?.id
+        capabilitySnapshot.workspaceModelID == workspace?.persistentModelID
     }
 
     var selectedComposerRuntimeCanExecuteRequest: Bool {

@@ -8,11 +8,14 @@ struct ComposerCapabilitySnapshot {
     static let empty = ComposerCapabilitySnapshot(availableSkills: [])
 
     let availableSkills: [Skill]
-    /// The workspace these skills were resolved for. `nil` both for "no
-    /// workspace" and for the empty placeholder a composer holds while it waits
-    /// for a newly selected workspace, which is why submission compares it with
-    /// the workspace on screen rather than treating empty as ready.
-    var workspaceID: UUID?
+    /// The workspace model these skills were resolved for, by persistent
+    /// identity rather than the domain UUID: a Replace import re-creates the
+    /// workspace under the same UUID, and the old model's skills must not pass
+    /// for the new one's. `nil` both for "no workspace" and for the empty
+    /// placeholder a composer holds while it waits for a newly selected
+    /// workspace, which is why submission compares it with the workspace on
+    /// screen rather than treating empty as ready.
+    var workspaceModelID: PersistentIdentifier?
 
     func selectedSkills(excluding excludedSkillIDs: Set<UUID>) -> [Skill] {
         availableSkills.filter { !excludedSkillIDs.contains($0.id) }
@@ -23,8 +26,8 @@ struct ComposerCapabilitySnapshot {
     /// the catalog refresh for this workspace has completed they belong to the
     /// previous one, and stamping them would let a composer submit with the
     /// wrong capabilities. `nil` (no workspace) is always ready.
-    static func stampedWorkspaceID(workspaceID: UUID?, catalogWorkspaceID: UUID?) -> UUID? {
-        workspaceID == catalogWorkspaceID ? workspaceID : nil
+    static func stampedIdentity<ID: Equatable>(_ workspace: ID?, catalog catalogWorkspace: ID?) -> ID? {
+        workspace == catalogWorkspace ? workspace : nil
     }
 }
 
@@ -49,7 +52,7 @@ enum ComposerCapabilitySnapshotBuilder {
             approvalRecords: approvalRecords,
             packPolicy: packPolicy
         )
-        return ComposerCapabilitySnapshot(availableSkills: capabilities.activeSkills, workspaceID: workspace.id)
+        return ComposerCapabilitySnapshot(availableSkills: capabilities.activeSkills, workspaceModelID: workspace.persistentModelID)
     }
 }
 
@@ -77,8 +80,8 @@ struct ComposerCapabilitySnapshotLoader: View {
     private var globalTools: [LocalTool]
 
     @State private var catalogSnapshot = ComposerCapabilityCatalogSnapshot.empty
-    /// The workspace `catalogSnapshot` was last refreshed for.
-    @State private var catalogWorkspaceID: UUID?
+    /// The workspace model `catalogSnapshot` was last refreshed for.
+    @State private var catalogWorkspaceModelID: PersistentIdentifier?
     @State private var catalogRefreshID = UUID()
     @State private var approvalRefreshID = UUID()
 
@@ -100,6 +103,8 @@ struct ComposerCapabilitySnapshotLoader: View {
     private var catalogRefreshSignature: String {
         [
             workspace?.id.uuidString ?? "none",
+            // A same-id replacement is a different model with its own catalog.
+            workspace.map { String(describing: $0.persistentModelID) } ?? "none",
             Self.joinFields(workspace?.enabledPackIDs ?? []),
             approvalRefreshID.uuidString
         ].joined(separator: "|")
@@ -121,7 +126,7 @@ struct ComposerCapabilitySnapshotLoader: View {
     private func refreshCatalogSnapshot() async {
         let refreshID = UUID()
         let enabledPackIDs = workspace?.enabledPackIDs ?? []
-        let refreshWorkspaceID = workspace?.id
+        let refreshWorkspaceModelID = workspace?.persistentModelID
         catalogRefreshID = refreshID
 
         let loadTask = Task.detached(priority: .userInitiated) {
@@ -144,7 +149,7 @@ struct ComposerCapabilitySnapshotLoader: View {
 
         guard let snapshot, !Task.isCancelled, catalogRefreshID == refreshID else { return }
         catalogSnapshot = snapshot.withBuiltInsFallback()
-        catalogWorkspaceID = refreshWorkspaceID
+        catalogWorkspaceModelID = refreshWorkspaceModelID
         emitSnapshot()
     }
 
@@ -159,9 +164,9 @@ struct ComposerCapabilitySnapshotLoader: View {
             approvalRecords: catalogSnapshot.approvalRecords,
             packPolicy: catalogSnapshot.packPolicy
         )
-        snapshot.workspaceID = ComposerCapabilitySnapshot.stampedWorkspaceID(
-            workspaceID: snapshot.workspaceID,
-            catalogWorkspaceID: catalogWorkspaceID
+        snapshot.workspaceModelID = ComposerCapabilitySnapshot.stampedIdentity(
+            snapshot.workspaceModelID,
+            catalog: catalogWorkspaceModelID
         )
         onSnapshotChange(snapshot)
     }
