@@ -1088,10 +1088,13 @@ struct ContentView: View {
         }
         .sheet(item: $packageImportPresentation.presented, onDismiss: { packageImportPresentation.sheetDismissed() }) { request in
             WorkspacePackageImportReviewView(packageURL: request.url) { imported in
+                let inComposerFlow = sceneSelection.isInComposerWorkspaceFlow
                 packageImportPresentation.presented = nil
                 if let imported {
                     applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(imported))
                 }
+                // Later packages in the same selection keep the composer too.
+                if inComposerFlow, packageImportPresentation.isActive { sceneSelection.beginComposerWorkspaceFlow() }
             }
             .id(request.id)
         }
@@ -1146,6 +1149,9 @@ struct ContentView: View {
         .onChange(of: workspaceSelectionSignature) {
             handleWorkspaceSelectionSignatureChanged()
         }
+        .onChange(of: packageImportPresentation.isActive) {
+            endComposerWorkspaceFlowUnlessReviewing()
+        }
         .onChange(of: pendingExternalRouteID) {
             handlePendingExternalRoute()
         }
@@ -1166,7 +1172,7 @@ struct ContentView: View {
             workspaces: workspaces,
             select: { sceneSelection.retargetComposer(to: $0) },
             createWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); createWorkspace() },
-            importWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); importWorkspace(); sceneSelection.endComposerWorkspaceFlow() }
+            importWorkspace: { sceneSelection.beginComposerWorkspaceFlow(); importWorkspace(); endComposerWorkspaceFlowUnlessReviewing() }
         ))
         .sheet(isPresented: onboardingSheetBinding) {
             OnboardingWizardView(
@@ -2290,6 +2296,13 @@ struct ContentView: View {
     private func createWorkspace() {
         newWorkspaceDraft.clear()
         showingNewWorkspace = true
+    }
+
+    /// An `.astra-share` import selects its workspace only when the user finishes
+    /// reviewing it, so the composer-workspace flow outlives `importWorkspace()`
+    /// until the last review sheet has closed.
+    private func endComposerWorkspaceFlowUnlessReviewing() {
+        if !packageImportPresentation.isActive { sceneSelection.endComposerWorkspaceFlow() }
     }
 
     private func resetNewWorkspaceDraft() {

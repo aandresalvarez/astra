@@ -139,6 +139,8 @@ final class SceneSelectionModel: ObservableObject {
         keepsComposerThroughWorkspaceFlow = true
     }
 
+    var isInComposerWorkspaceFlow: Bool { keepsComposerThroughWorkspaceFlow }
+
     func endComposerWorkspaceFlow() {
         keepsComposerThroughWorkspaceFlow = false
     }

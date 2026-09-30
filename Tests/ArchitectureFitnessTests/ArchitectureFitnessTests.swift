@@ -1917,7 +1917,11 @@ struct ArchitectureFitnessTests {
             // (two modifiers), and the workspace-change observer lets
             // a retarget keep the composer open; the switcher UI, ordering and
             // menu live in NewTaskWorkspacePicker*.swift.
-            "Astra/Views/ContentView.swift": .init(4_910, .owner("Workspace shell composition")),
+            // 4_910 -> 4_920: New workspace / Import from the composer's switcher
+            // keep the draft, including through the asynchronous .astra-share
+            // review (a flow marker that outlives importWorkspace() and ends when
+            // the last review sheet closes).
+            "Astra/Views/ContentView.swift": .init(4_920, .owner("Workspace shell composition")),
             // Freezing a schema version means copying every one of its ~16
             // referenced model types into a self-contained nested body
             // (957a90a8's V10 freeze is the precedent), which once grew this

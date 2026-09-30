@@ -182,6 +182,27 @@ struct SceneSelectionComposerRetargetTests {
         #expect(!model.consumeComposerRetarget(for: imported.id))
     }
 
+    @Test("A package review keeps the flow open until the delayed selection lands")
+    func packageReviewSelectionKeepsTheComposer() {
+        let first = workspace("First")
+        let imported = workspace("Imported")
+        let model = SceneSelectionModel()
+        model.composeTask(workspace: first)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: first, isComposingTask: true
+        )
+
+        // importWorkspace() returns after queuing the review; the flow stays open.
+        model.beginComposerWorkspaceFlow()
+        #expect(model.isInComposerWorkspaceFlow)
+
+        // The user finishes the review later and the selection lands.
+        model.apply(coordinator.importWorkspace(imported))
+
+        #expect(model.consumeComposerRetarget(for: imported.id))
+        #expect(!model.isInComposerWorkspaceFlow)
+    }
+
     @Test("A flow that ends without selecting anything does not affect a later selection")
     func cancelledFlowDoesNotLeak() {
         let first = workspace("First")
