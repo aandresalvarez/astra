@@ -2225,13 +2225,7 @@ struct ContentView: View {
             "update_safety_count",
             thresholdMilliseconds: 8
         ) {
-            let runningStatus = TaskStatus.running
-            let descriptor = FetchDescriptor<AgentTask>(
-                predicate: #Predicate<AgentTask> { task in
-                    task.status == runningStatus
-                }
-            )
-            return (try? modelContext.fetchCount(descriptor)) ?? 0
+            AppUpdateSafety.runningTaskCount(in: modelContext)
         }
     }
 
