@@ -90,6 +90,26 @@ enum LivePermissionApprovalRecovery {
             AppLogger.audit(.taskFailed, category: "Persistence", fields: ["operation": "live_approval_recovery_fetch"], level: .error)
             return 0
         }
+        return recover(events: events, modelContext: modelContext,
+            autoExportWorkspaces: autoExportWorkspaces, recoveringRestart: true)
+    }
+
+    /// Runtime settlement also closes the failed-delivery window in the current
+    /// session. Submission is durable; the existing queue dispatches it after
+    /// the current worker and its resource lease have been released.
+    @discardableResult
+    static func recoverSettledRun(task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                                  autoExportWorkspaces: Bool = true) -> Int {
+        guard !task.isDeleted, !run.isDeleted, run.status != .running else { return 0 }
+        let events = task.events.filter {
+            $0.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue && $0.run?.id == run.id
+        }
+        return recover(events: events, modelContext: modelContext,
+            autoExportWorkspaces: autoExportWorkspaces, recoveringRestart: false)
+    }
+
+    private static func recover(events: [TaskEvent], modelContext: ModelContext,
+                                autoExportWorkspaces: Bool, recoveringRestart: Bool) -> Int {
         // Validate every commit before creating any newer turn request. Recovery
         // itself must not make another approval of the same binding look stale.
         var groups: [BindingKey: [PendingApproval]] = [:]
@@ -99,7 +119,7 @@ enum LivePermissionApprovalRecovery {
                   let commit = try? JSONDecoder().decode(Commit.self, from: data),
                   task.resolvedRuntimeID == commit.runtime,
                   (try? TaskPermissionContinuation.isCurrent(commit.binding, task: task, modelContext: modelContext,
-                      recoveringRestart: true)) == true else { continue }
+                      recoveringRestart: recoveringRestart)) == true else { continue }
             let delivered = task.events.contains {
                 guard !$0.isDeleted, $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue,
                       $0.run?.id == commit.binding.runID, $0.timestamp >= event.timestamp,
@@ -137,7 +157,9 @@ enum LivePermissionApprovalRecovery {
                 },
                 prepare: {
                     modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.approved,
-                        payload: "Runtime permission approval recovered after restart. Continuation queued."))
+                        payload: recoveringRestart
+                            ? "Runtime permission approval recovered after restart. Continuation queued."
+                            : "Runtime permission approval recovered after provider exit. Continuation queued."))
                 }, rollback: { snapshot.restore(task, in: modelContext) })
             if case .success = result {
                 submitted += 1

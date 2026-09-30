@@ -83,6 +83,9 @@ enum PersistedTurnRuntimeEventLinker {
         forcedOutcome: (state: TaskTurnRequestState, reason: String)? = nil,
         in modelContext: ModelContext
     ) {
+        defer {
+            LivePermissionApprovalRecovery.recoverSettledRun(task: task, run: run, modelContext: modelContext)
+        }
         guard let request else { return }
         let runState: TaskTurnRequestState = switch run.status {
         case .completed: .completed

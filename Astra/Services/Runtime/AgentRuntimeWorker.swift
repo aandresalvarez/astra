@@ -192,7 +192,9 @@ final class AgentRuntimeWorker {
             plan: currentPlan,
             step: approvedStep
         )
+        .addingRuntimePermissions(from: executionPolicy)
         .withLaunchSnapshot(executionPolicy.launchSnapshot)
+        .withTurnIntentSnapshot(executionPolicy.turnIntentSnapshot)
         .withResourceAdmission(from: executionPolicy)
         // The provider finishing is a claim, not this turn's outcome: the
         // finalization below can still send the task back for review. Terminal

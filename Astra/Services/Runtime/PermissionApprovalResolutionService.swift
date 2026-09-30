@@ -56,7 +56,8 @@ enum PermissionApprovalResolutionService {
         let stale: Bool
         do {
             let current = try binding.map { try TaskPermissionContinuation.isCurrent($0, task: task, modelContext: modelContext) } ?? true
-            stale = task.isDone || task.status == .cancelled || runtime != task.resolvedRuntimeID
+            stale = task.isDone || (task.status == .cancelled && approval?.behavior != .futureUse)
+                || runtime != task.resolvedRuntimeID
                 || !current
         } catch {
             reportFailure(task: task, modelContext: modelContext)

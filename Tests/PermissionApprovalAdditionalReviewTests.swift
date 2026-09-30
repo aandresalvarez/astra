@@ -7,6 +7,112 @@ import ASTRAPersistence
 @testable import ASTRA
 
 extension PermissionApprovalContinuationTests {
+    @Test("A cancelled task saves future-use authority without changing status or queuing work")
+    func cancelledFutureUseApprovalSaves() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        fixture.task.status = .cancelled
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+            payload: fixture.payload(requestID: "cancelled-offer", behavior: .futureUse), task: fixture.task)
+        guard case .saved = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task,
+            modelContext: fixture.context) else { Issue.record("Future-use approval did not save"); return }
+        #expect(fixture.task.status == .cancelled)
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: fixture.task, runtime: .codexCLI) == [fixture.label])
+        #expect(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).isEmpty)
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+    }
+
+    @Test("Allow once reaches the resumed approved-plan provider launch", arguments: [TaskPlanExecutionMode.fullPlan, .nextStep])
+    func planOnceGrantReachesLaunch(mode: TaskPlanExecutionMode) async throws {
+        let fixture = try Fixture(runtime: .claudeCode)
+        defer { fixture.cleanup() }
+        let runner = CredentialBlockedRunner(connectorID: fixture.connectorID)
+        let queue = reviewQueue(runner: runner)
+        defer { queue.cancelAll() }
+        let plan = TaskPlanPayload(title: "Inspect tickets", goal: "Answer the ticket question",
+            steps: [.init(id: "step-1", title: "Inspect tickets", likelyTools: ["Jira"])])
+        TaskPlanService.recordCreated(plan, task: fixture.task, modelContext: fixture.context)
+        guard case .success(let initial) = ExecutionRequestSubmissionService.submitPlan(plan: plan,
+            mode: mode, mutation: .existingTask, for: fixture.task, into: fixture.context) else {
+            Issue.record("Plan did not submit"); return
+        }
+        await queue.signalExecutionRequest(id: initial.requestID, task: fixture.task, modelContext: fixture.context).value
+        #expect(fixture.task.status == .pendingUser)
+        guard case .queued(let resumed) = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .once,
+            modelContext: fixture.context) else { Issue.record("Plan did not resume"); return }
+        await queue.signalExecutionRequest(id: resumed.requestID, task: fixture.task, modelContext: fixture.context).value
+        #expect(runner.launchCount == 2)
+        #expect(runner.launchPolicies.last?.permissionGrantsOverride == [.credential(label: fixture.label)])
+        #expect(runner.launchPolicies.last?.allowedToolsOverride?.contains("Jira") == true)
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: fixture.task, runtime: .claudeCode).isEmpty)
+        let request = try #require(try TaskTurnRequestRepository.request(id: resumed.requestID, in: fixture.context))
+        #expect(request.state == .completed)
+    }
+
+    @Test("A failed live delivery is recovered and dispatched in the current session")
+    func failedLiveDeliveryRecoversWithoutRestart() async throws {
+        let fixture = try Fixture(runtime: .claudeCode)
+        defer { fixture.cleanup(); InFlightPermissionCenter.shared.failAll(taskID: fixture.task.id) }
+        let runner = CredentialBlockedRunner(connectorID: fixture.connectorID, failLiveDelivery: true)
+        let queue = reviewQueue(runner: runner, policyLevel: .review)
+        defer { queue.cancelAll() }
+        _ = TaskStateMachine.enqueueFromUITestSeed(fixture.task, modelContext: fixture.context)
+        guard case .success(let initial) = ExecutionRequestSubmissionService.submitInitial(for: fixture.task,
+            into: fixture.context) else { Issue.record("Initial turn did not submit"); return }
+        let handle = queue.signalExecutionRequest(id: initial.requestID, task: fixture.task, modelContext: fixture.context)
+        for _ in 0..<200 where InFlightPermissionCenter.shared.pendingAsks(taskID: fixture.task.id).isEmpty {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(!InFlightPermissionCenter.shared.pendingAsks(taskID: fixture.task.id).isEmpty)
+        guard case .live = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .once,
+            modelContext: fixture.context) else { Issue.record("Expected live approval"); return }
+        await handle.value
+        // The original request's handle stops at its terminal state. Its
+        // replacement is dispatched by the same queue loop asynchronously.
+        for _ in 0..<200 where fixture.task.status != .completed || runner.launchCount != 2 {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(runner.launchCount == 2)
+        #expect(fixture.task.status == .completed)
+        #expect(fixture.task.events.filter { $0.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue }.count == 1)
+        #expect(runner.launchPolicies.last?.permissionGrantsOverride?.isEmpty == false)
+        #expect(LivePermissionApprovalRecovery.recover(modelContext: fixture.context, autoExportWorkspaces: false) == 0)
+    }
+
+    private func reviewQueue(runner: CredentialBlockedRunner, policyLevel: AgentPolicyLevel = .autonomous) -> TaskQueue {
+        let queue = TaskQueue(poolSize: 1, workerFactory: {
+            let worker = AgentRuntimeWorker(processRunner: runner, providerSettingsSnapshotProvider: { .headlessScenario })
+            worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
+            return worker
+        }, sandboxEnforcementProvider: { .off })
+        queue.applySettings(claudePath: "/bin/sh", defaultRuntimeID: .claudeCode, timeoutSeconds: 10,
+            validationModel: "claude-sonnet-4-6", defaultPolicyLevelRaw: policyLevel.rawValue)
+        return queue
+    }
+
+    @Test("Run settlement preserves acknowledgement, cancellation, and supersession guards", arguments: ["acknowledged", "cancelled", "superseded", "running", "closed"])
+    func settlementDoesNotRecoverIneligibleApproval(state: String) throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let binding = try fixture.blockedRequest()
+        let run = try #require(fixture.task.runs.first)
+        LivePermissionApprovalRecovery.record(binding: binding, requestID: "guarded", runtime: .codexCLI,
+            grants: [.credential(label: fixture.label)], taskScope: false, task: fixture.task, modelContext: fixture.context)
+        switch state {
+        case "acknowledged":
+            #expect(LivePermissionApprovalRecovery.recordDelivery(requestID: "guarded", toolName: "Jira",
+                task: fixture.task, run: run, modelContext: fixture.context, persist: { try fixture.context.save() }))
+        case "cancelled": fixture.task.status = .cancelled
+        case "closed": fixture.task.isDone = true
+        case "running": run.status = .running
+        default:
+            _ = ExecutionRequestSubmissionService.submitFollowUp(message: "A newer turn", for: fixture.task, into: fixture.context)
+        }
+        let request = try #require(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).first)
+        PersistedTurnRuntimeEventLinker.finishRuntime(request: request, run: run, task: fixture.task, in: fixture.context)
+        #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue })
+    }
+
     @Test("Legacy pipe-write receipts cannot suppress recovery without provider completion evidence")
     func legacyWriteReceiptDoesNotAcknowledge() throws {
         let fixture = try Fixture()

@@ -310,12 +310,16 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
     let connectorID: UUID
     var launchCount = 0
     var continuationPrompt: String?
+    var launchPolicies: [AgentRuntimeExecutionPolicy] = []
     let firstResult: AgentProcessResult
     let providerReportedError: Bool
-    init(connectorID: UUID, firstResult: AgentProcessResult = .init(exitCode: 0), providerReportedError: Bool = false) {
+    let failLiveDelivery: Bool
+    init(connectorID: UUID, firstResult: AgentProcessResult = .init(exitCode: 0),
+         providerReportedError: Bool = false, failLiveDelivery: Bool = false) {
         self.connectorID = connectorID
         self.firstResult = firstResult
         self.providerReportedError = providerReportedError
+        self.failLiveDelivery = failLiveDelivery
     }
     func cancel() {}
     func isHostControlBrokerAvailable() -> Bool { true }
@@ -332,6 +336,15 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?, onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         launchCount += 1
+        launchPolicies.append(executionPolicy)
+        if launchCount == 1, failLiveDelivery {
+            let decision = await onInteractiveAsk?(.init(requestID: "failed-delivery", toolName: "Bash",
+                inputSummary: "npm install lodash", commandText: "npm install lodash", pathText: nil))
+            #expect(decision?.isAllowed == true)
+            // The provider exits without accepting the response or invoking its
+            // acknowledgement callback, after the user committed the approval.
+            return AgentProcessResult(exitCode: 1)
+        }
         let label = "connector:\(connectorID.uuidString):JIRA_API_TOKEN"
         let answer: String
         if launchCount == 1 {
@@ -340,7 +353,9 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
             answer = "Approve Jira access so I can check your open tickets."
         } else {
             continuationPrompt = prompt
-            #expect(permissionManifest?.approvalGrants.contains(.credential(label: label)) == true)
+            if !failLiveDelivery {
+                #expect(permissionManifest?.approvalGrants.contains(.credential(label: label)) == true)
+            }
             answer = "You have two open tickets."
         }
         onLine(#"{"type":"system","subtype":"init","session_id":"permission-test","model":"claude-sonnet-4-6"}"#, false)
