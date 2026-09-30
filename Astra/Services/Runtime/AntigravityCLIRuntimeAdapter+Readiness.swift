@@ -69,7 +69,7 @@ extension AntigravityCLIRuntimeAdapter {
                 state: .blocked,
                 remediation: authMode != .adc
                     ? "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
-                    : "Check the Google Cloud sign-in and project under Provider Details, then click Check Again."
+                    : "Sign in again under Provider Details (it runs `gcloud auth application-default login` and sets the quota project), then click Check Again."
             )
         }
         if antigravityReadinessOutputContainsReadyLine(result.stdout) {
