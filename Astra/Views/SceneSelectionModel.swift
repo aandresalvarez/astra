@@ -29,6 +29,8 @@ final class SceneSelectionModel: ObservableObject {
     @Published private(set) var selectedWorkspaceApp: WorkspaceApp?
     @Published private(set) var isComposingWorkspaceApp = false
     @Published private(set) var isComposingTask = false
+    private var retargetedComposerWorkspaceID: UUID?
+    private var keepsComposerThroughWorkspaceFlow = false
 
     var activeSurface: SceneSelectionSurface {
         if let selectedTask {
@@ -47,6 +49,21 @@ final class SceneSelectionModel: ObservableObject {
             return .workspace(selectedWorkspace.id)
         }
         return .none
+    }
+
+    /// The workspace a new task would start in, while the detail pane shows the
+    /// new-task composer: the explicit one, or the one a workspace with no tasks
+    /// shows on its own. `isComposingTask` alone misses the second.
+    var newTaskComposerWorkspaceID: UUID? {
+        let workspace = selectedTask?.workspace ?? selectedWorkspace
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: selectedTask,
+            effectiveWorkspace: workspace,
+            isComposingTask: isComposingTask,
+            selectedWorkspaceApp: selectedWorkspaceApp,
+            isComposingWorkspaceApp: isComposingWorkspaceApp
+        )
+        return presentation == .newTaskComposer ? workspace?.id : nil
     }
 
     var shouldClearWorkspaceAppSurfaceAfterWorkspaceChange: Bool {
@@ -102,6 +119,46 @@ final class SceneSelectionModel: ObservableObject {
         isComposingWorkspaceApp = false
     }
 
+    /// Moves the new-task composer to another workspace without leaving it. A
+    /// workspace with no tasks shows the composer without `isComposingTask`
+    /// being set, so this also establishes composition rather than requiring it.
+    /// The scene's workspace-change observer treats every other change while
+    /// composing as leaving the composer (a sidebar click), so this records the
+    /// one change it must let through; `consumeComposerRetarget` reads it back.
+    func retargetComposer(to workspace: Workspace) {
+        guard selectedTask == nil, selectedWorkspace?.id != workspace.id else { return }
+        retargetedComposerWorkspaceID = workspace.id
+        composeTask(workspace: workspace)
+    }
+
+    /// Marks that the workspace create or import the composer's switcher started
+    /// will select a workspace: `apply` then keeps the composer (and its draft)
+    /// open on it instead of leaving for that workspace's home. The flow ends
+    /// when that selection lands, or when the sheet or panel closes without one.
+    func beginComposerWorkspaceFlow() {
+        keepsComposerThroughWorkspaceFlow = true
+    }
+
+    var isInComposerWorkspaceFlow: Bool { keepsComposerThroughWorkspaceFlow }
+
+    /// Re-arms or ends the flow after a step of it has run. A mixed import
+    /// selects its legacy half at once, which consumes the marker, while its
+    /// package reviews are still to come, so the caller sets it back to whether
+    /// reviews remain.
+    func setComposerWorkspaceFlow(_ isActive: Bool) {
+        keepsComposerThroughWorkspaceFlow = isActive
+    }
+
+    func endComposerWorkspaceFlow() {
+        keepsComposerThroughWorkspaceFlow = false
+    }
+
+    /// True once for the workspace a `retargetComposer` just selected.
+    func consumeComposerRetarget(for workspaceID: UUID?) -> Bool {
+        defer { retargetedComposerWorkspaceID = nil }
+        return workspaceID != nil && workspaceID == retargetedComposerWorkspaceID
+    }
+
     func composeApp(workspace: Workspace? = nil) {
         if let workspace {
             selectedWorkspace = workspace
@@ -127,10 +184,20 @@ final class SceneSelectionModel: ObservableObject {
         let previousSelectedWorkspaceApp = selectedWorkspaceApp
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
         let preserveWorkspaceAppSurface = shouldPreserveWorkspaceAppSurface(for: update)
+        // By identity, not id: a Replace import re-creates the selected workspace
+        // under the same id as a new model object, and that is still a change.
+        let keepsComposer = keepsComposerThroughWorkspaceFlow
+            && update.selectedTask == nil
+            && update.selectedWorkspace != nil
+            && update.selectedWorkspace !== selectedWorkspace
 
         selectedWorkspace = update.selectedWorkspace
         selectedTask = update.selectedTask
-        isComposingTask = update.isComposingTask
+        isComposingTask = update.isComposingTask || keepsComposer
+        if keepsComposer {
+            keepsComposerThroughWorkspaceFlow = false
+            retargetedComposerWorkspaceID = update.selectedWorkspace?.id
+        }
         if !preserveWorkspaceAppSurface {
             selectedWorkspaceApp = nil
             isComposingWorkspaceApp = false
