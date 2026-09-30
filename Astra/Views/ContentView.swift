@@ -1161,7 +1161,7 @@ struct ContentView: View {
         // for the matching FocusedValueKey definitions.
         .focusedSceneValue(\.newWorkspaceAction, { createWorkspace() })
         .focusedSceneValue(\.importWorkspaceAction, { importWorkspace() })
-        .environment(\.newTaskComposerWorkspaceID, isComposingTask ? effectiveWorkspaceID : nil)
+        .environment(\.newTaskComposerWorkspaceID, sceneSelection.newTaskComposerWorkspaceID)
         .environment(\.newTaskWorkspaceSwitcher, NewTaskWorkspaceSwitcher(
             workspaces: workspaces,
             select: { sceneSelection.retargetComposer(to: $0) },

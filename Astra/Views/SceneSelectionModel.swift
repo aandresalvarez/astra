@@ -51,6 +51,21 @@ final class SceneSelectionModel: ObservableObject {
         return .none
     }
 
+    /// The workspace a new task would start in, while the detail pane shows the
+    /// new-task composer: the explicit one, or the one a workspace with no tasks
+    /// shows on its own. `isComposingTask` alone misses the second.
+    var newTaskComposerWorkspaceID: UUID? {
+        let workspace = selectedTask?.workspace ?? selectedWorkspace
+        let presentation = ContentDetailPresentation.resolve(
+            selectedTask: selectedTask,
+            effectiveWorkspace: workspace,
+            isComposingTask: isComposingTask,
+            selectedWorkspaceApp: selectedWorkspaceApp,
+            isComposingWorkspaceApp: isComposingWorkspaceApp
+        )
+        return presentation == .newTaskComposer ? workspace?.id : nil
+    }
+
     var shouldClearWorkspaceAppSurfaceAfterWorkspaceChange: Bool {
         if isComposingWorkspaceApp { return false }
         guard let selectedWorkspaceApp else { return false }

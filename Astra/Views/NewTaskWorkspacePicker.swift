@@ -51,6 +51,19 @@ enum NewTaskWorkspacePicker {
         name.count > limit ? String(name.prefix(limit - 1)) + "…" : name
     }
 
+    /// The first `count` segments of the row, always keeping the current
+    /// workspace: if it would be cut off it takes the last visible slot. Used
+    /// when the pane is too narrow for the whole row.
+    static func visibleRow(_ row: [UUID], keeping current: UUID, count: Int) -> [UUID] {
+        let count = max(count, 1)
+        guard row.count > count else { return row }
+        var visible = Array(row.prefix(count))
+        if !visible.contains(current), row.contains(current) {
+            visible[visible.count - 1] = current
+        }
+        return visible
+    }
+
     /// Workspaces in the menu's "Recent" section.
     static let recentLimit = 5
 

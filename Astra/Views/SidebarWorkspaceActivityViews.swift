@@ -15,6 +15,11 @@ struct WorkspaceRowActions: View {
     let onRename: () -> Void
     let onDelete: () -> Void
 
+    /// Extra trailing room on the one row that carries the new-task mark, so it
+    /// never crowds the star or the running/waiting counts out of the slot. The
+    /// row's right edge does not move; its title just truncates a little earlier.
+    private static let newTaskTargetExtraWidth: CGFloat = 40
+
     @State private var isEllipsisHovered = false
     @State private var isNewTaskHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -26,7 +31,7 @@ struct WorkspaceRowActions: View {
             metadata.opacity(isRowHovered ? 0 : 1).accessibilityHidden(isRowHovered)
             actions.opacity(isRowHovered ? 1 : 0).allowsHitTesting(isRowHovered)
         }
-        .frame(width: SidebarLeanPresentation.workspaceRowTrailingSlotWidth, alignment: .trailing)
+        .frame(width: SidebarLeanPresentation.workspaceRowTrailingSlotWidth + (isNewTaskTarget ? Self.newTaskTargetExtraWidth : 0), alignment: .trailing)
         .animation(hoverAnimation, value: isRowHovered)
     }
 

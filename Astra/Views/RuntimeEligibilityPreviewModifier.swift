@@ -203,6 +203,8 @@ struct RuntimeEligibilityPreviewRequest {
         let readiness = readinessSignature(readinessStates)
         let signature = ([
             draftTask?.id.uuidString ?? "new",
+            // A switched composer keeps its draft and skills but not its workspace.
+            workspace?.id.uuidString ?? "none",
             requestedRuntime.rawValue,
             String(runtimeExplicitlySelected),
             selectedPolicyLevelRaw,

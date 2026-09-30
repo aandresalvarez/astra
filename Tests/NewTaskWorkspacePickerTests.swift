@@ -75,6 +75,17 @@ struct NewTaskWorkspacePickerTests {
         #expect(next == [kept.id])
     }
 
+    @Test("A narrow pane shows fewer segments but always keeps the current workspace")
+    func narrowRowKeepsTheCurrentWorkspace() {
+        let ids = (0..<4).map { _ in UUID() }
+
+        #expect(NewTaskWorkspacePicker.visibleRow(ids, keeping: ids[0], count: 4) == ids)
+        #expect(NewTaskWorkspacePicker.visibleRow(ids, keeping: ids[1], count: 2) == [ids[0], ids[1]])
+        #expect(NewTaskWorkspacePicker.visibleRow(ids, keeping: ids[3], count: 2) == [ids[0], ids[3]])
+        #expect(NewTaskWorkspacePicker.visibleRow(ids, keeping: ids[2], count: 1) == [ids[2]])
+        #expect(NewTaskWorkspacePicker.visibleRow(ids, keeping: ids[0], count: 0) == [ids[0]])
+    }
+
     @Test("Long workspace names are shortened to fit a segment")
     func segmentTitlesAreShortened() {
         #expect(NewTaskWorkspacePicker.segmentTitle("Astra Work") == "Astra Work")

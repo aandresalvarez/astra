@@ -89,6 +89,44 @@ struct SceneSelectionComposerRetargetTests {
         #expect(!model.consumeComposerRetarget(for: first.id))
     }
 
+    // MARK: - Sidebar target
+
+    @Test("The sidebar target covers the implicit composer of an empty workspace")
+    func targetIncludesTheImplicitComposer() {
+        let empty = workspace("Empty")
+        let model = SceneSelectionModel()
+
+        model.openWorkspace(empty)
+
+        #expect(!model.isComposingTask)
+        #expect(model.newTaskComposerWorkspaceID == empty.id)
+    }
+
+    @Test("The sidebar target is the workspace being composed in, and nil on workspace home")
+    func targetFollowsTheComposer() {
+        let busy = workspace("Busy")
+        busy.tasks.append(AgentTask(title: "Existing", goal: "Existing", workspace: busy))
+        let model = SceneSelectionModel()
+
+        model.openWorkspace(busy)
+        #expect(model.newTaskComposerWorkspaceID == nil)
+
+        model.composeTask(workspace: busy)
+        #expect(model.newTaskComposerWorkspaceID == busy.id)
+    }
+
+    @Test("The sidebar target is nil while a task is open or when nothing is selected")
+    func targetIsNilElsewhere() {
+        let first = workspace("First")
+        let task = AgentTask(title: "Open", goal: "Open", workspace: first)
+        let model = SceneSelectionModel()
+        #expect(model.newTaskComposerWorkspaceID == nil)
+
+        model.openTask(task)
+
+        #expect(model.newTaskComposerWorkspaceID == nil)
+    }
+
     // MARK: - Create / import from the switcher
 
     @Test("A workspace imported from the switcher keeps the composer open on it")

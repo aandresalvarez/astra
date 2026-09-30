@@ -15,12 +15,9 @@ struct NewTaskWorkspacePickerView: View {
 
     private var displayIDs: [UUID] { rowIDs.isEmpty ? [current.id] : rowIDs }
 
-    private var rowWorkspaces: [Workspace] {
-        displayIDs.compactMap { id in switcher.workspaces.first { $0.id == id } }
-    }
-
-    private var hasMoreWorkspaces: Bool {
-        switcher.workspaces.count > rowWorkspaces.count
+    private func rowWorkspaces(showing count: Int) -> [Workspace] {
+        NewTaskWorkspacePicker.visibleRow(displayIDs, keeping: current.id, count: count)
+            .compactMap { id in switcher.workspaces.first { $0.id == id } }
     }
 
     var body: some View {
@@ -34,26 +31,14 @@ struct NewTaskWorkspacePickerView: View {
             .foregroundStyle(Stanford.textTertiary)
             .accessibilityHidden(true)
 
-            HStack(spacing: 2) {
-                ForEach(rowWorkspaces) { workspace in
-                    segment(workspace)
-                }
-                if hasMoreWorkspaces {
-                    moreButton
-                }
+            // The whole row when it fits, otherwise fewer segments: the cut-off
+            // workspaces stay one click away in the "…" menu, which lists them all.
+            ViewThatFits(in: .horizontal) {
+                strip(showing: NewTaskWorkspacePicker.segmentLimit)
+                strip(showing: 3)
+                strip(showing: 2)
+                strip(showing: 1)
             }
-            .padding(3)
-            .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(Color.primary.opacity(Stanford.fillSoft))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(Stanford.borderRest)
-            )
-            .fixedSize()
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Start this task in workspace")
 
             Text(WorkspacePathPresentation.abbreviatePath(current.primaryPath))
                 .font(Stanford.caption(12))
@@ -74,6 +59,30 @@ struct NewTaskWorkspacePickerView: View {
         .onChange(of: current.id) {
             rowIDs = NewTaskWorkspacePicker.row(displayIDs, selecting: current.id, in: switcher.workspaces)
         }
+    }
+
+    private func strip(showing count: Int) -> some View {
+        let segments = rowWorkspaces(showing: count)
+        return HStack(spacing: 2) {
+            ForEach(segments) { workspace in
+                segment(workspace)
+            }
+            if switcher.workspaces.count > segments.count {
+                moreButton
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.primary.opacity(Stanford.fillSoft))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(Stanford.borderRest)
+        )
+        .fixedSize()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Start this task in workspace")
     }
 
     private func segment(_ workspace: Workspace) -> some View {
