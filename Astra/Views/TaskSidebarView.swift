@@ -79,6 +79,7 @@ struct TaskSidebarContainerView: View {
             workspaces: workspaces,
             selectedWorkspace: $selectedWorkspace,
             taskActivities: taskActivities,
+            activityRequests: Dictionary(grouping: turnRequests, by: \.taskID),
             onNewTask: onNewTask,
             onRunQueue: onRunQueue,
             onRunTask: onRunTask,
@@ -371,9 +372,9 @@ struct TaskSidebarView: View {
     let taskQueue: TaskQueue
     let workspaces: [Workspace]
     @Binding var selectedWorkspace: Workspace?
-    /// Derived from `TaskTurnRequest` snapshots by the container. The sidebar
-    /// never mutates turn state and never needs an inverse on `AgentTask`.
+    /// Derived from request snapshots by the container; never mutates turn state.
     var taskActivities: [UUID: TaskActivityPresentation] = [:]
+    var activityRequests: [UUID: [TaskTurnRequest]] = [:]
     let onNewTask: () -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
@@ -923,7 +924,7 @@ struct TaskSidebarView: View {
                     isSelected: isSelected,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
-                    activity: taskActivities[task.id],
+                    requests: activityRequests[task.id] ?? [],
                     titleHelp: workspaceHoverHelp,
                     showsPinIndicator: false
                 )
@@ -1047,7 +1048,7 @@ struct TaskSidebarView: View {
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
                     subtitle: task.workspace?.name,
-                    activity: taskActivities[task.id]
+                    requests: activityRequests[task.id] ?? []
                 )
             }
             .buttonStyle(.plain)
@@ -1971,7 +1972,7 @@ struct TaskSidebarView: View {
                     isKeyboardFocused: isKeyboardFocused,
                     contentLeadingPadding: contentLeadingPadding,
                     attemptCount: attemptCount,
-                    activity: taskActivities[task.id]
+                    requests: activityRequests[task.id] ?? []
                 )
             }
             .buttonStyle(.plain)
