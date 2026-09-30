@@ -660,6 +660,49 @@ struct RuntimeReadinessServiceTests {
         #expect(accountCheckEnvironment["AGY_ADC_AUTH"] == "true")
     }
 
+    @Test("Antigravity ineligible-account failure points at the ADC route and offers the switch")
+    func antigravityIneligibleAccountOffersADCSwitch() async throws {
+        let ineligible = "Warning\n\"gemini-3.8-flash-high\" is no longer available. Using \"Gemini 3.8 Flash (High)\".\nEligibility Check\nEligibility check failed: Your current account is not eligible for Antigravity. Try signing in with another personal Google account.\n"
+        func account(mode: AntigravityAuthMode) async throws -> RuntimeReadinessCheck {
+            let runner = StubBinaryRunner()
+            await runner.setResponse(
+                forKey: "/opt/agy --version",
+                result: RunResult(outcome: .exited(code: 0), stdout: "1.0.2\n", stderr: "")
+            )
+            await runner.setResponse(
+                forKey: "/opt/agy --print Reply with ASTRA_READY only. --print-timeout 25s --sandbox",
+                result: RunResult(outcome: .exited(code: 1), stdout: "", stderr: ineligible)
+            )
+            let service = RuntimeReadinessService(
+                runner: runner,
+                detectExecutable: { binary in binary == "agy" ? "/opt/agy" : "" },
+                isExecutable: { $0 == "/opt/agy" }
+            )
+            let report = await service.check(configuration: RuntimeReadinessConfiguration(
+                runtime: .antigravityCLI,
+                claudePath: "",
+                copilotPath: "",
+                claudeProvider: .anthropic,
+                vertexProjectID: "",
+                vertexRegion: "",
+                vertexOpusModel: "",
+                vertexSonnetModel: "",
+                vertexHaikuModel: "",
+                antigravityAuthMode: mode
+            ))
+            return try #require(report.checks.first { $0.id == "antigravity-account" })
+        }
+
+        let consumer = try await account(mode: .consumer)
+        #expect(consumer.state == .blocked)
+        #expect(consumer.fixAction == .switchAntigravityToADC)
+        #expect(consumer.remediation?.contains("Google Cloud (ADC)") == true)
+
+        // Already on ADC: switching again would loop, so no button.
+        let adc = try await account(mode: .adc)
+        #expect(adc.fixAction == nil)
+    }
+
     /// `agy` exits 0 with nothing on stdout when its own print timeout fires, so
     /// silence proves nothing about the account and must not block a launch.
     @Test("Antigravity diagnostic readiness warns when live check exits zero without output")

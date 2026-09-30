@@ -1911,7 +1911,17 @@ struct ArchitectureFitnessTests {
             // whether prerequisites are *usable* rather than *verified*, which needs its
             // own accessor plus the note on why an `.unverified` contextual probe is not
             // missing setup — the two states drive different surfaces.
-            "Astra/Views/ContentView.swift": .init(4_900, .owner("Workspace shell composition")),
+            // 4_900 -> 4_910: the new-task workspace switcher. The scene hands the
+            // composer its workspace list and a retarget intent, and the sidebar
+            // which workspace the composer targets, through the environment
+            // (two modifiers), and the workspace-change observer lets
+            // a retarget keep the composer open; the switcher UI, ordering and
+            // menu live in NewTaskWorkspacePicker*.swift.
+            // 4_910 -> 4_920: New workspace / Import from the composer's switcher
+            // keep the draft, including through the asynchronous .astra-share
+            // review (a flow marker that outlives importWorkspace() and ends when
+            // the last review sheet closes).
+            "Astra/Views/ContentView.swift": .init(4_920, .owner("Workspace shell composition")),
             // Freezing a schema version means copying every one of its ~16
             // referenced model types into a self-contained nested body
             // (957a90a8's V10 freeze is the precedent), which once grew this
@@ -2032,7 +2042,10 @@ struct ArchitectureFitnessTests {
             // `sidebarTasksVersion`. The window itself is a separate file
             // (SidebarTaskIndexRebuildScheduler); what is left here is three
             // wiring lines and the note on why search stays uncoalesced.
-            "Astra/Views/TaskSidebarView.swift": .init(2_530, .owner("Task sidebar")),
+            // 2_530 -> 2_535: the workspace row marks the workspace the open
+            // new-task composer targets (one environment read, one argument); the
+            // mark itself lives in SidebarWorkspaceActivityViews.swift.
+            "Astra/Views/TaskSidebarView.swift": .init(2_535, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
             "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
             // Budget raised for Track A4 (ASTRAPersistence extraction) - see
