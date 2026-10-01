@@ -124,11 +124,17 @@ final class SceneSelectionModel: ObservableObject {
     /// instead of that workspace's home or last task. A no-op without a
     /// workspace or over a workspace app surface, and runs once per scene since
     /// the view's appear handler can fire again.
+    ///
+    /// The restore that selected this workspace is still undelivered to the
+    /// scene's workspace-change observer, which reads a composing scene as a
+    /// sidebar click and would send it to the workspace home. Recording the
+    /// workspace as a retarget lets that one change through.
     func openLaunchComposerOnce() {
         guard !didOpenLaunchComposer, let selectedWorkspace,
               selectedWorkspaceApp == nil,
               !isComposingWorkspaceApp else { return }
         didOpenLaunchComposer = true
+        retargetedComposerWorkspaceID = selectedWorkspace.id
         composeTask(workspace: selectedWorkspace)
     }
 
