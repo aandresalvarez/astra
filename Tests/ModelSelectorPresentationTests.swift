@@ -86,6 +86,49 @@ struct ModelSelectorPresentationTests {
         ) == "Not compatible with this request.")
     }
 
+    @Test("VoiceOver hears the real selection and each provider's state")
+    func providerAccessibilityValue() {
+        let current = provider(.codexCLI, .ready, current: true)
+        let browsed = provider(.claudeCode, .ready)
+        let setup = provider(.openCodeCLI, .needsSetup)
+        let blocked = provider(.cursorCLI, .unavailable(reason: "Needs MCP"))
+
+        #expect(ModelSelectorPresentation.providerAccessibilityValue(current, isBrowsing: false) == "Selected provider, 3 models")
+        #expect(ModelSelectorPresentation.providerAccessibilityValue(browsed, isBrowsing: true) == "3 models, Showing its models")
+        #expect(ModelSelectorPresentation.providerAccessibilityValue(setup, isBrowsing: false) == "Needs setup")
+        #expect(ModelSelectorPresentation.providerAccessibilityValue(blocked, isBrowsing: true) == "Needs MCP, Showing its models")
+    }
+
+    @Test("a model picked with a runtime switch wins, and the previous model is kept for the log")
+    func runtimeSwitchHonorsTheRequestedModel() {
+        let cache = antigravityCache()
+        let picked = TaskComposerCoordinator.runtimeUpdate(
+            previousRuntime: AgentRuntimeID.claudeCode.rawValue,
+            selectedRuntime: AgentRuntimeID.antigravityCLI.rawValue,
+            currentModel: "sonnet",
+            requestedModel: "gemini-3.8-pro-medium",
+            cache: cache
+        )
+        #expect(picked.resolvedModel == "gemini-3.8-pro-medium")
+        #expect(picked.previousModel == "sonnet")
+
+        // A requested model the runtime does not offer falls back like a plain switch.
+        let fallback = TaskComposerCoordinator.runtimeUpdate(
+            previousRuntime: AgentRuntimeID.claudeCode.rawValue,
+            selectedRuntime: AgentRuntimeID.antigravityCLI.rawValue,
+            currentModel: "sonnet",
+            requestedModel: "not-offered",
+            cache: cache
+        )
+        let plain = TaskComposerCoordinator.runtimeUpdate(
+            previousRuntime: AgentRuntimeID.claudeCode.rawValue,
+            selectedRuntime: AgentRuntimeID.antigravityCLI.rawValue,
+            currentModel: "sonnet",
+            cache: cache
+        )
+        #expect(fallback.resolvedModel == plain.resolvedModel)
+    }
+
     // MARK: - Listing
 
     @Test("the whole catalog is listed in catalog order, however long, with no disclosure")
@@ -332,6 +375,8 @@ struct ModelSelectorPresentationTests {
         // calls back into the toolbar, only a model pick does.
         #expect(!popover.contains("onSwitchProvider"))
         #expect(popover.contains("browsing = row.runtime"))
+        // A cross-provider pick is one transition: runtime and model together.
+        #expect(toolbar.contains("onRuntimeChange?(runtime.rawValue, modelID)"))
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {

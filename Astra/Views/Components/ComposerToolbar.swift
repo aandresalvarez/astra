@@ -79,7 +79,10 @@ struct ComposerToolbar: View {
     var onStop: (() -> Void)?
     var onModelChange: ((String) -> Void)?
     var onReasoningEffortChange: ((String?) -> Void)?
-    var onRuntimeChange: ((String) -> Void)?
+    /// A runtime switch, with the model the user picked alongside it (nil
+    /// lets the switch resolve one). One transition, so the parent's
+    /// `*_runtime_changed` breadcrumb records the model actually selected.
+    var onRuntimeChange: ((String, String?) -> Void)?
     var onBudgetChange: ((Int) -> Void)?
     var onRemoveSkill: ((Skill) -> Void)?
     var onToggleSkill: ((Skill, Bool) -> Void)?
@@ -398,9 +401,10 @@ struct ComposerToolbar: View {
             showsBudgetFooter: RuntimeBudgetPresentation.isEnabled(budget),
             onSelect: { runtime, modelID in
                 if runtime != resolvedRuntime {
-                    onRuntimeChange?(runtime.rawValue)
+                    onRuntimeChange?(runtime.rawValue, modelID)
+                } else {
+                    onModelChange?(modelID)
                 }
-                onModelChange?(modelID)
                 alignReasoningEffort(model: modelID, runtime: runtime)
             },
             onSetup: { openSettings() },
@@ -418,8 +422,7 @@ struct ComposerToolbar: View {
             to: runtime,
             cache: runtimeModelCache
         )
-        onRuntimeChange?(runtime.rawValue)
-        onModelChange?(switchedModel)
+        onRuntimeChange?(runtime.rawValue, switchedModel)
         alignReasoningEffort(model: switchedModel, runtime: runtime)
     }
 

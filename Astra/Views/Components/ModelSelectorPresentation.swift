@@ -80,6 +80,26 @@ enum ModelSelectorPresentation {
         return ModelSelectorListing(rows: matches, isFiltered: true)
     }
 
+    /// What VoiceOver says after a provider's name: whether it is the actual
+    /// selection, its availability, and whether its models are on screen.
+    static func providerAccessibilityValue(
+        _ row: ModelSelectorProviderRow,
+        isBrowsing: Bool
+    ) -> String {
+        var parts: [String] = []
+        if row.isCurrent { parts.append("Selected provider") }
+        switch row.availability {
+        case .ready:
+            parts.append(row.modelCount == 1 ? "1 model" : "\(row.modelCount) models")
+        case .needsSetup:
+            parts.append("Needs setup")
+        case .unavailable(let reason):
+            parts.append(reason)
+        }
+        if isBrowsing { parts.append("Showing its models") }
+        return parts.joined(separator: ", ")
+    }
+
     static let compatibilityPendingReason = "Checking compatibility with this request…"
 
     /// Why a ready provider cannot be picked for the current request, once a

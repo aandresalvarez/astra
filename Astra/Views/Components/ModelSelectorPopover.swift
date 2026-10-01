@@ -238,7 +238,11 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
             }
         }
         .accessibilityLabel(row.title)
-        .accessibilityAddTraits(isBrowsing ? .isSelected : [])
+        // Selected means the persisted selection, not the row being browsed;
+        // the value carries state the green dot and grouping show visually.
+        .accessibilityValue(ModelSelectorPresentation.providerAccessibilityValue(row, isBrowsing: isBrowsing))
+        .accessibilityHint("Shows this provider's models")
+        .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
     }
 
     // MARK: - Detail
