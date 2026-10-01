@@ -1125,7 +1125,7 @@ final class AgentRuntimeProcessRunner {
         }
         await deliveryChannel.recordAcknowledgements()
         var acknowledgedResult = result
-        acknowledgedResult.providerTurnCompleted = deliveryChannel.observedProviderTurnCompletion
+        acknowledgedResult.acknowledgedPermissionRequestIDs = deliveryChannel.acknowledgedPermissionRequestIDs
         return acknowledgedResult
     }
 

@@ -9,15 +9,19 @@ import ASTRAModels
 final class AgentLivePermissionDeliveryChannel: @unchecked Sendable {
     private let lock = NSLock()
     private var providerTurnCompleted = false
+    private var writtenApprovalRequestIDs: Set<String> = []
     private var receipts: [@Sendable () async -> Void] = []
 
     @discardableResult
     func writeResponse(_ response: String, to process: AgentExecutionScopedProcess,
-                       outcome: InteractiveAskOutcome) -> Bool {
+                       requestID: String? = nil, outcome: InteractiveAskOutcome) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard !providerTurnCompleted, process.writeStdinLine(response) else { return false }
-        if case .allowWithAcknowledgementReceipt(let receipt) = outcome { receipts.append(receipt) }
+        if case .allowWithAcknowledgementReceipt(let receipt) = outcome {
+            receipts.append(receipt)
+            if let requestID { writtenApprovalRequestIDs.insert(requestID) }
+        }
         return true
     }
 
@@ -27,10 +31,10 @@ final class AgentLivePermissionDeliveryChannel: @unchecked Sendable {
         providerTurnCompleted = true
     }
 
-    var observedProviderTurnCompletion: Bool {
+    var acknowledgedPermissionRequestIDs: Set<String> {
         lock.lock()
         defer { lock.unlock() }
-        return providerTurnCompleted
+        return providerTurnCompleted ? writtenApprovalRequestIDs : []
     }
 
     /// Called after final stdout drain and before the worker settles the run.
@@ -94,7 +98,7 @@ extension AgentRuntimeProcessRunner {
             case .deny(let message):
                 response = ClaudeControlProtocol.denyResponse(for: control, message: message)
             }
-            if let response { deliveryChannel.writeResponse(response, to: process, outcome: outcome) }
+            if let response { deliveryChannel.writeResponse(response, to: process, requestID: control.requestID, outcome: outcome) }
         }
     }
 

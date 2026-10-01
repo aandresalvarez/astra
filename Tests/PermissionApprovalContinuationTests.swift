@@ -350,7 +350,7 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
             if providerCompletedWithoutReceipt {
                 onLine(#"{"type":"result","subtype":"success","is_error":false,"result":"Approved work completed","total_cost_usd":0,"duration_ms":10,"num_turns":1}"#, false)
                 var result = AgentProcessResult(exitCode: 0)
-                result.providerTurnCompleted = true
+                result.acknowledgedPermissionRequestIDs = ["failed-delivery"]
                 return result
             }
             // The provider exits without accepting the response or invoking its

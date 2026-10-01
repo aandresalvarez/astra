@@ -81,7 +81,7 @@ extension PermissionApprovalContinuationTests {
             currentDirectory: fixture.root.path, environment: [:], providesStdinChannel: true)
         defer { process.closeStdinChannel() }
         let channel = AgentLivePermissionDeliveryChannel()
-        let written = channel.writeResponse("approved", to: process, outcome: .allowWithAcknowledgementReceipt {
+        let written = channel.writeResponse("approved", to: process, requestID: "completed", outcome: .allowWithAcknowledgementReceipt {
             await MainActor.run {
                 enum Failure: Error { case save }
                 #expect(!LivePermissionApprovalRecovery.recordDelivery(requestID: "completed", toolName: "Jira",
@@ -91,11 +91,11 @@ extension PermissionApprovalContinuationTests {
         #expect(written)
         channel.observeProviderCompletion()
         await channel.recordAcknowledgements()
-        #expect(channel.observedProviderTurnCompletion)
+        #expect(channel.acknowledgedPermissionRequestIDs == ["completed"])
         #expect(!fixture.task.events.contains { !$0.isDeleted && $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue })
         let request = try #require(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).first)
         PersistedTurnRuntimeEventLinker.finishRuntime(request: request, run: run, task: fixture.task,
-            providerTurnCompleted: channel.observedProviderTurnCompletion, in: fixture.context)
+            acknowledgedPermissionRequestIDs: channel.acknowledgedPermissionRequestIDs, in: fixture.context)
         #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue })
     }
 
@@ -231,6 +231,30 @@ extension PermissionApprovalContinuationTests {
             try await Task.sleep(for: .milliseconds(25))
         }
         #expect(mirrored)
+    }
+
+    @Test("A terminal frame before the approval write still queues same-session recovery")
+    func completionBeforeResponseStillRecovers() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let binding = try fixture.blockedRequest(completed: true)
+        let run = try #require(fixture.task.runs.first)
+        LivePermissionApprovalRecovery.record(binding: binding, requestID: "late-write", runtime: .codexCLI,
+            grants: [.credential(label: fixture.label)], taskScope: false, task: fixture.task, modelContext: fixture.context)
+        try fixture.context.save()
+        let process = AgentExecutionScopedProcess(executablePath: "/bin/sh", arguments: [],
+            currentDirectory: fixture.root.path, environment: [:], providesStdinChannel: true)
+        defer { process.closeStdinChannel() }
+        let channel = AgentLivePermissionDeliveryChannel()
+        channel.observeProviderCompletion()
+        #expect(!channel.writeResponse("approved", to: process, requestID: "late-write",
+            outcome: .allowWithAcknowledgementReceipt { Issue.record("Unwritten approval was acknowledged") }))
+        await channel.recordAcknowledgements()
+        #expect(channel.acknowledgedPermissionRequestIDs.isEmpty)
+        let request = try #require(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).first)
+        PersistedTurnRuntimeEventLinker.finishRuntime(request: request, run: run, task: fixture.task,
+            acknowledgedPermissionRequestIDs: channel.acknowledgedPermissionRequestIDs, in: fixture.context)
+        #expect(fixture.task.events.filter { $0.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue }.count == 1)
     }
 
 }

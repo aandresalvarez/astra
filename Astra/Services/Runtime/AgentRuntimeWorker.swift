@@ -85,7 +85,7 @@ final class AgentRuntimeWorker {
         existingStartEventID: UUID? = nil,
         executionRequestID: UUID? = nil,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun, Bool) -> Void)? = nil,
+        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun, Set<String>) -> Void)? = nil,
         retainIsolationAfterExecution: Bool = false,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async -> AgentRuntimeExecutionContext? {
@@ -202,7 +202,7 @@ final class AgentRuntimeWorker {
         // finalization below can still send the task back for review. Terminal
         // request state is irreversible, so hold the durable request open
         // until that verdict exists instead of completing it on raw success.
-        var pendingTurn: (request: TaskTurnRequest?, run: TaskRun, providerTurnCompleted: Bool)?
+        var pendingTurn: (request: TaskTurnRequest?, run: TaskRun, acknowledgedPermissionRequestIDs: Set<String>)?
         let executionContext = await execute(
             task: task,
             modelContext: modelContext,
@@ -212,7 +212,7 @@ final class AgentRuntimeWorker {
             existingStartEventID: existingStartEventID,
             executionRequestID: executionRequestID,
             executionPolicy: runExecutionPolicy,
-            deferTurnTerminalization: { pendingTurn = (request: $0, run: $1, providerTurnCompleted: $2) },
+            deferTurnTerminalization: { pendingTurn = (request: $0, run: $1, acknowledgedPermissionRequestIDs: $2) },
             retainIsolationAfterExecution: true,
             onEvent: onEvent
         )
@@ -260,7 +260,7 @@ final class AgentRuntimeWorker {
                 request: pendingTurn.request,
                 run: pendingTurn.run,
                 task: task,
-                providerTurnCompleted: pendingTurn.providerTurnCompleted,
+                acknowledgedPermissionRequestIDs: pendingTurn.acknowledgedPermissionRequestIDs,
                 forcedOutcome: rejectedOutcome,
                 in: modelContext
             )
@@ -551,7 +551,7 @@ final class AgentRuntimeWorker {
         auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun, Bool) -> Void)? = nil,
+        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun, Set<String>) -> Void)? = nil,
         retainIsolationAfterExecution: Bool = false,
         onExecutionContext: ((AgentRuntimeExecutionContext) -> Void)? = nil
     ) async {
@@ -690,13 +690,13 @@ final class AgentRuntimeWorker {
         // plans); otherwise provider completion IS the outcome, so terminalize
         // here. Registered before the guard below so every exit past this
         // point resolves the request through exactly one of the two.
-        var providerTurnCompleted = false
+        var acknowledgedPermissionRequestIDs: Set<String> = []
         defer {
             if let deferTurnTerminalization {
-                deferTurnTerminalization(turnBegin.request, run, providerTurnCompleted)
+                deferTurnTerminalization(turnBegin.request, run, acknowledgedPermissionRequestIDs)
             } else {
                 PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task,
-                    providerTurnCompleted: providerTurnCompleted, in: modelContext)
+                    acknowledgedPermissionRequestIDs: acknowledgedPermissionRequestIDs, in: modelContext)
             }
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
@@ -1140,7 +1140,7 @@ final class AgentRuntimeWorker {
                 }
             }
         )
-        providerTurnCompleted = result.providerTurnCompleted
+        acknowledgedPermissionRequestIDs = result.acknowledgedPermissionRequestIDs
         let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
         flushedBatch.recordEmitted(to: streamTelemetry)
         flushedBatch.recordEmitted(to: streamDebugCapture)
