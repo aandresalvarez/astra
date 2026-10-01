@@ -27,6 +27,38 @@ struct SceneSelectionModelTests {
         #expect(model.activeSurface == .task(task.id))
     }
 
+    @Test("Launch composer replaces the restored task with the new-task composer")
+    func launchComposerReplacesRestoredTask() {
+        let workspace = makeWorkspace(name: "Launch")
+        let task = makeTask(workspace: workspace)
+        let model = SceneSelectionModel()
+
+        model.openTask(task)
+        model.openLaunchComposerOnce()
+
+        #expect(model.selectedTask == nil)
+        #expect(model.selectedWorkspace?.id == workspace.id)
+        #expect(model.activeSurface == .taskComposer(workspace.id))
+
+        model.openTask(task)
+        model.openLaunchComposerOnce()
+        #expect(model.activeSurface == .task(task.id))
+    }
+
+    @Test("Launch composer is a no-op without a workspace or over an app surface")
+    func launchComposerLeavesOtherSurfacesAlone() {
+        let workspace = makeWorkspace(name: "Apps")
+        let app = makeApp(workspace: workspace)
+        let model = SceneSelectionModel()
+
+        model.openLaunchComposerOnce()
+        #expect(model.activeSurface == .none)
+
+        model.openApp(app, workspace: workspace)
+        model.openLaunchComposerOnce()
+        #expect(model.activeSurface == .workspaceApp(app.id))
+    }
+
     @Test("Opening a workspace clears task, app, and composer selections")
     func openWorkspaceClearsConflictingSelections() {
         let taskWorkspace = makeWorkspace(name: "Task")

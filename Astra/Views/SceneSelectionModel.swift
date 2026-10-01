@@ -29,6 +29,7 @@ final class SceneSelectionModel: ObservableObject {
     @Published private(set) var selectedWorkspaceApp: WorkspaceApp?
     @Published private(set) var isComposingWorkspaceApp = false
     @Published private(set) var isComposingTask = false
+    private var didOpenLaunchComposer = false
     private var retargetedComposerWorkspaceID: UUID?
     private var keepsComposerThroughWorkspaceFlow = false
 
@@ -117,6 +118,18 @@ final class SceneSelectionModel: ObservableObject {
         selectedWorkspaceApp = nil
         isComposingTask = true
         isComposingWorkspaceApp = false
+    }
+
+    /// Launch landing: opens the new-task composer in the restored workspace
+    /// instead of that workspace's home or last task. A no-op without a
+    /// workspace or over a workspace app surface, and runs once per scene since
+    /// the view's appear handler can fire again.
+    func openLaunchComposerOnce() {
+        guard !didOpenLaunchComposer, let selectedWorkspace,
+              selectedWorkspaceApp == nil,
+              !isComposingWorkspaceApp else { return }
+        didOpenLaunchComposer = true
+        composeTask(workspace: selectedWorkspace)
     }
 
     /// Moves the new-task composer to another workspace without leaving it. A
