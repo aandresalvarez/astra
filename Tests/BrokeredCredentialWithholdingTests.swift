@@ -280,7 +280,7 @@ struct BrokeredCredentialApprovalLoopTests {
 
         #expect(decoded.behavior == .futureUse)
         #expect(decoded.continuation?.runID == run.id)
-        #expect(TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
+        #expect(try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
         #expect(fixture.task.status == .pendingUser)
         #expect(run.typedStopReason == .permissionApprovalRequired)
     }
@@ -530,7 +530,7 @@ struct BrokeredCredentialApprovalLoopTests {
         _ = try brokerCall(fixture.brokerServer(taskID: fixture.task.id, runID: run.id),
             id: 1, tool: "redcap", arguments: ["operation": "status"])
         RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(task: fixture.task, run: run, modelContext: fixture.context)
-        #expect(TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
+        #expect(try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
         let payload = try #require(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: fixture.task))
         #expect(PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .continueBlockedTurn)
         #expect(fixture.task.status == .pendingUser)

@@ -40,7 +40,7 @@ enum TaskPermissionContinuation {
         modelContext: ModelContext
     ) -> PermissionApprovalContinuation? {
         let approval = PermissionApprovalEventPayload.decoded(from: payload)
-        guard approval?.behavior != .futureUse else { return nil }
+        guard !isFutureUse(payload: payload, task: task) else { return nil }
         if let continuation = approval?.continuation { return continuation }
         // Older connector requests were actual blocked calls but labelled as
         // offers. Bind them to their event's run, never to the newest user turn.
@@ -53,6 +53,16 @@ enum TaskPermissionContinuation {
             return nil
         }
         return capture(task: task, run: run, modelContext: modelContext)
+    }
+
+    nonisolated static func isFutureUse(payload: String, task: AgentTask) -> Bool {
+        guard let approval = PermissionApprovalEventPayload.decoded(from: payload) else { return false }
+        if let behavior = approval.behavior { return behavior == .futureUse }
+        guard approval.requestID?.hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true else { return false }
+        let run = approval.continuation.flatMap { binding in task.runs.first { $0.id == binding.runID } }
+            ?? task.events.filter { !$0.isDeleted && $0.payload == payload }
+                .max(by: { $0.timestamp < $1.timestamp })?.run
+        return run?.typedStopReason != .permissionApprovalRequired
     }
 
     static func isCurrent(_ binding: PermissionApprovalContinuation, task: AgentTask, modelContext: ModelContext,
@@ -103,7 +113,8 @@ enum TaskPermissionContinuation {
     }
 
     @discardableResult
-    static func applyBlockingOutcomeIfNeeded(task: AgentTask, run: TaskRun, modelContext: ModelContext) -> Bool {
+    static func applyBlockingOutcomeIfNeeded(task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                                             persist: (() throws -> Void)? = nil) throws -> Bool {
         guard !task.isDone, task.status != .cancelled else { return false }
         let requests = TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).filter { payload in
             if let approval = PermissionApprovalEventPayload.decoded(from: payload),
@@ -122,8 +133,11 @@ enum TaskPermissionContinuation {
         }
         run.recordPermissionApprovalRequired()
         TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext,
-            taskID: task.id, auditFields: ["operation": "permission_blocking_outcome"])
+        if let persist { try persist() }
+        else {
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: task.workspace, modelContext: modelContext,
+                taskID: task.id, auditFields: ["operation": "permission_blocking_outcome"])
+        }
         return true
     }
 

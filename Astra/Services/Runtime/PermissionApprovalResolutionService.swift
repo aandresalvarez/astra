@@ -46,6 +46,7 @@ enum PermissionApprovalResolutionService {
               TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task) else { return .ignored }
         let snapshot = ExecutionMutationSnapshot(task)
         let approval = PermissionApprovalEventPayload.decoded(from: payload)
+        let futureUse = TaskPermissionContinuation.isFutureUse(payload: payload, task: task)
         let binding = TaskPermissionContinuation.binding(payload: payload, task: task, modelContext: modelContext)
         let grants = TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
         let runtime = approval?.providerID ?? task.resolvedRuntimeID
@@ -56,7 +57,7 @@ enum PermissionApprovalResolutionService {
         let stale: Bool
         do {
             let current = try binding.map { try TaskPermissionContinuation.isCurrent($0, task: task, modelContext: modelContext) } ?? true
-            stale = task.isDone || (task.status == .cancelled && approval?.behavior != .futureUse)
+            stale = task.isDone || (task.status == .cancelled && !futureUse)
                 || runtime != task.resolvedRuntimeID
                 || !current
         } catch {
@@ -73,7 +74,7 @@ enum PermissionApprovalResolutionService {
             }
             return .ignored
         }
-        let shouldContinue = approval?.behavior != .futureUse
+        let shouldContinue = !futureUse
             && (binding != nil || liveID != nil || task.status == .pendingUser)
         let taskScope = scope == .task && !PermissionBroker.taskScopedApprovalGrants(for: grants).isEmpty
         guard shouldContinue || taskScope else { return .ignored }

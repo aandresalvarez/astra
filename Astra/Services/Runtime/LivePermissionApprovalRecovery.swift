@@ -80,6 +80,62 @@ enum LivePermissionApprovalRecovery {
         }
     }
 
+    /// Restore receipt evidence into the durable transaction at settlement.
+    /// Leave staged receipts in the context if saving fails, so a later save
+    /// cannot persist the approval commit while losing its acknowledgement.
+    @discardableResult
+    static func stageAcknowledgements(task: AgentTask, run: TaskRun, requestIDs: Set<String>,
+                                      modelContext: ModelContext) -> Bool {
+        var staged = false
+        for id in requestIDs where !hasDeliveryReceipt(requestID: id, task: task, run: run) {
+            guard task.events.contains(where: {
+                !$0.isDeleted && $0.run?.id == run.id
+                    && $0.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue
+                    && (try? JSONDecoder().decode(Commit.self, from: Data($0.payload.utf8)))?.requestID == id
+            }) else { continue }
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalDelivered,
+                payload: TaskEvent.payloadString(DeliveryReceipt(requestID: id, toolName: "Approved tool")), run: run))
+            staged = true
+        }
+        return staged
+    }
+
+    private static func hasDeliveryReceipt(requestID: String, task: AgentTask, run: TaskRun) -> Bool {
+        task.events.contains {
+            guard !$0.isDeleted, $0.run?.id == run.id,
+                  $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue,
+                  case .success(let receipt) = $0.decodePayload(as: DeliveryReceipt.self) else { return false }
+            return receipt.version == 1 && receipt.evidence == "provider_turn_completed"
+                && receipt.approved && receipt.requestID == requestID
+        }
+    }
+
+    /// Undelivered approvals must settle before fallback plan finalization can
+    /// mark their step done. The normal queue will dispatch the saved recovery.
+    static func settleUndeliveredPlanApproval(request: TaskTurnRequest?, run: TaskRun, task: AgentTask,
+                                             step: TaskPlanPayloadStep?, plan: TaskPlanPayload,
+                                             acknowledgedRequestIDs: Set<String>, modelContext: ModelContext) -> Bool {
+        guard task.status == .completed, task.events.contains(where: { event in
+            guard !event.isDeleted, event.run?.id == run.id,
+                  event.type == TaskEventTypes.Tool.permissionLiveApprovalCommitted.rawValue,
+                  let commit = try? JSONDecoder().decode(Commit.self, from: Data(event.payload.utf8)),
+                  (try? TaskPermissionContinuation.isCurrent(commit.binding, task: task, modelContext: modelContext)) == true else { return false }
+            return !acknowledgedRequestIDs.contains(commit.requestID)
+                && !hasDeliveryReceipt(requestID: commit.requestID, task: task, run: run)
+        }) else { return false }
+        if let step {
+            TaskPlanService.recordStepProgress(type: TaskPlanEventTypes.stepStarted, planID: plan.planID,
+                stepID: step.id, status: .running, task: task, modelContext: modelContext, run: run,
+                reason: "Approved response was not delivered; this step remains incomplete for recovery.")
+        }
+        run.recordPermissionApprovalRequired()
+        TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
+        PersistedTurnRuntimeEventLinker.finishRuntime(request: request, run: run, task: task,
+            acknowledgedPermissionRequestIDs: acknowledgedRequestIDs,
+            forcedOutcome: (.failed, "undelivered_plan_approval"), in: modelContext)
+        return true
+    }
+
     /// Startup calls this after orphaned runs and their original requests have
     /// been settled, before normal queue replay. Recovery never starts a provider.
     @discardableResult

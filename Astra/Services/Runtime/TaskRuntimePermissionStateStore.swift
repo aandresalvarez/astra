@@ -65,16 +65,8 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .missing:
             break
         }
-        guard let latestPayload = latestCompatibilityRequestEvent(for: task)?.payload else {
-            return .empty
-        }
-        let grants = compatibilityApprovalGrants(from: latestPayload)
-        return TaskRuntimePermissionState(
-            latestRequestPayload: latestPayload,
-            hasOpenApprovalRequest: hasOpenRequest(for: task),
-            decision: RuntimePermissionDecisionPresentation(payload: latestPayload),
-            taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: grants)
-        )
+        guard let latest = unresolvedCompatibilityEntries(for: task).last else { return .empty }
+        return state(from: latest)
     }
 
     static func hasOpenRequest(for task: AgentTask) -> Bool {
@@ -84,7 +76,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return false
         case .missing:
-            return RuntimePermissionOpenState.hasOpenRequest(events: compatibilityEvents(for: task))
+            return !unresolvedCompatibilityEntries(for: task).isEmpty
         }
     }
 
@@ -95,7 +87,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return nil
         case .missing:
-            return latestCompatibilityRequestEvent(for: task)?.payload
+            return unresolvedCompatibilityEntries(for: task).last?.payload
         }
     }
 
@@ -117,8 +109,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return []
         case .missing:
-            return latestCompatibilityRequestEvent(for: task)
-                .map { compatibilityApprovalGrants(from: $0.payload) } ?? []
+            return unresolvedCompatibilityEntries(for: task).last?.grants ?? []
         }
     }
 
@@ -129,9 +120,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return nil
         case .missing:
-            return latestCompatibilityRequestEvent(for: task).flatMap {
-                compatibilityPermissionToolName(from: $0.payload)
-            }
+            return unresolvedCompatibilityEntries(for: task).last.flatMap(permissionToolName(from:))
         }
     }
 
@@ -150,13 +139,12 @@ enum TaskRuntimePermissionOpenRequestStore {
             task.runtimePermissionOpenRequestsJSON = "[]"
             return 0
         case .missing:
-            guard hasOpenRequest(for: task),
-                  let latest = latestCompatibilityRequestEvent(for: task),
-                  !requiresExplicitSandboxApproval(entry(from: latest.payload, requestedAt: latest.timestamp)) else {
-                return 0
-            }
-            task.runtimePermissionOpenRequestsJSON = "[]"
-            return 1
+            let entries = unresolvedCompatibilityEntries(for: task)
+            let remaining = entries.filter(requiresExplicitSandboxApproval)
+            let closedCount = entries.count - remaining.count
+            guard closedCount > 0 else { return 0 }
+            task.runtimePermissionOpenRequestsJSON = encode(remaining)
+            return closedCount
         }
     }
 
@@ -169,7 +157,8 @@ enum TaskRuntimePermissionOpenRequestStore {
     private static func typedEntries(for task: AgentTask) -> [Entry] {
         switch typedState(for: task) {
         case .available(let entries): entries
-        case .missing, .invalid: []
+        case .missing: unresolvedCompatibilityEntries(for: task)
+        case .invalid: []
         }
     }
 
@@ -225,12 +214,6 @@ enum TaskRuntimePermissionOpenRequestStore {
         guard let request = entry.request else { return false }
         if case .sandboxPath = request { return true }
         return false
-    }
-
-    private static func compatibilityApprovalGrants(from payload: String) -> [PermissionGrant] {
-        let structured = PermissionBroker.structuredApprovalGrants(from: payload)
-        if !structured.isEmpty { return structured }
-        return PermissionBroker.legacyApprovalGrants(from: payload)
     }
 
     private static func permissionToolName(from entry: Entry) -> String? {
@@ -313,16 +296,4 @@ enum TaskRuntimePermissionOpenRequestStore {
         return entries
     }
 
-    private static func latestCompatibilityRequestEvent(for task: AgentTask) -> TaskEvent? {
-        task.events
-            .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
-            .sorted { $0.timestamp < $1.timestamp }
-            .last
-    }
-
-    private static func compatibilityEvents(for task: AgentTask) -> [RuntimePermissionOpenState.Event] {
-        task.events.filter { !$0.isDeleted }.map {
-            RuntimePermissionOpenState.Event(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
-        }
-    }
 }

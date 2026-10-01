@@ -84,7 +84,13 @@ enum PersistedTurnRuntimeEventLinker {
         forcedOutcome: (state: TaskTurnRequestState, reason: String)? = nil,
         in modelContext: ModelContext
     ) {
+        let stagedAcknowledgements = LivePermissionApprovalRecovery.stageAcknowledgements(
+            task: task, run: run, requestIDs: acknowledgedPermissionRequestIDs, modelContext: modelContext)
         defer {
+            if stagedAcknowledgements && modelContext.hasChanges {
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext,
+                    taskID: task.id, auditFields: ["operation": "settlement_acknowledgement"])
+            }
             LivePermissionApprovalRecovery.recoverSettledRun(task: task, run: run, modelContext: modelContext,
                 acknowledgedPermissionRequestIDs: acknowledgedPermissionRequestIDs)
         }

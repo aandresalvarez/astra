@@ -287,7 +287,7 @@ struct PermissionApprovalContinuationTests {
             _ = TaskTurnRequestStateMachine.transition(request, to: .failed)
             task.status = completed ? .completed : .pendingUser
             run.status = completed ? .completed : .failed
-            run.typedStopReason = completed ? .completed : .permissionApprovalRequired
+            run.typedStopReason = completed && !legacy ? .completed : .permissionApprovalRequired
             let binding = TaskPermissionContinuation.capture(task: task, run: run, modelContext: context)
             let raw = payload(requestID: "connector-credentials-\(connectorID.uuidString.lowercased())")
             let encoded = legacy ? raw : TaskPermissionContinuation.attach(raw, continuation: binding)
@@ -316,15 +316,18 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
     let failLiveDelivery: Bool
     let providerCompletedWithoutReceipt: Bool
     let liveAskToolName: String
+    let acknowledgeResponse: Bool
     init(connectorID: UUID, firstResult: AgentProcessResult = .init(exitCode: 0),
          providerReportedError: Bool = false, failLiveDelivery: Bool = false,
-         providerCompletedWithoutReceipt: Bool = false, liveAskToolName: String = "Bash") {
+         providerCompletedWithoutReceipt: Bool = false, liveAskToolName: String = "Bash",
+         acknowledgeResponse: Bool = true) {
         self.connectorID = connectorID
         self.firstResult = firstResult
         self.providerReportedError = providerReportedError
         self.failLiveDelivery = failLiveDelivery
         self.providerCompletedWithoutReceipt = providerCompletedWithoutReceipt
         self.liveAskToolName = liveAskToolName
+        self.acknowledgeResponse = acknowledgeResponse
     }
     func cancel() {}
     func isHostControlBrokerAvailable() -> Bool { true }
@@ -350,7 +353,7 @@ final class CredentialBlockedRunner: AgentRuntimeProcessRunning {
             if providerCompletedWithoutReceipt {
                 onLine(#"{"type":"result","subtype":"success","is_error":false,"result":"Approved work completed","total_cost_usd":0,"duration_ms":10,"num_turns":1}"#, false)
                 var result = AgentProcessResult(exitCode: 0)
-                result.acknowledgedPermissionRequestIDs = ["failed-delivery"]
+                result.acknowledgedPermissionRequestIDs = acknowledgeResponse ? ["failed-delivery"] : []
                 return result
             }
             // The provider exits without accepting the response or invoking its

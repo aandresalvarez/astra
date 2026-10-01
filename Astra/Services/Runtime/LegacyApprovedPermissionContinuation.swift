@@ -17,7 +17,7 @@ enum LegacyApprovedPermissionContinuation {
               let event = task.events.filter({ $0.type == "permission.approval.requested" && $0.run?.id == run.id })
                 .max(by: { $0.timestamp < $1.timestamp }),
               let approval = PermissionApprovalEventPayload.decoded(from: event.payload),
-              approval.behavior != .futureUse,
+              !TaskPermissionContinuation.isFutureUse(payload: event.payload, task: task),
               approval.requestID?.hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true,
               approval.providerID == task.resolvedRuntimeID,
               !task.events.contains(where: {

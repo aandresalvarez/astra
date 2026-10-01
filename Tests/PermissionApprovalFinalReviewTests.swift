@@ -139,7 +139,7 @@ extension PermissionApprovalContinuationTests {
         #expect(runner.launchCount == 1)
         #expect(fixture.task.status == .completed)
         #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue })
-        #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue })
+        #expect(fixture.task.events.contains { !$0.isDeleted && $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue })
     }
 
     @Test("Legacy recovery uses saved authority after approval notice compaction", arguments: [false, true])
@@ -202,7 +202,7 @@ extension PermissionApprovalContinuationTests {
         fixture.task.status = .running
         run.status = .running
         try fixture.context.save()
-        #expect(TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
+        #expect(try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
         let fresh = ModelContext(fixture.container)
         let id = fixture.task.id
         let saved = try #require(try fresh.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id })).first)
