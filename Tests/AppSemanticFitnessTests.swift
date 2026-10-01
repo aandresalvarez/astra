@@ -120,6 +120,7 @@ struct AppSemanticFitnessTests {
             "runtime.result.captured": .system,
             "runtime.turn.settled": .system,
             "runtime.reconciliation.required": .system,
+            "runtime.sensitive_data_risk_acknowledged": .system,
             "runtime.schedule_result.routed": .system,
             "schedule.result": .system,
             "skill.active": .system,
