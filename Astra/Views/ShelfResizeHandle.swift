@@ -5,8 +5,9 @@ import AppKit
 //
 // The hit area is a 14pt-wide invisible rectangle straddling the panel's leading edge
 // (offset -7) so the cursor changes a few pixels before and after the visible boundary —
-// this is what makes the divider feel "sticky." On hover and during drag we paint a
-// thin lagunita line at the boundary so the user has a clear visual to lock onto.
+// this is what makes the divider feel "sticky." The handle draws nothing itself: the
+// boundary line belongs to the panel (full height, through the titlebar), and a handle-owned
+// accent only spans the area below the titlebar, so it reads as a second, mismatched border.
 //
 // Cursor management uses AppKit's window-level cursor rect (addCursorRect via
 // CursorRectView) instead of NSCursor.push/pop on hover. push/pop is fragile during
@@ -14,22 +15,12 @@ import AppKit
 // cursor mid-drag. A registered cursor rect keeps the resize cursor for the entire
 // time the pointer is over the area, including throughout drags.
 struct ShelfResizeHandle: View {
-    let isResizing: Bool
     let helpText: String
     let onChanged: (CGSize) -> Void
     let onEnded: () -> Void
 
-    @State private var isHovered = false
-
     var body: some View {
         ZStack(alignment: .leading) {
-            // Visible divider accent — hidden at rest, lagunita on hover, brighter while dragging.
-            Rectangle()
-                .fill(Stanford.lagunita.opacity(indicatorOpacity))
-                .frame(width: 2)
-                .offset(x: 6) // center the 2pt bar on the canvas's leading edge
-                .allowsHitTesting(false)
-
             // Invisible hit target.
             //
             // coordinateSpace: .global is critical. With the default .local space, translation
@@ -51,21 +42,7 @@ struct ShelfResizeHandle: View {
         }
         .frame(maxHeight: .infinity)
         .offset(x: -7) // straddle the boundary: 7pt outside panel, 7pt inside
-        .onContinuousHover { phase in
-            switch phase {
-            case .active: isHovered = true
-            case .ended: isHovered = false
-            }
-        }
-        .animation(.easeOut(duration: 0.12), value: isHovered)
-        .animation(.easeOut(duration: 0.12), value: isResizing)
         .help(helpText)
-    }
-
-    private var indicatorOpacity: Double {
-        if isResizing { return 0.55 }
-        if isHovered { return 0.30 }
-        return 0
     }
 }
 
