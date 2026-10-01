@@ -47,15 +47,16 @@ enum AgentRuntimeRunPersistence {
         fields.merging(["trace_id": traceID], uniquingKeysWith: { _, new in new })
     }
 
+    @discardableResult
     static func recordSessionTurn(
         task: AgentTask,
         run: TaskRun,
         message: String
-    ) {
+    ) -> Bool {
         let folder = (try? TaskWorkspaceAccess(task: task).ensureTaskFolder()) ?? ""
-        guard !folder.isEmpty else { return }
+        guard !folder.isEmpty else { return false }
 
-        SessionHistoryManager.recordTurn(
+        let historySaved = SessionHistoryManager.recordTurn(
             taskFolder: folder,
             taskTitle: task.title,
             turnMessage: message,
@@ -64,9 +65,11 @@ enum AgentRuntimeRunPersistence {
             costUSD: run.costUSD,
             fileChanges: run.fileChanges,
             redactions: AgentSensitiveRedactions.values(for: task),
-            durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
+            durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) },
+            runID: run.id
         )
-        TaskContextStateManager.recordTurn(task: task, run: run, message: message)
+        let contextSaved = TaskContextStateManager.recordTurn(task: task, run: run, message: message)
+        guard historySaved && contextSaved else { return false }
 
         // Tier 2 objective re-assessment: opt-in, background-only, and gated by
         // its own deterministic trigger predicate (turn/hash/staleness) so it
@@ -85,6 +88,7 @@ enum AgentRuntimeRunPersistence {
             // ObjectiveAssessmentService.clearAssessmentIfDriftDetectionDisabled.
             ObjectiveAssessmentService.clearAssessmentIfDriftDetectionDisabled(task: task)
         }
+        return true
     }
 
     @discardableResult

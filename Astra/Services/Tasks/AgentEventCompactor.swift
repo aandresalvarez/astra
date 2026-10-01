@@ -65,7 +65,8 @@ enum AgentEventCompactor {
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
         let start = DispatchTime.now().uptimeNanoseconds
-        let events = task.events.sorted { $0.timestamp < $1.timestamp }
+        RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
+        let events = task.events.filter { !$0.isDeleted }.sorted { $0.timestamp < $1.timestamp }
         guard events.count > threshold else {
             logCompactionIfNeeded(
                 start: start,
@@ -287,6 +288,9 @@ enum AgentEventCompactor {
              "permission.request.resolved",
              "permission.live_approval.committed",
              "permission.approval.delivered",
+             "runtime.settlement.started",
+             "runtime.outcome.prepared",
+             "runtime.chained_work.dispatched",
              "runtime.result.captured",
              "runtime.turn.settled",
              "runtime.reconciliation.required",

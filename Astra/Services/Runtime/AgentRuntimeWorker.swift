@@ -995,7 +995,9 @@ final class AgentRuntimeWorker {
                     effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
                     tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
                     cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
-                    approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID),
+                    approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
+                    sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
+                        startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase)),
                 task: task, run: run, modelContext: modelContext)
         } catch {
             RuntimeTurnSettlementService.reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
@@ -1008,20 +1010,8 @@ final class AgentRuntimeWorker {
             return
         }
         guard await RuntimeTurnSettlementService.settle(checkpoint: checkpoint, task: task, run: run,
-            modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence,
-            beforeFinalization: {
-                AgentRuntimeRunPersistence.recordSessionTurn(
-                    task: task,
-                    run: run,
-                    message: runtimeAdapter.sessionTurnMessage(
-                        task: task,
-                        promptOverride: promptOverride,
-                        startPayload: startEventPayload,
-                        sessionMessage: sessionMessage,
-                        phase: auditPhase
-                    )
-                )
-            }) else { return }
+            modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence) else { return }
+
         RuntimeTurnSettlementService.dispatchChainedTask(task: task, run: run, modelContext: modelContext)
         if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {
             scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime, modelContext: modelContext)

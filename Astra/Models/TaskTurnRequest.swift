@@ -113,7 +113,7 @@ public enum TaskTurnRequestState: String, Codable, CaseIterable, Sendable {
 
 /// A bounded, Sendable projection suitable for queue and presentation code.
 /// Consumers should reload the model before attempting a state transition.
-public struct TaskTurnRequestSnapshot: Equatable, Sendable {
+public struct TaskTurnRequestSnapshot: Codable, Equatable, Sendable {
     public let id: UUID
     public let taskID: UUID
     public let messageEventID: UUID
@@ -131,7 +131,7 @@ public struct TaskTurnRequestSnapshot: Equatable, Sendable {
     public let runtimeIDSnapshot: String?
     public let modelSnapshot: String?
     public let tokenBudgetSnapshot: Int?
-    public let executionPolicySnapshotJSON: String?
+    public var executionPolicySnapshotJSON: String?
     public let resourceClaimsJSON: String
 }
 
@@ -210,6 +210,25 @@ public final class TaskTurnRequest {
             turnIntentSnapshot: turnIntentSnapshot
         ))
         self.resourceClaimsJSON = Self.encode(resourceClaims) ?? "[]"
+    }
+
+    /// Import the immutable owner ledger without submitting or admitting work.
+    public convenience init(snapshot: TaskTurnRequestSnapshot, task: AgentTask) {
+        self.init(task: task, messageEventID: snapshot.messageEventID, sequence: snapshot.sequence,
+                  kind: snapshot.kind, state: snapshot.state, submittedAt: snapshot.submittedAt)
+        id = snapshot.id
+        runID = snapshot.runID
+        admittedAt = snapshot.admittedAt
+        startedAt = snapshot.startedAt
+        terminalAt = snapshot.terminalAt
+        terminalReason = snapshot.terminalReason
+        blockingTaskID = snapshot.blockingTaskID
+        blockerSummary = snapshot.blockerSummary
+        runtimeIDSnapshot = snapshot.runtimeIDSnapshot
+        modelSnapshot = snapshot.modelSnapshot
+        tokenBudgetSnapshot = snapshot.tokenBudgetSnapshot
+        executionPolicySnapshotJSON = snapshot.executionPolicySnapshotJSON
+        resourceClaimsJSON = snapshot.resourceClaimsJSON
     }
 
     public var state: TaskTurnRequestState {
