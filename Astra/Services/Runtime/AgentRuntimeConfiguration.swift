@@ -2,7 +2,7 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 
-struct AgentRuntimeProviderSettings: Equatable, Sendable {
+struct AgentRuntimeProviderSettings: Codable, Equatable, Sendable {
     private var executablePaths: [AgentRuntimeID: String]
     private var homeDirectories: [AgentRuntimeID: String]
 

@@ -20,11 +20,21 @@ struct AgentRuntimeInteractiveAskPlan: Equatable {
 /// user declined".
 enum InteractiveAskOutcome: Sendable, Equatable {
     case allow
+    case allowWithAcknowledgementReceipt(@Sendable () async -> Void)
     case deny(message: String)
 
     var isAllowed: Bool {
-        if case .allow = self { return true }
-        return false
+        switch self {
+        case .allow, .allowWithAcknowledgementReceipt: return true
+        case .deny: return false
+        }
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case (.deny(let left), .deny(let right)): return left == right
+        default: return lhs.isAllowed && rhs.isAllowed
+        }
     }
 }
 
@@ -263,6 +273,18 @@ final class InFlightPermissionCenter: @unchecked Sendable {
         }
     }
 
+    /// Register the waiter and persist its UI request in one main-actor turn.
+    /// Publishing either half before the other creates a live/relaunch race.
+    @MainActor
+    func awaitDecision(taskID: UUID, ask: PendingAsk, persistRequest: () -> Bool) async -> Bool {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            waiters[taskID, default: []].append(Waiter(ask: ask, continuation: continuation))
+            lock.unlock()
+            if !persistRequest() { resolve(taskID: taskID, requestID: ask.requestID, approved: false) }
+        }
+    }
+
     func pendingAsks(taskID: UUID) -> [PendingAsk] {
         lock.lock()
         defer { lock.unlock() }
@@ -406,34 +428,37 @@ extension AgentRuntimeWorker {
 
             let request = PermissionBroker.providerNativePromptRequest(toolName: ask.toolName, context: ask.inputSummary)
             let grants = PermissionBroker.approvalGrants(for: request)
-            let payload = PermissionBroker.approvalPayloadString(
+            let payload = TaskPermissionContinuation.attach(PermissionBroker.approvalPayloadString(
                 providerID: runtime,
                 request: request,
                 reason: "The provider paused for permission before running this action.",
                 providerDetail: ask.inputSummary,
                 grants: grants,
                 requestID: ask.requestID
-            )
-            pendingEvents.add {
-                TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
-                let event = TaskEvent(
-                    task: task,
-                    eventType: TaskEventTypes.Tool.permissionApprovalRequested,
-                    payload: payload,
-                    run: run
-                )
-                modelContext.insert(event)
-                TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-            }
+            ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext, mode: .live))
+            // Previous stream events must precede the permission request. The
+            // waiter and saved card then become available together, with no
+            // actor yield in between that could turn a live approval into a
+            // relaunch or expose a waiter without an approvable request.
+            await pendingEvents.drainAll()
             let approved = await InFlightPermissionCenter.shared.awaitDecision(
                 taskID: taskID,
-                ask: InFlightPermissionCenter.PendingAsk(
-                    requestID: ask.requestID,
-                    toolName: ask.toolName,
-                    inputSummary: ask.inputSummary
-                )
-            )
+                ask: .init(requestID: ask.requestID, toolName: ask.toolName, inputSummary: ask.inputSummary),
+                persistRequest: {
+                    let snapshot = ExecutionMutationSnapshot(task)
+                    TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+                    let event = TaskEvent(
+                        task: task,
+                        eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+                        payload: payload,
+                        run: run
+                    )
+                    modelContext.insert(event)
+                    TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
+                    let saved = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                    if !saved { snapshot.restore(task, in: modelContext) }
+                    return saved
+            })
             pendingEvents.add {
                 // The provider continues after allow AND deny alike, so the
                 // pause always lifts; the run-status guard keeps this from
@@ -464,9 +489,12 @@ extension AgentRuntimeWorker {
                 ))
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
-            return approved
-                ? .allow
-                : .deny(message: "The user declined this action in ASTRA. Continue without it or propose an alternative.")
+            guard approved else {
+                return .deny(message: "The user declined this action in ASTRA. Continue without it or propose an alternative.")
+            }
+            // The runner returns delivery evidence with its result. Only the
+            // settlement service may save it, after draining provider events.
+            return .allow
         }
     }
 }

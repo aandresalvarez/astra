@@ -243,8 +243,8 @@ struct BrokeredCredentialApprovalLoopTests {
         #expect(!marker.contains(fixture.jiraConnector.id.uuidString))
     }
 
-    @Test("Calling a sealed connector raises a non-blocking approval offer and changes nothing about the run")
-    func callingASealedConnectorRaisesANonBlockingApprovalOffer() throws {
+    @Test("Calling a sealed connector records a future-use offer until the worker pauses")
+    func callingASealedConnectorRecordsABlockingContinuation() throws {
         let fixture = try Fixture()
         let run = fixture.finishedRun()
         let server = fixture.brokerServer(taskID: fixture.task.id, runID: run.id)
@@ -278,11 +278,11 @@ struct BrokeredCredentialApprovalLoopTests {
         #expect(payload.contains(Fixture.redcapCredentialLabel(fixture.redcapConnector.id)))
         #expect(fixture.task.events.contains { $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue })
 
-        // The iron rule. An offered connector may widen what a run can reach and
-        // may leave an offer behind; it may not fail the run, pause it, or ask
-        // the user anything the run is waiting on.
-        #expect(fixture.task.status == .completed)
-        #expect(run.status == .completed)
+        #expect(decoded.behavior == .futureUse)
+        #expect(decoded.continuation?.runID == run.id)
+        #expect(try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
+        #expect(fixture.task.status == .pendingUser)
+        #expect(run.typedStopReason == .permissionApprovalRequired)
     }
 
     /// The launch reads the grants once, at the start. A grant recorded after
@@ -349,15 +349,11 @@ struct BrokeredCredentialApprovalLoopTests {
             modelContext: fixture.context
         )
         #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
-        // The dock must know this is an offer: "Allow once" has no run to resume
-        // here and grants nothing, so the dock leads with the task-scoped approval.
+        // Discovery alone offers future-use authority without promising a new run.
         #expect(TaskRuntimePermissionState.build(task: fixture.task).decision?.isConnectorCredentialOffer == true)
 
-        let coordinator = TaskLifecycleCoordinator(
-            modelContext: fixture.context,
-            taskQueue: TaskQueue(poolSize: 0)
-        )
-        await coordinator.approveSimilarRuntimePermissionForTask(fixture.task)?.value
+        let outcome = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task, modelContext: fixture.context)
+        guard case .saved = outcome else { Issue.record("Expected future-use permission to be saved"); return }
 
         // The grant is the whole point: it is what the next launch reads to
         // unseal the connector. An approval path that only resumes paused tasks
@@ -367,8 +363,7 @@ struct BrokeredCredentialApprovalLoopTests {
             runtime: .claudeCode
         ).contains(Fixture.redcapCredentialLabel(fixture.redcapConnector.id)))
         #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
-        // Approving an offer is not a request to rerun the task.
-        #expect(fixture.task.status == .completed)
+        #expect(!fixture.task.events.contains { $0.type == "execution.request.permission_resume" })
     }
 
     /// The dock shows one decision and "Allow similar" grants exactly that one
@@ -400,11 +395,8 @@ struct BrokeredCredentialApprovalLoopTests {
         #expect(Set(TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: fixture.task))
             == Set(expectedLabels.map { PermissionGrant.credential(label: $0) }))
 
-        let coordinator = TaskLifecycleCoordinator(
-            modelContext: fixture.context,
-            taskQueue: TaskQueue(poolSize: 0)
-        )
-        await coordinator.approveSimilarRuntimePermissionForTask(fixture.task)?.value
+        let outcome = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task, modelContext: fixture.context)
+        guard case .saved = outcome else { Issue.record("Expected future-use permission to be saved"); return }
 
         #expect(Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
             for: fixture.task,
@@ -469,11 +461,8 @@ struct BrokeredCredentialApprovalLoopTests {
         #expect(Set(TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: fixture.task))
             == Set(expectedLabels.map { PermissionGrant.credential(label: $0) }))
 
-        let coordinator = TaskLifecycleCoordinator(
-            modelContext: fixture.context,
-            taskQueue: TaskQueue(poolSize: 0)
-        )
-        await coordinator.approveSimilarRuntimePermissionForTask(fixture.task)?.value
+        let outcome = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task, modelContext: fixture.context)
+        guard case .saved = outcome else { Issue.record("Expected future-use permission to be saved"); return }
 
         #expect(Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
             for: fixture.task,
@@ -482,14 +471,15 @@ struct BrokeredCredentialApprovalLoopTests {
         #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
     }
 
-    /// The per-connector id is what stops a second run from stacking another
-    /// copy of an offer in the dock. A combined offer has to keep answering
-    /// for every connector it carries, or each later run adds a card.
-    @Test("A later run that only calls already-offered connectors leaves the offer as it is")
-    func aLaterRunCallingOnlyOfferedConnectorsLeavesTheOfferAlone() throws {
+    /// Rebind an existing offer to the newest blocked run without stacking
+    /// another actionable card, so approval resumes the run that needs it.
+    @Test("A later run calling an already-offered connector rebinds the offer")
+    func aLaterRunCallingAlreadyOfferedConnectorRebindsTheOffer() throws {
         let fixture = try Fixture()
+        var latestRun: TaskRun?
         for _ in 0..<2 {
             let run = fixture.finishedRun()
+            latestRun = run
             let server = fixture.brokerServer(taskID: fixture.task.id, runID: run.id, turn: Fixture.unrelatedTurn)
             for (id, tool) in [(1, "jira"), (2, "redcap")] {
                 _ = try brokerCall(server, id: id, tool: tool, arguments: ["operation": "status"])
@@ -502,9 +492,51 @@ struct BrokeredCredentialApprovalLoopTests {
         }
 
         #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: fixture.task).count == 1)
-        #expect(fixture.task.events.filter {
-            $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue
-        }.count == 1)
+        let payload = try #require(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: fixture.task))
+        let approval = try #require(PermissionApprovalEventPayload.decoded(from: payload))
+        let continuation = try #require(approval.continuation)
+        #expect(continuation.runID == latestRun?.id)
+        #expect(approval.behavior == .futureUse)
+        #expect(approval.requestID == BrokeredCredentialApprovalRecord.offerRequestID(
+            forConnectors: [fixture.jiraConnector.id, fixture.redcapConnector.id]))
+        #expect(!payload.contains("Jira and Jira"))
+        #expect(!payload.contains("REDCap and REDCap"))
+    }
+
+    @Test("Failed broker runs retain future-use authority without restarting work", arguments: [TaskRunStopReason.timeout, .agentReportedError])
+    func failedBrokerOfferDoesNotRestart(reason: TaskRunStopReason) throws {
+        let fixture = try Fixture()
+        let run = fixture.finishedRun()
+        run.status = .failed
+        run.typedStopReason = reason
+        fixture.task.status = .failed
+        _ = try brokerCall(fixture.brokerServer(taskID: fixture.task.id, runID: run.id),
+            id: 1, tool: "redcap", arguments: ["operation": "status"])
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(task: fixture.task, run: run, modelContext: fixture.context)
+        let payload = try #require(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: fixture.task))
+        #expect(PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .futureUse)
+        #expect(TaskRuntimePermissionState.build(task: fixture.task).decision?.isConnectorCredentialOffer == true)
+        guard case .saved = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task,
+            modelContext: fixture.context) else { Issue.record("Future-use authority did not save"); return }
+        #expect(fixture.task.status == .failed)
+        #expect(try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context).isEmpty)
+    }
+
+    @Test("Only an explicit permission pause promotes a broker offer into continuation intent")
+    func workerPermissionPausePromotesOffer() throws {
+        let fixture = try Fixture()
+        let run = fixture.finishedRun()
+        fixture.task.status = .running
+        _ = try brokerCall(fixture.brokerServer(taskID: fixture.task.id, runID: run.id),
+            id: 1, tool: "redcap", arguments: ["operation": "status"])
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(task: fixture.task, run: run, modelContext: fixture.context)
+        #expect(try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
+        let payload = try #require(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: fixture.task))
+        #expect(PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .continueBlockedTurn)
+        #expect(fixture.task.status == .pendingUser)
+        #expect(run.typedStopReason == .permissionApprovalRequired)
+        guard case .queued = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task,
+            modelContext: fixture.context) else { Issue.record("Permission pause did not continue"); return }
     }
 
     /// One narrated connector and one reachable-only connector, wired the way a

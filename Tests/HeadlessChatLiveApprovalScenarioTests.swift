@@ -235,6 +235,12 @@ extension HeadlessChatScenarioTests {
         #expect(task.runs.count == 1)
         #expect(try TaskTurnRequestRepository.requests(for: task, in: harness.context).isEmpty)
         #expect(task.runs.first?.output == "Pushed after live approval")
+        // This uses the real process runner and stdout/event queue: the saved
+        // delivery evidence must belong to a captured result and final verdict.
+        let settledRun = try #require(task.runs.first)
+        #expect(try RuntimeTurnSettlementService.checkpoint(for: settledRun, task: task)?.result.acknowledgedPermissionRequestIDs == ["req-live-1"])
+        #expect(RuntimeTurnSettlementService.verdict(for: settledRun, task: task) != nil)
+        #expect(task.events.contains { $0.run?.id == settledRun.id && $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue })
         #expect(task.sessionId == "live-approval-sess")
         #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Live permission approved") })
         #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
@@ -248,6 +254,9 @@ extension HeadlessChatScenarioTests {
         #expect(stdin.contains("Push the release branch"))
         #expect(stdin.contains("\"behavior\":\"allow\""))
         #expect(stdin.contains("\"request_id\":\"req-live-1\""))
+        let receipt = try #require(task.events.first { $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue })
+        #expect(PermissionRequestResolution.decode(from: receipt.payload)?.requestID == "req-live-1", "Receipt: \(receipt.payload)")
+        #expect(receipt.run?.id == task.runs.first?.id)
     }
 
     @Test("Claude live ask denial answers the process and lifts the pause")

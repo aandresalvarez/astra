@@ -98,6 +98,9 @@ public enum RunSecretRedaction {
         var values: [String] = []
         for (key, value) in environment where isSecretKey(key) {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Only the exact runtime selector with a boolean value is a flag.
+            // Custom credentials, including prefixed connector keys, stay secret.
+            if key == "AGY_ADC_AUTH", trimmed == "true" || trimmed == "false" { continue }
             guard trimmed.count >= minimumSecretLength else { continue }
             values.append(trimmed)
         }

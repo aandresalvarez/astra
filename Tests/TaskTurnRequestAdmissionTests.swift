@@ -635,6 +635,9 @@ struct TaskTurnRequestAdmissionTests {
             for: task,
             into: context
         ).successValue)
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        #expect(TaskTurnRequestStateMachine.transition(request, to: .admitted).rejection == nil)
+        try context.save()
 
         let run = TaskRun(task: task)
         context.insert(run)
@@ -668,6 +671,7 @@ struct TaskTurnRequestAdmissionTests {
         // were written to the store together, in the same save — not that
         // the link merely lives in this context's in-memory object graph.
         #expect(begin.persisted)
+        #expect(request.state == .running)
         let event = try #require(task.events.first { $0.id == submission.eventID })
         #expect(event.run?.id == run.id)
     }

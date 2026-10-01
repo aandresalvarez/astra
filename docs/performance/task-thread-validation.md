@@ -31,7 +31,7 @@ event=task_open_snapshot_input_capture
 event=task_open_snapshot_queue_wait
 event=task_open_snapshot_apply_hop
 event=task_open_snapshot_apply
-event=task_open_snapshot_apply_to_transcript_ready
+event=task_open_apply_to_ready phase=snapshot_apply_to_transcript_ready
 event=thread_history_page_read
 event=thread_snapshot_apply_hop
 event=chat_stream_snapshot_cadence
@@ -177,6 +177,51 @@ swift test --filter TaskThreadLiveSnapshotPacerTests
 swift test --filter TaskThreadMainActorStallSamplerTests
 swift test --filter TaskThreadHistoryReaderTests
 swift test --filter TaskPlanServiceTests
+swift test --filter MarkdownRenderDocumentTests
+RUN_UI_STRESS=1 swift test --filter TaskTranscriptRenderingPerformanceTests --no-parallel
 ./script/build_and_run.sh --verify
 git diff --check
 ```
+
+## September 29, 2026: repeated Markdown render work
+
+Investigation of a production task-open trace found a 4.30-second gap between
+snapshot application and reported transcript readiness, alongside a matching
+main-actor probe gap. That endpoint includes later SwiftUI rendering/layout;
+it does not identify a blocking function by itself.
+
+Synthetic benchmarks found two avoidable synchronous contributors in the
+Markdown view path. Cache lookup previously ran after full-source display
+normalization, so an unchanged view still paid that cost on reconstruction.
+Suggestion detection walked backward to the nearest heading for every list
+item, making long ordinary lists quadratic. The fix looks up an immutable
+render document by source text and callback presence before normalization,
+and caches its suggestion projection from one forward pass. Eviction simply
+rebuilds this projection. The existing 500-entry / 8,000,000-cost-unit cache
+bounds remain; no persistent model or thread-window behavior changes.
+
+| Synthetic check | Before | After |
+| --- | ---: | ---: |
+| 50 reconstructions of unchanged 32,598-byte Markdown | 522.8 ms | 0.19 ms |
+| Suggested-action detection over 3,000 ordinary list items | 251.8 ms | 1.01 ms |
+| Initial hosted layout: 69 items, four small Markdown answers | 87.0 ms | 82.4 ms |
+
+These are individual local debug-build measurements, not production p50/p95
+results. The hosted layout change is within measurement noise. That small
+fixture did not reproduce the original 4.30-second gap or the watchdog freezes;
+the supported claim is removal of repeated preparation work, not resolution of
+every production stall.
+
+`MarkdownRenderDocumentTests` covers source and callback invalidation, stable
+cached block identity, parser-output equivalence, suggestion section boundaries,
+nested bullets, and output ordering. The opt-in rendering suite includes budget
+checks for repeated construction, long-list detection, and a hosted non-lazy
+transcript, without reading an application store.
+
+Cold render-document preparation now emits `event=markdown_render_prepare`
+at debug level when it takes at least 8 ms. Below-threshold work participates
+in the existing suppressed rollups; cache hits do not perform preparation. The
+event carries only duration, block count, and whether suggestions were enabled.
+`PerformanceTelemetry.measure` also publishes that phase to the stall watchdog.
+It measures preparation, not the subsequent AppKit layout pass. Use this event,
+the task-open endpoints, and a profiler stack to investigate remaining delays.
