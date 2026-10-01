@@ -592,19 +592,16 @@ struct ComposerToolbar: View {
 
     private func runtimeStatusLabel(style: RuntimeStatusLabelStyle) -> some View {
         HStack(spacing: 6) {
-            if isRunning || compatibilityIsPending {
-                ProgressView()
-                    .controlSize(.mini)
-                    .frame(width: 14, height: 14)
-            } else {
-                // The provider's own mark, so the chip says which runtime is
-                // selected before its text is read.
-                ModelSelectorProviderIcon(
-                    runtime: resolvedRuntime,
-                    pointSize: ComposerToolbarPresentation.chipIconSize + 1
-                )
-                .frame(width: 13, height: 13)
-            }
+            // The provider's own mark, so the chip says which runtime is
+            // selected before its text is read. Never a spinner: the send
+            // button already shows one while a run starts, and two read as
+            // two separate things loading. A pending compatibility check is
+            // still in the chip's tooltip and the selector's detail pane.
+            ModelSelectorProviderIcon(
+                runtime: resolvedRuntime,
+                pointSize: ComposerToolbarPresentation.chipIconSize + 1
+            )
+            .frame(width: 13, height: 13)
 
             switch style {
             case .full:

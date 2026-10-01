@@ -403,6 +403,9 @@ struct ModelSelectorPresentationTests {
         #expect(toolbar.contains("alignReasoningEffort(model: newModel, runtime: runtime)"))
         // The chip is a control that names its provider: brand mark, accent tint.
         #expect(toolbar.contains("ModelSelectorProviderIcon("))
+        // One spinner per composer: the send button's. A second one in the
+        // chip read as two separate things loading when a run started.
+        #expect(toolbar.components(separatedBy: "ProgressView()").count == 2)
         #expect(!toolbar.contains("return Stanford.coolGrey\n    }\n\n    private var runtimePillBackground"))
         // The reasoning footer is always laid out so the popover keeps one shape.
         #expect(!popover.contains("if !reasoningChoices.isEmpty || showsBudgetFooter"))
