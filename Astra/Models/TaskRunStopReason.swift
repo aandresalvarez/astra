@@ -65,6 +65,10 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     /// capabilities (host-control MCP, Docker workspace shell, browser
     /// control) and there's no automatic fallback to reroute to silently.
     public static let runtimeCapabilityIncompatible: TaskRunStopReason = "runtime_capability_incompatible"
+    /// Set by `RuntimeSensitiveDataLaunchGate` when a launch would move a
+    /// conversation from a runtime the user marked approved for PHI to one
+    /// they did not, without a recorded acknowledgement.
+    public static let runtimeSensitiveDataUnapproved: TaskRunStopReason = "runtime_sensitive_data_unapproved"
     public static let superseded: TaskRunStopReason = "superseded"
     public static let timeout: TaskRunStopReason = "timeout"
     public static let validationContractFailed: TaskRunStopReason = "validation_contract_failed"
@@ -78,6 +82,7 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     /// instead of silently matching (or missing) based on its spelling.
     public var isPolicyBlocked: Bool {
         self == .policyBlocked || self == .policyViolation || self == .runtimeCapabilityIncompatible
+            || self == .runtimeSensitiveDataUnapproved
     }
 
     public var isDockerRuntimeBlocked: Bool {

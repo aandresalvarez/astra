@@ -56,6 +56,11 @@ struct ComposerToolbar: View {
     let model: String
     var reasoningEffort: String? = nil
     var runtimeID: String = AgentRuntimeID.claudeCode.rawValue
+    /// The runtime a send actually uses, when it can differ from the chip's:
+    /// the new-task composer submits through the worker role profile, which
+    /// may name its own runtime. PHI approval is shown for this one, since it
+    /// is where the request goes.
+    var submissionRuntimeID: String?
     let budget: Int
     var skills: [Skill] = []
     var availableSkills: [Skill] = []
@@ -83,6 +88,9 @@ struct ComposerToolbar: View {
     /// lets the switch resolve one). One transition, so the parent's
     /// `*_runtime_changed` breadcrumb records the model actually selected.
     var onRuntimeChange: ((String, String?) -> Void)?
+    /// Set by an existing task's composer: a switch from a runtime approved
+    /// for PHI to one that is not waits for the user to acknowledge the risk.
+    var sensitiveDataSwitchGuard: RuntimeSensitiveDataSwitchGuard?
     var onBudgetChange: ((Int) -> Void)?
     var onRemoveSkill: ((Skill) -> Void)?
     var onToggleSkill: ((Skill, Bool) -> Void)?
@@ -121,6 +129,7 @@ struct ComposerToolbar: View {
     @State private var isModelSelectorPresented = false
     @State private var modelSelectorOpenedAt: UInt64?
     @State private var modelSelectorCatalogStore = ModelSelectorCatalogStore()
+    @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -165,6 +174,7 @@ struct ComposerToolbar: View {
                 onPolicyLevelChange: onPolicyLevelChange
             )
         }
+        .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
     }
 
     // MARK: - Plus Menu
@@ -359,7 +369,9 @@ struct ComposerToolbar: View {
         )
         .help(runtimeStatusHelp)
         .accessibilityLabel("Provider and model")
-        .accessibilityValue(runtimeStatusText(includeRuntime: true))
+        .accessibilityValue(selectedRuntimeApprovesSensitiveData
+            ? "\(runtimeStatusText(includeRuntime: true)), \(ModelSelectorPresentation.sensitiveDataStatus(approved: true))"
+            : runtimeStatusText(includeRuntime: true))
     }
 
     // MARK: - Model selector popover
@@ -384,7 +396,8 @@ struct ComposerToolbar: View {
                     blockedReason: runtimeBlockedReason(for: runtime)
                 ),
                 modelCount: catalog.modelCount(for: runtime),
-                isCurrent: runtime == resolvedRuntime
+                isCurrent: runtime == resolvedRuntime,
+                approvesSensitiveData: RuntimeProviderSettingsStore.isSensitiveDataApproved(for: runtime)
             )
         }
         let suggestion = compatibleSuggestedRuntime.map { runtime in
@@ -401,11 +414,11 @@ struct ComposerToolbar: View {
             showsBudgetFooter: RuntimeBudgetPresentation.isEnabled(budget),
             onSelect: { runtime, modelID in
                 if runtime != resolvedRuntime {
-                    onRuntimeChange?(runtime.rawValue, modelID)
+                    requestRuntimeChange(to: runtime, model: modelID)
                 } else {
                     onModelChange?(modelID)
+                    alignReasoningEffort(model: modelID, runtime: runtime)
                 }
-                alignReasoningEffort(model: modelID, runtime: runtime)
             },
             onSetup: { openSettings() },
             openedAt: modelSelectorOpenedAt,
@@ -422,8 +435,25 @@ struct ComposerToolbar: View {
             to: runtime,
             cache: runtimeModelCache
         )
-        onRuntimeChange?(runtime.rawValue, switchedModel)
-        alignReasoningEffort(model: switchedModel, runtime: runtime)
+        requestRuntimeChange(to: runtime, model: switchedModel)
+    }
+
+    /// Every provider switch goes through here, so none can skip the PHI
+    /// acknowledgement. The popover closes first: the alert belongs to the
+    /// window, not to a popover that may still be on screen.
+    private func requestRuntimeChange(to runtime: AgentRuntimeID, model newModel: String) {
+        let isWaiting = sensitiveDataSwitchPrompt.request(
+            RuntimeSensitiveDataSwitchRequest(previous: resolvedRuntime, next: runtime, model: newModel),
+            guard: sensitiveDataSwitchGuard
+        ) {
+            applyRuntimeChange(to: runtime, model: newModel)
+        }
+        if isWaiting { isModelSelectorPresented = false }
+    }
+
+    private func applyRuntimeChange(to runtime: AgentRuntimeID, model newModel: String) {
+        onRuntimeChange?(runtime.rawValue, newModel)
+        alignReasoningEffort(model: newModel, runtime: runtime)
     }
 
     /// Reasoning levels differ per model, so a pick made for the previous
@@ -567,19 +597,16 @@ struct ComposerToolbar: View {
 
     private func runtimeStatusLabel(style: RuntimeStatusLabelStyle) -> some View {
         HStack(spacing: 6) {
-            if isRunning || compatibilityIsPending {
-                ProgressView()
-                    .controlSize(.mini)
-                    .frame(width: 14, height: 14)
-            } else {
-                // The provider's own mark, so the chip says which runtime is
-                // selected before its text is read.
-                ModelSelectorProviderIcon(
-                    runtime: resolvedRuntime,
-                    pointSize: ComposerToolbarPresentation.chipIconSize + 1
-                )
-                .frame(width: 13, height: 13)
-            }
+            // The provider's own mark, so the chip says which runtime is
+            // selected before its text is read. Never a spinner: the send
+            // button already shows one while a run starts, and two read as
+            // two separate things loading. A pending compatibility check is
+            // still in the chip's tooltip and the selector's detail pane.
+            ModelSelectorProviderIcon(
+                runtime: resolvedRuntime,
+                pointSize: ComposerToolbarPresentation.chipIconSize + 1
+            )
+            .frame(width: 13, height: 13)
 
             switch style {
             case .full:
@@ -596,6 +623,14 @@ struct ComposerToolbar: View {
                     .frame(maxWidth: 180, alignment: .trailing)
             case .iconOnly:
                 EmptyView()
+            }
+
+            // Neutral, in the chip's own colour: it repeats the user's label
+            // for the runtime this message goes to, it is not a safety verdict.
+            if selectedRuntimeApprovesSensitiveData {
+                Image(systemName: "checkmark.shield")
+                    .font(Stanford.ui(ComposerToolbarPresentation.chipIconSize))
+                    .accessibilityHidden(true)
             }
 
             if style != .iconOnly {
@@ -889,7 +924,19 @@ struct ComposerToolbar: View {
         return resolvedRuntime
     }
 
+    private var selectedRuntimeApprovesSensitiveData: Bool {
+        let runtime = submissionRuntimeID.map { AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: $0) }
+            ?? resolvedRuntime
+        return RuntimeProviderSettingsStore.isSensitiveDataApproved(for: runtime)
+    }
+
     private var runtimeStatusHelp: String {
+        let help = runtimeReadinessHelp
+        guard selectedRuntimeApprovesSensitiveData else { return help }
+        return "\(help)\n\(ModelSelectorPresentation.sensitiveDataStatus(approved: true))."
+    }
+
+    private var runtimeReadinessHelp: String {
         if runtimeReadinessStates.isEmpty {
             return "Checking provider readiness"
         }

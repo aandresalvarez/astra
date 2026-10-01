@@ -903,8 +903,8 @@ struct RuntimeReadinessServiceTests {
 
     @Test("usableRuntimes with partial states excludes providers missing from the dict")
     func usableRuntimesWithPartialStatesExcludesMissingProviders() {
-        // Simulates what happens when withTaskGroup's for-await exits early after task
-        // cancellation: only the checks that completed before cancellation appear in the dict.
+        // A cancelled refresh now returns no states at all (a cancelled task group still yields
+        // every child, all scored blocked); this pins how a map missing providers is read.
         let partialStates: [AgentRuntimeID: RuntimeReadinessState] = [
             .claudeCode: .ready
             // copilotCLI and antigravityCLI absent — as if the task was cancelled before

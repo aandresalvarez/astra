@@ -54,6 +54,21 @@ enum RuntimeProviderSettingsStore {
         bumpRevision(defaults: defaults)
     }
 
+    /// Not part of `signature`/`settings`: approval labels a runtime, it does
+    /// not change how the runtime launches, so flipping it must not trigger a
+    /// readiness recheck.
+    static func isSensitiveDataApproved(for runtime: AgentRuntimeID, defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: AppStorageKeys.runtimeSensitiveDataApprovedKey(for: runtime))
+    }
+
+    static func setSensitiveDataApproved(
+        _ approved: Bool,
+        for runtime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(approved, forKey: AppStorageKeys.runtimeSensitiveDataApprovedKey(for: runtime))
+    }
+
     static func signature(
         for runtimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs,
         defaults: UserDefaults = .standard

@@ -85,4 +85,62 @@ struct RuntimeReadinessStateCacheTests {
         #expect(second.count == AgentRuntimeAdapterRegistry.runtimeIDs.count)
         await RuntimeReadinessStateCache.shared.removeAll()
     }
+
+    /// Regression: a composer's `.task(id:)` is cancelled whenever the view
+    /// goes away or its settings signature changes. The killed probes report
+    /// `.cancelled`, every readiness check scores that as `.blocked`, and the
+    /// task group still hands back one entry per runtime — so the cancelled
+    /// refresh used to be cached as a complete answer, and every composer read
+    /// "Needs setup" for five minutes while Settings, probing afresh, read Ready.
+    @Test("A cancelled availability refresh is neither returned nor cached")
+    func cancelledRefreshIsNotCached() async {
+        let cache = RuntimeReadinessStateCache()
+        let runner = CancellationAwaitingRunner()
+        let service = RuntimeProviderAvailabilityService(
+            readinessService: RuntimeReadinessService(
+                runner: runner,
+                detectExecutable: { "/opt/\($0)" },
+                isExecutable: { _ in true }
+            )
+        )
+
+        let refresh = Task { await service.states(configuration: configuration(), cache: cache) }
+        await runner.waitUntilAProbeStarts()
+        refresh.cancel()
+        let states = await refresh.value
+
+        #expect(states.isEmpty)
+        #expect(await cache.states(for: configuration(), maxAge: 300) == nil)
+    }
+}
+
+/// Holds every probe open until its task is cancelled, then answers the way
+/// `ProcessBinaryRunner` does after terminating the process.
+private actor CancellationAwaitingRunner: BinaryRunner {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitUntilAProbeStarts() async {
+        if started { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    private func markStarted() {
+        started = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+    }
+
+    nonisolated func run(
+        path: String,
+        args: [String],
+        timeout: TimeInterval,
+        environment: [String: String]?
+    ) async -> RunResult {
+        await markStarted()
+        // `Task.sleep` suspends without holding a pooled thread and throws as
+        // soon as the probe is cancelled.
+        try? await Task.sleep(for: .seconds(600))
+        return .cancelled(stdout: "", stderr: "")
+    }
 }

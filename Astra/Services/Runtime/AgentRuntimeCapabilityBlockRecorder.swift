@@ -13,7 +13,9 @@ enum AgentRuntimeCapabilityBlockRecorder {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        selectedRuntimeEvidence: [String] = []
+        selectedRuntimeEvidence: [String] = [],
+        kind: TaskRunLaunchBlockPayload.Kind = .runtimeIncompatible,
+        eventText: String? = nil
     ) {
         run.status = .failed
         run.completedAt = Date()
@@ -22,14 +24,14 @@ enum AgentRuntimeCapabilityBlockRecorder {
         modelContext.insert(TaskEvent(
             task: task,
             type: TaskEventTypes.System.error.rawValue,
-            payload: compatibilityEventPayload(block, runtime: runtime, evidence: selectedRuntimeEvidence),
+            payload: eventText ?? compatibilityEventPayload(block, runtime: runtime, evidence: selectedRuntimeEvidence),
             run: run
         ))
         modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             eventType: TaskEventTypes.System.runtimeLaunchBlocked,
             payload: TaskRunLaunchBlockPayload(
-                kind: .runtimeIncompatible,
+                kind: kind,
                 title: block.title,
                 message: block.message,
                 remediation: block.remediation,

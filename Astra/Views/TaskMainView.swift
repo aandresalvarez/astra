@@ -266,6 +266,7 @@ struct TaskMainView: View {
     @State private var gitPublishProposal: GitPullRequestPublishProposal?
     @State private var githubReviewPublication = TaskGitHubReviewPublicationState()
     @State private var connectorMutationReview = TaskConnectorMutationReviewState()
+    @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
     @FocusState private var isComposerFocused: Bool
@@ -538,6 +539,7 @@ struct TaskMainView: View {
             modelContext: modelContext,
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
+        .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
         .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
@@ -791,10 +793,10 @@ struct TaskMainView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration, cache: .shared
         )
-        // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
-        // the running task when the signature changes, causing withTaskGroup's for-await loop to
-        // exit early with fewer entries than registered runtimes. Writing partial states would
-        // drop providers from the menu until the replacement task completes.
+        // SwiftUI's .task(id:) cancels this when the view goes away or the signature changes. A
+        // cancelled refresh returns no states (its killed probes would all read as blocked), so
+        // anything short of a full map is not an answer: keep the previous states until the
+        // replacement task completes rather than dropping providers from the menu.
         guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignTaskAfterRuntimeAvailabilityRefresh()
@@ -3980,8 +3982,9 @@ struct TaskMainView: View {
             toggleTaskDoneFromDecisionDock()
         case .switchRuntime:
             guard let runtime = action.payload else { return }
-            TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
-            onRetryTask?(task)
+            TaskComposerCoordinator.requestDockRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, prompt: sensitiveDataSwitchPrompt) {
+                onRetryTask?(task)
+            }
         }
     }
 
@@ -4238,6 +4241,7 @@ struct TaskMainView: View {
                             source: "task_composer"
                         )
                     },
+                    sensitiveDataSwitchGuard: TaskComposerCoordinator.sensitiveDataSwitchGuard(for: task),
                     onBudgetChange: { task.tokenBudget = $0 },
                     onRemoveSkill: { skill in
                         task.skills.removeAll { $0.id == skill.id }
