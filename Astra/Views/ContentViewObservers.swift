@@ -1,10 +1,6 @@
 import SwiftUI
 
 extension View {
-    func shelfBoundaryOverlay() -> some View {
-        modifier(ShelfBoundaryOverlayModifier())
-    }
-
     /// Keeps the credential failure alert's expression graph outside ContentView.
     func workspaceCapabilityEnableFailureAlert(isPresented: Binding<Bool>) -> some View {
         modifier(WorkspaceCapabilityEnableFailureAlertModifier(isPresented: isPresented))
