@@ -65,6 +65,27 @@ struct ModelSelectorPresentationTests {
         ) == .ready)
     }
 
+    @Test("a provider the compatibility pass has not scored yet stays unpickable")
+    func unscoredProviderIsNotReady() {
+        let pending = ModelSelectorPresentation.compatibilityBlockReason(
+            isScored: false, isEligible: false, blockingReason: nil
+        )
+        #expect(pending == ModelSelectorPresentation.compatibilityPendingReason)
+        #expect(ModelSelectorProviderAvailability.resolve(
+            readinessKnown: true, allowsLaunch: true, blockedReason: pending
+        ) != .ready)
+
+        #expect(ModelSelectorPresentation.compatibilityBlockReason(
+            isScored: true, isEligible: true, blockingReason: nil
+        ) == nil)
+        #expect(ModelSelectorPresentation.compatibilityBlockReason(
+            isScored: true, isEligible: false, blockingReason: "Needs MCP"
+        ) == "Needs MCP")
+        #expect(ModelSelectorPresentation.compatibilityBlockReason(
+            isScored: true, isEligible: false, blockingReason: nil
+        ) == "Not compatible with this request.")
+    }
+
     // MARK: - Listing
 
     @Test("the whole catalog is listed in catalog order, however long, with no disclosure")

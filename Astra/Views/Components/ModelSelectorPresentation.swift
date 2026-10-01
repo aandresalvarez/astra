@@ -80,6 +80,23 @@ enum ModelSelectorPresentation {
         return ModelSelectorListing(rows: matches, isFiltered: true)
     }
 
+    static let compatibilityPendingReason = "Checking compatibility with this request…"
+
+    /// Why a ready provider cannot be picked for the current request, once a
+    /// compatibility snapshot exists. The selected runtime is scored first and
+    /// the others later, so a provider missing from the snapshot is *unscored*,
+    /// not compatible: it stays unpickable until its verdict arrives, matching
+    /// the old menu, which required an eligible candidate.
+    static func compatibilityBlockReason(
+        isScored: Bool,
+        isEligible: Bool,
+        blockingReason: String?
+    ) -> String? {
+        guard isScored else { return compatibilityPendingReason }
+        guard !isEligible else { return nil }
+        return blockingReason ?? "Not compatible with this request."
+    }
+
     static func setupTitle(for providerName: String) -> String {
         "\(providerName) isn't set up"
     }

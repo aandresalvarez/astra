@@ -521,11 +521,13 @@ struct ComposerToolbar: View {
     }
 
     private func runtimeBlockedReason(for runtime: AgentRuntimeID) -> String? {
-        guard let candidate = currentRuntimeEligibilitySnapshot?.candidates[runtime],
-              !candidate.isEligible else {
-            return nil
-        }
-        return candidate.blockingReason ?? "Not compatible with this request."
+        guard let snapshot = currentRuntimeEligibilitySnapshot else { return nil }
+        let candidate = snapshot.candidates[runtime]
+        return ModelSelectorPresentation.compatibilityBlockReason(
+            isScored: candidate != nil,
+            isEligible: candidate?.isEligible == true,
+            blockingReason: candidate?.blockingReason
+        )
     }
 
     private var runtimePillColor: Color {
