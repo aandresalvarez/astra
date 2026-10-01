@@ -42,9 +42,7 @@ enum TaskRuntimePermissionOpenRequestStore {
     static func resolveRequest(payload: String, task: AgentTask) {
         if case .missing = typedState(for: task) {
             // Materialize the legacy event-backed request before resolving it.
-            task.runtimePermissionOpenRequestsJSON = encode(openRequestPayloads(for: task).map {
-                entry(from: $0, requestedAt: Date())
-            })
+            task.runtimePermissionOpenRequestsJSON = encode(unresolvedCompatibilityEntries(for: task))
         }
         let requestID = PermissionApprovalEventPayload.decoded(from: payload)?.requestID
         task.runtimePermissionOpenRequestsJSON = encode(typedEntries(for: task).filter {
@@ -108,11 +106,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return []
         case .missing:
-            guard hasOpenRequest(for: task),
-                  let payload = latestCompatibilityRequestEvent(for: task)?.payload else {
-                return []
-            }
-            return [payload]
+            return unresolvedCompatibilityEntries(for: task).map(\.payload)
         }
     }
 
@@ -296,6 +290,27 @@ enum TaskRuntimePermissionOpenRequestStore {
             return nil
         }
         return trimmed
+    }
+
+    private static func unresolvedCompatibilityEntries(for task: AgentTask) -> [Entry] {
+        let events = task.events.filter { !$0.isDeleted }
+        var entries: [Entry] = []
+        for event in events.filter({ $0.type == "permission.approval.requested" })
+            .sorted(by: { $0.timestamp < $1.timestamp }) {
+            let candidate = entry(from: event.payload, requestedAt: event.timestamp)
+            let resolved = events.contains { closure in
+                guard closure.timestamp >= event.timestamp else { return false }
+                if let id = candidate.requestID {
+                    return closure.type == "permission.request.resolved"
+                        && PermissionRequestResolution.decode(from: closure.payload)?.requestID == id
+                }
+                return closure.type == "task.approved"
+            }
+            guard !resolved else { continue }
+            if let id = candidate.requestID { entries.removeAll { $0.requestID == id } }
+            entries.append(candidate)
+        }
+        return entries
     }
 
     private static func latestCompatibilityRequestEvent(for task: AgentTask) -> TaskEvent? {

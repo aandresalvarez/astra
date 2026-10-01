@@ -180,11 +180,13 @@ final class AgentRuntimeWorker {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: launchTask)
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
             task: launchTask, selectedRuntime: selectedRuntime, phase: "run")
-        let prompt = if let approvedStep {
+        let planPrompt = if let approvedStep {
             AgentPromptBuilder.buildApprovedPlanStepExecutionPrompt(for: launchTask, plan: currentPlan, step: approvedStep)
         } else {
             AgentPromptBuilder.buildApprovedPlanExecutionPrompt(for: launchTask, plan: currentPlan)
         }
+        let prompt = planPrompt + TaskPermissionContinuation.approvedPlanResumeGuidance(
+            executionRequestID: executionRequestID, task: task, modelContext: modelContext)
         let runExecutionPolicy = Self.approvedPlanExecutionPolicy(
             runtime: selectedRuntime,
             currentPermissionPolicy: permissionPolicy,

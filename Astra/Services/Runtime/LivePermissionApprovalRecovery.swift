@@ -68,7 +68,7 @@ enum LivePermissionApprovalRecovery {
         do {
             if let persist { try persist() }
             else {
-                try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: task.workspace,
                     modelContext: modelContext, taskID: task.id, auditFields: ["operation": "live_approval_delivery"])
             }
             return true

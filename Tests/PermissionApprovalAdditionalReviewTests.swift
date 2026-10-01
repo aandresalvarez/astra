@@ -42,6 +42,8 @@ extension PermissionApprovalContinuationTests {
             modelContext: fixture.context) else { Issue.record("Plan did not resume"); return }
         await queue.signalExecutionRequest(id: resumed.requestID, task: fixture.task, modelContext: fixture.context).value
         #expect(runner.launchCount == 2)
+        #expect(runner.continuationPrompt?.contains("Inspect existing results before retrying actions; do not repeat completed external changes.") == true)
+        #expect(runner.continuationPrompt?.contains("Original blocked user request:") == true)
         #expect(runner.launchPolicies.last?.permissionGrantsOverride == [.credential(label: fixture.label)])
         #expect(runner.launchPolicies.last?.allowedToolsOverride?.contains("Jira") == true)
         #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: fixture.task, runtime: .claudeCode).isEmpty)

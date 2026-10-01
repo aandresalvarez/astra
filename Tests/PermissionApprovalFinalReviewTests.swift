@@ -168,4 +168,69 @@ extension PermissionApprovalContinuationTests {
         #expect(try TaskTurnRequestRepository.request(id: submission.requestID, in: fixture.context)?.state == .waitingForWorker)
         #expect(LegacyApprovedPermissionContinuation.submit(task: fixture.task, modelContext: fixture.context) == nil)
     }
+    @Test("Materializing legacy requests preserves older independent asks and excludes resolved asks")
+    func materializesAllLegacyRequests() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        fixture.task.runtimePermissionOpenRequestsJSON = nil
+        for (index, id) in ["older", "closed", "latest"].enumerated() {
+            let event = TaskEvent(task: fixture.task, type: "permission.approval.requested",
+                payload: fixture.payload(requestID: id))
+            event.timestamp = Date().addingTimeInterval(Double(index - 10))
+            fixture.context.insert(event)
+        }
+        fixture.context.insert(TaskEvent(task: fixture.task, type: "permission.request.resolved",
+            payload: PermissionRequestResolution(requestID: "closed", approved: true, toolName: "Jira").payloadString))
+        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: fixture.task).count == 2)
+        TaskRuntimePermissionOpenRequestStore.resolveRequest(payload: fixture.payload(requestID: "latest"), task: fixture.task)
+        let remaining = TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: fixture.task)
+        #expect(remaining.count == 1)
+        #expect(remaining.first.flatMap(PermissionApprovalEventPayload.decoded(from:))?.requestID == "older")
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+    }
+
+    @Test("Blocking credential promotion is saved before returning to asynchronous handoff work")
+    func blockingPromotionIsDurable() throws {
+        let fixture = try Fixture(disk: true)
+        defer { fixture.cleanup() }
+        _ = try fixture.blockedRequest()
+        let run = try #require(fixture.task.runs.first)
+        let raw = fixture.payload(requestID: "connector-credentials-\(fixture.connectorID.uuidString.lowercased())", behavior: .futureUse)
+        let payload = TaskPermissionContinuation.attach(raw, continuation: TaskPermissionContinuation.capture(
+            task: fixture.task, run: run, modelContext: fixture.context), behavior: .futureUse)
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: fixture.task)
+        fixture.task.status = .running
+        run.status = .running
+        try fixture.context.save()
+        #expect(TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
+        let fresh = ModelContext(fixture.container)
+        let id = fixture.task.id
+        let saved = try #require(try fresh.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id })).first)
+        #expect(saved.status == .pendingUser)
+        #expect(saved.runs.first?.typedStopReason == .permissionApprovalRequired)
+        let approval = try #require(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: saved)
+            .flatMap(PermissionApprovalEventPayload.decoded(from:)))
+        #expect(approval.behavior != .futureUse)
+    }
+
+    @Test("Saving a delivery receipt refreshes the workspace mirror without later worker settlement")
+    func deliveryReceiptExportsMirror() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let binding = try fixture.blockedRequest(completed: true)
+        let run = try #require(fixture.task.runs.first)
+        LivePermissionApprovalRecovery.record(binding: binding, requestID: "exported", runtime: .codexCLI,
+            grants: [.credential(label: fixture.label)], taskScope: false, task: fixture.task, modelContext: fixture.context)
+        #expect(LivePermissionApprovalRecovery.recordDelivery(requestID: "exported", toolName: "Jira",
+            task: fixture.task, run: run, modelContext: fixture.context))
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: fixture.root.path).url)
+        var mirrored = false
+        for _ in 0..<200 {
+            if let text = try? String(contentsOf: url, encoding: .utf8),
+               text.contains(TaskEventTypes.Tool.permissionApprovalDelivered.rawValue) { mirrored = true; break }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(mirrored)
+    }
+
 }

@@ -122,7 +122,19 @@ enum TaskPermissionContinuation {
         }
         run.recordPermissionApprovalRequired()
         TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext,
+            taskID: task.id, auditFields: ["operation": "permission_blocking_outcome"])
         return true
+    }
+
+    static func approvedPlanResumeGuidance(executionRequestID: UUID?, task: AgentTask,
+                                          modelContext: ModelContext) -> String {
+        guard let id = executionRequestID,
+              let request = try? TaskTurnRequestRepository.request(id: id, in: modelContext),
+              let event = task.events.first(where: { $0.id == request.sourceEventID }),
+              event.type == TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
+              let message = ExecutionRequestSubmissionService.decodeSourcePayload(event)?.message else { return "" }
+        return "\n\nPermission continuation guidance:\n" + message
     }
 
     static func legacyResumeMessage(_ message: String, task: AgentTask, payload: String) -> String {
