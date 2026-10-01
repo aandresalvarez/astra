@@ -617,7 +617,8 @@ public enum WorkspaceRecoveryService {
                 let workspace = WorkspaceConfigManager.importWorkspace(
                     from: config,
                     modelContext: modelContext,
-                    scheduleTrustPolicy: .preserveEnabledState
+                    scheduleTrustPolicy: .preserveEnabledState,
+                taskRecoveryTrustPolicy: .trustedLocalRecovery
                 )
                 existingIDs.insert(workspace.id.uuidString)
                 existingPaths.insert(normalizePath(workspace.primaryPath))
@@ -660,7 +661,8 @@ public enum WorkspaceRecoveryService {
             let workspace = WorkspaceConfigManager.importWorkspace(
                 from: config,
                 modelContext: modelContext,
-                scheduleTrustPolicy: .preserveEnabledState
+                scheduleTrustPolicy: .preserveEnabledState,
+                taskRecoveryTrustPolicy: .trustedLocalRecovery
             )
             existingIDs.insert(workspace.id.uuidString)
             existingPaths.insert(normalizePath(workspace.primaryPath))

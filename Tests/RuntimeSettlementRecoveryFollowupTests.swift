@@ -98,7 +98,8 @@ struct RuntimeSettlementRecoveryFollowupTests {
         let decoded = try JSONDecoder().decode(WorkspaceConfigManager.WorkspaceConfig.self, from: encoded)
         let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
-        let imported = WorkspaceConfigManager.importWorkspace(from: decoded, modelContext: container.mainContext)
+        let imported = WorkspaceConfigManager.importWorkspace(from: decoded, modelContext: container.mainContext,
+            taskRecoveryTrustPolicy: .trustedLocalRecovery)
         let task = try #require(imported.tasks.first)
         let importedRun = try #require(task.runs.first)
         let restored = try #require(try RuntimeTurnSettlementService.checkpoint(for: importedRun, task: task))

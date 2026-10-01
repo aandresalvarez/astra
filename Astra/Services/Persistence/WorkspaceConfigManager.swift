@@ -1184,12 +1184,14 @@ public enum WorkspaceConfigManager {
     public static func importWorkspace(
         from config: WorkspaceConfig,
         modelContext: ModelContext,
-        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
+        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
     ) -> Workspace {
         importWorkspaceResult(
             from: config,
             modelContext: modelContext,
-            scheduleTrustPolicy: scheduleTrustPolicy
+            scheduleTrustPolicy: scheduleTrustPolicy,
+            taskRecoveryTrustPolicy: taskRecoveryTrustPolicy
         ).workspace
     }
 
@@ -1198,7 +1200,8 @@ public enum WorkspaceConfigManager {
     public static func importWorkspaceResult(
         from config: WorkspaceConfig,
         modelContext: ModelContext,
-        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
+        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
     ) -> WorkspaceConfigImportResult {
         let workspace = Workspace(
             name: config.name,
@@ -1326,6 +1329,7 @@ public enum WorkspaceConfigManager {
             for tc in taskConfigs {
                 importTask(
                     tc,
+                    recoveryTrust: taskRecoveryTrustPolicy,
                     workspace: workspace,
                     modelContext: modelContext,
                     skillsByID: &skillsByID,
@@ -1877,12 +1881,13 @@ public enum WorkspaceConfigManager {
         let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
             || recovery.sourceEventIDs.contains($0.id) || isTaskRecoveryEvent($0.type)) }
             .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
-        let eventConfigs = try mirroredEvents.map { event in
-            EventConfig(
+        let eventConfigs = mirroredEvents.compactMap { event -> EventConfig? in
+            guard let payload = isTaskRecoveryEvent(event.type) || recovery.sourceEventIDs.contains(event.id)
+                ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters) else { return nil }
+            return EventConfig(
                 id: event.id.uuidString,
                 type: event.type,
-                payload: try (isTaskRecoveryEvent(event.type) || recovery.sourceEventIDs.contains(event.id)
-                    ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters)),
+                payload: payload,
                 timestamp: event.timestamp,
                 category: event.category,
                 agentName: event.agentName,
@@ -2365,6 +2370,7 @@ public enum WorkspaceConfigManager {
     @MainActor
     private static func importTask(
         _ config: TaskConfig,
+        recoveryTrust: TaskRecoveryImportTrustPolicy,
         workspace: Workspace,
         modelContext: ModelContext,
         skillsByID: inout [String: Skill],
@@ -2386,7 +2392,8 @@ public enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             task.id = id
         }
-        let targetStatus = TaskStatus(rawValue: config.status) ?? .completed
+        let targetStatus = quarantinesActiveRecovery(config, trust: recoveryTrust) && config.isDone != true
+            ? TaskStatus.pendingUser : TaskStatus(rawValue: config.status) ?? .completed
         let restorationResult = TaskSessionStateApplyingSeam.required.restoreImportedStatus(
             taskID: task.id,
             currentStatusRawValue: task.status.rawValue,
@@ -2515,7 +2522,7 @@ public enum WorkspaceConfigManager {
             }
             let event = TaskEvent(
                 task: task,
-                type: ec.type,
+                type: importedRecoveryEventType(ec.type, trust: recoveryTrust),
                 payload: ec.payload,
                 run: run,
                 agentName: ec.agentName,
@@ -2529,7 +2536,11 @@ public enum WorkspaceConfigManager {
             event.category = ec.category
             modelContext.insert(event)
         }
-        importTaskRequestOwners(config.turnRequests ?? [], task: task, modelContext: modelContext)
+        if recoveryTrust == .trustedLocalRecovery {
+            importTaskRequestOwners(config.turnRequests ?? [], task: task, modelContext: modelContext)
+        } else if quarantinesActiveRecovery(config, trust: recoveryTrust) && !task.isDone {
+            recordImportedRecoveryQuarantine(task: task, modelContext: modelContext)
+        }
         task.updatedAt = config.updatedAt
 
         for ac in config.artifacts ?? [] {

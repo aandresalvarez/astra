@@ -52,7 +52,19 @@ enum RuntimeTurnSettlementRecoveryService {
                     continue
                 }
             }
-            RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
+            if RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext) {
+                do {
+                    if autoExport {
+                        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: task.workspace,
+                            modelContext: modelContext, taskID: task.id)
+                    } else {
+                        try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
+                            modelContext: modelContext, taskID: task.id)
+                    }
+                } catch {
+                    AppLogger.error("Settled runtime checkpoint cleanup could not be persisted; it will retry on recovery.", category: "Persistence")
+                }
+            }
             RuntimeTurnSettlementService.dispatchChainedTask(task: task, run: run, modelContext: modelContext)
             if let id = RuntimeTurnSettlementService.verdict(for: run, task: task)?.scheduleID {
                 taskQueue.routeScheduleResult(task: task, scheduleID: id, modelContext: modelContext)

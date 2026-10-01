@@ -729,7 +729,8 @@ final class TaskLifecycleCoordinator {
                     return WorkspaceConfigManager.importWorkspace(
                         from: exportedConfig,
                         modelContext: modelContext,
-                        scheduleTrustPolicy: .preserveEnabledState
+                        scheduleTrustPolicy: .preserveEnabledState,
+                        taskRecoveryTrustPolicy: .trustedLocalRecovery
                     )
                 }
                 modelContext.delete(existing)

@@ -19,3 +19,24 @@ checkpoint retention, and deletion of a dispatched child before restart.
 Mirrored request and checkpoint policies preserve credential references while
 removing secret environment values. Redaction changes only the exported
 projection; the original stored request policy remains unchanged.
+
+## PR #464 review corrections
+
+All five follow-up findings were reproduced or confirmed against the owning
+services. Validation now has its own durable prepared phase before session-file
+writes; finalization completion is recorded separately. A derived-file failure
+can retry the projection and finalization without repeating validation or
+turning a successful provider result into a failed verdict.
+
+Startup cleanup explicitly saves and exports pruned checkpoints even when no
+chained or scheduled work follows. Ordinary file imports quarantine runtime
+events and do not restore executable request owners. They require explicit user
+resume; trusted local missing-store recovery opts into owner restoration through
+an independent policy, rather than inheriting schedule trust.
+
+Mirror queries retrieve only active requests and owners of retained runs before
+decoding policies. A malformed owner or checkpoint is omitted individually with
+an audit event, so unrelated task mirrors continue to refresh. Regression tests
+cover failed projections with a validation counter, durable cleanup after a
+second store reopen, default import quarantine even when schedules are trusted,
+malformed outer and nested policies, and exclusion of obsolete terminal owners.

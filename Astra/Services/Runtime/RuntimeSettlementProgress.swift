@@ -10,6 +10,8 @@ enum RuntimeSettlementProgress {
     struct Prepared: Codable {
         let taskStatus: TaskStatus
         let taskCompletedAt: Date?
+        // Legacy prepared records were written after finalization.
+        var finalizationComplete: Bool? = nil
     }
 
     static func event(_ type: TaskEventType, task: AgentTask, run: TaskRun) -> TaskEvent? {
@@ -21,11 +23,18 @@ enum RuntimeSettlementProgress {
         return try JSONDecoder().decode(Prepared.self, from: Data(event.payload.utf8))
     }
 
-    static func stagePrepared(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
-        guard event(TaskEventTypes.System.runtimeOutcomePrepared, task: task, run: run) == nil else { return }
-        modelContext.insert(TaskEvent.structuredPayloadEvent(task: task,
-            type: TaskEventTypes.System.runtimeOutcomePrepared.rawValue,
-            payload: Prepared(taskStatus: task.status, taskCompletedAt: task.completedAt), run: run))
+    static func stagePrepared(task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                              finalizationComplete: Bool = true) {
+        let prepared = Prepared(taskStatus: task.status, taskCompletedAt: task.completedAt,
+                                finalizationComplete: finalizationComplete)
+        if let existing = event(TaskEventTypes.System.runtimeOutcomePrepared, task: task, run: run) {
+            if let payload = try? JSONEncoder().encode(prepared), let json = String(data: payload, encoding: .utf8) {
+                existing.payload = json
+            }
+        } else {
+            modelContext.insert(TaskEvent.structuredPayloadEvent(task: task,
+                type: TaskEventTypes.System.runtimeOutcomePrepared.rawValue, payload: prepared, run: run))
+        }
     }
 
     static func restore(_ prepared: Prepared, task: AgentTask, modelContext: ModelContext) {
@@ -34,7 +43,9 @@ enum RuntimeSettlementProgress {
             snapshot: .init(status: prepared.taskStatus, completedAt: prepared.taskCompletedAt), modelContext: modelContext)
     }
 
-    static func pruneSettledCaptures(task: AgentTask, modelContext: ModelContext) {
+    @discardableResult
+    static func pruneSettledCaptures(task: AgentTask, modelContext: ModelContext) -> Bool {
+        var changed = false
         let settled = Set(task.events.filter {
             guard !$0.isDeleted, $0.type == TaskEventTypes.System.runtimeTurnSettled.rawValue,
                   let verdict = try? JSONDecoder().decode(RuntimeTurnSettlementService.Verdict.self, from: Data($0.payload.utf8)) else { return false }
@@ -44,7 +55,9 @@ enum RuntimeSettlementProgress {
             if [TaskEventTypes.System.runtimeResultCaptured, TaskEventTypes.System.runtimeSettlementStarted,
                 TaskEventTypes.System.runtimeOutcomePrepared].contains(where: { $0.rawValue == event.type }) {
                 modelContext.delete(event)
+                changed = true
             }
         }
+        return changed
     }
 }

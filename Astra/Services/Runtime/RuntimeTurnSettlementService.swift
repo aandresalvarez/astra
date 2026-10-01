@@ -79,7 +79,8 @@ enum RuntimeTurnSettlementService {
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
                        permissionPromotionPersistence: (() throws -> Void)? = nil,
-                       verdictPersistence: (() throws -> Void)? = nil, autoExport: Bool = true) async -> Bool {
+                       verdictPersistence: (() throws -> Void)? = nil,
+                       sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
         do {
             if let id = checkpoint.requestID {
@@ -89,7 +90,7 @@ enum RuntimeTurnSettlementService {
             var alreadyPrepared = false
             if let prepared = try RuntimeSettlementProgress.prepared(task: task, run: run) {
                 RuntimeSettlementProgress.restore(prepared, task: task, modelContext: modelContext)
-                alreadyPrepared = true
+                alreadyPrepared = prepared.finalizationComplete ?? true
             } else if RuntimeSettlementProgress.event(TaskEventTypes.System.runtimeSettlementStarted, task: task, run: run) != nil {
                 pauseForReconciliation(task: task, run: run, modelContext: modelContext,
                     reason: "runtime_settlement_uncertain",
@@ -104,10 +105,16 @@ enum RuntimeTurnSettlementService {
                 try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
                     modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
                 await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
+                // Validation effects are durable before writing derived files.
+                // Projection I/O failures can retry without re-executing work.
+                RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext,
+                    finalizationComplete: false)
+                try save(task: task, modelContext: modelContext, operation: "runtime_outcome_validated", persist: nil,
+                    autoExport: autoExport)
             }
             let request = try checkpoint.requestID.flatMap { try TaskTurnRequestRepository.request(id: $0, in: modelContext) }
             let message = checkpoint.sessionMessage ?? request?.executionPolicySnapshot?.turnIntentSnapshot?.acceptedTurn ?? task.goal
-            guard AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run, message: message) else {
+            guard sessionProjection?() ?? AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run, message: message) else {
                 throw Failure.recoverySubmissionFailed
             }
             if alreadyPrepared {
@@ -220,7 +227,9 @@ enum RuntimeTurnSettlementService {
         var transitionedRequest: TaskTurnRequest?
         var priorRequest: TaskTurnRequestSnapshot?
         do {
-            RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
+            if RuntimeSettlementProgress.event(TaskEventTypes.System.runtimeOutcomePrepared, task: task, run: run) == nil {
+                RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
+            }
             let request = try checkpoint.requestID.flatMap { try TaskTurnRequestRepository.request(id: $0, in: modelContext) }
             if checkpoint.requestID != nil {
                 guard let request, request.taskID == task.id, request.runID == run.id else {
