@@ -58,7 +58,7 @@ extension AntigravityCLIRuntimeAdapter {
                     title: title,
                     detail: "Google rejected this account for Antigravity (consumer eligibility check failed). Workspace and enterprise accounts are usually rejected here.",
                     state: .blocked,
-                    remediation: "Switch Sign-in method to Google Cloud (ADC), run `gcloud auth application-default login` and `gcloud auth application-default set-quota-project <project>`, then click Check Again.",
+                    remediation: "Switch Sign-in method to Google Cloud (ADC), then enter your project and sign in under Provider Details.",
                     fixAction: .switchAntigravityToADC
                 )
             }
@@ -69,7 +69,7 @@ extension AntigravityCLIRuntimeAdapter {
                 state: .blocked,
                 remediation: authMode != .adc
                     ? "Run `agy` in Terminal, complete Google Sign-In, then click Check Again."
-                    : "Confirm `gcloud auth application-default login` (and `set-quota-project`) are set up, then click Check Again."
+                    : "Sign in again under Provider Details (it runs `gcloud auth application-default login` and sets the quota project), then click Check Again."
             )
         }
         if antigravityReadinessOutputContainsReadyLine(result.stdout) {
