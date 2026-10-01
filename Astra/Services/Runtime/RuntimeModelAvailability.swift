@@ -344,9 +344,8 @@ enum RuntimeModelAvailability {
     ) -> RuntimeModelDetail? {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return cachedSnapshot(for: runtime, cache: cache)?
-            .details?
-            .first { $0.value == trimmed }
+        return decodedSnapshot(from: cache.rawSnapshot(for: runtime), for: runtime)
+            .detailsByValue[trimmed]
     }
 
     private static func cachedDetail(
@@ -356,9 +355,10 @@ enum RuntimeModelAvailability {
     ) -> RuntimeModelDetail? {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return cachedSnapshot(for: runtime, defaults: defaults)?
-            .details?
-            .first { $0.value == trimmed }
+        return decodedSnapshot(
+            from: defaults.string(forKey: availableModelsKey(for: runtime)) ?? "",
+            for: runtime
+        ).detailsByValue[trimmed]
     }
 
     static func hasCachedModels(
@@ -568,6 +568,16 @@ enum RuntimeModelAvailability {
     }
 
     private static func cachedSnapshot(from raw: String, for runtime: AgentRuntimeID) -> RuntimeModelAvailabilitySnapshot? {
+        decodedSnapshot(from: raw, for: runtime).snapshot
+    }
+
+    private static func decodedSnapshot(from raw: String, for runtime: AgentRuntimeID) -> DecodedRuntimeModelSnapshot {
+        RuntimeModelSnapshotMemo.shared.decoded(raw: raw, runtime: runtime) { raw in
+            decodeSnapshot(from: raw, for: runtime)
+        }
+    }
+
+    private static func decodeSnapshot(from raw: String, for runtime: AgentRuntimeID) -> RuntimeModelAvailabilitySnapshot? {
         guard let data = raw.data(using: .utf8),
               let snapshot = try? JSONDecoder().decode(RuntimeModelAvailabilitySnapshot.self, from: data),
               snapshot.runtimeID == runtime.rawValue else {

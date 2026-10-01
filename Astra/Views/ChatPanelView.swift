@@ -952,7 +952,7 @@ struct ChatPanelView: View {
                         // draft is submitted without a fresh saveDraft().
                         draftTask?.reasoningEffort = effort
                     },
-                    onRuntimeChange: { runtime in
+                    onRuntimeChange: { runtime, requestedModel in
                         let previousRuntime = defaultRuntimeID
                         let previousModel = defaultModel
                         defaultRuntimeID = runtime
@@ -962,7 +962,7 @@ struct ChatPanelView: View {
                         draftTask?.runtimeExplicitlySelected = true
                         let resolved = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime)
                         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
-                            currentModel: defaultModel,
+                            currentModel: requestedModel ?? defaultModel,
                             to: resolved,
                             cache: runtimeModelCache
                         )
