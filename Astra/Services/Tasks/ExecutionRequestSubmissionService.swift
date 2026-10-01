@@ -23,6 +23,8 @@ struct TaskExecutionSourcePayloadV1: Codable, Equatable, Sendable {
     let scheduleID: UUID?
     let sourceTaskID: UUID?
     let executionPolicyOverride: TaskExecutionPolicyOverrideV1?
+    let permissionContinuation: PermissionApprovalContinuation?
+    let permissionApprovalID: String?
 
     init(
         launchMode: TaskExecutionLaunchMode,
@@ -31,7 +33,9 @@ struct TaskExecutionSourcePayloadV1: Codable, Equatable, Sendable {
         planExecutionMode: TaskPlanExecutionMode? = nil,
         scheduleID: UUID? = nil,
         sourceTaskID: UUID? = nil,
-        executionPolicy: AgentRuntimeExecutionPolicy? = nil
+        executionPolicy: AgentRuntimeExecutionPolicy? = nil,
+        permissionContinuation: PermissionApprovalContinuation? = nil,
+        permissionApprovalID: String? = nil
     ) {
         version = 1
         self.launchMode = launchMode
@@ -42,6 +46,8 @@ struct TaskExecutionSourcePayloadV1: Codable, Equatable, Sendable {
         self.scheduleID = scheduleID
         self.sourceTaskID = sourceTaskID
         self.executionPolicyOverride = executionPolicy.map(TaskExecutionPolicyOverrideV1.init)
+        self.permissionContinuation = permissionContinuation
+        self.permissionApprovalID = permissionApprovalID
     }
 
     var planExecutionMode: TaskPlanExecutionMode? {
@@ -181,23 +187,55 @@ enum ExecutionRequestSubmissionService {
         for task: AgentTask,
         into modelContext: ModelContext,
         at date: Date = Date(),
+        continuation: PermissionApprovalContinuation? = nil,
+        approvalID: String? = nil,
         persist: (() throws -> Void)? = nil,
         prepare: () -> Void = {},
         rollback: () -> Void = {}
     ) -> Result<Submission, SubmissionError> {
-        submitInternal(
-            kind: .followUp,
+        if let approvalID {
+            do {
+                if let existing = try TaskTurnRequestRepository.requests(for: task, in: modelContext).first(where: { request in
+                    task.events.first(where: { $0.id == request.sourceEventID })
+                        .flatMap(decodeSourcePayload)?.permissionApprovalID == approvalID
+                }) {
+                    return .success(Submission(requestID: existing.id, eventID: existing.sourceEventID, sequence: existing.sequence))
+                }
+            } catch { return .failure(.persistenceFailed(String(describing: type(of: error)))) }
+        }
+        let origin: TaskExecutionSourcePayloadV1?
+        do {
+            let request = try continuation.flatMap { binding in
+                try TaskTurnRequestRepository.requests(for: task, in: modelContext).last { $0.runID == binding.runID }
+            }
+            origin = request.flatMap { request in task.events.first { $0.id == request.sourceEventID } }
+                .flatMap(decodeSourcePayload)
+            if request?.kind == .planStep,
+               origin?.launchMode != .approvedPlan || origin?.planSnapshot == nil || origin?.planExecutionMode == nil {
+                return .failure(.emptySource)
+            }
+        } catch { return .failure(.persistenceFailed(String(describing: type(of: error)))) }
+        let resumesPlan = origin?.launchMode == .approvedPlan
+        return submitInternal(
+            kind: resumesPlan ? .planStep : .followUp,
             eventType: TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
             payload: TaskExecutionSourcePayloadV1(
-                launchMode: .continuation,
+                launchMode: resumesPlan ? .approvedPlan : .continuation,
                 message: message,
-                executionPolicy: executionPolicy
+                plan: resumesPlan ? origin?.planSnapshot : nil,
+                planExecutionMode: resumesPlan ? origin?.planExecutionMode : nil,
+                executionPolicy: executionPolicy,
+                permissionContinuation: continuation,
+                permissionApprovalID: approvalID
             ),
             task: task,
             modelContext: modelContext,
             at: date,
             persist: persist,
-            prepare: prepare,
+            prepare: {
+                prepare()
+                if resumesPlan { TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext) }
+            },
             rollback: rollback
         )
     }
@@ -353,6 +391,7 @@ enum ExecutionRequestSubmissionService {
             sourceEventType: eventType,
             sourcePayload: encoded,
             acceptedTurn: payload.message,
+            permissionContinuation: payload.permissionContinuation,
             task: task,
             modelContext: modelContext,
             at: date,
@@ -367,6 +406,7 @@ enum ExecutionRequestSubmissionService {
         sourceEventType: String,
         sourcePayload: String,
         acceptedTurn: String? = nil,
+        permissionContinuation: PermissionApprovalContinuation? = nil,
         attachmentPaths: [String] = [],
         task: AgentTask,
         modelContext: ModelContext,
@@ -376,8 +416,17 @@ enum ExecutionRequestSubmissionService {
         rollback: () -> Void = {}
     ) -> Result<Submission, SubmissionError> {
         let nextSequence: Int
+        let origin: TaskTurnRequest?
+        let originSnapshot: AgentTaskLaunchSnapshot?
         do {
             nextSequence = try TaskTurnRequestRepository.nextSequence(for: task, in: modelContext)
+            origin = try permissionContinuation.flatMap { binding in
+                try TaskTurnRequestRepository.requests(for: task, in: modelContext).last { $0.runID == binding.runID }
+            }
+            originSnapshot = origin.flatMap { TaskExecutionLaunchSnapshotApplicator.snapshot(request: $0, from: task) }
+            // Legacy requests have no snapshot. An existing but unreadable
+            // snapshot must never turn into today's mutable launch settings.
+            if origin?.executionPolicySnapshotJSON != nil, originSnapshot == nil { return .failure(.emptySource) }
         } catch {
             return .failure(.persistenceFailed(String(describing: type(of: error))))
         }
@@ -386,7 +435,9 @@ enum ExecutionRequestSubmissionService {
         let event = TaskEvent(task: task, type: sourceEventType, payload: sourcePayload)
         event.timestamp = date
         let attachmentsEvent = TaskEvent.attachmentsEvent(for: event, paths: attachmentPaths)
-        let turnIntentSnapshot = TaskTurnIntentResolver.capture(
+        let turnIntentSnapshot = permissionContinuation.map {
+            TaskPermissionContinuation.turnIntent($0, task: task, sourceEventID: event.id, modelContext: modelContext)
+        } ?? TaskTurnIntentResolver.capture(
             for: task,
             sourceEventID: event.id,
             acceptedTurn: acceptedTurn,
@@ -405,6 +456,25 @@ enum ExecutionRequestSubmissionService {
             turnIntentSnapshot: turnIntentSnapshot,
             submittedAt: date
         )
+        if let origin, let snapshot = originSnapshot {
+            let frozenTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+            // Task authority can grow through this approval; execution settings
+            // remain those the originating turn actually accepted.
+            frozenTask.runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
+            request.runtimeIDSnapshot = origin.runtimeIDSnapshot
+            request.modelSnapshot = origin.modelSnapshot
+            request.tokenBudgetSnapshot = origin.tokenBudgetSnapshot
+            request.executionPolicySnapshotJSON = TaskEvent.payloadString(TaskExecutionPolicySnapshotV1(
+                task: frozenTask, turnIntentSnapshot: turnIntentSnapshot))
+            request.resourceClaimsJSON = origin.resourceClaimsJSON
+        }
+        if let binding = permissionContinuation, let run = task.runs.first(where: { $0.id == binding.runID }),
+           let runtime = run.runtimeID, AgentRuntimeID(rawValue: runtime) != nil {
+            request.runtimeIDSnapshot = runtime
+            if let json = run.providerLaunchSignatureJSON,
+               let signature = try? JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: Data(json.utf8)),
+               signature.runtimeID == runtime { request.modelSnapshot = signature.model }
+        }
         modelContext.insert(event)
         modelContext.insert(request)
         if let attachmentsEvent { modelContext.insert(attachmentsEvent) }

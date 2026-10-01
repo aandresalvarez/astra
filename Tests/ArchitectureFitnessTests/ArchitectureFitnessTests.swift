@@ -1862,6 +1862,9 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeCapabilityBlockRecorder.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
+            "Astra/Services/Runtime/RuntimeTurnOutcomeService.swift": ["run"],
+            "Astra/Services/Runtime/RuntimeTurnSettlementService.swift": ["run"],
+            "Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift": ["run?"],
             "Astra/Models/AgentTaskForkService.swift": ["newRun"],
             "Astra/Services/Tasks/DatabaseQueryService.swift": ["self"],
             "Astra/Services/Tasks/TaskPlanService.swift": ["plan.steps[index]", "merged.steps[index]"],
@@ -2095,36 +2098,6 @@ struct ArchitectureFitnessTests {
             // the provider to have gone quiet, and says why.
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_300, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
-            // Budget raised for the run-before-resolve reordering fix (PR #281
-            // review follow-up) - the launch-sequencing comment explaining why
-            // TaskRun must be constructed before requirements are resolved
-            // isn't safely compressible further without losing the "why".
-            // Raised again for PR #364 review follow-up: budget/validation-strategy
-            // classification and both isolation-cleanup call sites now read the
-            // frozen launchTask snapshot instead of the live task, closing a
-            // mid-run edit desync — each site needs a one-line note on why.
-            // 2_100 -> 2_150 on 2026-07-24 (PR #364 review follow-up): approved-plan
-            // runs must hold their durable turn request open until post-run
-            // checkpoint/contract validation decides the outcome, so the verdict
-            // has to be threaded from the session defer back to executeApprovedPlan.
-            // 2_150 -> 2_160 on 2026-09-02 (PR #381 review follow-up): a staged
-            // connector proposal is durable on disk the moment the broker
-            // returns, so its pending event has to be saved before the minutes
-            // of post-run awaits that follow — and the save going through the
-            // persistence coordinator means a refusal is reported rather than
-            // swallowed.
-            // 2_161 -> 2_190 on 2026-09-08 (PR #383 review follow-up): the
-            // budget branch decides and explains itself from one snapshot taken
-            // before the outcome chain, because "no budget was set, so ASTRA's
-            // own ceiling applied" and "you went past the number you chose" are
-            // different things to tell the user and only the snapshot knows
-            // which one fired. Quoting the snapshot in both wordings also closed
-            // the allowlisted cosmetic gap where the event named a limit that
-            // was not the one enforced.
-            // 2_190 -> 2_200: the run's capability profile is resolved once here,
-            // after the reroute, and carried on the execution policy instead of
-            // being re-derived by every surface that describes the run.
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_200, .owner("Runtime worker execution")),
             // Global multi-resource admission remains coordinated here, while
             // claim resolution, compatibility, fairness, persistence events,
             // and store lifetime are extracted into focused task services.

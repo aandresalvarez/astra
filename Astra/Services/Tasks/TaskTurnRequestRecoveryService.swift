@@ -66,6 +66,8 @@ enum TaskTurnRequestRecoveryService {
             // (AgentRuntimeRunPersistence.finalizeAndPersist) before the
             // request's own finalizer defer runs, so a crash in that window must
             // not mismark a genuinely completed turn as failed.
+            if let runID = request.runID, let run = task.runs.first(where: { $0.id == runID }),
+               RuntimeTurnSettlementService.hasUnsettledResult(task: task, run: run) { continue }
             if let runID = request.runID,
                let run = task.runs.first(where: { $0.id == runID }),
                run.status != .running {

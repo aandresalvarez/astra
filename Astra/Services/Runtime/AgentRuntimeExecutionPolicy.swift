@@ -112,6 +112,21 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
     }
 
+    /// A continuation adds its approved authority to the plan's tools without
+    /// replacing the plan's permission policy or making grants task-scoped.
+    func addingRuntimePermissions(from source: AgentRuntimeExecutionPolicy) -> AgentRuntimeExecutionPolicy {
+        var copy = self
+        if let tools = source.allowedToolsOverride {
+            copy.allowedToolsOverride = Array(Set((allowedToolsOverride ?? []) + tools)).sorted()
+        }
+        if let grants = source.permissionGrantsOverride {
+            var seen = Set<PermissionGrant>()
+            copy.permissionGrantsOverride = ((permissionGrantsOverride ?? []) + grants)
+                .filter { seen.insert($0).inserted }
+        }
+        return copy
+    }
+
     static func approvedPlan(
         runtime _: AgentRuntimeID,
         currentPermissionPolicy: PermissionPolicy,

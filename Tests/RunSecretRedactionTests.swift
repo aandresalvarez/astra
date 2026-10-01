@@ -16,6 +16,22 @@ private let redcapShaped = "0123456789ABCDEF0123456789ABCDEF"
 
 @Suite("Run secret redaction", .serialized)
 struct RunSecretRedactionTests {
+    @Test("Antigravity's ADC flag preserves structured booleans while credential suffixes remain redacted")
+    func adcModeFlagIsNotACredential() {
+        let secrets = RunSecretRedaction.secretValues(in: ["AGY_ADC_AUTH": "true", "AGY_ADC_AUTH_TOKEN": atlassianShaped])
+        #expect(secrets == [atlassianShaped])
+        #expect(RunSecretRedaction.redact(#"{"approved":true}"#, secrets: secrets) == #"{"approved":true}"#)
+        #expect(RunSecretRedaction.isSecretKey("AGY_ADC_AUTH_TOKEN"))
+        #expect(RunSecretRedaction.secretValues(in: ["AGY_ADC_AUTH": "false"]).isEmpty)
+        for key in ["AGY_ADC_AUTH", "CUSTOM_AGY_ADC_AUTH"] {
+            #expect(Skill.isSecretEnvironmentKey(key))
+            let credentials = RunSecretRedaction.secretValues(in: [key: atlassianShaped])
+            #expect(credentials == [atlassianShaped])
+            #expect(!RunSecretRedaction.redact(atlassianShaped, secrets: credentials).contains(atlassianShaped))
+        }
+        #expect(RunSecretRedaction.secretValues(in: ["CUSTOM_AGY_ADC_AUTH": "true"]) == ["true"])
+    }
+
     // MARK: - Classification
 
     @Test("A credential is recognized by its variable name, not its value")

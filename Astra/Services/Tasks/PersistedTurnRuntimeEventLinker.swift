@@ -44,11 +44,19 @@ enum PersistedTurnRuntimeEventLinker {
             AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
             return RuntimeBegin(request: nil, persisted: false)
         }
+        guard request.taskID == task.id, request.state != .running || request.runID == run.id else {
+            AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
+            return RuntimeBegin(request: request, persisted: false)
+        }
         let transition = TaskTurnRequestStateMachine.transition(
             request,
             to: .running,
             runID: run.id
         )
+        guard transition.rejection == nil else {
+            AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
+            return RuntimeBegin(request: request, persisted: false)
+        }
         guard transition.changed else {
             return RuntimeBegin(request: request, persisted: true)
         }
@@ -80,10 +88,16 @@ enum PersistedTurnRuntimeEventLinker {
         request: TaskTurnRequest?,
         run: TaskRun,
         task: AgentTask,
+        acknowledgedPermissionRequestIDs: Set<String> = [],
         forcedOutcome: (state: TaskTurnRequestState, reason: String)? = nil,
         in modelContext: ModelContext
     ) {
-        guard let request else { return }
+        let stagedAcknowledgements = LivePermissionApprovalRecovery.stageAcknowledgements(
+            task: task, run: run, requestIDs: acknowledgedPermissionRequestIDs, modelContext: modelContext)
+        guard let request else {
+            if stagedAcknowledgements { WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext) }
+            return
+        }
         let runState: TaskTurnRequestState = switch run.status {
         case .completed: .completed
         case .cancelled: .cancelled
@@ -97,7 +111,7 @@ enum PersistedTurnRuntimeEventLinker {
             runID: run.id,
             terminalReason: forcedOutcome?.reason ?? (reason.isEmpty ? run.status.rawValue : reason)
         )
-        if transition.changed {
+        if transition.changed || stagedAcknowledgements {
             WorkspacePersistenceCoordinator.saveAndAutoExport(
                 workspace: task.workspace,
                 modelContext: modelContext,

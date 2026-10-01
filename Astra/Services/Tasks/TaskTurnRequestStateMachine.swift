@@ -17,6 +17,17 @@ enum TaskTurnRequestStateMachine {
         let rejection: Rejection?
     }
 
+    /// Rolls back only a transition whose enclosing save failed. This does
+    /// not reopen a durable terminal request or change its immutable intent.
+    static func restoreUncommittedTransition(_ request: TaskTurnRequest, snapshot: TaskTurnRequestSnapshot) {
+        request.state = snapshot.state
+        request.runID = snapshot.runID
+        request.terminalAt = snapshot.terminalAt
+        request.terminalReason = snapshot.terminalReason
+        request.blockingTaskID = snapshot.blockingTaskID
+        request.blockerSummary = snapshot.blockerSummary
+    }
+
     @discardableResult
     static func transition(
         _ request: TaskTurnRequest,
