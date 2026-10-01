@@ -164,7 +164,7 @@ struct RuntimeSetupSection: View {
 
         return VStack(alignment: .leading, spacing: 8) {
             if adcFix != nil, let onSwitchAntigravityToADC {
-                Text("Google rejected this account for Antigravity, so signing in again will not help. Route through Google Cloud (ADC) instead; you'll also need `gcloud auth application-default login` and `set-quota-project` once, outside ASTRA.")
+                Text("Google rejected this account for Antigravity, so signing in again will not help. Route through Google Cloud (ADC) instead, then enter your project and sign in under Provider Details.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.black)
                     .fixedSize(horizontal: false, vertical: true)

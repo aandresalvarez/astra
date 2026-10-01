@@ -37,6 +37,7 @@ struct SettingsRuntimeTab: View {
     @AppStorage(AppStorageKeys.claudeVertexSonnetModel) private var claudeVertexSonnetModel = ""
     @AppStorage(AppStorageKeys.claudeVertexHaikuModel) private var claudeVertexHaikuModel = ""
     @StateObject private var settingsRuntimeSetup = RuntimeSetupModel()
+    @StateObject private var antigravityADCSetup = AntigravityADCSetupModel()
     @State private var detectedPath = ""
     @State private var detectedCopilotPath = ""
     @State private var providerPathDrafts: [AgentRuntimeID: String] = [:]
@@ -348,10 +349,10 @@ struct SettingsRuntimeTab: View {
         }
 
         if antigravityAuthModeRaw == AntigravityAuthMode.adc.rawValue {
-            Text("Routes through Google Cloud Application Default Credentials instead of agy's own Google Sign-In. Use this for a Workspace/enterprise Google account that the consumer eligibility check rejects. Requires `gcloud auth application-default login` (and `set-quota-project` for the target project) to already be set up outside ASTRA.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(Stanford.coolGrey)
-                .fixedSize(horizontal: false, vertical: true)
+            AntigravityADCSetupPanel(model: antigravityADCSetup)
+                .onAppear {
+                    antigravityADCSetup.onConfigured = { Task { await refreshSharedRuntimeSetup(force: true) } }
+                }
         }
     }
 
