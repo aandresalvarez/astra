@@ -919,7 +919,6 @@ struct ContentView: View {
                 }
             }
         }
-        .shelfBoundaryOverlay()
         .modifier(sidebarLayoutObserver)
         .overlay {
             if isSearchActive {
@@ -3130,7 +3129,6 @@ private struct ContentDetailAreaView: View {
 
     private func rightRailResizeHandle(availableWidth: CGFloat) -> some View {
         ShelfResizeHandle(
-            isResizing: isResizingRightRail,
             helpText: "Drag to resize the Workspace Context panel",
             onChanged: { translation in
                 if rightRailDragStartWidth == nil || !isResizingRightRail {
@@ -3191,21 +3189,17 @@ private struct ContentDetailAreaView: View {
         .background(Stanford.canvasBackground)
         .overlay(alignment: .leading) {
             ZStack(alignment: .leading) {
+                // The panel is the single owner of its leading edge: one line, one color,
+                // running up through the titlebar so it never changes where the toolbar starts.
                 Rectangle()
-                    .fill(Stanford.separator)
-                    .frame(width: 1)
+                    .fill(isResizing ? Stanford.lagunita.opacity(0.95) : Stanford.separator)
+                    .frame(width: isResizing ? 3 : 1)
+                    .ignoresSafeArea(.container, edges: .top)
+                    .allowsHitTesting(false)
 
                 shelfResizeHandle(for: item, availableWidth: availableWidth)
             }
         }
-        .preference(
-            key: ShelfBoundaryMetricsPreferenceKey.self,
-            value: ShelfBoundaryMetrics(
-                width: width,
-                isVisible: true,
-                isResizing: isResizing
-            )
-        )
     }
 
     private func committedShelfWidth(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> CGFloat {
@@ -3263,7 +3257,6 @@ private struct ContentDetailAreaView: View {
 
     private func shelfResizeHandle(for item: WorkspaceCanvasItem, availableWidth: CGFloat) -> some View {
         ShelfResizeHandle(
-            isResizing: resizingShelfItem == item,
             helpText: "Drag to resize the \(item.title) Shelf",
             onChanged: { translation in
                 if shelfDragStartWidth == nil || resizingShelfItem != item {
