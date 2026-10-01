@@ -810,6 +810,21 @@ struct LogDiagnosticsTests {
         #expect(!report.issues.contains { $0.title == "Jira skill resolved without an active Jira connector" })
     }
 
+    @Test("A task-attached Jira skill pruned from the launch scope is not reported")
+    func taskAttachedJiraSkillPrunedFromScopeIsNotReported() {
+        // `skill_names` is every skill attached to the task; `resolved_skill_names`
+        // is what the launch scope kept, and `none` is an answer, not an absence.
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "task_short=5DB5F63D capability.resolved connector_count=0 connector_service_types=none resolved_skill_count=0 resolved_skill_names=none scope_excluded_skill_names=Jira Agent scope_pruned=true skill_names=Jira Agent workspace_enabled_capabilities_count=3"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(!report.issues.contains { $0.title == "Jira skill resolved without an active Jira connector" })
+    }
+
     @Test("A Jira skill after a multi-word skill name is still reported")
     func jiraSkillAfterMultiWordNameIsReported() {
         let report = LogDiagnosticsService.makeReport(entries: [

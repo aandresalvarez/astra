@@ -2393,10 +2393,12 @@ enum LogDiagnosticsService {
 
     private static func isJiraSkillResolvedWithoutConnector(_ message: String) -> Bool {
         let lower = message.lowercased()
-        // Only skills the turn carried count: `configured_*` and `scope_excluded_*`
-        // name what the workspace has and what pruning dropped on purpose.
-        let carriedSkillNames = ["resolved_skill_names", "skill_names", "selected_skill_names"]
-            .flatMap { listField($0, in: message) }
+        // Only skills the turn carried count. `resolved_skill_names` is the launch
+        // scope's answer, `none` included; `skill_names` is every skill attached
+        // to the task, pruned ones too, so it only stands in when that is absent.
+        let carriedSkillNames = fieldValueRange(of: "resolved_skill_names", in: message) != nil
+            ? listField("resolved_skill_names", in: message)
+            : ["skill_names", "selected_skill_names"].flatMap { listField($0, in: message) }
         guard carriedSkillNames.contains(where: { $0.lowercased().contains("jira") }) else { return false }
 
         if let serviceTypes = field("connector_service_types", in: message)?.lowercased() {
