@@ -253,6 +253,10 @@ final class TaskLifecycleCoordinator {
 
     @discardableResult
     func resumeTask(_ task: AgentTask) -> Task<Void, Never>? {
+        if LegacyApprovedPermissionContinuation.isAvailable(task: task) {
+            guard let submission = LegacyApprovedPermissionContinuation.submit(task: task, modelContext: modelContext) else { return nil }
+            return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
+        }
         guard task.hasProviderSession else {
             AppLogger.audit(.workerSessionCleared, category: "UI", taskID: task.id, fields: [
                 "reason": "missing_session_id"
@@ -285,9 +289,12 @@ final class TaskLifecycleCoordinator {
 
     @discardableResult
     func approveTask(_ task: AgentTask) -> Task<Void, Never>? {
-        if task.status == .pendingUser,
-           hasOpenRuntimePermissionApprovalRequest(task) {
+        if hasOpenRuntimePermissionApprovalRequest(task) {
             return approveRuntimePermissionAndContinue(task)
+        }
+
+        if task.runs.max(by: { $0.startedAt < $1.startedAt })?.typedStopReason == .permissionApprovalRequired {
+            return nil
         }
 
         if let latestRun = dismissibleLatestRun(for: task) {
@@ -417,205 +424,25 @@ final class TaskLifecycleCoordinator {
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
-    /// Records the durable grants an open runtime-permission request carries.
-    ///
-    /// The `.pendingUser` check moved off the entry condition and onto the
-    /// resume, because those are two different questions. Not every open
-    /// request comes from a paused run: a run that discovered mid-flight that
-    /// it had been handed a connector without its credentials records a request
-    /// and then finishes normally, on purpose — the offered tier is not allowed
-    /// to stop a run to ask about a connector the turn never named. Gating the
-    /// whole method on `.pendingUser` meant that request rendered a button that
-    /// completed the task and granted nothing, so the connector stayed sealed
-    /// on the next run and the only thing the user could do about it was change
-    /// their wording.
+    /// Approval owns its continuation intent even when the provider already exited.
     @discardableResult
     func approveSimilarRuntimePermissionForTask(_ task: AgentTask) -> Task<Void, Never>? {
-        guard hasOpenRuntimePermissionApprovalRequest(task) else {
-            return approveTask(task)
-        }
+        resolveRuntimePermission(task, scope: .task)
+    }
 
-        let mutationSnapshot = ExecutionMutationSnapshot(task)
-        let runtime = task.resolvedRuntimeID
-        let latestGrants = Self.latestRuntimePermissionGrants(for: task)
-        let latestRequestedTool = Self.latestRequestedPermissionTool(for: task)
-        let taskScopedGrants = PermissionBroker.taskScopedApprovalGrants(for: latestGrants)
-        guard !taskScopedGrants.isEmpty else {
-            // Nothing durable to record either way. A paused task still needs
-            // its provider answered; an unpaused one has no one waiting.
-            return task.status == .pendingUser
-                ? approveRuntimePermissionAndContinue(task)
-                : approveTask(task)
-        }
+    private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never>? {
+        resolveRuntimePermission(task, scope: .once)
+    }
 
-        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
-            "approval_type": "runtime_permission",
-            "approval_scope": "task",
-            "runtime": runtime.rawValue,
-            "grant_count": String(taskScopedGrants.count)
-        ])
-        let applyApprovalMutation = {
-            _ = TaskRuntimePermissionGrants.record(
-                grants: latestGrants,
-                providerID: runtime,
-                task: task,
-                modelContext: self.modelContext,
-                source: "approve_similar"
-            )
-            TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
-            task.updatedAt = Date()
-            task.markRead()
-            self.modelContext.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.Task.approved,
-                payload: "Runtime permission approved by user for similar requests in this task. Continuing with task-scoped provider permissions."
-            ))
-        }
-
-        // Nothing paused, so nothing to resume: record the grant and stop.
-        // Submitting a resume here would relaunch a task the user did not ask
-        // to rerun, which is the opposite of what approving an offer should do.
-        // The grant is what matters — the next run unseals the connector.
-        guard task.status == .pendingUser else {
-            applyApprovalMutation()
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext
-            )
-            return Task {}
-        }
-
-        // A live in-flight ask means the provider process is still alive and
-        // blocked on this decision: answer it over the control channel instead
-        // of relaunching a new run. The recorded grants cover later turns.
-        if !InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty {
-            applyApprovalMutation()
-            guard persistLivePermissionApproval(task) else {
-                mutationSnapshot.restore(task, in: modelContext)
-                return Task {}
-            }
-            if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
-                return Task {}
-            }
-        }
-
-        let resumeMessage = PermissionBroker.resumeMessage(
-            providerID: runtime,
-            grants: taskScopedGrants,
-            fallback: latestRequestedTool
-                .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
-            scopeDescription: "task-scoped runtime permission for similar requests in this task"
+    private func resolveRuntimePermission(_ task: AgentTask, scope: PermissionApprovalResolutionService.Scope) -> Task<Void, Never>? {
+        let outcome = PermissionApprovalResolutionService.approve(
+            task: task, scope: scope, modelContext: modelContext,
+            heldGrants: oneRunGrantsHeldByPausedRequest(for: task)
         )
-        // What the user already allowed once for this request stays allowed:
-        // approving the rest for the task must not revoke it.
-        let heldGrants = oneRunGrantsHeldByPausedRequest(for: task)
-        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
-            message: resumeMessage,
-            executionPolicy: heldGrants.isEmpty
-                ? .default
-                : PermissionBroker.executionPolicy(forRuntime: runtime, grants: heldGrants),
-            for: task,
-            into: modelContext,
-            prepare: applyApprovalMutation,
-            rollback: { mutationSnapshot.restore(task, in: modelContext) }
-        ) else { return nil }
-        return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
-    }
-
-    private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never> {
-        let mutationSnapshot = ExecutionMutationSnapshot(task)
-        let runtime = task.resolvedRuntimeID
-        let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
-        let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
-        AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
-            "approval_type": "runtime_permission",
-            "runtime": runtime.rawValue
-        ])
-        let applyApprovalMutation = {
-            TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
-            task.updatedAt = Date()
-            task.markRead()
-            self.modelContext.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.Task.approved,
-                payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
-            ))
+        if case .queued(let submission) = outcome {
+            return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
         }
-
-        // Live in-flight ask: answer the waiting provider process instead of
-        // relaunching a new run.
-        if !InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty {
-            applyApprovalMutation()
-            guard persistLivePermissionApproval(task) else {
-                mutationSnapshot.restore(task, in: modelContext)
-                return Task {}
-            }
-            if InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true) > 0 {
-                AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
-                    "approval_type": "runtime_permission_live",
-                    "approval_scope": "once"
-                ])
-                return Task {}
-            }
-        }
-
-        let executionPolicy = PermissionBroker.executionPolicy(
-            forRuntime: runtime,
-            grants: oneRunGrantsHeldByPausedRequest(for: task) + approvedGrants
-        )
-        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPermissionResume(
-            message: resumeMessage,
-            executionPolicy: executionPolicy,
-            for: task,
-            into: modelContext,
-            prepare: applyApprovalMutation,
-            rollback: { mutationSnapshot.restore(task, in: modelContext) }
-        ) else { return Task {} }
-        return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
-    }
-
-    private func persistLivePermissionApproval(_ task: AgentTask) -> Bool {
-        do {
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "live_permission_approval"]
-            )
-            return true
-        } catch {
-            AppLogger.audit(.taskFailed, category: "Persistence", taskID: task.id, fields: [
-                "operation": "live_permission_approval",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-            return false
-        }
-    }
-
-    private static func runtimePermissionApprovalResumeMessage(
-        for task: AgentTask,
-        grants: [PermissionGrant]
-    ) -> String {
-        var message = PermissionBroker.resumeMessage(
-            providerID: task.resolvedRuntimeID,
-            grants: grants,
-            fallback: latestRequestedPermissionTool(for: task)
-                .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName }
-        )
-        if let blockedRequest = latestBlockedUserRequest(for: task) {
-            message += """
-
-
-            Original blocked user request: \(blockedRequest)
-
-            Continue by answering that request now. Do not answer an earlier turn or the approval notice itself.
-            """
-        }
-        return message
-    }
-
-    private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
-        TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
+        return nil
     }
 
     /// What the user already allowed once for the request that is paused now.
@@ -639,29 +466,6 @@ final class TaskLifecycleCoordinator {
         return PermissionBroker.oneRunGrantsCarriedWithinRequest(
             source.executionPolicyOverride?.permissionGrants ?? []
         )
-    }
-
-    private static func latestRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
-        TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
-    }
-
-    private static func latestRequestedPermissionTool(for task: AgentTask) -> String? {
-        TaskRuntimePermissionOpenRequestStore.latestRequestedToolName(for: task)
-    }
-
-    private static func permissionRequestEvents(for task: AgentTask) -> [TaskEvent] {
-        task.events
-            .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
-    }
-
-    private static func latestBlockedUserRequest(for task: AgentTask) -> String? {
-        let latestPermissionEvent = permissionRequestEvents(for: task)
-            .sorted { $0.timestamp < $1.timestamp }
-            .last
-        let cutoff = latestPermissionEvent?.timestamp ?? Date.distantFuture
-        let request = latestActionableUserMessage(for: task, before: cutoff)
-        let fallback = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        return request ?? (fallback.isEmpty ? nil : fallback)
     }
 
     private static func latestRetryableFollowUpMessage(

@@ -714,7 +714,13 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue.scenarioQueue(poolSize: 1)
+        let worker = AgentRuntimeWorker.scenarioWorker()
+        // This scenario verifies that the resumed provider launch still sees
+        // Jira in its capability scope. Its synthetic connector intentionally
+        // has no real Keychain credentials, so connector health is outside the
+        // behavior under test.
+        worker.connectorPreflightOverrideForTesting = { true }
+        let queue = TaskQueue(poolSize: 1) { worker }
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,

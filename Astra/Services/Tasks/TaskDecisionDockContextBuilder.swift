@@ -64,6 +64,7 @@ enum TaskDecisionDockContextBuilder {
         var verification: TaskVerificationPresentation?
         var pendingReviewState: PendingTaskReviewState
         var runtimePermission: TaskRuntimePermissionState
+        var hasApprovedPermissionContinuation: Bool = false
         var hasGitPublishRequest: Bool = false
         var githubReviewPath: String?
         var pendingConnectorMutationTargets: [String] = []
@@ -154,6 +155,7 @@ enum TaskDecisionDockContextBuilder {
             canApprove: input.canApprove,
             canRetry: input.canRetry,
             canResume: input.canResume,
+            hasApprovedPermissionContinuation: input.hasApprovedPermissionContinuation,
             canReportProblem: input.canReportProblem,
             canToggleDone: input.canToggleDone,
             hasProviderSession: input.hasProviderSession,

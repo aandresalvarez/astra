@@ -854,7 +854,8 @@ final class AgentRuntimeProcessRunner {
         RunSecretRedactionScope.beginRun(taskID: taskID)
         defer { RunSecretRedactionScope.endRun(taskID: taskID) }
 
-        return await withCheckedContinuation { continuation in
+        let deliveryChannel = AgentLivePermissionDeliveryChannel()
+        let result: AgentProcessResult = await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
             var hasResumed = false
             let resumeOnce: (AgentProcessResult) -> Void = { result in
@@ -939,6 +940,7 @@ final class AgentRuntimeProcessRunner {
                         process: process,
                         monitor: monitor,
                         taskID: taskID,
+                        deliveryChannel: deliveryChannel,
                         onInteractiveAsk: onInteractiveAsk
                     )
                     return
@@ -952,6 +954,7 @@ final class AgentRuntimeProcessRunner {
                     // message after a turn ends; EOF on the terminal result is
                     // what lets the process exit.
                     if plan.interactiveAsk != nil, case .result = parsed {
+                        deliveryChannel.observeProviderCompletion()
                         process.closeStdinChannel()
                     }
                 }
@@ -1120,6 +1123,10 @@ final class AgentRuntimeProcessRunner {
             currentProcess = process
             monitor.startWatchdog(process: process)
         }
+        var acknowledgedResult = result
+        acknowledgedResult.acknowledgedPermissionRequestIDs = deliveryChannel.acknowledgedPermissionRequestIDs
+        acknowledgedResult.writtenPermissionRequestIDs = deliveryChannel.writtenPermissionRequestIDs
+        return acknowledgedResult
     }
 
     private static func runScopedUtilityProcess(
@@ -1299,57 +1306,6 @@ final class AgentRuntimeProcessRunner {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
             guard process.isRunning else { return }
             requestTermination(timeoutResult(timeoutSeconds))
-        }
-    }
-
-    /// Answers a provider control request. `can_use_tool` asks are routed to the
-    /// worker's hook (which surfaces them in the UI and awaits the user); every
-    /// other subtype gets an immediate error response so the provider never
-    /// blocks on an unanswered request. A heartbeat keeps the idle watchdog from
-    /// killing the run while the user decides.
-    private static func answerControlRequest(
-        _ control: ClaudeControlProtocol.ControlRequest,
-        process: AgentExecutionScopedProcess,
-        monitor: AgentProcessMonitor,
-        taskID: UUID,
-        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?
-    ) {
-        guard control.subtype == "can_use_tool", let onInteractiveAsk else {
-            if let response = ClaudeControlProtocol.errorResponse(
-                requestID: control.requestID,
-                message: "ASTRA does not handle control requests of subtype \(control.subtype)."
-            ) {
-                process.writeStdinLine(response)
-            }
-            return
-        }
-        let request = AgentInteractiveAskRequest(
-            requestID: control.requestID,
-            toolName: control.toolName ?? "Tool",
-            inputSummary: control.inputSummary,
-            commandText: control.commandText,
-            pathText: control.pathText
-        )
-        let heartbeat = Task.detached {
-            while !Task.isCancelled {
-                monitor.recordActivity()
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
-            }
-        }
-        Task.detached {
-            let outcome = await onInteractiveAsk(request)
-            heartbeat.cancel()
-            monitor.recordActivity()
-            let response: String?
-            switch outcome {
-            case .allow:
-                response = ClaudeControlProtocol.allowResponse(for: control)
-            case .deny(let message):
-                response = ClaudeControlProtocol.denyResponse(for: control, message: message)
-            }
-            if let response {
-                process.writeStdinLine(response)
-            }
         }
     }
 

@@ -1,6 +1,11 @@
 import Foundation
 
-struct AgentProcessResult {
+struct AgentProcessResult: Codable {
+    /// Successfully written approval responses followed by provider completion.
+    /// Receipt-save failures must not erase this process-local evidence.
+    var acknowledgedPermissionRequestIDs: Set<String> = []
+    /// Written responses without a terminal frame are uncertain, not safe retries.
+    var writtenPermissionRequestIDs: Set<String> = []
     let exitCode: Int
     let error: String?
     let providerFailureOutput: String?

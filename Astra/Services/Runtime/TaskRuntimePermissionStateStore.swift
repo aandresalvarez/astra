@@ -38,11 +38,24 @@ enum TaskRuntimePermissionOpenRequestStore {
         task.runtimePermissionOpenRequestsJSON = "[]"
     }
 
+    /// Resolve only the card the user approved, preserving independent asks.
+    static func resolveRequest(payload: String, task: AgentTask) {
+        if case .missing = typedState(for: task) {
+            // Materialize the legacy event-backed request before resolving it.
+            task.runtimePermissionOpenRequestsJSON = encode(unresolvedCompatibilityEntries(for: task))
+        }
+        let requestID = PermissionApprovalEventPayload.decoded(from: payload)?.requestID
+        task.runtimePermissionOpenRequestsJSON = encode(typedEntries(for: task).filter {
+            if let requestID { return $0.requestID != requestID }
+            return $0.payload != payload
+        })
+    }
+
     static func state(for task: AgentTask) -> TaskRuntimePermissionState {
         switch typedState(for: task) {
         case .available(let entries):
             guard let latest = entries.last else { return .empty }
-            return state(from: latest)
+            return state(from: latest, task: task)
         case .invalid:
             AppLogger.audit(.taskFailed, category: "RuntimePermissionState", taskID: task.id, fields: [
                 "reason": "runtime_permission_open_requests_decode_failed",
@@ -52,16 +65,8 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .missing:
             break
         }
-        guard let latestPayload = latestCompatibilityRequestEvent(for: task)?.payload else {
-            return .empty
-        }
-        let grants = compatibilityApprovalGrants(from: latestPayload)
-        return TaskRuntimePermissionState(
-            latestRequestPayload: latestPayload,
-            hasOpenApprovalRequest: hasOpenRequest(for: task),
-            decision: RuntimePermissionDecisionPresentation(payload: latestPayload),
-            taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: grants)
-        )
+        guard let latest = unresolvedCompatibilityEntries(for: task).last else { return .empty }
+        return state(from: latest, task: task)
     }
 
     static func hasOpenRequest(for task: AgentTask) -> Bool {
@@ -71,7 +76,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return false
         case .missing:
-            return RuntimePermissionOpenState.hasOpenRequest(events: compatibilityEvents(for: task))
+            return !unresolvedCompatibilityEntries(for: task).isEmpty
         }
     }
 
@@ -82,7 +87,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return nil
         case .missing:
-            return latestCompatibilityRequestEvent(for: task)?.payload
+            return unresolvedCompatibilityEntries(for: task).last?.payload
         }
     }
 
@@ -93,11 +98,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return []
         case .missing:
-            guard hasOpenRequest(for: task),
-                  let payload = latestCompatibilityRequestEvent(for: task)?.payload else {
-                return []
-            }
-            return [payload]
+            return unresolvedCompatibilityEntries(for: task).map(\.payload)
         }
     }
 
@@ -108,8 +109,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return []
         case .missing:
-            return latestCompatibilityRequestEvent(for: task)
-                .map { compatibilityApprovalGrants(from: $0.payload) } ?? []
+            return unresolvedCompatibilityEntries(for: task).last?.grants ?? []
         }
     }
 
@@ -120,9 +120,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .invalid:
             return nil
         case .missing:
-            return latestCompatibilityRequestEvent(for: task).flatMap {
-                compatibilityPermissionToolName(from: $0.payload)
-            }
+            return unresolvedCompatibilityEntries(for: task).last.flatMap(permissionToolName(from:))
         }
     }
 
@@ -141,13 +139,12 @@ enum TaskRuntimePermissionOpenRequestStore {
             task.runtimePermissionOpenRequestsJSON = "[]"
             return 0
         case .missing:
-            guard hasOpenRequest(for: task),
-                  let latest = latestCompatibilityRequestEvent(for: task),
-                  !requiresExplicitSandboxApproval(entry(from: latest.payload, requestedAt: latest.timestamp)) else {
-                return 0
-            }
-            task.runtimePermissionOpenRequestsJSON = "[]"
-            return 1
+            let entries = unresolvedCompatibilityEntries(for: task)
+            let remaining = entries.filter(requiresExplicitSandboxApproval)
+            let closedCount = entries.count - remaining.count
+            guard closedCount > 0 else { return 0 }
+            task.runtimePermissionOpenRequestsJSON = encode(remaining)
+            return closedCount
         }
     }
 
@@ -160,7 +157,8 @@ enum TaskRuntimePermissionOpenRequestStore {
     private static func typedEntries(for task: AgentTask) -> [Entry] {
         switch typedState(for: task) {
         case .available(let entries): entries
-        case .missing, .invalid: []
+        case .missing: unresolvedCompatibilityEntries(for: task)
+        case .invalid: []
         }
     }
 
@@ -203,11 +201,12 @@ enum TaskRuntimePermissionOpenRequestStore {
         )
     }
 
-    private static func state(from entry: Entry) -> TaskRuntimePermissionState {
+    private static func state(from entry: Entry, task: AgentTask) -> TaskRuntimePermissionState {
         TaskRuntimePermissionState(
             latestRequestPayload: entry.payload,
             hasOpenApprovalRequest: true,
-            decision: RuntimePermissionDecisionPresentation(payload: entry.payload),
+            decision: RuntimePermissionDecisionPresentation(payload: entry.payload,
+                isFutureUse: TaskPermissionContinuation.isFutureUse(payload: entry.payload, task: task)),
             taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: entry.grants)
         )
     }
@@ -216,12 +215,6 @@ enum TaskRuntimePermissionOpenRequestStore {
         guard let request = entry.request else { return false }
         if case .sandboxPath = request { return true }
         return false
-    }
-
-    private static func compatibilityApprovalGrants(from payload: String) -> [PermissionGrant] {
-        let structured = PermissionBroker.structuredApprovalGrants(from: payload)
-        if !structured.isEmpty { return structured }
-        return PermissionBroker.legacyApprovalGrants(from: payload)
     }
 
     private static func permissionToolName(from entry: Entry) -> String? {
@@ -283,16 +276,25 @@ enum TaskRuntimePermissionOpenRequestStore {
         return trimmed
     }
 
-    private static func latestCompatibilityRequestEvent(for task: AgentTask) -> TaskEvent? {
-        task.events
-            .filter { $0.type == "permission.denied" || $0.type == "permission.approval.requested" }
-            .sorted { $0.timestamp < $1.timestamp }
-            .last
+    private static func unresolvedCompatibilityEntries(for task: AgentTask) -> [Entry] {
+        let events = task.events.filter { !$0.isDeleted }
+        var entries: [Entry] = []
+        for event in events.filter({ $0.type == "permission.approval.requested" })
+            .sorted(by: { $0.timestamp < $1.timestamp }) {
+            let candidate = entry(from: event.payload, requestedAt: event.timestamp)
+            let resolved = events.contains { closure in
+                guard closure.timestamp >= event.timestamp else { return false }
+                if let id = candidate.requestID {
+                    return closure.type == "permission.request.resolved"
+                        && PermissionRequestResolution.decode(from: closure.payload)?.requestID == id
+                }
+                return closure.type == "task.approved"
+            }
+            guard !resolved else { continue }
+            if let id = candidate.requestID { entries.removeAll { $0.requestID == id } }
+            entries.append(candidate)
+        }
+        return entries
     }
 
-    private static func compatibilityEvents(for task: AgentTask) -> [RuntimePermissionOpenState.Event] {
-        task.events.map {
-            RuntimePermissionOpenState.Event(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
-        }
-    }
 }

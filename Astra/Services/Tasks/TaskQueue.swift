@@ -458,6 +458,9 @@ final class TaskQueue {
         )
         guard let schedule = try? modelContext.fetch(descriptor).first else { return }
 
+        guard RuntimeTurnSettlementService.stageScheduleRouting(task: task, scheduleID: scheduleID,
+            modelContext: modelContext) else { return }
+
         let lastRun = task.runs.sorted { $0.startedAt < $1.startedAt }.last
         let outputSummary = String((lastRun?.output ?? "No output").prefix(500))
         let statusStr = task.status.rawValue
@@ -506,9 +509,7 @@ final class TaskQueue {
             schedule.appendRunResult(status: statusStr, summary: outputSummary, taskID: task.id)
         }
 
-        if let ws = schedule.workspace {
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
-        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: schedule.workspace, modelContext: modelContext)
     }
 
     @MainActor

@@ -92,6 +92,8 @@ public enum TaskEventTypes {
         /// a `task.approved` (the deny path, and any provider whose answer
         /// resolves the same running process). Closes the open-request card.
         public static let permissionRequestResolved: TaskEventType = "permission.request.resolved"
+        public static let permissionLiveApprovalCommitted: TaskEventType = "permission.live_approval.committed"
+        public static let permissionApprovalDelivered: TaskEventType = "permission.approval.delivered"
         public static let permissionGrantTask: TaskEventType = "permission.grant.task"
     }
 
@@ -203,6 +205,10 @@ public enum TaskEventTypes {
     }
 
     public enum System {
+        public static let runtimeResultCaptured: TaskEventType = "runtime.result.captured"
+        public static let runtimeTurnSettled: TaskEventType = "runtime.turn.settled"
+        public static let runtimeReconciliationRequired: TaskEventType = "runtime.reconciliation.required"
+        public static let runtimeScheduleResultRouted: TaskEventType = "runtime.schedule_result.routed"
         public static let readOnlyBoundaryApplied: TaskEventType = "astra.read_only_boundary.applied"
         public static let readOnlyBoundaryUnavailable: TaskEventType = "astra.read_only_boundary.unavailable"
         public static let info: TaskEventType = "system.info"
@@ -309,6 +315,10 @@ public enum TaskEventTypes {
     ]
 
     private static let systemTypes: Set<TaskEventType> = [
+        System.runtimeResultCaptured,
+        System.runtimeTurnSettled,
+        System.runtimeReconciliationRequired,
+        System.runtimeScheduleResultRouted,
         System.error,
         System.info,
         Budget.exceeded,

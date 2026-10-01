@@ -56,6 +56,20 @@ struct AgentRuntimeAdapterRegistryTests {
 
 @Suite("Agent Runtime Execution Policy")
 struct AgentRuntimeExecutionPolicyTests {
+    @Test("Plan continuation merges one-time authority while retaining the plan permission tier")
+    func planContinuationAddsOneTimeAuthority() {
+        let credential = PermissionGrant.credential(label: "connector:test:JIRA_API_TOKEN")
+        let base = AgentRuntimeExecutionPolicy.approvedPlan(runtime: .claudeCode,
+            currentPermissionPolicy: .restricted, allowedTools: ["Read"])
+        let approval = AgentRuntimeExecutionPolicy(permissionPolicyOverride: .autonomous,
+            allowedToolsOverride: ["Read", "Bash(npm:*)"], permissionGrantsOverride: [credential, credential])
+        let merged = base.addingRuntimePermissions(from: approval)
+        #expect(merged.allowedToolsOverride == ["Bash(npm:*)", "Read"])
+        #expect(merged.permissionGrantsOverride == [credential])
+        #expect(merged.permissionPolicyOverride == .restricted)
+        #expect(base.addingRuntimePermissions(from: .default) == base)
+    }
+
     @Test("Approved plan policy carries approved tools for every runtime")
     func approvedPlanPolicyCarriesApprovedToolsForEveryRuntime() {
         let approvedTools = ["Read", "Write"]

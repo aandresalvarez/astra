@@ -235,15 +235,13 @@ enum BrokeredCredentialApprovalDiscovery {
             runtime: runtime
         ))
         let openOffers = openCredentialOffers(for: task)
-        let alreadyOpen = Set(openOffers.flatMap(\.coveredRequestIDs))
         var recorded: [BrokeredCredentialApprovalRecord] = []
         for approval in drained {
             // A grant recorded after the launch read its labels — the user
             // approved mid-run, or an earlier run's request was approved — means
             // the next launch will unseal this connector on its own. Asking
             // again would be asking for something already given.
-            guard !approval.credentialLabels.allSatisfy(granted.contains),
-                  !alreadyOpen.contains(approval.requestID) else {
+            guard !approval.credentialLabels.allSatisfy(granted.contains) else {
                 continue
             }
             recorded.append(approval)
@@ -254,7 +252,9 @@ enum BrokeredCredentialApprovalDiscovery {
         // closing the rest, so a second offer in the store is a connector the
         // user approves without ever being shown — and it stays sealed. Anything
         // an earlier run left open therefore travels in this offer too.
+        let currentConnectorIDs = Set(recorded.map(\.connectorID))
         let stillWaiting = records(stillWaitingIn: openOffers, excluding: granted, modelContext: modelContext)
+            .filter { !currentConnectorIDs.contains($0.connectorID) }
         recordOpenRequest(
             covering: stillWaiting + recorded,
             includesEarlierRuns: !stillWaiting.isEmpty,
@@ -301,7 +301,7 @@ enum BrokeredCredentialApprovalDiscovery {
             displayName: offer.connectorName,
             labels: offer.labels
         )
-        let payload = PermissionBroker.approvalPayloadString(
+        let payload = TaskPermissionContinuation.attach(PermissionBroker.approvalPayloadString(
             providerID: runtime,
             request: request,
             reason: offerReason(
@@ -311,10 +311,16 @@ enum BrokeredCredentialApprovalDiscovery {
             ),
             providerDetail: offer.connectorName,
             grants: PermissionBroker.approvalGrants(for: request),
-            requestID: BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: connectorIDs)
-        )
+            requestID: BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: connectorIDs),
+            behavior: .futureUse
+        ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext), behavior: .futureUse)
         for requestID in replacedRequestIDs {
             TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: requestID, task: task)
+            if requestID != PermissionApprovalEventPayload.decoded(from: payload)?.requestID {
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionRequestResolved,
+                    payload: PermissionRequestResolution(requestID: requestID, approved: false,
+                        toolName: "Replaced connector offer").payloadString, run: run))
+            }
         }
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
         modelContext.insert(TaskEvent(
@@ -355,18 +361,9 @@ enum BrokeredCredentialApprovalDiscovery {
             + "credentials sealed. " + unchanged
     }
 
-    /// An offer this discovery recorded that the user has not answered yet.
     private struct OpenOffer {
         let requestID: String
         let labels: [String]
-
-        /// Its own id and the per-connector id of every connector it covers, so
-        /// a connector folded into a combined offer still counts as offered.
-        var coveredRequestIDs: [String] {
-            [requestID] + ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: labels).map {
-                BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: [$0])
-            }
-        }
     }
 
     private static func openCredentialOffers(for task: AgentTask) -> [OpenOffer] {
