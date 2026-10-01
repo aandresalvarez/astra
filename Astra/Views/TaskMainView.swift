@@ -4225,9 +4225,10 @@ struct TaskMainView: View {
                     onStop: (decisionDockPresentation != nil || onCancelTask == nil) ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onReasoningEffortChange: { task.reasoningEffort = $0 },
-                    onRuntimeChange: { runtime in
+                    onRuntimeChange: { runtime, requestedModel in
                         TaskComposerCoordinator.applyRuntimeSwitch(
                             to: runtime,
+                            requestedModel: requestedModel,
                             task: task,
                             cache: runtimeModelCache,
                             source: "task_composer"

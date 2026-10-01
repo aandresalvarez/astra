@@ -56,7 +56,7 @@ struct ComposerPresentationTests {
     func runtimeChipHugsItsLabel() throws {
         let source = try sourceFile("Astra/Views/Components/ComposerToolbar.swift")
         let start = try #require(source.range(of: "private func providerModelPill"))
-        let end = try #require(source.range(of: "private var compatibleRuntimes", range: start.upperBound..<source.endIndex))
+        let end = try #require(source.range(of: "// MARK: - Model selector popover", range: start.upperBound..<source.endIndex))
         let chip = String(source[start.lowerBound..<end.lowerBound])
 
         let fit = try #require(chip.range(of: ".fixedSize(horizontal: true, vertical: false)"))

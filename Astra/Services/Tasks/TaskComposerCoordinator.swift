@@ -123,15 +123,19 @@ enum TaskComposerCoordinator {
         TaskAttachmentBlock.message(messageText, attaching: attachedFiles)
     }
 
+    /// `requestedModel` is a model the user picked together with the runtime
+    /// (the composer's model selector); it wins when the runtime offers it,
+    /// while `previousModel` still records what the task had before.
     static func runtimeUpdate(
         previousRuntime: String?,
         selectedRuntime: String,
         currentModel: String,
+        requestedModel: String? = nil,
         cache: RuntimeModelAvailabilityCache
     ) -> TaskComposerRuntimeUpdate {
         let resolvedRuntime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: selectedRuntime)
         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
-            currentModel: currentModel,
+            currentModel: requestedModel ?? currentModel,
             to: resolvedRuntime,
             cache: cache
         )
@@ -152,6 +156,7 @@ enum TaskComposerCoordinator {
     @MainActor
     static func applyRuntimeSwitch(
         to runtime: String,
+        requestedModel: String? = nil,
         task: AgentTask,
         cache: RuntimeModelAvailabilityCache,
         source: String
@@ -160,6 +165,7 @@ enum TaskComposerCoordinator {
             previousRuntime: task.runtimeID,
             selectedRuntime: runtime,
             currentModel: task.model,
+            requestedModel: requestedModel,
             cache: cache
         )
         task.runtimeID = runtime

@@ -177,6 +177,7 @@ enum UIResponsivenessDiagnostics {
             || filesShelfReadinessEvents.contains(event)
             || event.hasPrefix("chat_stream_")
             || event.hasPrefix("chat_scroll_")
+            || event.hasPrefix("model_selector_")
     }
 
     /// Lifts `main_actor_max_stall_ms` out of whichever event carried it and
