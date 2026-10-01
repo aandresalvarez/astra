@@ -117,6 +117,13 @@ public enum AppStorageKeys {
         }
     }
 
+    /// Whether the user has marked this runtime as approved for PHI and other
+    /// sensitive data. A label ASTRA shows next to the runtime; the user owns
+    /// the judgement, so a runtime defaults to not approved.
+    public static func runtimeSensitiveDataApprovedKey(for runtime: AgentRuntimeID) -> String {
+        "astra.runtime.\(storageComponent(for: runtime)).sensitiveDataApproved.v1"
+    }
+
     public static func runtimeAvailableModelsKey(for runtime: AgentRuntimeID) -> String {
         switch runtime {
         case .claudeCode:
