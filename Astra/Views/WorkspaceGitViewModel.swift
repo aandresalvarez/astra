@@ -122,6 +122,10 @@ final class WorkspaceGitViewModel: ObservableObject {
         pollingSuspension.onResume = { [weak self] in
             // One refresh on return, so the rail is current when the user is.
             guard let self, !self.isRefreshPaused, self.workspace != nil else { return }
+            // Waking is when a dropped network most likely came back, so end any
+            // network backoff first; otherwise the refresh below can skip the PR
+            // lookup and leave a stale error up for the rest of the interval.
+            self.prLookupBreaker.rearmAfterForeground()
             self.scheduleRefresh()
         }
     }

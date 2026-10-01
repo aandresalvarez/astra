@@ -303,7 +303,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
             // address` when the local address went away (VPN or Wi-Fi change),
             // and the user was told only that the process exited with code 3.
             "dial tcp", "read tcp", "write tcp", "can't assign requested address",
-            "no route to host", "no such host", "broken pipe", "connection aborted"
+            "no route to host", "no such host", "connection aborted"
         ]) {
             return .networkFailed
         }

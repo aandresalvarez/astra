@@ -1649,6 +1649,21 @@ struct RuntimePermissionApprovalGateTests {
         #expect(diagnostic.isApprovableRuntimePermission == false)
     }
 
+    /// A bare `broken pipe` is a local EPIPE (a tool writing to a closed pipe) as
+    /// often as a dropped connection, so it must not read as a network failure on
+    /// its own; the socket form (`write tcp …: broken pipe`) still does.
+    @Test("A local broken pipe is not a network failure, a socket one is")
+    func brokenPipeNeedsASocketOperation() {
+        func category(_ raw: String) -> AgentRuntimeFailureCategory {
+            AgentRuntimeFailureDiagnostic.classify(
+                runtime: .antigravityCLI, model: "m", exitCode: 1, rawError: raw,
+                providerVersion: nil, stream: nil
+            ).category
+        }
+        #expect(category("bash: echo: write error: Broken pipe") != .networkFailed)
+        #expect(category(#"Post "https://x": write tcp 10.0.0.1:5->1.1.1.1:443: write: broken pipe"#) == .networkFailed)
+    }
+
     @Test("A local approval prompt still raises an approval card")
     func localApprovalPromptStillPauses() throws {
         let container = try makeRuntimeComponentContainer()
