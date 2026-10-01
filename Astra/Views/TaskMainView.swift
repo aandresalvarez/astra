@@ -793,10 +793,8 @@ struct TaskMainView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration, cache: .shared
         )
-        // SwiftUI's .task(id:) cancels this when the view goes away or the signature changes. A
-        // cancelled refresh returns no states (its killed probes would all read as blocked), so
-        // anything short of a full map is not an answer: keep the previous states until the
-        // replacement task completes rather than dropping providers from the menu.
+        // .task(id:) cancels this on a signature change or disappearance, and a cancelled refresh
+        // returns no states. Short of a full map, keep the previous states rather than drop providers.
         guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignTaskAfterRuntimeAvailabilityRefresh()
