@@ -85,4 +85,90 @@ struct RuntimeSensitiveDataSwitchPolicyTests {
             "Switched from \(AgentRuntimeID.claudeCode.displayName) to \(AgentRuntimeID.codexCLI.displayName), which is not approved for PHI or sensitive data. Risk acknowledged."
         ])
     }
+
+    // MARK: - Shared prompt
+
+    @MainActor
+    private func guardRecording(into log: SwitchLog, hasConversation: Bool = true) -> RuntimeSensitiveDataSwitchGuard {
+        RuntimeSensitiveDataSwitchGuard(
+            hasConversation: { hasConversation },
+            recordAcknowledgement: { previous, next, model in
+                log.entries.append("ack \(previous.rawValue)->\(next.rawValue) \(model)")
+            }
+        )
+    }
+
+    private var claudeToCodex: RuntimeSensitiveDataSwitchRequest {
+        RuntimeSensitiveDataSwitchRequest(previous: .claudeCode, next: .codexCLI, model: "gpt-6-astra")
+    }
+
+    @Test("a risky switch waits for the alert; confirming records the acknowledgement, then applies")
+    @MainActor
+    func promptHoldsRiskySwitchUntilConfirmed() {
+        let log = SwitchLog()
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+
+        let isWaiting = prompt.request(
+            claudeToCodex,
+            guard: guardRecording(into: log),
+            isApproved: { $0 == .claudeCode }
+        ) { log.entries.append("applied") }
+
+        #expect(isWaiting)
+        #expect(log.entries.isEmpty)
+        #expect(prompt.pending?.request == claudeToCodex)
+
+        prompt.confirm()
+        #expect(log.entries == ["ack claude_code->codex_cli gpt-6-astra", "applied"])
+        #expect(prompt.pending == nil)
+    }
+
+    @Test("cancelling a held switch applies nothing and records nothing")
+    @MainActor
+    func promptCancelDropsTheSwitch() {
+        let log = SwitchLog()
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+        prompt.request(claudeToCodex, guard: guardRecording(into: log), isApproved: { $0 == .claudeCode }) {
+            log.entries.append("applied")
+        }
+
+        prompt.cancel()
+        prompt.confirm()
+        #expect(log.entries.isEmpty)
+    }
+
+    @Test("a safe or unguarded switch applies at once")
+    @MainActor
+    func promptAppliesSafeSwitchesImmediately() {
+        let log = SwitchLog()
+        let prompt = RuntimeSensitiveDataSwitchPrompt()
+
+        #expect(!prompt.request(claudeToCodex, guard: nil, isApproved: { $0 == .claudeCode }) {
+            log.entries.append("unguarded")
+        })
+        #expect(!prompt.request(claudeToCodex, guard: guardRecording(into: log), isApproved: { _ in false }) {
+            log.entries.append("neither approved")
+        })
+        #expect(log.entries == ["unguarded", "neither approved"])
+        #expect(prompt.pending == nil)
+    }
+
+    @Test("every runtime switch on an existing task goes through the shared prompt")
+    func everyTaskRuntimeSwitchIsGated() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let taskMainView = try String(contentsOf: root.appendingPathComponent("Astra/Views/TaskMainView.swift"), encoding: .utf8)
+        let toolbar = try String(contentsOf: root.appendingPathComponent("Astra/Views/Components/ComposerToolbar.swift"), encoding: .utf8)
+
+        // The decision dock's "Switch to …" once bypassed the gate by calling
+        // applyRuntimeSwitch directly; it now goes through the prompt.
+        #expect(taskMainView.contains("TaskComposerCoordinator.requestDockRuntimeSwitch("))
+        #expect(!taskMainView.contains("TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task"))
+        #expect(taskMainView.contains(".runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)"))
+        #expect(toolbar.contains(".runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)"))
+    }
+}
+
+@MainActor
+private final class SwitchLog {
+    var entries: [String] = []
 }

@@ -124,7 +124,7 @@ struct ComposerToolbar: View {
     @State private var isModelSelectorPresented = false
     @State private var modelSelectorOpenedAt: UInt64?
     @State private var modelSelectorCatalogStore = ModelSelectorCatalogStore()
-    @State private var pendingSensitiveDataSwitch: RuntimeSensitiveDataSwitchRequest?
+    @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -169,27 +169,7 @@ struct ComposerToolbar: View {
                 onPolicyLevelChange: onPolicyLevelChange
             )
         }
-        .alert(
-            pendingSensitiveDataSwitch.map { RuntimeSensitiveDataSwitchPolicy.alertTitle(to: $0.next) } ?? "",
-            isPresented: Binding(
-                get: { pendingSensitiveDataSwitch != nil },
-                set: { if !$0 { pendingSensitiveDataSwitch = nil } }
-            ),
-            presenting: pendingSensitiveDataSwitch
-        ) { request in
-            Button(RuntimeSensitiveDataSwitchPolicy.confirmTitle, role: .destructive) {
-                sensitiveDataSwitchGuard?.recordAcknowledgement(request.previous, request.next, request.model)
-                applyRuntimeChange(to: request.next, model: request.model)
-            }
-            Button(RuntimeSensitiveDataSwitchPolicy.cancelTitle(keeping: request.previous), role: .cancel) {
-                AppLogger.breadcrumb(action: "task_sensitive_data_switch_cancelled", category: "UI", fields: [
-                    "runtime": request.previous.rawValue,
-                    "declined_runtime": request.next.rawValue
-                ])
-            }
-        } message: { request in
-            Text(RuntimeSensitiveDataSwitchPolicy.alertMessage(from: request.previous, to: request.next))
-        }
+        .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
     }
 
     // MARK: - Plus Menu
@@ -457,22 +437,13 @@ struct ComposerToolbar: View {
     /// acknowledgement. The popover closes first: the alert belongs to the
     /// window, not to a popover that may still be on screen.
     private func requestRuntimeChange(to runtime: AgentRuntimeID, model newModel: String) {
-        if let sensitiveDataSwitchGuard,
-           RuntimeSensitiveDataSwitchPolicy.requiresAcknowledgement(
-               from: resolvedRuntime,
-               to: runtime,
-               hasConversation: sensitiveDataSwitchGuard.hasConversation(),
-               isApproved: { RuntimeProviderSettingsStore.isSensitiveDataApproved(for: $0) }
-           ) {
-            isModelSelectorPresented = false
-            pendingSensitiveDataSwitch = RuntimeSensitiveDataSwitchRequest(
-                previous: resolvedRuntime,
-                next: runtime,
-                model: newModel
-            )
-            return
+        let isWaiting = sensitiveDataSwitchPrompt.request(
+            RuntimeSensitiveDataSwitchRequest(previous: resolvedRuntime, next: runtime, model: newModel),
+            guard: sensitiveDataSwitchGuard
+        ) {
+            applyRuntimeChange(to: runtime, model: newModel)
         }
-        applyRuntimeChange(to: runtime, model: newModel)
+        if isWaiting { isModelSelectorPresented = false }
     }
 
     private func applyRuntimeChange(to runtime: AgentRuntimeID, model newModel: String) {

@@ -266,6 +266,7 @@ struct TaskMainView: View {
     @State private var gitPublishProposal: GitPullRequestPublishProposal?
     @State private var githubReviewPublication = TaskGitHubReviewPublicationState()
     @State private var connectorMutationReview = TaskConnectorMutationReviewState()
+    @State private var sensitiveDataSwitchPrompt = RuntimeSensitiveDataSwitchPrompt()
     @State private var isPreparingGitPublishProposal = false
     @State private var gitPublishPreparationError: String?
     @FocusState private var isComposerFocused: Bool
@@ -538,6 +539,7 @@ struct TaskMainView: View {
             modelContext: modelContext,
             onResolved: { threadViewModel.refreshSnapshot(for: task) }
         )
+        .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
         .alert("Couldn’t Fork Conversation", isPresented: isForkCreationErrorPresented) {
             Button("OK", role: .cancel) { forkCreationError = nil }
         } message: {
@@ -3976,8 +3978,9 @@ struct TaskMainView: View {
             toggleTaskDoneFromDecisionDock()
         case .switchRuntime:
             guard let runtime = action.payload else { return }
-            TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
-            onRetryTask?(task)
+            TaskComposerCoordinator.requestDockRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, prompt: sensitiveDataSwitchPrompt) {
+                onRetryTask?(task)
+            }
         }
     }
 

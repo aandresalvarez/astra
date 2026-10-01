@@ -183,6 +183,43 @@ enum TaskComposerCoordinator {
         ])
     }
 
+    /// The decision dock's "Switch to …" for a policy-blocked task: the same
+    /// acknowledgement gate as the composer, then `then` (the retry) only once
+    /// the switch has actually been applied.
+    @MainActor
+    static func requestDockRuntimeSwitch(
+        to runtime: String,
+        task: AgentTask,
+        cache: RuntimeModelAvailabilityCache,
+        prompt: RuntimeSensitiveDataSwitchPrompt,
+        then: @escaping () -> Void
+    ) {
+        let update = runtimeUpdate(
+            previousRuntime: task.runtimeID,
+            selectedRuntime: runtime,
+            currentModel: task.model,
+            requestedModel: nil,
+            cache: cache
+        )
+        prompt.request(
+            RuntimeSensitiveDataSwitchRequest(
+                previous: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue),
+                next: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime),
+                model: update.resolvedModel
+            ),
+            guard: sensitiveDataSwitchGuard(for: task)
+        ) {
+            applyRuntimeSwitch(
+                to: runtime,
+                requestedModel: update.resolvedModel,
+                task: task,
+                cache: cache,
+                source: "policy_block_switch_action"
+            )
+            then()
+        }
+    }
+
     /// Guards runtime switches in an existing task's composer. A task with no
     /// runs has sent nothing to any provider, so there is no thread to protect.
     static func sensitiveDataSwitchGuard(for task: AgentTask) -> RuntimeSensitiveDataSwitchGuard {
