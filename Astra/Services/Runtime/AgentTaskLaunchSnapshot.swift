@@ -4,7 +4,7 @@ import ASTRAModels
 /// Immutable request-time configuration passed through a runtime launch.
 /// Keeping this value outside SwiftData prevents a queued request from
 /// rewriting editable task preferences while it waits for a worker.
-struct AgentTaskLaunchSnapshot: Sendable, Equatable {
+struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     let id: UUID
     let model: String
     let reasoningEffort: String?

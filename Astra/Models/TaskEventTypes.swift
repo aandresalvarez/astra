@@ -205,6 +205,10 @@ public enum TaskEventTypes {
     }
 
     public enum System {
+        public static let runtimeResultCaptured: TaskEventType = "runtime.result.captured"
+        public static let runtimeTurnSettled: TaskEventType = "runtime.turn.settled"
+        public static let runtimeReconciliationRequired: TaskEventType = "runtime.reconciliation.required"
+        public static let runtimeScheduleResultRouted: TaskEventType = "runtime.schedule_result.routed"
         public static let readOnlyBoundaryApplied: TaskEventType = "astra.read_only_boundary.applied"
         public static let readOnlyBoundaryUnavailable: TaskEventType = "astra.read_only_boundary.unavailable"
         public static let info: TaskEventType = "system.info"
@@ -311,6 +315,10 @@ public enum TaskEventTypes {
     ]
 
     private static let systemTypes: Set<TaskEventType> = [
+        System.runtimeResultCaptured,
+        System.runtimeTurnSettled,
+        System.runtimeReconciliationRequired,
+        System.runtimeScheduleResultRouted,
         System.error,
         System.info,
         Budget.exceeded,

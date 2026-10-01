@@ -20,8 +20,8 @@ final class AgentLivePermissionDeliveryChannel: @unchecked Sendable {
         guard !providerTurnCompleted, process.writeStdinLine(response) else { return false }
         if case .allowWithAcknowledgementReceipt(let receipt) = outcome {
             receipts.append(receipt)
-            if let requestID { writtenApprovalRequestIDs.insert(requestID) }
         }
+        if outcome.isAllowed, let requestID { writtenApprovalRequestIDs.insert(requestID) }
         return true
     }
 
@@ -35,6 +35,12 @@ final class AgentLivePermissionDeliveryChannel: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return providerTurnCompleted ? writtenApprovalRequestIDs : []
+    }
+
+    var writtenPermissionRequestIDs: Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return writtenApprovalRequestIDs
     }
 
     /// Called after final stdout drain and before the worker settles the run.

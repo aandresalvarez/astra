@@ -915,6 +915,8 @@ public struct ASTRAApp: App {
     /// Settles the runs and turn requests a crash or quit left in flight.
     @MainActor
     private static func settleInterruptedWork(modelContext: ModelContext, autoExportWorkspaces: Bool) {
+        runtimeSettlementAutoExportWorkspaces = autoExportWorkspaces
+        RuntimeTurnSettlementRecoveryService.prepare(modelContext: modelContext, autoExport: autoExportWorkspaces)
         TaskRunLifecycleService.recoverOrphanedRunningRuns(
             modelContext: modelContext,
             autoExportWorkspaces: autoExportWorkspaces
@@ -924,6 +926,28 @@ public struct ASTRAApp: App {
             autoExportWorkspaces: autoExportWorkspaces
         )
         LivePermissionApprovalRecovery.recover(modelContext: modelContext, autoExportWorkspaces: autoExportWorkspaces)
+    }
+
+    @MainActor private static var runtimeSettlementRecovery: Task<Void, Never>?
+    @MainActor private static var runtimeSettlementAutoExportWorkspaces = true
+
+    @MainActor
+    static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
+        runDeferredStartupWork(modelContext: modelContext)
+        await recoverTaskFolderSnapshots(modelContext: modelContext)
+        await recoverRuntimeSettlements(modelContext: modelContext, taskQueue: taskQueue)
+    }
+
+    @MainActor
+    static func recoverRuntimeSettlements(modelContext: ModelContext, taskQueue: TaskQueue) async {
+        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
+        if let recovery = runtimeSettlementRecovery { await recovery.value; return }
+        let recovery = Task { @MainActor in
+            await RuntimeTurnSettlementRecoveryService.resume(modelContext: modelContext, taskQueue: taskQueue,
+                autoExport: runtimeSettlementAutoExportWorkspaces)
+        }
+        runtimeSettlementRecovery = recovery
+        await recovery.value
     }
 
     /// One recovery for the process: every window's startup awaits the same

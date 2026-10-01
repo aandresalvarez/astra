@@ -416,8 +416,17 @@ enum ExecutionRequestSubmissionService {
         rollback: () -> Void = {}
     ) -> Result<Submission, SubmissionError> {
         let nextSequence: Int
+        let origin: TaskTurnRequest?
+        let originSnapshot: AgentTaskLaunchSnapshot?
         do {
             nextSequence = try TaskTurnRequestRepository.nextSequence(for: task, in: modelContext)
+            origin = try permissionContinuation.flatMap { binding in
+                try TaskTurnRequestRepository.requests(for: task, in: modelContext).last { $0.runID == binding.runID }
+            }
+            originSnapshot = origin.flatMap { TaskExecutionLaunchSnapshotApplicator.snapshot(request: $0, from: task) }
+            // Legacy requests have no snapshot. An existing but unreadable
+            // snapshot must never turn into today's mutable launch settings.
+            if origin?.executionPolicySnapshotJSON != nil, originSnapshot == nil { return .failure(.emptySource) }
         } catch {
             return .failure(.persistenceFailed(String(describing: type(of: error))))
         }
@@ -447,6 +456,18 @@ enum ExecutionRequestSubmissionService {
             turnIntentSnapshot: turnIntentSnapshot,
             submittedAt: date
         )
+        if let origin, let snapshot = originSnapshot {
+            let frozenTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+            // Task authority can grow through this approval; execution settings
+            // remain those the originating turn actually accepted.
+            frozenTask.runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
+            request.runtimeIDSnapshot = origin.runtimeIDSnapshot
+            request.modelSnapshot = origin.modelSnapshot
+            request.tokenBudgetSnapshot = origin.tokenBudgetSnapshot
+            request.executionPolicySnapshotJSON = TaskEvent.payloadString(TaskExecutionPolicySnapshotV1(
+                task: frozenTask, turnIntentSnapshot: turnIntentSnapshot))
+            request.resourceClaimsJSON = origin.resourceClaimsJSON
+        }
         if let binding = permissionContinuation, let run = task.runs.first(where: { $0.id == binding.runID }),
            let runtime = run.runtimeID, AgentRuntimeID(rawValue: runtime) != nil {
             request.runtimeIDSnapshot = runtime

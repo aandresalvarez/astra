@@ -1123,9 +1123,9 @@ final class AgentRuntimeProcessRunner {
             currentProcess = process
             monitor.startWatchdog(process: process)
         }
-        await deliveryChannel.recordAcknowledgements()
         var acknowledgedResult = result
         acknowledgedResult.acknowledgedPermissionRequestIDs = deliveryChannel.acknowledgedPermissionRequestIDs
+        acknowledgedResult.writtenPermissionRequestIDs = deliveryChannel.writtenPermissionRequestIDs
         return acknowledgedResult
     }
 

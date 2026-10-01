@@ -86,7 +86,7 @@ final class AgentRuntimeWorker {
         existingStartEventID: UUID? = nil,
         executionRequestID: UUID? = nil,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun, Set<String>) -> Void)? = nil,
+        approvedPlan: RuntimeTurnSettlementService.ApprovedPlan? = nil,
         retainIsolationAfterExecution: Bool = false,
         onEvent: @escaping (ParsedEvent) -> Void
     ) async -> AgentRuntimeExecutionContext? {
@@ -119,7 +119,7 @@ final class AgentRuntimeWorker {
             auditPhase: "run",
             recordingMode: .initial,
             executionPolicy: executionPolicy,
-            deferTurnTerminalization: deferTurnTerminalization,
+            approvedPlan: approvedPlan,
             retainIsolationAfterExecution: retainIsolationAfterExecution,
             onExecutionContext: { executionContext = $0 }
         )
@@ -141,11 +141,15 @@ final class AgentRuntimeWorker {
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
-            guard await validateApprovedPlanContractForFinalCompletion(
+            guard await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: currentPlan,
-                modelContext: modelContext
+                modelContext: modelContext,
+                verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
+                    fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
+                    preferredModel: validationModel, modelContext: modelContext)
             ) else {
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 return
             }
             TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
@@ -199,307 +203,17 @@ final class AgentRuntimeWorker {
         .withLaunchSnapshot(executionPolicy.launchSnapshot)
         .withTurnIntentSnapshot(executionPolicy.turnIntentSnapshot)
         .withResourceAdmission(from: executionPolicy)
-        // The provider finishing is a claim, not this turn's outcome: the
-        // finalization below can still send the task back for review. Terminal
-        // request state is irreversible, so hold the durable request open
-        // until that verdict exists instead of completing it on raw success.
-        var pendingTurn: (request: TaskTurnRequest?, run: TaskRun, acknowledgedPermissionRequestIDs: Set<String>)?
         let executionContext = await execute(
-            task: task,
-            modelContext: modelContext,
-            promptOverride: prompt,
+            task: task, modelContext: modelContext, promptOverride: prompt,
             startEventPayload: approvedStep.map { "Agent started approved plan step: \($0.title)" }
                 ?? "Agent started executing approved plan: \(currentPlan.title)",
-            existingStartEventID: existingStartEventID,
-            executionRequestID: executionRequestID,
+            existingStartEventID: existingStartEventID, executionRequestID: executionRequestID,
             executionPolicy: runExecutionPolicy,
-            deferTurnTerminalization: { pendingTurn = (request: $0, run: $1, acknowledgedPermissionRequestIDs: $2) },
-            retainIsolationAfterExecution: true,
-            onEvent: onEvent
-        )
-        defer { executionContext?.cleanup() }
-        let validationWorkspacePath = executionContext?.executionPath
-        var rejectedOutcome: (state: TaskTurnRequestState, reason: String)?
-        if let pendingTurn, LivePermissionApprovalRecovery.settleUndeliveredPlanApproval(
-            request: pendingTurn.request, run: pendingTurn.run, task: task, step: approvedStep, plan: currentPlan,
-            acknowledgedRequestIDs: pendingTurn.acknowledgedPermissionRequestIDs, modelContext: modelContext) { return }
-        if task.status == .completed {
-            let accepted: Bool
-            if let approvedStep {
-                accepted = await finalizeApprovedPlanStep(
-                    approvedStep,
-                    plan: currentPlan,
-                    task: task,
-                    workspacePath: validationWorkspacePath,
-                    sandboxEnforcementSnapshot: runExecutionPolicy.sandboxEnforcementSnapshot,
-                    modelContext: modelContext
-                )
-            } else {
-                accepted = await finalizeApprovedFullPlan(
-                    currentPlan,
-                    task: task,
-                    workspacePath: validationWorkspacePath,
-                    sandboxEnforcementSnapshot: runExecutionPolicy.sandboxEnforcementSnapshot,
-                    modelContext: modelContext
-                )
-            }
-            if !accepted {
-                rejectedOutcome = (.failed, "approved_plan_finalization_rejected")
-            }
-        } else if task.isTerminal {
-            TaskPlanService.recordExecutionFailed(
-                planID: currentPlan.planID,
-                task: task,
-                modelContext: modelContext,
-                reason: task.status.rawValue
-            )
-        }
-        // Reached on every path that started a runtime session, including the
-        // early provider-boundary aborts, so a held-open request is always
-        // terminalized exactly once. Rejections force `.failed` because the
-        // run object itself may still read `.completed`; every other outcome
-        // keeps the run's own status mapping (cancelled stays cancelled).
-        if let pendingTurn {
-            PersistedTurnRuntimeEventLinker.finishRuntime(
-                request: pendingTurn.request,
-                run: pendingTurn.run,
-                task: task,
-                acknowledgedPermissionRequestIDs: pendingTurn.acknowledgedPermissionRequestIDs,
-                forcedOutcome: rejectedOutcome,
-                in: modelContext
-            )
-        }
+            approvedPlan: .init(plan: currentPlan, step: approvedStep),
+            retainIsolationAfterExecution: true, onEvent: onEvent)
+        executionContext?.cleanup()
     }
 
-    /// Returns false when the run was rejected (checkpoint, provider blocker,
-    /// or contract) so the caller can terminalize the durable turn as failed
-    /// instead of completed. A pause that only awaits the NEXT step's approval
-    /// is an accepted outcome — that step's work really did land.
-    @MainActor
-    private func finalizeApprovedPlanStep(
-        _ step: TaskPlanPayloadStep,
-        plan: TaskPlanPayload,
-        task: AgentTask,
-        workspacePath: String? = nil,
-        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
-        modelContext: ModelContext
-    ) async -> Bool {
-        let stateAfterRun = TaskPlanService.reconstruct(for: task)
-        let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
-        let lastRun = task.runs.sorted { $0.startedAt < $1.startedAt }.last
-
-        // Checkpoint: a finished process is a claim, not evidence. Resolve the
-        // step's declared required outputs before recording it done — even a
-        // provider-emitted completion marker doesn't outrank a missing output.
-        // Provider-skipped steps are exempt (their outputs legitimately don't
-        // exist), and a provider-reported blocker takes priority below so its
-        // actionable detail isn't shadowed by a generic checkpoint message.
-        let checkpoint = PlanStepCheckpointVerifier.verify(
-            step: step,
-            plan: plan,
-            task: task,
-            workspacePath: workspacePath
-        )
-        let latestBlockIsCheckpointImposed = PlanStepCheckpointVerifier.latestBlockIsCheckpointImposed(
-            task: task,
-            stepID: step.id
-        )
-        let providerReportedBlock = currentStepStatus == .blocked && !latestBlockIsCheckpointImposed
-        if currentStepStatus != .skipped, !providerReportedBlock, !checkpoint.missingRequiredPaths.isEmpty {
-            let message = PlanStepCheckpointVerifier.recordCheckpointBlock(
-                step: step,
-                missing: checkpoint.missingRequiredPaths,
-                plan: plan,
-                task: task,
-                run: lastRun,
-                modelContext: modelContext
-            )
-            pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
-            return false
-        }
-
-        let shouldFallbackComplete: Bool = {
-            switch currentStepStatus {
-            case .done, .skipped:
-                return false
-            case .blocked:
-                // Only ASTRA's own checkpoint blocks are liftable by evidence:
-                // a retried step whose required outputs now exist completes.
-                // Provider-reported blockers carry meaning the filesystem
-                // can't refute and still need an explicit completion marker.
-                return latestBlockIsCheckpointImposed
-                    && checkpoint.isVerified
-                    && !checkpoint.verifiedPaths.isEmpty
-            case .pending, .running, nil:
-                return true
-            }
-        }()
-        if shouldFallbackComplete {
-            TaskPlanService.recordStepProgress(
-                type: TaskPlanEventTypes.stepCompleted,
-                planID: plan.planID,
-                stepID: step.id,
-                status: .done,
-                task: task,
-                modelContext: modelContext,
-                run: lastRun,
-                title: step.title,
-                summary: "Completed approved step: \(step.title).\(checkpoint.completionEvidence)"
-            )
-        } else if currentStepStatus == .done, !checkpoint.verifiedPaths.isEmpty {
-            // The provider's own completion marker recorded the step; keep the
-            // checkpoint's evidence in the log alongside it.
-            modelContext.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.System.info,
-                payload: "Step checkpoint verified for \"\(step.title)\":\(checkpoint.completionEvidence)",
-                run: lastRun
-            ))
-        }
-
-        let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
-        if let blockedStep = refreshedPlan.steps.first(where: { $0.id == step.id && $0.status == .blocked }) {
-            pauseApprovedPlanForUser(
-                task: task,
-                modelContext: modelContext,
-                message: blockedStep.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "Plan step blocked. Fix the blocker, then approve this step again to retry."
-                    : "Plan step blocked: \(blockedStep.detail)",
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
-            )
-            return false
-        }
-
-        if TaskPlanService.hasRemainingExecutableSteps(in: refreshedPlan) {
-            pauseApprovedPlanForUser(
-                task: task,
-                modelContext: modelContext,
-                message: "Plan step complete. Review the next step, then approve it when you're ready.",
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
-            )
-        } else {
-            guard await validateApprovedPlanContractForFinalCompletion(
-                task: task,
-                plan: refreshedPlan,
-                workspacePath: workspacePath,
-                sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
-                modelContext: modelContext
-            ) else {
-                return false
-            }
-            TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
-        }
-        return true
-    }
-
-    /// Returns false when the plan was rejected after the run; see
-    /// `finalizeApprovedPlanStep`.
-    @MainActor
-    private func finalizeApprovedFullPlan(
-        _ plan: TaskPlanPayload,
-        task: AgentTask,
-        workspacePath: String? = nil,
-        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
-        modelContext: ModelContext
-    ) async -> Bool {
-        let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
-        if let blockedStep = refreshedPlan.steps.first(where: { $0.status == .blocked }) {
-            pauseApprovedPlanForUser(
-                task: task,
-                modelContext: modelContext,
-                message: blockedStep.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "Plan blocked. Fix the blocker, then approve the plan again to retry."
-                    : "Plan blocked at \(blockedStep.title): \(blockedStep.detail)",
-                run: task.runs.sorted { $0.startedAt < $1.startedAt }.last
-            )
-            return false
-        }
-
-        // Single-run plans have no intermediate run boundaries, so the output
-        // checkpoint for every step lands here instead.
-        let lastRun = task.runs.sorted(by: { $0.startedAt < $1.startedAt }).last
-        if let message = PlanStepCheckpointVerifier.recordFullPlanCheckpointBlocks(
-            plan: refreshedPlan,
-            task: task,
-            run: lastRun,
-            workspacePath: workspacePath,
-            modelContext: modelContext
-        ) {
-            pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
-            return false
-        }
-
-        guard await validateApprovedPlanContractForFinalCompletion(
-            task: task,
-            plan: refreshedPlan,
-            workspacePath: workspacePath,
-            sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
-            modelContext: modelContext
-        ) else {
-            return false
-        }
-        TaskPlanService.recordExecutionCompleted(planID: plan.planID, task: task, modelContext: modelContext)
-        return true
-    }
-
-    @MainActor
-    private func validateApprovedPlanContractForFinalCompletion(
-        task: AgentTask,
-        plan: TaskPlanPayload,
-        workspacePath: String? = nil,
-        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
-        modelContext: ModelContext
-    ) async -> Bool {
-        let contractEvaluation = await ValidationService.runContract(
-            task: task,
-            plan: plan,
-            run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
-            modelContext: modelContext,
-            workspacePath: workspacePath,
-            verifierRuntime: utilityRuntimeConfiguration(
-                for: .verifier,
-                task: task,
-                fallbackRuntime: runtimeConfiguration.selectedRuntime(for: task),
-                preferredModel: validationModel,
-                modelContext: modelContext
-            ),
-            commandRunner: ShellValidationCommandRunner(
-                sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
-            )
-        )
-        let decision = TaskCompletionPolicy.decide(validationContract: contractEvaluation)
-        guard decision.canComplete else {
-            let run = task.runs.sorted { $0.startedAt < $1.startedAt }.last
-            run?.status = .failed
-            run?.typedStopReason = decision.typedStopReason ?? TaskRunStopReason.custom(TaskCompletionPolicyGate.validationContract.rawValue)
-            pauseApprovedPlanForUser(
-                task: task,
-                modelContext: modelContext,
-                message: decision.userVisibleMessage ?? contractEvaluation.summary,
-                run: run
-            )
-            return false
-        }
-        return true
-    }
-
-    @MainActor
-    private func pauseApprovedPlanForUser(
-        task: AgentTask,
-        modelContext: ModelContext,
-        message: String,
-        run: TaskRun?
-    ) {
-        let notice = TaskEvent(
-            task: task,
-            eventType: TaskEventTypes.System.info,
-            payload: message,
-            run: run
-        )
-        modelContext.insert(notice)
-        TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-    }
     /// Continue an existing session with a follow-up message (HITL flow).
     @MainActor
     func continueSession(
@@ -555,7 +269,7 @@ final class AgentRuntimeWorker {
         auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        deferTurnTerminalization: ((TaskTurnRequest?, TaskRun, Set<String>) -> Void)? = nil,
+        approvedPlan: RuntimeTurnSettlementService.ApprovedPlan? = nil,
         retainIsolationAfterExecution: Bool = false,
         onExecutionContext: ((AgentRuntimeExecutionContext) -> Void)? = nil
     ) async {
@@ -691,17 +405,11 @@ final class AgentRuntimeWorker {
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: launchTask)
         PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
         let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
-        // Hand the pair to the caller when it owns a later verdict (approved
-        // plans); otherwise provider completion IS the outcome, so terminalize
-        // here. Registered before the guard below so every exit past this
-        // point resolves the request through exactly one of the two.
-        var acknowledgedPermissionRequestIDs: Set<String> = []
+        var settlementHandled = false
         defer {
-            if let deferTurnTerminalization {
-                deferTurnTerminalization(turnBegin.request, run, acknowledgedPermissionRequestIDs)
-            } else {
-                PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run, task: task,
-                    acknowledgedPermissionRequestIDs: acknowledgedPermissionRequestIDs, in: modelContext)
+            if !settlementHandled {
+                PersistedTurnRuntimeEventLinker.finishRuntime(request: turnBegin.request, run: run,
+                    task: task, in: modelContext)
             }
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
@@ -1134,9 +842,6 @@ final class AgentRuntimeWorker {
                 }
             }
         )
-        acknowledgedPermissionRequestIDs = result.acknowledgedPermissionRequestIDs
-        LivePermissionApprovalRecovery.stageAcknowledgements(task: task, run: run,
-            requestIDs: acknowledgedPermissionRequestIDs, modelContext: modelContext)
         let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
         flushedBatch.recordEmitted(to: streamTelemetry)
         flushedBatch.recordEmitted(to: streamDebugCapture)
@@ -1269,284 +974,49 @@ final class AgentRuntimeWorker {
             modelContext: modelContext
         )
 
-        // Built before the outcome chain so the budget branch can decide and
-        // explain itself from the same snapshot. The limit is frozen on
-        // `executionTask`; task usage remains cumulative across its runs.
-        let budgetSnapshot = AgentRuntimeBudgetSnapshot(
-            effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
-            tokensUsed: task.tokensUsed
-        )
 
         do {
-            if cancellationRequested || task.status == .cancelled {
-                run.status = .cancelled
-                run.typedStopReason = .cancelled
-                TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
-            } else if result.policyApprovalRequired {
-                TaskRuntimeOutcomeTransition.applyPolicyApproval(
-                    task: task,
-                    run: run,
-                    approvalMessage: result.policyApprovalMessage,
-                    modelContext: modelContext
-                )
-            } else if result.timedOut {
-                run.status = .timeout
-                run.typedStopReason = .timeout
-                TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
-                                      payload: runtimeAdapter.timeoutPayload(
-                                        phase: auditPhase,
-                                        timeoutSeconds: timeoutSeconds
-                                      ), run: run)
-                modelContext.insert(event)
-            } else if result.maxTurnsExceeded {
-                run.status = .budgetExceeded
-                run.typedStopReason = .maxTurnsReached
-                TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
-                let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
-                                      payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
-                modelContext.insert(event)
-            } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
-            } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
-            } else if result.policyViolation {
-                run.status = .failed
-                run.typedStopReason = .policyViolation
-                TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
-                let event = TaskEvent(
-                    task: task,
-                    eventType: TaskEventTypes.System.error,
-                    payload: result.policyViolationMessage ?? "ASTRA stopped the provider because observed activity violated the run policy.",
-                    run: run
-                )
-                modelContext.insert(event)
-            } else if AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
-                result: result,
-                budget: budgetSnapshot,
-                budgetEnforcementMode: budgetEnforcementMode
-            ) {
-                run.status = .budgetExceeded
-                run.typedStopReason = .maxBudgetReached
-                TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
-                let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
-                let payload = "Token budget exceeded (\(task.tokensUsed)/\(budgetSnapshot.effectiveTokenBudget)). \(outcome)"
-                let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
-                                      payload: payload, run: run)
-                modelContext.insert(event)
-            } else if processSucceeded, !recordingState.agentReportedError(for: run),
-                      try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext,
-                          persist: permissionPromotionPersistence) {
-            } else if processSucceeded,
-                      runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
-                      Self.applyEmptySuccessfulRunIfNeeded(
-                        runtimeAdapter: runtimeAdapter,
-                        task: task,
-                        run: run,
-                        modelContext: modelContext,
-                        result: result,
-                        phase: auditPhase
-                      ) {
-            } else if processSucceeded {
-                run.status = .completed
-                run.typedStopReason = .completed
-                AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
-                    result: result,
-                    task: task,
-                    run: run,
-                    modelContext: modelContext,
-                    phase: auditPhase,
-                    budgetEnforcementMode: budgetEnforcementMode
-                )
-                let blockedFromCompleting = await AgentRuntimeCompletionValidation.applyCompletionBlocksIfNeeded(
-                    task: task, run: run, modelContext: modelContext,
-                    workspacePath: executionPath,
-                    agentReportedError: recordingState.agentReportedError(for: run)
-                )
-                if !blockedFromCompleting {
-                    if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
-                        // Frozen on launchTask, same as the budget above.
-                        switch executionTask.validationStrategy {
-                        case .manual:
-                            let completed = await TaskSuccessfulCompletionService.apply(
-                                task: task,
-                                run: run,
-                                modelContext: modelContext,
-                                successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
-                                permissionPolicy: launchPermissionPolicy
-                            )
-                            if completed {
-                                await AgentRuntimeCompletionValidation.applyAutomaticBaselineVerificationIfNeeded(
-                                    task: task,
-                                    run: run,
-                                    modelContext: modelContext,
-                                    workspacePath: executionPath,
-                                    sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot
-                                )
-                            }
-                        case .runTests:
-                            let testEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running validation tests...", run: run)
-                            modelContext.insert(testEvent)
-                            // Frozen on executionTask like the strategy switch above:
-                            // testCommand is part of AgentTaskLaunchSnapshot, so a
-                            // command edited after admission must not be what grades
-                            // this run. executionTask also carries the executionRootPath
-                            // the run actually used, so tests execute where it ran.
-                            let testResult = await ValidationService.runTests(
-                                task: executionTask,
-                                commandRunner: ShellValidationCommandRunner(
-                                    sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot
-                                )
-                            )
-                            switch testResult {
-                            case .passed(let details):
-                                _ = await TaskSuccessfulCompletionService.apply(
-                                    task: task,
-                                    run: run,
-                                    modelContext: modelContext,
-                                    successPayload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))",
-                                    permissionPolicy: launchPermissionPolicy
-                                )
-                            case .failed(let details):
-                                TaskStateMachine.failFromValidation(task, modelContext: modelContext)
-                                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
-                                modelContext.insert(event)
-                            case .error(let msg):
-                                TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
-                                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.validationError.rawValue): \(msg). Needs manual review.", run: run)
-                                modelContext.insert(event)
-                            }
-                        case .aiCheck:
-                            let checkEvent = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Running AI self-check...", run: run)
-                            modelContext.insert(checkEvent)
-                            let aiResult = await ValidationService.aiCheck(
-                                task: task,
-                                claudePath: claudePath,
-                                model: validationModel,
-                                utilityRuntime: utilityRuntimeConfiguration(
-                                    for: .verifier,
-                                    task: task,
-                                    fallbackRuntime: selectedRuntime,
-                                    preferredModel: validationModel,
-                                    modelContext: modelContext
-                                ),
-                                workspacePath: executionPath
-                            )
-                            switch aiResult {
-                            case .passed(let details):
-                                _ = await TaskSuccessfulCompletionService.apply(
-                                    task: task,
-                                    run: run,
-                                    modelContext: modelContext,
-                                    successPayload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))",
-                                    permissionPolicy: launchPermissionPolicy
-                                )
-                            case .failed(let details):
-                                TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
-                                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
-                                modelContext.insert(event)
-                            case .error(let msg):
-                                TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
-                                let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): \(msg). Needs manual review.", run: run)
-                                modelContext.insert(event)
-                            }
-                        }
-                    } else {
-                        let completed = await TaskSuccessfulCompletionService.apply(
-                            task: task,
-                            run: run,
-                            modelContext: modelContext,
-                            successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
-                            permissionPolicy: launchPermissionPolicy
-                        )
-                        if completed {
-                            await AgentRuntimeCompletionValidation.applyAutomaticBaselineVerificationIfNeeded(
-                                task: task,
-                                run: run,
-                                modelContext: modelContext,
-                                workspacePath: executionPath,
-                                sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot
-                            )
-                        }
-                    }
-                }
-            } else if RuntimePermissionApprovalGate.shouldPause(
-                failureDiagnostic: failureDiagnostic,
-                task: task,
-                run: run
-            ) {
-                run.status = .failed
-                run.typedStopReason = .permissionApprovalRequired
-                TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-                let payload = TaskPermissionContinuation.attach(permissionApprovalRequestPayload(
-                    diagnostic: failureDiagnostic,
-                    result: result
-                ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext))
-                TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
-                let event = TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalRequested, payload: payload, run: run)
-                modelContext.insert(event)
-            } else {
-                run.status = .failed
-                run.typedStopReason = Self.durableFailureStopReason(category: failureDiagnostic?.category)
-                if runtimeAdapter.shouldClearStaleSessionOnFailure(phase: auditPhase, result: result) {
-                    task.sessionId = nil
-                    let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
-                                          payload: "Session expired or not found. Session cleared - retry will start fresh.", run: run)
-                    modelContext.insert(event)
-                    AppLogger.audit(.workerSessionCleared, category: "Worker", taskID: task.id, fields: [
-                        "reason": "stale_session",
-                        "runtime": selectedRuntime.rawValue
-                    ], level: .warning)
-                } else {
-                    let prefix = runtimeAdapter.failurePayloadPrefix(phase: auditPhase, exitCode: result.exitCode)
-                    let payload = failureDiagnostic?.userFacingPayload(
-                        prefix: prefix
-                    ) ?? AgentRuntimeFailurePayload.enriched(
-                        prefix: prefix,
-                        rawError: result.error,
-                        task: task
-                    )
-                    let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
-                    modelContext.insert(event)
-                }
-                TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-            }
-
+            try RuntimeTurnSettlementService.capture(
+                .init(requestID: turnBegin.request?.id, result: result, runtime: selectedRuntime,
+                    phase: auditPhase, executionPath: executionPath, launchSnapshot: .init(task: executionTask),
+                    permissionPolicy: launchPermissionPolicy, sandboxEnforcement: executionPolicy.sandboxEnforcementSnapshot,
+                    verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
+                        fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext),
+                    timeoutSeconds: timeoutSeconds, budgetEnforcementMode: budgetEnforcementMode.rawValue,
+                    effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
+                    tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
+                    cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
+                    approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID),
+                task: task, run: run, modelContext: modelContext)
         } catch {
-            TaskPermissionContinuation.reportPromotionPersistenceFailure(task: task, run: run, modelContext: modelContext)
+            RuntimeTurnSettlementService.reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
+            settlementHandled = true
             return
         }
-
-        AgentRuntimeRunPersistence.recordSessionTurn(
-            task: task,
-            run: run,
-            message: runtimeAdapter.sessionTurnMessage(
-                task: task,
-                promptOverride: promptOverride,
-                startPayload: startEventPayload,
-                sessionMessage: sessionMessage,
-                phase: auditPhase
-            )
-        )
-
-        if auditPhase == .run,
-           task.status == .completed,
-           runtimeAdapter.performsPostRunFollowUps(phase: auditPhase),
-           !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            ChainedTaskSubmissionService.create(from: task, run: run, modelContext: modelContext)
+        settlementHandled = true
+        guard let checkpoint = try? RuntimeTurnSettlementService.checkpoint(for: run, task: task) else {
+            RuntimeTurnSettlementService.reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
+            return
         }
-
+        guard await RuntimeTurnSettlementService.settle(checkpoint: checkpoint, task: task, run: run,
+            modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence,
+            beforeFinalization: {
+                AgentRuntimeRunPersistence.recordSessionTurn(
+                    task: task,
+                    run: run,
+                    message: runtimeAdapter.sessionTurnMessage(
+                        task: task,
+                        promptOverride: promptOverride,
+                        startPayload: startEventPayload,
+                        sessionMessage: sessionMessage,
+                        phase: auditPhase
+                    )
+                )
+            }) else { return }
+        RuntimeTurnSettlementService.dispatchChainedTask(task: task, run: run, modelContext: modelContext)
         if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {
             scheduleGeneratedTitleIfNeeded(for: task, selectedRuntime: selectedRuntime, modelContext: modelContext)
         }
-
-        let handoffTaskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        let handoffDiscoveredFiles = await TaskOutputDiscovery.filesAsync(in: handoffTaskFolder)
-        await AgentRuntimeRunPersistence.finalizeAndPersist(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: auditPhase,
-            handoffDiscoveredFiles: handoffDiscoveredFiles
-        )
         await TaskFolderRunSnapshot.settleBaseline(taskFolderRecord, task: task, run: run)
     }
     nonisolated static func durableFailureStopReason(category: AgentRuntimeFailureCategory?) -> TaskRunStopReason {
@@ -1575,60 +1045,6 @@ final class AgentRuntimeWorker {
             vertexHaikuModel: providerSnapshot.vertexHaikuModel,
             antigravityAuthMode: providerSnapshot.antigravityAuthMode
         )
-    }
-
-    @MainActor
-    private static func applyEmptySuccessfulRunIfNeeded(
-        runtimeAdapter: any AgentRuntimePostRunDiagnostics,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        result: AgentProcessResult,
-        phase: RunPhase
-    ) -> Bool {
-        let visibleOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let visibleFileResult = TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run)
-        guard !visibleOutput, !visibleFileResult else {
-            return false
-        }
-
-        run.status = .failed
-        run.typedStopReason = .noUsableResult
-        TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
-
-        let providerName = runtimeAdapter.descriptor.displayName
-        let requiredArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
-        let antigravityDiagnostic = runtimeAdapter.id == .antigravityCLI
-            ? AntigravityCLIRuntime.diagnosticSummary(
-                logPath: AntigravityCLIRuntime.diagnosticLogPath(task: task, runID: run.id)
-            )
-            : nil
-        var payload = requiredArtifact
-            ? "\(providerName) finished with exit code 0 but did not return text output and did not create a usable file for this run. Retry this task or switch providers."
-            : "\(providerName) finished with exit code 0 but did not return text output or create a visible file. Retry this task or switch providers."
-        if let antigravityDiagnostic {
-            payload += " \(antigravityDiagnostic.message) Diagnostic log: \(antigravityDiagnostic.logPath)"
-        }
-        if let error = result.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
-            payload += " Provider stderr: \(String(RuntimeReadinessRedactor.redacted(error).prefix(300)))"
-        }
-        let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
-        modelContext.insert(event)
-        var auditFields = [
-            "runtime": runtimeAdapter.id.rawValue,
-            "phase": phase.rawValue,
-            "exit_code": String(result.exitCode),
-            "run_output_chars": String(run.output.count),
-            "file_changes": String(run.fileChanges.count),
-            "run_scoped_file_result": String(visibleFileResult),
-            "requires_artifact": String(requiredArtifact),
-            "stderr_bytes": String(result.error?.utf8.count ?? 0)
-        ]
-        if let antigravityDiagnostic {
-            auditFields.merge(antigravityDiagnostic.auditFields) { _, new in new }
-        }
-        AppLogger.audit(.runtimeEmptyOutput, category: "Worker", taskID: task.id, fields: auditFields, level: .warning)
-        return true
     }
 
     @MainActor
@@ -1740,24 +1156,6 @@ final class AgentRuntimeWorker {
                 }
             }
         }
-    }
-
-    private func permissionApprovalRequestPayload(
-        diagnostic: AgentRuntimeFailureDiagnostic?,
-        result: AgentProcessResult
-    ) -> String {
-        let providerDetail = result.error?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .prefix(500)
-        let detail = providerDetail.map { "\n\nProvider detail:\n\($0)" } ?? ""
-        let message = diagnostic?.category == .permissionDenied
-            ? diagnostic?.userMessage
-            : "The provider needs a runtime permission before it can continue."
-        return """
-        \(message ?? "The provider needs a runtime permission before it can continue.")
-
-        Approve to continue this task with one-time expanded runtime permissions.\(detail)
-        """
     }
 
     @MainActor
@@ -2008,35 +1406,6 @@ final class AgentRuntimeWorker {
             .contains { lower.contains($0) }
     }
 
-    @MainActor
-    private func applyRuntimeStopIfNeeded(
-        _ result: AgentProcessResult,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: RunPhase
-    ) -> Bool {
-        guard let reason = result.runtimeStopReason, !reason.isEmpty else { return false }
-
-        run.status = .failed
-        run.typedStopReason = TaskRunStopReason.custom(reason)
-        if Self.isTerminalRuntimeStop(reason) {
-            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-        } else {
-            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
-        }
-
-        let payload = result.runtimeStopMessage
-            ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
-        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
-        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase.rawValue,
-            "reason": reason,
-            "source": "runtime_stop"
-        ], level: .error)
-        return true
-    }
-
     /// Whether a runtime stop is final or the run should wait for the user.
     ///
     /// Internal rather than private so a test can pin the membership directly:
@@ -2058,34 +1427,6 @@ final class AgentRuntimeWorker {
             .providerWorkspaceJobStalled,
             .providerRunWallClockExceeded
         ].contains(stopReason)
-    }
-
-    @MainActor
-    private func applyRepetitionStopIfNeeded(
-        _ result: AgentProcessResult,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: RunPhase
-    ) -> Bool {
-        guard result.repetitionKilled else { return false }
-
-        run.status = .failed
-        run.typedStopReason = .repetitionDetected
-        TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-
-        modelContext.insert(TaskEvent(
-            task: task,
-            type: "error",
-            payload: "Repetition loop detected. ASTRA stopped the provider after repeated identical runtime events.",
-            run: run
-        ))
-        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase.rawValue,
-            "reason": "repetition_detected",
-            "source": "runtime_repetition_guard"
-        ], level: .error)
-        return true
     }
 
     @MainActor

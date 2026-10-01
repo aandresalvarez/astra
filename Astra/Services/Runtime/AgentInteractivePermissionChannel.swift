@@ -273,6 +273,18 @@ final class InFlightPermissionCenter: @unchecked Sendable {
         }
     }
 
+    /// Register the waiter and persist its UI request in one main-actor turn.
+    /// Publishing either half before the other creates a live/relaunch race.
+    @MainActor
+    func awaitDecision(taskID: UUID, ask: PendingAsk, persistRequest: () -> Bool) async -> Bool {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            waiters[taskID, default: []].append(Waiter(ask: ask, continuation: continuation))
+            lock.unlock()
+            if !persistRequest() { resolve(taskID: taskID, requestID: ask.requestID, approved: false) }
+        }
+    }
+
     func pendingAsks(taskID: UUID) -> [PendingAsk] {
         lock.lock()
         defer { lock.unlock() }
@@ -424,26 +436,29 @@ extension AgentRuntimeWorker {
                 grants: grants,
                 requestID: ask.requestID
             ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext, mode: .live))
-            pendingEvents.add {
-                TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
-                let event = TaskEvent(
-                    task: task,
-                    eventType: TaskEventTypes.Tool.permissionApprovalRequested,
-                    payload: payload,
-                    run: run
-                )
-                modelContext.insert(event)
-                TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-            }
+            // Previous stream events must precede the permission request. The
+            // waiter and saved card then become available together, with no
+            // actor yield in between that could turn a live approval into a
+            // relaunch or expose a waiter without an approvable request.
+            await pendingEvents.drainAll()
             let approved = await InFlightPermissionCenter.shared.awaitDecision(
                 taskID: taskID,
-                ask: InFlightPermissionCenter.PendingAsk(
-                    requestID: ask.requestID,
-                    toolName: ask.toolName,
-                    inputSummary: ask.inputSummary
-                )
-            )
+                ask: .init(requestID: ask.requestID, toolName: ask.toolName, inputSummary: ask.inputSummary),
+                persistRequest: {
+                    let snapshot = ExecutionMutationSnapshot(task)
+                    TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+                    let event = TaskEvent(
+                        task: task,
+                        eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+                        payload: payload,
+                        run: run
+                    )
+                    modelContext.insert(event)
+                    TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
+                    let saved = WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                    if !saved { snapshot.restore(task, in: modelContext) }
+                    return saved
+            })
             pendingEvents.add {
                 // The provider continues after allow AND deny alike, so the
                 // pause always lifts; the run-status guard keeps this from
@@ -477,12 +492,9 @@ extension AgentRuntimeWorker {
             guard approved else {
                 return .deny(message: "The user declined this action in ASTRA. Continue without it or propose an alternative.")
             }
-            return .allowWithAcknowledgementReceipt {
-                await MainActor.run {
-                    _ = LivePermissionApprovalRecovery.recordDelivery(requestID: ask.requestID,
-                        toolName: ask.toolName, task: task, run: run, modelContext: modelContext)
-                }
-            }
+            // The runner returns delivery evidence with its result. Only the
+            // settlement service may save it, after draining provider events.
+            return .allow
         }
     }
 }

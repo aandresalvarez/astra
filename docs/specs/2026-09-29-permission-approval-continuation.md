@@ -34,9 +34,11 @@ Future-use offers save permission without execution and have distinct UI wording
 
 Live asks resolve only their own control-channel waiter. A durable live approval
 commit covers a restart before the provider acknowledges the answer. Startup
-recovery submits the approved continuation only if no acknowledgement or newer
-work supersedes it; normal queue replay performs admission. An acknowledged live
-approval does not cause a fresh run after restart.
+recovery finishes local settlement from the captured provider result.
+An approval whose live delivery is uncertain requires reconciliation before
+retrying; it never automatically replays potentially completed external work.
+Known unwritten responses transfer authority to a durable continuation before
+completion is accepted; normal queue replay performs admission.
 
 ## Compatibility and presentation
 
@@ -57,3 +59,41 @@ legacy requests, explicit recovery of already-approved tasks, future-use offers,
 independent requests, duplicate submission, rollback on save failure, cancelled
 and superseded tasks, persistence across store reopening, and live acknowledgement
 recovery. Provider and connector traffic in these tests is simulated locally.
+
+## Shared result settlement
+
+`RuntimeTurnSettlementService` owns two typed, run-scoped events, without adding
+another mutable model or changing the SwiftData schema:
+
+1. `runtime.result.captured`: after draining provider events, the result,
+   acknowledgement evidence and immutable execution/plan envelope are saved
+   together. The runner returns transport evidence and never saves receipts.
+2. `runtime.turn.settled`: the shared outcome and plan finalizers have reconciled
+   permission delivery and validation. The final task/run/request outcome,
+   continuation (if required) and downstream-work intent are committed together.
+
+Normal runs and restart recovery call the same settlement service. Orphan-run
+and admission recovery leave captured results to that service. Startup completes
+local settlement before queue replay and never invokes the original provider
+turn to recover an already-captured result. Unsupported/corrupt results fail
+closed for review. A verdict also requires the original request to still belong
+to this task and run, and its terminal transition to be accepted. Missing or
+superseded ownership cannot release downstream work.
+
+Chained work is released only from a saved verdict, using a stable child ID.
+Schedule routing records its consumed intent with the schedule result so repeated
+startup dispatch cannot publish it twice. Approved-plan checkpoints and final
+contracts run before either effect becomes eligible. Permission continuations
+preserve the original budget, validation command, resource claims and launch
+settings; newly approved authority is additive.
+
+A native live waiter and its durable approval card are published in the same
+main-actor turn after earlier stream events drain. A failed card save denies the
+waiter and restores the request state. This closes the admission race between a
+live response and a relaunch.
+
+Regression coverage includes reopening the store between capture and verdict,
+failed capture/verdict saves, known unwritten and uncertain written responses,
+ordinary/plan completion ordering, missing plan outputs after restart, immutable
+continuation settings, rejected request ownership, and idempotent chained/scheduled dispatch. Real local
+provider-process scenarios verify the stdout/event-queue integration.

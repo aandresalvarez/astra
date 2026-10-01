@@ -137,6 +137,9 @@ enum TaskRunLifecycleService {
         var summary = TaskRunInterruptionSummary()
 
         for task in tasks {
+            // A captured provider result belongs to local settlement recovery,
+            // which must run before orphan cancellation can destroy its verdict.
+            if task.runs.contains(where: { RuntimeTurnSettlementService.hasUnsettledResult(task: task, run: $0) }) { continue }
             let hasRunningRun = task.runs.contains { $0.status == .running }
             // `pendingUser` is also the durable review state for completed
             // work that is waiting on an ASTRA-owned external outcome. Only
