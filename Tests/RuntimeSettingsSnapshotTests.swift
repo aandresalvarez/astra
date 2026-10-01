@@ -68,6 +68,31 @@ struct RuntimeSettingsSnapshotTests {
         #expect(readiness.providerSettings.executablePath(for: .copilotCLI) == "/bin/copilot")
     }
 
+    /// The composers build their snapshot from @AppStorage values without the
+    /// Antigravity route; it must still be the stored one, or they probe
+    /// consumer sign-in while Settings and the worker check ADC.
+    @Test("Composer provider snapshot carries the stored Antigravity route")
+    func composerProviderSnapshotCarriesStoredAntigravityRoute() {
+        let defaults = makeDefaults().0
+        defaults.set(AntigravityAuthMode.adc.rawValue, forKey: AppStorageKeys.antigravityAuthMode)
+
+        let snapshot = RuntimeSettingsSnapshotStore.providerSnapshot(
+            claudePath: "/bin/claude",
+            copilotPath: "/bin/copilot",
+            providerSettingsRevision: 1,
+            claudeProviderRaw: ClaudeProvider.anthropic.rawValue,
+            vertexProjectID: "",
+            vertexRegion: "",
+            vertexOpusModel: "",
+            vertexSonnetModel: "",
+            vertexHaikuModel: "",
+            defaults: defaults
+        )
+
+        #expect(snapshot.antigravityAuthMode == .adc)
+        #expect(snapshot.readinessConfiguration(for: .antigravityCLI).antigravityAuthMode == .adc)
+    }
+
     @Test("Runtime snapshot centralizes defaults and model cache")
     func runtimeSnapshotCentralizesDefaultsAndModelCache() {
         let provider = RuntimeSettingsSnapshotStore.providerSnapshot(

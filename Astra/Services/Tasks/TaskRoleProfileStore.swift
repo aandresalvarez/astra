@@ -49,7 +49,7 @@ enum TaskRoleProfileStore {
             ?? defaults.string(forKey: AppStorageKeys.defaultAgentPolicyLevel)
             ?? AgentPolicyLevel.review.rawValue
 
-        let explicitRuntimeRaw = cleaned(defaults.string(forKey: AppStorageKeys.roleProfileRuntimeKey(for: role)))
+        let explicitRuntimeRaw = explicitRuntimeRaw(for: role, defaults: defaults)
         let explicitModel = cleaned(defaults.string(forKey: AppStorageKeys.roleProfileModelKey(for: role)))
         let explicitBudget = defaults.object(forKey: AppStorageKeys.roleProfileBudgetKey(for: role)) == nil
             ? nil
@@ -98,6 +98,22 @@ enum TaskRoleProfileStore {
             ),
             source: source
         )
+    }
+
+    /// The runtime a new task for `role` will use: the role profile's own
+    /// runtime when one is set, otherwise `defaultRuntime`. Cheap enough to
+    /// read while a composer renders, and the same rule `selection` applies.
+    static func effectiveRuntime(
+        for role: TaskRoleID,
+        defaultRuntime: AgentRuntimeID,
+        defaults: UserDefaults = .standard
+    ) -> AgentRuntimeID {
+        guard let raw = explicitRuntimeRaw(for: role, defaults: defaults) else { return defaultRuntime }
+        return AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: raw, fallback: defaultRuntime)
+    }
+
+    private static func explicitRuntimeRaw(for role: TaskRoleID, defaults: UserDefaults) -> String? {
+        cleaned(defaults.string(forKey: AppStorageKeys.roleProfileRuntimeKey(for: role)))
     }
 
     static func setProfile(

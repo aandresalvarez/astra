@@ -27,6 +27,9 @@ struct ModelSelectorProviderRow: Equatable, Identifiable {
     let availability: ModelSelectorProviderAvailability
     let modelCount: Int
     let isCurrent: Bool
+    /// The user's own label that this runtime is approved for PHI and other
+    /// sensitive data (Settings > Runtime). ASTRA does not verify it.
+    var approvesSensitiveData = false
 
     var id: String { runtime.rawValue }
 }
@@ -54,19 +57,33 @@ struct ModelSelectorListing: Equatable {
 }
 
 struct ModelSelectorRailGroups: Equatable {
+    /// Ready providers the user marked approved for PHI and sensitive data.
+    var approved: [ModelSelectorProviderRow]
     var providers: [ModelSelectorProviderRow]
     var needsSetup: [ModelSelectorProviderRow]
+
+    /// "Providers" alone would read as "all of them" under an approved group.
+    var providersTitle: String {
+        approved.isEmpty ? "Providers" : "Other providers"
+    }
 }
 
 enum ModelSelectorPresentation {
     /// Shared status lives in the group, not on each row: providers that still
-    /// need setup move to their own group instead of carrying a per-row pill.
+    /// need setup move to their own group instead of carrying a per-row pill,
+    /// and approved providers lead under a header that says what approval
+    /// means, which a bare icon could not. Setup outranks approval: a
+    /// provider that cannot run belongs with the others that cannot.
     static func railGroups(_ rows: [ModelSelectorProviderRow]) -> ModelSelectorRailGroups {
-        ModelSelectorRailGroups(
-            providers: rows.filter { $0.availability != .needsSetup },
+        let usable = rows.filter { $0.availability != .needsSetup }
+        return ModelSelectorRailGroups(
+            approved: usable.filter(\.approvesSensitiveData),
+            providers: usable.filter { !$0.approvesSensitiveData },
             needsSetup: rows.filter { $0.availability == .needsSetup }
         )
     }
+
+    static let approvedGroupTitle = "Approved for sensitive data"
 
     /// Every model the provider offers, in catalog order, or the matches for
     /// the search text. The list scrolls instead of hiding models behind a
@@ -96,9 +113,27 @@ enum ModelSelectorPresentation {
         case .unavailable(let reason):
             parts.append(reason)
         }
+        // Only the exception is announced; "not approved" is the default.
+        if row.approvesSensitiveData { parts.append(sensitiveDataStatus(approved: true)) }
         if isBrowsing { parts.append("Showing its models") }
         return parts.joined(separator: ", ")
     }
+
+    static func sensitiveDataStatus(approved: Bool) -> String {
+        approved ? "Approved for PHI and sensitive data" : "Not approved for PHI or sensitive data"
+    }
+
+    /// The detail pane's line: who made the call, and what it means in
+    /// practice. Approval is the user's label, never an ASTRA verdict.
+    static func sensitiveDataDetail(approved: Bool) -> String {
+        approved
+            ? "Approved for PHI and sensitive data. Marked by you."
+            : "Not approved for PHI. Don't use it with patient data."
+    }
+
+    static let sensitiveDataChangeAction = "Change"
+    static let sensitiveDataApprovedHelp = "You marked this provider as approved for PHI and sensitive data in Settings > Runtime. ASTRA does not verify it."
+    static let sensitiveDataNotApprovedHelp = "Not approved for PHI or sensitive data. Mark it approved in Settings > Runtime once your organization allows it."
 
     static let compatibilityPendingReason = "Checking compatibility with this request…"
 

@@ -165,6 +165,9 @@ struct SettingsRuntimeTab: View {
                         antigravityRouteSettings
                     }
                 }
+                settingsDivider
+                SensitiveDataApprovalRow(runtime: runtime)
+                    .id(runtime)
                 // Capability-gated, so it stays outside the provider branch
                 // above: Claude declares `supportsReasoningEffort` too, and
                 // nesting this in the `else` hid the picker from the one
@@ -742,6 +745,36 @@ struct SettingsRuntimeTab: View {
         case .claudeCode: detectedPath
         case .copilotCLI: detectedCopilotPath
         default: detectedProviderPaths[runtime] ?? ""
+        }
+    }
+}
+
+/// The user's label that a runtime is approved for PHI and other sensitive
+/// data. Stored per runtime and shown in the composer's provider selector;
+/// ASTRA does not verify the claim or block runs on it.
+private struct SensitiveDataApprovalRow: View {
+    let runtime: AgentRuntimeID
+    @State private var approved: Bool
+
+    init(runtime: AgentRuntimeID) {
+        self.runtime = runtime
+        _approved = State(initialValue: RuntimeProviderSettingsStore.isSensitiveDataApproved(for: runtime))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Approved for PHI and sensitive data", isOn: $approved)
+                .onChange(of: approved) {
+                    RuntimeProviderSettingsStore.setSensitiveDataApproved(approved, for: runtime)
+                    AppLogger.breadcrumb(action: "runtime_sensitive_data_approval_changed", category: "UI", fields: [
+                        "runtime": runtime.rawValue,
+                        "approved": String(approved)
+                    ])
+                }
+            Text("Mark \(runtime.displayName) when your organization has approved it for protected health information or other sensitive data. The composer's provider selector shows this label. ASTRA does not verify it.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

@@ -174,6 +174,35 @@ struct RuntimeProviderSettingsStoreTests {
         #expect(ProviderPathPersistenceState.hasUnsavedDraft(draft: "/draft/bin/future", persisted: ""))
     }
 
+    @Test("PHI approval defaults to off, is stored per runtime, and leaves launch settings alone")
+    func sensitiveDataApprovalIsPerRuntimeAndDefaultsOff() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(!RuntimeProviderSettingsStore.isSensitiveDataApproved(for: .claudeCode, defaults: defaults))
+
+        let signatureBefore = RuntimeProviderSettingsStore.signature(defaults: defaults)
+        RuntimeProviderSettingsStore.setSensitiveDataApproved(true, for: .claudeCode, defaults: defaults)
+
+        #expect(RuntimeProviderSettingsStore.isSensitiveDataApproved(for: .claudeCode, defaults: defaults))
+        #expect(!RuntimeProviderSettingsStore.isSensitiveDataApproved(for: .codexCLI, defaults: defaults))
+        // Approval is a label, not launch configuration: no readiness recheck.
+        #expect(RuntimeProviderSettingsStore.signature(defaults: defaults) == signatureBefore)
+        #expect(defaults.integer(forKey: AppStorageKeys.runtimeProviderSettingsRevision) == 0)
+
+        RuntimeProviderSettingsStore.setSensitiveDataApproved(false, for: .claudeCode, defaults: defaults)
+        #expect(!RuntimeProviderSettingsStore.isSensitiveDataApproved(for: .claudeCode, defaults: defaults))
+    }
+
+    @Test("PHI approval keys stay runtime namespaced")
+    func sensitiveDataApprovalKeysStayRuntimeNamespaced() {
+        #expect(
+            AppStorageKeys.runtimeSensitiveDataApprovedKey(for: .claudeCode)
+                != AppStorageKeys.runtimeSensitiveDataApprovedKey(for: .codexCLI)
+        )
+        #expect(AppStorageKeys.runtimeSensitiveDataApprovedKey(for: .claudeCode).hasSuffix(".sensitiveDataApproved.v1"))
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suiteName = "RuntimeProviderSettingsStoreTests-\(UUID().uuidString)"
         return (UserDefaults(suiteName: suiteName)!, suiteName)

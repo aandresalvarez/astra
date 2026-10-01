@@ -172,7 +172,7 @@ enum RuntimeSettingsSnapshotStore {
         vertexOpusModel: String,
         vertexSonnetModel: String,
         vertexHaikuModel: String,
-        antigravityAuthModeRaw: String = AntigravityAuthMode.consumer.rawValue,
+        antigravityAuthModeRaw: String? = nil,
         defaults: UserDefaults = .standard,
         runtimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs
     ) -> ProviderSettingsSnapshot {
@@ -190,7 +190,14 @@ enum RuntimeSettingsSnapshotStore {
             vertexOpusModel: vertexOpusModel.trimmingCharacters(in: .whitespacesAndNewlines),
             vertexSonnetModel: vertexSonnetModel.trimmingCharacters(in: .whitespacesAndNewlines),
             vertexHaikuModel: vertexHaikuModel.trimmingCharacters(in: .whitespacesAndNewlines),
-            antigravityAuthMode: AntigravityAuthMode(rawValue: antigravityAuthModeRaw) ?? .consumer
+            // The composers build this from their own stored-setting bindings and
+            // never pass the Antigravity route, so a hard-coded consumer default
+            // made them probe consumer sign-in while Settings and the worker
+            // checked ADC. Read the stored route instead; Settings bumps the
+            // provider-settings revision when it changes, which re-keys them.
+            antigravityAuthMode: AntigravityAuthMode(
+                rawValue: antigravityAuthModeRaw ?? defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? ""
+            ) ?? .consumer
         )
     }
 

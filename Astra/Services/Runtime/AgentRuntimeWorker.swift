@@ -365,8 +365,12 @@ final class AgentRuntimeWorker {
                 processRunner.isHostControlBrokerAvailable()
             }
         )
+        // Before the reroute is applied: a launch the gate stops must not
+        // rewrite the task's runtime toward the provider it refused.
+        let sensitiveDataBlock = RuntimeSensitiveDataLaunchGate.block(
+            task: task, requestedRuntime: runtimeResolution.requestedRuntime, launchRuntime: runtimeResolution.runtime)
         let appliedRuntime = AgentRuntimeLaunchRuntimeResolver.apply(
-            runtimeResolution,
+            sensitiveDataBlock == nil ? runtimeResolution : runtimeResolution.withoutReroute,
             task: launchTask,
             phase: auditPhase,
             alignModel: { runtime in
@@ -436,6 +440,11 @@ final class AgentRuntimeWorker {
             executionPolicy: executionPolicy
         )
         let capabilityResolutionSnapshot = appliedRuntime.capabilityResolutionSnapshot
+        if let sensitiveDataBlock {
+            RuntimeSensitiveDataLaunchGate.record(sensitiveDataBlock, task: task, run: run, modelContext: modelContext, phase: auditPhase)
+            isRunning = false
+            return
+        }
         if let block = appliedRuntime.launchBlock {
             AgentRuntimeCapabilityBlockRecorder.apply(
                 block,

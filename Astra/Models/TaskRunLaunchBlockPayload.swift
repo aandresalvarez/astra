@@ -14,6 +14,10 @@ public struct TaskRunLaunchBlockPayload: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case policyDiagnostic
         case runtimeIncompatible
+        /// The launch would have sent a conversation from a runtime approved
+        /// for PHI to one that is not. `suggestedRuntimeID` is that runtime,
+        /// so the dock's switch goes through the acknowledgement alert.
+        case sensitiveDataUnapproved
         case dockerImageUnavailable
     }
 

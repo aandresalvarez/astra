@@ -183,6 +183,107 @@ enum TaskComposerCoordinator {
         ])
     }
 
+    /// The decision dock's "Switch to …" for a policy-blocked task: the same
+    /// acknowledgement gate as the composer, then `then` (the retry) only once
+    /// the switch has actually been applied.
+    @MainActor
+    static func requestDockRuntimeSwitch(
+        to runtime: String,
+        task: AgentTask,
+        cache: RuntimeModelAvailabilityCache,
+        prompt: RuntimeSensitiveDataSwitchPrompt,
+        then: @escaping () -> Void
+    ) {
+        let update = runtimeUpdate(
+            previousRuntime: task.runtimeID,
+            selectedRuntime: runtime,
+            currentModel: task.model,
+            requestedModel: nil,
+            cache: cache
+        )
+        prompt.request(
+            RuntimeSensitiveDataSwitchRequest(
+                // Where the conversation last ran, not task.runtimeID: a
+                // launch fallback may already have rewritten the latter to
+                // the very runtime this switch is asking about.
+                previous: RuntimeSensitiveDataLaunchGate.conversationRuntimeID(of: task)
+                    .flatMap { AgentRuntimeID(rawValue: $0) }
+                    ?? AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue),
+                next: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime),
+                model: update.resolvedModel
+            ),
+            guard: sensitiveDataSwitchGuard(for: task)
+        ) {
+            applyRuntimeSwitch(
+                to: runtime,
+                requestedModel: update.resolvedModel,
+                task: task,
+                cache: cache,
+                source: "policy_block_switch_action"
+            )
+            then()
+        }
+    }
+
+    /// Guards runtime switches in an existing task's composer.
+    static func sensitiveDataSwitchGuard(for task: AgentTask) -> RuntimeSensitiveDataSwitchGuard {
+        RuntimeSensitiveDataSwitchGuard(
+            hasConversation: { hasProviderConversation(task) },
+            recordAcknowledgement: { previous, next, model in
+                recordSensitiveDataRiskAcknowledgement(task: task, previous: previous, next: next, model: model)
+            }
+        )
+    }
+
+    /// Whether anything in this task has already gone to a provider. Runs are
+    /// not the only way: Goal mode sends the planning conversation through
+    /// `SpecEngine` and records it as plan events, with no run at all.
+    static func hasProviderConversation(_ task: AgentTask) -> Bool {
+        guard task.runs.isEmpty else { return true }
+        return task.events.contains {
+            $0.type == TaskPlanConversationEventTypes.userMessage
+                || $0.type == TaskPlanConversationEventTypes.assistantMessage
+        }
+    }
+
+    /// Recorded before the switch it allows, so the thread reads in order.
+    static func recordSensitiveDataRiskAcknowledgement(
+        task: AgentTask,
+        previous: AgentRuntimeID,
+        next: AgentRuntimeID,
+        model: String
+    ) {
+        task.modelContext?.insert(sensitiveDataRiskAcknowledgementEvent(
+            task: task,
+            previous: previous,
+            next: next,
+            model: model
+        ))
+        AppLogger.breadcrumb(action: "task_sensitive_data_risk_acknowledged", category: "UI", taskID: task.id, fields: [
+            "previous_runtime": previous.rawValue,
+            "runtime": next.rawValue,
+            "model": model,
+            "workspace_id": task.workspace?.id.uuidString ?? "none"
+        ])
+    }
+
+    static func sensitiveDataRiskAcknowledgementEvent(
+        task: AgentTask,
+        previous: AgentRuntimeID,
+        next: AgentRuntimeID,
+        model: String
+    ) -> TaskEvent {
+        TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.System.sensitiveDataRiskAcknowledged,
+            payload: RuntimeSensitiveDataRiskAcknowledgement(
+                previousRuntimeID: previous.rawValue,
+                runtimeID: next.rawValue,
+                model: model
+            )
+        )
+    }
+
     /// Combines a task/draft's already-persisted explicit-pick flag with the
     /// composer's session-scoped "did the user just touch the runtime picker"
     /// signal. Sticky-true: once either side has recorded an explicit pick, a

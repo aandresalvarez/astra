@@ -23,14 +23,16 @@ struct ModelSelectorPresentationTests {
     private func provider(
         _ runtime: AgentRuntimeID,
         _ availability: ModelSelectorProviderAvailability,
-        current: Bool = false
+        current: Bool = false,
+        approvesSensitiveData: Bool = false
     ) -> ModelSelectorProviderRow {
         ModelSelectorProviderRow(
             runtime: runtime,
             title: runtime.displayName,
             availability: availability,
             modelCount: 3,
-            isCurrent: current
+            isCurrent: current,
+            approvesSensitiveData: approvesSensitiveData
         )
     }
 
@@ -47,6 +49,23 @@ struct ModelSelectorPresentationTests {
 
         #expect(groups.providers.map(\.runtime) == [.claudeCode, .codexCLI])
         #expect(groups.needsSetup.map(\.runtime) == [.openCodeCLI])
+    }
+
+    @Test("approved providers lead under a header that names the approval, and setup still wins")
+    func railLeadsWithApprovedProviders() {
+        let rows = [
+            provider(.claudeCode, .ready, current: true),
+            provider(.codexCLI, .ready, approvesSensitiveData: true),
+            provider(.cursorCLI, .unavailable(reason: "Checking"), approvesSensitiveData: true),
+            provider(.openCodeCLI, .needsSetup, approvesSensitiveData: true),
+        ]
+        let groups = ModelSelectorPresentation.railGroups(rows)
+
+        #expect(groups.approved.map(\.runtime) == [.codexCLI, .cursorCLI])
+        #expect(groups.providers.map(\.runtime) == [.claudeCode])
+        #expect(groups.needsSetup.map(\.runtime) == [.openCodeCLI])
+        #expect(groups.providersTitle == "Other providers")
+        #expect(ModelSelectorPresentation.railGroups([provider(.claudeCode, .ready)]).providersTitle == "Providers")
     }
 
     @Test("availability resolves setup before request compatibility")
@@ -97,6 +116,18 @@ struct ModelSelectorPresentationTests {
         #expect(ModelSelectorPresentation.providerAccessibilityValue(browsed, isBrowsing: true) == "3 models, Showing its models")
         #expect(ModelSelectorPresentation.providerAccessibilityValue(setup, isBrowsing: false) == "Needs setup")
         #expect(ModelSelectorPresentation.providerAccessibilityValue(blocked, isBrowsing: true) == "Needs MCP, Showing its models")
+    }
+
+    @Test("VoiceOver announces PHI approval only when a provider has it")
+    func sensitiveDataApprovalIsAnnouncedOnlyWhenApproved() {
+        let approved = provider(.claudeCode, .ready, approvesSensitiveData: true)
+        let plain = provider(.codexCLI, .ready)
+
+        #expect(ModelSelectorPresentation.providerAccessibilityValue(approved, isBrowsing: false)
+            == "3 models, Approved for PHI and sensitive data")
+        #expect(ModelSelectorPresentation.providerAccessibilityValue(plain, isBrowsing: false) == "3 models")
+        #expect(ModelSelectorPresentation.sensitiveDataStatus(approved: false)
+            == "Not approved for PHI or sensitive data")
     }
 
     @Test("a model picked with a runtime switch wins, and the previous model is kept for the log")
@@ -364,10 +395,17 @@ struct ModelSelectorPresentationTests {
         #expect(!popover.contains("Show all"))
         // Reasoning levels are per model: every way of changing provider or
         // model has to re-resolve the effort, on both composers.
+        // Provider switches (picked model or the suggestion bar) share one
+        // path, which also holds the PHI acknowledgement gate.
         #expect(toolbar.contains("alignReasoningEffort(model: modelID, runtime: runtime)"))
-        #expect(toolbar.contains("alignReasoningEffort(model: switchedModel, runtime: runtime)"))
+        #expect(toolbar.contains("requestRuntimeChange(to: runtime, model: modelID)"))
+        #expect(toolbar.contains("requestRuntimeChange(to: runtime, model: switchedModel)"))
+        #expect(toolbar.contains("alignReasoningEffort(model: newModel, runtime: runtime)"))
         // The chip is a control that names its provider: brand mark, accent tint.
         #expect(toolbar.contains("ModelSelectorProviderIcon("))
+        // One spinner per composer: the send button's. A second one in the
+        // chip read as two separate things loading when a run started.
+        #expect(toolbar.components(separatedBy: "ProgressView()").count == 2)
         #expect(!toolbar.contains("return Stanford.coolGrey\n    }\n\n    private var runtimePillBackground"))
         // The reasoning footer is always laid out so the popover keeps one shape.
         #expect(!popover.contains("if !reasoningChoices.isEmpty || showsBudgetFooter"))
@@ -376,7 +414,8 @@ struct ModelSelectorPresentationTests {
         #expect(!popover.contains("onSwitchProvider"))
         #expect(popover.contains("browsing = row.runtime"))
         // A cross-provider pick is one transition: runtime and model together.
-        #expect(toolbar.contains("onRuntimeChange?(runtime.rawValue, modelID)"))
+        #expect(toolbar.contains("onRuntimeChange?(runtime.rawValue, newModel)"))
+        #expect(toolbar.components(separatedBy: "onRuntimeChange?(").count == 2)
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {

@@ -1239,7 +1239,8 @@ struct TaskThreadSnapshot: Sendable {
     }
 
     private static let visibleSystemTimelineEventTypes: Set<String> = [
-        TaskPlanEventTypes.executionFailed
+        TaskPlanEventTypes.executionFailed,
+        TaskEventTypes.System.sensitiveDataRiskAcknowledged.rawValue
     ]
 
     private static func isVisibleSystemInfo(_ payload: String) -> Bool {
@@ -1302,6 +1303,10 @@ struct TaskThreadSnapshot: Sendable {
             return "Plan execution completed."
         case TaskPlanEventTypes.executionFailed:
             return "Plan execution stopped."
+        case TaskEventTypes.System.sensitiveDataRiskAcknowledged.rawValue:
+            return RuntimeSensitiveDataRiskAcknowledgement.decode(from: event.payload)
+                .map(RuntimeSensitiveDataSwitchPolicy.timelineText)
+                ?? "Switched to a runtime not approved for PHI or sensitive data. Risk acknowledged."
         default:
             return event.payload
         }
