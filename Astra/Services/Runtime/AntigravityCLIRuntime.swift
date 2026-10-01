@@ -845,7 +845,18 @@ enum AntigravityCLIRuntime {
         case "quota_exhausted":
             let reset = quotaResetText(from: evidence)
             let resetText = reset.map { " \($0)." } ?? ""
-            primaryMessage = "Antigravity quota is exhausted for the selected model.\(resetText) Wait for the quota reset, choose another eligible Antigravity account/model, or switch providers."
+            let lowerEvidence = evidence.lowercased()
+            if reset == nil,
+               lowerEvidence.contains("try again later"),
+               !lowerEvidence.contains("exhausted your capacity") {
+                // A bare `Resource exhausted. Please try again later` with no
+                // reset time is Google throttling the model for now, not an
+                // account whose quota is spent. Telling someone to wait for a
+                // quota reset sends them looking for a date that does not exist.
+                primaryMessage = "Google is rate-limiting the selected Antigravity model right now (HTTP 429), and the run could not finish while Antigravity kept retrying. Retry in a few minutes, or choose another model or provider."
+            } else {
+                primaryMessage = "Antigravity quota is exhausted for the selected model.\(resetText) Wait for the quota reset, choose another eligible Antigravity account/model, or switch providers."
+            }
         case "account_ineligible":
             primaryMessage = "The authenticated Google account is not eligible for Antigravity. Sign in with an eligible account or switch providers."
         case "auth_required":

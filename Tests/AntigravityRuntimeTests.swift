@@ -395,6 +395,24 @@ struct AntigravityCLIRuntimeTests {
         #expect(summary.auditFields["provider_diagnostic_log"] == "/tmp/antigravity.log")
     }
 
+    /// Task BA13BF87: agy retried a 429 for the full 10-minute print timeout, and
+    /// the user was told to wait for a quota reset that the log never names.
+    @Test("A bare 429 with no reset time reads as throttling, not a spent quota")
+    func bareResourceExhaustedReadsAsThrottling() throws {
+        let log = """
+        I1001 11:32:55.491513 518 run.go:395] Run: attempt 1 failed (RESOURCE_EXHAUSTED (code 429): Resource exhausted. Please try again later.
+        """
+
+        let summary = try #require(AntigravityCLIRuntime.diagnosticSummary(
+            logText: log,
+            logPath: "/tmp/antigravity.log"
+        ))
+
+        #expect(summary.primaryCode == "quota_exhausted")
+        #expect(summary.message.contains("rate-limiting"))
+        #expect(!summary.message.contains("quota is exhausted"))
+    }
+
     @Test("Diagnostic summary ignores quotaProject and successful silent auth noise")
     func diagnosticSummaryIgnoresQuotaProjectAndSuccessfulSilentAuthNoise() throws {
         let log = """
