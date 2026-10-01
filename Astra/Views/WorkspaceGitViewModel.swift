@@ -91,6 +91,8 @@ final class WorkspaceGitViewModel: ObservableObject {
     private var workspace: Workspace?
     private var selectedTask: AgentTask?
     private var refreshTimer: Timer?
+    /// Stands polling down while the Mac sleeps or the screen is locked.
+    private let pollingSuspension = GitPollingSuspension()
     /// The most recently scheduled background status refresh. Refreshes are
     /// chained through this handle so they never overlap (each awaits the
     /// previous) and so callers — and tests — can drain pending work instead
@@ -117,6 +119,11 @@ final class WorkspaceGitViewModel: ObservableObject {
         self.git = git
         self.urlLauncher = urlLauncher
         observeGitHubAccessRepairs()
+        pollingSuspension.onResume = { [weak self] in
+            // One refresh on return, so the rail is current when the user is.
+            guard let self, !self.isRefreshPaused, self.workspace != nil else { return }
+            self.scheduleRefresh()
+        }
     }
 
     private func makeAuthoringService() -> any GitCommitMessageGenerating & GitPullRequestGenerating {
@@ -170,7 +177,8 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard !isRefreshPaused else { return }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.scheduleRefresh()
+                guard let self, !self.pollingSuspension.isSuspended else { return }
+                self.scheduleRefresh()
             }
         }
     }
@@ -509,7 +517,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         if !force,
            !branchChanged,
            let checkedAt = prLookupAt,
-           Date().timeIntervalSince(checkedAt) < 60 {
+           Date().timeIntervalSince(checkedAt) < prLookupBreaker.pollInterval {
             return
         }
         // A credential GitHub has already rejected cannot start working on the

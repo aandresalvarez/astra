@@ -44,10 +44,28 @@ struct GitPullRequestLookupBreaker: Equatable, Sendable {
     /// so frequent app switching cannot turn a paused poll back into a busy one.
     static let foregroundRearmDelay: TimeInterval = 60
 
+    /// The polled lookup's normal minimum gap.
+    static let basePollInterval: TimeInterval = 60
+    /// Ceiling for the network-failure backoff, matching `authCooldown`.
+    static let maxTransientPollInterval: TimeInterval = 900
+
     private(set) var openedAt: Date?
     private(set) var reason: String?
     private(set) var branch: String?
     private(set) var repoPath: String?
+    /// Network-class failures in a row since the last answer from GitHub.
+    private(set) var consecutiveTransientFailures = 0
+
+    /// Minimum gap before the next polled lookup. A network failure keeps
+    /// polling alive, but backs off: one offline laptop ran `gh pr list` every
+    /// 60–90 s for 12.5 hours, 528 identical "error connecting to
+    /// api.github.com" failures. Doubles from the second failure and caps at
+    /// 15 minutes; any answer, a branch change, or foregrounding resets it.
+    var pollInterval: TimeInterval {
+        guard consecutiveTransientFailures > 1 else { return Self.basePollInterval }
+        let doublings = Double(min(consecutiveTransientFailures - 1, 4))
+        return min(Self.basePollInterval * pow(2, doublings), Self.maxTransientPollInterval)
+    }
 
     var isOpen: Bool { openedAt != nil }
 
@@ -77,7 +95,9 @@ struct GitPullRequestLookupBreaker: Equatable, Sendable {
             self.branch = branch
             self.repoPath = repoPath
         case .transient:
+            let failures = consecutiveTransientFailures + 1
             reset()
+            consecutiveTransientFailures = failures
         }
         return kind
     }
@@ -91,6 +111,9 @@ struct GitPullRequestLookupBreaker: Equatable, Sendable {
     /// delay keeps app-switching (or rail churn) from turning a paused poll
     /// back into the 90s failure poll this breaker exists to stop.
     mutating func rearmAfterForeground(now: Date = Date()) {
+        // Coming back is also the moment a dropped network most likely
+        // returned, so the next poll goes at the normal pace.
+        consecutiveTransientFailures = 0
         guard let openedAt, now.timeIntervalSince(openedAt) >= Self.foregroundRearmDelay else { return }
         reset()
     }
@@ -114,6 +137,7 @@ struct GitPullRequestLookupBreaker: Equatable, Sendable {
         reason = nil
         branch = nil
         repoPath = nil
+        consecutiveTransientFailures = 0
     }
 
     #if DEBUG
