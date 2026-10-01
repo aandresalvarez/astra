@@ -83,6 +83,9 @@ struct ComposerToolbar: View {
     /// lets the switch resolve one). One transition, so the parent's
     /// `*_runtime_changed` breadcrumb records the model actually selected.
     var onRuntimeChange: ((String, String?) -> Void)?
+    /// Set by an existing task's composer: a switch from a runtime approved
+    /// for PHI to one that is not waits for the user to acknowledge the risk.
+    var sensitiveDataSwitchGuard: RuntimeSensitiveDataSwitchGuard?
     var onBudgetChange: ((Int) -> Void)?
     var onRemoveSkill: ((Skill) -> Void)?
     var onToggleSkill: ((Skill, Bool) -> Void)?
@@ -121,6 +124,7 @@ struct ComposerToolbar: View {
     @State private var isModelSelectorPresented = false
     @State private var modelSelectorOpenedAt: UInt64?
     @State private var modelSelectorCatalogStore = ModelSelectorCatalogStore()
+    @State private var pendingSensitiveDataSwitch: RuntimeSensitiveDataSwitchRequest?
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -164,6 +168,27 @@ struct ComposerToolbar: View {
                 skipPermissions: $skipPermissions,
                 onPolicyLevelChange: onPolicyLevelChange
             )
+        }
+        .alert(
+            pendingSensitiveDataSwitch.map { RuntimeSensitiveDataSwitchPolicy.alertTitle(to: $0.next) } ?? "",
+            isPresented: Binding(
+                get: { pendingSensitiveDataSwitch != nil },
+                set: { if !$0 { pendingSensitiveDataSwitch = nil } }
+            ),
+            presenting: pendingSensitiveDataSwitch
+        ) { request in
+            Button(RuntimeSensitiveDataSwitchPolicy.confirmTitle, role: .destructive) {
+                sensitiveDataSwitchGuard?.recordAcknowledgement(request.previous, request.next, request.model)
+                applyRuntimeChange(to: request.next, model: request.model)
+            }
+            Button(RuntimeSensitiveDataSwitchPolicy.cancelTitle(keeping: request.previous), role: .cancel) {
+                AppLogger.breadcrumb(action: "task_sensitive_data_switch_cancelled", category: "UI", fields: [
+                    "runtime": request.previous.rawValue,
+                    "declined_runtime": request.next.rawValue
+                ])
+            }
+        } message: { request in
+            Text(RuntimeSensitiveDataSwitchPolicy.alertMessage(from: request.previous, to: request.next))
         }
     }
 
@@ -359,7 +384,9 @@ struct ComposerToolbar: View {
         )
         .help(runtimeStatusHelp)
         .accessibilityLabel("Provider and model")
-        .accessibilityValue(runtimeStatusText(includeRuntime: true))
+        .accessibilityValue(selectedRuntimeApprovesSensitiveData
+            ? "\(runtimeStatusText(includeRuntime: true)), \(ModelSelectorPresentation.sensitiveDataStatus(approved: true))"
+            : runtimeStatusText(includeRuntime: true))
     }
 
     // MARK: - Model selector popover
@@ -384,7 +411,8 @@ struct ComposerToolbar: View {
                     blockedReason: runtimeBlockedReason(for: runtime)
                 ),
                 modelCount: catalog.modelCount(for: runtime),
-                isCurrent: runtime == resolvedRuntime
+                isCurrent: runtime == resolvedRuntime,
+                approvesSensitiveData: RuntimeProviderSettingsStore.isSensitiveDataApproved(for: runtime)
             )
         }
         let suggestion = compatibleSuggestedRuntime.map { runtime in
@@ -401,11 +429,11 @@ struct ComposerToolbar: View {
             showsBudgetFooter: RuntimeBudgetPresentation.isEnabled(budget),
             onSelect: { runtime, modelID in
                 if runtime != resolvedRuntime {
-                    onRuntimeChange?(runtime.rawValue, modelID)
+                    requestRuntimeChange(to: runtime, model: modelID)
                 } else {
                     onModelChange?(modelID)
+                    alignReasoningEffort(model: modelID, runtime: runtime)
                 }
-                alignReasoningEffort(model: modelID, runtime: runtime)
             },
             onSetup: { openSettings() },
             openedAt: modelSelectorOpenedAt,
@@ -422,8 +450,34 @@ struct ComposerToolbar: View {
             to: runtime,
             cache: runtimeModelCache
         )
-        onRuntimeChange?(runtime.rawValue, switchedModel)
-        alignReasoningEffort(model: switchedModel, runtime: runtime)
+        requestRuntimeChange(to: runtime, model: switchedModel)
+    }
+
+    /// Every provider switch goes through here, so none can skip the PHI
+    /// acknowledgement. The popover closes first: the alert belongs to the
+    /// window, not to a popover that may still be on screen.
+    private func requestRuntimeChange(to runtime: AgentRuntimeID, model newModel: String) {
+        if let sensitiveDataSwitchGuard,
+           RuntimeSensitiveDataSwitchPolicy.requiresAcknowledgement(
+               from: resolvedRuntime,
+               to: runtime,
+               hasConversation: sensitiveDataSwitchGuard.hasConversation(),
+               isApproved: { RuntimeProviderSettingsStore.isSensitiveDataApproved(for: $0) }
+           ) {
+            isModelSelectorPresented = false
+            pendingSensitiveDataSwitch = RuntimeSensitiveDataSwitchRequest(
+                previous: resolvedRuntime,
+                next: runtime,
+                model: newModel
+            )
+            return
+        }
+        applyRuntimeChange(to: runtime, model: newModel)
+    }
+
+    private func applyRuntimeChange(to runtime: AgentRuntimeID, model newModel: String) {
+        onRuntimeChange?(runtime.rawValue, newModel)
+        alignReasoningEffort(model: newModel, runtime: runtime)
     }
 
     /// Reasoning levels differ per model, so a pick made for the previous
@@ -596,6 +650,14 @@ struct ComposerToolbar: View {
                     .frame(maxWidth: 180, alignment: .trailing)
             case .iconOnly:
                 EmptyView()
+            }
+
+            // Neutral, in the chip's own colour: it repeats the user's label
+            // for the runtime this message goes to, it is not a safety verdict.
+            if selectedRuntimeApprovesSensitiveData {
+                Image(systemName: "checkmark.shield")
+                    .font(Stanford.ui(ComposerToolbarPresentation.chipIconSize))
+                    .accessibilityHidden(true)
             }
 
             if style != .iconOnly {
@@ -889,7 +951,17 @@ struct ComposerToolbar: View {
         return resolvedRuntime
     }
 
+    private var selectedRuntimeApprovesSensitiveData: Bool {
+        RuntimeProviderSettingsStore.isSensitiveDataApproved(for: resolvedRuntime)
+    }
+
     private var runtimeStatusHelp: String {
+        let help = runtimeReadinessHelp
+        guard selectedRuntimeApprovesSensitiveData else { return help }
+        return "\(help)\n\(ModelSelectorPresentation.sensitiveDataStatus(approved: true))."
+    }
+
+    private var runtimeReadinessHelp: String {
         if runtimeReadinessStates.isEmpty {
             return "Checking provider readiness"
         }

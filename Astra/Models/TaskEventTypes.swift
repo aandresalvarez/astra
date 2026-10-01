@@ -215,6 +215,10 @@ public enum TaskEventTypes {
         /// alongside the free-text `error` event whenever a run is blocked
         /// before or without launching a provider process.
         public static let runtimeLaunchBlocked: TaskEventType = "runtime.launch_blocked"
+        /// The user switched an existing conversation from a runtime they
+        /// marked approved for PHI to one they did not, and accepted the risk.
+        /// Payload is `RuntimeSensitiveDataRiskAcknowledgement`.
+        public static let sensitiveDataRiskAcknowledged: TaskEventType = "runtime.sensitive_data_risk_acknowledged"
     }
 
     private static let lifecycleTypes: Set<TaskEventType> = [
@@ -320,7 +324,8 @@ public enum TaskEventTypes {
         System.skillActive,
         System.recapResult,
         System.scheduleResult,
-        System.runtimeLaunchBlocked
+        System.runtimeLaunchBlocked,
+        System.sensitiveDataRiskAcknowledged
     ]
 
     public static func category(for eventType: TaskEventType) -> TaskEventCategory {

@@ -4234,6 +4234,7 @@ struct TaskMainView: View {
                             source: "task_composer"
                         )
                     },
+                    sensitiveDataSwitchGuard: TaskComposerCoordinator.sensitiveDataSwitchGuard(for: task),
                     onBudgetChange: { task.tokenBudget = $0 },
                     onRemoveSkill: { skill in
                         task.skills.removeAll { $0.id == skill.id }

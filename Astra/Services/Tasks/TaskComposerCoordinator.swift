@@ -183,6 +183,55 @@ enum TaskComposerCoordinator {
         ])
     }
 
+    /// Guards runtime switches in an existing task's composer. A task with no
+    /// runs has sent nothing to any provider, so there is no thread to protect.
+    static func sensitiveDataSwitchGuard(for task: AgentTask) -> RuntimeSensitiveDataSwitchGuard {
+        RuntimeSensitiveDataSwitchGuard(
+            hasConversation: { !task.runs.isEmpty },
+            recordAcknowledgement: { previous, next, model in
+                recordSensitiveDataRiskAcknowledgement(task: task, previous: previous, next: next, model: model)
+            }
+        )
+    }
+
+    /// Recorded before the switch it allows, so the thread reads in order.
+    static func recordSensitiveDataRiskAcknowledgement(
+        task: AgentTask,
+        previous: AgentRuntimeID,
+        next: AgentRuntimeID,
+        model: String
+    ) {
+        task.modelContext?.insert(sensitiveDataRiskAcknowledgementEvent(
+            task: task,
+            previous: previous,
+            next: next,
+            model: model
+        ))
+        AppLogger.breadcrumb(action: "task_sensitive_data_risk_acknowledged", category: "UI", taskID: task.id, fields: [
+            "previous_runtime": previous.rawValue,
+            "runtime": next.rawValue,
+            "model": model,
+            "workspace_id": task.workspace?.id.uuidString ?? "none"
+        ])
+    }
+
+    static func sensitiveDataRiskAcknowledgementEvent(
+        task: AgentTask,
+        previous: AgentRuntimeID,
+        next: AgentRuntimeID,
+        model: String
+    ) -> TaskEvent {
+        TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.System.sensitiveDataRiskAcknowledged,
+            payload: RuntimeSensitiveDataRiskAcknowledgement(
+                previousRuntimeID: previous.rawValue,
+                runtimeID: next.rawValue,
+                model: model
+            )
+        )
+    }
+
     /// Combines a task/draft's already-persisted explicit-pick flag with the
     /// composer's session-scoped "did the user just touch the runtime picker"
     /// signal. Sticky-true: once either side has recorded an explicit pick, a

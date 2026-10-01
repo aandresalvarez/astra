@@ -169,7 +169,18 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         let groups = ModelSelectorPresentation.railGroups(providers)
         return ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                railGroup(title: "Providers", rows: groups.providers)
+                if !groups.approved.isEmpty {
+                    railGroup(
+                        title: ModelSelectorPresentation.approvedGroupTitle,
+                        systemImage: "checkmark.shield.fill",
+                        rows: groups.approved
+                    )
+                    .help(ModelSelectorPresentation.sensitiveDataApprovedHelp)
+                }
+                if !groups.providers.isEmpty {
+                    railGroup(title: groups.providersTitle, rows: groups.providers)
+                        .padding(.top, groups.approved.isEmpty ? 0 : 6)
+                }
                 if !groups.needsSetup.isEmpty {
                     railGroup(title: "Needs setup", rows: groups.needsSetup)
                         .padding(.top, 6)
@@ -179,13 +190,26 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         }
     }
 
-    private func railGroup(title: String, rows: [ModelSelectorProviderRow]) -> some View {
+    private func railGroup(
+        title: String,
+        systemImage: String? = nil,
+        rows: [ModelSelectorProviderRow]
+    ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+            HStack(spacing: 4) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                Text(title)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .font(Stanford.caption(11).weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
             ForEach(rows) { row in
                 providerRow(row)
             }
@@ -225,6 +249,12 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
                     .foregroundStyle(row.availability == .needsSetup ? .secondary : .primary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
+                if row.approvesSensitiveData {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(Stanford.ui(11))
+                        .foregroundStyle(Stanford.lagunita)
+                        .help(ModelSelectorPresentation.sensitiveDataApprovedHelp)
+                }
                 if row.isCurrent {
                     Circle()
                         .fill(Stanford.paloAltoGreen)
@@ -276,6 +306,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         }
         return VStack(alignment: .leading, spacing: 0) {
             searchField(placeholder: "Search \(provider.title)")
+            sensitiveDataStatus(for: provider)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
@@ -302,6 +333,35 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
                 }
             }
         }
+    }
+
+    /// One quiet line under the search field saying whose call approval is
+    /// and what it means, with the way to change it. Approved reads as a
+    /// positive state; not approved stays muted so it informs without alarming.
+    private func sensitiveDataStatus(for provider: ModelSelectorProviderRow) -> some View {
+        let approved = provider.approvesSensitiveData
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: approved ? "checkmark.shield.fill" : "shield")
+                .font(Stanford.ui(11))
+                .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.tertiary))
+            Text(ModelSelectorPresentation.sensitiveDataDetail(approved: approved))
+                .font(Stanford.caption(12))
+                .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.secondary))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(ModelSelectorPresentation.sensitiveDataChangeAction) {
+                onSetup()
+                dismiss()
+            }
+            .buttonStyle(.link)
+            .font(Stanford.caption(12))
+            .accessibilityLabel("Change PHI approval in Settings")
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
+        .help(approved
+            ? ModelSelectorPresentation.sensitiveDataApprovedHelp
+            : ModelSelectorPresentation.sensitiveDataNotApprovedHelp)
     }
 
     private func searchField(placeholder: String) -> some View {
