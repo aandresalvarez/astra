@@ -1631,6 +1631,39 @@ struct RuntimePermissionApprovalGateTests {
         ) == false)
     }
 
+    /// Task BA13BF87: agy lost its Vertex stream when the machine's address
+    /// changed mid-request. Go names the socket operation and never says
+    /// "network", so this fell through to a bare "exited with code 3".
+    @Test("A dropped provider socket is a network failure, not a process failure")
+    func droppedSocketIsANetworkFailure() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .antigravityCLI,
+            model: "gemini-3.8-flash-high",
+            exitCode: 3,
+            rawError: #"error: agent executor error: generating and executing: request failed: Post "https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse": read tcp 10.130.200.188:59810->142.251.218.106:443: read: can't assign requested address AGY_ERROR: {"status":"UNKNOWN","error_code":2,"code_kind":"grpc","retryable":false}"#,
+            providerVersion: nil,
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .networkFailed)
+        #expect(diagnostic.isApprovableRuntimePermission == false)
+    }
+
+    /// A bare `broken pipe` is a local EPIPE (a tool writing to a closed pipe) as
+    /// often as a dropped connection, so it must not read as a network failure on
+    /// its own; the socket form (`write tcp …: broken pipe`) still does.
+    @Test("A local broken pipe is not a network failure, a socket one is")
+    func brokenPipeNeedsASocketOperation() {
+        func category(_ raw: String) -> AgentRuntimeFailureCategory {
+            AgentRuntimeFailureDiagnostic.classify(
+                runtime: .antigravityCLI, model: "m", exitCode: 1, rawError: raw,
+                providerVersion: nil, stream: nil
+            ).category
+        }
+        #expect(category("bash: echo: write error: Broken pipe") != .networkFailed)
+        #expect(category(#"Post "https://x": write tcp 10.0.0.1:5->1.1.1.1:443: write: broken pipe"#) == .networkFailed)
+    }
+
     @Test("A local approval prompt still raises an approval card")
     func localApprovalPromptStillPauses() throws {
         let container = try makeRuntimeComponentContainer()

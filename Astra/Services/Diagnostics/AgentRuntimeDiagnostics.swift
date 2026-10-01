@@ -297,7 +297,13 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         }
         if containsAny(haystack, [
             "network", "connection refused", "connection reset", "timed out",
-            "timeout", "enotfound", "econnreset", "econnrefused", "tls", "ssl"
+            "timeout", "enotfound", "econnreset", "econnrefused", "tls", "ssl",
+            // Go's socket errors name the operation, never "network": agy lost a
+            // Vertex stream to `read tcp …:443: read: can't assign requested
+            // address` when the local address went away (VPN or Wi-Fi change),
+            // and the user was told only that the process exited with code 3.
+            "dial tcp", "read tcp", "write tcp", "can't assign requested address",
+            "no route to host", "no such host", "connection aborted"
         ]) {
             return .networkFailed
         }

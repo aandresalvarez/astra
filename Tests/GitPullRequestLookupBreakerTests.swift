@@ -54,6 +54,30 @@ struct GitPullRequestLookupBreakerTests {
         }
     }
 
+    @Test("Repeated network failures back off the poll, and an answer restores it")
+    func repeatedNetworkFailuresBackOff() {
+        // Verbatim from an offline session that failed 528 times in 12.5 hours.
+        let offline = "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com"
+        var breaker = GitPullRequestLookupBreaker()
+        var intervals: [TimeInterval] = []
+        for _ in 0..<7 {
+            breaker.recordFailure(detail: offline, branch: Self.branch, repoPath: Self.repoPath)
+            intervals.append(breaker.pollInterval)
+        }
+
+        #expect(intervals == [60, 120, 240, 480, 900, 900, 900])
+        #expect(!breaker.isOpen)
+        #expect(!breaker.shouldSkip(branch: Self.branch, repoPath: Self.repoPath))
+
+        breaker.recordSuccess()
+        #expect(breaker.pollInterval == GitPullRequestLookupBreaker.basePollInterval)
+
+        breaker.recordFailure(detail: offline, branch: Self.branch, repoPath: Self.repoPath)
+        breaker.recordFailure(detail: offline, branch: Self.branch, repoPath: Self.repoPath)
+        breaker.rearmAfterForeground()
+        #expect(breaker.pollInterval == GitPullRequestLookupBreaker.basePollInterval)
+    }
+
     @Test("A transient failure after an open breaker re-arms polling")
     func transientFailureClosesAnOpenBreaker() {
         var breaker = openedBreaker()

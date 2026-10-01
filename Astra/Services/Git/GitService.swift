@@ -359,6 +359,7 @@ class GitService: GitRepositoryOperating {
 
     private let indexLock = NSLock()
     private var _indexBusy = false
+    private static let lookupOutcomes = GitPollingLogPolicy.LookupOutcomes()
 
     private var statusService: GitStatusService {
         GitStatusService { [self] repoPath, arguments in
@@ -516,7 +517,9 @@ class GitService: GitRepositoryOperating {
         timeout: TimeInterval? = nil,
         failureLogLevel: LogLevel = .error
     ) async throws -> String {
-        AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
+        if !GitPollingLogPolicy.isReadOnlyPollQuery(arguments) {
+            AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
+        }
         return try await runProcess(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git", "-C", repoPath] + arguments,
@@ -1025,18 +1028,23 @@ class GitService: GitRepositoryOperating {
                 ], diagnostic: decodeResult.diagnostic), level: .warning, fieldMaxLength: 240)
                 return .unavailable("GitHub CLI returned PR data ASTRA could not read.")
             }
+            let lookupKey = "\(repoPath)|\(trimmedHead)"
             if let pr = decoded.first(where: { $0.state.uppercased() == "OPEN" }) ?? decoded.first {
-                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
-                    "head": trimmedHead,
-                    "result": "found",
-                    "number": "\(pr.number)"
-                ], level: .debug)
+                if Self.lookupOutcomes.recordChanged(key: lookupKey, outcome: "found:\(pr.number)") {
+                    AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                        "head": trimmedHead,
+                        "result": "found",
+                        "number": "\(pr.number)"
+                    ], level: .debug)
+                }
                 return .found(pr)
             }
-            AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
-                "head": trimmedHead,
-                "result": "none"
-            ], level: .debug)
+            if Self.lookupOutcomes.recordChanged(key: lookupKey, outcome: "none") {
+                AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
+                    "head": trimmedHead,
+                    "result": "none"
+                ], level: .debug)
+            }
             return .none
         } catch {
             AppLogger.audit(.gitPullRequestLookup, category: "Git", fields: [
