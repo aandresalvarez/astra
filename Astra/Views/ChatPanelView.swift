@@ -1071,10 +1071,10 @@ struct ChatPanelView: View {
         let states = await RuntimeProviderAvailabilityService().states(
             configuration: runtimeAvailabilityConfiguration, cache: .shared
         )
-        // Skip partial results from a mid-flight task cancellation: SwiftUI's .task(id:) cancels
-        // the running task when the signature changes, causing withTaskGroup's for-await loop to
-        // exit early with fewer entries than registered runtimes. Writing partial states would
-        // drop providers from the menu until the replacement task completes.
+        // SwiftUI's .task(id:) cancels this when the view goes away or the signature changes. A
+        // cancelled refresh returns no states (its killed probes would all read as blocked), so
+        // anything short of a full map is not an answer: keep the previous states until the
+        // replacement task completes rather than dropping providers from the menu.
         guard states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count else { return }
         runtimeReadinessStates = states
         alignDefaultRuntimeWithAvailability()
