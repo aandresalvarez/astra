@@ -1,7 +1,7 @@
 import Foundation
 import ASTRACore
 
-struct AgentUtilityRuntimeConfiguration: Equatable {
+struct AgentUtilityRuntimeConfiguration: Codable, Equatable {
     static let defaultTimeoutSeconds: TimeInterval = 60
 
     var runtime: AgentRuntimeID

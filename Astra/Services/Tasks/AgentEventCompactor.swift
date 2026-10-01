@@ -269,7 +269,8 @@ enum AgentEventCompactor {
     }
 
     private static func shouldPreserveDuringCompaction(_ event: TaskEvent) -> Bool {
-        if event.type.hasPrefix("astra.") {
+        // Durable turn requests retain source-event IDs, including blocked plans.
+        if event.type.hasPrefix("astra.") || event.type.hasPrefix("execution.request.") {
             return true
         }
 
@@ -284,8 +285,15 @@ enum AgentEventCompactor {
              "permission.denied",
              "permission.approval.requested",
              "permission.request.resolved",
+             "permission.live_approval.committed",
+             "permission.approval.delivered",
+             "runtime.result.captured",
+             "runtime.turn.settled",
+             "runtime.reconciliation.required",
+             "runtime.schedule_result.routed",
              "error",
              "task.completed",
+             "task.approved",
              "task.cancelled",
              "task.interrupted":
             return true

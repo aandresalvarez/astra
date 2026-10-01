@@ -2,7 +2,7 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 
-enum AgentRuntimeFailureCategory: String, CaseIterable, Sendable {
+enum AgentRuntimeFailureCategory: String, Codable, CaseIterable, Sendable {
     case authenticationFailed = "authentication_failed"
     case modelUnavailable = "model_unavailable"
     case quotaExceeded = "quota_exceeded"
@@ -18,7 +18,7 @@ enum AgentRuntimeFailureCategory: String, CaseIterable, Sendable {
     case sandboxCredentialAccessBlocked = "sandbox_credential_access_blocked"
 }
 
-struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
+struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
     let runtime: AgentRuntimeID
     let model: String
     let exitCode: Int
@@ -44,7 +44,7 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
     /// failed identically — five times in the logged run.
     let isApprovableRuntimePermission: Bool
 
-    enum SummarySource: String, Sendable {
+    enum SummarySource: String, Codable, Sendable {
         case stderr
         case resultOutput = "result_output"
         case fallback

@@ -1212,8 +1212,8 @@ struct TaskThreadSnapshot: Sendable {
     }
 
     private static func isGenericPermissionApprovalText(_ text: String) -> Bool {
-        text == "Permission approved. Continuing." ||
-            text == "Permission approved for this task. Continuing."
+        text == "Permission approved." || text == "Permission approved for the live session." ||
+            text == "Permission approved. Continuing." || text == "Permission approved for this task. Continuing."
     }
 
     private static func isVisibleConversationEvent(_ event: TaskEventSnapshot) -> Bool {
@@ -1278,10 +1278,18 @@ struct TaskThreadSnapshot: Sendable {
             return event.payload.isEmpty ? "Task moved back to draft for editing." : event.payload
         case "task.approved":
             if isRuntimePermissionApprovalEvent(event.payload) {
-                return event.payload.localizedCaseInsensitiveContains("similar") ||
-                    event.payload.localizedCaseInsensitiveContains("task-scoped")
-                    ? "Permission approved for this task. Continuing."
-                    : "Permission approved. Continuing."
+                if event.payload.contains("Continuation queued.") {
+                    return "Permission approved. Continuation queued."
+                }
+                if event.payload.contains("Permission saved for future use.") {
+                    return "Permission saved for future use."
+                }
+                if event.payload.contains("Approved for the live provider session.") {
+                    return "Permission approved for the live session."
+                }
+                // Older approval events promised continuation without submitting
+                // it. Describe only the fact those events actually establish.
+                return "Permission approved."
             }
             return "Approval granted."
         case TaskPlanEventTypes.approved:

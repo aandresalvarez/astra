@@ -16,6 +16,11 @@ enum TaskSuccessfulCompletionService {
             await GitService.shared.getRemoteOriginURL(at: path)
         }
     ) async -> Bool {
+        do {
+            if try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
+                return false
+            }
+        } catch { return false }
         await GitHubReviewPublicationRequirement.bindOriginTargetIfNeeded(
             task: task,
             run: run,
