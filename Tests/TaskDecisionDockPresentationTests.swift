@@ -721,6 +721,37 @@ struct TaskDecisionDockPresentationTests {
         )
     }
 
+    @Test("Artifact attention keeps run-bound legacy continuation available", arguments: [true, false])
+    func artifactAttentionOffersLegacyContinuation(canResume: Bool) throws {
+        var input = context(status: .completed, canResume: canResume)
+        input.hasApprovedPermissionContinuation = true
+        input.completedTaskNeedsArtifactAttention = true
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.id == "completed-no-usable-result")
+        #expect(dock.primaryAction?.kind == .retry)
+        #expect(dock.secondaryActions.contains { $0.kind == .resume && $0.title == "Continue approved request" } == canResume)
+    }
+
+    @Test("Legacy future-use offers expose a working task-scoped approval", arguments: [true, false])
+    @MainActor
+    func legacyOfferUsesRecordedStopInDock(blocking: Bool) throws {
+        let fixture = try PermissionApprovalContinuationTests.Fixture()
+        defer { fixture.cleanup() }
+        _ = try fixture.blockedRequest(completed: true, legacy: true)
+        fixture.task.runs.first?.typedStopReason = blocking ? .permissionApprovalRequired : .timeout
+        fixture.task.status = blocking ? .pendingUser : .failed
+        let state = TaskRuntimePermissionState.build(task: fixture.task)
+        #expect(state.decision?.isConnectorCredentialOffer == !blocking)
+        let dock = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(state, isAuto: false)))
+        #expect(dock.primaryAction?.kind == (blocking ? .allowOnce : .allowSimilar))
+        if !blocking {
+            #expect(!actionTitles(dock).contains { $0.hasPrefix("Allow once") })
+            guard case .saved = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task,
+                modelContext: fixture.context) else { Issue.record("Primary offered approval did not save"); return }
+            #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+        }
+    }
+
     private func context(
         status: TaskStatus,
         mission: MissionControlPresentation? = nil,

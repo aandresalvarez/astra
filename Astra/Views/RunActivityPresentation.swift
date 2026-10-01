@@ -179,18 +179,19 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
     /// Future-use permission carries no blocked turn to resume.
     let isConnectorCredentialOffer: Bool
 
-    init(payload: String) {
+    init(payload: String, isFutureUse: Bool? = nil) {
+        let offer = isFutureUse ?? (PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .futureUse)
         let approval = RuntimePermissionApprovalText(payload: payload)
         title = approval.decisionTitle
         summary = approval.decisionBody
-        scope = "Scope: one time for this run."
+        scope = offer ? "Scope: future use in this task." : "Scope: one time for this run."
         check = approval.checkSummary
         commandPreview = approval.actionPreview
         grantSummary = approval.approvalGrant
         compactAuditSummary = approval.compactSummary
         allowSimilarLabel = approval.allowSimilarLabel
         isConnectorCredentialRequest = approval.isConnectorCredentialRequest
-        isConnectorCredentialOffer = PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .futureUse
+        isConnectorCredentialOffer = offer
     }
 }
 

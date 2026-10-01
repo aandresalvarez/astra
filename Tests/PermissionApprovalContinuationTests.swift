@@ -112,7 +112,7 @@ struct PermissionApprovalContinuationTests {
 
     @Test("Cancelled, closed, and superseded requests never restart work")
     func staleApprovalsCannotLaunch() throws {
-        for reason in ["cancelled", "closed", "new-turn", "new-run", "runtime-change"] {
+        for reason in ["cancelled", "closed", "new-turn", "new-run", "runtime-mismatch"] {
             let fixture = try Fixture()
             defer { fixture.cleanup() }
             _ = try fixture.blockedRequest()
@@ -121,7 +121,7 @@ struct PermissionApprovalContinuationTests {
             case "closed": fixture.task.isDone = true
             case "new-turn":
                 _ = ExecutionRequestSubmissionService.submitFollowUp(message: "A newer user question", for: fixture.task, into: fixture.context)
-            case "runtime-change": fixture.task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+            case "runtime-mismatch": fixture.task.runs.first?.runtimeID = AgentRuntimeID.claudeCode.rawValue
             default:
                 let run = TaskRun(task: fixture.task)
                 fixture.context.insert(run)

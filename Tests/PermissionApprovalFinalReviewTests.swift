@@ -8,7 +8,7 @@ import ASTRAPersistence
 
 extension PermissionApprovalContinuationTests {
     @Test("Legacy recovery still requires current saved authority and never overrides a denial",
-          arguments: ["missing-grant", "denied", "cancelled", "closed", "new-turn", "runtime-change", "future-use"])
+          arguments: ["missing-grant", "denied", "cancelled", "closed", "new-turn", "runtime-mismatch", "future-use"])
     func legacyRecoveryRejectsIneligibleRequests(reason: String) throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -28,7 +28,7 @@ extension PermissionApprovalContinuationTests {
         case "new-turn":
             _ = ExecutionRequestSubmissionService.submitFollowUp(message: "A newer request", for: fixture.task, into: fixture.context)
             fixture.task.status = .completed
-        case "runtime-change": fixture.task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        case "runtime-mismatch": fixture.task.runs.first?.runtimeID = AgentRuntimeID.claudeCode.rawValue
         case "future-use":
             let event = try #require(fixture.task.events.last { $0.type == "permission.approval.requested" })
             var payload = try #require(PermissionApprovalEventPayload.decoded(from: event.payload))

@@ -610,6 +610,8 @@ struct TaskDecisionDockPresentation: Equatable {
             details: details(context),
             primaryAction: context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
             secondaryActions: [
+                context.hasApprovedPermissionContinuation && context.canResume
+                    ? action(.resume, title: "Continue approved request", systemImage: "play.fill") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
             overflowActions: supportAndCloseOverflowActions(

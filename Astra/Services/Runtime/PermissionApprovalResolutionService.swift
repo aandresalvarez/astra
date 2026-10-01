@@ -20,6 +20,8 @@ enum PermissionApprovalResolutionService {
         heldGrants: [PermissionGrant] = [],
         persist: (() throws -> Void)? = nil
     ) -> Outcome {
+        let approvedRuntime = TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: task)
+            .flatMap(PermissionApprovalEventPayload.decoded(from:))?.providerID ?? task.resolvedRuntimeID
         let outcome = commitApproval(task: task, scope: scope, modelContext: modelContext,
             heldGrants: heldGrants, persist: persist)
         let result: String
@@ -31,7 +33,7 @@ enum PermissionApprovalResolutionService {
         }
         AppLogger.audit(.taskApproved, category: "PermissionApproval", taskID: task.id,
             fields: ["approval_scope": scope == .task ? "task" : "once",
-                "runtime": task.resolvedRuntimeID.rawValue, "outcome": result])
+                "runtime": approvedRuntime.rawValue, "outcome": result])
         return outcome
     }
 
@@ -49,7 +51,10 @@ enum PermissionApprovalResolutionService {
         let futureUse = TaskPermissionContinuation.isFutureUse(payload: payload, task: task)
         let binding = TaskPermissionContinuation.binding(payload: payload, task: task, modelContext: modelContext)
         let grants = TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
-        let runtime = approval?.providerID ?? task.resolvedRuntimeID
+        let owningRunID = binding?.runID ?? approval?.continuation?.runID
+            ?? task.events.filter { !$0.isDeleted && $0.payload == payload }.max(by: { $0.timestamp < $1.timestamp })?.run?.id
+        let expectedRuntime = TaskPermissionContinuation.runtime(forRunID: owningRunID, task: task)
+        let runtime = approval?.providerID ?? expectedRuntime
         let requestID = approval?.requestID
         let asks = InFlightPermissionCenter.shared.pendingAsks(taskID: task.id)
         let liveID = asks.first(where: { $0.requestID == requestID })?.requestID
@@ -58,7 +63,7 @@ enum PermissionApprovalResolutionService {
         do {
             let current = try binding.map { try TaskPermissionContinuation.isCurrent($0, task: task, modelContext: modelContext) } ?? true
             stale = task.isDone || (task.status == .cancelled && !futureUse)
-                || runtime != task.resolvedRuntimeID
+                || runtime != expectedRuntime
                 || !current
         } catch {
             reportFailure(task: task, modelContext: modelContext)

@@ -65,6 +65,19 @@ enum TaskPermissionContinuation {
         return run?.typedStopReason != .permissionApprovalRequired
     }
 
+    nonisolated static func runtime(forRunID runID: UUID?, task: AgentTask) -> AgentRuntimeID {
+        runID.flatMap { id in task.runs.first { $0.id == id }?.runtimeID }
+            .flatMap(AgentRuntimeID.init(rawValue:)) ?? task.resolvedRuntimeID
+    }
+
+    static func reportPromotionPersistenceFailure(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
+        run.completedAt = Date()
+        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+            payload: "The permission pause could not be saved. Execution stopped before handoff; review this request before continuing.", run: run))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext,
+            taskID: task.id, auditFields: ["operation": "permission_promotion_failure_settlement"])
+    }
+
     static func isCurrent(_ binding: PermissionApprovalContinuation, task: AgentTask, modelContext: ModelContext,
                           recoveringRestart: Bool = false) throws -> Bool {
         guard !task.isDone,

@@ -12,6 +12,7 @@ final class AgentRuntimeWorker {
     private let processRunner: any AgentRuntimeProcessRunning
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
+    var permissionPromotionPersistence: (() throws -> Void)?
 
     private var currentBudgetEnforcementMode: BudgetEnforcementMode {
         budgetEnforcementModeOverride ?? .configuredDefault
@@ -613,6 +614,7 @@ final class AgentRuntimeWorker {
             return
         }
         isRunning = true
+        defer { isRunning = false }
         cancellationRequested = false
 
         // Settle executionEnvironmentSnapshotJSON before resolving
@@ -703,7 +705,7 @@ final class AgentRuntimeWorker {
             }
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
-        guard turnBegin.persisted else { isRunning = false; return }
+        guard turnBegin.persisted else { return }
         let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
             ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
@@ -736,7 +738,6 @@ final class AgentRuntimeWorker {
                 phase: auditPhase,
                 selectedRuntimeEvidence: appliedRuntime.selectedRuntimeEvidence
             )
-            isRunning = false
             return
         }
 
@@ -745,7 +746,6 @@ final class AgentRuntimeWorker {
             executablePath: launchSettings.executablePath,
             runtime: selectedRuntime.rawValue, modelContext: modelContext
         ) else {
-            isRunning = false
             return
         }
 
@@ -758,7 +758,6 @@ final class AgentRuntimeWorker {
             readinessService: runtimeReadinessService,
             verdictCache: launchReadinessCache
         ) else {
-            isRunning = false
             return
         }
 
@@ -781,7 +780,6 @@ final class AgentRuntimeWorker {
             mcpIsExecutableFile: mcpServerExecutableIsResolvable,
             testingOverride: connectorPreflightTestingOverride
         ) else {
-            isRunning = false
             return
         }
         let githubRepositoryStatus = await capabilityPreflightCache.cachedStatus(
@@ -820,7 +818,6 @@ final class AgentRuntimeWorker {
                 payload: "The task workspace changed after this run was submitted. Start a new run so ASTRA can acquire the correct workspace lock.",
                 run: run
             ))
-            isRunning = false
             return
         }
         var isDir: ObjCBool = false
@@ -838,7 +835,6 @@ final class AgentRuntimeWorker {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: "Workspace directory not found: \(codeDir)", run: run)
             modelContext.insert(event)
-            isRunning = false
             return
         }
 
@@ -848,7 +844,6 @@ final class AgentRuntimeWorker {
             modelContext: modelContext,
             phase: auditPhase
         ) else {
-            isRunning = false
             return
         }
 
@@ -859,7 +854,6 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             codeDirectory: codeDir
         ) else {
-            isRunning = false
             return
         }
 
@@ -886,7 +880,6 @@ final class AgentRuntimeWorker {
                 let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                     payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
                 modelContext.insert(event)
-                isRunning = false
                 return
             }
         } else {
@@ -962,7 +955,6 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime,
             budgetEnforcementMode: budgetEnforcementMode
         ) else {
-            isRunning = false
             return
         }
         AgentRuntimeCapabilityLaunchAudit.logResolution(
@@ -1046,7 +1038,6 @@ final class AgentRuntimeWorker {
             workspacePath: executionPath,
             modelContext: modelContext
         ) else {
-            isRunning = false
             return
         }
         let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
@@ -1342,7 +1333,8 @@ final class AgentRuntimeWorker {
                                       payload: payload, run: run)
                 modelContext.insert(event)
             } else if processSucceeded, !recordingState.agentReportedError(for: run),
-                      try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
+                      try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext,
+                          persist: permissionPromotionPersistence) {
             } else if processSucceeded,
                       runtimeAdapter.requiresVisibleResultForSuccessfulRun(phase: auditPhase),
                       Self.applyEmptySuccessfulRunIfNeeded(
@@ -1519,7 +1511,7 @@ final class AgentRuntimeWorker {
             }
 
         } catch {
-            // Keep the permission pause and abort before asynchronous handoff.
+            TaskPermissionContinuation.reportPromotionPersistenceFailure(task: task, run: run, modelContext: modelContext)
             return
         }
 
@@ -1556,7 +1548,6 @@ final class AgentRuntimeWorker {
             handoffDiscoveredFiles: handoffDiscoveredFiles
         )
         await TaskFolderRunSnapshot.settleBaseline(taskFolderRecord, task: task, run: run)
-        isRunning = false
     }
     nonisolated static func durableFailureStopReason(category: AgentRuntimeFailureCategory?) -> TaskRunStopReason {
         guard let category,

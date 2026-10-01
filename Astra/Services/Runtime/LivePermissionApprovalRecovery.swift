@@ -177,7 +177,7 @@ enum LivePermissionApprovalRecovery {
             guard !event.isDeleted, let task = event.task,
                   let data = event.payload.data(using: .utf8),
                   let commit = try? JSONDecoder().decode(Commit.self, from: data),
-                  task.resolvedRuntimeID == commit.runtime,
+                  TaskPermissionContinuation.runtime(forRunID: commit.binding.runID, task: task) == commit.runtime,
                   (try? TaskPermissionContinuation.isCurrent(commit.binding, task: task, modelContext: modelContext,
                       recoveringRestart: recoveringRestart)) == true else { continue }
             let delivered = acknowledgedPermissionRequestIDs.contains(commit.requestID) || task.events.contains {

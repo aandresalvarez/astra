@@ -55,7 +55,7 @@ enum TaskRuntimePermissionOpenRequestStore {
         switch typedState(for: task) {
         case .available(let entries):
             guard let latest = entries.last else { return .empty }
-            return state(from: latest)
+            return state(from: latest, task: task)
         case .invalid:
             AppLogger.audit(.taskFailed, category: "RuntimePermissionState", taskID: task.id, fields: [
                 "reason": "runtime_permission_open_requests_decode_failed",
@@ -66,7 +66,7 @@ enum TaskRuntimePermissionOpenRequestStore {
             break
         }
         guard let latest = unresolvedCompatibilityEntries(for: task).last else { return .empty }
-        return state(from: latest)
+        return state(from: latest, task: task)
     }
 
     static func hasOpenRequest(for task: AgentTask) -> Bool {
@@ -201,11 +201,12 @@ enum TaskRuntimePermissionOpenRequestStore {
         )
     }
 
-    private static func state(from entry: Entry) -> TaskRuntimePermissionState {
+    private static func state(from entry: Entry, task: AgentTask) -> TaskRuntimePermissionState {
         TaskRuntimePermissionState(
             latestRequestPayload: entry.payload,
             hasOpenApprovalRequest: true,
-            decision: RuntimePermissionDecisionPresentation(payload: entry.payload),
+            decision: RuntimePermissionDecisionPresentation(payload: entry.payload,
+                isFutureUse: TaskPermissionContinuation.isFutureUse(payload: entry.payload, task: task)),
             taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: entry.grants)
         )
     }

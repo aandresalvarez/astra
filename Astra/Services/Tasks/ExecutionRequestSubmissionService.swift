@@ -447,6 +447,13 @@ enum ExecutionRequestSubmissionService {
             turnIntentSnapshot: turnIntentSnapshot,
             submittedAt: date
         )
+        if let binding = permissionContinuation, let run = task.runs.first(where: { $0.id == binding.runID }),
+           let runtime = run.runtimeID, AgentRuntimeID(rawValue: runtime) != nil {
+            request.runtimeIDSnapshot = runtime
+            if let json = run.providerLaunchSignatureJSON,
+               let signature = try? JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: Data(json.utf8)),
+               signature.runtimeID == runtime { request.modelSnapshot = signature.model }
+        }
         modelContext.insert(event)
         modelContext.insert(request)
         if let attachmentsEvent { modelContext.insert(attachmentsEvent) }
