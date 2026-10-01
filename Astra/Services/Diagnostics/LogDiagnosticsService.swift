@@ -2310,11 +2310,34 @@ enum LogDiagnosticsService {
     }
 
     private static func field(_ name: String, in message: String) -> String? {
-        let prefix = "\(name)="
-        guard let range = message.range(of: prefix) else { return nil }
-        let remainder = message[range.upperBound...]
+        guard let range = fieldValueRange(of: name, in: message) else { return nil }
+        let remainder = message[range]
         let value = remainder.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
         return value.map(String.init)
+    }
+
+    /// The text after `name=`, where `name` starts a token. A bare substring
+    /// search let `skill_names=` match inside `configured_skill_names=` and
+    /// `result=` inside `diagnostic_result=`.
+    private static func fieldValueRange(of name: String, in message: String) -> Range<String.Index>? {
+        var searchStart = message.startIndex
+        while let range = message.range(of: "\(name)=", range: searchStart..<message.endIndex) {
+            if range.lowerBound == message.startIndex
+                || message[message.index(before: range.lowerBound)].isWhitespace {
+                return range.upperBound..<message.endIndex
+            }
+            searchStart = range.upperBound
+        }
+        return nil
+    }
+
+    /// A comma-separated list value whose names may contain spaces
+    /// (`resolved_skill_names=Jira Agent,Safe Bash`), read up to the next `key=`.
+    private static func listField(_ name: String, in message: String) -> [String] {
+        guard let range = fieldValueRange(of: name, in: message) else { return [] }
+        let value = message[range]
+        let end = value.range(of: #"\s[A-Za-z_][A-Za-z0-9_.]*="#, options: .regularExpression)?.lowerBound ?? value.endIndex
+        return value[..<end].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     private static func intField(_ name: String, in message: String) -> Int {
@@ -2370,11 +2393,13 @@ enum LogDiagnosticsService {
 
     private static func isJiraSkillResolvedWithoutConnector(_ message: String) -> Bool {
         let lower = message.lowercased()
-        guard lower.contains("jira agent")
-                || lower.contains("skill_names=jira")
-                || lower.contains("resolved_skill_names=jira")
-                || lower.contains("selected_skill_names=jira")
-        else { return false }
+        // Only skills the turn carried count. `resolved_skill_names` is the launch
+        // scope's answer, `none` included; `skill_names` is every skill attached
+        // to the task, pruned ones too, so it only stands in when that is absent.
+        let carriedSkillNames = fieldValueRange(of: "resolved_skill_names", in: message) != nil
+            ? listField("resolved_skill_names", in: message)
+            : ["skill_names", "selected_skill_names"].flatMap { listField($0, in: message) }
+        guard carriedSkillNames.contains(where: { $0.lowercased().contains("jira") }) else { return false }
 
         if let serviceTypes = field("connector_service_types", in: message)?.lowercased() {
             let normalizedTypes = serviceTypes

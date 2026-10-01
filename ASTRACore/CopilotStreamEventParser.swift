@@ -170,6 +170,14 @@ public enum CopilotStreamEventParser {
             return [.control(type: normalized)]
         }
 
+        // Ephemeral per-model-call bookends. A failed call arrives as
+        // `model.call_failure` above, so these carry nothing the run's outcome
+        // needs; left unhandled they were logged as unknown provider shapes at
+        // warning level on every run.
+        if normalized == "model.call_start" || normalized == "model.call_finished" {
+            return [.control(type: normalized)]
+        }
+
         // `assistant.idle` is Copilot lifecycle metadata emitted after a turn,
         // including after an aborted process. The process exit path owns the
         // actual success/failure outcome; keep this marker transient so it

@@ -103,6 +103,31 @@ struct TaskRunLifecycleServiceTests {
         #expect(!task.events.contains { $0.type == "task.approved" })
     }
 
+    /// Task BA13BF87: the approve control stayed reachable on a completed task
+    /// and each of 40 clicks wrote another approval event and a fresh
+    /// `completedAt`.
+    @Test("Approving an already completed task changes nothing")
+    func approvingCompletedTaskIsIdempotent() throws {
+        let container = try makeTaskRunLifecycleContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Done", goal: "Already finished")
+        task.status = .completed
+        let completedAt = Date(timeIntervalSince1970: 1_000)
+        task.completedAt = completedAt
+        context.insert(task)
+        let run = TaskRun(task: task)
+        run.status = .completed
+        context.insert(run)
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        for _ in 0..<3 { coordinator.approveTask(task) }
+
+        #expect(task.status == .completed)
+        #expect(task.completedAt == completedAt)
+        #expect(!task.events.contains { $0.type == "task.approved" })
+    }
+
     @Test("Task folder runtime files do not satisfy standalone artifact requirement")
     func taskFolderRuntimeFilesDoNotSatisfyStandaloneArtifactRequirement() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

@@ -341,6 +341,21 @@ final class TaskLifecycleCoordinator {
             }
         }
 
+        // Approving a task that is already complete decides nothing, and the
+        // transition would still stamp a fresh `completedAt`, insert another
+        // "Task approved by user." event, and save and export the workspace.
+        // One user clicked an approve control that did nothing 40 times in 35
+        // seconds (task BA13BF87) and each click did exactly that. This sits
+        // after the completion block above, which can still reopen a task
+        // whose external outcome is pending.
+        guard task.status != .completed else {
+            AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
+                "approval_type": "completion_ignored",
+                "reason": "already_completed"
+            ], level: .debug)
+            return
+        }
+
         let recordedValidationOverride = recordValidationOverrideIfNeeded(for: task)
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": recordedValidationOverride ? "validation_override" : "completion"

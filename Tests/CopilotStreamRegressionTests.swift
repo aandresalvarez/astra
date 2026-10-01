@@ -33,6 +33,27 @@ struct CopilotStreamRegressionTests {
         #expect(processFailures == failures)
     }
 
+    @Test("Model call bookends are control metadata, not unknown provider shapes", arguments: ["model.call_start", "model.call_finished"])
+    func modelCallBookendsAreControlMetadata(type: String) throws {
+        let line = try jsonLine([
+            "type": type,
+            "data": ["turnId": "0"],
+            "ephemeral": true
+        ])
+
+        let agentEvents = CopilotStreamEventParser.parseAgentEvents(line: line)
+        #expect(agentEvents.count == 1)
+        if case .control(let parsed) = agentEvents.first {
+            #expect(parsed == type)
+        } else {
+            Issue.record("Expected \(type) to parse as control metadata")
+        }
+
+        let telemetry = AgentRuntimeStreamTelemetry()
+        telemetry.recordParsed(agentEvents)
+        #expect(telemetry.snapshot().unknownEventCount == 0)
+    }
+
     @Test("Assistant idle remains transient", arguments: [false, true])
     func assistantIdleRemainsTransient(aborted: Bool) throws {
         let line = try jsonLine([

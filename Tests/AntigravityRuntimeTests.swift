@@ -229,6 +229,16 @@ struct AntigravityCLIRuntimeTests {
         } else {
             Issue.record("Expected a non-SUCCESS status to parse as a failed run")
         }
+
+        // The failure leads the usage, so a consumer that reads usage as it
+        // arrives already knows the run failed.
+        let failureWithUsage = #"""
+        {"event":"result","result":{"status":"ERROR","response":"","error":"boom","usage":{"input_tokens":10,"output_tokens":2},"num_turns":1}}
+        """#
+        let failureEvents = AntigravityCLIRuntime.parseAgentEvents(line: failureWithUsage, parsesJSONLines: true)
+        let failedIndex = failureEvents.firstIndex { if case .failed = $0 { true } else { false } }
+        let statsIndex = failureEvents.firstIndex { if case .stats = $0 { true } else { false } }
+        #expect(failedIndex != nil && statsIndex != nil && failedIndex! < statsIndex!)
     }
 
     @Test("Prose still falls back to the plain-text parser in stream-json mode")

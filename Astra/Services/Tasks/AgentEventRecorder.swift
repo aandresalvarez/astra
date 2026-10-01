@@ -842,8 +842,15 @@ enum AgentEventRecorder {
             // is written; a Codex turn emitted three of these at the same
             // millisecond and still ended `run_status=completed exit_code=0`,
             // which the log then reported as three failed tasks.
+            //
+            // The message rides along because this line is the only place a
+            // diagnostics bundle sees why a run ended failed: task 5DB5F63D
+            // died after 90 tool calls and 1.2M input tokens with an
+            // `agent_reported_error` that named nothing. The field logger
+            // redacts and caps it, and the full text stays in the transcript.
             AppLogger.audit(.runtimeAgentReportedError, category: "Worker", taskID: task.id, fields: [
-                "reason": "agent_reported_error"
+                "reason": "agent_reported_error",
+                "error_summary": message.isEmpty ? "empty" : message
             ], level: .warning)
 
         case .notice(let message):
