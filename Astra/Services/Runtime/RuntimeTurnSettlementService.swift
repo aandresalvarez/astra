@@ -35,6 +35,7 @@ enum RuntimeTurnSettlementService {
         let approvedPlan: ApprovedPlan?
         let chainedGoal: String
         let scheduleID: UUID?
+        var sessionMessage: String? = nil
     }
 
     struct Verdict: Codable {
@@ -62,7 +63,10 @@ enum RuntimeTurnSettlementService {
     static func verdict(for run: TaskRun, task: AgentTask) -> Verdict? {
         task.events.first {
             !$0.isDeleted && $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeTurnSettled.rawValue
-        }.flatMap { try? JSONDecoder().decode(Verdict.self, from: Data($0.payload.utf8)) }
+        }.flatMap { event in
+            guard let value = try? JSONDecoder().decode(Verdict.self, from: Data(event.payload.utf8)), value.version == 1 else { return nil }
+            return value
+        }
     }
 
     static func hasUnsettledResult(task: AgentTask, run: TaskRun) -> Bool {
@@ -75,17 +79,52 @@ enum RuntimeTurnSettlementService {
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
                        permissionPromotionPersistence: (() throws -> Void)? = nil,
-                       beforeFinalization: (() -> Void)? = nil, autoExport: Bool = true) async -> Bool {
+                       verdictPersistence: (() throws -> Void)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
         do {
-            try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
-                modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
-            await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
-            beforeFinalization?()
+            if let id = checkpoint.requestID {
+                guard let owner = try TaskTurnRequestRepository.request(id: id, in: modelContext),
+                      owner.taskID == task.id, owner.runID == run.id else { throw Failure.invalidRequestOwner }
+            }
+            var alreadyPrepared = false
+            if let prepared = try RuntimeSettlementProgress.prepared(task: task, run: run) {
+                RuntimeSettlementProgress.restore(prepared, task: task, modelContext: modelContext)
+                alreadyPrepared = true
+            } else if RuntimeSettlementProgress.event(TaskEventTypes.System.runtimeSettlementStarted, task: task, run: run) != nil {
+                pauseForReconciliation(task: task, run: run, modelContext: modelContext,
+                    reason: "runtime_settlement_uncertain",
+                    message: "Result settlement was interrupted before validation finished. Review validation and external changes before retrying; ASTRA did not rerun them.")
+                return commit(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
+                    persist: verdictPersistence, autoExport: autoExport)
+            } else {
+                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeSettlementStarted,
+                    payload: "Outcome settlement started. Validation must not be replayed without a prepared result.", run: run))
+                try save(task: task, modelContext: modelContext, operation: "runtime_settlement_started", persist: nil,
+                    autoExport: autoExport)
+                try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
+                    modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
+                await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
+            }
+            let request = try checkpoint.requestID.flatMap { try TaskTurnRequestRepository.request(id: $0, in: modelContext) }
+            let message = checkpoint.sessionMessage ?? request?.executionPolicySnapshot?.turnIntentSnapshot?.acceptedTurn ?? task.goal
+            guard AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run, message: message) else {
+                throw Failure.recoverySubmissionFailed
+            }
+            if alreadyPrepared {
+                return commit(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
+                    persist: verdictPersistence, autoExport: autoExport)
+            }
             guard await AgentRuntimeRunPersistence.finalizeAndPersist(task: task, run: run,
                 modelContext: modelContext, phase: checkpoint.phase, autoExport: autoExport,
-                persist: { commit(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
-                    autoExport: autoExport) }) else {
+                persist: {
+                    RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
+                    do {
+                        try save(task: task, modelContext: modelContext, operation: "runtime_outcome_prepared", persist: nil,
+                            autoExport: autoExport)
+                    } catch { return false }
+                    return commit(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext,
+                        persist: verdictPersistence, autoExport: autoExport)
+                }) else {
                 reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
                 return false
             }
@@ -181,6 +220,7 @@ enum RuntimeTurnSettlementService {
         var transitionedRequest: TaskTurnRequest?
         var priorRequest: TaskTurnRequestSnapshot?
         do {
+            RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
             let request = try checkpoint.requestID.flatMap { try TaskTurnRequestRepository.request(id: $0, in: modelContext) }
             if checkpoint.requestID != nil {
                 guard let request, request.taskID == task.id, request.runID == run.id else {
@@ -215,6 +255,9 @@ enum RuntimeTurnSettlementService {
                 try save(task: task, modelContext: modelContext, operation: "runtime_turn_settled", persist: persist,
                     autoExport: autoExport)
             }
+            RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
+            do { try save(task: task, modelContext: modelContext, operation: "runtime_checkpoint_pruned", persist: nil, autoExport: autoExport) }
+            catch { AppLogger.error("Settled runtime checkpoint cleanup will be retried.", category: "Persistence") }
             return true
         } catch {
             if let transitionedRequest, let priorRequest {
@@ -231,7 +274,17 @@ enum RuntimeTurnSettlementService {
 
     static func dispatchChainedTask(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
         guard let verdict = verdict(for: run, task: task), let id = verdict.chainedTaskID,
-              let goal = verdict.chainedGoal, !task.isDone else { return }
+              let goal = verdict.chainedGoal, !task.isDone,
+              RuntimeSettlementProgress.event(TaskEventTypes.System.runtimeChainedWorkDispatched, task: task, run: run) == nil else { return }
+        // Older dispatches had no typed receipt. Their durable chained event
+        // still proves dispatch, even if the user subsequently deleted the child.
+        if task.events.contains(where: { !$0.isDeleted && $0.type == TaskEventTypes.Task.chained.rawValue
+            && ($0.run?.id == run.id || ($0.run == nil && $0.timestamp >= (run.completedAt ?? run.startedAt))) }) {
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeChainedWorkDispatched,
+                payload: id.uuidString, run: run))
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            return
+        }
         ChainedTaskSubmissionService.create(from: task, run: run, modelContext: modelContext, taskID: id, goal: goal)
     }
 
@@ -249,14 +302,16 @@ enum RuntimeTurnSettlementService {
         return true
     }
 
-    static func pauseForReconciliation(task: AgentTask, run: TaskRun, modelContext: ModelContext) {
+    static func pauseForReconciliation(task: AgentTask, run: TaskRun, modelContext: ModelContext,
+        reason: String = "permission_delivery_uncertain",
+        message: String = "Approval was saved, but ASTRA cannot confirm the provider's result. Review existing results and external changes before retrying. No automatic replay was started.") {
         run.status = .failed
-        run.typedStopReason = .custom("permission_delivery_uncertain")
+        run.typedStopReason = .custom(reason)
         TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
         if !task.events.contains(where: { $0.run?.id == run.id
             && $0.type == TaskEventTypes.System.runtimeReconciliationRequired.rawValue }) {
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeReconciliationRequired,
-                payload: "Approval was saved, but ASTRA cannot confirm the provider's result. Review existing results and external changes before retrying. No automatic replay was started.", run: run))
+                payload: message, run: run))
         }
     }
 

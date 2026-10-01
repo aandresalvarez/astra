@@ -238,7 +238,7 @@ extension HeadlessChatScenarioTests {
         // This uses the real process runner and stdout/event queue: the saved
         // delivery evidence must belong to a captured result and final verdict.
         let settledRun = try #require(task.runs.first)
-        #expect(try RuntimeTurnSettlementService.checkpoint(for: settledRun, task: task)?.result.acknowledgedPermissionRequestIDs == ["req-live-1"])
+        #expect(try RuntimeTurnSettlementService.checkpoint(for: settledRun, task: task) == nil)
         #expect(RuntimeTurnSettlementService.verdict(for: settledRun, task: task) != nil)
         #expect(task.events.contains { $0.run?.id == settledRun.id && $0.type == TaskEventTypes.Tool.permissionApprovalDelivered.rawValue })
         #expect(task.sessionId == "live-approval-sess")

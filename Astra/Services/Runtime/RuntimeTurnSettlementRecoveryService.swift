@@ -35,10 +35,12 @@ enum RuntimeTurnSettlementRecoveryService {
     /// Resumes only local outcome/plan settlement. The queue is signalled after
     /// every verdict is saved; no original provider process is launched here.
     static func resume(modelContext: ModelContext, taskQueue: TaskQueue, autoExport: Bool = true) async {
-        let type = TaskEventTypes.System.runtimeResultCaptured.rawValue
-        guard let events = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.type == type })) else { return }
+        let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
+        let settled = TaskEventTypes.System.runtimeTurnSettled.rawValue
+        guard let events = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.type == captured || $0.type == settled })) else { return }
+        var seenRuns: Set<UUID> = []
         for event in events {
-            guard let task = event.task, let run = event.run, !task.isDone,
+            guard let task = event.task, let run = event.run, !task.isDone, seenRuns.insert(run.id).inserted,
                   task.runs.max(by: { $0.startedAt < $1.startedAt })?.id == run.id else { continue }
             if RuntimeTurnSettlementService.verdict(for: run, task: task) == nil {
                 do {
@@ -50,6 +52,7 @@ enum RuntimeTurnSettlementRecoveryService {
                     continue
                 }
             }
+            RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
             RuntimeTurnSettlementService.dispatchChainedTask(task: task, run: run, modelContext: modelContext)
             if let id = RuntimeTurnSettlementService.verdict(for: run, task: task)?.scheduleID {
                 taskQueue.routeScheduleResult(task: task, scheduleID: id, modelContext: modelContext)

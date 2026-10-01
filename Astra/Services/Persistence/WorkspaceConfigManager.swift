@@ -623,6 +623,8 @@ public enum WorkspaceConfigManager {
         public var executionRootPath: String? = nil
         public var runs: [RunConfig]
         public var events: [EventConfig]
+        /// Immutable admission owners needed to recover captured results after import.
+        public var turnRequests: [TaskTurnRequestSnapshot]?
         public var artifacts: [ArtifactConfig]?
         public var skillIDs: [String]?
         public var skillNames: [String]
@@ -943,7 +945,7 @@ public enum WorkspaceConfigManager {
         globalTools: [LocalTool] = []
     ) -> WorkspaceConfig? {
         // Guard against faulted/deleted workspace during dealloc
-        guard !workspace.isDeleted, workspace.modelContext != nil else { return nil }
+        guard !workspace.isDeleted, let modelContext = workspace.modelContext else { return nil }
 
         let skills = skillsForExport(workspace: workspace, globalSkills: globalSkills)
         let connectors = connectorsForExport(
@@ -963,7 +965,7 @@ public enum WorkspaceConfigManager {
         let templateConfigs = workspace.templates.map(templateConfig)
         let scheduleConfigs = workspace.schedules.map(scheduleConfig)
         let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
-        let taskConfigs = workspace.tasks.map(taskConfig)
+        guard let taskConfigs = try? workspace.tasks.map({ try taskConfig($0, modelContext: modelContext) }) else { return nil }
         let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
         let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
         let workspaceAppRunConfigs = workspaceAppRunSnapshot.runs.map(workspaceAppRunConfig)
@@ -1831,14 +1833,16 @@ public enum WorkspaceConfigManager {
         )
     }
 
-    private static func taskConfig(_ task: AgentTask) -> TaskConfig {
+    private static func taskConfig(_ task: AgentTask, modelContext: ModelContext) throws -> TaskConfig {
+        let recovery = try taskRecoveryMirror(task: task, modelContext: modelContext)
         let sortedRuns = task.runs.sorted {
             if $0.startedAt == $1.startedAt {
                 return $0.id.uuidString < $1.id.uuidString
             }
             return $0.startedAt < $1.startedAt
         }
-        let mirroredRuns = Array(sortedRuns.suffix(MirrorLimits.maxRunsPerTask))
+        let retainedRunIDs = Set(sortedRuns.suffix(MirrorLimits.maxRunsPerTask).map(\.id)).union(recovery.pendingRunIDs)
+        let mirroredRuns = sortedRuns.filter { retainedRunIDs.contains($0.id) }
         let runIDToIndex = Dictionary(
             mirroredRuns.enumerated().map { ($1.id, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -1859,26 +1863,26 @@ public enum WorkspaceConfigManager {
                 executionEnvironmentSnapshotJSON: run.executionEnvironmentSnapshotJSON,
                 providerLaunchSignatureJSON: run.providerLaunchSignatureJSON,
                 exitCode: run.exitCode,
-                output: boundedMirrorString(run.output, limit: MirrorLimits.maxRunOutputCharacters),
+                output: recovery.pendingRunIDs.contains(run.id) ? run.output : boundedMirrorString(run.output, limit: MirrorLimits.maxRunOutputCharacters),
                 costUSD: run.costUSD,
                 stopReason: run.stopReason,
                 fileChangesJSON: run.fileChangesJSON
             )
         }
 
-        let mirroredEvents = Array(task.events
-            .sorted {
-                if $0.timestamp == $1.timestamp {
-                    return $0.id.uuidString < $1.id.uuidString
-                }
-                return $0.timestamp < $1.timestamp
-            }
-            .suffix(MirrorLimits.maxEventsPerTask))
-        let eventConfigs = mirroredEvents.map { event in
+        let presentationIDs = Set(task.events.sorted {
+            $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
+        }
+            .suffix(MirrorLimits.maxEventsPerTask).map(\.id))
+        let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
+            || recovery.sourceEventIDs.contains($0.id) || isTaskRecoveryEvent($0.type)) }
+            .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
+        let eventConfigs = try mirroredEvents.map { event in
             EventConfig(
                 id: event.id.uuidString,
                 type: event.type,
-                payload: boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters),
+                payload: try (isTaskRecoveryEvent(event.type) || recovery.sourceEventIDs.contains(event.id)
+                    ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters)),
                 timestamp: event.timestamp,
                 category: event.category,
                 agentName: event.agentName,
@@ -1892,7 +1896,7 @@ public enum WorkspaceConfigManager {
             ? task.skills.map(SkillSnapshotConfig.init(skill:))
             : task.skillSnapshots).map(redactedSkillSnapshot)
 
-        return TaskConfig(
+        var config = TaskConfig(
             id: task.id.uuidString,
             title: task.title,
             goal: task.goal,
@@ -1942,6 +1946,10 @@ public enum WorkspaceConfigManager {
             runtimePermissionGrantsJSON: task.runtimePermissionGrantsJSON == "[]" ? nil : task.runtimePermissionGrantsJSON,
             rememberedWorkspaceCanvasItemRawValue: task.rememberedWorkspaceCanvasItemRawValue
         )
+        config.turnRequests = recovery.requests.filter { request in
+            request.state.isActive || request.runID.map { retainedRunIDs.contains($0) } == true
+        }
+        return config
     }
 
     private static func boundedMirrorString(_ value: String, limit: Int) -> String {
@@ -1963,7 +1971,7 @@ public enum WorkspaceConfigManager {
         return result
     }
 
-    private static func sanitizedExecutionEnvironmentJSON(_ json: String?, preservingHost: Bool = false) -> String? {
+    static func sanitizedExecutionEnvironmentJSON(_ json: String?, preservingHost: Bool = false) -> String? {
         let environment = ExecutionEnvironmentStore.decode(json)
         return preservingHost
             ? ExecutionEnvironmentStore.encodeSnapshot(environment)
@@ -2178,7 +2186,7 @@ public enum WorkspaceConfigManager {
         return template
     }
 
-    private static func redactedSkillSnapshot(_ snapshot: SkillSnapshotConfig) -> SkillSnapshotConfig {
+    static func redactedSkillSnapshot(_ snapshot: SkillSnapshotConfig) -> SkillSnapshotConfig {
         SkillSnapshotConfig(
             id: snapshot.id,
             name: snapshot.name,
@@ -2521,6 +2529,7 @@ public enum WorkspaceConfigManager {
             event.category = ec.category
             modelContext.insert(event)
         }
+        importTaskRequestOwners(config.turnRequests ?? [], task: task, modelContext: modelContext)
         task.updatedAt = config.updatedAt
 
         for ac in config.artifacts ?? [] {

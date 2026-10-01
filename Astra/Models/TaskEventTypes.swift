@@ -205,6 +205,9 @@ public enum TaskEventTypes {
     }
 
     public enum System {
+        public static let runtimeSettlementStarted: TaskEventType = "runtime.settlement.started"
+        public static let runtimeOutcomePrepared: TaskEventType = "runtime.outcome.prepared"
+        public static let runtimeChainedWorkDispatched: TaskEventType = "runtime.chained_work.dispatched"
         public static let runtimeResultCaptured: TaskEventType = "runtime.result.captured"
         public static let runtimeTurnSettled: TaskEventType = "runtime.turn.settled"
         public static let runtimeReconciliationRequired: TaskEventType = "runtime.reconciliation.required"
@@ -319,6 +322,9 @@ public enum TaskEventTypes {
     ]
 
     private static let systemTypes: Set<TaskEventType> = [
+        System.runtimeSettlementStarted,
+        System.runtimeOutcomePrepared,
+        System.runtimeChainedWorkDispatched,
         System.runtimeResultCaptured,
         System.runtimeTurnSettled,
         System.runtimeReconciliationRequired,

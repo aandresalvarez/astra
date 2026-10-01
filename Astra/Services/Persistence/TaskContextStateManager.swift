@@ -12,7 +12,8 @@ public enum TaskThreadMode: String, Codable, Sendable, Equatable {
 
 public struct TaskContextState: Codable, Sendable, Equatable {
     public struct Turn: Codable, Sendable, Equatable {
-        public init(turn: Int, ask: String, summary: String, filesChanged: [String], blockers: [String], outputFile: String? = nil, runStatus: String, completedAt: String? = nil) {
+        public init(turn: Int, ask: String, summary: String, filesChanged: [String], blockers: [String], outputFile: String? = nil, runStatus: String, completedAt: String? = nil, runID: UUID? = nil) {
+            self.runID = runID
             self.turn = turn
             self.ask = ask
             self.summary = summary
@@ -23,6 +24,7 @@ public struct TaskContextState: Codable, Sendable, Equatable {
             self.completedAt = completedAt
         }
 
+        public var runID: UUID?
         public var turn: Int
         public var ask: String
         public var summary: String
@@ -454,8 +456,9 @@ public enum TaskContextStateManager {
     }
 
     @MainActor
-    public static func recordTurn(task: AgentTask, run: TaskRun, message: String) {
-        guard let folder = ensureTaskFolder(for: task) else { return }
+    @discardableResult
+    public static func recordTurn(task: AgentTask, run: TaskRun, message: String) -> Bool {
+        guard let folder = ensureTaskFolder(for: task) else { return false }
         var state = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id) ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
         updateDerivedFields(&state, task: task, latestRun: run)
@@ -468,10 +471,9 @@ public enum TaskContextStateManager {
             task: task,
             taskFolder: folder
         )
-        state.turns.append(turn)
-        state.turns = Array(state.turns.suffix(maxTurns))
+        TaskContextTurnRecording.upsert(turn, state: &state, limit: maxTurns)
         state.updatedAt = timestamp(Date())
-        saveState(state, taskFolder: folder, taskID: task.id)
+        return saveState(state, taskFolder: folder, taskID: task.id).didSave
     }
 
     /// Returns whether it rewrote `current_state.json`, and so announced it.
@@ -1130,7 +1132,8 @@ public enum TaskContextStateManager {
             blockers: dedupeKeepingOrder(runBlockers, limit: 8),
             outputFile: formattedOutputFileName(turn: number),
             runStatus: run.status.rawValue,
-            completedAt: run.completedAt.map(timestamp)
+            completedAt: run.completedAt.map(timestamp),
+            runID: run.id
         )
     }
 

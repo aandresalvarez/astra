@@ -9,6 +9,7 @@ import ASTRAModels
 public enum SessionHistoryManager {
 
     /// Append a turn entry to the session history file after a run completes.
+    @discardableResult
     public static func recordTurn(
         taskFolder: String,
         taskTitle: String,
@@ -18,12 +19,23 @@ public enum SessionHistoryManager {
         costUSD: Double,
         fileChanges: [StoredFileChange],
         redactions: [String] = [],
-        durationMs: Int? = nil
-    ) {
-        guard !taskFolder.isEmpty else { return }
+        durationMs: Int? = nil,
+        runID: UUID? = nil
+    ) -> Bool {
+        guard !taskFolder.isEmpty else { return false }
         try? FileManager.default.createDirectory(atPath: taskFolder, withIntermediateDirectories: true)
 
         let historyPath = (taskFolder as NSString).appendingPathComponent("session_history.md")
+        let broker = HostFileAccessBroker()
+        let intent = HostFileAccessIntent.astraManagedStorage(root: URL(fileURLWithPath: taskFolder, isDirectory: true))
+        let historyURL = URL(fileURLWithPath: historyPath)
+        let existingHistory: String
+        if broker.fileExists(at: historyURL, intent: intent) {
+            guard let value = try? broker.readString(at: historyURL, encoding: .utf8, intent: intent) else { return false }
+            existingHistory = value
+        } else { existingHistory = "" }
+        let runMarker = runID.map { "<!-- ASTRA run \($0.uuidString) -->" }
+        if let runMarker, existingHistory.contains(runMarker) { return true }
         let turnNumber = nextTurnNumber(historyPath: historyPath, taskFolder: taskFolder)
         let timestamp = Self.formatTimestamp(Date())
         let redactedMessage = redactSensitiveContent(turnMessage, redactions: redactions)
@@ -34,10 +46,12 @@ public enum SessionHistoryManager {
         try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
         let outputFile = (outputDir as NSString).appendingPathComponent("turn_\(String(format: "%03d", turnNumber)).md")
         let outputHeader = "# Turn \(turnNumber) — \(timestamp)\n\n**Ask**: \(redactedMessage.prefix(200))\n\n---\n\n"
-        try? (outputHeader + redactedOutput).write(toFile: outputFile, atomically: true, encoding: .utf8)
+        do { try (outputHeader + redactedOutput).write(toFile: outputFile, atomically: true, encoding: .utf8) }
+        catch { return false }
 
         // Build summary entry for history file
         var entry = "\n## Turn \(turnNumber) — \(timestamp)\n\n"
+        if let runMarker { entry += runMarker + "\n\n" }
         entry += "**Ask**: \(redactedMessage.prefix(300))\n\n"
 
         // Key output summary (first 600 chars, preserving structure)
@@ -68,19 +82,12 @@ public enum SessionHistoryManager {
         entry += "\n**Full output**: [turn_\(String(format: "%03d", turnNumber)).md](outputs/turn_\(String(format: "%03d", turnNumber)).md)\n"
         entry += "\n---\n"
 
-        // Create or append to history file
-        if FileManager.default.fileExists(atPath: historyPath) {
-            if let handle = FileHandle(forWritingAtPath: historyPath) {
-                handle.seekToEndOfFile()
-                if let data = entry.data(using: .utf8) {
-                    handle.write(data)
-                }
-                handle.closeFile()
-            }
-        } else {
-            let header = "# Session History: \(taskTitle)\n\n> This file tracks the conversation history for this task.\n> The agent can read this file to recover context from earlier turns.\n> Full outputs are stored in the `outputs/` subfolder.\n\n---\n"
-            try? (header + entry).write(toFile: historyPath, atomically: true, encoding: .utf8)
-        }
+        let header = "# Session History: \(taskTitle)\n\n> This file tracks the conversation history for this task.\n> Full outputs are stored in the `outputs/` subfolder.\n\n---\n"
+        do {
+            try ((existingHistory.isEmpty ? header : existingHistory) + entry)
+                .write(toFile: historyPath, atomically: true, encoding: .utf8)
+            return true
+        } catch { return false }
     }
 
     /// Path to the session history file for a task folder.

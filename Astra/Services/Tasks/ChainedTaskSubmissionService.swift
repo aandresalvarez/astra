@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 enum ChainedTaskSubmissionService {
@@ -8,7 +9,15 @@ enum ChainedTaskSubmissionService {
                        taskID: UUID? = nil, goal: String? = nil) {
         if let taskID {
             guard let existing = try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })) else { return }
-            if !existing.isEmpty { return }
+            if let child = existing.first {
+                guard child.chainedFromID == task.id else { return }
+                if RuntimeSettlementProgress.event(TaskEventTypes.System.runtimeChainedWorkDispatched, task: task, run: run) == nil {
+                    modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeChainedWorkDispatched,
+                        payload: taskID.uuidString, run: run))
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                }
+                return
+            }
         }
         let chainedGoal = goal ?? task.chainedGoal
         let nextTask = AgentTask(
@@ -42,11 +51,17 @@ enum ChainedTaskSubmissionService {
         )
         modelContext.insert(chainEvent)
 
+        let receipt = taskID.map { id in
+            TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeChainedWorkDispatched,
+                payload: id.uuidString, run: run)
+        }
+        if let receipt { modelContext.insert(receipt) }
         guard case .success = ExecutionRequestSubmissionService.submitChained(
             sourceTaskID: task.id,
             for: nextTask,
             into: modelContext
         ) else {
+            if let receipt { modelContext.delete(receipt) }
             modelContext.delete(chainEvent)
             modelContext.delete(nextTask)
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [

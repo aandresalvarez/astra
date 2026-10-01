@@ -23,7 +23,6 @@ private struct ScheduleSourceContext {
 // view's older-runs window expansion, which has no analogue in ChatPanelView.
 private struct ChatTopPositionPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = -.infinity
-
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
@@ -41,7 +40,6 @@ private enum RunNoticeProminence {
 /// turn completes.
 private struct StreamingAgentTextView: View {
     let displayText: String
-
     var body: some View {
         MarkdownTextView(
             text: displayText,
