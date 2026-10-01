@@ -4,10 +4,16 @@ import ASTRAModels
 
 @MainActor
 enum ChainedTaskSubmissionService {
-    static func create(from task: AgentTask, run: TaskRun, modelContext: ModelContext) {
+    static func create(from task: AgentTask, run: TaskRun, modelContext: ModelContext,
+                       taskID: UUID? = nil, goal: String? = nil) {
+        if let taskID {
+            guard let existing = try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })) else { return }
+            if !existing.isEmpty { return }
+        }
+        let chainedGoal = goal ?? task.chainedGoal
         let nextTask = AgentTask(
-            title: String(task.chainedGoal.prefix(60)),
-            goal: task.chainedGoal,
+            title: String(chainedGoal.prefix(60)),
+            goal: chainedGoal,
             workspace: task.workspace,
             tokenBudget: task.tokenBudget,
             model: task.model,
@@ -15,6 +21,7 @@ enum ChainedTaskSubmissionService {
             isolationStrategy: task.isolationStrategy,
             validationStrategy: task.validationStrategy
         )
+        if let taskID { nextTask.id = taskID }
         TaskStateMachine.enqueueChainedFollowUp(nextTask, modelContext: modelContext)
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID

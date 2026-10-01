@@ -365,13 +365,13 @@ enum AgentRuntimeLaunchPreflight {
         )
         let grants = PermissionBroker.approvalGrants(for: request)
         let runtime = registeredLaunchRuntime(task: task, run: run)
-        let payload = PermissionBroker.approvalPayloadString(
+        let payload = TaskPermissionContinuation.attach(PermissionBroker.approvalPayloadString(
             providerID: runtime,
             request: request,
             reason: "A connector's saved credentials need your first-use approval before ASTRA uses them for this task.",
             providerDetail: credentialRequest.displayName,
             grants: grants
-        )
+        ), continuation: TaskPermissionContinuation.capture(task: task, run: run, modelContext: modelContext))
         let connectorIDs = ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: credentialRequest.labels)
         let fields: [String: String] = [
             "source": "connector_credential_egress",

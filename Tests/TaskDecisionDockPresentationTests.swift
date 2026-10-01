@@ -490,11 +490,11 @@ struct TaskDecisionDockPresentationTests {
 
         #expect(dock.id == "runtime-permission")
         #expect(dock.primaryAction?.kind == .allowSimilar)
-        #expect(dock.primaryAction?.title == "Allow for this task")
+        #expect(dock.primaryAction?.title == "Allow for task & continue")
         // The tooltip keeps the request's own wording.
         #expect(dock.primaryAction?.help == "Allow these connectors for task")
         #expect(dock.secondaryActions.map(\.kind) == [.retry, .allowOnce])
-        #expect(dock.secondaryActions.last?.title == "Allow once")
+        #expect(dock.secondaryActions.last?.title == "Allow once & continue")
         let scope = dock.details.first { $0.id == "permission.scope" }?.summary
         #expect(scope == TaskDecisionDockPresentation.taskScopedPermissionScope)
     }
@@ -562,7 +562,7 @@ struct TaskDecisionDockPresentationTests {
         let auto = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(credentials, isAuto: true)))
         #expect(auto.title == "Jira-new and REDCap connectors need permission")
         #expect(auto.primaryAction?.kind == .allowSimilar)
-        #expect(auto.primaryAction?.title == "Allow for this task")
+        #expect(auto.primaryAction?.title == "Allow for task & continue")
         #expect(auto.primaryAction?.help == "Allow these connectors for task")
 
         let ask = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(credentials, isAuto: false)))
@@ -594,22 +594,22 @@ struct TaskDecisionDockPresentationTests {
         #expect(scope == TaskDecisionDockPresentation.offeredConnectorPermissionScope)
     }
 
-    @Test("An offer is still answered once when no task-scoped approval exists")
-    func offerWithoutATaskScopedApprovalKeepsTheOneRunApproval() throws {
+    @Test("A future-use offer never exposes a one-run approval")
+    func offerWithoutTaskScopeHasNoMisleadingApproval() throws {
         var input = connectorCredentialContext(isAuto: false)
         input.runtimePermissionIsOffer = true
         input.canApproveSimilarRuntimePermission = false
 
         let dock = try #require(TaskDecisionDockPresentation.build(input))
 
-        #expect(dock.primaryAction?.kind == .allowOnce)
+        #expect(dock.primaryAction == nil)
     }
 
-    @Test("The dock builder recognises an offer by its request id, and a launch pause as not one")
-    func builderRecognisesOffersFromTheRequestID() throws {
+    @Test("The dock builder recognises explicit future-use intent instead of parsing request ids")
+    func builderRecognisesExplicitFutureUse() throws {
         let offerID = BrokeredCredentialApprovalRecord.offerRequestID(forConnectors: [Self.jiraConnectorID])
         let offer = TaskRuntimePermissionState.build(events: [
-            .init(type: "permission.approval.requested", payload: connectorCredentialPayload(requestID: offerID), timestamp: Date())
+            .init(type: "permission.approval.requested", payload: connectorCredentialPayload(requestID: offerID, behavior: .futureUse), timestamp: Date())
         ])
         #expect(offer.decision?.isConnectorCredentialOffer == true)
         let dock = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(offer, isAuto: false)))
@@ -658,7 +658,7 @@ struct TaskDecisionDockPresentationTests {
     private static let jiraConnectorID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
     private static let redcapConnectorID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
 
-    private func connectorCredentialPayload(requestID: String? = nil) -> String {
+    private func connectorCredentialPayload(requestID: String? = nil, behavior: PermissionApprovalBehavior? = nil) -> String {
         let request = PermissionRequest.connectorCredentials(
             connectorID: Self.jiraConnectorID,
             displayName: "Jira-new and REDCap connector credentials (3 configured credentials)",
@@ -673,7 +673,8 @@ struct TaskDecisionDockPresentationTests {
             request: request,
             reason: "Connector credential egress requires explicit first-use approval.",
             grants: PermissionBroker.approvalGrants(for: request),
-            requestID: requestID
+            requestID: requestID,
+            behavior: behavior
         )
     }
 
@@ -718,6 +719,37 @@ struct TaskDecisionDockPresentationTests {
             artifactPaths: [],
             extraDetails: []
         )
+    }
+
+    @Test("Artifact attention keeps run-bound legacy continuation available", arguments: [true, false])
+    func artifactAttentionOffersLegacyContinuation(canResume: Bool) throws {
+        var input = context(status: .completed, canResume: canResume)
+        input.hasApprovedPermissionContinuation = true
+        input.completedTaskNeedsArtifactAttention = true
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(dock.id == "completed-no-usable-result")
+        #expect(dock.primaryAction?.kind == .retry)
+        #expect(dock.secondaryActions.contains { $0.kind == .resume && $0.title == "Continue approved request" } == canResume)
+    }
+
+    @Test("Legacy future-use offers expose a working task-scoped approval", arguments: [true, false])
+    @MainActor
+    func legacyOfferUsesRecordedStopInDock(blocking: Bool) throws {
+        let fixture = try PermissionApprovalContinuationTests.Fixture()
+        defer { fixture.cleanup() }
+        _ = try fixture.blockedRequest(completed: true, legacy: true)
+        fixture.task.runs.first?.typedStopReason = blocking ? .permissionApprovalRequired : .timeout
+        fixture.task.status = blocking ? .pendingUser : .failed
+        let state = TaskRuntimePermissionState.build(task: fixture.task)
+        #expect(state.decision?.isConnectorCredentialOffer == !blocking)
+        let dock = try #require(TaskDecisionDockContextBuilder.build(dockBuilderInput(state, isAuto: false)))
+        #expect(dock.primaryAction?.kind == (blocking ? .allowOnce : .allowSimilar))
+        if !blocking {
+            #expect(!actionTitles(dock).contains { $0.hasPrefix("Allow once") })
+            guard case .saved = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .task,
+                modelContext: fixture.context) else { Issue.record("Primary offered approval did not save"); return }
+            #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+        }
     }
 
     private func context(

@@ -176,24 +176,22 @@ struct RuntimePermissionDecisionPresentation: Hashable, Sendable {
     /// A connector's saved credentials rather than a shell, file or network
     /// permission: the one kind Auto never dismisses on the user's behalf.
     let isConnectorCredentialRequest: Bool
-    /// A sealed connector the agent reached for after its run: recorded at the
-    /// run boundary, pausing nothing, so there is no run for "Allow once" to
-    /// resume. Read from the request's own id, which is durable.
+    /// Future-use permission carries no blocked turn to resume.
     let isConnectorCredentialOffer: Bool
 
-    init(payload: String) {
+    init(payload: String, isFutureUse: Bool? = nil) {
+        let offer = isFutureUse ?? (PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .futureUse)
         let approval = RuntimePermissionApprovalText(payload: payload)
         title = approval.decisionTitle
         summary = approval.decisionBody
-        scope = "Scope: one time for this run."
+        scope = offer ? "Scope: future use in this task." : "Scope: one time for this run."
         check = approval.checkSummary
         commandPreview = approval.actionPreview
         grantSummary = approval.approvalGrant
         compactAuditSummary = approval.compactSummary
         allowSimilarLabel = approval.allowSimilarLabel
         isConnectorCredentialRequest = approval.isConnectorCredentialRequest
-        isConnectorCredentialOffer = PermissionApprovalEventPayload.decoded(from: payload)?.requestID?
-            .hasPrefix(BrokeredCredentialApprovalRecord.offerRequestIDPrefix) == true
+        isConnectorCredentialOffer = offer
     }
 }
 
@@ -245,11 +243,15 @@ private func isCredentialApprovalPayload(_ decoded: PermissionApprovalEventPaylo
 private func safeCredentialApprovalDisplayMessage(from decoded: PermissionApprovalEventPayload?) -> String {
     let count = decoded.map(credentialGrantCount(in:)) ?? 0
     let noun = count == 1 ? "credential" : "credentials"
+    let futureUse = decoded?.behavior == .futureUse
+    let effect = futureUse ? "Saves permission for later runs of this task. It does not start a run."
+        : "Allows ASTRA to use the approved connector \(noun) and continue the original request."
     return [
-        "Permission requested for tool: Connector credentials. ASTRA paused before allowing this run to continue.",
+        futureUse ? "Permission requested for tool: Connector credentials for future use."
+            : "Permission requested for tool: Connector credentials. ASTRA is waiting for approval to continue.",
         "What ASTRA observed: Connector credential request.",
         "Why approval is needed: A connector's saved credentials need your first-use approval before ASTRA uses them for this task.",
-        "What allowing does: Allows ASTRA to use the approved connector \(noun) in this run, then restarts the provider from the stopped point.",
+        "What allowing does: \(effect)",
         "What to check: Allow only if this task should use this connector's configured credentials."
     ].joined(separator: "\n")
 }

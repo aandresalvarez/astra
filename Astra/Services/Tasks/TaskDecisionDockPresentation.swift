@@ -115,6 +115,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var canApprove: Bool
         var canRetry: Bool
         var canResume: Bool
+        var hasApprovedPermissionContinuation: Bool = false
         var canReportProblem: Bool = false
         var canToggleDone: Bool
         var hasProviderSession: Bool
@@ -311,21 +312,21 @@ struct TaskDecisionDockPresentation: Equatable {
         if context.prefersTaskScopedRuntimePermission {
             let allowForTask = action(
                 .allowSimilar,
-                title: "Allow for this task",
+                title: context.runtimePermissionIsOffer ? "Allow for this task" : "Allow for task & continue",
                 systemImage: "lock.open.fill",
                 help: context.runtimePermissionAllowSimilarLabel ?? "Allow for the rest of this task."
             )
             let allowOnce = context.canApprove && !context.runtimePermissionIsOffer
                 ? action(
                     .allowOnce,
-                    title: "Allow once",
+                    title: "Allow once & continue",
                     systemImage: "lock.open",
                     help: "Allow only this run. The next message or Retry asks again."
                 )
                 : nil
             return (allowForTask, allowOnce)
         }
-        let allowOnce = context.canApprove
+        let allowOnce = context.canApprove && !context.runtimePermissionIsOffer
             ? action(.allowOnce, title: "Allow once & continue", systemImage: "lock.open.fill")
             : nil
         let allowSimilar = context.canApproveSimilarRuntimePermission
@@ -609,6 +610,8 @@ struct TaskDecisionDockPresentation: Equatable {
             details: details(context),
             primaryAction: context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
             secondaryActions: [
+                context.hasApprovedPermissionContinuation && context.canResume
+                    ? action(.resume, title: "Continue approved request", systemImage: "play.fill") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
             overflowActions: supportAndCloseOverflowActions(
@@ -649,6 +652,8 @@ struct TaskDecisionDockPresentation: Equatable {
             details: details(context),
             primaryAction: context.canToggleDone ? action(.closeTask, title: TaskPresentationState.closeTaskActionTitle, systemImage: "checkmark.circle") : nil,
             secondaryActions: [
+                context.hasApprovedPermissionContinuation && context.canResume
+                    ? action(.resume, title: "Continue approved request", systemImage: "play.fill") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
             overflowActions: [],

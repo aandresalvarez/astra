@@ -46,7 +46,8 @@ enum PermissionBroker {
         reason: String,
         providerDetail: String? = nil,
         grants: [PermissionGrant],
-        requestID: String? = nil
+        requestID: String? = nil,
+        behavior: PermissionApprovalBehavior? = nil
     ) -> String {
         let payload = approvalPayload(
             providerID: providerID,
@@ -54,7 +55,8 @@ enum PermissionBroker {
             reason: reason,
             providerDetail: providerDetail,
             grants: grants,
-            requestID: requestID
+            requestID: requestID,
+            behavior: behavior
         )
         return TaskEvent.payloadString(
             payload,
@@ -69,7 +71,8 @@ enum PermissionBroker {
         reason: String,
         providerDetail: String? = nil,
         grants: [PermissionGrant],
-        requestID: String? = nil
+        requestID: String? = nil,
+        behavior: PermissionApprovalBehavior? = nil
     ) -> PermissionApprovalEventPayload {
         let sanitizedGrants: [PermissionGrant]
         switch request {
@@ -83,7 +86,8 @@ enum PermissionBroker {
             request: request,
             reason: reason,
             providerDetail: providerDetail,
-            grants: sanitizedGrants
+            grants: sanitizedGrants,
+            behavior: behavior
         )
         let decision = PermissionDecision.askUser(message: message, grants: sanitizedGrants)
         return PermissionApprovalEventPayload(
@@ -93,7 +97,8 @@ enum PermissionBroker {
             decision: decision,
             grants: sanitizedGrants,
             displayMessage: message,
-            requestID: requestID
+            requestID: requestID,
+            behavior: behavior
         )
     }
 
@@ -261,8 +266,13 @@ enum PermissionBroker {
         request: PermissionRequest,
         reason: String,
         providerDetail: String?,
-        grants: [PermissionGrant]
+        grants: [PermissionGrant],
+        behavior: PermissionApprovalBehavior?
     ) -> String {
+        if behavior == .futureUse {
+            return "Permission requested for future use.\nWhy approval is needed: \(sentence(reason))\n"
+                + "What allowing does: Saves permission for later runs of this task. It does not start a run."
+        }
         if case .gitPublish(let authorization) = request {
             return [
                 "Permission requested for tool: GitHub draft publication. ASTRA paused before making this external change.",

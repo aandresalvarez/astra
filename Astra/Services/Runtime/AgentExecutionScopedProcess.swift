@@ -81,12 +81,16 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     /// Writes one line to the child's stdin. Safe to call after the child has
     /// exited; a broken pipe is swallowed. Serialized with the close so a
     /// write can never race the handle being closed.
-    func writeStdinLine(_ line: String) {
-        guard let stdinPipe, let data = (line + "\n").data(using: .utf8) else { return }
+    @discardableResult
+    func writeStdinLine(_ line: String) -> Bool {
+        guard let stdinPipe, let data = (line + "\n").data(using: .utf8) else { return false }
         stdinLock.lock()
         defer { stdinLock.unlock() }
-        guard !stdinClosed else { return }
-        try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
+        guard !stdinClosed else { return false }
+        do {
+            try stdinPipe.fileHandleForWriting.write(contentsOf: data)
+            return true
+        } catch { return false }
     }
 
     /// Signals end-of-conversation: stream-json providers keep waiting for the

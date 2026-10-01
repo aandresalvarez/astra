@@ -87,13 +87,16 @@ enum AgentRuntimeRunPersistence {
         }
     }
 
+    @discardableResult
     static func finalizeAndPersist(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
-    ) async {
+        handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil,
+        autoExport: Bool = true,
+        persist: (() -> Bool)? = nil
+    ) async -> Bool {
         let start = DispatchTime.now().uptimeNanoseconds
         // File discovery is independent of SwiftData. Prepare it asynchronously
         // before the ordered model commit so directory traversal does not
@@ -152,8 +155,13 @@ enum AgentRuntimeRunPersistence {
             phase: phase,
             persistedArtifactCount: artifactReconciliation.createdArtifacts.count
         )
-        _ = measureFinalizationPhase("save_and_auto_export", task: task, run: run, traceID: traceID) {
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
+        let saved = measureFinalizationPhase("save_and_auto_export", task: task, run: run, traceID: traceID) {
+            if let persist { return persist() }
+            if !autoExport {
+                return WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext,
+                    taskID: task.id, auditFields: auditFields)
+            }
+            return WorkspacePersistenceCoordinator.saveAndAutoExport(
                 workspace: task.workspace,
                 modelContext: modelContext,
                 taskID: task.id,
@@ -171,6 +179,7 @@ enum AgentRuntimeRunPersistence {
             thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
             fields: telemetryFields
         )
+        return saved
     }
 
     static func fields(

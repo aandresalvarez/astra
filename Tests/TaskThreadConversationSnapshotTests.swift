@@ -955,7 +955,7 @@ extension TaskThreadSnapshotTests {
 
         #expect(snapshot.conversationItems.contains {
             if case .systemInfo(let text, _, _) = $0 {
-                return text == "Permission approved. Continuing."
+                return text == "Permission approved."
             }
             return false
         })

@@ -1045,6 +1045,8 @@ public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
     /// several asks are pending concurrently. Nil for the legacy
     /// pause-and-relaunch path (closed by `task.approved`).
     public var requestID: String?
+    public var behavior: PermissionApprovalBehavior?
+    public var continuation: PermissionApprovalContinuation?
 
     public init(
         brokerVersion: Int,
@@ -1053,7 +1055,9 @@ public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
         decision: PermissionDecision,
         grants: [PermissionGrant],
         displayMessage: String,
-        requestID: String? = nil
+        requestID: String? = nil,
+        behavior: PermissionApprovalBehavior? = nil,
+        continuation: PermissionApprovalContinuation? = nil
     ) {
         self.brokerVersion = brokerVersion
         self.providerID = providerID
@@ -1062,6 +1066,8 @@ public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
         self.grants = grants
         self.displayMessage = displayMessage
         self.requestID = requestID
+        self.behavior = behavior
+        self.continuation = continuation
     }
 
     public static func decoded(from payload: String) -> PermissionApprovalEventPayload? {
