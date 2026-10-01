@@ -209,6 +209,36 @@ struct AgentEventRecorderTests {
         #expect(!messages.contains { $0.contains(AuditEvent.taskFailed.rawValue) })
     }
 
+    /// Task 5DB5F63D: an Antigravity result frame carries the failure and the
+    /// run's usage together. Usage first logged `has_error=false` on a run that
+    /// was about to fail, and the failure line named no reason.
+    @Test("An Antigravity failure frame logs its reason and reports has_error on the stats line")
+    func antigravityFailureFrameLogsReasonAndAgreesWithStats() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Agy", goal: "Fail with usage")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        let recordingState = AgentEventRecordingState()
+
+        let frame = #"""
+        {"event":"result","result":{"status":"ERROR","response":"","error":"context window exceeded","usage":{"input_tokens":1200,"output_tokens":30},"num_turns":1}}
+        """#
+        for event in AntigravityCLIRuntime.parseAgentEvents(line: frame, parsesJSONLines: true) {
+            AgentEventRecorder.recordAntigravityEvent(
+                event, to: task, run: run, modelContext: context, recordingState: recordingState
+            )
+        }
+
+        AppLogger.flushForTesting()
+        let messages = AppLogger.entries.filter { $0.taskID == task.id }.map(\.message)
+        let failure = try #require(messages.first { $0.contains(AuditEvent.runtimeAgentReportedError.rawValue) })
+        #expect(failure.contains("error_summary=context window exceeded"))
+        let stats = try #require(messages.first { $0.contains(AuditEvent.taskStats.rawValue) })
+        #expect(stats.contains("has_error=true"))
+    }
+
     @Test("Claude cumulative text replay appends only unseen suffix")
     func claudeCumulativeTextReplayAppendsOnlyUnseenSuffix() throws {
         let container = try makeAgentEventRecorderContainer()

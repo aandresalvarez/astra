@@ -2,6 +2,7 @@ import Foundation
 import os
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 /// The completed, user-visible measurements emitted for an existing task open.
 ///
@@ -401,6 +402,24 @@ enum TaskOpenResponsivenessTelemetry {
             level: elapsed >= slowPhaseThresholdMilliseconds ? .warning : .debug,
             fields: pending.trace.phaseFields(name: pending.name),
             taskID: pending.taskID
+        )
+    }
+
+    /// Where a slow context-state refresh spent its time, beside the
+    /// `context_state_refresh` phase it belongs to. Slow ones only; the common
+    /// refresh is a few milliseconds.
+    static func logContextRefreshBreakdown(_ timing: TaskContextStateManager.RefreshTiming, taskID: UUID) {
+        guard timing.totalMilliseconds >= 100 else { return }
+        PerformanceTelemetry.log(
+            "context_state_refresh_breakdown",
+            durationMilliseconds: timing.totalMilliseconds,
+            fields: [
+                "load_ms": String(format: "%.2f", timing.loadMilliseconds),
+                "apply_ms": String(format: "%.2f", timing.applyMilliseconds),
+                "attempts": String(timing.attempts),
+                "saved": String(timing.saved)
+            ],
+            taskID: taskID
         )
     }
 

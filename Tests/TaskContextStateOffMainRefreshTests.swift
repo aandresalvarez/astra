@@ -75,6 +75,25 @@ struct TaskContextStateOffMainRefreshTests {
         #expect(FileManager.default.fileExists(atPath: path.path))
     }
 
+    @Test("An applied off-actor refresh reports where its time went")
+    func offActorRefreshReportsTiming() async throws {
+        let fixture = try makeFixture("timing")
+        defer { fixture.cleanup() }
+        let path = URL(fileURLWithPath: fixture.folder)
+            .appendingPathComponent(TaskContextStateManager.jsonFileName)
+        try? FileManager.default.removeItem(at: path)
+
+        var timings: [TaskContextStateManager.RefreshTiming] = []
+        await TaskContextStateManager.refreshLoadingOffMainActor(task: fixture.task) { timings.append($0) }
+
+        let timing = try #require(timings.first)
+        #expect(timings.count == 1)
+        #expect(timing.attempts == 1)
+        #expect(timing.saved)
+        #expect(timing.loadMilliseconds >= 0 && timing.applyMilliseconds >= 0)
+        #expect(timing.totalMilliseconds >= timing.applyMilliseconds)
+    }
+
     @Test("A second off-actor refresh over unchanged state rewrites nothing")
     func repeatedOffActorRefreshIsANoOp() async throws {
         let fixture = try makeFixture("noop")

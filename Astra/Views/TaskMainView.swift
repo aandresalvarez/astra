@@ -834,7 +834,10 @@ struct TaskMainView: View {
     /// `phase` is opened by the caller, while the trace is still live. See
     /// `startContextStateRefresh`.
     private func refreshTaskContextState(phase: TaskOpenResponsivenessTelemetry.PendingPhase?) async {
-        let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor(task: task)
+        let taskID = task.id
+        let announcedSave = await TaskContextStateManager.refreshLoadingOffMainActor(task: task) {
+            TaskOpenResponsivenessTelemetry.logContextRefreshBreakdown($0, taskID: taskID)
+        }
         // Before the sample, not after it: selecting another task cancels this
         // one's `.task(id:)`, and an abandoned open is not a completed one.
         // Logging it would put supersessions in the same distribution as the

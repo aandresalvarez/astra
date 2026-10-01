@@ -790,6 +790,39 @@ struct LogDiagnosticsTests {
         #expect(report.markdown.contains("connector_service_types!=jira"))
     }
 
+    @Test("A Jira skill that is only configured or scope-excluded is not reported as resolved")
+    func prunedJiraSkillIsNotReportedAsResolvedWithoutConnector() {
+        // Shape from a real provider launch: Jira is configured on the workspace and
+        // pruned from the turn on purpose, so nothing Jira-related reached the agent.
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "task_short=5DB5F63D capability.chat_context capability_scope=provider_launch configured_connector_count=4 configured_connector_names=Google Cloud,Google Cloud,Jira,Jira configured_skill_count=4 configured_skill_names=GitHub Agent,GCloud Agent,Jira Agent,New Capability connector_count=0 connector_names=none connector_service_types=none phase=resume preflight_connector_count=0 resolved_skill_count=0 resolved_skill_names=none scope_excluded_skill_names=GitHub Agent,GCloud Agent,Jira Agent,New Capability scope_pruned=true skill_names=none source=connector_preflight_candidates workspace_enabled_capabilities_count=3"
+            ),
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "task_short=5DB5F63D capability.resolved connector_count=0 connector_service_types=none resolved_skill_count=1 resolved_skill_names=GitHub Agent scope_excluded_skill_names=Jira Agent scope_pruned=true workspace_enabled_capabilities_count=3"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(!report.issues.contains { $0.title == "Jira skill resolved without an active Jira connector" })
+    }
+
+    @Test("A Jira skill after a multi-word skill name is still reported")
+    func jiraSkillAfterMultiWordNameIsReported() {
+        let report = LogDiagnosticsService.makeReport(entries: [
+            LogEntry(
+                level: .debug,
+                category: "Worker",
+                message: "task_short=688EC1FE capability.chat_context source=connector_preflight_candidates resolved_skill_count=2 resolved_skill_names=Safe Bash,Jira Agent connector_count=1 connector_names=Google Cloud connector_service_types=gcloud preflight_connector_count=0 workspace_enabled_capabilities_count=1"
+            )
+        ], generatedAt: Date(timeIntervalSince1970: 0))
+
+        #expect(report.issues.contains { $0.title == "Jira skill resolved without an active Jira connector" })
+    }
+
     @Test("Capability runtime integrity failure is reported")
     func capabilityRuntimeIntegrityFailureIsReported() {
         let report = LogDiagnosticsService.makeReport(entries: [

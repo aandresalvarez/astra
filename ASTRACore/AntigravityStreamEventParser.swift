@@ -119,10 +119,6 @@ public enum AntigravityStreamEventParser {
     private static func resultEvents(in result: [String: Any]) -> [AgentEvent] {
         let status = string(in: result, keys: ["status"])?.uppercased() ?? "SUCCESS"
         let response = string(in: result, keys: ["response"])
-        var events: [AgentEvent] = []
-        if let usage = usageEvent(in: result) {
-            events.append(usage)
-        }
         // A non-SUCCESS status is the provider saying the turn itself failed,
         // and the reason arrives in `error` while `response` is empty — agy
         // still exits 0 there, so this frame is the only thing that knows the
@@ -132,13 +128,15 @@ public enum AntigravityStreamEventParser {
         // A print timeout does *not* land here: agy reports SUCCESS with an
         // empty response and explains itself on stderr, which the empty-result
         // path already treats as no usable result.
+        let usage = usageEvent(in: result)
         if status == "SUCCESS" {
-            events.append(.completed(summary: response))
-        } else {
-            let reason = string(in: result, keys: ["error"]) ?? response
-            events.append(.failed(message: reason ?? "Antigravity reported \(status)."))
+            return (usage.map { [$0] } ?? []) + [.completed(summary: response)]
         }
-        return events
+        // The failure goes first. The recorder logs `has_error` when it sees
+        // the usage frame, so usage ahead of the failure reported
+        // `has_error=false` on a run that was about to fail (task 5DB5F63D).
+        let reason = string(in: result, keys: ["error"]) ?? response
+        return [.failed(message: reason ?? "Antigravity reported \(status).")] + (usage.map { [$0] } ?? [])
     }
 
     private static func usageEvent(in result: [String: Any]) -> AgentEvent? {

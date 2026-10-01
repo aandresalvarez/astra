@@ -112,7 +112,11 @@ extension TaskContextStateManager {
     /// Returns whether it rewrote `current_state.json`, and so announced it,
     /// which lets a caller tell a save from a refresh that only moved things.
     @MainActor @discardableResult
-    public static func refreshLoadingOffMainActor(task: AgentTask, followUpMessage: String = "") async -> Bool {
+    public static func refreshLoadingOffMainActor(
+        task: AgentTask,
+        followUpMessage: String = "",
+        onTiming: ((RefreshTiming) -> Void)? = nil
+    ) async -> Bool {
         // Read off the model before leaving the actor; the load takes only
         // sendable values.
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
@@ -122,8 +126,15 @@ extension TaskContextStateManager {
         // redoing the refresh under the actor spends exactly what this avoids.
         // Bounded, because a file under continuous rewriting would otherwise
         // retry forever.
+        let refreshStart = DispatchTime.now().uptimeNanoseconds
+        var loadMilliseconds = 0.0
+        var attempts = 0
         for _ in 0..<maxRevalidationAttempts {
-            guard let loaded = await loadOffActor(workspacePath: workspacePath, taskID: taskID) else { return false }
+            attempts += 1
+            let loadStart = DispatchTime.now().uptimeNanoseconds
+            let loadedState = await loadOffActor(workspacePath: workspacePath, taskID: taskID)
+            loadMilliseconds += elapsedMilliseconds(since: loadStart)
+            guard let loaded = loadedState else { return false }
             #if DEBUG
             // Runs on the main actor in exactly the window the guards below
             // exist for, so a test can create the interleaving deterministically
@@ -170,16 +181,44 @@ extension TaskContextStateManager {
                 #endif
                 continue
             }
-            return applyRefresh(
+            let applyStart = DispatchTime.now().uptimeNanoseconds
+            let saved = applyRefresh(
                 existing: loaded.existing,
                 folder: loaded.folder,
                 task: task,
                 followUpMessage: followUpMessage
             )
+            onTiming?(RefreshTiming(
+                totalMilliseconds: elapsedMilliseconds(since: refreshStart),
+                loadMilliseconds: loadMilliseconds,
+                applyMilliseconds: elapsedMilliseconds(since: applyStart),
+                attempts: attempts,
+                saved: saved
+            ))
+            return saved
         }
         // Still moving after every attempt. Take the actor path once rather
         // than spin: a refresh that never lands is worse than a slow one.
         return fallBack(task: task, followUpMessage: followUpMessage)
+    }
+
+    /// What one refresh spent where, so a slow `context_state_refresh` can be
+    /// told apart. The task-open phase reports a single number, and 76FB97C5
+    /// took 1.9–2.3 s on it while a sibling task took 60–150 ms. `loadMilliseconds`
+    /// includes the wait to get the main actor back after the off-actor read,
+    /// so a busy actor shows up there; `applyMilliseconds` is the on-actor
+    /// derive and output-folder scan. Only a refresh that applied reports: the
+    /// early exits and the synchronous fallback do not.
+    public struct RefreshTiming: Sendable, Equatable {
+        public let totalMilliseconds: Double
+        public let loadMilliseconds: Double
+        public let applyMilliseconds: Double
+        public let attempts: Int
+        public let saved: Bool
+    }
+
+    private static func elapsedMilliseconds(since start: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
     }
 
     /// How many times a load invalidated by a concurrent write is retried off
