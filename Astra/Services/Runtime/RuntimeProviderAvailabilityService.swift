@@ -102,6 +102,7 @@ struct RuntimeProviderAvailabilityService {
         cacheMaxAge: TimeInterval = RuntimeProviderAvailabilityService.cacheMaxAge
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
         if let cache, let cached = await cache.states(for: configuration, maxAge: cacheMaxAge) {
+            AppLogger.debug("runtime.availability_refresh source=cache \(Self.summary(of: cached))", category: "Runtime")
             return cached
         }
         let states = await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
@@ -120,12 +121,31 @@ struct RuntimeProviderAvailabilityService {
             }
             return states
         }
-        // A cancelled group exits early with fewer entries than runtimes; the
-        // caller already discards those, and so must the cache.
+        // A cancelled refresh is not an answer. Cancelling the probes makes
+        // every runner report `.cancelled`, which the readiness checks score as
+        // `.blocked` — and a task group still yields every child after
+        // cancellation, so the map arrives complete. `.task(id:)` cancels this
+        // whenever a composer disappears or its settings signature changes; if
+        // that map were returned or cached, every composer would read "Needs
+        // setup" for `cacheMaxAge` while Settings, probing afresh, read Ready.
+        guard !Task.isCancelled else {
+            AppLogger.debug(
+                "runtime.availability_refresh discarded=cancelled \(Self.summary(of: states))",
+                category: "Runtime"
+            )
+            return [:]
+        }
         if let cache, states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count {
             await cache.store(states, for: configuration)
         }
+        AppLogger.debug("runtime.availability_refresh source=probe \(Self.summary(of: states))", category: "Runtime")
         return states
+    }
+
+    private static func summary(of states: [AgentRuntimeID: RuntimeReadinessState]) -> String {
+        AgentRuntimeAdapterRegistry.runtimeIDs
+            .map { "\($0.rawValue)=\(states[$0]?.rawValue ?? "missing")" }
+            .joined(separator: " ")
     }
 
     static func usableRuntimes(
