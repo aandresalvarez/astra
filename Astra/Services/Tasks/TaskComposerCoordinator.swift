@@ -203,7 +203,12 @@ enum TaskComposerCoordinator {
         )
         prompt.request(
             RuntimeSensitiveDataSwitchRequest(
-                previous: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue),
+                // Where the conversation last ran, not task.runtimeID: a
+                // launch fallback may already have rewritten the latter to
+                // the very runtime this switch is asking about.
+                previous: RuntimeSensitiveDataLaunchGate.conversationRuntimeID(of: task)
+                    .flatMap { AgentRuntimeID(rawValue: $0) }
+                    ?? AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: task.runtimeID ?? AgentRuntimeID.claudeCode.rawValue),
                 next: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime),
                 model: update.resolvedModel
             ),

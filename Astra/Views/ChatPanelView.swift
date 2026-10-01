@@ -978,6 +978,9 @@ struct ChatPanelView: View {
                             "workspace_id": workspace?.id.uuidString ?? "none"
                         ])
                     },
+                    // A draft restored from a task that already ran carries its
+                    // conversation, so it gets the same acknowledgement gate.
+                    sensitiveDataSwitchGuard: draftTask.map(TaskComposerCoordinator.sensitiveDataSwitchGuard(for:)),
                     onBudgetChange: { defaultBudget = $0 },
                     onRemoveSkill: { skill in
                         excludedSkillIDs.insert(skill.id)
