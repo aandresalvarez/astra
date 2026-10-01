@@ -215,11 +215,55 @@ struct ModelSelectorPresentationTests {
         }
     }
 
+    @Test("a snapshot is decoded once per distinct raw JSON, and a changed JSON re-decodes")
+    func snapshotMemoDecodesOncePerRaw() {
+        let memo = RuntimeModelSnapshotMemo()
+        var decodes = 0
+        let decode: (String) -> RuntimeModelAvailabilitySnapshot? = { raw in
+            decodes += 1
+            return RuntimeModelAvailabilitySnapshot(
+                runtimeID: AgentRuntimeID.codexCLI.rawValue,
+                models: [raw],
+                checkedAt: Date(timeIntervalSince1970: 0),
+                authority: .authoritative,
+                details: [
+                    RuntimeModelDetail(value: raw, displayName: "first"),
+                    RuntimeModelDetail(value: raw, displayName: "second"),
+                ]
+            )
+        }
+
+        let first = memo.decoded(raw: "a", runtime: .codexCLI, decode: decode)
+        _ = memo.decoded(raw: "a", runtime: .codexCLI, decode: decode)
+        #expect(decodes == 1)
+        // The index keeps the first detail, like the linear lookup it replaces.
+        #expect(first.detailsByValue["a"]?.displayName == "first")
+
+        let changed = memo.decoded(raw: "b", runtime: .codexCLI, decode: decode)
+        #expect(decodes == 2)
+        #expect(changed.snapshot?.models == ["b"])
+        _ = memo.decoded(raw: "a", runtime: .claudeCode, decode: decode)
+        #expect(decodes == 3, "entries are per runtime")
+    }
+
+    @Test("the catalog survives re-renders until the runtime, model, or cache changes")
+    func catalogStoreReusesUntilInputsChange() {
+        let store = ModelSelectorCatalogStore()
+        let cache = antigravityCache()
+        let first = store.catalog(cache: cache, currentRuntime: .antigravityCLI, currentModel: "gemini-3.8-flash-high")
+
+        #expect(store.catalog(cache: cache, currentRuntime: .antigravityCLI, currentModel: "gemini-3.8-flash-high") === first)
+        #expect(store.catalog(cache: cache, currentRuntime: .antigravityCLI, currentModel: "gemini-3.8-pro-medium") !== first)
+        let second = store.catalog(cache: cache, currentRuntime: .claudeCode, currentModel: "sonnet")
+        #expect(second !== first)
+        #expect(store.catalog(cache: codexCache(), currentRuntime: .claudeCode, currentModel: "sonnet") !== second)
+    }
+
     @Test("selector latency lines land in the responsiveness report")
     func selectorLatencyIsReported() {
         let entries = [
             LogEntry(level: .info, category: "Performance", message: "event=\(ModelSelectorTelemetry.openEvent) duration_ms=180.00 runtime=cursor_cli"),
-            LogEntry(level: .info, category: "Performance", message: "event=\(ModelSelectorTelemetry.providerSwitchEvent) duration_ms=95.00 runtime=codex_cli"),
+            LogEntry(level: .info, category: "Performance", message: "event=\(ModelSelectorTelemetry.browseEvent) duration_ms=95.00 runtime=codex_cli"),
             LogEntry(level: .info, category: "Performance", message: "event=\(ModelSelectorTelemetry.modelPickEvent) duration_ms=40.00 runtime=codex_cli"),
             LogEntry(level: .info, category: "Performance", message: "event=\(ModelSelectorTelemetry.reasoningPickEvent) duration_ms=12.00 runtime=codex_cli"),
             LogEntry(level: .info, category: "Performance", message: "event=\(ModelSelectorTelemetry.searchEvent) duration_ms=9.00 runtime=cursor_cli"),
@@ -229,12 +273,14 @@ struct ModelSelectorPresentationTests {
 
         #expect(events == [
             ModelSelectorTelemetry.openEvent,
-            ModelSelectorTelemetry.providerSwitchEvent,
+            ModelSelectorTelemetry.browseEvent,
             ModelSelectorTelemetry.modelPickEvent,
             ModelSelectorTelemetry.reasoningPickEvent,
             ModelSelectorTelemetry.searchEvent,
             "model_selector_rows_build",
         ])
+        #expect(ModelSelectorTelemetry.popoverBodyEvent.hasPrefix("model_selector_"))
+        #expect(ModelSelectorTelemetry.toolbarBodyEvent.hasPrefix("model_selector_"))
     }
 
     // MARK: - Wiring
@@ -261,6 +307,10 @@ struct ModelSelectorPresentationTests {
         #expect(!toolbar.contains("return Stanford.coolGrey\n    }\n\n    private var runtimePillBackground"))
         // The reasoning footer is always laid out so the popover keeps one shape.
         #expect(!popover.contains("if !reasoningChoices.isEmpty || showsBudgetFooter"))
+        // Browsing a provider must not change the selection: the rail never
+        // calls back into the toolbar, only a model pick does.
+        #expect(!popover.contains("onSwitchProvider"))
+        #expect(popover.contains("browsing = row.runtime"))
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {

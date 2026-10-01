@@ -117,9 +117,22 @@ struct ComposerToolbar: View {
     @State private var isPolicySheetPresented = false
     @State private var isModelSelectorPresented = false
     @State private var modelSelectorOpenedAt: UInt64?
+    @State private var modelSelectorCatalogStore = ModelSelectorCatalogStore()
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
+        // Debug-level: this body runs on every composer keystroke. Lines above
+        // one frame show whether the selector's per-click cost is the toolbar.
+        PerformanceTelemetry.measure(
+            ModelSelectorTelemetry.toolbarBodyEvent,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: ["runtime": runtimeID]
+        ) {
+            toolbarContent
+        }
+    }
+
+    private var toolbarContent: some View {
         HStack(spacing: ComposerToolbarPresentation.controlSpacing) {
             plusMenu
 
@@ -349,7 +362,7 @@ struct ComposerToolbar: View {
     // MARK: - Model selector popover
 
     private var modelSelectorCatalog: ModelSelectorCatalog {
-        ModelSelectorCatalog(
+        modelSelectorCatalogStore.catalog(
             cache: runtimeModelCache,
             currentRuntime: resolvedRuntime,
             currentModel: model
@@ -383,7 +396,6 @@ struct ComposerToolbar: View {
             reasoningChoices: modelSelectorReasoningChoices,
             suggestion: suggestion,
             showsBudgetFooter: RuntimeBudgetPresentation.isEnabled(budget),
-            onSwitchProvider: { switchProvider(to: $0) },
             onSelect: { runtime, modelID in
                 if runtime != resolvedRuntime {
                     onRuntimeChange?(runtime.rawValue)

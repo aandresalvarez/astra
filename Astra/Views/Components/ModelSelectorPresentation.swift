@@ -232,3 +232,36 @@ final class ModelSelectorCatalog {
         return groups
     }
 }
+
+/// Keeps one `ModelSelectorCatalog` alive across composer re-renders.
+///
+/// A provider switch re-renders the composer several times (runtime, then
+/// model, then effort), and a fresh catalog each time threw its memoized rows
+/// away: `model_selector_rows_build` logged Cursor's 246 rows being built twice
+/// per switch. The catalog is reused while its inputs are unchanged.
+/// Deliberately not observable — handing out a cached value must not
+/// invalidate the view that asked for it.
+@MainActor
+final class ModelSelectorCatalogStore {
+    private var current: ModelSelectorCatalog?
+
+    func catalog(
+        cache: RuntimeModelAvailabilityCache,
+        currentRuntime: AgentRuntimeID,
+        currentModel: String
+    ) -> ModelSelectorCatalog {
+        if let current,
+           current.currentRuntime == currentRuntime,
+           current.currentModel == currentModel,
+           current.cache == cache {
+            return current
+        }
+        let fresh = ModelSelectorCatalog(
+            cache: cache,
+            currentRuntime: currentRuntime,
+            currentModel: currentModel
+        )
+        current = fresh
+        return fresh
+    }
+}

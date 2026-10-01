@@ -24,7 +24,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
     let reasoningChoices: [ModelSelectorReasoningChoice]
     let suggestion: ModelSelectorSuggestion?
     let showsBudgetFooter: Bool
-    let onSwitchProvider: (AgentRuntimeID) -> Void
     let onSelect: (AgentRuntimeID, String) -> Void
     let onSetup: () -> Void
     /// Uptime (ns) of the chip click that opened this popover, for the
@@ -44,7 +43,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         reasoningChoices: [ModelSelectorReasoningChoice],
         suggestion: ModelSelectorSuggestion?,
         showsBudgetFooter: Bool,
-        onSwitchProvider: @escaping (AgentRuntimeID) -> Void,
         onSelect: @escaping (AgentRuntimeID, String) -> Void,
         onSetup: @escaping () -> Void,
         openedAt: UInt64? = nil,
@@ -55,7 +53,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         self.reasoningChoices = reasoningChoices
         self.suggestion = suggestion
         self.showsBudgetFooter = showsBudgetFooter
-        self.onSwitchProvider = onSwitchProvider
         self.onSelect = onSelect
         self.onSetup = onSetup
         self.openedAt = openedAt
@@ -67,6 +64,17 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
     private static var railWidth: CGFloat { 188 }
 
     var body: some View {
+        PerformanceTelemetry.measure(
+            ModelSelectorTelemetry.popoverBodyEvent,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            level: .info,
+            fields: ["runtime": browsing.rawValue]
+        ) {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             if let suggestion {
                 suggestionBar(suggestion)
@@ -136,8 +144,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         guard let pending else { return }
         let landed: Bool
         switch pending.event {
-        case ModelSelectorTelemetry.providerSwitchEvent:
-            landed = catalog.currentRuntime.rawValue == pending.target
         case ModelSelectorTelemetry.modelPickEvent:
             landed = catalog.currentModel == pending.target
         default:
@@ -192,14 +198,21 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
             isHighlighted: isBrowsing,
             highlight: Color.primary.opacity(0.08),
             action: {
+                // Browsing only: looking at another provider's models never
+                // changes the selection. A model pick is the only thing that does.
+                let start = DispatchTime.now().uptimeNanoseconds
                 browsing = row.runtime
                 query = ""
-                // A ready provider becomes the selection right away, with its
-                // default model, so the model list and the reasoning levels
-                // below already describe it. Unready ones are only browsed.
-                if row.availability == .ready, !row.isCurrent {
-                    begin(ModelSelectorTelemetry.providerSwitchEvent, target: row.runtime.rawValue)
-                    onSwitchProvider(row.runtime)
+                DispatchQueue.main.async {
+                    PerformanceTelemetry.log(
+                        ModelSelectorTelemetry.browseEvent,
+                        durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: start),
+                        level: .info,
+                        fields: [
+                            "runtime": row.runtime.rawValue,
+                            "model_count": PerformanceTelemetryFields.count(row.modelCount),
+                        ]
+                    )
                 }
             }
         ) {
@@ -440,7 +453,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
                     reasoningControl
                 }
                 Spacer(minLength: 8)
-                if let title = catalog.selectedModelTitle {
+                if let title = selectedModelLabel {
                     Text(title)
                         .font(Stanford.caption(11))
                         .foregroundStyle(.tertiary)
@@ -462,6 +475,16 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// What the reasoning row applies to. It always follows the selection,
+    /// so while another provider is being browsed it names the selection's
+    /// provider too.
+    private var selectedModelLabel: String? {
+        guard let model = catalog.selectedModelTitle else { return nil }
+        guard browsing != catalog.currentRuntime,
+              let provider = providers.first(where: \.isCurrent) else { return model }
+        return "\(provider.title) · \(model)"
     }
 
     private var reasoningControl: some View {
@@ -500,10 +523,15 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
 /// The `model_selector_` prefix is what `UIResponsivenessDiagnostics` keys on.
 enum ModelSelectorTelemetry {
     static let openEvent = "model_selector_open_to_ready"
-    static let providerSwitchEvent = "model_selector_provider_switch_to_ready"
+    /// Clicking a provider in the rail to look at its models.
+    static let browseEvent = "model_selector_browse_to_ready"
     static let modelPickEvent = "model_selector_model_pick_to_ready"
     static let reasoningPickEvent = "model_selector_reasoning_pick_to_ready"
     static let searchEvent = "model_selector_search"
+    /// Building the popover's view description (rows included).
+    static let popoverBodyEvent = "model_selector_popover_body"
+    /// Building the composer toolbar that hosts the chip.
+    static let toolbarBodyEvent = "model_selector_toolbar_body"
 }
 
 private struct ModelSelectorPendingInteraction: Equatable {
