@@ -56,6 +56,11 @@ struct ComposerToolbar: View {
     let model: String
     var reasoningEffort: String? = nil
     var runtimeID: String = AgentRuntimeID.claudeCode.rawValue
+    /// The runtime a send actually uses, when it can differ from the chip's:
+    /// the new-task composer submits through the worker role profile, which
+    /// may name its own runtime. PHI approval is shown for this one, since it
+    /// is where the request goes.
+    var submissionRuntimeID: String?
     let budget: Int
     var skills: [Skill] = []
     var availableSkills: [Skill] = []
@@ -920,7 +925,9 @@ struct ComposerToolbar: View {
     }
 
     private var selectedRuntimeApprovesSensitiveData: Bool {
-        RuntimeProviderSettingsStore.isSensitiveDataApproved(for: resolvedRuntime)
+        let runtime = submissionRuntimeID.map { AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: $0) }
+            ?? resolvedRuntime
+        return RuntimeProviderSettingsStore.isSensitiveDataApproved(for: runtime)
     }
 
     private var runtimeStatusHelp: String {

@@ -141,4 +141,36 @@ struct RuntimeSensitiveDataLaunchGateTests {
         // A restored draft carries its conversation, so its composer is gated too.
         #expect(chatPanel.contains("sensitiveDataSwitchGuard: draftTask.map(TaskComposerCoordinator.sensitiveDataSwitchGuard(for:))"))
     }
+
+    @Test("a Goal-mode planning conversation counts as conversation even with no runs")
+    func planningConversationCountsAsConversation() throws {
+        let container = try makeLaunchGateContainer()
+        let context = container.mainContext
+        let task = task(in: context, lastRanOn: nil)
+        #expect(!TaskComposerCoordinator.hasProviderConversation(task))
+
+        let planMessage = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: "plan this")
+        context.insert(planMessage)
+        if !task.events.contains(where: { $0.id == planMessage.id }) { task.events.append(planMessage) }
+
+        #expect(TaskComposerCoordinator.hasProviderConversation(task))
+        #expect(TaskComposerCoordinator.sensitiveDataSwitchGuard(for: task).hasConversation())
+    }
+
+    @Test("a new task's effective runtime follows the worker role profile, as submission does")
+    func effectiveWorkerRuntimeFollowsTheRoleProfile() throws {
+        let defaults = InMemoryDefaults()
+
+        #expect(TaskRoleProfileStore.effectiveRuntime(for: .worker, defaultRuntime: .claudeCode, defaults: defaults) == .claudeCode)
+
+        defaults.set(AgentRuntimeID.codexCLI.rawValue, forKey: AppStorageKeys.roleProfileRuntimeKey(for: .worker))
+        #expect(TaskRoleProfileStore.effectiveRuntime(for: .worker, defaultRuntime: .claudeCode, defaults: defaults) == .codexCLI)
+        #expect(TaskRoleProfileStore.selection(for: .worker, defaultRuntimeID: AgentRuntimeID.claudeCode.rawValue, defaults: defaults)
+            .profile.runtime == .codexCLI)
+
+        // The new-task composer shows approval for that runtime, not the chip's default.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let chatPanel = try String(contentsOf: root.appendingPathComponent("Astra/Views/ChatPanelView.swift"), encoding: .utf8)
+        #expect(chatPanel.contains("submissionRuntimeID: TaskRoleProfileStore.effectiveRuntime(for: .worker, defaultRuntime: defaultRuntime).rawValue"))
+    }
 }

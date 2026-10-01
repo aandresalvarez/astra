@@ -225,15 +225,25 @@ enum TaskComposerCoordinator {
         }
     }
 
-    /// Guards runtime switches in an existing task's composer. A task with no
-    /// runs has sent nothing to any provider, so there is no thread to protect.
+    /// Guards runtime switches in an existing task's composer.
     static func sensitiveDataSwitchGuard(for task: AgentTask) -> RuntimeSensitiveDataSwitchGuard {
         RuntimeSensitiveDataSwitchGuard(
-            hasConversation: { !task.runs.isEmpty },
+            hasConversation: { hasProviderConversation(task) },
             recordAcknowledgement: { previous, next, model in
                 recordSensitiveDataRiskAcknowledgement(task: task, previous: previous, next: next, model: model)
             }
         )
+    }
+
+    /// Whether anything in this task has already gone to a provider. Runs are
+    /// not the only way: Goal mode sends the planning conversation through
+    /// `SpecEngine` and records it as plan events, with no run at all.
+    static func hasProviderConversation(_ task: AgentTask) -> Bool {
+        guard task.runs.isEmpty else { return true }
+        return task.events.contains {
+            $0.type == TaskPlanConversationEventTypes.userMessage
+                || $0.type == TaskPlanConversationEventTypes.assistantMessage
+        }
     }
 
     /// Recorded before the switch it allows, so the thread reads in order.

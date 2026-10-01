@@ -931,6 +931,7 @@ struct ChatPanelView: View {
                     model: defaultModel,
                     reasoningEffort: composerReasoningEffort,
                     runtimeID: defaultRuntimeID,
+                    submissionRuntimeID: TaskRoleProfileStore.effectiveRuntime(for: .worker, defaultRuntime: defaultRuntime).rawValue,
                     budget: defaultBudget,
                     skills: selectedSkills,
                     availableSkills: availableSkills,
