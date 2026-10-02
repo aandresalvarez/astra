@@ -1749,7 +1749,7 @@ struct TaskCapabilityResolverTests {
             task: task,
             environment: .host,
             contextText: terminalPluralContext
-        ) == ["github"])
+        ) == ["github", "history"])
     }
 
     @Test("GitHub package intent ignores ci substrings and generic UI issues")
@@ -1793,14 +1793,14 @@ struct TaskCapabilityResolverTests {
                 task: task,
                 environment: .host,
                 contextText: task.goal
-            ) == ["github"])
+            ) == ["github", "history"])
         }
 
         #expect(HostControlPlaneMCPProjection.enabledToolNames(
             task: ciTask,
             environment: .host,
             contextText: ciTask.goal
-        ) == ["github"])
+        ) == ["github", "history"])
     }
 
     @Test("A pruned-but-existing enabled capability is not a launch failure")
@@ -2964,12 +2964,12 @@ struct TaskCapabilityResolverTests {
         #expect(!scope.connectors.contains { $0.id == jiraConnector.id })
         // Reachability says yes, because the user enabled this connector.
         #expect(scope.reachableConnectors.contains { $0.id == jiraConnector.id })
-        #expect(HostControlPlaneMCPProjection.offeredToolNames(capabilityScope: scope) == ["jira"])
+        #expect(HostControlPlaneMCPProjection.offeredToolNames(capabilityScope: scope) == ["jira", "history"])
         #expect(HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: .host,
             contextText: turn
-        ) == ["jira"])
+        ) == ["jira", "history"])
         // Offered, not required: the route is attached, but this turn does not
         // depend on it, so it cannot reroute the run, abort the launch, or
         // withdraw the provider's own shell.

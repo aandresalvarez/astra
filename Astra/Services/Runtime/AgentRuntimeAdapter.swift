@@ -1957,7 +1957,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         // The attached list above includes offered routes. Shell denial follows
         // the required subset, so an enabled-but-unmentioned connector does not
         // cost this turn its native shell.
-        let requiredHostControlTools = context.runtimeRequirements?.hostControlTools ?? hostControlTools
+        let requiredHostControlTools = HostControlPlaneMCPProjection.requiredToolNames(launchContext: context, environment: executionEnvironment)
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             environment: executionEnvironment,
             permissionPolicy: providerLaunchPermissionPolicy,

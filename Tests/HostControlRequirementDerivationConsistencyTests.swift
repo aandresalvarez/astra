@@ -149,7 +149,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             executionEnvironment: .host,
             browserBridgeRequired: snapshot.providerLaunch.requiresBrowserBridge
         )
-        #expect(requirements.offeredHostControlTools == ["jira"])
+        #expect(requirements.offeredHostControlTools == ["jira", "history"])
         #expect(requirements.hostControlTools.isEmpty)
 
         func routesJiraThroughControlPlane(precomputed: TaskRuntimeRequirementSet?) -> Bool {
@@ -278,6 +278,7 @@ struct HostControlRequirementDerivationConsistencyTests {
             turnIntentSnapshot: turnIntentSnapshot,
             runtime: .cursorCLI
         )
+        #expect(resolverRequirements.hostControlTools == HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: renderSnapshot.providerLaunch))
         let renderHostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
@@ -286,7 +287,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         )
 
         #expect(
-            resolverRequirements.hostControlTools == renderHostControlTools,
+            resolverRequirements.offeredHostControlTools == renderHostControlTools,
             """
             resolver derived hostControlTools=\(resolverRequirements.hostControlTools) but \
             policy render derived hostControlTools=\(renderHostControlTools) for the identical \
@@ -419,7 +420,7 @@ struct HostControlRequirementDerivationConsistencyTests {
         )
 
         #expect(
-            launchAttachedTools == resolverRequirements.hostControlTools,
+            launchAttachedTools == resolverRequirements.offeredHostControlTools,
             """
             resolver derived hostControlTools=\(resolverRequirements.hostControlTools) but Copilot's \
             actual launch projection attached hostControlEnvironment tools=\(launchAttachedTools) for \

@@ -52,7 +52,7 @@ struct AgentPolicyGitHubRoutingTests {
         #expect(manifest.mcpServers.contains { server in
             server.packageID == "astra-builtin"
                 && server.id == HostControlPlaneMCPProjection.serverID
-                && server.allowedTools == ["github"]
+                && server.allowedTools == ["github", "history"]
         })
         #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
             descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")

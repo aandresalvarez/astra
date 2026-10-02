@@ -55,7 +55,7 @@ enum HostControlPlaneMCPProjection {
     }
 
     static let serverID = "astra_host"
-    static let toolNames = ["github", "gcloud", "bq", "ssh", "jira", "redcap"]
+    static let toolNames = ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history"]
     static let githubPackageID = "github-workflow"
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
@@ -105,7 +105,7 @@ enum HostControlPlaneMCPProjection {
             return precomputedRuntimeRequirements.hostControlTools
         }
         if isEnabled(for: environment) {
-            return toolNames
+            return toolNames.filter { $0 != "history" }
         }
         let scope = capabilityScope ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
@@ -121,6 +121,13 @@ enum HostControlPlaneMCPProjection {
     /// keyed on what the turn is actually about.
     static func requiredToolNames(capabilityScope: TaskCapabilityPromptScope) -> [String] {
         requiredToolNames(capabilitySnapshot: CapabilitySnapshot(capabilityScope: capabilityScope))
+    }
+
+    @MainActor
+    static func requiredToolNames(launchContext: AgentRuntimeProcessLaunchContext, environment: WorkspaceExecutionEnvironment) -> [String] {
+        launchContext.runtimeRequirements?.hostControlTools ?? requiredToolNames(task: launchContext.task,
+            environment: environment, contextText: launchContext.contextText,
+            capabilityScope: launchContext.capabilityResolutionSnapshot.providerLaunch)
     }
 
     static func requiredToolNames(capabilitySnapshot: CapabilitySnapshot) -> [String] {
@@ -153,7 +160,7 @@ enum HostControlPlaneMCPProjection {
             // inherit exactly the word-match gate it exists to bypass.
             behaviorInstructions: capabilitySnapshot.reachableBehaviorInstructions,
             capabilitySnapshot: capabilitySnapshot
-        )
+        ) + ["history"]
     }
 
     private static func toolNames(
@@ -468,6 +475,8 @@ enum HostControlPlaneMCPProjection {
 
     private static func runtimeSupportPurpose(for tool: String) -> String {
         switch tool {
+        case "history":
+            return "Retrieve bounded pages of this task's original durable evidence without database or arbitrary file access."
         case "github":
             return "Run GitHub control-plane commands on the host through ASTRA without provider Bash."
         case "gcloud":
@@ -490,6 +499,8 @@ enum HostControlPlaneMCPProjection {
 
     private static func allowedInputKeys(for tool: String) -> [String] {
         switch tool {
+        case "history":
+            return ["event_id", "before_id", "offset"]
         case "github", "gcloud", "bq":
             return ["arguments", "timeout_seconds"]
         case "ssh":

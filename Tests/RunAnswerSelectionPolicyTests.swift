@@ -243,7 +243,7 @@ struct RunAnswerSelectionPolicyTests {
         let remaining = try context.fetch(FetchDescriptor<TaskEvent>()).filter { $0.run?.id == first.id }
         let ids = Set(remaining.map(\.id))
         #expect(ids.contains(answer.id) && ids.contains(signOff.id))
-        #expect(!ids.contains(narration.id))
+        #expect(ids.contains(narration.id))
         let snapshot = TaskThreadSnapshot(
             goal: task.goal,
             createdAt: task.createdAt,

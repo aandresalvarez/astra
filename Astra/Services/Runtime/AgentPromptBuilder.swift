@@ -668,30 +668,30 @@ enum AgentPromptBuilder {
         message: String,
         task: AgentTask,
         budgetProfile: PromptContextBudgetProfile? = nil,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        usesNativeContinuation: Bool = false
     ) -> String {
         buildFreshFollowUpPromptAssembly(
             message: message,
             task: task,
             budgetProfile: budgetProfile,
-            executionPolicy: executionPolicy
+            executionPolicy: executionPolicy,
+            usesNativeContinuation: usesNativeContinuation
         ).prompt
     }
-
-    static func continuityBudgetProfile(for runtime: AgentRuntimeID) -> PromptContextBudgetProfile {
-        AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: runtime) ? .standard : .extendedTranscript
+    static func continuityBudgetProfile(for _: AgentRuntimeID, usesNativeContinuation: Bool = false) -> PromptContextBudgetProfile {
+        usesNativeContinuation ? .standard : .extendedTranscript
     }
-
-    static func continuityTranscriptWindow(for runtime: AgentRuntimeID) -> PromptContextIOSnapshotLoader.TranscriptWindow {
-        AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: runtime) ? .standard : .extended
+    static func continuityTranscriptWindow(for _: AgentRuntimeID, usesNativeContinuation: Bool = false) -> PromptContextIOSnapshotLoader.TranscriptWindow {
+        usesNativeContinuation ? .standard : .extended
     }
-
     static func buildFreshFollowUpPromptAssembly(
         message: String,
         task: AgentTask,
         budgetProfile: PromptContextBudgetProfile? = nil,
         ioSnapshot: PromptContextIOSnapshot? = nil,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        usesNativeContinuation: Bool = false
     ) -> PromptAssemblyManifest {
         let runtime = task.resolvedRuntimeID
         return assemblePrompt(
@@ -700,12 +700,12 @@ enum AgentPromptBuilder {
                 task: task,
                 ioSnapshot: ioSnapshot ?? PromptContextIOSnapshotLoader.snapshot(
                     for: task,
-                    window: continuityTranscriptWindow(for: runtime)
+                    window: continuityTranscriptWindow(for: runtime, usesNativeContinuation: usesNativeContinuation)
                 ),
                 executionPolicy: executionPolicy
             ),
             mode: .followUp,
-            budgetProfile: budgetProfile ?? continuityBudgetProfile(for: runtime)
+            budgetProfile: budgetProfile ?? continuityBudgetProfile(for: runtime, usesNativeContinuation: usesNativeContinuation)
         )
     }
 

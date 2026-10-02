@@ -3,306 +3,69 @@ import SwiftData
 import ASTRAModels
 import ASTRACore
 
+/// Summarizes a bounded sample for presentation. Original TaskEvent rows remain
+/// the sole durable evidence; paging and prompt budgets own working-set size.
 enum AgentEventCompactor {
     static let threshold = 200
     static let keepCount = 50
-    private static let maxPreservedFinalResponseChunks = 24
-
-    private enum FilePathPattern {
-        /// Failable so a bad pattern degrades to "no paths in the compaction
-        /// summary" instead of crashing at first use; the positive match is
-        /// covered by `CompactionTests`, so a pattern typo fails CI.
-        static let regex: NSRegularExpression? = {
-            do {
-                return try NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
-            } catch {
-                AppLogger.error("File-path pattern failed to compile; compaction summaries omit paths: \(error)", category: "Worker")
-                return nil
-            }
-        }()
-    }
+    private static let summaryPrefix = "History summary (original details retained)."
     private static let semanticLineLimit = 12
 
-    /// Event-type namespaces whose state is reconstructed from the event log
-    /// (`TaskPlanService.reconstruct`, the Context Capsule's validation/handoff/
-    /// corrective summaries). Deleting these during compaction silently corrupts
-    /// the derived state that feeds the prompt — e.g. an approved plan reverting
-    /// to draft, or a passed contract reading back as not_verified.
-    private static let reconstructedEventTypePrefixes = [
-        "plan.",
-        "validation.",
-        "verifier.",
-        "handoff.",
-        "corrective.",
-        "objective."
-    ]
-
-    /// Validation assertion event types. Grouped by `(planID, assertionID)` when
-    /// deciding what to preserve, mirroring how the Context Capsule reads the latest
-    /// event per assertion *within a plan* in `latestAssertionEventsByID(task:planID:)`.
-    /// Scoping by planID prevents two plans that reuse an assertion id (e.g. "a1")
-    /// from colliding and dropping the active plan's event.
-    private static let validationAssertionEventTypes: Set<String> = [
-        TaskValidationEventTypes.assertionDefined,
-        TaskValidationEventTypes.assertionStarted,
-        TaskValidationEventTypes.assertionPassed,
-        TaskValidationEventTypes.assertionFailed,
-        TaskValidationEventTypes.assertionSkipped,
-        TaskValidationEventTypes.assertionReviewed
-    ]
-
-    /// Validation contract event types. Grouped by `(planID, type)` so each plan's
-    /// latest contract outcome survives, mirroring how the capsule filters contract
-    /// events by `payload.planID` in `validationContractState`.
-    private static let validationContractEventTypes: Set<String> = [
-        TaskValidationEventTypes.contractCreated,
-        TaskValidationEventTypes.contractUpdated,
-        TaskValidationEventTypes.contractPassed,
-        TaskValidationEventTypes.contractFailed,
-        TaskValidationEventTypes.contractOverridden
-    ]
+    private enum FilePathPattern {
+        static let regex = try? NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
+    }
 
     @MainActor
     static func compactEvents(for task: AgentTask, modelContext: ModelContext) {
         let start = DispatchTime.now().uptimeNanoseconds
         RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
-        let events = task.events.filter { !$0.isDeleted }.sorted { $0.timestamp < $1.timestamp }
-        guard events.count > threshold else {
-            logCompactionIfNeeded(
-                start: start,
-                taskID: task.id,
-                eventCount: events.count,
-                compactedCount: 0,
-                keptCount: events.count,
-                reconstructionCriticalCount: 0,
-                summaryEventInserted: false
-            )
-            return
+        let taskID = task.id
+        let summaryType = TaskEventTypes.Activity.compacted.rawValue
+        let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
+        let prepared = TaskEventTypes.System.runtimeOutcomePrepared.rawValue
+        let predicate = #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.type != summaryType && $0.type != captured && $0.type != prepared
         }
-
-        let cutoff = events.count - keepCount
-        let compactionCandidates = events
-            .prefix(cutoff)
-            .filter { !shouldPreserveDuringCompaction($0) }
-        // Keep the most recent reconstructed-lifecycle event per grouping key beyond
-        // the recency window so plan/contract state still rebuilds after compaction
-        // (see latestReconstructedEventIDs for the per-key rules). Bounded by the
-        // number of distinct keys, so high-volume plan.step.* streams still compact.
-        let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
-        // The answer is chosen over each run's full event list, with the rule
-        // the transcript view uses, so compaction keeps exactly what is shown.
-        let outputPresentationAnchorIDs = latestOutputPresentationAnchorIDs(in: events)
-        let preservedIDs = reconstructionCriticalIDs.union(outputPresentationAnchorIDs)
-        let toCompact = compactionCandidates.filter { !preservedIDs.contains($0.id) }
-        guard !toCompact.isEmpty else {
-            logCompactionIfNeeded(
-                start: start,
-                taskID: task.id,
-                eventCount: events.count,
-                compactedCount: 0,
-                keptCount: events.count,
-                reconstructionCriticalCount: reconstructionCriticalIDs.count,
-                summaryEventInserted: false
-            )
-            return
-        }
-
-        var typeCounts: [String: Int] = [:]
-        for event in toCompact {
-            typeCounts[event.type, default: 0] += 1
-        }
-
-        let summary = typeCounts
-            .sorted { $0.value > $1.value }
-            .map { "\($0.value) \($0.key)" }
-            .joined(separator: ", ")
-        let semanticLines = semanticSummaryLines(from: compactionCandidates)
-        var payload = "Compacted \(toCompact.count) earlier events. Breakdown: \(summary)"
-        if !semanticLines.isEmpty {
-            payload += "\nCompacted detail index:\n" + semanticLines.joined(separator: "\n")
-        }
-
-        let summaryEvent = TaskEvent(
-            task: task,
-            type: "activity.compacted",
-            payload: payload
-        )
-        if let firstKept = events.dropFirst(cutoff).first {
-            summaryEvent.timestamp = firstKept.timestamp.addingTimeInterval(-1)
-        }
-        modelContext.insert(summaryEvent)
-
-        for event in toCompact {
-            modelContext.delete(event)
-        }
-
-        // One backdated insert plus `toCompact.count` deletes. When those two
-        // cancel out in the total (reachable whenever the preserve rules leave a
-        // single compactable row), the transcript's incremental tail read cannot
-        // detect this from counts and would keep rendering the deleted rows.
-        TaskThreadHistoryInvalidation.invalidate(taskID: task.id)
-
-        AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
-            "event": "activity_compacted",
-            "compacted_count": String(toCompact.count),
-            "kept_count": String(keepCount)
-        ])
-        logCompactionIfNeeded(
-            start: start,
-            taskID: task.id,
-            eventCount: events.count,
-            compactedCount: toCompact.count,
-            keptCount: events.count - toCompact.count,
-            reconstructionCriticalCount: reconstructionCriticalIDs.count,
-            summaryEventInserted: true
-        )
-    }
-
-    private static func logCompactionIfNeeded(
-        start: UInt64,
-        taskID: UUID,
-        eventCount: Int,
-        compactedCount: Int,
-        keptCount: Int,
-        reconstructionCriticalCount: Int,
-        summaryEventInserted: Bool
-    ) {
-        PerformanceTelemetry.logIfNeeded(
-            "event_compaction",
-            start: start,
-            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
-            fields: [
-                "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
-                "event_count": PerformanceTelemetryFields.count(eventCount),
-                "compacted_count": PerformanceTelemetryFields.count(compactedCount),
-                "kept_count": PerformanceTelemetryFields.count(keptCount),
-                "reconstruction_critical_count": PerformanceTelemetryFields.count(reconstructionCriticalCount),
-                "summary_event_inserted": PerformanceTelemetryFields.bool(summaryEventInserted)
-            ]
-        )
-    }
-
-    /// IDs of the most recent reconstructed-lifecycle event for each grouping key
-    /// present in `events`, exempted from deletion so the derived state that feeds
-    /// the prompt still rebuilds after compaction. Grouping is per-entity, matching
-    /// how the consumers read the log:
-    /// - validation assertion events → latest per `(planID, assertionID)`
-    ///   (mirrors the Context Capsule's `latestAssertionEventsByID(task:planID:)`),
-    /// - validation contract events → latest per `(planID, type)`,
-    /// - corrective step events → latest per `correctiveStepID`
-    ///   (mirrors `TaskCorrectiveWorkService.latestCorrectiveSteps`),
-    /// - everything else (plan lifecycle, verifier, handoff) → latest per type.
-    /// Bounded by the number of distinct assertions/steps/types, so high-volume
-    /// `plan.step.*` streams still compact while per-assertion status survives.
-    private static func latestReconstructedEventIDs(in events: [TaskEvent]) -> Set<UUID> {
-        var latestByKey: [String: TaskEvent] = [:]
-        for event in events where isReconstructedLifecycleEvent(event) {
-            let key = reconstructionGroupingKey(for: event)
-            // `events` is sorted ascending by timestamp, so a strict `>` keeps the
-            // last-seen (latest) event on a timestamp tie.
-            if let existing = latestByKey[key], existing.timestamp > event.timestamp {
-                continue
+        do {
+            let count = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(predicate: predicate))
+            guard count > threshold else { return }
+            // Never fault the whole relationship just to prepare a summary.
+            var descriptor = FetchDescriptor<TaskEvent>(predicate: predicate,
+                sortBy: [SortDescriptor(\TaskEvent.timestamp, order: .reverse), SortDescriptor(\TaskEvent.id, order: .reverse)])
+            descriptor.fetchLimit = keepCount + threshold
+            let sample = Array(try modelContext.fetch(descriptor).dropFirst(keepCount).reversed())
+            var counts: [String: Int] = [:]
+            for event in sample { counts[event.type, default: 0] += 1 }
+            let breakdown = counts.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+            let payload = "\(summaryPrefix)\n\(count - keepCount) older events; sample of \(sample.count): \(breakdown)"
+                + "\nCompacted detail index:\n" + semanticSummaryLines(from: sample).joined(separator: "\n")
+                + "\nEvidence remains in task history. Latest sampled event: \(sample.last?.id.uuidString ?? "none")."
+            let summaries = FetchDescriptor<TaskEvent>(
+                predicate: #Predicate<TaskEvent> { $0.task?.id == taskID && $0.type == summaryType },
+                sortBy: [SortDescriptor(\TaskEvent.timestamp, order: .reverse)])
+            // Legacy deletion summaries contain the only surviving description
+            // of their lost details. Never overwrite those.
+            let summary = try modelContext.fetch(summaries).first { $0.payload.hasPrefix(summaryPrefix) }
+            guard summary?.payload != payload else { return }
+            if let summary {
+                summary.payload = RunSecretRedactionScope.redact(payload, taskID: task.id)
+                summary.timestamp = sample.last?.timestamp ?? Date()
+            } else {
+                let summary = TaskEvent(task: task, type: summaryType, payload: payload)
+                summary.timestamp = sample.last?.timestamp ?? Date()
+                modelContext.insert(summary)
             }
-            latestByKey[key] = event
-        }
-        return Set(latestByKey.values.map(\.id))
-    }
-
-    /// What each run's answer needs to survive compaction: its rows, the work
-    /// event it follows, and (for a keyed run) its message records, chosen by
-    /// `RunAnswerSelectionPolicy` exactly as the transcript view chooses them.
-    private static func latestOutputPresentationAnchorIDs(in events: [TaskEvent]) -> Set<UUID> {
-        let grouped = Dictionary(grouping: events) { event in
-            event.run?.id.uuidString ?? "task"
-        }
-        var output = Set<UUID>()
-        for runEvents in grouped.values {
-            let sorted = runEvents.sorted { $0.timestamp < $1.timestamp }
-            let transcript = sorted.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
-            if let keyed = RunAnswerSelectionPolicy.select(transcript) {
-                let rows = keyed.answer.flatMap { $0 }
-                guard rows.count <= maxPreservedFinalResponseChunks else { continue }
-                output.formUnion(rows)
-                output.formUnion(sorted.filter { $0.type == RunAnswerSelectionPolicy.messageRecordType }.map(\.id))
-                if let anchor = keyed.anchor { output.insert(anchor) }
-            } else if let legacy = RunAnswerSelectionPolicy.legacySelection(transcript) {
-                let rows = legacy.answer.flatMap { $0 }
-                guard rows.count <= maxPreservedFinalResponseChunks else { continue }
-                output.formUnion(rows)
-                if let anchor = legacy.anchor { output.insert(anchor) }
-            } else if let latestResponse = sorted.last(where: { $0.type == "agent.response" }) {
-                output.insert(latestResponse.id)
-            }
-        }
-        return output
-    }
-
-    private static func isReconstructedLifecycleEvent(_ event: TaskEvent) -> Bool {
-        reconstructedEventTypePrefixes.contains { event.type.hasPrefix($0) }
-    }
-
-    /// Per-entity key used to decide which reconstructed events to keep. Reuses the
-    /// same decoders the consumers use, so a preserved event keys identically to how
-    /// it will later be read. Falls back to the event type when the payload can't be
-    /// decoded (still preserved as latest-of-type).
-    private static func reconstructionGroupingKey(for event: TaskEvent) -> String {
-        if validationAssertionEventTypes.contains(event.type),
-           case let .success(payload) = ValidationService.decodeAssertionPayloadResult(event.payload) {
-            return "assertion:\(payload.planID.uuidString):\(payload.assertionID)"
-        }
-        if validationContractEventTypes.contains(event.type),
-           let planID = decodeContractPlanID(event.payload) {
-            return "contract:\(planID):\(event.type)"
-        }
-        if event.type.hasPrefix("corrective."),
-           let payload = TaskCorrectiveWorkQueries.decode(event.payload) {
-            return "corrective:\(TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(payload))"
-        }
-        return event.type
-    }
-
-    private static func decodeContractPlanID(_ payload: String) -> String? {
-        guard let data = payload.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(TaskValidationContractEventPayload.self, from: data) else {
-            return nil
-        }
-        return decoded.planID.uuidString
-    }
-
-    private static func shouldPreserveDuringCompaction(_ event: TaskEvent) -> Bool {
-        // Durable turn requests retain source-event IDs, including blocked plans.
-        if event.type.hasPrefix("astra.") || event.type.hasPrefix("execution.request.") {
-            return true
-        }
-
-        switch event.type {
-        case "user.message",
-             "objective.assessment.changed",
-             "schedule.result",
-             "system.info",
-             "recap.result",
-             "budget.warning",
-             "budget.exceeded",
-             "permission.denied",
-             "permission.approval.requested",
-             "permission.request.resolved",
-             "permission.live_approval.committed",
-             "permission.approval.delivered",
-             "runtime.settlement.started",
-             "runtime.outcome.prepared",
-             "runtime.chained_work.dispatched",
-             "runtime.result.captured",
-             "runtime.turn.settled",
-             "runtime.reconciliation.required",
-             "runtime.schedule_result.routed",
-             "error",
-             "task.completed",
-             "task.approved",
-             "task.cancelled",
-             "task.interrupted":
-            return true
-        default:
-            return false
+            TaskThreadHistoryInvalidation.invalidate(taskID: task.id)
+            PerformanceTelemetry.logIfNeeded("event_compaction", start: start,
+                thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
+                fields: ["task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                         "event_count": PerformanceTelemetryFields.count(count),
+                         "sample_count": PerformanceTelemetryFields.count(sample.count),
+                         "deleted_count": "0"])
+        } catch {
+            // Auxiliary summary failure must neither discard evidence nor fail
+            // settlement. The next explicit finalization can retry it.
+            AppLogger.error("History summary failed: \(error.localizedDescription)", category: "Worker")
         }
     }
 

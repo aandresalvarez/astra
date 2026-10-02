@@ -3,7 +3,7 @@ import Foundation
 import MCPServerKit
 
 public struct HostControlToolConfiguration: Equatable, Sendable {
-    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira", "redcap"]
+    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history"]
 
     public var githubExecutable: String
     public var gcloudExecutable: String
@@ -822,6 +822,7 @@ private struct HostControlDiagnosticRecord: Codable {
 
 public final class HostControlMCPServer {
     private let configuration: HostControlToolConfiguration
+    private let historyReader: (any TaskHistoryReading)?
     private let processRunner: HostControlProcessRunning
     private let cancellationRegistry: HostControlOperationCancellationRegistry
     private let diagnosticsRecorder: HostControlToolDiagnosticsRecorder?
@@ -842,10 +843,12 @@ public final class HostControlMCPServer {
         processRunner: HostControlProcessRunning? = nil,
         diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil,
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
-        processLimits: HostControlProcessLimits = .standard
+        processLimits: HostControlProcessLimits = .standard,
+        historyReader: (any TaskHistoryReading)? = nil
     ) {
         let cancellationRegistry = HostControlOperationCancellationRegistry()
         self.configuration = configuration
+        self.historyReader = historyReader
         self.cancellationRegistry = cancellationRegistry
         self.processRunner = processRunner ?? HostControlProcessRunner(
             limits: processLimits,
@@ -871,6 +874,8 @@ public final class HostControlMCPServer {
         }
         let arguments = call.arguments
         switch normalizedToolName {
+        case "history":
+            return TaskHistoryHostControlPolicy.handle(arguments: arguments, reader: historyReader)
         case "github":
             return handleProcessTool(
                 toolName: normalizedToolName,
@@ -1286,6 +1291,7 @@ public final class HostControlMCPServer {
                 description: "Run BigQuery CLI help/version commands on the host through ASTRA without provider Bash.",
                 argumentDescription: "Help-only bq arguments, for example [\"--help\"], [\"help\"], or [\"version\"]. Resource listing, display, query, export, load, delete, copy, table mutation, and job commands are denied."
             ),
+            TaskHistoryHostControlPolicy.schema,
             sshSchema(),
             jiraSchema(),
             REDCapHostControlPolicy.toolSchema(timeoutDescription: timeoutDescription(kind: "request"))

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 /// Runs `TaskThreadHistoryReader` off the main actor.
 ///
@@ -30,21 +31,28 @@ actor TaskThreadHistoryStore {
     /// caller that has to *replace* what it accumulated (an announced mutation
     /// invalidated it) would otherwise collapse a transcript the user paged
     /// open back to a single page and lose their place. The widening is bounded
-    /// by rows the caller is already holding in memory.
+    /// by rows the caller already holds plus at most one page of new rows.
     func initialPage(
         taskID: UUID,
         coveringEventCount: Int = 0,
+        previousTotalEventCount: Int? = nil,
         coveringRunCount: Int = 0,
         runPageSize: Int = TaskThreadHistoryReader.defaultRunPageSize,
         eventPageSize: Int = TaskThreadHistoryReader.defaultEventPageSize
     ) throws -> TaskThreadHistoryPage {
         // No `await` between the context and the return: the context must never
         // be alive across a suspension point.
-        try TaskThreadHistoryReader.initialPage(
+        let context = makeContext()
+        let growth: Int
+        if let previousTotalEventCount {
+            let count = try context.fetchCount(FetchDescriptor<ASTRAModels.TaskEvent>(predicate: #Predicate { $0.task?.id == taskID }))
+            growth = min(eventPageSize, max(0, count - previousTotalEventCount))
+        } else { growth = 0 }
+        return try TaskThreadHistoryReader.initialPage(
             taskID: taskID,
-            modelContext: makeContext(),
+            modelContext: context,
             runPageSize: max(runPageSize, coveringRunCount),
-            eventPageSize: max(eventPageSize, coveringEventCount)
+            eventPageSize: max(eventPageSize, coveringEventCount + growth)
         )
     }
 

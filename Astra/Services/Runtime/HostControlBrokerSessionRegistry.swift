@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SwiftData
 import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
@@ -76,6 +77,26 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var sessions: [SessionKey: HostControlBrokerSession] = [:]
+    private var historyReaders: [SessionKey: any TaskHistoryReading] = [:]
+
+    /// Bind the durable store before handing a detached execution task to a provider.
+    func bindHistory(container: ModelContainer, taskID: UUID, runID: UUID) {
+        lock.lock()
+        historyReaders[sessionKey(taskID: taskID, runID: runID)] = TaskHistoryEvidenceReader(container: container, taskID: taskID)
+        lock.unlock()
+    }
+
+    func historyReader(taskID: UUID, runID: UUID?) -> (any TaskHistoryReading)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return historyReaders[sessionKey(taskID: taskID, runID: runID)]
+    }
+
+    func unbindHistory(taskID: UUID, runID: UUID) {
+        lock.lock()
+        historyReaders.removeValue(forKey: sessionKey(taskID: taskID, runID: runID))
+        lock.unlock()
+    }
 
     private init() {}
 
@@ -121,10 +142,12 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         environment.merge(hostEnvironment) { _, brokerValue in brokerValue }
 
         let configuration = HostControlToolConfiguration.fromEnvironment(environment)
+        let reader = historyReader(taskID: task.id, runID: runID)
         let session = HostControlBrokerSession(
             configuration: configuration,
             expectedHelperPath: expectedHelperPath,
-            withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID)
+            withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID),
+            historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id) }
         )
         guard let socketPath = session.start(
             allowsFileDropFallback: runtime.map(Self.providerSandboxedRuntimes.contains) == true
@@ -288,11 +311,13 @@ private final class HostControlBrokerSession: @unchecked Sendable {
     init(
         configuration: HostControlToolConfiguration,
         expectedHelperPath: String,
-        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil
+        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
+        historyReader: (any TaskHistoryReading)? = nil
     ) {
         server = HostControlMCPServer(
             configuration: configuration,
-            withholdingObserver: withholdingObserver
+            withholdingObserver: withholdingObserver,
+            historyReader: historyReader
         )
         self.expectedHelperPath = Self.canonicalPath(expectedHelperPath)
     }

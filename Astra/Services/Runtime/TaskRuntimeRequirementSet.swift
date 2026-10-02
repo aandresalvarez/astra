@@ -71,7 +71,7 @@ struct TaskRuntimeRequirementSet: Equatable, Sendable {
         // set silently disagrees with the actual launch-time tool grant.
         let isDocker = HostControlPlaneMCPProjection.isEnabled(for: executionEnvironment)
         let hostControlTools = isDocker
-            ? HostControlPlaneMCPProjection.toolNames
+            ? HostControlPlaneMCPProjection.toolNames.filter { $0 != "history" }
             : HostControlPlaneMCPProjection.requiredToolNames(
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch
             )

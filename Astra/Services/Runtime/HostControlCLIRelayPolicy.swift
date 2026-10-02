@@ -24,6 +24,16 @@ enum HostControlCLIRelayPolicy {
         }
 
         switch tokens[1].lowercased() {
+        case "history":
+            guard let values = pairedOptions(Array(tokens.dropFirst(2)), allowed: ["--event-id", "--before-id", "--offset"]) else { return false }
+            var args: [String: Any] = [:]
+            if let id = values["--event-id"] { args["event_id"] = id }
+            if let id = values["--before-id"] { args["before_id"] = id }
+            if let raw = values["--offset"] {
+                guard let offset = Int(raw) else { return false }
+                args["offset"] = offset
+            }
+            return TaskHistoryReadRequest.parse(args) != nil
         case "jira":
             return allowsJira(Array(tokens.dropFirst(2)))
         case "redcap":

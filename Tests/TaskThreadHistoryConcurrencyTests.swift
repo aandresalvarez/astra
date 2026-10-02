@@ -279,16 +279,14 @@ struct TaskThreadHistoryConcurrencyTests {
         #expect(!viewModel.hasEarlierHistory)
     }
 
-    @Test("A one-row compaction does not strand the deleted event in the transcript")
+    @Test("Summarization retains original evidence and refreshes the transcript")
     func oneRowCompactionDoesNotStrandTheDeletedEvent() async throws {
         let (container, context, task) = try fixture()
         defer { _ = container }
         TaskThreadHistoryInvalidation.resetForTesting()
 
-        // 201 events whose oldest 151 hold exactly one compactable row, so the
-        // delete and the backdated summary cancel out in the authoritative
-        // count and no count-based invariant can observe the change.
-        let strandedPayload = "tool call the compaction deletes"
+        // Original tool evidence remains alongside the backdated summary.
+        let strandedPayload = "tool call retained through summarization"
         let stranded = TaskEvent(task: task, type: "tool.call", payload: strandedPayload)
         stranded.timestamp = Date(timeIntervalSince1970: 10)
         context.insert(stranded)
@@ -306,15 +304,15 @@ struct TaskThreadHistoryConcurrencyTests {
 
         AgentEventCompactor.compactEvents(for: task, modelContext: context)
         try context.save()
-        // The blind spot: one delete, one backdated insert, net zero.
-        #expect(task.events.count == 201)
+        // Summary insertion increases the count without replacing evidence.
+        #expect(task.events.count == 202)
         #expect(task.events.contains { $0.type == "activity.compacted" })
 
         viewModel.requestSnapshotRefresh(for: task)
         await viewModel.waitForPendingWorkForTesting()
 
         let events = viewModel.snapshot?.sortedEvents ?? []
-        #expect(!events.contains { $0.payload == strandedPayload })
+        #expect(events.contains { $0.payload == strandedPayload })
         #expect(events.contains { $0.type == "activity.compacted" })
     }
 }

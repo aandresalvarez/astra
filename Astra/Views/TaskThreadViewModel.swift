@@ -1048,6 +1048,7 @@ final class TaskThreadViewModel {
             let page = try await store.initialPage(
                 taskID: taskID,
                 coveringEventCount: tailIsTrusted ? 0 : loadedHistoryEvents.count,
+                previousTotalEventCount: tailIsTrusted ? nil : historyTotalEventCount,
                 coveringRunCount: tailIsTrusted ? 0 : loadedHistoryRuns.count
             )
             await notifyHistoryPageCapturedForTesting()

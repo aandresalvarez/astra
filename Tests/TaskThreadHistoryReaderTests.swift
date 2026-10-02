@@ -827,7 +827,7 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(viewModel.historyFullReadCountForTesting == 1)
     }
 
-    @Test("Compaction forces a full re-read instead of stranding deleted rows")
+    @Test("Summarization forces a full re-read for its backdated summary")
     func compactionForcesFullReread() async throws {
         let (container, context, task) = try fixture()
         defer { _ = container }
@@ -850,12 +850,12 @@ struct StorageBackedTaskThreadViewModelTests {
 
         let events = viewModel.snapshot?.sortedEvents ?? []
         #expect(events.contains { $0.type == "activity.compacted" })
-        #expect(!events.contains { $0.payload == "chunk 0" })
+        #expect(events.contains { $0.payload == "chunk 0" })
         #expect(events.contains { $0.payload == "chunk 259" })
         // Compaction announces itself through `TaskThreadHistoryInvalidation`,
         // so the tail read is not merely rejected after the fact — it is never
         // issued. A tail read here can only ever be discarded, because the
-        // deletes and the backdated summary all land before the tail cursor.
+        // backdated summary lands before the tail cursor.
         #expect(viewModel.historyTailReadCountForTesting == 0)
         #expect(viewModel.historyFullReadCountForTesting == 2)
     }
@@ -903,10 +903,8 @@ struct StorageBackedTaskThreadViewModelTests {
         defer { _ = container }
         TaskThreadHistoryInvalidation.resetForTesting()
 
-        // One compactable row among 1_249 preserved `user.message` rows, so the
-        // delete and the backdated summary cancel out and the transcript stays
-        // wider than a single page after compaction.
-        let strandedPayload = "tool call the compaction deletes"
+        // The summary adds a backdated row to an already expanded transcript.
+        let strandedPayload = "tool call retained through summarization"
         let stranded = TaskEvent(task: task, type: "tool.call", payload: strandedPayload)
         stranded.timestamp = Date(timeIntervalSince1970: 10)
         context.insert(stranded)
@@ -931,20 +929,18 @@ struct StorageBackedTaskThreadViewModelTests {
 
         AgentEventCompactor.compactEvents(for: task, modelContext: context)
         try context.save()
-        #expect(task.events.count == 1_250)
+        #expect(task.events.count == 1_251)
 
         viewModel.requestSnapshotRefresh(for: task)
         await viewModel.waitForPendingWorkForTesting()
 
         let events = viewModel.snapshot?.sortedEvents ?? []
-        // The announced mutation still has to drop the deleted row and surface
-        // the backdated summary — the untrusted read replaces rather than
-        // merges.
-        #expect(!events.contains { $0.payload == strandedPayload })
+        // Refresh must surface the backdated summary and preserve the evidence.
+        #expect(events.contains { $0.payload == strandedPayload })
         #expect(events.contains { $0.type == "activity.compacted" })
         // But replacing must not throw away the pages the user opened: nothing
         // they did triggered this read.
-        #expect(events.count == 1_250)
+        #expect(events.count == 1_251)
         #expect(!viewModel.hasEarlierHistory)
         #expect(events.contains { $0.payload == "message 1" })
     }

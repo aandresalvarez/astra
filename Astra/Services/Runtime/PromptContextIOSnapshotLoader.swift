@@ -6,9 +6,9 @@ import ASTRACore
 enum PromptContextIOSnapshotLoader {
     private static let maximumSnapshotReadBytes = 1_048_576
 
-    /// How much raw turn history a rebuilt follow-up prompt may carry. Runtimes
-    /// without provider-native session resume depend entirely on this window for
-    /// multi-turn coherence, so they get the wider preset.
+    /// How much raw turn history a rebuilt follow-up prompt may carry. Fresh
+    /// launches use the wider preset; only a verified native continuation can
+    /// rely on the smaller window.
     struct TranscriptWindow: Sendable, Equatable {
         var fileLimit: Int
         var fullOutputFileLimit: Int

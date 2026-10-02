@@ -629,11 +629,11 @@ public enum TaskContextStateManager {
         if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
             lines.append("- Objective reconciliation: \(boundedInline(divergence, maxCharacters: 320))")
         }
-        appendFactList("Constraints", state.constraints, to: &lines, limit: 6)
-        appendFactList("Acceptance criteria", state.acceptanceCriteria, to: &lines, limit: 6)
+        appendFactList("Constraints", state.constraints, to: &lines, limit: state.constraints.count)
+        appendFactList("Acceptance criteria", state.acceptanceCriteria, to: &lines, limit: state.acceptanceCriteria.count)
         appendFactList(
-            "Standing user instructions (recent follow-up directives; treat as binding unless superseded)",
-            state.standingInstructions ?? [],
+            "Standing user instructions (recent follow-up directives; newest first; treat as binding unless superseded)",
+            Array((state.standingInstructions ?? []).reversed()),
             to: &lines,
             limit: maxStandingInstructions
         )
@@ -688,12 +688,7 @@ public enum TaskContextStateManager {
             tail.append("- Read \(boundedFolder)/\(markdownFileName) or referenced turn outputs if this follow-up depends on older decisions, failures, changed files, or exact prior wording.")
         }
 
-        let body = lines.joined(separator: "\n")
-        let tailBlock = tail.joined(separator: "\n")
-        let bodyLimit = promptBlockCharacterLimit - tailBlock.count - 1
-        guard body.count > bodyLimit else { return body + "\n" + tailBlock }
-        let notice = "\n... (thread intent truncated)"
-        return String(body.prefix(max(0, bodyLimit - notice.count))) + notice + "\n" + tailBlock
+        return TaskContextPromptPriority.render(lines: lines, tail: tail.joined(separator: "\n"), limit: promptBlockCharacterLimit)
     }
 
     public static func promptDiagnosticsFields(task: AgentTask, prompt: String, phase: String) -> [String: String] {
