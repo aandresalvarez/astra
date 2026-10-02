@@ -233,18 +233,12 @@ final class AgentRuntimeWorker {
         alignTaskModelWithSelectedRuntime(launchTask, selectedRuntime: selectedRuntime, phase: "resume")
         // Live task — see the note at the "run" phase call site.
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
-        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
-            message: message,
-            task: launchTask,
-            executionPolicy: executionPolicy
-        )
         await executeRuntimeSession(
             task: task,
             launchTask: launchTask,
             modelContext: modelContext,
             selectedRuntime: selectedRuntime,
             onEvent: onEvent,
-            promptOverride: prompt,
             startEventType: "user.message",
             startEventPayload: message,
             existingStartEventID: existingMessageEventID,
@@ -624,7 +618,10 @@ final class AgentRuntimeWorker {
             workspaceAccess: executionWorkspaceAccess,
             approvedSandboxReadablePaths: approvedSandboxPaths)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
-        let basePrompt = promptOverride ?? buildPrompt(
+        let basePrompt = (auditPhase == .resume && approvedPlan == nil
+            ? AgentPromptBuilder.buildFreshFollowUpPrompt(message: sessionMessage ?? startPayload,
+                task: executionTask, executionPolicy: executionPolicy)
+            : promptOverride) ?? buildPrompt(
             for: executionTask,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
@@ -639,7 +636,7 @@ final class AgentRuntimeWorker {
             to: policyPrompt,
             repositoryStatus: githubRepositoryStatus
         )
-        let prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
+        var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: executionTask,
             runID: run.id,
@@ -661,19 +658,7 @@ final class AgentRuntimeWorker {
             runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
-        logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         let budgetEnforcementMode = currentBudgetEnforcementMode
-        guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
-            prompt: prompt,
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            phase: auditPhase,
-            runtime: selectedRuntime,
-            budgetEnforcementMode: budgetEnforcementMode
-        ) else {
-            return
-        }
         AgentRuntimeCapabilityLaunchAudit.logResolution(
             for: task,
             runtime: selectedRuntime,
@@ -734,6 +719,29 @@ final class AgentRuntimeWorker {
             modelContext: modelContext
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
+        // Compact only after this launch has proved native continuation safe.
+        // Fresh handoffs (including changed signatures) keep the wider context.
+        if auditPhase == .resume, approvedPlan == nil, nativeContinuationSessionID != nil {
+            prompt = AgentContinuationPrompt.build(message: sessionMessage ?? startPayload,
+                task: executionTask, executionPolicy: executionPolicy,
+                permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
+                repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment)
+        }
+        if runtimeCapabilityProfile.canDeliverHostControlPlane, appliedRuntime.requirements.offeredHostControlTools.contains("history") {
+            prompt += TaskHistoryRetrievalGuidance.prompt
+        }
+        logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
+        guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+            prompt: prompt,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            phase: auditPhase,
+            runtime: selectedRuntime,
+            budgetEnforcementMode: budgetEnforcementMode
+        ) else {
+            return
+        }
         if auditPhase == .resume {
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                 "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
@@ -776,6 +784,8 @@ final class AgentRuntimeWorker {
             modelContext.insert(skillEvent)
         }
 
+        HostControlBrokerSessionRegistry.shared.bindHistory(container: modelContext.container, taskID: task.id, runID: run.id)
+        defer { HostControlBrokerSessionRegistry.shared.unbindHistory(taskID: task.id, runID: run.id) }
         let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol

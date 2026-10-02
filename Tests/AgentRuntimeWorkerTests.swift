@@ -152,7 +152,7 @@ struct ProviderLaunchCapabilityScopeTests {
             .appendingPathComponent("AgentRuntimeWorker.swift")
         let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
         let preflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
-        let promptBuild = "let basePrompt = promptOverride ?? buildPrompt("
+        let promptBuild = "let basePrompt ="
         let providerLaunch = "processRunner.runRuntimeProcess"
         let preflightRange = try #require(workerSource.range(of: preflight))
         let promptBuildRange = try #require(workerSource.range(of: promptBuild))
@@ -767,10 +767,10 @@ struct CompactionSwiftDataTests {
         try ctx.save()
 
         let remaining = task.events
-        #expect(remaining.count == 51)
+        #expect(remaining.count == 251)
         let summary = remaining.first { $0.type == "activity.compacted" }
         #expect(summary != nil)
-        #expect(summary?.payload.contains("Compacted 200") == true)
+        #expect(summary?.payload.contains("200 older events") == true)
     }
 }
 
@@ -1400,12 +1400,11 @@ struct BuildPromptTests {
         #expect(extended.recentConversationTranscript?.text.contains("WINDOW_TURN_1_OUTPUT") == true)
         #expect(extended.recentConversationTranscript?.text.contains("WINDOW_TURN_9_OUTPUT") == true)
 
-        // Claude and Codex resume provider sessions natively; the rest depend
-        // entirely on the rebuilt prompt and get the wider window.
-        #expect(AgentPromptBuilder.continuityBudgetProfile(for: .claudeCode) == .standard)
-        #expect(AgentPromptBuilder.continuityBudgetProfile(for: .codexCLI) == .standard)
+        // Fresh prompts use the wider window even when the runtime supports resume.
+        #expect(AgentPromptBuilder.continuityBudgetProfile(for: .claudeCode) == .extendedTranscript)
+        #expect(AgentPromptBuilder.continuityBudgetProfile(for: .codexCLI) == .extendedTranscript)
         #expect(AgentPromptBuilder.continuityBudgetProfile(for: .cursorCLI) == .extendedTranscript)
-        #expect(AgentPromptBuilder.continuityTranscriptWindow(for: .claudeCode) == .standard)
+        #expect(AgentPromptBuilder.continuityTranscriptWindow(for: .claudeCode) == .extended)
         #expect(AgentPromptBuilder.continuityTranscriptWindow(for: .copilotCLI) == .extended)
         #expect(
             PromptContextBudgetProfile.extendedTranscript.recentTranscriptTokens
@@ -2424,58 +2423,6 @@ struct CardinalKeyClientCertificateTests {
 }
 
 // MARK: - AgentRuntimeProcessRunning fake-injection seam
-
-/// Records the parameters `AgentRuntimeWorker` hands to the injected process
-/// runner and returns a canned success — no real process ever spawns. Proves
-/// the `AgentRuntimeProcessRunning` seam is real: `AgentRuntimeWorker` depends
-/// on the protocol, not the concrete `AgentRuntimeProcessRunner`.
-final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
-    private(set) var receivedTaskIDs: [UUID] = []
-    private(set) var receivedWorkspacePaths: [String] = []
-    private(set) var receivedPrompts: [String] = []
-    var cancelCallCount = 0
-    var hostControlBrokerAvailable = true
-
-    func cancel() {
-        cancelCallCount += 1
-    }
-
-    func isHostControlBrokerAvailable() -> Bool {
-        hostControlBrokerAvailable
-    }
-
-    @MainActor
-    func runRuntimeProcess(
-        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
-        prompt: String,
-        task: AgentTask,
-        workspacePath: String,
-        executablePath: String,
-        homeDirectory: String,
-        permissionPolicy: PermissionPolicy,
-        executionPolicy: AgentRuntimeExecutionPolicy,
-        permissionManifest: RunPermissionManifest?,
-        budgetEnforcementMode: BudgetEnforcementMode,
-        timeoutSeconds: TimeInterval,
-        phase: RunPhase,
-        contextText: String,
-        nativeContinuationSessionID: String?,
-        runID: UUID?,
-        launchResourcePlan: TaskLaunchResourcePlan?,
-        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
-        runtimeRequirements: TaskRuntimeRequirementSet?,
-        liveApprovalsEnabled: Bool,
-        noSemanticProgressTimeoutSeconds: TimeInterval?,
-        maxRunSeconds: TimeInterval?,
-        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
-        onLine: @escaping (String, Bool) -> Void
-    ) async -> AgentProcessResult {
-        receivedTaskIDs.append(task.id)
-        receivedWorkspacePaths.append(workspacePath)
-        receivedPrompts.append(prompt)
-        return AgentProcessResult(exitCode: 0)
-    }
-}
 
 @Suite("AgentRuntimeWorker fake process runner")
 @MainActor

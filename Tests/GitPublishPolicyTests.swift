@@ -160,7 +160,7 @@ struct GitPublishPolicyTests {
         #expect(autoPlan.arguments.contains("Bash"))
         #expect(autoPlan.arguments.contains("--dangerously-skip-permissions"))
         #expect(autoManifest.mcpServers.contains {
-            $0.id == HostControlPlaneMCPProjection.serverID && $0.allowedTools == ["github"]
+            $0.id == HostControlPlaneMCPProjection.serverID && $0.allowedTools == ["github", "history"]
         })
 
         for enforcement in [ExecutionSandboxEnforcement.off, .bestEffort, .strict] {

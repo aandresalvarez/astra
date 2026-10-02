@@ -1743,7 +1743,7 @@ struct RunPermissionManifestTests {
         #expect(manifest.mcpServers.contains { server in
             server.packageID == "astra-builtin"
                 && server.id == HostControlPlaneMCPProjection.serverID
-                && server.allowedTools == ["github"]
+                && server.allowedTools == ["github", "history"]
         })
         #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
             descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
@@ -1787,7 +1787,7 @@ struct RunPermissionManifestTests {
             environment: DockerExecutionPlanner.resolveEnvironment(for: task),
             contextText: task.goal
         )
-        #expect(tools.isEmpty)
+        #expect(tools == ["history"])
 
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -1802,7 +1802,7 @@ struct RunPermissionManifestTests {
             modelContext: context
         )
 
-        #expect(!manifest.mcpServers.contains { $0.id == HostControlPlaneMCPProjection.serverID })
+        #expect(!manifest.mcpServers.contains { $0.id == HostControlPlaneMCPProjection.serverID && $0.allowedTools.contains("github") })
         #expect(!manifest.providerRender.runtimeSupportTools.contains {
             $0.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
         })
@@ -2450,7 +2450,7 @@ struct RunPermissionManifestTests {
         #expect(manifest.mcpServers.contains { server in
             server.packageID == "astra-builtin"
                 && server.id == HostControlPlaneMCPProjection.serverID
-                && server.allowedTools == ["github"]
+                && server.allowedTools == ["github", "history"]
         })
         #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
             descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
@@ -2579,14 +2579,15 @@ struct RunPermissionManifestTests {
             modelContext: context
         )
 
-        #expect(manifest.mcpServers.count == 1)
-        #expect(manifest.mcpServers.first?.packageID == package.id)
-        #expect(manifest.mcpServers.first?.id == "github")
-        #expect(manifest.mcpServers.first?.allowedTools == ["issues.list"])
-        #expect(manifest.mcpServers.first?.excludedTools == ["repo.delete"])
-        #expect(manifest.mcpServers.first?.resourcesEnabled == true)
-        #expect(manifest.mcpServers.first?.promptsEnabled == true)
-        #expect(manifest.mcpServers.first?.trustLevel == "high")
+        let catalogServer = try #require(manifest.mcpServers.first { $0.id == "github" })
+        #expect(manifest.mcpServers.count == 2)
+        #expect(catalogServer.packageID == package.id)
+        #expect(catalogServer.id == "github")
+        #expect(catalogServer.allowedTools == ["issues.list"])
+        #expect(catalogServer.excludedTools == ["repo.delete"])
+        #expect(catalogServer.resourcesEnabled == true)
+        #expect(catalogServer.promptsEnabled == true)
+        #expect(catalogServer.trustLevel == "high")
     }
 
     @Test("Copilot launch arguments drop local CLI grants at read-only policy levels")

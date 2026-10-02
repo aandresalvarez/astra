@@ -68,20 +68,30 @@ struct CompactionTests {
         // compactEvents would be a no-op — we verify the threshold logic
     }
 
-    @Test("Events above threshold would compact down")
-    func aboveThreshold() {
-        let total = 250
-        let threshold = AgentRuntimeWorker.compactionThreshold
-        let keepCount = AgentRuntimeWorker.compactionKeepCount
-
-        #expect(total > threshold)
-
-        let cutoff = total - keepCount
-        #expect(cutoff == 200) // 250 - 50 = 200 events to compact
-
-        // After compaction: 50 kept + 1 summary = 51 events
-        let afterCompaction = keepCount + 1
-        #expect(afterCompaction == 51)
+    @Test("Compaction retains all source rows and reuses its derived summary")
+    func aboveThreshold() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Retention", primaryPath: "/tmp/history-retention")
+        let task = AgentTask(title: "Task", goal: "Keep evidence", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        for index in 0..<250 {
+            let event = TaskEvent(task: task, type: "tool.result", payload: "exact result \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+        let originals = Dictionary(uniqueKeysWithValues: task.events.map { ($0.id, $0.payload) })
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+        #expect(task.events.count == 251)
+        #expect(task.events.filter { $0.type == "activity.compacted" }.count == 1)
+        for event in task.events where event.type != "activity.compacted" {
+            #expect(originals[event.id] == event.payload)
+        }
     }
 
     @Test("Summary generation from type counts")
@@ -174,7 +184,7 @@ struct CompactionTests {
         for type in preservedTypes {
             #expect(remainingEvents.contains { $0.type == type })
         }
-        #expect(!remainingEvents.contains { $0.type == "agent.response" && $0.payload == "event 10" })
+        #expect(remainingEvents.contains { $0.type == "agent.response" && $0.payload == "event 10" })
         #expect(remainingEvents.contains { $0.type == "activity.compacted" })
     }
 
@@ -212,7 +222,7 @@ struct CompactionTests {
         for item in preserved {
             #expect(remainingEvents.contains { $0.type == item.1 && $0.payload == item.2 })
         }
-        #expect(!remainingEvents.contains { $0.type == "agent.response" && $0.payload == "event 10" })
+        #expect(remainingEvents.contains { $0.type == "agent.response" && $0.payload == "event 10" })
         #expect(remainingEvents.contains { $0.type == "activity.compacted" })
     }
 
@@ -261,7 +271,7 @@ struct CompactionTests {
         #expect(remaining.contains { $0.type == TaskPlanEventTypes.approved })
         #expect(remaining.contains { $0.type == TaskValidationEventTypes.contractPassed })
         // …while ordinary old activity was compacted…
-        #expect(!remaining.contains { $0.type == "agent.response" && $0.payload == "event 0" })
+        #expect(remaining.contains { $0.type == "agent.response" && $0.payload == "event 0" })
         #expect(remaining.contains { $0.type == "activity.compacted" })
 
         // …so the plan still reconstructs as approved with the original goal,
@@ -488,14 +498,14 @@ struct CompactionTests {
         try context.save()
 
         let remaining = try context.fetch(FetchDescriptor<TaskEvent>())
-        #expect(!remaining.contains { $0.id == progress.id })
+        #expect(remaining.contains { $0.id == progress.id })
         #expect(remaining.contains { $0.id == boundary.id })
         #expect(remaining.contains { $0.id == finalOne.id })
         #expect(remaining.contains { $0.id == finalTwo.id })
         #expect(remaining.contains { $0.type == "activity.compacted" })
     }
 
-    @Test("Compaction does not preserve unbounded final response chunk streams")
+    @Test("Compaction retains complete final response chunk streams")
     func compactionDoesNotPreserveUnboundedFinalResponseChunkStreams() throws {
         let container = try makeCompactionTestContainer()
         let context = container.mainContext
@@ -534,10 +544,10 @@ struct CompactionTests {
         try context.save()
 
         let remaining = try context.fetch(FetchDescriptor<TaskEvent>())
-        #expect(!remaining.contains { $0.id == progress.id })
-        #expect(!remaining.contains { $0.id == boundary.id })
+        #expect(remaining.contains { $0.id == progress.id })
+        #expect(remaining.contains { $0.id == boundary.id })
         for event in finalChunks {
-            #expect(!remaining.contains { $0.id == event.id })
+            #expect(remaining.contains { $0.id == event.id })
         }
         #expect(remaining.contains { $0.type == "activity.compacted" })
     }

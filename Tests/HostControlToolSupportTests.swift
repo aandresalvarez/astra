@@ -207,7 +207,7 @@ struct HostControlToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
         let toolNames = Set(tools.compactMap { $0["name"] as? String })
-        #expect(toolNames == ["github", "gcloud", "bq", "ssh", "jira", "redcap"])
+        #expect(toolNames == ["github", "gcloud", "bq", "ssh", "jira", "redcap", "history"])
         let sshSchema = try #require(tools.first { $0["name"] as? String == "ssh" })
         let sshDescription = try #require(sshSchema["description"] as? String)
         #expect(sshDescription.contains("non-interactive"))
@@ -1427,7 +1427,7 @@ struct HostControlToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
 
-        for tool in tools {
+        for tool in tools where tool["name"] as? String != "history" {
             let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
             let properties = try #require(inputSchema["properties"] as? [String: Any])
             let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
@@ -1450,7 +1450,7 @@ struct HostControlToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
 
-        for tool in tools {
+        for tool in tools where tool["name"] as? String != "history" {
             let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
             let properties = try #require(inputSchema["properties"] as? [String: Any])
             let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
@@ -1471,7 +1471,7 @@ struct HostControlToolSupportTests {
         let listResult = try #require(list["result"] as? [String: Any])
         let tools = try #require(listResult["tools"] as? [[String: Any]])
 
-        for tool in tools {
+        for tool in tools where tool["name"] as? String != "history" {
             let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
             let properties = try #require(inputSchema["properties"] as? [String: Any])
             let timeout = try #require(properties["timeout_seconds"] as? [String: Any])

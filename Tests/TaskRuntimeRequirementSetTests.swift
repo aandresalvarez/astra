@@ -109,8 +109,8 @@ struct TaskRuntimeRequirementSetTests {
         // launch-time resolvedServer/enabledToolNames still attached the
         // server with all 5 tools — render and launch silently disagreeing in
         // Docker mode specifically.
-        #expect(requirements.hostControlTools == HostControlPlaneMCPProjection.toolNames)
-        #expect(requirements.hostControlTools == HostControlPlaneMCPProjection.enabledToolNames(
+        #expect(requirements.hostControlTools == HostControlPlaneMCPProjection.toolNames.filter { $0 != "history" })
+        #expect(requirements.offeredHostControlTools == HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: environment,
             contextText: "Run tests"

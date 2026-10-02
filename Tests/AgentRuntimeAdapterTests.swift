@@ -1329,9 +1329,9 @@ struct AgentRuntimeAdapterTests {
             ))
 
         let visibleToolsIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
-        #expect(plan.arguments[visibleToolsIndex + 1] == "Read,Write")
+        #expect(plan.arguments[visibleToolsIndex + 1] == "Read,Write,mcp__astra_host__history")
         let allowedTools = Set(Self.argumentValues(after: "--allowedTools", in: plan.arguments))
-        #expect(allowedTools == ["Read"])
+        #expect(allowedTools == ["Read", "mcp__astra_host__history"])
     }
 
     // MARK: - Cross-provider manifest-render authority (all 6 providers)
@@ -1810,7 +1810,7 @@ struct AgentRuntimeAdapterTests {
         let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
 
         #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
-        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "3")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
@@ -1874,7 +1874,7 @@ struct AgentRuntimeAdapterTests {
         let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
 
         #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
-        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "false")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
         #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
@@ -2007,17 +2007,17 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["ask_first_tool_count"] == "3")
         #expect(plan.commandPlannedFields["ask_first_tool_names"] == "Bash,Edit,Write")
         #expect(plan.commandPlannedFields["uses_visible_tools_filter"] == "true")
-        #expect(plan.commandPlannedFields["visible_tools_count"] == "4")
-        #expect(plan.commandPlannedFields["visible_tool_names"] == "Bash,Edit,Read,Write")
+        #expect(plan.commandPlannedFields["visible_tools_count"] == "5")
+        #expect(plan.commandPlannedFields["visible_tool_names"] == "Bash,Edit,Read,Write,mcp__astra_host__history")
         #expect(plan.commandPlannedFields["artifact_bootstrap_profile"] == "true")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "1")
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_names"] == "Write")
-        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "4")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "5")
         #expect(plan.commandPlannedFields["launch_effort"] == "low")
         let effortFlagIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
         #expect(plan.arguments[effortFlagIndex + 1] == "low")
         let toolsFlagIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
-        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write")
+        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write,mcp__astra_host__history")
         #expect(!plan.arguments[toolsFlagIndex + 1].contains("TaskCreate"))
         #expect(plan.arguments.contains("--allowedTools"))
         #expect(plan.arguments.contains("Read"))
@@ -2285,7 +2285,7 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.arguments.contains("--permission-prompt-tool"))
         // …ask-first tools stay visible so the model can still invoke them…
         let toolsFlagIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
-        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write")
+        #expect(plan.arguments[toolsFlagIndex + 1] == "Bash,Edit,Read,Write,mcp__astra_host__history")
         // …but are NOT pre-allowed (separate --allowedTools args), so the
         // provider must ask before running them. Read stays allowed.
         #expect(plan.arguments.contains("--allowedTools"))
@@ -2293,7 +2293,7 @@ struct AgentRuntimeAdapterTests {
         #expect(!plan.arguments.contains("Bash"))
         #expect(!plan.arguments.contains("Edit"))
         #expect(!plan.arguments.contains("Write"))
-        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "1")
+        #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
         #expect(plan.commandPlannedFields["uses_live_approvals"] == "true")
 
         // The generated settings.local.json must not pre-allow ask-first tools
@@ -3094,7 +3094,7 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["host_control_plane_supported"] == "false")
         #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "host_control_plane_unsupported_runtime")
         #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("--additional-mcp-config") == true)
-        #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github,history")
         #expect(plan.environment["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"] == workspace.primaryPath)
         // Anything a broker must not return inline goes to the task folder, not
         // the working directory: the working directory is usually a git
@@ -3157,7 +3157,7 @@ struct AgentRuntimeAdapterTests {
             ))
 
         #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
-        #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github,history")
         #expect(plan.arguments.contains("--additional-mcp-config"))
         let joinedArguments = plan.arguments.joined(separator: " ")
         #expect(joinedArguments.contains("astra_host-github"))
