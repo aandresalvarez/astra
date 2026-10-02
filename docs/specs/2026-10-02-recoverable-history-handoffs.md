@@ -29,6 +29,14 @@ ID. Model, runtime, policy, or resource changes that invalidate continuation
 therefore receive the wider rebuilt context. Budget enforcement and context
 diagnostics apply to the final prompt sent to the provider.
 
+Rejected preflight attempts do not record a provider launch signature or inherit
+a provider session ID. After admission, the worker pairs the signature with the
+native session selected for that launch; a fresh launch receives its new session
+ID from the provider's start event. Raising the budget after a rejected model or
+policy change therefore cannot make the old session appear compatible. A failed
+fresh launch that never reports a session likewise cannot replace the old
+session's recorded settings.
+
 The capsule reserves room for current objective, newest user instructions,
 constraints, acceptance criteria, unfinished work, and verification before
 optional historical sections. Instructions are labeled newest first; omitted

@@ -392,6 +392,8 @@ final class AgentRuntimeWorker {
 
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
+        // A new attempt does not yet own the task's previous provider session.
+        run.providerSessionId = nil
         modelContext.insert(run)
         // Link the event to its run BEFORE the running-state save below, so
         // the same save durably persists both facts together. No later save
@@ -712,12 +714,6 @@ final class AgentRuntimeWorker {
             currentLaunchSignature: launchSignature,
             grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest)
         )
-        ProviderLaunchSignatureService.record(
-            launchSignature,
-            task: task,
-            run: run,
-            modelContext: modelContext
-        )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
@@ -798,6 +794,10 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             idleTimeoutSeconds: timeoutSeconds
         )
+        // Record only admitted attempts, paired with the session this launch uses.
+        // Fresh launches acquire their session ID from the provider's start event.
+        run.providerSessionId = nativeContinuationSessionID
+        ProviderLaunchSignatureService.record(launchSignature, task: task, run: run, modelContext: modelContext)
         let result = await processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: prompt,

@@ -16,6 +16,7 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
     var onLaunch: ((AgentTask, UUID?) -> Void)?
     var cancelCallCount = 0
     var hostControlBrokerAvailable = true
+    var result = AgentProcessResult(exitCode: 0)
 
     func cancel() {
         cancelCallCount += 1
@@ -57,6 +58,6 @@ final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
         receivedNativeSessions.append(nativeContinuationSessionID)
         onLaunch?(task, runID)
         for line in streamLines { onLine(line, true) }
-        return AgentProcessResult(exitCode: 0)
+        return result
     }
 }
