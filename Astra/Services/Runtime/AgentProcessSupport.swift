@@ -698,7 +698,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         }
 
-        if let signature = Self.repetitionSignature(parsed) {
+        if let signature = Self.repetitionSignature(parsed, toolNameForResult: { toolUseContextsByID[$0]?.name }) {
             if signature == lastEventSignature {
                 repetitionCount += 1
                 if repetitionCount >= maxRepetitions {
