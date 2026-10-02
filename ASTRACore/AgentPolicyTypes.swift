@@ -814,14 +814,16 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
 
     private static func providerInputKeys(from input: [String: Any]?) -> [String] {
         guard let input else { return [] }
+        // The repetition fingerprint is ASTRA's, not a key the provider sent.
+        let providerKeys = input.keys.filter { $0 != ToolInputFingerprint.key }
         if let summary = input["summary"] as? String,
            let summaryObject = jsonDictionary(from: summary) {
-            let nonSummaryKeys = input.keys.filter { $0 != "summary" }
+            let nonSummaryKeys = providerKeys.filter { $0 != "summary" }
             if nonSummaryKeys.isEmpty {
                 return normalizedInputKeys(Array(summaryObject.keys))
             }
         }
-        return normalizedInputKeys(Array(input.keys))
+        return normalizedInputKeys(Array(providerKeys))
     }
 
     private static func normalizedInputKeys(_ keys: [String]) -> [String] {
