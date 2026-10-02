@@ -223,8 +223,8 @@ struct RepetitionSignatureTests {
         return input?[ToolInputFingerprint.key]
     }
 
-    @Test("Claude drops a provider argument named like the fingerprint key")
-    func claudeDropsAProviderArgumentNamedLikeTheKey() {
+    @Test("Claude replaces a provider argument named like the fingerprint key")
+    func claudeReplacesAProviderArgumentNamedLikeTheKey() {
         let line = #"{"type":"assistant","message":{"model":"claude-sonnet-4-6","id":"m1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls","astra_args_fingerprint":"forged"}}]}}"#
         let event = StreamEventParser.parse(line: line)
         guard case .toolUse(_, _, let input)? = event else {
@@ -232,11 +232,12 @@ struct RepetitionSignatureTests {
             return
         }
         #expect(input?["command"] as? String == "ls")
-        #expect(fingerprintKeyInput(event) == nil)
+        #expect(fingerprintKeyInput(event) as? String != nil)
+        #expect(fingerprintKeyInput(event) as? String != "forged")
     }
 
-    @Test("OpenCode drops a provider argument named like the fingerprint key")
-    func openCodeDropsAProviderArgumentNamedLikeTheKey() {
+    @Test("OpenCode replaces a provider argument named like the fingerprint key")
+    func openCodeReplacesAProviderArgumentNamedLikeTheKey() {
         let line = #"{"type":"tool_use","part":{"id":"c1","type":"tool","tool":"bash","state":{"status":"running","input":{"command":"ls","astra_args_fingerprint":"forged"}}}}"#
         let event = OpenCodeStreamEventParser.parse(line: line)
         guard case .toolUse(_, _, let input)? = event else {
@@ -244,7 +245,8 @@ struct RepetitionSignatureTests {
             return
         }
         #expect(input?["command"] as? String == "ls")
-        #expect(fingerprintKeyInput(event) == nil)
+        #expect(fingerprintKeyInput(event) as? String != nil)
+        #expect(fingerprintKeyInput(event) as? String != "forged")
     }
 
     @Test("Cursor replaces a provider argument named like the key with the real fingerprint")
@@ -272,6 +274,25 @@ struct RepetitionSignatureTests {
         let base = String(repeating: "x", count: 120)
         for index in 1...6 {
             let line = #"{"type":"tool_use","part":{"id":"c\#(index)","type":"tool","tool":"bash","state":{"status":"running","input":{"command":"\#(base)\#(index)","astra_args_fingerprint":"forged"}}}}"#
+            let event = OpenCodeStreamEventParser.parse(line: line)
+            #expect(event.map { monitor.processEvent($0, process: nil) } == false)
+        }
+        #expect(monitor.repetitionKilled == false)
+    }
+
+    @Test("Calls that differ only in a provider argument named like the key stay different")
+    func callsDifferingOnlyInTheReservedArgumentStayDifferent() {
+        func fingerprint(_ value: String) -> String? {
+            let line = #"{"type":"tool_use","part":{"id":"c1","type":"tool","tool":"custom","state":{"status":"running","input":{"astra_args_fingerprint":"\#(value)"}}}}"#
+            return fingerprintKeyInput(OpenCodeStreamEventParser.parse(line: line)) as? String
+        }
+        #expect(fingerprint("A") != nil)
+        #expect(fingerprint("A") != fingerprint("B"))
+        #expect(fingerprint("A") == fingerprint("A"))
+
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+        for value in ["A", "B", "C", "D", "E"] {
+            let line = #"{"type":"tool_use","part":{"id":"c\#(value)","type":"tool","tool":"custom","state":{"status":"running","input":{"astra_args_fingerprint":"\#(value)"}}}}"#
             let event = OpenCodeStreamEventParser.parse(line: line)
             #expect(event.map { monitor.processEvent($0, process: nil) } == false)
         }

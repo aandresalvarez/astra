@@ -129,8 +129,9 @@ public enum CursorStreamEventParser {
         case "started":
             // The file body a write streams is not a summary of the call.
             let rawArgs = call["args"] as? [String: Any] ?? [:]
-            var args = ToolInputFingerprint.removingReservedKey(from: rawArgs.filter { !bulkyArgumentKeys.contains($0.key) }) ?? [:]
-            // What is dropped above is exactly what tells two edits apart.
+            var args = rawArgs.filter { !bulkyArgumentKeys.contains($0.key) }
+            // What is dropped above is exactly what tells two edits apart. This
+            // also replaces any provider-sent argument of the same name.
             args[ToolInputFingerprint.key] = ToolInputFingerprint.of(rawArgs)
             return [.toolUse(name: name, id: id, input: args)]
         case "completed":
