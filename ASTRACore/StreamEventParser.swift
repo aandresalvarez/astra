@@ -452,11 +452,11 @@ public enum StreamEventParser {
             }
             let msgType = input?["type"] as? String ?? "message"
             if msgType == "shutdown_request" {
-                return .toolUse(name: name, id: id, input: input)
+                return .toolUse(name: name, id: id, input: ToolInputFingerprint.removingReservedKey(from: input))
             }
             return .teamMessage(from: "lead", to: to, content: msgContent)
         default:
-            return .toolUse(name: name, id: id, input: input)
+            return .toolUse(name: name, id: id, input: ToolInputFingerprint.removingReservedKey(from: input))
         }
     }
 

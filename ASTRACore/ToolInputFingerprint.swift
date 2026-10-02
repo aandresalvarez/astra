@@ -12,6 +12,18 @@ public enum ToolInputFingerprint {
     /// Policy and display code ignore it.
     public static let key = "astra_args_fingerprint"
 
+    /// A provider's own tool input without any argument that happens to be
+    /// named like the fingerprint key. The key is ASTRA's, so a parser drops a
+    /// provider-sent one before the input enters the event stream, where the
+    /// monitor would otherwise trust its value as a fingerprint. (A parser that
+    /// computes the fingerprint hashes the raw arguments, so the dropped value
+    /// still counts toward it.)
+    public static func removingReservedKey(from input: [String: Any]?) -> [String: Any]? {
+        guard var input, input[key] != nil else { return input }
+        input.removeValue(forKey: key)
+        return input
+    }
+
     /// FNV-1a over a canonical rendering, so key order does not matter and every
     /// character counts, unlike the prefix a readable signature keeps.
     public static func of(_ value: Any?) -> String {

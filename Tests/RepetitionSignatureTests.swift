@@ -215,4 +215,66 @@ struct RepetitionSignatureTests {
         }
         #expect(identical.repetitionKilled == true)
     }
+
+    // MARK: - Provider-sent arguments named like the fingerprint key
+
+    private func fingerprintKeyInput(_ event: ParsedEvent?) -> Any? {
+        guard case .toolUse(_, _, let input)? = event else { return nil }
+        return input?[ToolInputFingerprint.key]
+    }
+
+    @Test("Claude drops a provider argument named like the fingerprint key")
+    func claudeDropsAProviderArgumentNamedLikeTheKey() {
+        let line = #"{"type":"assistant","message":{"model":"claude-sonnet-4-6","id":"m1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls","astra_args_fingerprint":"forged"}}]}}"#
+        let event = StreamEventParser.parse(line: line)
+        guard case .toolUse(_, _, let input)? = event else {
+            Issue.record("Expected a tool use")
+            return
+        }
+        #expect(input?["command"] as? String == "ls")
+        #expect(fingerprintKeyInput(event) == nil)
+    }
+
+    @Test("OpenCode drops a provider argument named like the fingerprint key")
+    func openCodeDropsAProviderArgumentNamedLikeTheKey() {
+        let line = #"{"type":"tool_use","part":{"id":"c1","type":"tool","tool":"bash","state":{"status":"running","input":{"command":"ls","astra_args_fingerprint":"forged"}}}}"#
+        let event = OpenCodeStreamEventParser.parse(line: line)
+        guard case .toolUse(_, _, let input)? = event else {
+            Issue.record("Expected a tool use")
+            return
+        }
+        #expect(input?["command"] as? String == "ls")
+        #expect(fingerprintKeyInput(event) == nil)
+    }
+
+    @Test("Cursor replaces a provider argument named like the key with the real fingerprint")
+    func cursorReplacesAProviderArgumentNamedLikeTheKey() throws {
+        func fingerprint(_ forged: String, body: String) throws -> String? {
+            let frame = try line([
+                "type": "tool_call", "subtype": "started", "call_id": "c1",
+                "tool_call": ["editToolCall": ["args": [
+                    "path": "/w/a.md", "streamContent": body, ToolInputFingerprint.key: forged
+                ]]]
+            ])
+            return fingerprintKeyInput(CursorStreamEventParser.parseAll(line: frame).first) as? String
+        }
+        let first = try fingerprint("forged-1", body: "one")
+        // The forged value is never the fingerprint, and calls that differ only
+        // in the body still differ.
+        #expect(first != nil)
+        #expect(first != "forged-1")
+        #expect(first != (try fingerprint("forged-1", body: "two")))
+    }
+
+    @Test("A forged fingerprint cannot group calls that differ past the readable prefix")
+    func forgedFingerprintCannotGroupDifferentCalls() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max, maxRepetitions: 3)
+        let base = String(repeating: "x", count: 120)
+        for index in 1...6 {
+            let line = #"{"type":"tool_use","part":{"id":"c\#(index)","type":"tool","tool":"bash","state":{"status":"running","input":{"command":"\#(base)\#(index)","astra_args_fingerprint":"forged"}}}}"#
+            let event = OpenCodeStreamEventParser.parse(line: line)
+            #expect(event.map { monitor.processEvent($0, process: nil) } == false)
+        }
+        #expect(monitor.repetitionKilled == false)
+    }
 }
