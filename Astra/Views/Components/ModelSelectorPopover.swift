@@ -552,34 +552,12 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
     }
 
     private var reasoningControl: some View {
-        HStack(spacing: 2) {
-            ForEach(reasoningChoices) { choice in
-                Button {
-                    if !choice.isSelected {
-                        begin(ModelSelectorTelemetry.reasoningPickEvent, target: choice.id)
-                    }
-                    choice.select()
-                } label: {
-                    Text(choice.title)
-                        .font(Stanford.ui(12, weight: choice.isSelected ? .medium : .regular))
-                        .foregroundStyle(choice.isSelected ? Color.primary : Color.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                                .fill(choice.isSelected ? Color.primary.opacity(0.10) : Color.clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(choice.isSelected ? .isSelected : [])
+        ReasoningLevelStrip(choices: reasoningChoices) { choice in
+            if !choice.isSelected {
+                begin(ModelSelectorTelemetry.reasoningPickEvent, target: choice.id)
             }
+            choice.select()
         }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        )
     }
 }
 
