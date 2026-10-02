@@ -290,9 +290,10 @@ struct ModelSelectorPresentationTests {
         #expect(codexCatalog().resolvedReasoningEffort("", model: "narrow", runtime: .codexCLI) == nil)
     }
 
-    @Test("the footer is labelled with the model it applies to")
-    func selectedModelTitleNamesTheCurrentModel() {
-        #expect(codexCatalog(model: "narrow").selectedModelTitle == "Narrow")
+    @Test("the footer states PHI approval briefly, in the user's own terms")
+    func footerPHILabelIsShort() {
+        #expect(ModelSelectorPresentation.sensitiveDataFooterLabel(approved: true) == "Approved for PHI")
+        #expect(ModelSelectorPresentation.sensitiveDataFooterLabel(approved: false) == "Not approved for PHI")
     }
 
     // MARK: - Speed

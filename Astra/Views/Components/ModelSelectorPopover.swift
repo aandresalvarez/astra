@@ -306,7 +306,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         }
         return VStack(alignment: .leading, spacing: 0) {
             searchField(placeholder: "Search \(provider.title)")
-            sensitiveDataStatus(for: provider)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
@@ -333,35 +332,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
                 }
             }
         }
-    }
-
-    /// One quiet line under the search field saying whose call approval is
-    /// and what it means, with the way to change it. Approved reads as a
-    /// positive state; not approved stays muted so it informs without alarming.
-    private func sensitiveDataStatus(for provider: ModelSelectorProviderRow) -> some View {
-        let approved = provider.approvesSensitiveData
-        return HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: approved ? "checkmark.shield.fill" : "shield")
-                .font(Stanford.ui(11))
-                .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.tertiary))
-            Text(ModelSelectorPresentation.sensitiveDataDetail(approved: approved))
-                .font(Stanford.caption(12))
-                .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.secondary))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            Button(ModelSelectorPresentation.sensitiveDataChangeAction) {
-                onSetup()
-                dismiss()
-            }
-            .buttonStyle(.link)
-            .font(Stanford.caption(12))
-            .accessibilityLabel("Change PHI approval in Settings")
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 6)
-        .help(approved
-            ? ModelSelectorPresentation.sensitiveDataApprovedHelp
-            : ModelSelectorPresentation.sensitiveDataNotApprovedHelp)
     }
 
     private func searchField(placeholder: String) -> some View {
@@ -517,12 +487,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
                     reasoningControl
                 }
                 Spacer(minLength: 8)
-                if let title = selectedModelLabel {
-                    Text(title)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+                sensitiveDataFooter
             }
             // Same height with or without levels, so the popover never jumps.
             .frame(height: 28)
@@ -541,14 +506,39 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// What the reasoning row applies to. It always follows the selection,
-    /// so while another provider is being browsed it names the selection's
-    /// provider too.
-    private var selectedModelLabel: String? {
-        guard let model = catalog.selectedModelTitle else { return nil }
-        guard browsing != catalog.currentRuntime,
-              let provider = providers.first(where: \.isCurrent) else { return model }
-        return "\(provider.title) · \(model)"
+    /// Whether the selected provider is approved for PHI, with the way to
+    /// change it. Approval is the user's label, never an ASTRA verdict. It names
+    /// the provider while another is being browsed, since the list then
+    /// describes something else.
+    @ViewBuilder
+    private var sensitiveDataFooter: some View {
+        if let provider = providers.first(where: \.isCurrent) {
+            let approved = provider.approvesSensitiveData
+            HStack(spacing: 6) {
+                if browsing != catalog.currentRuntime {
+                    Text("\(provider.title) ·")
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .layoutPriority(-1)
+                }
+                Image(systemName: approved ? "checkmark.shield.fill" : "shield")
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.tertiary))
+                Text(ModelSelectorPresentation.sensitiveDataFooterLabel(approved: approved))
+                    .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                Button(ModelSelectorPresentation.sensitiveDataChangeAction) {
+                    onSetup()
+                    dismiss()
+                }
+                .buttonStyle(.link)
+                .accessibilityLabel("Change PHI approval in Settings")
+            }
+            .font(Stanford.caption(11))
+            .help(approved
+                ? ModelSelectorPresentation.sensitiveDataApprovedHelp
+                : ModelSelectorPresentation.sensitiveDataNotApprovedHelp)
+        }
     }
 
     private var reasoningControl: some View {

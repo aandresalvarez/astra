@@ -123,12 +123,10 @@ enum ModelSelectorPresentation {
         approved ? "Approved for PHI and sensitive data" : "Not approved for PHI or sensitive data"
     }
 
-    /// The detail pane's line: who made the call, and what it means in
-    /// practice. Approval is the user's label, never an ASTRA verdict.
-    static func sensitiveDataDetail(approved: Bool) -> String {
-        approved
-            ? "Approved for PHI and sensitive data. Marked by you."
-            : "Not approved for PHI. Don't use it with patient data."
+    /// The footer's short line for the selected provider. Approval is the
+    /// user's label, never an ASTRA verdict.
+    static func sensitiveDataFooterLabel(approved: Bool) -> String {
+        approved ? "Approved for PHI" : "Not approved for PHI"
     }
 
     static let sensitiveDataChangeAction = "Change"
@@ -257,12 +255,6 @@ final class ModelSelectorCatalog {
             runtime: runtime,
             cache: cache
         )
-    }
-
-    /// Title of the model the current selection resolves to, for labelling
-    /// controls (like reasoning) that apply to it.
-    var selectedModelTitle: String? {
-        rows(for: currentRuntime).first(where: \.isSelected)?.title
     }
 
     /// The rail's count, without building presentation rows for providers the
