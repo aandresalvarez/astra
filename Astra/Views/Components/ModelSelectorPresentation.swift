@@ -110,6 +110,16 @@ enum ModelSelectorPresentation {
         approved ? "Approved for PHI" : "Not approved for PHI"
     }
 
+    /// Whether the footer names the runtime its PHI status is about: when it is
+    /// not the provider the list is showing, or not the one the chip selects.
+    static func namesSensitiveDataRuntime(
+        submission: AgentRuntimeID,
+        browsing: AgentRuntimeID,
+        selected: AgentRuntimeID
+    ) -> Bool {
+        submission != browsing || submission != selected
+    }
+
     static let sensitiveDataChangeAction = "Change"
     static let sensitiveDataApprovedHelp = "You marked this provider as approved for PHI and sensitive data in Settings > Runtime. ASTRA does not verify it."
     static let sensitiveDataNotApprovedHelp = "Not approved for PHI or sensitive data. Mark it approved in Settings > Runtime once your organization allows it."

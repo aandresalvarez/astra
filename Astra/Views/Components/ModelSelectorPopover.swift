@@ -24,6 +24,10 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
     let reasoningChoices: [ModelSelectorReasoningChoice]
     let suggestion: ModelSelectorSuggestion?
     let showsBudgetFooter: Bool
+    /// The runtime the message is submitted to. A worker role profile can make
+    /// it differ from the selected provider, and it is the one whose PHI
+    /// approval matters, as on the composer chip.
+    let sensitiveDataRuntime: AgentRuntimeID
     let onSelect: (AgentRuntimeID, String) -> Void
     let onSetup: () -> Void
     /// Uptime (ns) of the chip click that opened this popover, for the
@@ -43,6 +47,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         reasoningChoices: [ModelSelectorReasoningChoice],
         suggestion: ModelSelectorSuggestion?,
         showsBudgetFooter: Bool,
+        sensitiveDataRuntime: AgentRuntimeID,
         onSelect: @escaping (AgentRuntimeID, String) -> Void,
         onSetup: @escaping () -> Void,
         openedAt: UInt64? = nil,
@@ -53,6 +58,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         self.reasoningChoices = reasoningChoices
         self.suggestion = suggestion
         self.showsBudgetFooter = showsBudgetFooter
+        self.sensitiveDataRuntime = sensitiveDataRuntime
         self.onSelect = onSelect
         self.onSetup = onSetup
         self.openedAt = openedAt
@@ -466,16 +472,19 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Whether the selected provider is approved for PHI, with the way to
-    /// change it. Approval is the user's label, never an ASTRA verdict. It names
-    /// the provider while another is being browsed, since the list then
-    /// describes something else.
+    /// Whether the runtime the message goes to is approved for PHI, with the
+    /// way to change it. Approval is the user's label, never an ASTRA verdict.
+    /// It names that runtime whenever it is not the one the list shows.
     @ViewBuilder
     private var sensitiveDataFooter: some View {
-        if let provider = providers.first(where: \.isCurrent) {
+        if let provider = providers.first(where: { $0.runtime == sensitiveDataRuntime }) {
             let approved = provider.approvesSensitiveData
             HStack(spacing: 6) {
-                if browsing != catalog.currentRuntime {
+                if ModelSelectorPresentation.namesSensitiveDataRuntime(
+                    submission: sensitiveDataRuntime,
+                    browsing: browsing,
+                    selected: catalog.currentRuntime
+                ) {
                     Text("\(provider.title) ·")
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

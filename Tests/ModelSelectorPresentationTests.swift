@@ -114,6 +114,17 @@ struct ModelSelectorPresentationTests {
             == "Not approved for PHI or sensitive data")
     }
 
+    @Test("the footer names its runtime unless it is both what the list shows and what the chip selects")
+    func footerNamesItsRuntimeWhenItIsNotTheOneShown() {
+        let names = ModelSelectorPresentation.namesSensitiveDataRuntime
+        #expect(!names(.codexCLI, .codexCLI, .codexCLI))
+        // Browsing another provider's models.
+        #expect(names(.codexCLI, .claudeCode, .codexCLI))
+        // A role profile sends the message somewhere other than the selection.
+        #expect(names(.claudeCode, .codexCLI, .codexCLI))
+        #expect(names(.claudeCode, .claudeCode, .codexCLI))
+    }
+
     @Test("a model picked with a runtime switch wins, and the previous model is kept for the log")
     func runtimeSwitchHonorsTheRequestedModel() {
         let cache = antigravityCache()
