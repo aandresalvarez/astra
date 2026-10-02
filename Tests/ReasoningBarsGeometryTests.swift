@@ -33,4 +33,13 @@ struct ReasoningBarsGeometryTests {
         #expect(ReasoningBarsGeometry.index(atX: 500, count: 8) == 7)
         #expect(ReasoningBarsGeometry.index(atX: 5, count: 0) == 0)
     }
+
+    @Test("A stale hover or drag index is dropped once the levels shrink")
+    func staleIndexIsDropped() {
+        #expect(ReasoningBarsGeometry.valid(7, count: 8) == 7)
+        #expect(ReasoningBarsGeometry.valid(7, count: 2) == nil)
+        #expect(ReasoningBarsGeometry.valid(-1, count: 8) == nil)
+        #expect(ReasoningBarsGeometry.valid(0, count: 0) == nil)
+        #expect(ReasoningBarsGeometry.valid(nil, count: 8) == nil)
+    }
 }

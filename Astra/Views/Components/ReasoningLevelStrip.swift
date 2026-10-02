@@ -19,6 +19,13 @@ enum ReasoningBarsGeometry {
         return minBarHeight + step * CGFloat(index)
     }
 
+    /// An index that may be stale (a hover or drag kept across a change in the
+    /// model's levels), kept only if it still names a bar.
+    static func valid(_ index: Int?, count: Int) -> Int? {
+        guard let index, (0..<count).contains(index) else { return nil }
+        return index
+    }
+
     /// The bar a horizontal position falls on. The gap after a bar belongs to
     /// it, and positions past either end clamp to the nearest bar.
     static func index(atX x: CGFloat, count: Int) -> Int {
@@ -49,12 +56,14 @@ struct ReasoningLevelStrip: View {
 
     /// What the bars show: the level being dragged to, else the chosen one.
     private var shownIndex: Int? {
-        dragIndex ?? selectedIndex
+        ReasoningBarsGeometry.valid(dragIndex, count: choices.count) ?? selectedIndex
     }
 
     /// What the name shows: a drag or hover preview wins over the chosen level.
     private var namedIndex: Int? {
-        dragIndex ?? hoverIndex ?? selectedIndex
+        ReasoningBarsGeometry.valid(dragIndex, count: choices.count)
+            ?? ReasoningBarsGeometry.valid(hoverIndex, count: choices.count)
+            ?? selectedIndex
     }
 
     var body: some View {
@@ -103,8 +112,8 @@ struct ReasoningLevelStrip: View {
                 .onEnded { value in
                     let index = ReasoningBarsGeometry.index(atX: value.location.x, count: choices.count)
                     dragIndex = nil
-                    let choice = choices[index]
-                    if !choice.isSelected { onPick(choice) }
+                    guard choices.indices.contains(index), !choices[index].isSelected else { return }
+                    onPick(choices[index])
                 }
         )
     }
