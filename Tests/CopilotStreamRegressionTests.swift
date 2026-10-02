@@ -280,6 +280,55 @@ struct CopilotStreamRegressionTests {
         #expect(monitor.repetitionKilled == false)
     }
 
+    @Test("A parallel batch of distinct edits to one file is not a repetition loop")
+    func parallelEditsToOneFileDoNotTripRepetition() throws {
+        // One assistant message asked for nine different edits to the same
+        // file (task 5C892B2E, 2026-10-02). Copilot starts them together and
+        // each answers "File <path> updated with changes.", so the monitor
+        // saw nine identical-looking starts, then nine identical results.
+        let path = "/Users/alvaro1/Documents/Astra/Workspaces/starrdocs/.astra/tasks/5C892B2E/plan.md"
+        let ids = (1...9).map { "toolu_edit_\($0)" }
+        let startLines = try ids.enumerated().map { index, id in
+            try jsonLine([
+                "type": "tool.execution_start",
+                "data": [
+                    "toolCallId": id,
+                    "toolName": "edit",
+                    "arguments": [
+                        "path": path,
+                        "old_str": "section \(index) before",
+                        "new_str": "section \(index) after, rewritten"
+                    ]
+                ]
+            ])
+        }
+        let completeLines = try ids.map { id in
+            try jsonLine([
+                "type": "tool.execution_complete",
+                "data": [
+                    "toolCallId": id,
+                    "success": true,
+                    "result": ["content": "File \(path) updated with changes."]
+                ]
+            ])
+        }
+
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: .max)
+        var toolUseCount = 0
+        var toolResultCount = 0
+        for line in startLines + completeLines {
+            for event in CopilotStreamEventParser.parseAll(line: line) {
+                if case .toolUse = event { toolUseCount += 1 }
+                if case .toolResult = event { toolResultCount += 1 }
+                #expect(monitor.processEvent(event, process: nil) == false)
+            }
+        }
+
+        #expect(toolUseCount == 9)
+        #expect(toolResultCount == 9)
+        #expect(monitor.repetitionKilled == false)
+    }
+
     private func jsonLine(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return try #require(String(data: data, encoding: .utf8))
