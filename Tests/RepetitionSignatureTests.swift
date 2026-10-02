@@ -298,4 +298,37 @@ struct RepetitionSignatureTests {
         }
         #expect(monitor.repetitionKilled == false)
     }
+
+    @Test("A provider-sent argument named like the key stays visible to policy under its own name")
+    func policyStillSeesAProviderSentArgumentNamedLikeTheKey() throws {
+        let line = #"{"type":"tool_use","part":{"id":"c1","type":"tool","tool":"custom","state":{"status":"running","input":{"astra_args_fingerprint":"forged","path":"/w/a.md"}}}}"#
+        let event = try #require(OpenCodeStreamEventParser.parse(line: line))
+        guard case .toolUse(_, _, let input) = event else {
+            Issue.record("Expected a tool use")
+            return
+        }
+        // The provider's value is kept, apart from the real fingerprint.
+        #expect(input?[ToolInputFingerprint.providerValueKey] as? String == "forged")
+        #expect(input?[ToolInputFingerprint.key] as? String != "forged")
+
+        let observed = try #require(PolicyObservedEvent(providerEvent: event))
+        // Policy hides ASTRA's key but still validates the provider-supplied one.
+        #expect(!observed.inputKeys.contains(ToolInputFingerprint.key))
+        #expect(observed.inputKeys.contains(ToolInputFingerprint.providerValueKey))
+    }
+
+    @Test("Cursor keeps a provider-sent argument named like the key apart from the fingerprint")
+    func cursorKeepsAProviderSentArgumentApart() throws {
+        let frame = try line([
+            "type": "tool_call", "subtype": "started", "call_id": "c1",
+            "tool_call": ["editToolCall": ["args": ["path": "/w/a.md", ToolInputFingerprint.key: "forged"]]]
+        ])
+        let event = try #require(CursorStreamEventParser.parseAll(line: frame).first)
+        guard case .toolUse(_, _, let input) = event else {
+            Issue.record("Expected a tool use")
+            return
+        }
+        #expect(input?[ToolInputFingerprint.providerValueKey] as? String == "forged")
+        #expect(input?[ToolInputFingerprint.key] as? String != "forged")
+    }
 }
