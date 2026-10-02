@@ -122,6 +122,17 @@ struct RepetitionSignatureTests {
         #expect(ToolInputFingerprint.of(["a": "bc"]) != ToolInputFingerprint.of(["ab": "c"]))
     }
 
+    @Test("A JSON boolean is not the number it would print as")
+    func fingerprintSeparatesBooleansFromNumbers() throws {
+        func parsed(_ json: String) throws -> Any {
+            try JSONSerialization.jsonObject(with: Data(json.utf8))
+        }
+        #expect(try ToolInputFingerprint.of(parsed(#"{"force":true}"#)) != ToolInputFingerprint.of(parsed(#"{"force":1}"#)))
+        #expect(try ToolInputFingerprint.of(parsed(#"{"force":false}"#)) != ToolInputFingerprint.of(parsed(#"{"force":0}"#)))
+        #expect(try ToolInputFingerprint.of(parsed(#"{"force":true}"#)) == ToolInputFingerprint.of(parsed(#"{"force":true}"#)))
+        #expect(ToolInputFingerprint.of(["force": true]) != ToolInputFingerprint.of(["force": 1]))
+    }
+
     @Test("Policy does not see the fingerprint as an input key the provider sent")
     func policyIgnoresTheFingerprintKey() throws {
         let plain = try #require(PolicyObservedEvent(providerEvent: .toolUse(

@@ -37,7 +37,9 @@ public enum ToolInputFingerprint {
         case let array as [Any]:
             return "[" + array.map { canonical($0) }.joined(separator: ",") + "]"
         case let number as NSNumber:
-            return "n\(number)"
+            // JSON booleans and numbers are both NSNumber, and would otherwise
+            // render true as 1 and false as 0.
+            return CFGetTypeID(number) == CFBooleanGetTypeID() ? "b\(number.boolValue)" : "n\(number)"
         default:
             return "v\(String(describing: value))"
         }
