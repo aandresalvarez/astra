@@ -38,34 +38,18 @@ struct ModelSelectorPresentationTests {
 
     // MARK: - Rail
 
-    @Test("providers that need setup move to their own group instead of repeating a pill")
-    func railSeparatesNeedsSetup() {
+    @Test("the rail is one flat list: neither approval nor setup regroups it")
+    func railIsFlat() {
         let rows = [
             provider(.claudeCode, .ready, current: true),
-            provider(.openCodeCLI, .needsSetup),
-            provider(.codexCLI, .unavailable(reason: "No network")),
-        ]
-        let groups = ModelSelectorPresentation.railGroups(rows)
-
-        #expect(groups.providers.map(\.runtime) == [.claudeCode, .codexCLI])
-        #expect(groups.needsSetup.map(\.runtime) == [.openCodeCLI])
-    }
-
-    @Test("approved providers lead under a header that names the approval, and setup still wins")
-    func railLeadsWithApprovedProviders() {
-        let rows = [
-            provider(.claudeCode, .ready, current: true),
-            provider(.codexCLI, .ready, approvesSensitiveData: true),
-            provider(.cursorCLI, .unavailable(reason: "Checking"), approvesSensitiveData: true),
             provider(.openCodeCLI, .needsSetup, approvesSensitiveData: true),
+            provider(.codexCLI, .ready, approvesSensitiveData: true),
+            provider(.cursorCLI, .unavailable(reason: "Checking")),
         ]
-        let groups = ModelSelectorPresentation.railGroups(rows)
 
-        #expect(groups.approved.map(\.runtime) == [.codexCLI, .cursorCLI])
-        #expect(groups.providers.map(\.runtime) == [.claudeCode])
-        #expect(groups.needsSetup.map(\.runtime) == [.openCodeCLI])
-        #expect(groups.providersTitle == "Other providers")
-        #expect(ModelSelectorPresentation.railGroups([provider(.claudeCode, .ready)]).providersTitle == "Providers")
+        // Order is kept, except that providers that cannot run trail the ready ones.
+        #expect(ModelSelectorPresentation.railRows(rows).map(\.runtime)
+            == [.claudeCode, .codexCLI, .openCodeCLI, .cursorCLI])
     }
 
     @Test("availability resolves setup before request compatibility")
@@ -128,6 +112,17 @@ struct ModelSelectorPresentationTests {
         #expect(ModelSelectorPresentation.providerAccessibilityValue(plain, isBrowsing: false) == "3 models")
         #expect(ModelSelectorPresentation.sensitiveDataStatus(approved: false)
             == "Not approved for PHI or sensitive data")
+    }
+
+    @Test("the footer names its runtime unless it is both what the list shows and what the chip selects")
+    func footerNamesItsRuntimeWhenItIsNotTheOneShown() {
+        let names = ModelSelectorPresentation.namesSensitiveDataRuntime
+        #expect(!names(.codexCLI, .codexCLI, .codexCLI))
+        // Browsing another provider's models.
+        #expect(names(.codexCLI, .claudeCode, .codexCLI))
+        // A role profile sends the message somewhere other than the selection.
+        #expect(names(.claudeCode, .codexCLI, .codexCLI))
+        #expect(names(.claudeCode, .claudeCode, .codexCLI))
     }
 
     @Test("a model picked with a runtime switch wins, and the previous model is kept for the log")
@@ -290,9 +285,10 @@ struct ModelSelectorPresentationTests {
         #expect(codexCatalog().resolvedReasoningEffort("", model: "narrow", runtime: .codexCLI) == nil)
     }
 
-    @Test("the footer is labelled with the model it applies to")
-    func selectedModelTitleNamesTheCurrentModel() {
-        #expect(codexCatalog(model: "narrow").selectedModelTitle == "Narrow")
+    @Test("the footer states PHI approval briefly, in the user's own terms")
+    func footerPHILabelIsShort() {
+        #expect(ModelSelectorPresentation.sensitiveDataFooterLabel(approved: true) == "Approved for PHI")
+        #expect(ModelSelectorPresentation.sensitiveDataFooterLabel(approved: false) == "Not approved for PHI")
     }
 
     // MARK: - Speed

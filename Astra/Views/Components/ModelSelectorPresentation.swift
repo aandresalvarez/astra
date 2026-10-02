@@ -56,34 +56,15 @@ struct ModelSelectorListing: Equatable {
     var isFiltered: Bool
 }
 
-struct ModelSelectorRailGroups: Equatable {
-    /// Ready providers the user marked approved for PHI and sensitive data.
-    var approved: [ModelSelectorProviderRow]
-    var providers: [ModelSelectorProviderRow]
-    var needsSetup: [ModelSelectorProviderRow]
-
-    /// "Providers" alone would read as "all of them" under an approved group.
-    var providersTitle: String {
-        approved.isEmpty ? "Providers" : "Other providers"
-    }
-}
-
 enum ModelSelectorPresentation {
-    /// Shared status lives in the group, not on each row: providers that still
-    /// need setup move to their own group instead of carrying a per-row pill,
-    /// and approved providers lead under a header that says what approval
-    /// means, which a bare icon could not. Setup outranks approval: a
-    /// provider that cannot run belongs with the others that cannot.
-    static func railGroups(_ rows: [ModelSelectorProviderRow]) -> ModelSelectorRailGroups {
-        let usable = rows.filter { $0.availability != .needsSetup }
-        return ModelSelectorRailGroups(
-            approved: usable.filter(\.approvesSensitiveData),
-            providers: usable.filter { !$0.approvesSensitiveData },
-            needsSetup: rows.filter { $0.availability == .needsSetup }
-        )
+    /// The rail is one flat list with no group headers. Neither PHI approval
+    /// nor setup state regroups it: approved providers carry their own shield
+    /// and one that cannot run is dimmed on its row. Ready providers keep their
+    /// order and come first, so a provider that is still being checked, is
+    /// incompatible, or needs setup never sits between them.
+    static func railRows(_ rows: [ModelSelectorProviderRow]) -> [ModelSelectorProviderRow] {
+        rows.filter { $0.availability == .ready } + rows.filter { $0.availability != .ready }
     }
-
-    static let approvedGroupTitle = "Approved for sensitive data"
 
     /// Every model the provider offers, in catalog order, or the matches for
     /// the search text. The list scrolls instead of hiding models behind a
@@ -123,12 +104,20 @@ enum ModelSelectorPresentation {
         approved ? "Approved for PHI and sensitive data" : "Not approved for PHI or sensitive data"
     }
 
-    /// The detail pane's line: who made the call, and what it means in
-    /// practice. Approval is the user's label, never an ASTRA verdict.
-    static func sensitiveDataDetail(approved: Bool) -> String {
-        approved
-            ? "Approved for PHI and sensitive data. Marked by you."
-            : "Not approved for PHI. Don't use it with patient data."
+    /// The footer's short line for the selected provider. Approval is the
+    /// user's label, never an ASTRA verdict.
+    static func sensitiveDataFooterLabel(approved: Bool) -> String {
+        approved ? "Approved for PHI" : "Not approved for PHI"
+    }
+
+    /// Whether the footer names the runtime its PHI status is about: when it is
+    /// not the provider the list is showing, or not the one the chip selects.
+    static func namesSensitiveDataRuntime(
+        submission: AgentRuntimeID,
+        browsing: AgentRuntimeID,
+        selected: AgentRuntimeID
+    ) -> Bool {
+        submission != browsing || submission != selected
     }
 
     static let sensitiveDataChangeAction = "Change"
@@ -257,12 +246,6 @@ final class ModelSelectorCatalog {
             runtime: runtime,
             cache: cache
         )
-    }
-
-    /// Title of the model the current selection resolves to, for labelling
-    /// controls (like reasoning) that apply to it.
-    var selectedModelTitle: String? {
-        rows(for: currentRuntime).first(where: \.isSelected)?.title
     }
 
     /// The rail's count, without building presentation rows for providers the

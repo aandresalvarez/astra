@@ -24,6 +24,10 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
     let reasoningChoices: [ModelSelectorReasoningChoice]
     let suggestion: ModelSelectorSuggestion?
     let showsBudgetFooter: Bool
+    /// The runtime the message is submitted to. A worker role profile can make
+    /// it differ from the selected provider, and it is the one whose PHI
+    /// approval matters, as on the composer chip.
+    let sensitiveDataRuntime: AgentRuntimeID
     let onSelect: (AgentRuntimeID, String) -> Void
     let onSetup: () -> Void
     /// Uptime (ns) of the chip click that opened this popover, for the
@@ -43,6 +47,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         reasoningChoices: [ModelSelectorReasoningChoice],
         suggestion: ModelSelectorSuggestion?,
         showsBudgetFooter: Bool,
+        sensitiveDataRuntime: AgentRuntimeID,
         onSelect: @escaping (AgentRuntimeID, String) -> Void,
         onSetup: @escaping () -> Void,
         openedAt: UInt64? = nil,
@@ -53,6 +58,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         self.reasoningChoices = reasoningChoices
         self.suggestion = suggestion
         self.showsBudgetFooter = showsBudgetFooter
+        self.sensitiveDataRuntime = sensitiveDataRuntime
         self.onSelect = onSelect
         self.onSetup = onSetup
         self.openedAt = openedAt
@@ -166,53 +172,13 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
     // MARK: - Rail
 
     private var rail: some View {
-        let groups = ModelSelectorPresentation.railGroups(providers)
-        return ScrollView {
+        ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                if !groups.approved.isEmpty {
-                    railGroup(
-                        title: ModelSelectorPresentation.approvedGroupTitle,
-                        systemImage: "checkmark.shield.fill",
-                        rows: groups.approved
-                    )
-                    .help(ModelSelectorPresentation.sensitiveDataApprovedHelp)
-                }
-                if !groups.providers.isEmpty {
-                    railGroup(title: groups.providersTitle, rows: groups.providers)
-                        .padding(.top, groups.approved.isEmpty ? 0 : 6)
-                }
-                if !groups.needsSetup.isEmpty {
-                    railGroup(title: "Needs setup", rows: groups.needsSetup)
-                        .padding(.top, 6)
+                ForEach(ModelSelectorPresentation.railRows(providers)) { row in
+                    providerRow(row)
                 }
             }
             .padding(6)
-        }
-    }
-
-    private func railGroup(
-        title: String,
-        systemImage: String? = nil,
-        rows: [ModelSelectorProviderRow]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                Text(title)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .font(Stanford.caption(11).weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-            ForEach(rows) { row in
-                providerRow(row)
-            }
         }
     }
 
@@ -306,7 +272,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         }
         return VStack(alignment: .leading, spacing: 0) {
             searchField(placeholder: "Search \(provider.title)")
-            sensitiveDataStatus(for: provider)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
@@ -333,35 +298,6 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
                 }
             }
         }
-    }
-
-    /// One quiet line under the search field saying whose call approval is
-    /// and what it means, with the way to change it. Approved reads as a
-    /// positive state; not approved stays muted so it informs without alarming.
-    private func sensitiveDataStatus(for provider: ModelSelectorProviderRow) -> some View {
-        let approved = provider.approvesSensitiveData
-        return HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: approved ? "checkmark.shield.fill" : "shield")
-                .font(Stanford.ui(11))
-                .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.tertiary))
-            Text(ModelSelectorPresentation.sensitiveDataDetail(approved: approved))
-                .font(Stanford.caption(12))
-                .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.secondary))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            Button(ModelSelectorPresentation.sensitiveDataChangeAction) {
-                onSetup()
-                dismiss()
-            }
-            .buttonStyle(.link)
-            .font(Stanford.caption(12))
-            .accessibilityLabel("Change PHI approval in Settings")
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 6)
-        .help(approved
-            ? ModelSelectorPresentation.sensitiveDataApprovedHelp
-            : ModelSelectorPresentation.sensitiveDataNotApprovedHelp)
     }
 
     private func searchField(placeholder: String) -> some View {
@@ -517,12 +453,7 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
                     reasoningControl
                 }
                 Spacer(minLength: 8)
-                if let title = selectedModelLabel {
-                    Text(title)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
+                sensitiveDataFooter
             }
             // Same height with or without levels, so the popover never jumps.
             .frame(height: 28)
@@ -541,45 +472,51 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// What the reasoning row applies to. It always follows the selection,
-    /// so while another provider is being browsed it names the selection's
-    /// provider too.
-    private var selectedModelLabel: String? {
-        guard let model = catalog.selectedModelTitle else { return nil }
-        guard browsing != catalog.currentRuntime,
-              let provider = providers.first(where: \.isCurrent) else { return model }
-        return "\(provider.title) · \(model)"
+    /// Whether the runtime the message goes to is approved for PHI, with the
+    /// way to change it. Approval is the user's label, never an ASTRA verdict.
+    /// It names that runtime whenever it is not the one the list shows.
+    @ViewBuilder
+    private var sensitiveDataFooter: some View {
+        if let provider = providers.first(where: { $0.runtime == sensitiveDataRuntime }) {
+            let approved = provider.approvesSensitiveData
+            HStack(spacing: 6) {
+                if ModelSelectorPresentation.namesSensitiveDataRuntime(
+                    submission: sensitiveDataRuntime,
+                    browsing: browsing,
+                    selected: catalog.currentRuntime
+                ) {
+                    Text("\(provider.title) ·")
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .layoutPriority(-1)
+                }
+                Image(systemName: approved ? "checkmark.shield.fill" : "shield")
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.tertiary))
+                Text(ModelSelectorPresentation.sensitiveDataFooterLabel(approved: approved))
+                    .foregroundStyle(approved ? AnyShapeStyle(Stanford.lagunita) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                Button(ModelSelectorPresentation.sensitiveDataChangeAction) {
+                    onSetup()
+                    dismiss()
+                }
+                .buttonStyle(.link)
+                .accessibilityLabel("Change PHI approval in Settings")
+            }
+            .font(Stanford.caption(11))
+            .help(approved
+                ? ModelSelectorPresentation.sensitiveDataApprovedHelp
+                : ModelSelectorPresentation.sensitiveDataNotApprovedHelp)
+        }
     }
 
     private var reasoningControl: some View {
-        HStack(spacing: 2) {
-            ForEach(reasoningChoices) { choice in
-                Button {
-                    if !choice.isSelected {
-                        begin(ModelSelectorTelemetry.reasoningPickEvent, target: choice.id)
-                    }
-                    choice.select()
-                } label: {
-                    Text(choice.title)
-                        .font(Stanford.ui(12, weight: choice.isSelected ? .medium : .regular))
-                        .foregroundStyle(choice.isSelected ? Color.primary : Color.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                                .fill(choice.isSelected ? Color.primary.opacity(0.10) : Color.clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(choice.isSelected ? .isSelected : [])
+        ReasoningLevelStrip(choices: reasoningChoices) { choice in
+            if !choice.isSelected {
+                begin(ModelSelectorTelemetry.reasoningPickEvent, target: choice.id)
             }
+            choice.select()
         }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .fill(Color.primary.opacity(0.04))
-        )
     }
 }
 

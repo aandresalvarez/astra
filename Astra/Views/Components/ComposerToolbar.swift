@@ -412,6 +412,7 @@ struct ComposerToolbar: View {
             reasoningChoices: modelSelectorReasoningChoices,
             suggestion: suggestion,
             showsBudgetFooter: RuntimeBudgetPresentation.isEnabled(budget),
+            sensitiveDataRuntime: sensitiveDataRuntime,
             onSelect: { runtime, modelID in
                 if runtime != resolvedRuntime {
                     requestRuntimeChange(to: runtime, model: modelID)
@@ -924,10 +925,15 @@ struct ComposerToolbar: View {
         return resolvedRuntime
     }
 
-    private var selectedRuntimeApprovesSensitiveData: Bool {
-        let runtime = submissionRuntimeID.map { AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: $0) }
+    /// The runtime this message is submitted to, which a worker role profile can
+    /// make differ from the selected provider. PHI approval applies to it.
+    private var sensitiveDataRuntime: AgentRuntimeID {
+        submissionRuntimeID.map { AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: $0) }
             ?? resolvedRuntime
-        return RuntimeProviderSettingsStore.isSensitiveDataApproved(for: runtime)
+    }
+
+    private var selectedRuntimeApprovesSensitiveData: Bool {
+        RuntimeProviderSettingsStore.isSensitiveDataApproved(for: sensitiveDataRuntime)
     }
 
     private var runtimeStatusHelp: String {
