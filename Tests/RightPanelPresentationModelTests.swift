@@ -206,4 +206,44 @@ struct RightPanelPresentationModelTests {
         #expect(model.activeCanvasItem == nil)
     }
 
+    // MARK: - Launch
+
+    private func makeLaunchModel(shownBefore: Bool) -> (RightPanelPresentationModel, UserDefaults) {
+        let defaults = InMemoryDefaults(["isWorkspaceRightRailVisible": shownBefore])
+        return (RightPanelPresentationModel(defaults: defaults, opensClosed: true), defaults)
+    }
+
+    @Test("A launch starts with every right panel closed, whatever the rail was last time")
+    func launchStartsClosedWhateverTheRailWasLastTime() {
+        let (model, _) = makeLaunchModel(shownBefore: true)
+        #expect(model.isRailShown == false)
+        #expect(model.activeCanvasItem == nil)
+        #expect(model.hasAnyPanelPresented(hasWorkspace: true) == false)
+    }
+
+    @Test("Launching leaves the saved rail preference as the user last set it")
+    func launchLeavesTheSavedPreferenceAlone() {
+        let (_, defaults) = makeLaunchModel(shownBefore: true)
+        #expect(defaults.object(forKey: "isWorkspaceRightRailVisible") as? Bool == true)
+    }
+
+    @Test("A remembered item waits for launch to land, then restores as always")
+    func rememberedItemWaitsForLaunchToLand() {
+        let (model, _) = makeLaunchModel(shownBefore: false)
+        #expect(model.restoreRememberedItemIfAvailable(rememberedItem: .markdown, canPresent: { _ in true }) == nil)
+        #expect(model.activeCanvasItem == nil)
+
+        model.finishLaunchLanding()
+        #expect(model.restoreRememberedItemIfAvailable(rememberedItem: .markdown, canPresent: { _ in true }) == .markdown)
+        #expect(model.activeCanvasItem == .markdown)
+    }
+
+    @Test("Opening the rail after launch persists as before")
+    func openingTheRailAfterLaunchStillPersists() {
+        let (model, defaults) = makeLaunchModel(shownBefore: false)
+        model.finishLaunchLanding()
+        model.presentRail()
+        #expect(model.isRailShown)
+        #expect(defaults.object(forKey: "isWorkspaceRightRailVisible") as? Bool == true)
+    }
 }

@@ -118,7 +118,7 @@ struct ContentView: View {
     /// (written directly from four independent call sites) and the
     /// `activeWorkspaceCanvasItem` `@State`; every writer now routes through
     /// this model instead of touching either property directly.
-    @StateObject private var rightPanel = RightPanelPresentationModel()
+    @StateObject private var rightPanel = RightPanelPresentationModel(opensClosed: true)
     @StateObject private var sidebarTitlebarCommands = SidebarTitlebarCommandBridge()
     /// Hover state of the show-sidebar toggle, which drives the transient
     /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
@@ -2672,6 +2672,7 @@ struct ContentView: View {
         refreshProviderModelsInBackground()
         enterUITestComposerIfNeeded()
         sceneSelection.openLaunchComposerOnce()
+        rightPanel.finishLaunchLanding()
         runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()

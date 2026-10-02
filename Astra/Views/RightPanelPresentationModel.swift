@@ -36,9 +36,23 @@ final class RightPanelPresentationModel: ObservableObject {
     private let defaults: UserDefaults
     private static let railShownDefaultsKey = "isWorkspaceRightRailVisible"
 
-    init(defaults: UserDefaults = .standard) {
+    /// True from a launch that opens no right panel until it has landed on the
+    /// new-task composer. While it is, the shelf item a restored task remembers
+    /// is not reopened; reopening a task afterwards restores it as always.
+    private var isLaunching: Bool
+
+    /// `opensClosed` is for app launch: the rail starts closed and the saved
+    /// preference is left exactly as the user last set it, so every persistence
+    /// rule applies again once the user is working.
+    init(defaults: UserDefaults = .standard, opensClosed: Bool = false) {
         self.defaults = defaults
-        self.isRailShown = (defaults.object(forKey: Self.railShownDefaultsKey) as? Bool) ?? true
+        self.isRailShown = opensClosed ? false : ((defaults.object(forKey: Self.railShownDefaultsKey) as? Bool) ?? true)
+        self.isLaunching = opensClosed
+    }
+
+    /// Marks the launch landing as done, so a remembered shelf item can restore.
+    func finishLaunchLanding() {
+        isLaunching = false
     }
 
     // MARK: - Derived presentation
@@ -102,12 +116,12 @@ final class RightPanelPresentationModel: ObservableObject {
     }
 
     /// If the task-owned remembered item can be shown and nothing is currently
-    /// presented, restore it without writing durable state.
+    /// presented, restore it without writing durable state. Not while launching.
     func restoreRememberedItemIfAvailable(
         rememberedItem: WorkspaceCanvasItem?,
         canPresent: (WorkspaceCanvasItem) -> Bool
     ) -> WorkspaceCanvasItem? {
-        guard WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
+        guard !isLaunching, WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
             activeItem: activeCanvasItem,
             isRightRailVisible: isRailShown,
             rememberedItem: rememberedItem,
