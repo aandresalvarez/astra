@@ -166,53 +166,13 @@ struct ModelSelectorPopover<BudgetFooter: View>: View {
     // MARK: - Rail
 
     private var rail: some View {
-        let groups = ModelSelectorPresentation.railGroups(providers)
-        return ScrollView {
+        ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                if !groups.approved.isEmpty {
-                    railGroup(
-                        title: ModelSelectorPresentation.approvedGroupTitle,
-                        systemImage: "checkmark.shield.fill",
-                        rows: groups.approved
-                    )
-                    .help(ModelSelectorPresentation.sensitiveDataApprovedHelp)
-                }
-                if !groups.providers.isEmpty {
-                    railGroup(title: groups.providersTitle, rows: groups.providers)
-                        .padding(.top, groups.approved.isEmpty ? 0 : 6)
-                }
-                if !groups.needsSetup.isEmpty {
-                    railGroup(title: "Needs setup", rows: groups.needsSetup)
-                        .padding(.top, 6)
+                ForEach(ModelSelectorPresentation.railRows(providers)) { row in
+                    providerRow(row)
                 }
             }
             .padding(6)
-        }
-    }
-
-    private func railGroup(
-        title: String,
-        systemImage: String? = nil,
-        rows: [ModelSelectorProviderRow]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                Text(title)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .font(Stanford.caption(11).weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-            ForEach(rows) { row in
-                providerRow(row)
-            }
         }
     }
 

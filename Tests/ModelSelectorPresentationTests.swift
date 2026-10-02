@@ -38,34 +38,18 @@ struct ModelSelectorPresentationTests {
 
     // MARK: - Rail
 
-    @Test("providers that need setup move to their own group instead of repeating a pill")
-    func railSeparatesNeedsSetup() {
+    @Test("the rail is one flat list: neither approval nor setup regroups it")
+    func railIsFlat() {
         let rows = [
             provider(.claudeCode, .ready, current: true),
-            provider(.openCodeCLI, .needsSetup),
-            provider(.codexCLI, .unavailable(reason: "No network")),
-        ]
-        let groups = ModelSelectorPresentation.railGroups(rows)
-
-        #expect(groups.providers.map(\.runtime) == [.claudeCode, .codexCLI])
-        #expect(groups.needsSetup.map(\.runtime) == [.openCodeCLI])
-    }
-
-    @Test("approved providers lead under a header that names the approval, and setup still wins")
-    func railLeadsWithApprovedProviders() {
-        let rows = [
-            provider(.claudeCode, .ready, current: true),
-            provider(.codexCLI, .ready, approvesSensitiveData: true),
-            provider(.cursorCLI, .unavailable(reason: "Checking"), approvesSensitiveData: true),
             provider(.openCodeCLI, .needsSetup, approvesSensitiveData: true),
+            provider(.codexCLI, .ready, approvesSensitiveData: true),
+            provider(.cursorCLI, .unavailable(reason: "Checking")),
         ]
-        let groups = ModelSelectorPresentation.railGroups(rows)
 
-        #expect(groups.approved.map(\.runtime) == [.codexCLI, .cursorCLI])
-        #expect(groups.providers.map(\.runtime) == [.claudeCode])
-        #expect(groups.needsSetup.map(\.runtime) == [.openCodeCLI])
-        #expect(groups.providersTitle == "Other providers")
-        #expect(ModelSelectorPresentation.railGroups([provider(.claudeCode, .ready)]).providersTitle == "Providers")
+        // Order is kept, except that providers needing setup trail the rest.
+        #expect(ModelSelectorPresentation.railRows(rows).map(\.runtime)
+            == [.claudeCode, .codexCLI, .cursorCLI, .openCodeCLI])
     }
 
     @Test("availability resolves setup before request compatibility")

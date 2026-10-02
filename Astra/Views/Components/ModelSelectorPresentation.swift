@@ -56,34 +56,15 @@ struct ModelSelectorListing: Equatable {
     var isFiltered: Bool
 }
 
-struct ModelSelectorRailGroups: Equatable {
-    /// Ready providers the user marked approved for PHI and sensitive data.
-    var approved: [ModelSelectorProviderRow]
-    var providers: [ModelSelectorProviderRow]
-    var needsSetup: [ModelSelectorProviderRow]
-
-    /// "Providers" alone would read as "all of them" under an approved group.
-    var providersTitle: String {
-        approved.isEmpty ? "Providers" : "Other providers"
-    }
-}
-
 enum ModelSelectorPresentation {
-    /// Shared status lives in the group, not on each row: providers that still
-    /// need setup move to their own group instead of carrying a per-row pill,
-    /// and approved providers lead under a header that says what approval
-    /// means, which a bare icon could not. Setup outranks approval: a
-    /// provider that cannot run belongs with the others that cannot.
-    static func railGroups(_ rows: [ModelSelectorProviderRow]) -> ModelSelectorRailGroups {
-        let usable = rows.filter { $0.availability != .needsSetup }
-        return ModelSelectorRailGroups(
-            approved: usable.filter(\.approvesSensitiveData),
-            providers: usable.filter { !$0.approvesSensitiveData },
-            needsSetup: rows.filter { $0.availability == .needsSetup }
-        )
+    /// The rail is one flat list with no group headers. Neither PHI approval
+    /// nor setup state regroups it: approved providers carry their own shield
+    /// and a provider that needs setup is dimmed on its row. Providers that
+    /// can run keep their order and come first, so ones that cannot never sit
+    /// between them.
+    static func railRows(_ rows: [ModelSelectorProviderRow]) -> [ModelSelectorProviderRow] {
+        rows.filter { $0.availability != .needsSetup } + rows.filter { $0.availability == .needsSetup }
     }
-
-    static let approvedGroupTitle = "Approved for sensitive data"
 
     /// Every model the provider offers, in catalog order, or the matches for
     /// the search text. The list scrolls instead of hiding models behind a
