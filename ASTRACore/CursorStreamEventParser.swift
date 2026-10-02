@@ -128,7 +128,14 @@ public enum CursorStreamEventParser {
         switch (object["subtype"] as? String)?.lowercased() {
         case "started":
             // The file body a write streams is not a summary of the call.
-            let args = (call["args"] as? [String: Any] ?? [:]).filter { !bulkyArgumentKeys.contains($0.key) }
+            let rawArgs = call["args"] as? [String: Any] ?? [:]
+            var args = rawArgs.filter { !bulkyArgumentKeys.contains($0.key) }
+            // What is dropped above is exactly what tells two edits apart. A
+            // provider-sent argument named like the key moves aside first.
+            if let providerValue = rawArgs[ToolInputFingerprint.key] {
+                args[ToolInputFingerprint.providerValueKey] = providerValue
+            }
+            args[ToolInputFingerprint.key] = ToolInputFingerprint.of(rawArgs)
             return [.toolUse(name: name, id: id, input: args)]
         case "completed":
             let result = call["result"] as? [String: Any] ?? [:]
@@ -180,7 +187,8 @@ public enum CursorStreamEventParser {
     private static let fileChangeKinds = ["editToolCall": "update", "writeToolCall": "add", "deleteToolCall": "delete"]
 
     private static func inputSummary(_ input: [String: Any]?) -> String? {
-        guard let input else { return nil }
+        guard var input else { return nil }
+        input.removeValue(forKey: ToolInputFingerprint.key)
         guard JSONSerialization.isValidJSONObject(input),
               let data = try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys]),
               let text = String(data: data, encoding: .utf8) else {

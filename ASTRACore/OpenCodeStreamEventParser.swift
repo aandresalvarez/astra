@@ -168,7 +168,7 @@ public enum OpenCodeStreamEventParser {
         let id = part["id"] as? String ?? part["toolID"] as? String ?? name
         let state = part["state"] as? [String: Any]
         let input = state?["input"] as? [String: Any] ?? part["input"] as? [String: Any]
-        var events: [ParsedEvent] = [.toolUse(name: name, id: id, input: input)]
+        var events: [ParsedEvent] = [.toolUse(name: name, id: id, input: ToolInputFingerprint.replacingReservedKey(in: input))]
         if let output = state?["output"] as? String, !output.isEmpty {
             events.append(.toolResult(toolId: id, content: output))
         } else if let error = state?["error"] as? String, !error.isEmpty {

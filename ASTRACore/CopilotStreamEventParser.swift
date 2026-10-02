@@ -78,11 +78,27 @@ public enum CopilotStreamEventParser {
                 parsed.append(.text(text: summary))
             default:
                 if let parsedEvent = parsedEvent(from: event) {
-                    parsed.append(parsedEvent)
+                    parsed.append(withArgumentsFingerprint(parsedEvent, line: line))
                 }
             }
         }
         return parsed
+    }
+
+    /// A tool call reaches the monitor as a one-line summary, which for edit,
+    /// view and create is only the path. The fingerprint of the raw arguments
+    /// lets the repetition breaker tell different edits to one file apart while
+    /// still seeing identical calls as identical.
+    private static func withArgumentsFingerprint(_ event: ParsedEvent, line: String) -> ParsedEvent {
+        guard case .toolUse(let name, let id, let summaryInput) = event,
+              var input = summaryInput,
+              let data = line.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let arguments = object["input"] ?? object["arguments"] ?? object["args"]
+                ?? payloadObject(in: object).flatMap({ $0["input"] ?? $0["arguments"] ?? $0["args"] })
+        else { return event }
+        input[ToolInputFingerprint.key] = ToolInputFingerprint.of(arguments)
+        return .toolUse(name: name, id: id, input: input)
     }
 
     public static func parsePlainText(line: String, appendingNewline: Bool = false) -> [ParsedEvent] {

@@ -698,7 +698,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         }
 
-        if let signature = Self.repetitionSignature(parsed, toolNameForResult: { toolUseContextsByID[$0]?.name }) {
+        if let signature = Self.breakerSignature(parsed) {
             if signature == lastEventSignature {
                 repetitionCount += 1
                 if repetitionCount >= maxRepetitions {
@@ -2260,7 +2260,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func inputSignature(_ input: [String: Any]?) -> String {
+    static func inputSignature(_ input: [String: Any]?) -> String {
         guard let input else { return "" }
         return valueSignature(input)
     }
@@ -2270,7 +2270,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return "s:\(string.count):\(string.prefix(80))"
         }
         if let dictionary = value as? [String: Any] {
-            let joined = dictionary.keys.sorted().map { key in
+            let joined = dictionary.keys.filter { $0 != ToolInputFingerprint.key }.sorted().map { key in
                 "\(key)=\(valueSignature(dictionary[key]))"
             }.joined(separator: ";")
             return "d:\(joined.count):\(joined.prefix(120))"
