@@ -19,6 +19,17 @@ enum ReasoningBarsGeometry {
         return minBarHeight + step * CGFloat(index)
     }
 
+    /// The level an arrow key or an assistive "adjust" lands on, or nil at an
+    /// end. With nothing selected there is no level to step from, so either
+    /// direction starts at the first entry (the provider default) and the
+    /// control can always be set.
+    static func adjusted(from selected: Int?, by delta: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        guard let selected else { return 0 }
+        let target = selected + delta
+        return (0..<count).contains(target) ? target : nil
+    }
+
     /// An index that may be stale (a hover or drag kept across a change in the
     /// model's levels), kept only if it still names a bar.
     static func valid(_ index: Int?, count: Int) -> Int? {
@@ -71,14 +82,25 @@ struct ReasoningLevelStrip: View {
             bars
             nameLabel
         }
+        .focusable()
+        .onKeyPress(.leftArrow) { adjust(by: -1) }
+        .onKeyPress(.rightArrow) { adjust(by: 1) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Reasoning level")
         .accessibilityValue(selectedIndex.map { choices[$0].title } ?? "Not set")
         .accessibilityAdjustableAction { direction in
-            guard let selectedIndex else { return }
-            let target = direction == .increment ? selectedIndex + 1 : selectedIndex - 1
-            if choices.indices.contains(target) { onPick(choices[target]) }
+            _ = adjust(by: direction == .increment ? 1 : -1)
         }
+    }
+
+    /// Steps the level for the arrow keys and VoiceOver. Handled only when it
+    /// moved, so an arrow at an end still reaches whatever sits beside it.
+    private func adjust(by delta: Int) -> KeyPress.Result {
+        guard let target = ReasoningBarsGeometry.adjusted(
+            from: selectedIndex, by: delta, count: choices.count
+        ) else { return .ignored }
+        onPick(choices[target])
+        return .handled
     }
 
     private var bars: some View {

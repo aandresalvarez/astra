@@ -42,4 +42,15 @@ struct ReasoningBarsGeometryTests {
         #expect(ReasoningBarsGeometry.valid(0, count: 0) == nil)
         #expect(ReasoningBarsGeometry.valid(nil, count: 8) == nil)
     }
+
+    @Test("Arrow keys step one level, stop at the ends, and start from the default when nothing is selected")
+    func adjustedStepsAndStarts() {
+        #expect(ReasoningBarsGeometry.adjusted(from: 3, by: 1, count: 8) == 4)
+        #expect(ReasoningBarsGeometry.adjusted(from: 3, by: -1, count: 8) == 2)
+        #expect(ReasoningBarsGeometry.adjusted(from: 0, by: -1, count: 8) == nil)
+        #expect(ReasoningBarsGeometry.adjusted(from: 7, by: 1, count: 8) == nil)
+        #expect(ReasoningBarsGeometry.adjusted(from: nil, by: 1, count: 8) == 0)
+        #expect(ReasoningBarsGeometry.adjusted(from: nil, by: -1, count: 8) == 0)
+        #expect(ReasoningBarsGeometry.adjusted(from: nil, by: 1, count: 0) == nil)
+    }
 }

@@ -59,11 +59,11 @@ struct ModelSelectorListing: Equatable {
 enum ModelSelectorPresentation {
     /// The rail is one flat list with no group headers. Neither PHI approval
     /// nor setup state regroups it: approved providers carry their own shield
-    /// and a provider that needs setup is dimmed on its row. Providers that
-    /// can run keep their order and come first, so ones that cannot never sit
-    /// between them.
+    /// and one that cannot run is dimmed on its row. Ready providers keep their
+    /// order and come first, so a provider that is still being checked, is
+    /// incompatible, or needs setup never sits between them.
     static func railRows(_ rows: [ModelSelectorProviderRow]) -> [ModelSelectorProviderRow] {
-        rows.filter { $0.availability != .needsSetup } + rows.filter { $0.availability == .needsSetup }
+        rows.filter { $0.availability == .ready } + rows.filter { $0.availability != .ready }
     }
 
     /// Every model the provider offers, in catalog order, or the matches for

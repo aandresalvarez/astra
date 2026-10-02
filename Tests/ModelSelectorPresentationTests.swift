@@ -47,9 +47,9 @@ struct ModelSelectorPresentationTests {
             provider(.cursorCLI, .unavailable(reason: "Checking")),
         ]
 
-        // Order is kept, except that providers needing setup trail the rest.
+        // Order is kept, except that providers that cannot run trail the ready ones.
         #expect(ModelSelectorPresentation.railRows(rows).map(\.runtime)
-            == [.claudeCode, .codexCLI, .cursorCLI, .openCodeCLI])
+            == [.claudeCode, .codexCLI, .openCodeCLI, .cursorCLI])
     }
 
     @Test("availability resolves setup before request compatibility")
