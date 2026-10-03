@@ -39,7 +39,8 @@ struct TaskSidebarContainerView: View {
     let taskQueue: TaskQueue
     let workspaces: [Workspace]
     @Binding var selectedWorkspace: Workspace?
-    let onNewTask: () -> Void
+    /// Opens the new-task composer in the given workspace, or, with `nil`, in the selected one.
+    let onNewTask: (Workspace?) -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
     var onToggleDone: ((AgentTask) -> Void)?
@@ -375,7 +376,8 @@ struct TaskSidebarView: View {
     /// Derived from request snapshots by the container; never mutates turn state.
     var taskActivities: [UUID: TaskActivityPresentation] = [:]
     var activityRequests: [UUID: [TaskTurnRequest]] = [:]
-    let onNewTask: () -> Void
+    /// Opens the new-task composer in the given workspace, or, with `nil`, in the selected one.
+    let onNewTask: (Workspace?) -> Void
     let onRunQueue: () -> Void
     let onRunTask: (AgentTask) -> Void
     var onToggleDone: ((AgentTask) -> Void)?
@@ -1838,8 +1840,8 @@ struct TaskSidebarView: View {
     }
 
     private func startNewTask(in workspace: Workspace) {
-        openWorkspace(workspace)
-        onNewTask()
+        ensureWorkspaceExpanded(workspace)
+        onNewTask(workspace)
     }
 
     private func openWorkspace(_ workspace: Workspace) {
@@ -1932,7 +1934,7 @@ struct TaskSidebarView: View {
     private func emptyWorkspaceRow(for workspace: Workspace) -> some View {
         Button {
             selectedWorkspace = workspace
-            onNewTask()
+            onNewTask(nil)
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "plus")
@@ -2305,7 +2307,7 @@ struct TaskSidebarView: View {
         if isShowingNewTaskNudge {
             dismissNewTaskNudge()
         }
-        onNewTask()
+        onNewTask(nil)
     }
 
     private func updateNewTaskNudge() {

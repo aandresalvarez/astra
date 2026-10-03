@@ -30,7 +30,6 @@ final class SceneSelectionModel: ObservableObject {
     @Published private(set) var isComposingWorkspaceApp = false
     @Published private(set) var isComposingTask = false
     private var didOpenLaunchComposer = false
-    private var retargetedComposerWorkspaceID: UUID?
     private var keepsComposerThroughWorkspaceFlow = false
 
     var activeSurface: SceneSelectionSurface {
@@ -124,29 +123,19 @@ final class SceneSelectionModel: ObservableObject {
     /// instead of that workspace's home or last task. A no-op without a
     /// workspace or over a workspace app surface, and runs once per scene since
     /// the view's appear handler can fire again.
-    ///
-    /// The restore that selected this workspace is still undelivered to the
-    /// scene's workspace-change observer, which reads a composing scene as a
-    /// sidebar click and would send it to the workspace home. Recording the
-    /// workspace as a retarget lets that one change through.
     func openLaunchComposerOnce() {
         guard !didOpenLaunchComposer, let selectedWorkspace,
               selectedWorkspaceApp == nil,
               !isComposingWorkspaceApp else { return }
         didOpenLaunchComposer = true
-        retargetedComposerWorkspaceID = selectedWorkspace.id
         composeTask(workspace: selectedWorkspace)
     }
 
     /// Moves the new-task composer to another workspace without leaving it. A
     /// workspace with no tasks shows the composer without `isComposingTask`
     /// being set, so this also establishes composition rather than requiring it.
-    /// The scene's workspace-change observer treats every other change while
-    /// composing as leaving the composer (a sidebar click), so this records the
-    /// one change it must let through; `consumeComposerRetarget` reads it back.
     func retargetComposer(to workspace: Workspace) {
         guard selectedTask == nil, selectedWorkspace?.id != workspace.id else { return }
-        retargetedComposerWorkspaceID = workspace.id
         composeTask(workspace: workspace)
     }
 
@@ -170,12 +159,6 @@ final class SceneSelectionModel: ObservableObject {
 
     func endComposerWorkspaceFlow() {
         keepsComposerThroughWorkspaceFlow = false
-    }
-
-    /// True once for the workspace a `retargetComposer` just selected.
-    func consumeComposerRetarget(for workspaceID: UUID?) -> Bool {
-        defer { retargetedComposerWorkspaceID = nil }
-        return workspaceID != nil && workspaceID == retargetedComposerWorkspaceID
     }
 
     func composeApp(workspace: Workspace? = nil) {
@@ -210,12 +193,17 @@ final class SceneSelectionModel: ObservableObject {
             && update.selectedWorkspace != nil
             && update.selectedWorkspace !== selectedWorkspace
 
+        // Selecting a different workspace is not a compose intent, so it leaves
+        // the composer; `composeTask(workspace:)` and a composer-started workspace
+        // flow are the intents that stay. Decided here, as part of the
+        // transition, so no observer has to infer it from the change afterwards.
+        let changesWorkspace = update.selectedWorkspace !== selectedWorkspace
+
         selectedWorkspace = update.selectedWorkspace
         selectedTask = update.selectedTask
-        isComposingTask = update.isComposingTask || keepsComposer
+        isComposingTask = (update.isComposingTask && !changesWorkspace) || keepsComposer
         if keepsComposer {
             keepsComposerThroughWorkspaceFlow = false
-            retargetedComposerWorkspaceID = update.selectedWorkspace?.id
         }
         if !preserveWorkspaceAppSurface {
             selectedWorkspaceApp = nil

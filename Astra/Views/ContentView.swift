@@ -522,7 +522,7 @@ struct ContentView: View {
             taskQueue: runtime.taskQueue,
             workspaces: workspaces,
             selectedWorkspace: selectedWorkspaceBinding,
-            onNewTask: startComposingTask,
+            onNewTask: { startComposingTask(in: $0) },
             onRunQueue: runQueue,
             onRunTask: runSingleTask,
             onToggleDone: toggleDone,
@@ -635,7 +635,7 @@ struct ContentView: View {
             onToggleDone: toggleDone,
             onMoveToDraft: moveTaskToDraft,
             onForkTask: { setSelectedTask($0) },
-            onCreateTask: startComposingTask,
+            onCreateTask: { startComposingTask() },
             onOpenWorkspaceApp: setSelectedWorkspaceApp,
             onOpenTask: openExistingTask,
             onDeleteTask: requestDeleteTask,
@@ -2055,10 +2055,13 @@ struct ContentView: View {
         }
     }
 
-    private func startComposingTask() {
+    /// Opens the new-task composer, in `workspace` or, with none, in the one
+    /// already selected. Selecting and composing are one transition, so a new
+    /// task started from another workspace's row lands on its composer.
+    private func startComposingTask(in workspace: Workspace? = nil) {
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
         setSelectedTask(nil, recordsFinalHomeTransition: false)
-        sceneSelection.composeTask()
+        sceneSelection.composeTask(workspace: workspace)
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         presentRightRail(rememberShelfState: false)
     }
@@ -2633,16 +2636,9 @@ struct ContentView: View {
         if sceneSelection.shouldClearWorkspaceAppSurfaceAfterWorkspaceChange {
             clearWorkspaceAppSurfaceSelection()
         }
-        if isUITestingSeededLaunch {
-            setSelectedTask(nil)
-            if selectedWorkspace != nil {
-                sceneSelection.composeTask()
-            } else {
-                sceneSelection.openWorkspace(nil)
-            }
-        } else if isComposingTask, !sceneSelection.consumeComposerRetarget(for: selectedWorkspace?.id) {
-            sceneSelection.openWorkspace(selectedWorkspace)
-        }
+        // Whether a change leaves the composer is decided by the transition that
+        // made it (`SceneSelectionModel`), so this reaction only follows up.
+        enterUITestComposerIfNeeded()
         invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
         persistWorkspaceSelection()
     }
