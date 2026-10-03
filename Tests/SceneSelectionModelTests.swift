@@ -45,20 +45,18 @@ struct SceneSelectionModelTests {
         #expect(model.activeSurface == .task(task.id))
     }
 
-    @Test("Launch composer survives the deferred workspace-change observer")
-    func launchComposerSurvivesWorkspaceChangeObserver() {
+    @Test("A later restore of the same workspace keeps the launch composer open")
+    func laterRestoreOfTheSameWorkspaceKeepsTheLaunchComposer() {
         let workspace = makeWorkspace(name: "Launch")
         let model = SceneSelectionModel()
-
-        // handleAppear restores the workspace and opens the composer in one pass;
-        // ContentView's onChange(of: selectedWorkspace) fires afterwards and
-        // treats a composing scene with no retarget token as a sidebar click,
-        // calling openWorkspace and dropping the composer.
         model.restoreWorkspace(workspace)
         model.openLaunchComposerOnce()
 
-        #expect(model.isComposingTask)
-        #expect(model.consumeComposerRetarget(for: workspace.id))
+        // The workspace list can reload after launch and restore the same one.
+        model.apply(ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: workspace, isComposingTask: true
+        ).restore(workspace: workspace))
+
         #expect(model.activeSurface == .taskComposer(workspace.id))
     }
 
