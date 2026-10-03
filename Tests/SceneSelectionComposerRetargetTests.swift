@@ -20,29 +20,22 @@ struct SceneSelectionComposerRetargetTests {
         #expect(model.activeSurface == .taskComposer(second.id))
     }
 
-    @Test("The workspace-change observer may keep the composer exactly once")
-    func retargetIsConsumedOnce() {
-        let first = workspace("First")
-        let second = workspace("Second")
-        let model = SceneSelectionModel()
-        model.composeTask(workspace: first)
-        model.retargetComposer(to: second)
-
-        #expect(model.consumeComposerRetarget(for: second.id))
-        #expect(!model.consumeComposerRetarget(for: second.id))
-    }
-
-    @Test("A different workspace change is still treated as leaving the composer")
-    func otherWorkspaceChangesAreNotRetargets() {
+    @Test("A later workspace change that is not a compose intent leaves the composer")
+    func laterChangeWithoutAnIntentLeavesTheComposer() {
         let first = workspace("First")
         let second = workspace("Second")
         let third = workspace("Third")
         let model = SceneSelectionModel()
         model.composeTask(workspace: first)
         model.retargetComposer(to: second)
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil, selectedWorkspace: second, isComposingTask: true
+        )
 
-        #expect(!model.consumeComposerRetarget(for: third.id))
-        #expect(!model.consumeComposerRetarget(for: nil))
+        model.apply(coordinator.importWorkspace(third))
+
+        #expect(!model.isComposingTask)
+        #expect(model.activeSurface == .workspace(third.id))
     }
 
     @Test("Retargeting from the implicit composer of an empty workspace starts composing")
@@ -59,7 +52,6 @@ struct SceneSelectionComposerRetargetTests {
         #expect(model.isComposingTask)
         #expect(model.selectedWorkspace?.id == second.id)
         #expect(model.activeSurface == .taskComposer(second.id))
-        #expect(model.consumeComposerRetarget(for: second.id))
     }
 
     @Test("Retargeting does nothing while a task is open")
@@ -75,7 +67,6 @@ struct SceneSelectionComposerRetargetTests {
         #expect(model.selectedTask?.id == task.id)
         #expect(model.selectedWorkspace?.id == first.id)
         #expect(!model.isComposingTask)
-        #expect(!model.consumeComposerRetarget(for: second.id))
     }
 
     @Test("Retargeting to the current workspace is a no-op")
@@ -86,7 +77,7 @@ struct SceneSelectionComposerRetargetTests {
 
         model.retargetComposer(to: first)
 
-        #expect(!model.consumeComposerRetarget(for: first.id))
+        #expect(model.activeSurface == .taskComposer(first.id))
     }
 
     // MARK: - Sidebar target
@@ -144,7 +135,7 @@ struct SceneSelectionComposerRetargetTests {
 
         #expect(model.isComposingTask)
         #expect(model.selectedWorkspace?.id == imported.id)
-        #expect(model.consumeComposerRetarget(for: imported.id))
+        #expect(model.activeSurface == .taskComposer(imported.id))
     }
 
     @Test("A workspace created from the implicit composer of an empty workspace also keeps composing")
@@ -162,10 +153,9 @@ struct SceneSelectionComposerRetargetTests {
 
         #expect(model.isComposingTask)
         #expect(model.activeSurface == .taskComposer(created.id))
-        #expect(model.consumeComposerRetarget(for: created.id))
     }
 
-    @Test("Without the flow marker an import is not exempt from the composer-exit rule")
+    @Test("Without the flow marker an import leaves the composer for the imported workspace")
     func importWithoutTheFlowIsNotExempt() {
         let first = workspace("First")
         let imported = workspace("Imported")
@@ -177,9 +167,10 @@ struct SceneSelectionComposerRetargetTests {
 
         model.apply(coordinator.importWorkspace(imported))
 
-        // The workspace-change observer leaves the composer for any change the
-        // token does not cover, so a missing token is what the old behavior was.
-        #expect(!model.consumeComposerRetarget(for: imported.id))
+        // Selecting another workspace is not a compose intent, so the model
+        // itself leaves the composer; nothing downstream has to guess.
+        #expect(!model.isComposingTask)
+        #expect(model.activeSurface == .workspace(imported.id))
     }
 
     @Test("A package review keeps the flow open until the delayed selection lands")
@@ -199,7 +190,8 @@ struct SceneSelectionComposerRetargetTests {
         // The user finishes the review later and the selection lands.
         model.apply(coordinator.importWorkspace(imported))
 
-        #expect(model.consumeComposerRetarget(for: imported.id))
+        #expect(model.isComposingTask)
+        #expect(model.selectedWorkspace?.id == imported.id)
         #expect(!model.isInComposerWorkspaceFlow)
     }
 
@@ -216,14 +208,14 @@ struct SceneSelectionComposerRetargetTests {
 
         model.beginComposerWorkspaceFlow()
         model.apply(coordinator.importWorkspace(legacy))
-        #expect(model.consumeComposerRetarget(for: legacy.id))
+        #expect(model.isComposingTask)
         #expect(!model.isInComposerWorkspaceFlow)
 
         // A package review is still queued, so the caller puts the flow back.
         model.setComposerWorkspaceFlow(true)
         model.apply(coordinator.importWorkspace(packaged))
 
-        #expect(model.consumeComposerRetarget(for: packaged.id))
+        #expect(model.selectedWorkspace?.id == packaged.id)
         #expect(model.isComposingTask)
     }
 
@@ -243,7 +235,6 @@ struct SceneSelectionComposerRetargetTests {
 
         #expect(model.selectedWorkspace === replacement)
         #expect(model.isComposingTask)
-        #expect(model.consumeComposerRetarget(for: replacement.id))
     }
 
     @Test("Restoring the same workspace object never consumes the flow")
@@ -275,7 +266,8 @@ struct SceneSelectionComposerRetargetTests {
         model.endComposerWorkspaceFlow()
         model.apply(coordinator.importWorkspace(later))
 
-        #expect(!model.consumeComposerRetarget(for: later.id))
+        #expect(!model.isComposingTask)
+        #expect(model.activeSurface == .workspace(later.id))
     }
 
     @Test("Restoring the current workspace during a flow does not consume it")
