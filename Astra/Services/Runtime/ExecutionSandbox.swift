@@ -140,8 +140,8 @@ struct ExecutionSandboxResolution: Sendable, Equatable {
 /// decision logic is testable without touching `UserDefaults`.
 struct ExecutionSandboxSettings: Sendable, Equatable {
     var enforcement: ExecutionSandboxEnforcement
-    /// Runtimes ASTRA wraps with its own Seatbelt profile. Providers that ship a
-    /// native OS sandbox (Codex, Cursor, Antigravity) are excluded by default to
+    /// Runtimes ASTRA wraps with its own Seatbelt profile. Providers whose own OS
+    /// sandbox confines file writes (Codex, Cursor) are excluded by default to
     /// avoid double-confinement breakage; they enforce via their own flags.
     var wrappedRuntimes: Set<AgentRuntimeID>
     /// Whether the profile permits outbound network. The provider CLI itself
@@ -152,13 +152,19 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     /// allowlist, or enforced by the Seatbelt profile.
     var readScope: ExecutionSandboxReadScope
 
-    /// Providers without a native OS sandbox today — wrapped by default.
-    static let defaultWrappedRuntimes: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI, .openCodeCLI]
+    /// Providers without an OS sandbox that confines file writes — wrapped by
+    /// default. Antigravity is here because its `--sandbox` only restricts the
+    /// terminal: its file-write tool is unconfined, so below Auto a write outside
+    /// the workspace succeeded and ASTRA's guard could only report it afterwards.
+    /// Its terminal sandbox nests inside ASTRA's profile (verified against the
+    /// real `agy`: a shell write in the workspace works, one outside is denied).
+    static let defaultWrappedRuntimes: Set<AgentRuntimeID> =
+        [.claudeCode, .copilotCLI, .openCodeCLI, .antigravityCLI]
 
-    /// Providers that ship their own OS sandbox (enforced via per-run flags).
+    /// Providers that ship their own OS sandbox over file writes (enforced via per-run flags).
     /// Excluded by default to avoid double-confinement breakage; the user can
     /// opt in to layer ASTRA's Seatbelt over them for defense-in-depth.
-    static let nativeSandboxRuntimes: Set<AgentRuntimeID> = [.codexCLI, .cursorCLI, .antigravityCLI]
+    static let nativeSandboxRuntimes: Set<AgentRuntimeID> = [.codexCLI, .cursorCLI]
 
     /// Providers that drop their own confinement in autonomous mode (the
     /// `--dangerously-bypass…` / `--force --sandbox disabled` /
@@ -167,7 +173,7 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     /// the most dangerous mode runs with no kernel boundary at all. Because the
     /// provider sandbox is bypassed here, wrapping is NOT double-confinement.
     static let autonomousForcedWrapRuntimes: Set<AgentRuntimeID> =
-        nativeSandboxRuntimes.union([.openCodeCLI])
+        nativeSandboxRuntimes.union([.openCodeCLI, .antigravityCLI])
 
     /// Single source of truth for the unset-defaults behavior. `current(...)`
     /// (which reads `UserDefaults`) and the `SettingsView` `@AppStorage`
