@@ -238,9 +238,9 @@ enum Stanford {
     static let chatBodyPointSize: CGFloat = 16
     static let chatBodyLineSpacing: CGFloat = 4
     static let chatCompactLineSpacing: CGFloat = 3
-    /// Reading measure for chat prose. ~82 characters at the 16pt body size;
-    /// wider stretches (the old 1280) read as walls of text on large windows.
-    static let chatParagraphMaxWidth: CGFloat = 720
+    /// Chat prose fills narrower columns and grows to a generous reading
+    /// measure on wide windows. Tables and code use the full column width.
+    static let chatParagraphMaxWidth: CGFloat = 1_000
     /// Subtle chip behind inline code runs; `Color.primary`-derived so it
     /// adapts to both appearances without a bespoke asset.
     static let inlineCodeBackground = Color.primary.opacity(0.065)
