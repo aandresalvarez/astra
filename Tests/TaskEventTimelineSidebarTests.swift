@@ -739,18 +739,32 @@ struct SidebarGroupingTests {
         )
     }
 
-    @Test("Task option overlay separates long titles from an opaque menu surface")
+    @Test("Task option overlay keeps a fixed target and fades long titles without a tile")
     func taskOptionOverlayHasSeparationFromLongTitles() {
         #expect(SidebarTaskAccessoryPresentation.controlSize == 24)
         #expect(SidebarTaskAccessoryPresentation.trailingPadding == 8)
         #expect(SidebarTaskAccessoryPresentation.footprintWidth == 32)
-        #expect(SidebarTaskAccessoryPresentation.backgroundCornerRadius == 6)
-        #expect(SidebarTaskAccessoryPresentation.backgroundOpacity == 1)
         #expect(SidebarTaskAccessoryPresentation.trailingFadeWidth == 64)
         #expect(
             SidebarTaskAccessoryPresentation.trailingFadeWidth
                 >= SidebarTaskAccessoryPresentation.footprintWidth * 2
         )
+    }
+
+    @Test("Sidebar overflow controls blend into rows and respond only to local interaction")
+    func overflowControlSurfaceStates() {
+        #expect(SidebarOverflowPresentation.backgroundOpacity(
+            isHovered: false, isPressed: false, isFocused: false
+        ) == 0)
+        #expect(SidebarOverflowPresentation.backgroundOpacity(
+            isHovered: true, isPressed: false, isFocused: false
+        ) == Stanford.fillSoft)
+        #expect(SidebarOverflowPresentation.backgroundOpacity(
+            isHovered: false, isPressed: false, isFocused: true
+        ) == Stanford.fillSoft)
+        #expect(SidebarOverflowPresentation.backgroundOpacity(
+            isHovered: true, isPressed: true, isFocused: true
+        ) == Stanford.fillPressed)
     }
 
     @Test("Workspace stars share geometry while filter and status keep distinct chrome")
