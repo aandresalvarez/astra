@@ -2271,8 +2271,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
             if metrics != nil { break }
         }
-        guard let metrics else { return }
-
+        guard let metrics else { return }; CopilotSessionMetricsReader.adoptSession(metrics, task: context.task, run: context.run)
         AgentEventRecorder.recordCopilotEvent(
             metrics.event,
             to: context.task,

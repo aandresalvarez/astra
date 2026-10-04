@@ -351,6 +351,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     let tokenBudget: Int
+    /// Tokens already inside the cumulative usage a resumed session reports; offsets only those comparisons.
+    let reportedUsageBaseline: Int
     let budgetEnforcementMode: BudgetEnforcementMode
     let maxTurns: Int
     let maxRepetitions: Int
@@ -509,6 +511,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
     init(
         tokenBudget: Int,
+        reportedUsageBaseline: Int = 0,
         budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
@@ -525,6 +528,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         readOnlyBoundaryReceipt: ReadOnlyResourceBoundaryReceipt? = nil
     ) {
         self.tokenBudget = tokenBudget
+        self.reportedUsageBaseline = reportedUsageBaseline
         self.budgetEnforcementMode = budgetEnforcementMode
         self.maxTurns = maxTurns
         self.maxRepetitions = maxRepetitions
@@ -721,7 +725,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
         if case .usage(let totalInput, let totalOutput) = parsed {
             let totalTokens = totalInput + totalOutput
-            if totalTokens > tokenBudget {
+            if totalTokens - reportedUsageBaseline > tokenBudget {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "stream_usage_budget_exceeded",
@@ -743,7 +747,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
             let totalTokens = totalInput + totalOutput
-            if totalTokens > tokenBudget {
+            if totalTokens - reportedUsageBaseline > tokenBudget {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "reported_budget_exceeded",

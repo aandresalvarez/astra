@@ -97,4 +97,68 @@ struct CumulativeSessionUsageTests {
         #expect(AgentRuntimeProcessRunner.remainingTokenBudget(1_000, alreadyUsed: 0 - 300) == 1_300)
         #expect(AgentRuntimeProcessRunner.remainingTokenBudget(Int.max, alreadyUsed: 0 - 300) == Int.max)
     }
+
+    @Test("A resumed session's cumulative cost is reduced to what the run's own turn added")
+    func resumedCostIsADelta() throws {
+        let (context, container) = try makeContext()
+        defer { withExtendedLifetime(container) {} }
+        let task = AgentTask(title: "Cost", goal: "Count once", runtime: .copilotCLI)
+        context.insert(task)
+        func recordCost(_ cost: Double, run: TaskRun, mode: AgentRuntimeRecordingMode) {
+            AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).recordWorkerStreamEvent(
+                .agent(.stats(inputTokens: 10, outputTokens: 1, costUSD: cost, durationMs: nil, turns: nil)),
+                mode: mode, task: task, run: run, modelContext: context, recordingState: AgentEventRecordingState()
+            )
+        }
+        let first = TaskRun(task: task)
+        first.providerSessionId = "session-1"
+        context.insert(first)
+        recordCost(1.00, run: first, mode: .initial)
+        let resumed = TaskRun(task: task)
+        resumed.providerSessionId = "session-1"
+        context.insert(resumed)
+        recordCost(1.25, run: resumed, mode: .followUp)
+
+        #expect(first.costUSD == 1.00)
+        #expect(resumed.costUSD == 0.25)
+    }
+
+    @Test("A Copilot session found only in its state directory becomes the task's, but never replaces a known one")
+    func discoveredCopilotSessionIsAdopted() throws {
+        let (context, container) = try makeContext()
+        defer { withExtendedLifetime(container) {} }
+        let task = AgentTask(title: "Adopt", goal: "Resume later", runtime: .copilotCLI)
+        context.insert(task)
+        let run = TaskRun(task: task)
+        context.insert(run)
+        task.sessionId = nil
+        run.providerSessionId = nil
+        let metrics = CopilotSessionMetrics(
+            sessionID: "found-session", inputTokens: 1, outputTokens: 1, costUSD: nil, durationMs: nil, turns: nil
+        )
+
+        CopilotSessionMetricsReader.adoptSession(metrics, task: task, run: run)
+        #expect(task.sessionId == "found-session")
+        #expect(run.providerSessionId == "found-session")
+
+        task.sessionId = "known"
+        run.providerSessionId = "known-run"
+        CopilotSessionMetricsReader.adoptSession(metrics, task: task, run: run)
+        #expect(task.sessionId == "known")
+        #expect(run.providerSessionId == "known-run")
+    }
+
+    @Test("The session baseline offsets the cumulative reported usage only, never the live estimate")
+    func monitorBaselineOffsetsReportedUsageOnly() {
+        let reported = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1_000, reportedUsageBaseline: 5_000)
+        // 5,900 reported is 900 of this run once the 5,000 already in the session total is set aside
+        #expect(!reported.processEvent(.usage(totalInputTokens: 5_500, totalOutputTokens: 400), process: nil))
+        #expect(reported.processEvent(.usage(totalInputTokens: 5_900, totalOutputTokens: 400), process: nil))
+        #expect(reported.budgetExceeded)
+
+        // What the current process itself has produced is not offset: the configured ceiling still stops it.
+        let estimated = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1_000, reportedUsageBaseline: 5_000)
+        #expect(estimated.processEvent(.text(text: String(repeating: "word ", count: 6_000)), process: nil))
+        #expect(estimated.budgetExceeded)
+    }
 }

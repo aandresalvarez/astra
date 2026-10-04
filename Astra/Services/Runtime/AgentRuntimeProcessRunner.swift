@@ -770,7 +770,7 @@ final class AgentRuntimeProcessRunner {
             }
         }
         let remainingTokenBudget = Self.remainingTokenBudget(
-            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed - executionPolicy.providerSessionUsageBaseline
+            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed
         )
         let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
@@ -806,6 +806,7 @@ final class AgentRuntimeProcessRunner {
                 maxRunSeconds: maxRunSeconds,
                 maxTurns: remainingTurns,
                 tokenBudget: remainingTokenBudget,
+                reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -832,6 +833,7 @@ final class AgentRuntimeProcessRunner {
             maxRunSeconds: maxRunSeconds,
             maxTurns: remainingTurns,
             tokenBudget: remainingTokenBudget,
+            reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -862,6 +864,7 @@ final class AgentRuntimeProcessRunner {
         maxRunSeconds: TimeInterval?,
         maxTurns: Int,
         tokenBudget: Int,
+        reportedUsageBaseline: Int,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -922,6 +925,7 @@ final class AgentRuntimeProcessRunner {
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
+                reportedUsageBaseline: reportedUsageBaseline,
                 budgetEnforcementMode: budgetEnforcementMode,
                 maxTurns: maxTurns,
                 maxRepetitions: 8,

@@ -780,7 +780,8 @@ enum AgentEventRecorder {
                     recordingMode: recordingMode
                 )
             }
-            if let cost {
+            // A resumed session's cost is cumulative too: record only what this run's turn added.
+            if let cost = cost.map({ max(0, $0 - priorSessionUsage(for: run, in: task).cost) }) {
                 switch recordingMode {
                 case .initial:
                     task.costUSD = cost
@@ -1041,13 +1042,13 @@ enum AgentEventRecorder {
     /// Tokens earlier runs of this run's provider session recorded, for runtimes whose resumed launches
     /// report the whole session's usage. Zero for every other runtime and for a run's first launch.
     @MainActor
-    static func priorSessionUsage(for run: TaskRun, in task: AgentTask) -> (input: Int, output: Int) {
+    static func priorSessionUsage(for run: TaskRun, in task: AgentTask) -> (input: Int, output: Int, cost: Double) {
         guard let runtime = run.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
               AgentRuntimeAdapterRegistry.adapter(for: runtime).descriptor.reportsCumulativeSessionUsage,
               let session = run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !session.isEmpty else { return (0, 0) }
+              !session.isEmpty else { return (0, 0, 0) }
         let earlier = task.runs.filter { $0.id != run.id && $0.providerSessionId == session }
-        return (earlier.reduce(0) { $0 + $1.inputTokens }, earlier.reduce(0) { $0 + $1.outputTokens })
+        return (earlier.reduce(0) { $0 + $1.inputTokens }, earlier.reduce(0) { $0 + $1.outputTokens }, earlier.reduce(0) { $0 + $1.costUSD })
     }
 
     @MainActor
