@@ -240,6 +240,37 @@ struct NativeResumeEmptyTurnTests {
         #expect(task.sessionId == nil)
     }
 
+    @Test("A hard budget stop on the re-run still drops the abandoned session")
+    func budgetStoppedRerunDropsTheOldSession() async throws {
+        let padHistory: (AgentRuntimeWorker, AgentTask) -> Void = { _, task in
+            let outputs = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")
+            try? FileManager.default.createDirectory(atPath: outputs, withIntermediateDirectories: true)
+            for turn in 2...9 {
+                let path = (outputs as NSString).appendingPathComponent(String(format: "turn_%03d.md", turn))
+                try? String(repeating: "Earlier turn \(turn) detail. ", count: 150).write(toFile: path, atomically: true, encoding: .utf8)
+            }
+        }
+        let (measured, _, measuredContainer) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyTurn), .init(lines: Self.freshAnswerTurn)
+        ], configure: padHistory)
+        defer { withExtendedLifetime(measuredContainer) {} }
+        let compact = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[1])
+        let full = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[2])
+        try #require(full > compact)
+
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyTurn), .init(lines: Self.freshAnswerTurn)
+        ], configure: { worker, task in
+            padHistory(worker, task)
+            worker.budgetEnforcementModeOverride = .hardStop
+            task.tokenBudget = (compact + full) / 2
+        })
+        defer { withExtendedLifetime(container) {} }
+
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+        #expect(task.sessionId == nil)
+    }
+
     @Test("A resumed turn that shows real output is not re-run")
     func realResumedTurnIsKept() async throws {
         let answered = [

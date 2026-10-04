@@ -709,8 +709,8 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
         )
-        // OpenCode keeps its database under XDG_DATA_HOME, which an attached skill may redirect for the launch.
-        let providerLaunchEnvironment = selectedRuntime == .openCodeCLI
+        // OpenCode and Antigravity keep their stores under XDG_DATA_HOME / HOME, which an attached skill may redirect for the launch.
+        let providerLaunchEnvironment = selectedRuntime == .openCodeCLI || selectedRuntime == .antigravityCLI
             ? ProcessInfo.processInfo.environment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: executionTask,
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch,
@@ -911,6 +911,10 @@ final class AgentRuntimeWorker {
                     "prompt_chars": String(promptWithoutResume.count)
                 ], level: .warning)
                 emptyTurnGate.discard()
+                // The abandoned session must not stay the task's resumable one, however this re-run ends
+                // (a hard budget stop below, a failure before its init frame); a successful init replaces it.
+                run.providerSessionId = nil
+                task.sessionId = nil
                 // The full-history prompt is larger than the compact one that was budget-checked.
                 guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
                     prompt: promptWithoutResume,
@@ -924,9 +928,6 @@ final class AgentRuntimeWorker {
                     return
                 }
                 prompt = promptWithoutResume
-                run.providerSessionId = nil
-                // The abandoned session must not stay the task's resumable one if this attempt fails before its init frame.
-                task.sessionId = nil
                 // maxRunSeconds bounds the whole run, so the re-run only gets what the first attempt left.
                 let remainingRunSeconds = max(1, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt))
                 // The empty attempt spent one provider turn of the run's maxTurns.

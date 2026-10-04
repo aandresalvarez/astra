@@ -32,9 +32,10 @@ enum ProviderNativeSessionStore {
         case .cursorCLI:
             return cursorChatExists(sessionID, userHome: userHome, fileManager: fileManager)
         case .antigravityCLI:
-            // `agy` reads its store out of HOME, which ASTRA points at the
-            // configured provider home when there is one.
-            let base = home.isEmpty ? userHome : home
+            // `agy` reads its store out of HOME: the configured provider home when there is one,
+            // else the launch's own HOME (a skill can scope it), else ASTRA's.
+            let launchHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let base = !home.isEmpty ? home : (launchHome.isEmpty ? userHome : launchHome)
             return fileManager.fileExists(atPath: path(
                 base, ".gemini", "antigravity-cli", "conversations", "\(sessionID).db"
             ))

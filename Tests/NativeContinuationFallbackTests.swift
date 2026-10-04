@@ -46,11 +46,34 @@ struct NativeContinuationFallbackTests {
         ))
         // Without the provider home configured it looks under the user home, where it is absent.
         #expect(!ProviderNativeSessionStore.sessionExists(
-            runtime: .antigravityCLI, sessionID: "conv-1", userHome: userHome
+            runtime: .antigravityCLI, sessionID: "conv-1", userHome: userHome, environment: [:]
         ))
         try touch("\(userHome)/.gemini/antigravity-cli/conversations/conv-2.db")
         #expect(ProviderNativeSessionStore.sessionExists(
-            runtime: .antigravityCLI, sessionID: "conv-2", userHome: userHome
+            runtime: .antigravityCLI, sessionID: "conv-2", userHome: userHome, environment: [:]
+        ))
+    }
+
+    @Test("With no provider home, Antigravity follows a launch-scoped HOME")
+    func antigravityFollowsTheLaunchHome() throws {
+        let userHome = try makeHome()
+        let skillHome = try makeHome()
+        defer {
+            try? FileManager.default.removeItem(atPath: userHome)
+            try? FileManager.default.removeItem(atPath: skillHome)
+        }
+        try touch("\(skillHome)/.gemini/antigravity-cli/conversations/conv-s.db")
+
+        #expect(ProviderNativeSessionStore.sessionExists(
+            runtime: .antigravityCLI, sessionID: "conv-s", userHome: userHome, environment: ["HOME": skillHome]
+        ))
+        #expect(!ProviderNativeSessionStore.sessionExists(
+            runtime: .antigravityCLI, sessionID: "conv-s", userHome: userHome, environment: [:]
+        ))
+        // A configured provider home still wins over the launch HOME.
+        #expect(!ProviderNativeSessionStore.sessionExists(
+            runtime: .antigravityCLI, sessionID: "conv-s", providerHomeDirectory: userHome,
+            userHome: userHome, environment: ["HOME": skillHome]
         ))
     }
 
