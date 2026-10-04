@@ -1836,7 +1836,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.copilot,
         defaultModel: CopilotCLIRuntime.defaultModel,
         defaultModels: CopilotCLIRuntime.defaultModels,
-        supportsAstraRunProtocol: true,
+        supportsAstraRunProtocol: true, supportsNativeContinuation: true,
         supportsMCPServers: true,
         supportsReasoningEffort: true
     )
@@ -2039,7 +2039,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
-            reasoningEffort: reasoningEffort,
+            reasoningEffort: reasoningEffort, resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
@@ -2429,7 +2429,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.antigravity,
         defaultModel: AntigravityCLIRuntime.defaultModelName(),
         defaultModels: AntigravityCLIRuntime.availableModelNames(),
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true, supportsNativeContinuation: true
     )
     let readinessCheckID = "antigravity-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .antigravityCLI, launchOverheadTokens: 0)
@@ -2644,7 +2644,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
                 || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
-            diagnosticLogPath: diagnosticLogPath,
+            diagnosticLogPath: diagnosticLogPath, resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()
         )
         var commandPlannedFields = [

@@ -712,7 +712,8 @@ final class AgentRuntimeWorker {
             runtimeAdapter: runtimeAdapter,
             phase: auditPhase,
             currentLaunchSignature: launchSignature,
-            grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest)
+            grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest),
+            providerHomeDirectory: launchSettings.homeDirectory
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
         // Compact only after this launch has proved native continuation safe.
@@ -1292,7 +1293,8 @@ final class AgentRuntimeWorker {
         runtimeAdapter: any AgentRuntimeDescriptorReadiness,
         phase: RunPhase,
         currentLaunchSignature: ProviderLaunchSignaturePayload,
-        grantNeutralizingStrings: Set<String> = []
+        grantNeutralizingStrings: Set<String> = [],
+        providerHomeDirectory: String = ""
     ) -> NativeContinuationDecision {
         guard phase == .resume,
               runtimeAdapter.descriptor.supportsNativeContinuation else {
@@ -1310,6 +1312,14 @@ final class AgentRuntimeWorker {
 
         guard let previousRun = priorRun(forNativeSessionID: sessionID, task: task, currentRun: currentRun) else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_session_run", signatureMatched: false)
+        }
+
+        guard ProviderNativeSessionStore.sessionExists(
+            runtime: runtimeAdapter.descriptor.id,
+            sessionID: sessionID,
+            providerHomeDirectory: providerHomeDirectory
+        ) else {
+            return NativeContinuationDecision(sessionID: nil, skipReason: "provider_session_missing", signatureMatched: false)
         }
 
         guard let previousSignature = ProviderLaunchSignatureService.storedSignature(for: task, run: previousRun) else {

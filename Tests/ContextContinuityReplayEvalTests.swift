@@ -100,7 +100,7 @@ struct ContextContinuityReplayEvalTests {
         try context.save()
 
         TaskContextStateManager.recordTurn(task: task, run: run, message: "Run focused continuity tests")
-        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.runtimeID = AgentRuntimeID.openCodeCLI.rawValue
 
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
             message: "switch provider and fix the failure",
