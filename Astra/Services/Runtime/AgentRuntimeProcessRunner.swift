@@ -157,7 +157,7 @@ final class AgentRuntimeProcessRunner {
         case .skipped, .fallback:
             return .plan(originalPlan)
         case .failClosed(let reason):
-            let message = "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked."
+            let message = "ASTRA could not apply the macOS execution sandbox (\(reason)), which this run depends on, so it was blocked. Use a narrower workspace folder, or switch to Auto to run without it."
             return .blocked(AgentProcessResult(
                 exitCode: -1,
                 error: message,

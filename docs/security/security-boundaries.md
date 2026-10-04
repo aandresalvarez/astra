@@ -51,6 +51,10 @@ and `~/Documents/Astra Dev/Workspaces`.
   terminal, so ASTRA wraps it in Seatbelt at every level. Without that wrap a
   write outside the workspace through its file tool happened first and was only
   reported afterwards. See `ExecutionSandboxSettings.defaultWrappedRuntimes`.
+  Because that wrap is all that makes Ask mean anything for Antigravity, a run
+  below Auto is blocked, not run unconfined, when the wrap cannot be applied
+  (workspace too broad, `sandbox-exec` missing) even under best-effort. Auto is
+  exempt and the other wrapped runtimes still fall back with an audit line.
 - Capability packages can define skills, connectors, and local tools; package
   IDs, tool commands, default arguments, connector URLs, and browser adapters
   must be treated as untrusted input.

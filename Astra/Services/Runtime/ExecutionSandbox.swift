@@ -151,6 +151,9 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     /// Whether runtime filesystem reads are open, audited against the strict
     /// allowlist, or enforced by the Seatbelt profile.
     var readScope: ExecutionSandboxReadScope
+    /// Runtimes whose run must be blocked, not run unconfined, when the wrap
+    /// cannot be applied even under best-effort. See `failClosedRuntimes(...)`.
+    var failClosedRuntimes: Set<AgentRuntimeID>
 
     /// Providers without an OS sandbox that confines file writes — wrapped by
     /// default. Antigravity is here because its `--sandbox` only restricts the
@@ -188,12 +191,28 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         enforcement: ExecutionSandboxEnforcement,
         wrappedRuntimes: Set<AgentRuntimeID> = ExecutionSandboxSettings.defaultWrappedRuntimes,
         allowNetwork: Bool = ExecutionSandboxSettings.defaultAllowNetwork,
-        readScope: ExecutionSandboxReadScope? = nil
+        readScope: ExecutionSandboxReadScope? = nil,
+        failClosedRuntimes: Set<AgentRuntimeID> = []
     ) {
         self.enforcement = enforcement
         self.wrappedRuntimes = wrappedRuntimes
         self.allowNetwork = allowNetwork
         self.readScope = readScope ?? Self.defaultReadScope(for: enforcement)
+        self.failClosedRuntimes = failClosedRuntimes
+    }
+
+    /// Runtimes for which the wrap is the only thing that makes Ask mean
+    /// anything. Antigravity's own sandbox does not reach its file-write tool,
+    /// so below Auto, running it unconfined is Auto in all but name: the guard
+    /// can only report a write after it happened. Best-effort therefore blocks
+    /// these runs instead of falling back. Auto is exempt (the user chose to
+    /// drop the gates), strict already blocks, and Off is the user's call.
+    static func failClosedRuntimes(
+        enforcement: ExecutionSandboxEnforcement,
+        permissionPolicy: PermissionPolicy
+    ) -> Set<AgentRuntimeID> {
+        guard enforcement == .bestEffort, permissionPolicy != .autonomous else { return [] }
+        return [.antigravityCLI]
     }
 
     func shouldWrap(runtime: AgentRuntimeID) -> Bool {
@@ -212,7 +231,8 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         return ExecutionSandboxSettings(
             enforcement: snapshot,
             wrappedRuntimes: runtimes,
-            allowNetwork: snapshot == .off ? Self.defaultAllowNetwork : allowNetwork
+            allowNetwork: snapshot == .off ? Self.defaultAllowNetwork : allowNetwork,
+            failClosedRuntimes: Self.failClosedRuntimes(enforcement: snapshot, permissionPolicy: permissionPolicy)
         )
     }
 
@@ -313,7 +333,8 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
                 enforcement: enforcement,
                 wrappedRuntimes: wrappedRuntimes,
                 allowNetwork: allowNetwork,
-                readScope: readScope
+                readScope: readScope,
+                failClosedRuntimes: failClosedRuntimes(enforcement: enforcement, permissionPolicy: permissionPolicy)
             ),
             reason: resolutionReason
         )
@@ -622,8 +643,10 @@ enum ExecutionSandbox: Sendable {
             return .skipped(reason: "runtime_excluded")
         }
 
+        let blocksWhenUnavailable = settings.enforcement == .strict
+            || settings.failClosedRuntimes.contains(plan.runtime)
         let unavailable: (String) -> ExecutionSandboxDecision = { reason in
-            settings.enforcement == .strict ? .failClosed(reason: reason) : .fallback(reason: reason)
+            blocksWhenUnavailable ? .failClosed(reason: reason) : .fallback(reason: reason)
         }
 
         guard let workspace = canonicalize(plan.currentDirectory), !workspace.isEmpty else {
