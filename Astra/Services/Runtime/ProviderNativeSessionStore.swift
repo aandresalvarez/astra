@@ -30,7 +30,9 @@ enum ProviderNativeSessionStore {
         let home = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         switch runtime {
         case .cursorCLI:
-            return cursorChatExists(sessionID, userHome: userHome, fileManager: fileManager)
+            // Cursor reads `~/.cursor` from the launch's HOME, which a skill can scope.
+            let launchHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return cursorChatExists(sessionID, userHome: launchHome.isEmpty ? userHome : launchHome, fileManager: fileManager)
         case .antigravityCLI:
             // `agy` reads its store out of HOME: the configured provider home when there is one,
             // else the launch's own HOME (a skill can scope it), else ASTRA's.
@@ -80,7 +82,11 @@ enum ProviderNativeSessionStore {
         let dataHome = !configured.isEmpty
             ? configured
             : path(launchHome.isEmpty ? userHome : launchHome, ".local", "share")
-        let databasePath = path(dataHome, "opencode", "opencode.db")
+        // OPENCODE_DB overrides the file: absolute as given, relative to OpenCode's own data directory.
+        let override = environment["OPENCODE_DB"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let databasePath = override.isEmpty
+            ? path(dataHome, "opencode", "opencode.db")
+            : (override.hasPrefix("/") ? override : path(dataHome, "opencode", override))
         guard fileManager.fileExists(atPath: databasePath) else { return false }
 
         var database: OpaquePointer?

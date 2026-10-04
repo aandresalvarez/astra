@@ -345,6 +345,36 @@ struct NativeResumeEmptyTurnTests {
         #expect(AgentRuntimeProcessRunner.remainingTokenBudget(-5, alreadyUsed: 110) == -5)
     }
 
+    @Test("The full-history prompt is judged against the budget the discarded attempt left, and that usage is still recorded")
+    func rerunIsBudgetCheckedAgainstWhatIsLeft() async throws {
+        let padHistory: (AgentRuntimeWorker, AgentTask) -> Void = { _, task in
+            let outputs = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")
+            try? FileManager.default.createDirectory(atPath: outputs, withIntermediateDirectories: true)
+            for turn in 2...9 {
+                let path = (outputs as NSString).appendingPathComponent(String(format: "turn_%03d.md", turn))
+                try? String(repeating: "Earlier turn \(turn) detail. ", count: 150).write(toFile: path, atomically: true, encoding: .utf8)
+            }
+        }
+        let scripts: [ScriptedStreamRunner.Script] = [
+            .init(lines: Self.initialTurn), .init(lines: Self.reasoningOnlyWithUsage), .init(lines: Self.freshAnswerWithUsage)
+        ]
+        let (measured, _, measuredContainer) = try await runFollowUp(scripts: scripts, configure: padHistory)
+        defer { withExtendedLifetime(measuredContainer) {} }
+        let full = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[2])
+
+        // The full prompt fits the whole budget, but not what is left after the discarded attempt's 110 tokens.
+        let (runner, task, container) = try await runFollowUp(scripts: scripts, configure: { worker, task in
+            padHistory(worker, task)
+            worker.budgetEnforcementModeOverride = .hardStop
+            task.tokenBudget = full + 50
+        })
+        defer { withExtendedLifetime(container) {} }
+
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
+        let latest = try #require(task.runs.max { $0.startedAt < $1.startedAt })
+        #expect(latest.tokensUsed == 110)
+    }
+
     @Test("A resumed turn that shows real output is not re-run")
     func realResumedTurnIsKept() async throws {
         let answered = [

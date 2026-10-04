@@ -94,15 +94,56 @@ struct NativeContinuationFallbackTests {
         try touch("\(home)/.cursor/chats/aaaa/other-chat", directory: true)
         try touch("\(home)/.cursor/chats/bbbb/chat-1", directory: true)
 
-        #expect(ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-1", userHome: home))
-        #expect(!ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-2", userHome: home))
+        #expect(ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-1", userHome: home, environment: [:]))
+        #expect(!ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-2", userHome: home, environment: [:]))
     }
 
     @Test("Cursor with no chats directory at all reads as missing")
     func cursorWithoutStore() throws {
         let home = try makeHome()
         defer { try? FileManager.default.removeItem(atPath: home) }
-        #expect(!ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-1", userHome: home))
+        #expect(!ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-1", userHome: home, environment: [:]))
+    }
+
+    @Test("Cursor follows a launch-scoped HOME")
+    func cursorFollowsTheLaunchHome() throws {
+        let userHome = try makeHome()
+        let skillHome = try makeHome()
+        defer {
+            try? FileManager.default.removeItem(atPath: userHome)
+            try? FileManager.default.removeItem(atPath: skillHome)
+        }
+        try touch("\(skillHome)/.cursor/chats/h/chat-s", directory: true)
+
+        #expect(ProviderNativeSessionStore.sessionExists(
+            runtime: .cursorCLI, sessionID: "chat-s", userHome: userHome, environment: ["HOME": skillHome]
+        ))
+        #expect(!ProviderNativeSessionStore.sessionExists(
+            runtime: .cursorCLI, sessionID: "chat-s", userHome: userHome, environment: [:]
+        ))
+    }
+
+    @Test("OPENCODE_DB points the lookup at another database: absolute as given, relative to OpenCode's data directory")
+    func openCodeDatabaseOverride() throws {
+        let userHome = try makeHome()
+        let elsewhere = try makeHome()
+        defer {
+            try? FileManager.default.removeItem(atPath: userHome)
+            try? FileManager.default.removeItem(atPath: elsewhere)
+        }
+        try makeOpenCodeDatabase(at: "\(userHome)/.local/share/opencode/opencode.db", sessionIDs: ["ses_default"])
+        try makeOpenCodeDatabase(at: "\(elsewhere)/alt.db", sessionIDs: ["ses_absolute"])
+        try makeOpenCodeDatabase(at: "\(userHome)/.local/share/opencode/rel.db", sessionIDs: ["ses_relative"])
+
+        func exists(_ id: String, _ environment: [String: String]) -> Bool {
+            ProviderNativeSessionStore.sessionExists(
+                runtime: .openCodeCLI, sessionID: id, userHome: userHome, environment: environment
+            )
+        }
+        #expect(exists("ses_absolute", ["OPENCODE_DB": "\(elsewhere)/alt.db"]))
+        #expect(!exists("ses_default", ["OPENCODE_DB": "\(elsewhere)/alt.db"]))
+        #expect(exists("ses_relative", ["OPENCODE_DB": "rel.db"]))
+        #expect(exists("ses_default", [:]))
     }
 
     @Test("OpenCode session is a row of its SQLite database, under XDG_DATA_HOME when set")
@@ -248,6 +289,7 @@ struct NativeContinuationFallbackTests {
 
         #expect(runner.nativeSessionIDs.count == 1)
         #expect(runner.nativeSessionIDs.first == .some(nil))
+        #expect(task.sessionId == nil)
         let prompt = try #require(runner.prompts.first)
         #expect(prompt.contains("Pick up where we left off."))
         // Pin the reason: a missing launch signature would also skip, and must not pass for this.

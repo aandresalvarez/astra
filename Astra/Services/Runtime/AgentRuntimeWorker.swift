@@ -709,16 +709,17 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
         )
-        // OpenCode and Antigravity keep their stores under XDG_DATA_HOME / HOME, which an attached skill may redirect for the launch.
-        let providerLaunchEnvironment = selectedRuntime == .openCodeCLI || selectedRuntime == .antigravityCLI
-            ? ProcessInfo.processInfo.environment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+        // OpenCode, Antigravity and Cursor keep their stores under HOME (OpenCode also XDG_DATA_HOME / OPENCODE_DB), which an attached skill may redirect for the launch.
+        let baseLaunchEnvironment = ProcessInfo.processInfo.environment.merging(["HOME": providerSessionStoreHome]) { _, home in home }
+        let providerLaunchEnvironment = [.openCodeCLI, .antigravityCLI, .cursorCLI].contains(selectedRuntime)
+            ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: executionTask,
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch,
                 contextText: providerLaunchContextText,
                 executionPolicy: executionPolicy,
                 runtimeRequirements: appliedRuntime.requirements
             )) { _, scoped in scoped }
-            : ProcessInfo.processInfo.environment
+            : baseLaunchEnvironment
         let nativeContinuationDecision = Self.nativeContinuationSessionID(
             for: task,
             currentRun: run,
@@ -818,6 +819,24 @@ final class AgentRuntimeWorker {
         run.providerSessionId = nativeContinuationSessionID
         ProviderLaunchSignatureService.record(launchSignature, task: task, run: run, modelContext: modelContext)
         let discardedUsage = DiscardedAttemptUsage()
+        let persistRecordedEvent: (AgentRuntimeRecordedEvent) -> Void = { event in
+            pendingEvents.add { [weak self] in
+                guard self != nil else { return }
+                PerformanceSignposts.persistProviderEvent {
+                    runtimeAdapter.recordWorkerStreamEvent(
+                        event,
+                        mode: recordingMode,
+                        task: task,
+                        run: run,
+                        modelContext: modelContext,
+                        recordingState: recordingState
+                    )
+                }
+                if let parsed = runtimeAdapter.callbackEvent(from: event) {
+                    onEvent(parsed)
+                }
+            }
+        }
         let handleLine: (String, Bool) -> Void = { line, parsesJSONLines in
             PerformanceSignposts.processStreamLine {
                 streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
@@ -928,8 +947,12 @@ final class AgentRuntimeWorker {
                     modelContext: modelContext,
                     phase: auditPhase,
                     runtime: selectedRuntime,
-                    budgetEnforcementMode: budgetEnforcementMode
+                    budgetEnforcementMode: budgetEnforcementMode,
+                    alreadyUsedTokens: discardedUsage.totalTokens
                 ) else {
+                    // The run ends here, but the discarded attempt still spent what it spent.
+                    for event in discardedUsage.unappliedEvents() { persistRecordedEvent(event) }
+                    await pendingEvents.drainAll()
                     return
                 }
                 prompt = promptWithoutResume
@@ -945,22 +968,7 @@ final class AgentRuntimeWorker {
         flushedBatch.recordEmitted(to: streamTelemetry)
         flushedBatch.recordEmitted(to: streamDebugCapture)
         for event in flushedBatch.events + discardedUsage.unappliedEvents() {
-            pendingEvents.add { [weak self] in
-                guard self != nil else { return }
-                PerformanceSignposts.persistProviderEvent {
-                    runtimeAdapter.recordWorkerStreamEvent(
-                        event,
-                        mode: recordingMode,
-                        task: task,
-                        run: run,
-                        modelContext: modelContext,
-                        recordingState: recordingState
-                    )
-                }
-                if let parsed = runtimeAdapter.callbackEvent(from: event) {
-                    onEvent(parsed)
-                }
-            }
+            persistRecordedEvent(event)
         }
         await pendingEvents.drainAll()
         AgentEventRecorder.commitUnresolvedFileChanges(
@@ -1402,6 +1410,8 @@ final class AgentRuntimeWorker {
             userHome: userHome,
             environment: environment
         ) else {
+            // Known gone: stop advertising it, so a fresh launch that fails early cannot leave Resume pointing at it.
+            task.sessionId = nil
             return NativeContinuationDecision(sessionID: nil, skipReason: "provider_session_missing", signatureMatched: false)
         }
 
