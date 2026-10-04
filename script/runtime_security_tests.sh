@@ -44,7 +44,7 @@ stage_suites() {
       printf '%s\n' ExecutionSandboxRunnerTests
       ;;
     policy_manifests)
-      printf '%s\n' RunPermissionManifestTests
+      printf '%s\n' RunPermissionManifestTests AgentPolicyRuntimeMatrixTests
       ;;
     permission_actions)
       printf '%s\n' \
