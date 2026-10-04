@@ -149,7 +149,8 @@ final class AgentRuntimeProcessRunner {
     /// unconfined under strict/autonomous with no test to catch it.
     static func sandboxOutcome(
         for decision: ExecutionSandboxDecision,
-        originalPlan: AgentRuntimeProcessLaunchPlan
+        originalPlan: AgentRuntimeProcessLaunchPlan,
+        enforcement: ExecutionSandboxEnforcement = .strict
     ) -> SandboxedPlanOutcome {
         switch decision {
         case .applied(let wrapped, _):
@@ -157,7 +158,12 @@ final class AgentRuntimeProcessRunner {
         case .skipped, .fallback:
             return .plan(originalPlan)
         case .failClosed(let reason):
-            let message = "ASTRA could not apply the macOS execution sandbox (\(reason)), which this run depends on, so it was blocked. Use a narrower workspace folder, or switch to Auto to run without it."
+            // Strict blocks every runtime and switching to Auto would not unblock it,
+            // so the way out differs from the best-effort block of a runtime whose
+            // Ask depends on the sandbox (`ExecutionSandboxSettings.failClosedRuntimes`).
+            let message = enforcement == .strict
+                ? "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked. Use a narrower workspace folder, or change the sandbox enforcement in Settings."
+                : "ASTRA could not apply the macOS execution sandbox (\(reason)), which this run depends on below Auto, so it was blocked. Use a narrower workspace folder, or switch to Auto to run without it."
             return .blocked(AgentProcessResult(
                 exitCode: -1,
                 error: message,
@@ -548,7 +554,7 @@ final class AgentRuntimeProcessRunner {
             }
             return .plan(finalPlan)
         }
-        return Self.sandboxOutcome(for: decision, originalPlan: plan)
+        return Self.sandboxOutcome(for: decision, originalPlan: plan, enforcement: settings.enforcement)
     }
 
     enum SandboxedUtilityPlanOutcome {
@@ -595,7 +601,7 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
         }
 
-        switch Self.sandboxOutcome(for: decision, originalPlan: plan) {
+        switch Self.sandboxOutcome(for: decision, originalPlan: plan, enforcement: settings.enforcement) {
         case .plan(let resolvedPlan):
             return .plan(AgentUtilityLaunchPlan(
                 process: resolvedPlan,

@@ -67,8 +67,13 @@ struct AskCoverageBadge: Equatable {
         // floor there would over-state the boundary. Under strict, a sandbox that
         // can't apply fails closed instead, so a run that proceeds is genuinely
         // confined — which is why strict subsumes a willLikelyApply preflight here.
+        //
+        // A runtime in `failClosedRuntimes` blocks instead of falling back under
+        // best-effort (Antigravity below Auto), so for it too a run that proceeds
+        // is genuinely confined.
         let kernelFloor = sandboxSettings.shouldWrap(runtime: runtime)
-            && sandboxSettings.enforcement == .strict
+            && (sandboxSettings.enforcement == .strict
+                || sandboxSettings.failClosedRuntimes.contains(runtime))
 
         let tier: Tier
         switch (liveApprovals, kernelFloor) {

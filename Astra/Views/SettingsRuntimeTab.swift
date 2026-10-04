@@ -265,7 +265,7 @@ struct SettingsRuntimeTab: View {
                 Toggle("Also Sandbox Providers With Built-In Sandboxes", isOn: $sandboxLayerNativeProviders)
                     .disabled(selectedSandboxEnforcement == .off)
 
-                Text("Layer ASTRA's sandbox over Codex, Cursor, and Antigravity for defense-in-depth. Off by default - these providers already self-sandbox, and double-confinement can break them.")
+                Text("Layer ASTRA's sandbox over Codex and Cursor for defense-in-depth. Off by default - these providers already sandbox file writes, and double-confinement can break them. Antigravity is always sandboxed by ASTRA, since its own sandbox covers only the terminal.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.coolGrey)
                     .fixedSize(horizontal: false, vertical: true)

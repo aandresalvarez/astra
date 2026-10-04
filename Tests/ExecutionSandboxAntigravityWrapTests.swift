@@ -83,12 +83,52 @@ struct ExecutionSandboxAntigravityWrapTests {
             == .failClosed(reason: "unsafe_execution_path"))
     }
 
-    private func decide(
-        runtime: AgentRuntimeID,
-        workspace: String,
-        settings: ExecutionSandboxSettings
-    ) -> ExecutionSandboxDecision {
-        let plan = AgentRuntimeProcessLaunchPlan(
+    // MARK: - What the user is told
+
+    @Test("The Ask badge counts the wrap as a kernel floor for Antigravity even under best-effort")
+    func askBadgeCountsTheFailClosedWrap() {
+        let defaults = InMemoryDefaults()
+        let ask = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
+
+        let antigravity = AskCoverageBadge.resolve(
+            runtime: .antigravityCLI, permissionPolicy: .restricted, sandboxSettings: ask
+        )
+        #expect(antigravity.hasKernelFloor)
+
+        // A wrapped runtime that still falls back has no guaranteed floor under best-effort.
+        let claude = AskCoverageBadge.resolve(
+            runtime: .claudeCode, permissionPolicy: .restricted, sandboxSettings: ask
+        )
+        #expect(!claude.hasKernelFloor)
+
+        // Auto drops the block, so there is no guarantee to claim.
+        let auto = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
+        let autoAntigravity = AskCoverageBadge.resolve(
+            runtime: .antigravityCLI, permissionPolicy: .autonomous, sandboxSettings: auto
+        )
+        #expect(!autoAntigravity.hasKernelFloor)
+    }
+
+    @Test("A strict block points at the sandbox setting, since switching to Auto would not unblock it")
+    func strictBlockPointsAtTheSetting() {
+        let message = blockedMessage(enforcement: .strict)
+
+        #expect(message?.contains("strict") == true)
+        #expect(message?.contains("Auto") == false)
+        #expect(message?.contains("sandbox enforcement") == true)
+    }
+
+    @Test("A best-effort block offers a narrower workspace or Auto, and does not claim strict is on")
+    func bestEffortBlockOffersAutoOrANarrowerWorkspace() {
+        let message = blockedMessage(enforcement: .bestEffort)
+
+        #expect(message?.contains("strict") == false)
+        #expect(message?.contains("narrower workspace") == true)
+        #expect(message?.contains("Auto") == true)
+    }
+
+    private func makePlan(runtime: AgentRuntimeID, workspace: String) -> AgentRuntimeProcessLaunchPlan {
+        AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
             executablePath: "/usr/bin/true",
             arguments: [],
@@ -105,6 +145,27 @@ struct ExecutionSandboxAntigravityWrapTests {
             pathMapper: nil,
             executionEnvironment: .host
         )
-        return ExecutionSandbox.decide(plan: plan, providerHomeDirectory: "", settings: settings)
+    }
+
+    private func decide(
+        runtime: AgentRuntimeID,
+        workspace: String,
+        settings: ExecutionSandboxSettings
+    ) -> ExecutionSandboxDecision {
+        ExecutionSandbox.decide(
+            plan: makePlan(runtime: runtime, workspace: workspace),
+            providerHomeDirectory: "",
+            settings: settings
+        )
+    }
+
+    private func blockedMessage(enforcement: ExecutionSandboxEnforcement) -> String? {
+        let outcome = AgentRuntimeProcessRunner.sandboxOutcome(
+            for: .failClosed(reason: "unsafe_execution_path"),
+            originalPlan: makePlan(runtime: .antigravityCLI, workspace: "/"),
+            enforcement: enforcement
+        )
+        guard case .blocked(let result) = outcome else { return nil }
+        return result.runtimeStopMessage
     }
 }
