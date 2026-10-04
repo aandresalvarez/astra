@@ -890,39 +890,14 @@ struct ChatPanelView: View {
     private var composerView: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
-                if draftTask == nil, draftToLoad == nil, let workspace {
-                    NewTaskWorktreeOptionsView(workspace: workspace, selection: $worktreeSelection)
-                        .padding(.horizontal, 18)
-                        .padding(.top, worktreeSelection.repositories.isEmpty && !worktreeSelection.isEnabled ? 0 : 12)
-                } else if let path = draftTask?.executionRootPath {
-                    Label(WorkspacePathPresentation.abbreviatePath(path), systemImage: "arrow.triangle.branch")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help("This draft is pinned to \(path). Start a new task to choose another checkout.")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 18)
-                        .padding(.top, 12)
-                }
-
-                if isPreparingWorktree {
-                    ProgressView("Preparing task checkout...")
-                        .controlSize(.small)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 18)
-                        .padding(.top, 10)
-                }
-
-                if let taskCreationError {
-                    Text(taskCreationError)
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(Stanford.errorRed)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 18)
-                        .padding(.top, 10)
-                }
+                NewTaskWorktreeDockView(
+                    workspace: workspace,
+                    allowsChoice: draftTask == nil && draftToLoad == nil,
+                    pinnedPath: (draftTask ?? draftToLoad)?.executionRootPath,
+                    isPreparing: isPreparingWorktree,
+                    problem: taskCreationError,
+                    selection: $worktreeSelection
+                )
 
                 if !attachedFiles.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {

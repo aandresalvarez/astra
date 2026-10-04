@@ -16,17 +16,64 @@ struct ComposerPresentationTests {
         #expect(TaskComposerPresentation.inputBottomPadding == 9)
     }
 
-    @Test("new task worktree controls are opt-in and use a native repository choice")
+    @Test("new task worktree choice sits in the composer dock strip with trailing controls")
     func newTaskWorktreeControlsAreWiredIntoComposer() throws {
         let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
-        let options = try sourceFile("Astra/Views/NewTaskWorktreeOptionsView.swift")
-        #expect(composer.contains("NewTaskWorktreeOptionsView(workspace: workspace, selection: $worktreeSelection)"))
+        let strip = try sourceFile("Astra/Views/NewTaskWorktreeDockView.swift")
+        let decisionDock = try sourceFile("Astra/Views/TaskDecisionDockView.swift")
+
+        // The strip opens the composer card, where an open task shows its
+        // decision dock, and owns the setup progress and creation problems.
+        let stripCall = try #require(composer.range(of: "NewTaskWorktreeDockView("))
+        let input = try #require(composer.range(of: "TextField(\"Describe a task or ask a question...\""))
+        #expect(stripCall.lowerBound < input.lowerBound)
+        #expect(composer.contains("allowsChoice: draftTask == nil && draftToLoad == nil"))
+        #expect(composer.contains("isPreparing: isPreparingWorktree"))
+        #expect(composer.contains("problem: taskCreationError"))
+        #expect(composer.contains("selection: $worktreeSelection"))
         #expect(composer.contains("hasInput: hasInput && canSubmitWorktreeSelection"))
-        #expect(options.contains("if !selection.repositories.isEmpty || selection.isEnabled"))
-        #expect(options.contains("Toggle(\"Start in a new worktree\", isOn: $selection.isEnabled)"))
-        #expect(options.contains(".toggleStyle(.checkbox)"))
-        #expect(options.contains("Picker(\"Repository\", selection: $selection.repositoryPath)"))
-        #expect(options.contains(".pickerStyle(.radioGroup)"))
+        #expect(!composer.contains("NewTaskWorktreeOptionsView"))
+        #expect(!composer.contains("ProgressView(\"Preparing task checkout...\")"))
+
+        // Both strips share the dock row chrome.
+        #expect(strip.contains(".composerDockRowChrome(tone: presentation.tone)"))
+        #expect(decisionDock.contains(".composerDockRowChrome(tone: presentation.tone)"))
+        #expect(strip.contains("SubtleDivider()"))
+
+        // Status leads; controls trail after a spacer in both layouts.
+        let row = try #require(strip.range(of: "private func dockRow("))
+        let status = try #require(strip.range(of: "statusCluster(presentation)", range: row.upperBound..<strip.endIndex))
+        let spacer = try #require(strip.range(of: "Spacer(minLength: 12)", range: status.upperBound..<strip.endIndex))
+        let trailing = try #require(strip.range(of: "controls(presentation)", range: spacer.upperBound..<strip.endIndex))
+        let compactSpacer = try #require(strip.range(of: "Spacer(minLength: 0)", range: trailing.upperBound..<strip.endIndex))
+        #expect(strip.range(of: "controls(presentation)", range: compactSpacer.upperBound..<strip.endIndex) != nil)
+
+        // The checkbox is rightmost; the repository menu appears to its left.
+        let controls = try #require(strip.range(of: "private func controls("))
+        let menu = try #require(strip.range(of: "repositoryMenu", range: controls.upperBound..<strip.endIndex))
+        let toggle = try #require(strip.range(
+            of: "Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: $selection.isEnabled)",
+            range: controls.upperBound..<strip.endIndex
+        ))
+        #expect(menu.lowerBound < toggle.lowerBound)
+        #expect(strip.contains(".toggleStyle(.checkbox)"))
+        #expect(strip.contains("Picker(\"Repository\", selection: $selection.repositoryPath)"))
+        #expect(strip.contains(".pickerStyle(.inline)"))
+        #expect(strip.contains(".menuStyle(.button)"))
+        #expect(NewTaskWorktreeDockPresentation.toggleTitle == "Start in a new worktree")
+    }
+
+    @Test("composer dock strips share one tone palette")
+    func composerDockStripsShareTonePalette() {
+        #expect(TaskDecisionDockTone.neutral.dockColor == Stanford.coolGrey)
+        #expect(TaskDecisionDockTone.running.dockColor == Stanford.lagunita)
+        #expect(TaskDecisionDockTone.attention.dockColor == Stanford.poppy)
+        #expect(TaskDecisionDockTone.failed.dockColor == Stanford.failed)
+        for tone in [TaskDecisionDockTone.success, .verified, .closed] {
+            #expect(tone.dockColor == Stanford.statusHealthy)
+        }
+        #expect(TaskDecisionDockTone.running.dockStatusIconColor == Stanford.statusInfo)
+        #expect(TaskDecisionDockTone.failed.dockStatusIconColor == Stanford.failed)
     }
 
     @Test("planning context uses the prepared checkout before either provider call")
