@@ -42,7 +42,7 @@ private struct SidebarOverflowButtonBody: View {
                     isFocused: isEnabled && isFocused
                 )
             )))
-            .overlay(shape.stroke(isFocused ? Stanford.focusRing : .clear, lineWidth: 2))
+            .overlay(shape.stroke(isFocused ? Stanford.focusRing : .clear, lineWidth: Stanford.strokeFocusWidth))
             .contentShape(Rectangle())
             .opacity(isEnabled ? 1 : 0.45)
             .onHover { isHovered = $0 }
