@@ -21,7 +21,9 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.cursor,
         defaultModel: CursorCLIRuntime.defaultModelName(),
         defaultModels: CursorCLIRuntime.availableModelNames(),
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true,
+        supportsNativeContinuation: true,
+        retriesEmptyResumedTurnWithoutResume: true
     )
     let readinessCheckID = "cursor-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .cursorCLI, launchOverheadTokens: 0)
@@ -222,6 +224,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
                 || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
+            resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: context.requiredProviderPolicyRender(for: id).cursorLaunchPermissionArguments()
         )
         var commandPlannedFields = [
@@ -237,6 +240,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             "uses_stream_json": String(plan.arguments.contains("stream-json")),
             "uses_workspace": String(plan.arguments.contains("--workspace")),
             "uses_trust": String(plan.arguments.contains("--trust")),
+            "uses_native_continuation": String(plan.arguments.contains("--resume")),
             "uses_sandbox": String(plan.arguments.contains("--sandbox")),
             "uses_force": String(plan.arguments.contains("--force"))
         ]

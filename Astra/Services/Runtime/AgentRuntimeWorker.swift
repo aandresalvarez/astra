@@ -13,6 +13,9 @@ final class AgentRuntimeWorker {
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
     var permissionPromotionPersistence: (() throws -> Void)?
+    /// Home directory in which provider session stores are looked up before a
+    /// native resume. Tests point it at a scratch directory.
+    var providerSessionStoreHome = FileManager.default.homeDirectoryForCurrentUser.path
 
     private var currentBudgetEnforcementMode: BudgetEnforcementMode {
         budgetEnforcementModeOverride ?? .configuredDefault
@@ -713,9 +716,15 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             currentLaunchSignature: launchSignature,
             grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest),
-            providerHomeDirectory: launchSettings.homeDirectory
+            providerHomeDirectory: launchSettings.homeDirectory,
+            userHome: providerSessionStoreHome
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
+        // What a launch without the resume sends, kept in case a resumed turn comes back empty.
+        let historyGuidance = runtimeCapabilityProfile.canDeliverHostControlPlane
+            && appliedRuntime.requirements.offeredHostControlTools.contains("history")
+            ? TaskHistoryRetrievalGuidance.prompt : ""
+        let promptWithoutResume = prompt + historyGuidance
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
         if auditPhase == .resume, approvedPlan == nil, nativeContinuationSessionID != nil {
@@ -724,9 +733,7 @@ final class AgentRuntimeWorker {
                 permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
                 repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment)
         }
-        if runtimeCapabilityProfile.canDeliverHostControlPlane, appliedRuntime.requirements.offeredHostControlTools.contains("history") {
-            prompt += TaskHistoryRetrievalGuidance.prompt
-        }
+        prompt += historyGuidance
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
         guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
             prompt: prompt,
@@ -799,9 +806,57 @@ final class AgentRuntimeWorker {
         // Fresh launches acquire their session ID from the provider's start event.
         run.providerSessionId = nativeContinuationSessionID
         ProviderLaunchSignatureService.record(launchSignature, task: task, run: run, modelContext: modelContext)
-        let result = await processRunner.runRuntimeProcess(
+        let handleLine: (String, Bool) -> Void = { line, parsesJSONLines in
+            PerformanceSignposts.processStreamLine {
+                streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
+                streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
+                let parsedBatch = PerformanceSignposts.parseProviderStream {
+                    runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
+                }
+                parsedBatch.recordParsed(to: streamTelemetry)
+                parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
+                let emittedEvents = parsedBatch.events.flatMap {
+                    runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
+                }
+                let emittedBatch = AgentRuntimeStreamEventBatch(events: emittedEvents)
+                emittedBatch.recordEmitted(to: streamTelemetry)
+                emittedBatch.recordEmitted(to: streamDebugCapture)
+                for filtered in emittedEvents {
+                    pendingEvents.add { [weak self] in
+                        guard self != nil else { return }
+                        PerformanceSignposts.persistProviderEvent {
+                            runtimeAdapter.recordWorkerStreamEvent(
+                                filtered,
+                                mode: recordingMode,
+                                task: task,
+                                run: run,
+                                modelContext: modelContext,
+                                recordingState: recordingState
+                            )
+                        }
+                        if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
+                            onEvent(parsed)
+                        }
+                    }
+                }
+            }
+        }
+        // A resumed turn on a runtime that sometimes answers with reasoning only is held
+        // until it shows real output, so an empty one can be re-run without the resume.
+        let emptyTurnGate = nativeContinuationSessionID != nil && runtimeAdapter.descriptor.retriesEmptyResumedTurnWithoutResume
+            ? NativeResumeEmptyTurnGate(isSubstantiveLine: { line, parsesJSONLines in
+                runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
+                    .agentEvents.contains(where: NativeResumeEmptyTurnGate.isSubstantive)
+            })
+            : nil
+        let processRunner = self.processRunner
+        let launchTimeoutSeconds = timeoutSeconds
+        let launchLiveApprovalsEnabled = liveApprovalsEnabled
+        let launchMaxRunSeconds = maxRunSeconds
+        let launchProcess: (String, String?, NativeResumeEmptyTurnGate?) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate in
+            await processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
-            prompt: prompt,
+            prompt: launchPrompt,
             task: executionTask,
             workspacePath: executionPath,
             executablePath: launchSettings.executablePath,
@@ -810,58 +865,46 @@ final class AgentRuntimeWorker {
             executionPolicy: launchExecutionPolicy,
             permissionManifest: manifest,
             budgetEnforcementMode: budgetEnforcementMode,
-            timeoutSeconds: timeoutSeconds,
+            timeoutSeconds: launchTimeoutSeconds,
             phase: auditPhase,
             contextText: providerLaunchContextText,
-            nativeContinuationSessionID: nativeContinuationSessionID,
+            nativeContinuationSessionID: nativeSessionID,
             runID: run.id,
             launchResourcePlan: launchResourcePlan,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeRequirements: appliedRuntime.requirements,
-            liveApprovalsEnabled: liveApprovalsEnabled,
+            liveApprovalsEnabled: launchLiveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
-            maxRunSeconds: maxRunSeconds,
+            maxRunSeconds: launchMaxRunSeconds,
             onInteractiveAsk: Self.interactiveAskHandler(
                 runtime: selectedRuntime, task: task, run: run,
                 permissionPolicy: runPermissionPolicy, manifest: manifest,
                 modelContext: modelContext, pendingEvents: pendingEvents
             ),
             onLine: { line, parsesJSONLines in
-                PerformanceSignposts.processStreamLine {
-                    streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
-                    streamDebugCapture?.recordLine(line, parsesJSONLines: parsesJSONLines)
-                    let parsedBatch = PerformanceSignposts.parseProviderStream {
-                        runtimeAdapter.parseWorkerStreamEvents(line: line, parsesJSONLines: parsesJSONLines)
-                    }
-                    parsedBatch.recordParsed(to: streamTelemetry)
-                    parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
-                    let emittedEvents = parsedBatch.events.flatMap {
-                        runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
-                    }
-                    let emittedBatch = AgentRuntimeStreamEventBatch(events: emittedEvents)
-                    emittedBatch.recordEmitted(to: streamTelemetry)
-                    emittedBatch.recordEmitted(to: streamDebugCapture)
-                    for filtered in emittedEvents {
-                        pendingEvents.add { [weak self] in
-                            guard self != nil else { return }
-                            PerformanceSignposts.persistProviderEvent {
-                                runtimeAdapter.recordWorkerStreamEvent(
-                                    filtered,
-                                    mode: recordingMode,
-                                    task: task,
-                                    run: run,
-                                    modelContext: modelContext,
-                                    recordingState: recordingState
-                                )
-                            }
-                            if let parsed = runtimeAdapter.callbackEvent(from: filtered) {
-                                onEvent(parsed)
-                            }
-                        }
-                    }
-                }
+                guard let gate else { return handleLine(line, parsesJSONLines) }
+                gate.accept(line, parsesJSONLines, forward: handleLine)
             }
-        )
+            )
+        }
+        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate)
+        if let emptyTurnGate {
+            if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested {
+                // The resumed turn ended cleanly with reasoning only. Re-run it once without the resume.
+                AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
+                    "continuation_retry": "empty_resumed_turn",
+                    "runtime": selectedRuntime.rawValue,
+                    "native_session_prefix": nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
+                    "prompt_chars": String(promptWithoutResume.count)
+                ], level: .warning)
+                emptyTurnGate.discard()
+                prompt = promptWithoutResume
+                run.providerSessionId = nil
+                result = await launchProcess(prompt, nil, nil)
+            } else {
+                emptyTurnGate.flush(forward: handleLine)
+            }
+        }
         let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
         flushedBatch.recordEmitted(to: streamTelemetry)
         flushedBatch.recordEmitted(to: streamDebugCapture)
@@ -1294,7 +1337,8 @@ final class AgentRuntimeWorker {
         phase: RunPhase,
         currentLaunchSignature: ProviderLaunchSignaturePayload,
         grantNeutralizingStrings: Set<String> = [],
-        providerHomeDirectory: String = ""
+        providerHomeDirectory: String = "",
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) -> NativeContinuationDecision {
         guard phase == .resume,
               runtimeAdapter.descriptor.supportsNativeContinuation else {
@@ -1317,7 +1361,8 @@ final class AgentRuntimeWorker {
         guard ProviderNativeSessionStore.sessionExists(
             runtime: runtimeAdapter.descriptor.id,
             sessionID: sessionID,
-            providerHomeDirectory: providerHomeDirectory
+            providerHomeDirectory: providerHomeDirectory,
+            userHome: userHome
         ) else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "provider_session_missing", signatureMatched: false)
         }

@@ -115,12 +115,6 @@ struct RetryInterruptedRunTests {
         #expect(submitted.mode == .initial)
     }
 
-    @Test("A runtime with no native resume keeps its from-scratch Retry")
-    func runtimeWithoutNativeResumeRelaunches() async throws {
-        let submitted = try await retry(runtime: .openCodeCLI, sessionID: "oc-1", stopReason: "cancelled")
-        #expect(submitted.mode == .initial)
-    }
-
     @Test("A pending user follow-up still wins over the generic resume message")
     func followUpTakesPrecedence() async throws {
         let submitted = try await retry(stopReason: "cancelled", followUp: "now also add a chart")

@@ -100,7 +100,8 @@ struct ContextContinuityReplayEvalTests {
         try context.save()
 
         TaskContextStateManager.recordTurn(task: task, run: run, message: "Run focused continuity tests")
-        task.runtimeID = AgentRuntimeID.openCodeCLI.rawValue
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+        task.sessionId = nil // a provider switch drops the old runtime's session
 
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
             message: "switch provider and fix the failure",

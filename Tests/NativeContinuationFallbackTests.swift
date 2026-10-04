@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import SQLite3
 import Testing
 import ASTRACore
 import ASTRAModels
@@ -63,6 +64,77 @@ struct NativeContinuationFallbackTests {
         #expect(!ProviderNativeSessionStore.sessionExists(runtime: .copilotCLI, sessionID: "sess-2", userHome: home))
     }
 
+    @Test("Cursor chat is found under whichever workspace hash directory holds it")
+    func cursorChatLookup() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try touch("\(home)/.cursor/chats/aaaa/other-chat", directory: true)
+        try touch("\(home)/.cursor/chats/bbbb/chat-1", directory: true)
+
+        #expect(ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-1", userHome: home))
+        #expect(!ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-2", userHome: home))
+    }
+
+    @Test("Cursor with no chats directory at all reads as missing")
+    func cursorWithoutStore() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        #expect(!ProviderNativeSessionStore.sessionExists(runtime: .cursorCLI, sessionID: "chat-1", userHome: home))
+    }
+
+    @Test("OpenCode session is a row of its SQLite database, under XDG_DATA_HOME when set")
+    func openCodeSessionLookup() throws {
+        let userHome = try makeHome()
+        let dataHome = try makeHome()
+        defer {
+            try? FileManager.default.removeItem(atPath: userHome)
+            try? FileManager.default.removeItem(atPath: dataHome)
+        }
+        try makeOpenCodeDatabase(at: "\(dataHome)/opencode/opencode.db", sessionIDs: ["ses_known"])
+
+        let configured = ["XDG_DATA_HOME": dataHome]
+        #expect(ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_known", userHome: userHome, environment: configured
+        ))
+        #expect(!ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_other", userHome: userHome, environment: configured
+        ))
+        // Without XDG_DATA_HOME it looks under ~/.local/share, where there is no database.
+        #expect(!ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_known", userHome: userHome, environment: [:]
+        ))
+        try makeOpenCodeDatabase(at: "\(userHome)/.local/share/opencode/opencode.db", sessionIDs: ["ses_home"])
+        #expect(ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_home", userHome: userHome, environment: [:]
+        ))
+    }
+
+    @Test("An OpenCode database that cannot be read reads as missing, never as a crash")
+    func openCodeUnreadableDatabase() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        try touch("\(home)/.local/share/opencode/opencode.db")
+        FileManager.default.createFile(
+            atPath: "\(home)/.local/share/opencode/opencode.db", contents: Data("not a database".utf8)
+        )
+        #expect(!ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_known", userHome: home, environment: [:]
+        ))
+    }
+
+    private func makeOpenCodeDatabase(at path: String, sessionIDs: [String]) throws {
+        try FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true
+        )
+        var database: OpaquePointer?
+        guard sqlite3_open(path, &database) == SQLITE_OK else { throw CocoaError(.fileWriteUnknown) }
+        defer { sqlite3_close(database) }
+        let inserts = sessionIDs.map { "INSERT INTO session VALUES ('\($0)');" }.joined()
+        guard sqlite3_exec(database, "CREATE TABLE session (id text PRIMARY KEY);\(inserts)", nil, nil, nil) == SQLITE_OK else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+
     @Test("A session id that is not a plain token never reaches the filesystem")
     func traversalIsRejected() throws {
         let home = try makeHome()
@@ -78,7 +150,7 @@ struct NativeContinuationFallbackTests {
     func otherRuntimesPassThrough() throws {
         let home = try makeHome()
         defer { try? FileManager.default.removeItem(atPath: home) }
-        for runtime in [AgentRuntimeID.claudeCode, .codexCLI, .cursorCLI, .openCodeCLI] {
+        for runtime in [AgentRuntimeID.claudeCode, .codexCLI] {
             #expect(!ProviderNativeSessionStore.verifiesBeforeResume(runtime))
             #expect(ProviderNativeSessionStore.sessionExists(runtime: runtime, sessionID: "anything", userHome: home))
         }

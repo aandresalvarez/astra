@@ -114,6 +114,10 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let defaultModels: [String]
     public let supportsAstraRunProtocol: Bool
     public let supportsNativeContinuation: Bool
+    /// Whether a natively resumed turn that ends cleanly with no output should
+    /// be discarded and re-run once without the resume. For a runtime whose CLI
+    /// sometimes answers a resumed turn with reasoning only (Cursor).
+    public let retriesEmptyResumedTurnWithoutResume: Bool
     /// Whether capability-package MCP servers are materialized into this
     /// runtime's launches. Runtimes without support surface the skip
     /// explicitly instead of silently dropping declared servers.
@@ -135,6 +139,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         defaultModels: [String],
         supportsAstraRunProtocol: Bool,
         supportsNativeContinuation: Bool = false,
+        retriesEmptyResumedTurnWithoutResume: Bool = false,
         supportsMCPServers: Bool = false,
         supportsReasoningEffort: Bool = false
     ) {
@@ -154,6 +159,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.defaultModels = defaultModels
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
         self.supportsNativeContinuation = supportsNativeContinuation
+        self.retriesEmptyResumedTurnWithoutResume = retriesEmptyResumedTurnWithoutResume
         self.supportsMCPServers = supportsMCPServers
         self.supportsReasoningEffort = supportsReasoningEffort
     }

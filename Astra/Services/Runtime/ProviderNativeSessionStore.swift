@@ -1,17 +1,16 @@
 import Foundation
+import SQLite3
 import ASTRACore
 
 /// Asks a provider's own on-disk session store whether a session id ASTRA
 /// captured can still be resumed, so a missing one is caught before launch.
 ///
 /// Only runtimes that mishandle a stale id are checked:
-/// - Antigravity silently opens a fresh conversation under an unknown id, so the
-///   follow-up would lose its history without any error.
-/// - Copilot exits 1 on an unknown id and has no stale-session recovery, so
-///   Retry would replay the same dead id forever.
-/// Claude Code and Codex fail loudly and already clear a stale session. Cursor
-/// does not resume natively (its resumed turns come back empty too often), so
-/// it never reaches this check.
+/// - Cursor and Antigravity silently open a fresh conversation under an unknown
+///   id, so the follow-up would lose its history without any error.
+/// - Copilot and OpenCode exit 1 on an unknown id and have no stale-session
+///   recovery, so Retry would replay the same dead id forever.
+/// Claude Code and Codex fail loudly and already clear a stale session.
 ///
 /// The layouts below were read off the real CLIs. A layout change reads as
 /// "missing", which degrades to the rebuilt-prompt continuation ASTRA used
@@ -22,6 +21,7 @@ enum ProviderNativeSessionStore {
         sessionID: String,
         providerHomeDirectory: String = "",
         userHome: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> Bool {
         guard verifiesBeforeResume(runtime) else { return true }
@@ -29,6 +29,8 @@ enum ProviderNativeSessionStore {
         guard isPlainSessionToken(sessionID) else { return false }
         let home = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         switch runtime {
+        case .cursorCLI:
+            return cursorChatExists(sessionID, userHome: userHome, fileManager: fileManager)
         case .antigravityCLI:
             // `agy` reads its store out of HOME, which ASTRA points at the
             // configured provider home when there is one.
@@ -40,6 +42,8 @@ enum ProviderNativeSessionStore {
             return fileManager.fileExists(atPath: path(
                 CopilotCLIRuntime.defaultHome(userHome: userHome), "session-state", sessionID
             ))
+        case .openCodeCLI:
+            return openCodeSessionExists(sessionID, userHome: userHome, environment: environment, fileManager: fileManager)
         default:
             return true
         }
@@ -47,9 +51,49 @@ enum ProviderNativeSessionStore {
 
     static func verifiesBeforeResume(_ runtime: AgentRuntimeID) -> Bool {
         switch runtime {
-        case .antigravityCLI, .copilotCLI: true
+        case .cursorCLI, .antigravityCLI, .copilotCLI, .openCodeCLI: true
         default: false
         }
+    }
+
+    /// Cursor files chats under a per-workspace hash directory it does not
+    /// document, so look for the chat id one level down.
+    private static func cursorChatExists(_ sessionID: String, userHome: String, fileManager: FileManager) -> Bool {
+        let chatsRoot = path(userHome, ".cursor", "chats")
+        guard let workspaces = try? fileManager.contentsOfDirectory(atPath: chatsRoot) else { return false }
+        return workspaces.contains { fileManager.fileExists(atPath: path(chatsRoot, $0, sessionID)) }
+    }
+
+    /// OpenCode keeps sessions as rows of its SQLite database. Opened read-only
+    /// with a short busy timeout so a running OpenCode never blocks a launch;
+    /// any failure to read it counts as "missing".
+    private static func openCodeSessionExists(
+        _ sessionID: String,
+        userHome: String,
+        environment: [String: String],
+        fileManager: FileManager
+    ) -> Bool {
+        let configured = environment["XDG_DATA_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let dataHome = configured.isEmpty ? path(userHome, ".local", "share") : configured
+        let databasePath = path(dataHome, "opencode", "opencode.db")
+        guard fileManager.fileExists(atPath: databasePath) else { return false }
+
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(databasePath, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let database else {
+            sqlite3_close(database)
+            return false
+        }
+        defer { sqlite3_close(database) }
+        sqlite3_busy_timeout(database, 500)
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT 1 FROM session WHERE id = ?1 LIMIT 1", -1, &statement, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard sqlite3_bind_text(statement, 1, sessionID, -1, transient) == SQLITE_OK else { return false }
+        return sqlite3_step(statement) == SQLITE_ROW
     }
 
     private static func isPlainSessionToken(_ value: String) -> Bool {
