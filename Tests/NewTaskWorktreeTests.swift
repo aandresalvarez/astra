@@ -6,70 +6,112 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
-@MainActor
-@Suite("New task worktrees", .serialized)
-struct NewTaskWorktreeTests {
-    private struct Fixture {
-        let root: URL
-        let storage: URL
-        let worktrees: URL
+/// Real Git repositories in a temporary folder for worktree tests.
+struct NewTaskWorktreeFixture {
+    let root: URL
+    let storage: URL
+    let worktrees: URL
 
-        init() throws {
-            root = FileManager.default.temporaryDirectory
-                .appendingPathComponent("astra-new-task-worktree-\(UUID().uuidString)", isDirectory: true)
-                .resolvingSymlinksInPath()
-            storage = root.appendingPathComponent("Workspace", isDirectory: true)
-            worktrees = root.appendingPathComponent("Worktrees", isDirectory: true)
-            try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
-        }
-
-        func repository(_ name: String, committed: Bool = true) throws -> URL {
-            let url = root.appendingPathComponent(name, isDirectory: true)
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-            _ = try git(["init", "-b", "main"], at: url)
-            if committed {
-                let sources = url.appendingPathComponent("Sources", isDirectory: true)
-                try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
-                try "committed \(name)".write(
-                    to: sources.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8
-                )
-                _ = try git(["add", "Sources/file.txt"], at: url)
-                _ = try git([
-                    "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
-                    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
-                    "commit", "-m", "Initial commit"
-                ], at: url)
-            }
-            return url
-        }
-
-        @discardableResult
-        func git(_ arguments: [String], at directory: URL) throws -> String {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            process.arguments = arguments
-            process.currentDirectoryURL = directory
-            process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            try process.run()
-            let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw NSError(domain: "NewTaskWorktreeTests", code: Int(process.terminationStatus), userInfo: [
-                    NSLocalizedDescriptionKey: output
-                ])
-            }
-            return output.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+    init() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-new-task-worktree-\(UUID().uuidString)", isDirectory: true)
+            .resolvingSymlinksInPath()
+        storage = root.appendingPathComponent("Workspace", isDirectory: true)
+        worktrees = root.appendingPathComponent("Worktrees", isDirectory: true)
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
     }
 
-    private func container() throws -> ModelContainer {
+    static func container() throws -> ModelContainer {
         try ModelContainer(
             for: ASTRASchema.current,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
         )
+    }
+
+    func cleanUp() {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    func repository(_ name: String, committed: Bool = true, branch: String = "main") throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        _ = try git(["init", "-b", branch], at: url)
+        if committed {
+            let sources = url.appendingPathComponent("Sources", isDirectory: true)
+            try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+            try "committed \(name)".write(
+                to: sources.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8
+            )
+            _ = try git(["add", "Sources/file.txt"], at: url)
+            _ = try git([
+                "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
+                "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                "commit", "-m", "Initial commit"
+            ], at: url)
+        }
+        return url
+    }
+
+    /// Commits `contents` to `file` and returns the new HEAD.
+    @discardableResult
+    func commit(_ file: String, contents: String, message: String, at repository: URL) throws -> String {
+        let url = repository.appendingPathComponent(file)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        try git(["add", file], at: repository)
+        try git([
+            "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+            "commit", "-m", message
+        ], at: repository)
+        return try git(["rev-parse", "HEAD"], at: repository)
+    }
+
+    func bareRemote(_ name: String) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try git(["init", "--bare", "-b", "main", url.path], at: root)
+        return url
+    }
+
+    func clone(_ remote: URL, as name: String) throws -> URL {
+        let url = root.appendingPathComponent(name, isDirectory: true)
+        try git(["clone", "--quiet", remote.path, url.path], at: root)
+        return url
+    }
+
+    func push(_ arguments: [String], at repository: URL) throws {
+        try git(["-c", "core.hooksPath=/dev/null", "push", "--quiet"] + arguments, at: repository)
+    }
+
+    @discardableResult
+    func git(_ arguments: [String], at directory: URL) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.currentDirectoryURL = directory
+        process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "NewTaskWorktreeFixture", code: Int(process.terminationStatus), userInfo: [
+                NSLocalizedDescriptionKey: output
+            ])
+        }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+@MainActor
+@Suite("New task worktrees", .serialized)
+struct NewTaskWorktreeTests {
+    private typealias Fixture = NewTaskWorktreeFixture
+
+    private func container() throws -> ModelContainer {
+        try Fixture.container()
     }
 
     @Test("Worktree creation is opt-in and requires a selected available repository")
@@ -79,7 +121,7 @@ struct NewTaskWorktreeTests {
         #expect(selection.canSubmit)
         selection.isEnabled = true
         #expect(!selection.canSubmit)
-        selection.updateRepositories([GitRepositoryInfo(name: "App", path: "/repos/app")], preferredPath: nil)
+        selection.updateRepositories([GitRepositoryInfo(name: "App", path: "/repos/app")], selectedPath: nil)
         #expect(selection.repositoryPath == "/repos/app")
         #expect(selection.canSubmit)
         selection.isLoading = true
@@ -88,31 +130,42 @@ struct NewTaskWorktreeTests {
         #expect(selection.canSubmit)
     }
 
-    @Test("Repository refresh respects the user's choice and never switches a missing enabled selection")
-    func selectionSurvivesRefresh() {
+    @Test("The repository follows the shared code location; base labels reset only when it changes")
+    func selectionFollowsSharedCodeLocation() {
         let app = GitRepositoryInfo(name: "App", path: "/repos/app")
         let api = GitRepositoryInfo(name: "API", path: "/repos/api")
         var selection = NewTaskWorktreeSelection()
-        selection.updateRepositories([app, api], preferredPath: api.path)
+        selection.updateRepositories([app, api], selectedPath: api.path, checkoutPath: "/worktrees/api/feature")
         #expect(selection.repositoryPath == api.path)
+        #expect(selection.checkoutPath == "/worktrees/api/feature")
+        #expect(selection.request == nil)
         selection.isEnabled = true
-        selection.repositoryPath = app.path
-        selection.updateRepositories([api, app], preferredPath: api.path)
+        selection.defaultBaseLabel = "main"
+        #expect(selection.request == TaskWorktreeRequest(
+            repositoryPath: api.path, checkoutPath: "/worktrees/api/feature", base: .defaultBranch
+        ))
+        selection.updateRepositories([api, app], selectedPath: api.path)
+        #expect(selection.defaultBaseLabel == "main")
+        #expect(selection.checkoutPath == api.path)
+        selection.base = .currentBranch
+        #expect(selection.request?.base == .currentBranch)
+        #expect(selection.requestPayload == TaskWorktreeRequestPayload(enabled: true, base: .currentBranch))
+        selection.updateRepositories([app, api], selectedPath: app.path)
         #expect(selection.repositoryPath == app.path)
-        selection.updateRepositories([api], preferredPath: api.path)
-        #expect(selection.repositoryPath == app.path)
-        #expect(!selection.canSubmit)
-        selection.repositoryPath = api.path
+        #expect(selection.defaultBaseLabel == nil)
+        // A shared location outside every repository falls back to the first one.
+        selection.updateRepositories([api], selectedPath: "/elsewhere")
+        #expect(selection.repositoryPath == api.path)
         #expect(selection.canSubmit)
     }
 
     @Test("A new workspace or composer starts with worktree creation disabled")
     func composerResetDoesNotCarryRepositoryChoice() {
         var selection = NewTaskWorktreeSelection()
-        selection.updateRepositories([GitRepositoryInfo(name: "App", path: "/repos/app")], preferredPath: nil)
+        selection.updateRepositories([GitRepositoryInfo(name: "App", path: "/repos/app")], selectedPath: nil)
         selection.isEnabled = true
         selection = NewTaskWorktreeSelection()
-        selection.updateRepositories([GitRepositoryInfo(name: "Other", path: "/repos/other")], preferredPath: nil)
+        selection.updateRepositories([GitRepositoryInfo(name: "Other", path: "/repos/other")], selectedPath: nil)
         #expect(!selection.isEnabled)
         #expect(selection.repositoryPath == "/repos/other")
     }
@@ -142,7 +195,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Task", goal: "Update a file", workspace: workspace)
 
         try await TaskWorktreeService.prepare(
-            task: task, repositoryPath: nil, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+            task: task, request: nil, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
         )
 
         #expect(task.executionRootPath == repository.path)
@@ -170,7 +223,7 @@ struct NewTaskWorktreeTests {
         store.mainContext.insert(workspace)
 
         try await TaskWorktreeService.prepare(
-            task: task, repositoryPath: second.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+            task: task, request: TaskWorktreeRequest(repositoryPath: second.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
         )
 
         let path = try #require(task.executionRootPath)
@@ -189,7 +242,13 @@ struct NewTaskWorktreeTests {
         #expect(TaskWorkspaceAccess(task: task).runtimeWritablePaths == [first.path, path])
         let prepared = try #require(task.events.first { $0.hasType(TaskEventTypes.Task.worktreePrepared) })
         #expect(prepared.typedCategory == .lifecycle)
-        #expect(try prepared.decodePayload(as: TaskWorktreePayload.self).get().worktreePath == path)
+        let payload = try prepared.decodePayload(as: TaskWorktreePayload.self).get()
+        #expect(payload.worktreePath == path)
+        // Without a remote the default base is the local main branch.
+        #expect(payload.baseRef == "main")
+        #expect(payload.baseCommit == head)
+        #expect(payload.baseSource == .defaultBranch)
+        #expect(payload.baseFetched == false)
 
         let taskID = task.id
         let reloadedContext = ModelContext(store)
@@ -217,7 +276,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update file", goal: "Change Sources/file.txt", workspace: workspace)
         store.mainContext.insert(workspace)
         try await TaskWorktreeService.prepare(
-            task: task, repositoryPath: repository.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
         )
         let path = try #require(task.executionRootPath)
         let access = TaskWorkspaceAccess(task: task)
@@ -260,7 +319,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
         store.mainContext.insert(workspace)
         try await TaskWorktreeService.prepare(
-            task: task, repositoryPath: repository.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
         )
         let path = try #require(task.executionRootPath)
         #expect(TaskWorkspaceAccess(task: task).runtimeWritablePaths == [path, path + "/Sources"])
@@ -281,13 +340,13 @@ struct NewTaskWorktreeTests {
         context.insert(workspace)
         let draft = AgentTask(title: "Draft", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: draft, repositoryPath: repository.path, modelContext: context, worktreesRoot: fixture.worktrees.path
+            task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: context, worktreesRoot: fixture.worktrees.path
         )
         let path = try #require(draft.executionRootPath)
         workspace.activeWorkingPath = other.path
         let task = AgentTask(title: "Approved goal", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: task, repositoryPath: nil, inheritingFrom: draft, modelContext: context, worktreesRoot: fixture.worktrees.path
+            task: task, request: nil, inheritingFrom: draft, modelContext: context, worktreesRoot: fixture.worktrees.path
         )
         context.insert(task)
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
@@ -315,7 +374,7 @@ struct NewTaskWorktreeTests {
         store.mainContext.insert(workspace)
         let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: task, repositoryPath: repository.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
         )
         let path = try #require(task.executionRootPath)
         try await GitService.shared.removeWorktree(repoPath: repository.path, worktreePath: path)
@@ -332,7 +391,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: fixture.storage.path))
         await #expect(throws: TaskWorktreeCreationError.self) {
             try await TaskWorktreeService.prepare(
-                task: task, repositoryPath: repository.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
             )
         }
         #expect(task.executionRootPath == nil)
@@ -350,7 +409,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: repository.path))
         await #expect(throws: TaskWorktreeCreationError.self) {
             try await TaskWorktreeService.prepare(
-                task: task, repositoryPath: repository.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
             )
         }
         #expect(task.executionRootPath == nil)
@@ -368,7 +427,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: repository.path))
         await #expect(throws: (any Error).self) {
             try await TaskWorktreeService.prepare(
-                task: task, repositoryPath: repository.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
             )
         }
         #expect(task.executionRootPath == nil)
@@ -388,7 +447,7 @@ struct NewTaskWorktreeTests {
         context.insert(workspace)
         let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: task, repositoryPath: repository.path, modelContext: context, worktreesRoot: fixture.worktrees.path
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: context, worktreesRoot: fixture.worktrees.path
         )
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
         let recovered = TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: nil, modelContext: context)
@@ -396,7 +455,7 @@ struct NewTaskWorktreeTests {
         #expect(task.status == .draft)
         #expect(task.executionRootPath != nil)
         let retry = AgentTask(title: "Retry", goal: task.goal, workspace: workspace)
-        try await TaskWorktreeService.prepare(task: retry, repositoryPath: nil, inheritingFrom: task, modelContext: context)
+        try await TaskWorktreeService.prepare(task: retry, request: nil, inheritingFrom: task, modelContext: context)
         #expect(retry.executionRootPath == task.executionRootPath)
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
         TaskStateMachine.enqueueFromChatSubmission(retry, modelContext: context)
@@ -437,7 +496,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: repository.path))
         let operation = Task { @MainActor in
             try await TaskWorktreeService.prepare(
-                task: task, repositoryPath: repository.path, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path
             )
         }
         operation.cancel()

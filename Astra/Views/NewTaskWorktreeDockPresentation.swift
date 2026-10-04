@@ -1,13 +1,23 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// The new-task composer's transient worktree choice. Submission hands it to
 /// `TaskWorktreeService`, which records the durable `executionRootPath` pin.
+/// The repository follows the shared "where the next task runs" setting that
+/// the Repository card shows; only the checkbox and base are local.
 struct NewTaskWorktreeSelection {
     var isEnabled = false
     var repositoryPath: String?
+    /// The checkout of the repository the task would otherwise run in: its
+    /// root or one of its worktrees. "Current branch" starts from its HEAD.
+    var checkoutPath: String?
+    var base: TaskWorktreeBaseChoice = .defaultBranch
     var repositories: [GitRepositoryInfo] = []
     var isLoading = false
+    /// Branch names for each base, e.g. "main"; nil until resolved.
+    var defaultBaseLabel: String?
+    var currentBaseLabel: String?
 
     var selectedRepository: GitRepositoryInfo? {
         repositories.first { $0.path == repositoryPath }
@@ -17,13 +27,35 @@ struct NewTaskWorktreeSelection {
         !isEnabled || (!isLoading && selectedRepository != nil)
     }
 
-    mutating func updateRepositories(_ repositories: [GitRepositoryInfo], preferredPath: String?) {
+    var baseLabel: String? {
+        base == .defaultBranch ? defaultBaseLabel : currentBaseLabel
+    }
+
+    var request: TaskWorktreeRequest? {
+        guard isEnabled, let repository = selectedRepository else { return nil }
+        return TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: checkoutPath, base: base)
+    }
+
+    var requestPayload: TaskWorktreeRequestPayload {
+        TaskWorktreeRequestPayload(enabled: isEnabled, base: base)
+    }
+
+    mutating func updateRepositories(
+        _ repositories: [GitRepositoryInfo],
+        selectedPath: String?,
+        checkoutPath: String? = nil
+    ) {
         self.repositories = repositories
         isLoading = false
-        guard repositoryPath == nil || !isEnabled else { return }
-        repositoryPath = repositories.first {
-            $0.path == preferredPath.map(WorkspacePathPresentation.standardizedPath)
-        }?.path ?? repositories.first?.path
+        let selected = repositories.first {
+            $0.path == selectedPath.map(WorkspacePathPresentation.standardizedPath)
+        } ?? repositories.first
+        if selected?.path != repositoryPath {
+            defaultBaseLabel = nil
+            currentBaseLabel = nil
+        }
+        repositoryPath = selected?.path
+        self.checkoutPath = selected == nil ? nil : (checkoutPath ?? selected?.path)
     }
 }
 
@@ -42,13 +74,37 @@ struct NewTaskWorktreeDockPresentation: Equatable {
         /// Only a brand-new task chooses; a draft keeps the checkout it was pinned to.
         var allowsChoice: Bool
         var pinnedPath: String?
+        /// What the draft's worktree started from, e.g. "origin/main".
+        var pinnedBase: String? = nil
         var isPreparing: Bool
         var problem: String?
     }
 
     static let toggleTitle = "Start in a new worktree"
-    static let toggleHelp = "Give this task its own branch and folder. The original checkout is not changed."
+    static let toggleHelp = "Give this task its own branch and folder, started from the default branch. The original checkout is not changed."
     static let chooseRepositoryTitle = "Choose repository"
+    static let repositorySectionTitle = "Repository"
+    static let baseSectionTitle = "Start from"
+
+    /// "Default branch (main)" or "Current branch (feature/x)" in the menu.
+    static func baseOptionTitle(_ base: TaskWorktreeBaseChoice, label: String?) -> String {
+        let name = base == .defaultBranch ? "Default branch" : "Current branch"
+        guard let label = nonEmpty(label) else { return name }
+        return "\(name) (\(label))"
+    }
+
+    /// "from main", or the base's generic name until its branch is known.
+    static func startsFrom(_ base: TaskWorktreeBaseChoice, label: String?) -> String {
+        if let label = nonEmpty(label) { return "from \(label)" }
+        return base == .defaultBranch ? "from default branch" : "from current branch"
+    }
+
+    /// The repository chip names both choices it holds: "astra · main".
+    static func chipTitle(repository: String?, baseLabel: String?) -> String {
+        guard let repository = nonEmpty(repository) else { return chooseRepositoryTitle }
+        guard let baseLabel = nonEmpty(baseLabel) else { return repository }
+        return "\(repository) · \(baseLabel)"
+    }
 
     let tone: TaskDecisionDockTone
     let glyph: Glyph
@@ -102,12 +158,16 @@ struct NewTaskWorktreeDockPresentation: Equatable {
 
         guard input.allowsChoice else {
             guard let pinnedPath = nonEmpty(input.pinnedPath) else { return nil }
+            let location = WorkspacePathPresentation.abbreviatePath(pinnedPath)
+            let base = nonEmpty(input.pinnedBase)
             return make(
                 tone: .success,
                 glyph: .symbol("arrow.triangle.branch"),
                 title: "Task worktree",
-                meta: WorkspacePathPresentation.abbreviatePath(pinnedPath),
-                help: "This draft is pinned to \(pinnedPath). Start a new task to choose another checkout."
+                meta: base.map { "\(location) · from \($0)" } ?? location,
+                help: "This draft has its own worktree at \(pinnedPath)"
+                    + (base.map { ", started from \($0)" } ?? "")
+                    + ". Start over or delete the draft to choose another checkout."
             )
         }
 
@@ -125,13 +185,16 @@ struct NewTaskWorktreeDockPresentation: Equatable {
 
         // Every submission briefly sets `isPreparing`; only an enabled
         // worktree choice actually creates one.
+        let origin = Self.startsFrom(selection.base, label: selection.baseLabel)
         if input.isPreparing {
             return make(
                 tone: .running,
                 glyph: .progress,
                 title: "Creating worktree",
-                meta: selection.selectedRepository?.name,
-                help: "ASTRA is creating this task's branch and folder. The original checkout is not changed."
+                meta: selection.selectedRepository.map { repository in
+                    nonEmpty(selection.baseLabel).map { "\(repository.name) · from \($0)" } ?? repository.name
+                },
+                help: "ASTRA is creating this task's branch and folder \(origin). The original checkout is not changed."
             )
         }
 
@@ -158,12 +221,18 @@ struct NewTaskWorktreeDockPresentation: Equatable {
             )
         }
 
+        let help = switch selection.base {
+        case .defaultBranch:
+            "Before any agent runs, ASTRA fetches \(repository.name)'s default branch and creates an astra/… branch \(origin) in its own folder. Work on the current branch and uncommitted changes are not included."
+        case .currentBranch:
+            "Before any agent runs, ASTRA creates an astra/… branch \(origin) of \(repository.name) in its own folder. Its commits are included; uncommitted changes stay in the original checkout."
+        }
         return make(
             tone: .success,
             glyph: .symbol("arrow.triangle.branch"),
             title: "New worktree",
-            meta: "new branch from current commit",
-            help: "ASTRA creates an astra/… branch from \(repository.name)'s current commit in its own folder. Uncommitted changes stay in the original checkout."
+            meta: origin,
+            help: help
         )
     }
 

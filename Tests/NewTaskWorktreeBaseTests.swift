@@ -1,0 +1,445 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+@MainActor
+@Suite("New task worktree bases, names, and cleanup", .serialized)
+struct NewTaskWorktreeBaseTests {
+    private typealias Fixture = NewTaskWorktreeFixture
+
+    private func workspace(_ repository: URL, in context: ModelContext) -> Workspace {
+        let workspace = Workspace(name: repository.lastPathComponent, primaryPath: repository.path)
+        context.insert(workspace)
+        return workspace
+    }
+
+    private func prepare(
+        _ task: AgentTask,
+        _ repository: URL,
+        base: TaskWorktreeBaseChoice = .defaultBranch,
+        inheritingFrom draft: AgentTask? = nil,
+        context: ModelContext,
+        fixture: Fixture
+    ) async throws {
+        try await TaskWorktreeService.prepare(
+            task: task,
+            request: TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: repository.path, base: base),
+            inheritingFrom: draft,
+            modelContext: context,
+            worktreesRoot: fixture.worktrees.path
+        )
+    }
+
+    // MARK: - Base
+
+    @Test("The default base is the freshly fetched remote main, not the checked-out feature branch")
+    func defaultBaseFetchesRemoteMain() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let remote = try fixture.bareRemote("App.git")
+        try fixture.git(["remote", "add", "origin", remote.path], at: repository)
+        try fixture.push(["-u", "origin", "main"], at: repository)
+        // A teammate lands work on main after this checkout last fetched.
+        let teammate = try fixture.clone(remote, as: "Teammate")
+        let remoteTip = try fixture.commit("Sources/landed.txt", contents: "landed", message: "Land", at: teammate)
+        try fixture.push(["origin", "main"], at: teammate)
+        // The checkout itself is on an unmerged feature branch.
+        try fixture.git(["switch", "-c", "feature/local"], at: repository)
+        let featureTip = try fixture.commit("Sources/feature.txt", contents: "wip", message: "WIP", at: repository)
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Fix login", goal: "Fix login", workspace: workspace(repository, in: store.mainContext))
+
+        try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+
+        let worktree = URL(fileURLWithPath: try #require(task.executionRootPath))
+        #expect(try fixture.git(["rev-parse", "HEAD"], at: worktree) == remoteTip)
+        #expect(FileManager.default.fileExists(atPath: worktree.appendingPathComponent("Sources/landed.txt").path))
+        #expect(!FileManager.default.fileExists(atPath: worktree.appendingPathComponent("Sources/feature.txt").path))
+        #expect(try fixture.git(["branch", "--show-current"], at: repository) == "feature/local")
+        #expect(try fixture.git(["rev-parse", "HEAD"], at: repository) == featureTip)
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.baseRef == "origin/main")
+        #expect(binding.baseCommit == remoteTip)
+        #expect(binding.baseSource == .defaultBranch)
+        #expect(binding.baseFetched == true)
+        let label = await TaskWorktreeService.baseLabel(
+            for: TaskWorktreeRequest(repositoryPath: repository.path), git: GitService.shared
+        )
+        #expect(label == "main")
+    }
+
+    @Test("When the remote can't be reached the default base is the local main, never the current branch")
+    func defaultBaseFallsBackToLocalMain() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let mainTip = try fixture.git(["rev-parse", "HEAD"], at: repository)
+        try fixture.git(["remote", "add", "origin", fixture.root.appendingPathComponent("missing.git").path], at: repository)
+        try fixture.git(["switch", "-c", "feature"], at: repository)
+        try fixture.commit("Sources/feature.txt", contents: "wip", message: "WIP", at: repository)
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Update", goal: "Update", workspace: workspace(repository, in: store.mainContext))
+
+        try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+
+        let worktree = URL(fileURLWithPath: try #require(task.executionRootPath))
+        #expect(try fixture.git(["rev-parse", "HEAD"], at: worktree) == mainTip)
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.baseRef == "main")
+        #expect(binding.baseFetched == false)
+    }
+
+    @Test("Current branch starts from the selected checkout's HEAD, including its unmerged commits")
+    func currentBranchBase() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try fixture.git(["switch", "-c", "feature/x"], at: repository)
+        let featureTip = try fixture.commit("Sources/feature.txt", contents: "wip", message: "WIP", at: repository)
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Continue", goal: "Continue", workspace: workspace(repository, in: store.mainContext))
+
+        try await prepare(task, repository, base: .currentBranch, context: store.mainContext, fixture: fixture)
+
+        let worktree = URL(fileURLWithPath: try #require(task.executionRootPath))
+        #expect(try fixture.git(["rev-parse", "HEAD"], at: worktree) == featureTip)
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.baseRef == "feature/x")
+        #expect(binding.baseSource == .currentBranch)
+        #expect(binding.baseFetched == false)
+        let label = await TaskWorktreeService.baseLabel(
+            for: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch), git: GitService.shared
+        )
+        #expect(label == "feature/x")
+    }
+
+    @Test("A repository without main or master fails closed and points to Current branch")
+    func missingDefaultBranchFailsClosed() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("Trunk", branch: "trunk")
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Update", goal: "Update", workspace: workspace(repository, in: store.mainContext))
+
+        await #expect(throws: TaskWorktreeCreationError.self) {
+            try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+        }
+        #expect(task.executionRootPath == nil)
+        #expect(!FileManager.default.fileExists(atPath: fixture.worktrees.path))
+        #expect(TaskWorktreeCreationError.baseUnavailable(repository.path).localizedDescription.contains("Current branch"))
+        let label = await TaskWorktreeService.baseLabel(
+            for: TaskWorktreeRequest(repositoryPath: repository.path), git: GitService.shared
+        )
+        #expect(label == nil)
+
+        try await prepare(task, repository, base: .currentBranch, context: store.mainContext, fixture: fixture)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: task)?.baseRef == "trunk")
+    }
+
+    // MARK: - Names
+
+    @Test("Branch names keep whole words of the title and end with the task folder's short ID")
+    func branchNamesAreShortAndReadable() throws {
+        let id = try #require(UUID(uuidString: "25E8279E-1111-2222-3333-444455556666"))
+        #expect(TaskWorktreeService.branchName(
+            title: "fix the login button alignment on the settings page", taskID: id
+        ) == "astra/fix-login-button-alignment-25e8279e")
+        #expect(TaskWorktreeService.branchName(title: "Update", taskID: id, attempt: 3) == "astra/update-25e8279e-3")
+        #expect(TaskWorktreeService.slug(for: "Añadir función de búsqueda") == "anadir-funcion-de-busqueda")
+        #expect(TaskWorktreeService.slug(for: "Ünïcödé façade") == "unicode-facade")
+        #expect(TaskWorktreeService.slug(for: "the and of") == "the-and-of")
+        #expect(TaskWorktreeService.slug(for: "") == "task")
+        #expect(TaskWorktreeService.slug(for: String(repeating: "x", count: 50)) == String(repeating: "x", count: 32))
+        for title in ["修复登录按钮", "Привет мир", "fix: a/b..c @{now}"] {
+            let slug = TaskWorktreeService.slug(for: title)
+            #expect(slug.count <= TaskWorktreeService.slugLimit)
+            #expect(slug.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
+        }
+    }
+
+    @Test("A taken branch name gets a numbered suffix instead of reusing another branch")
+    func collidingNamesGetSuffix() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Update docs", goal: "Update", workspace: workspace(repository, in: store.mainContext))
+        try fixture.git(["branch", TaskWorktreeService.branchName(for: task)], at: repository)
+
+        try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+
+        let expected = TaskWorktreeService.branchName(for: task, attempt: 2)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: task)?.branch == expected)
+        let worktree = URL(fileURLWithPath: try #require(task.executionRootPath))
+        #expect(try fixture.git(["branch", "--show-current"], at: worktree) == expected)
+    }
+
+    // MARK: - Lazy creation and handoff
+
+    @Test("A draft's planning worktree is created once and carried to the task started from it")
+    func planningWorktreeCarriesOver() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        let draft = AgentTask(title: "Plan login", goal: "Plan login", workspace: workspace)
+
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        #expect(draft.executionRootPath == path)
+
+        let task = AgentTask(title: "Approved plan", goal: "Plan login", workspace: workspace)
+        try await prepare(task, repository, inheritingFrom: draft, context: context, fixture: fixture)
+        #expect(task.executionRootPath == path)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: task)?.worktreePath == path)
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
+    }
+
+    @Test("A failed start hands its new worktree to the open draft so retry reuses it")
+    func failedStartAdoptsWorktreeIntoDraft() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        let draft = AgentTask(title: "Chat", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        // An unselected draft without a worktree is not a checkout source.
+        #expect(NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: false) == nil)
+        #expect(NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: true) === draft)
+        let task = AgentTask(title: "Run", goal: "Explore", workspace: workspace)
+        try await prepare(task, repository, context: context, fixture: fixture)
+        let path = try #require(task.executionRootPath)
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
+
+        let recovered = TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: draft, modelContext: context)
+
+        #expect(recovered === draft)
+        #expect(draft.executionRootPath == path)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: draft)?.worktreePath == path)
+        try context.save()
+        #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == 1)
+        #expect(NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: false) === draft)
+        let retry = AgentTask(title: "Retry", goal: "Explore", workspace: workspace)
+        try await prepare(retry, repository, inheritingFrom: draft, context: context, fixture: fixture)
+        #expect(retry.executionRootPath == path)
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
+    }
+
+    @Test("The composer's choice is recorded on the draft once enabled and restored on reopen")
+    func requestRoundTrip() throws {
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: "/repos/app")
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        var selection = NewTaskWorktreeSelection()
+
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        #expect(TaskWorktreeService.latestRequest(for: draft) == nil)
+        selection.isEnabled = true
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        selection.base = .currentBranch
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+
+        let requests = draft.events.filter { $0.hasType(TaskEventTypes.Task.worktreeRequested) }
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { $0.typedCategory == .system })
+        #expect(TaskWorktreeService.latestRequest(for: draft) == TaskWorktreeRequestPayload(enabled: true, base: .currentBranch))
+        var reopened = NewTaskWorktreeSelection()
+        NewTaskWorktreeComposerFlow.restoreChoice(&reopened, from: draft)
+        #expect(reopened.isEnabled)
+        #expect(reopened.base == .currentBranch)
+    }
+
+    // MARK: - Cleanup
+
+    @Test("Discarding an untouched draft removes its worktree and branch")
+    func discardRemovesUnusedWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace(repository, in: context))
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context))
+
+        #expect(!FileManager.default.fileExists(atPath: path))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+    }
+
+    @Test("Worktrees with changes, commits, or another owner are kept")
+    func discardKeepsUsedWorktrees() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+
+        func discarded(_ title: String, after use: (URL) throws -> Void) async throws -> (Bool, URL) {
+            let draft = AgentTask(title: title, goal: title, workspace: workspace)
+            try await prepare(draft, repository, context: context, fixture: fixture)
+            let worktree = URL(fileURLWithPath: try #require(draft.executionRootPath))
+            let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+            try use(worktree)
+            context.delete(draft)
+            try context.save()
+            return (await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context), worktree)
+        }
+
+        let (dirtyRemoved, dirty) = try await discarded("Dirty") { worktree in
+            try "edited".write(to: worktree.appendingPathComponent("Sources/file.txt"), atomically: true, encoding: .utf8)
+        }
+        #expect(!dirtyRemoved)
+        #expect(FileManager.default.fileExists(atPath: dirty.path))
+
+        let (committedRemoved, committed) = try await discarded("Committed") { worktree in
+            _ = try fixture.commit("Sources/new.txt", contents: "new", message: "Work", at: worktree)
+        }
+        #expect(!committedRemoved)
+        #expect(FileManager.default.fileExists(atPath: committed.path))
+
+        let (referencedRemoved, referenced) = try await discarded("Referenced") { worktree in
+            workspace.activeWorkingPath = worktree.path
+        }
+        #expect(!referencedRemoved)
+        #expect(FileManager.default.fileExists(atPath: referenced.path))
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 4)
+
+        // Worktrees prepared before the base commit was recorded are never discarded.
+        let legacy = AgentTask(title: "Legacy", goal: "Legacy", workspace: workspace)
+        legacy.executionRootPath = "/tmp/legacy-worktree"
+        let payload = try TaskEvent.encodePayload(TaskWorktreePayload(
+            repositoryPath: repository.path, worktreePath: "/tmp/legacy-worktree", branch: "astra/legacy"
+        )).get()
+        legacy.events = [TaskEvent(task: legacy, eventType: TaskEventTypes.Task.worktreePrepared, payload: payload)]
+        #expect(TaskWorktreeService.discardSnapshot(for: legacy) == nil)
+    }
+
+    @Test("Deleting a draft that never ran gives back its untouched worktree")
+    func deletingDraftDiscardsItsWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = ModelContext(store)
+        let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace(repository, in: context))
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue(poolSize: 0))
+
+        _ = coordinator.deleteTask(draft)
+
+        for _ in 0..<100 where FileManager.default.fileExists(atPath: path) {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(!FileManager.default.fileExists(atPath: path))
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+    }
+
+    // MARK: - Shared code location
+
+    @Test("One writer stores where the next task runs: the draft's pin or the workspace default")
+    func codeLocationPinHasOneOwner() {
+        let workspace = Workspace(name: "App", primaryPath: "/repos/app")
+        #expect(TaskCodeLocationPin.set("/repos/other", workspace: workspace, task: nil))
+        #expect(workspace.activeWorkingPath == "/repos/other")
+        #expect(!TaskCodeLocationPin.set("/repos/other", workspace: workspace, task: nil))
+        #expect(TaskCodeLocationPin.set("/repos/app", workspace: workspace, task: nil))
+        #expect(workspace.activeWorkingPath == nil)
+
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        #expect(TaskCodeLocationPin.set(" /repos/other ", workspace: workspace, task: draft))
+        #expect(draft.executionRootPath == "/repos/other")
+        #expect(workspace.activeWorkingPath == nil)
+    }
+
+    @Test("The strip picks the repository that holds the shared code location, including its worktrees")
+    func stripFollowsSharedCodeLocation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let first = try fixture.repository("First")
+        let second = try fixture.repository("Second")
+        let linked = fixture.root.appendingPathComponent("Second-side", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "side", linked.path], at: second)
+        let repositories = await GitService.shared.scanForGitRepositories(
+            primaryPath: fixture.storage.path, additionalPaths: [first.path, second.path]
+        )
+
+        let exact = await NewTaskWorktreeDockView.checkout(
+            second.path, primaryPath: fixture.storage.path, in: repositories, git: GitService.shared
+        )
+        #expect(exact?.repository.path == second.path)
+        #expect(exact?.checkoutPath == second.path)
+        let worktree = await NewTaskWorktreeDockView.checkout(
+            linked.path, primaryPath: fixture.storage.path, in: repositories, git: GitService.shared
+        )
+        #expect(worktree?.repository.path == second.path)
+        #expect(worktree?.checkoutPath == linked.path)
+        let primary = await NewTaskWorktreeDockView.checkout(
+            nil, primaryPath: second.path, in: repositories, git: GitService.shared
+        )
+        #expect(primary?.repository.path == second.path)
+        let fallback = await NewTaskWorktreeDockView.checkout(
+            nil, primaryPath: fixture.storage.path, in: repositories, git: GitService.shared
+        )
+        #expect(fallback?.repository.path == first.path)
+    }
+
+    @Test("The Repository card's scan keeps a workspace default on one of the repository's worktrees")
+    func repositoryScanKeepsWorktreeDefault() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-side", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "side", linked.path], at: repository)
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path, additionalPaths: [repository.path])
+        workspace.activeWorkingPath = linked.path
+
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace)
+        await panel.scanRepositories()
+
+        #expect(panel.rootRepoPath == repository.path)
+        #expect(panel.workingPath == linked.path)
+        #expect(workspace.activeWorkingPath == linked.path)
+    }
+
+    @Test("A draft with its own worktree keeps it; the card explains how to choose another checkout")
+    func draftWorktreeLocksCodeLocation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let plain = AgentTask(title: "Plain", goal: "Explore", workspace: workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let panel = WorkspaceGitViewModel()
+
+        panel.setWorkspaceForTesting(workspace, selectedTask: plain)
+        #expect(panel.canChangeActiveCodePath)
+        panel.setWorkspaceForTesting(workspace, selectedTask: draft)
+        #expect(!panel.canChangeActiveCodePath)
+        #expect(panel.activeCodePathChangeBlockedMessage.contains("own worktree"))
+    }
+}

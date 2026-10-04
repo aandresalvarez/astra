@@ -127,8 +127,24 @@ struct ChatPanelView: View {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var composerDraft: AgentTask? {
+        NewTaskWorktreeComposerFlow.liveDraft(draftTask ?? draftToLoad)
+    }
+
+    private var worktreeBinding: TaskWorktreePayload? {
+        composerDraft.flatMap(TaskWorktreeService.activeWorktreeBinding)
+    }
+
+    /// A draft that already has its worktree keeps it; anything else may opt in.
+    private var allowsWorktreeChoice: Bool { worktreeBinding == nil }
+
+    /// The worktree the next planning step or run creates, if any.
+    private var requestedWorktree: TaskWorktreeRequest? {
+        allowsWorktreeChoice ? worktreeSelection.request : nil
+    }
+
     private var canSubmitWorktreeSelection: Bool {
-        draftTask != nil || worktreeSelection.canSubmit
+        !allowsWorktreeChoice || worktreeSelection.canSubmit
     }
 
     private var defaultRuntime: AgentRuntimeID {
@@ -801,8 +817,10 @@ struct ChatPanelView: View {
 
             Button {
                 if let draft = draftTask {
+                    let worktree = TaskWorktreeService.discardSnapshot(for: draft)
                     modelContext.delete(draft)
                     draftTask = nil
+                    NewTaskWorktreeComposerFlow.discardWorktree(worktree, workspace: workspace, modelContext: modelContext)
                 }
                 messages = []
                 attachedFiles = []
@@ -892,8 +910,10 @@ struct ChatPanelView: View {
             VStack(spacing: 0) {
                 NewTaskWorktreeDockView(
                     workspace: workspace,
-                    allowsChoice: draftTask == nil && draftToLoad == nil,
-                    pinnedPath: (draftTask ?? draftToLoad)?.executionRootPath,
+                    draft: composerDraft,
+                    pinOwner: NewTaskWorktreeComposerFlow.liveDraft(draftToLoad),
+                    allowsChoice: allowsWorktreeChoice,
+                    binding: worktreeBinding,
                     isPreparing: isPreparingWorktree,
                     problem: taskCreationError,
                     selection: $worktreeSelection
@@ -1084,13 +1104,11 @@ struct ChatPanelView: View {
 
     // MARK: - Actions
 
+    /// The repository follows the shared code location, so only the
+    /// per-task choices reset.
     private func resetWorktreeChoice() {
         worktreeSelection.isEnabled = false
-        worktreeSelection.repositoryPath = nil
-        worktreeSelection.updateRepositories(
-            worktreeSelection.repositories,
-            preferredPath: workspace?.activeWorkingPath
-        )
+        worktreeSelection.base = .defaultBranch
     }
 
     private func reportTaskCreationError(_ error: Error) {
@@ -1116,15 +1134,17 @@ struct ChatPanelView: View {
         }
     }
 
-    private func prepareTaskCheckout(_ task: AgentTask, inheritingFrom draft: AgentTask? = nil) async throws {
-        guard draft != nil || worktreeSelection.canSubmit else {
+    private func prepareTaskCheckout(_ task: AgentTask) async throws {
+        guard canSubmitWorktreeSelection else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
         let wasPreparing = isPreparingWorktree
         isPreparingWorktree = true
         defer { isPreparingWorktree = wasPreparing }
+        let draft = composerDraft
+        let request = requestedWorktree
         do {
-            if draft == nil, worktreeSelection.isEnabled, task.draftMessages.isEmpty {
+            if draft == nil, request != nil, task.draftMessages.isEmpty {
                 let history = messages.isEmpty
                     ? [DraftChatMessagePayload(role: "user", content: task.goal)]
                     : messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
@@ -1132,21 +1152,32 @@ struct ChatPanelView: View {
             }
             try await TaskWorktreeService.prepare(
                 task: task,
-                repositoryPath: worktreeSelection.isEnabled ? worktreeSelection.repositoryPath : nil,
-                inheritingFrom: draft,
+                request: request,
+                inheritingFrom: NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: draftToLoad != nil),
                 modelContext: modelContext
             )
             try Task.checkCancellation()
         } catch {
-            // A completed Git operation may already have saved a pinned draft.
-            // Keep it for retry rather than creating a second worktree.
-            if draft != nil, task.modelContext != nil {
-                modelContext.delete(task)
-            } else if task.modelContext != nil, task.executionRootPath != nil {
-                draftTask = task
+            // A completed Git operation may already have saved the task with its
+            // worktree. The draft keeps that worktree for retry, never a second one.
+            if task.modelContext != nil {
+                draftTask = TaskWorktreeService.recoverFailedSubmission(
+                    task: task, existingDraft: draft, modelContext: modelContext
+                )
             }
             throw error
         }
+    }
+
+    /// Planning reads the code the task will run in, so a requested worktree
+    /// is created for the draft before the planner first runs.
+    private func ensurePlanningWorktree(for draft: AgentTask) async throws {
+        guard let request = requestedWorktree else { return }
+        let wasPreparing = isPreparingWorktree
+        isPreparingWorktree = true
+        defer { isPreparingWorktree = wasPreparing }
+        try await TaskWorktreeService.prepare(task: draft, request: request, modelContext: modelContext)
+        try Task.checkCancellation()
     }
 
     private func focusComposerInput() {
@@ -1361,6 +1392,7 @@ struct ChatPanelView: View {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
                 if shouldUseGoalMode, let planningDraft {
+                    try await ensurePlanningWorktree(for: planningDraft)
                     let selection = TaskRoleProfileStore.selection(
                         for: .planner,
                         task: planningDraft,
@@ -1447,7 +1479,7 @@ struct ChatPanelView: View {
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         performTaskCreation {
-            try await prepareTaskCheckout(task, inheritingFrom: draftTask)
+            try await prepareTaskCheckout(task)
             TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
             modelContext.insert(task)
             TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -1508,6 +1540,7 @@ struct ChatPanelView: View {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
                 if let planningDraft {
+                    try await ensurePlanningWorktree(for: planningDraft)
                     let selection = TaskRoleProfileStore.selection(
                         for: .planner,
                         task: planningDraft,
@@ -1582,9 +1615,9 @@ struct ChatPanelView: View {
         }
     }
 
-    private func runApprovedPlan(_ plan: TaskPlanPayload) {
+    private func runApprovedPlan(_ plan: TaskPlanPayload, worktreeReady: Bool = false) {
         guard let task = draftTask,
-              task.status != .running, !isPreparingWorktree else { return }
+              task.status != .running, worktreeReady || !isPreparingWorktree else { return }
 
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             TaskForkPolicyService.recordReadOnlyBlock(
@@ -1592,6 +1625,14 @@ struct ChatPanelView: View {
                 for: task,
                 modelContext: modelContext
             )
+            return
+        }
+        // The draft itself becomes the task, so it gets its worktree first.
+        if !worktreeReady, requestedWorktree != nil {
+            performTaskCreation {
+                try await ensurePlanningWorktree(for: task)
+                runApprovedPlan(plan, worktreeReady: true)
+            }
             return
         }
 
@@ -1662,7 +1703,7 @@ struct ChatPanelView: View {
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         performTaskCreation {
-            try await prepareTaskCheckout(task, inheritingFrom: draftTask)
+            try await prepareTaskCheckout(task)
             TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
             modelContext.insert(task)
             TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -2185,6 +2226,10 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
+            if draftToLoad == nil {
+                NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft, workspace: workspace)
+            }
+            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
             if TaskPolicyStore.latestSelectedLevel(for: draft) != currentAgentPolicyLevel {
                 recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_updated")
             }
@@ -2199,7 +2244,7 @@ struct ChatPanelView: View {
             // plan — it persists normally and captures the full conversation. This
             // keeps the long tail of "open chat, type hi, wander off" out of the
             // store entirely, complementing the board filter and launch prune.
-            if !isPlanMode, pendingPlan == nil, !worktreeSelection.isEnabled {
+            if !isPlanMode, pendingPlan == nil {
                 let userMessages = messages.filter { $0.role == "user" }.map(\.content)
                 if TaskConversationSignal.isLowSignalConversation(
                     goal: messages.first?.content ?? "",
@@ -2229,10 +2274,10 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
-            try await prepareTaskCheckout(draft)
             modelContext.insert(draft)
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_created")
+            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
             draftTask = draft
             try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: draft.workspace, modelContext: modelContext)
             return draft
@@ -2312,6 +2357,7 @@ struct ChatPanelView: View {
         // Adopt this draft's own persisted runtime pick and chips, not whatever this view held before.
         composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
         attachedFiles = ComposerAttachments.paths(in: task.inputs)
+        NewTaskWorktreeComposerFlow.restoreChoice(&worktreeSelection, from: task)
         // First try loading from draftMessages JSON
         if !task.draftMessages.isEmpty,
            let data = task.draftMessages.data(using: .utf8),

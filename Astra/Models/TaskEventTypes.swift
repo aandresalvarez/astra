@@ -57,6 +57,8 @@ public enum TaskEventTypes {
         public static let stats: TaskEventType = "task.stats"
         public static let chained: TaskEventType = "task.chained"
         public static let worktreePrepared: TaskEventType = "task.worktree.prepared"
+        /// Draft-only intent; payload is `TaskWorktreeRequestPayload`.
+        public static let worktreeRequested: TaskEventType = "task.worktree.requested"
     }
 
     public enum Conversation {
@@ -337,6 +339,7 @@ public enum TaskEventTypes {
         Budget.warning,
         Task.stats,
         Task.chained,
+        Task.worktreeRequested,
         Tool.permissionApprovalRequested,
         Tool.permissionGrantTask,
         System.skillActive,

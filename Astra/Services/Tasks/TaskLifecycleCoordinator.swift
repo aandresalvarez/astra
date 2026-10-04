@@ -542,9 +542,20 @@ final class TaskLifecycleCoordinator {
     func deleteTask(_ task: AgentTask) -> Workspace? {
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
+        // A draft that never ran gives back its untouched worktree; any other
+        // task's worktree holds the user's work and is kept.
+        let unusedWorktree = task.status == .draft && task.runs.isEmpty
+            ? TaskWorktreeService.discardSnapshot(for: task)
+            : nil
         cancelAndRemoveTurnRequests(for: task)
         modelContext.delete(task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        if let unusedWorktree {
+            let modelContext = modelContext
+            Task { @MainActor in
+                await TaskWorktreeService.discardUnusedWorktree(unusedWorktree, modelContext: modelContext)
+            }
+        }
         return workspace
     }
 

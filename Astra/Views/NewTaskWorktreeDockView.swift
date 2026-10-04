@@ -6,18 +6,47 @@ import ASTRAModels
 /// decision dock and wears the same row chrome: where the task will run on
 /// the leading side, the worktree checkbox and repository menu on the
 /// trailing side, and any task-creation problem underneath.
+///
+/// The repository is the shared "where the next task runs" setting the
+/// Repository card also edits: the selected draft's pin, otherwise the
+/// workspace default. Picking one here writes that setting; the checkbox and
+/// base are mirrored to the card through `NewTaskWorktreeIntentStore`.
 struct NewTaskWorktreeDockView: View {
     let workspace: Workspace?
+    /// The composer's draft, if any.
+    let draft: AgentTask?
+    /// The draft the scene selected, whose pin is the shared setting; nil
+    /// when the composer starts a new task from the workspace default.
+    let pinOwner: AgentTask?
     let allowsChoice: Bool
-    let pinnedPath: String?
+    /// The draft's worktree once it has one.
+    let binding: TaskWorktreePayload?
     let isPreparing: Bool
     let problem: String?
     @Binding var selection: NewTaskWorktreeSelection
+    @Environment(\.newTaskWorktreeIntents) private var intents
+    @State private var intentOwner = UUID()
 
     private struct ScanRequest: Hashable {
         let workspaceID: UUID
         let primaryPath: String
         let additionalPaths: [String]
+        let codePath: String?
+    }
+
+    private struct IntentSnapshot: Equatable {
+        let workspaceID: UUID?
+        let draftID: UUID?
+        let isEnabled: Bool
+        let base: TaskWorktreeBaseChoice
+        let baseLabel: String?
+        let hasPreparedDraft: Bool
+    }
+
+    /// Where the next task runs before any worktree is created.
+    private var sharedCodePath: String? {
+        if let pinned = pinOwner?.executionRootPath, !pinned.isEmpty { return pinned }
+        return workspace?.activeWorkingPath
     }
 
     private var scanRequest: ScanRequest? {
@@ -25,7 +54,19 @@ struct NewTaskWorktreeDockView: View {
         return ScanRequest(
             workspaceID: workspace.id,
             primaryPath: workspace.primaryPath,
-            additionalPaths: workspace.additionalPaths
+            additionalPaths: workspace.additionalPaths,
+            codePath: sharedCodePath.map(WorkspacePathPresentation.standardizedPath)
+        )
+    }
+
+    private var intentSnapshot: IntentSnapshot {
+        IntentSnapshot(
+            workspaceID: workspace?.id,
+            draftID: draft?.id,
+            isEnabled: allowsChoice && selection.isEnabled,
+            base: selection.base,
+            baseLabel: selection.baseLabel,
+            hasPreparedDraft: !allowsChoice && draft != nil
         )
     }
 
@@ -33,7 +74,8 @@ struct NewTaskWorktreeDockView: View {
         NewTaskWorktreeDockPresentation.build(.init(
             selection: selection,
             allowsChoice: allowsChoice,
-            pinnedPath: pinnedPath,
+            pinnedPath: binding?.worktreePath,
+            pinnedBase: binding?.baseRef,
             isPreparing: isPreparing,
             problem: problem
         ))
@@ -56,6 +98,10 @@ struct NewTaskWorktreeDockView: View {
         .task(id: scanRequest) {
             await scanRepositories()
         }
+        .onAppear { claimIntent() }
+        .onChange(of: workspace?.id) { claimIntent() }
+        .onChange(of: intentSnapshot) { publishIntent() }
+        .onDisappear { intents?.release(owner: intentOwner) }
     }
 
     private func scanRepositories() async {
@@ -64,12 +110,89 @@ struct NewTaskWorktreeDockView: View {
             return
         }
         selection.isLoading = true
-        let repositories = await GitService.shared.scanForGitRepositories(
+        let git = GitService.shared
+        let repositories = await git.scanForGitRepositories(
             primaryPath: request.primaryPath,
             additionalPaths: request.additionalPaths
         )
+        let match = await Self.checkout(
+            request.codePath,
+            primaryPath: request.primaryPath,
+            in: repositories,
+            git: git
+        )
         guard !Task.isCancelled, request == scanRequest else { return }
-        selection.updateRepositories(repositories, preferredPath: workspace?.activeWorkingPath)
+        selection.updateRepositories(
+            repositories,
+            selectedPath: match?.repository.path,
+            checkoutPath: match?.checkoutPath
+        )
+        guard let repository = selection.selectedRepository else { return }
+        let base = TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: selection.checkoutPath)
+        var current = base
+        current.base = .currentBranch
+        let defaultLabel = await TaskWorktreeService.baseLabel(for: base, git: git)
+        let currentLabel = await TaskWorktreeService.baseLabel(for: current, git: git)
+        guard !Task.isCancelled, request == scanRequest else { return }
+        selection.defaultBaseLabel = defaultLabel
+        selection.currentBaseLabel = currentLabel
+    }
+
+    /// The repository whose root or worktree is `codePath`, with that
+    /// checkout; else the repository at the workspace's primary path, else the
+    /// first, each with its root as the checkout.
+    static func checkout(
+        _ codePath: String?,
+        primaryPath: String,
+        in repositories: [GitRepositoryInfo],
+        git: any GitRepositoryOperating
+    ) async -> (repository: GitRepositoryInfo, checkoutPath: String)? {
+        if let codePath {
+            if let exact = repositories.first(where: { $0.path == codePath }) { return (exact, exact.path) }
+            let resolved = URL(fileURLWithPath: codePath).resolvingSymlinksInPath().path
+            for repository in repositories {
+                let worktrees = await git.listWorktrees(at: repository.path)
+                if worktrees.contains(where: { URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == resolved }) {
+                    return (repository, codePath)
+                }
+            }
+        }
+        let primary = WorkspacePathPresentation.standardizedPath(primaryPath)
+        guard let fallback = repositories.first(where: { $0.path == primary }) ?? repositories.first else { return nil }
+        return (fallback, fallback.path)
+    }
+
+    private func claimIntent() {
+        guard let intents else { return }
+        guard let workspace else {
+            intents.release(owner: intentOwner)
+            return
+        }
+        intents.claim(owner: intentOwner, workspaceID: workspace.id, draftID: draft?.id)
+        publishIntent()
+    }
+
+    private func publishIntent() {
+        let snapshot = intentSnapshot
+        intents?.update(owner: intentOwner) { entry in
+            if let workspaceID = snapshot.workspaceID { entry.workspaceID = workspaceID }
+            entry.draftID = snapshot.draftID
+            entry.isEnabled = snapshot.isEnabled
+            entry.base = snapshot.base
+            entry.baseLabel = snapshot.baseLabel
+            entry.preparedDraft = snapshot.hasPreparedDraft ? draft : nil
+        }
+    }
+
+    /// Picking a repository here moves the shared setting, exactly as the
+    /// Repository card's picker does.
+    private func selectRepository(_ repository: GitRepositoryInfo) {
+        guard let workspace, repository.path != selection.repositoryPath else { return }
+        TaskCodeLocationPin.set(repository.path, workspace: workspace, task: pinOwner)
+        selection.repositoryPath = repository.path
+        selection.checkoutPath = repository.path
+        selection.defaultBaseLabel = nil
+        selection.currentBaseLabel = nil
     }
 
     private func dockRow(_ presentation: NewTaskWorktreeDockPresentation) -> some View {
@@ -171,17 +294,34 @@ struct NewTaskWorktreeDockView: View {
         }
     }
 
+    /// One chip for both choices the worktree is made from: which repository
+    /// and which commit it starts from.
     private var repositoryMenu: some View {
         Menu {
-            Picker("Repository", selection: $selection.repositoryPath) {
+            Section(NewTaskWorktreeDockPresentation.repositorySectionTitle) {
                 ForEach(selection.repositories) { repository in
-                    Text(repository.name)
-                        .tag(Optional(repository.path))
-                        .accessibilityIdentifier("NewTaskWorktreeRepository:\(repository.path)")
+                    Button {
+                        selectRepository(repository)
+                    } label: {
+                        if repository.path == selection.repositoryPath {
+                            Label(repository.name, systemImage: "checkmark")
+                        } else {
+                            Text(repository.name)
+                        }
+                    }
+                    .accessibilityIdentifier("NewTaskWorktreeRepository:\(repository.path)")
                 }
             }
-            .pickerStyle(.inline)
-            .labelsHidden()
+            Section(NewTaskWorktreeDockPresentation.baseSectionTitle) {
+                Picker(NewTaskWorktreeDockPresentation.baseSectionTitle, selection: $selection.base) {
+                    ForEach(TaskWorktreeBaseChoice.allCases, id: \.self) { base in
+                        Text(NewTaskWorktreeDockPresentation.baseOptionTitle(base, label: label(for: base)))
+                            .tag(base)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
         } label: {
             repositoryMenuLabel
         }
@@ -189,10 +329,27 @@ struct NewTaskWorktreeDockView: View {
         .menuIndicator(.hidden)
         .buttonStyle(NewTaskWorktreeRepositoryChipStyle())
         .fixedSize()
-        .help(selection.selectedRepository.map { "Branch from \($0.path)" } ?? "Choose the repository to branch from")
-        .accessibilityLabel("Worktree repository")
-        .accessibilityValue(selection.selectedRepository?.name ?? NewTaskWorktreeDockPresentation.chooseRepositoryTitle)
+        .help(repositoryMenuHelp)
+        .accessibilityLabel("Worktree repository and starting point")
+        .accessibilityValue(chipTitle)
         .accessibilityIdentifier("NewTaskWorktreeRepositoryPicker")
+    }
+
+    private func label(for base: TaskWorktreeBaseChoice) -> String? {
+        base == .defaultBranch ? selection.defaultBaseLabel : selection.currentBaseLabel
+    }
+
+    private var chipTitle: String {
+        NewTaskWorktreeDockPresentation.chipTitle(
+            repository: selection.selectedRepository?.name,
+            baseLabel: selection.baseLabel
+        )
+    }
+
+    private var repositoryMenuHelp: String {
+        guard let repository = selection.selectedRepository else { return "Choose the repository to branch from" }
+        let origin = NewTaskWorktreeDockPresentation.startsFrom(selection.base, label: selection.baseLabel)
+        return "New branch of \(repository.path), \(origin)"
     }
 
     private var repositoryMenuLabel: some View {
@@ -200,7 +357,7 @@ struct NewTaskWorktreeDockView: View {
         return HStack(spacing: 5) {
             Image(systemName: "folder")
                 .font(Stanford.ui(10, weight: .semibold))
-            Text(repository?.name ?? NewTaskWorktreeDockPresentation.chooseRepositoryTitle)
+            Text(chipTitle)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Image(systemName: "chevron.up.chevron.down")
@@ -209,7 +366,7 @@ struct NewTaskWorktreeDockView: View {
         }
         .font(Stanford.caption(12).weight(.semibold))
         .foregroundStyle(repository == nil ? Stanford.poppy : Stanford.black.opacity(0.84))
-        .frame(maxWidth: 180)
+        .frame(maxWidth: 220)
     }
 }
 

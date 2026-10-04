@@ -140,6 +140,7 @@ struct AppSemanticFitnessTests {
             "task.started": .lifecycle,
             "task.stats": .system,
             "task.worktree.prepared": .lifecycle,
+            "task.worktree.requested": .system,
             "team.agent.completed": .team,
             "team.agent.started": .team,
             "team.created": .team,

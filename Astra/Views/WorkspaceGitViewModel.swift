@@ -297,25 +297,28 @@ final class WorkspaceGitViewModel: ObservableObject {
               activeWorkingPath == activePath else { return }
         self.repositories = repos
         if let preferred {
-            self.selectedRepository = preferred
+            self.selectedRepository = preferred.repository
         } else if self.selectedRepository == nil {
             self.selectedRepository = repos.first
         } else if !repos.contains(where: { $0.path == self.selectedRepository?.path }) {
             self.selectedRepository = repos.first
         }
-        persistScannedRepositorySelectionIfNeeded()
+        persistScannedRepositorySelectionIfNeeded(activePathInRepository: preferred?.containsActivePath == true)
         scheduleRefresh()
         await waitForPendingRefresh()
     }
 
-    private func persistScannedRepositorySelectionIfNeeded() {
+    private func persistScannedRepositorySelectionIfNeeded(activePathInRepository: Bool) {
         // A scan is read-only with respect to task pinning: only adopt the
         // scanned selection as the workspace code default when no task is
         // selected. A selected task (including a draft) must be pinned only by an
         // explicit user selection in `selectRepository`, never as a side effect
         // of a background scan. `setActiveWorkingPath` skips no-op writes, so this
         // never churns `workspace.updatedAt` when the default already matches.
+        // A default that is already the repository or one of its worktrees is
+        // kept: resetting it to the root would undo a chosen worktree checkout.
         guard selectedTask == nil,
+              !activePathInRepository,
               let selectedRepository
         else { return }
         _ = setActiveWorkingPath(selectedRepository.path)
@@ -353,7 +356,12 @@ final class WorkspaceGitViewModel: ObservableObject {
         return nil
     }
 
-    private func preferredRepository(in repos: [GitRepositoryInfo]) async -> GitRepositoryInfo? {
+    /// The repository to select, and whether it contains the active path (as
+    /// its root or one of its worktrees).
+    private func preferredRepository(
+        in repos: [GitRepositoryInfo]
+    ) async -> (repository: GitRepositoryInfo, containsActivePath: Bool)? {
+        let active = activeWorkingPath.map(WorkspacePathPresentation.standardizedPath)
         let candidates = [
             activeWorkingPath,
             selectedTask?.executionRootPath,
@@ -366,7 +374,7 @@ final class WorkspaceGitViewModel: ObservableObject {
 
         for candidate in candidates {
             if let exact = repos.first(where: { $0.path == candidate }) {
-                return exact
+                return (exact, candidate == active)
             }
             let resolved = URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path
             for repository in repos {
@@ -374,7 +382,7 @@ final class WorkspaceGitViewModel: ObservableObject {
                 if worktrees.contains(where: {
                     URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == resolved
                 }) {
-                    return repository
+                    return (repository, candidate == active)
                 }
             }
         }
@@ -439,11 +447,14 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     var canChangeActiveCodePath: Bool {
         guard let task = selectedTask else { return true }
-        return task.status == .draft
+        return task.status == .draft && TaskWorktreeService.activeWorktreeBinding(for: task) == nil
     }
 
     var activeCodePathChangeBlockedMessage: String {
-        "This task already has execution history, so its repository is pinned. Fork or start a new task to use another repository."
+        if selectedTask?.status == .draft {
+            return "This draft already has its own worktree. Start over or delete the draft to choose another checkout."
+        }
+        return "This task already has execution history, so its repository is pinned. Fork or start a new task to use another repository."
     }
 
     func selectRepository(_ repo: GitRepositoryInfo) {
@@ -855,27 +866,9 @@ final class WorkspaceGitViewModel: ObservableObject {
             return false
         }
 
-        let normalized = path
-            .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-            .map(WorkspacePathPresentation.standardizedPath)
-
-        activeWorkingPath = normalized
+        activeWorkingPath = TaskCodeLocationPin.normalize(path)
         guard let workspace else { return true }
-        let persistedOverride = normalized == WorkspacePathPresentation.standardizedPath(workspace.primaryPath)
-            ? nil
-            : normalized
-
-        if let selectedTask {
-            // Skip no-op writes so reselecting the same repo (or a scan) never
-            // bumps updatedAt or marks the model dirty.
-            guard selectedTask.executionRootPath != persistedOverride else { return true }
-            selectedTask.executionRootPath = persistedOverride
-            selectedTask.updatedAt = Date()
-        } else {
-            guard workspace.activeWorkingPath != persistedOverride else { return true }
-            workspace.activeWorkingPath = persistedOverride
-            workspace.updatedAt = Date()
-        }
+        TaskCodeLocationPin.set(path, workspace: workspace, task: selectedTask)
         return true
     }
 

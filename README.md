@@ -56,19 +56,46 @@ When a workspace has Git repositories in its primary or additional folders, the
 new-task composer shows a strip at the top of the input card, in the same
 place an open task shows **Result ready** or problem messages. The strip's
 left side names the current checkouts. On its right, check **Start in a new
-worktree**, then choose the repository from the menu that appears beside it.
-ASTRA creates a task-specific `astra/...` branch from that checkout's current
-commit before starting the task or its Goal Mode draft. The repository needs at
-least one commit; uncommitted changes are not copied. The same strip shows the
-worktree being created and, if the task cannot start, the reason.
+worktree**; the menu beside it shows the repository and where the new branch
+starts:
+
+- **Repository** is the same setting as the Repository card's repository and
+  checkout pickers, so changing either one changes both.
+- **Start from › Default branch** (the default) fetches the repository's
+  remote default branch, usually `origin/main`, and starts there. If the fetch
+  fails, the last fetched remote branch or the local `main`/`master` is used.
+  Commits on the branch you have checked out are not included.
+- **Start from › Current branch** starts from the selected checkout's current
+  commit instead, including commits not yet on `main`.
+
+Uncommitted changes are never copied, and the repository needs at least one
+commit. While the box is checked, the Repository card previews the new
+worktree: Branch reads *New · from main*, Checkout reads *New worktree*, and
+Changes and Commit & push are labelled as acting on the base checkout.
+
+The branch is named `astra/<title words>-<task id>`, for example
+`astra/fix-login-button-alignment-25e8279e`: up to 32 characters of whole
+words from the task title, with accents removed and filler words such as
+"the" dropped, then the first 8 characters of the task ID, which match the
+task's `.astra/tasks/` folder. A taken name gets `-2`, `-3`, and so on. The
+folder is the branch name with `/` replaced by `-`, under the app's
+`Worktrees/<repository>/` folder.
+
+The worktree is created only when it is needed: when the task starts, or
+when Goal Mode planning first reads the code. Plain chat messages don't create
+one. The strip shows the worktree being created and, if the task cannot start,
+the reason. A draft keeps its choice when reopened.
 
 The task stays pinned to that worktree, including when its draft becomes a
-queued task; the draft's strip shows the pinned folder. Other tasks and the
-workspace's default checkout are unchanged.
-Task history and outputs remain in the workspace's task folder. Worktrees are
-kept after execution and can be managed from the Repository panel. Leave the
-checkbox off to use the existing checkout behavior. If a task's new worktree is
-removed, launch fails rather than falling back to the original repository.
+queued task; the draft's strip shows the pinned folder and its base. Other
+tasks and the workspace's default checkout are unchanged. Task history and
+outputs remain in the workspace's task folder. Worktrees are kept after
+execution and can be managed from the Repository panel. **Start Over** or
+deleting a draft that never ran removes its worktree and branch, but only if
+nothing changed in them. A worktree with edits or commits, or one another task
+or the workspace default uses, is kept. Leave the checkbox off to use the existing checkout behavior. If a
+task's new worktree is removed, launch fails rather than falling back to the
+original repository.
 
 ## Requirements
 

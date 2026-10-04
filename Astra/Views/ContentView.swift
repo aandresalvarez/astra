@@ -123,6 +123,7 @@ struct ContentView: View {
     /// Hover state of the show-sidebar toggle, which drives the transient
     /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
     @State private var isSidebarToggleHovered = false
+    @State private var newTaskWorktreeIntents = NewTaskWorktreeIntentStore()
     @State private var cachedHasCanvasContent = false
     /// Run-once guard for the deferred Sparkle update probe. handleAppear can
     /// fire on more than one .onAppear for the same view instance; this keeps
@@ -972,6 +973,7 @@ struct ContentView: View {
     private var rootLayoutWithNewTaskSwitcher: some View {
         rootLayoutWithFeedbackChrome
             .environment(\.newTaskComposerWorkspaceID, sceneSelection.newTaskComposerWorkspaceID)
+            .environment(\.newTaskWorktreeIntents, newTaskWorktreeIntents)
             .environment(\.newTaskWorkspaceSwitcher, NewTaskWorkspaceSwitcher(
                 workspaces: workspaces,
                 select: { sceneSelection.retargetComposer(to: $0) },

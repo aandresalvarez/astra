@@ -1,5 +1,7 @@
+import Foundation
 import Testing
 import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("New task worktree dock")
@@ -26,6 +28,7 @@ struct NewTaskWorktreeDockPresentationTests {
         _ selection: NewTaskWorktreeSelection,
         allowsChoice: Bool = true,
         pinnedPath: String? = nil,
+        pinnedBase: String? = nil,
         isPreparing: Bool = false,
         problem: String? = nil
     ) -> NewTaskWorktreeDockPresentation? {
@@ -33,6 +36,7 @@ struct NewTaskWorktreeDockPresentationTests {
             selection: selection,
             allowsChoice: allowsChoice,
             pinnedPath: pinnedPath,
+            pinnedBase: pinnedBase,
             isPreparing: isPreparing,
             problem: problem
         ))
@@ -121,6 +125,96 @@ struct NewTaskWorktreeDockPresentationTests {
         #expect(pinned.help.contains(path))
         #expect(!pinned.showsToggle)
         #expect(!pinned.showsRepositoryMenu)
+
+        let withBase = try #require(dock(selection(), allowsChoice: false, pinnedPath: path, pinnedBase: "origin/main"))
+        #expect(withBase.meta == "\(WorkspacePathPresentation.abbreviatePath(path)) · from origin/main")
+        #expect(withBase.help.contains("started from origin/main"))
+        #expect(withBase.help.contains("Start over or delete the draft"))
+    }
+
+    @Test("The strip and its menu name the base the worktree starts from")
+    func baseCopy() throws {
+        var ready = selection(enabled: true, selected: astra.path)
+        let unresolved = try #require(dock(ready))
+        #expect(unresolved.meta == "from default branch")
+        #expect(unresolved.help.contains("fetches astra's default branch"))
+
+        ready.defaultBaseLabel = "main"
+        let main = try #require(dock(ready))
+        #expect(main.meta == "from main")
+        #expect(main.help.contains("from main"))
+
+        ready.base = .currentBranch
+        ready.currentBaseLabel = "feature/x"
+        let current = try #require(dock(ready))
+        #expect(current.meta == "from feature/x")
+        #expect(current.help.contains("uncommitted changes stay in the original checkout"))
+        let creating = try #require(dock(ready, isPreparing: true))
+        #expect(creating.meta == "astra · from feature/x")
+
+        #expect(NewTaskWorktreeDockPresentation.baseOptionTitle(.defaultBranch, label: "main") == "Default branch (main)")
+        #expect(NewTaskWorktreeDockPresentation.baseOptionTitle(.currentBranch, label: " ") == "Current branch")
+        #expect(NewTaskWorktreeDockPresentation.startsFrom(.currentBranch, label: nil) == "from current branch")
+        #expect(NewTaskWorktreeDockPresentation.chipTitle(repository: "astra", baseLabel: "main") == "astra · main")
+        #expect(NewTaskWorktreeDockPresentation.chipTitle(repository: "astra", baseLabel: nil) == "astra")
+        #expect(NewTaskWorktreeDockPresentation.chipTitle(repository: nil, baseLabel: "main") == "Choose repository")
+        #expect(NewTaskWorktreeDockPresentation.toggleHelp.contains("default branch"))
+    }
+
+    @Test("The Repository card previews a new worktree only while the next task will get one")
+    @MainActor
+    func repositoryCardPreview() throws {
+        let workspaceID = UUID()
+        let entry = NewTaskWorktreeIntentStore.Entry(
+            owner: UUID(), workspaceID: workspaceID, isEnabled: true, base: .defaultBranch, baseLabel: "main"
+        )
+        let preview = try #require(WorkspaceGitNewWorktreePreview(entry: entry, contextTask: nil))
+        #expect(preview.summary == "New worktree · from main")
+        #expect(preview.branchValue == "New · from main")
+        #expect(preview.branchHelp.contains("astra/"))
+        #expect(WorkspaceGitNewWorktreePreview.checkoutValue == "New worktree")
+        #expect(WorkspaceGitNewWorktreePreview.changesCaption == "Base checkout · not copied")
+        #expect(WorkspaceGitNewWorktreePreview(base: .currentBranch, baseLabel: " ").branchValue == "New · from current branch")
+
+        var unchecked = entry
+        unchecked.isEnabled = false
+        #expect(WorkspaceGitNewWorktreePreview(entry: unchecked, contextTask: nil) == nil)
+        #expect(WorkspaceGitNewWorktreePreview(entry: nil, contextTask: nil) == nil)
+
+        // A draft that already has its worktree shows that worktree instead.
+        let draft = AgentTask(title: "Draft", goal: "Explore")
+        draft.executionRootPath = "/tmp/astra-dock/Worktrees/astra/draft"
+        let payload = try TaskEvent.encodePayload(TaskWorktreePayload(
+            repositoryPath: astra.path, worktreePath: "/tmp/astra-dock/Worktrees/astra/draft", branch: "astra/draft"
+        )).get()
+        draft.events = [TaskEvent(task: draft, eventType: TaskEventTypes.Task.worktreePrepared, payload: payload)]
+        #expect(WorkspaceGitNewWorktreePreview(entry: entry, contextTask: draft) == nil)
+        #expect(WorkspaceGitNewWorktreePreview(entry: entry, contextTask: AgentTask(title: "Plain", goal: "Explore")) != nil)
+    }
+
+    @Test("Only the composer on screen owns the shared worktree choice")
+    @MainActor
+    func intentStoreOwnership() {
+        let store = NewTaskWorktreeIntentStore()
+        let workspaceID = UUID()
+        let first = UUID()
+        let second = UUID()
+        let draftID = UUID()
+        store.claim(owner: first, workspaceID: workspaceID, draftID: nil)
+        store.update(owner: first) { $0.isEnabled = true }
+        #expect(store.entry(workspaceID: workspaceID, selectedTaskID: nil)?.isEnabled == true)
+        #expect(store.entry(workspaceID: UUID(), selectedTaskID: nil) == nil)
+        #expect(store.entry(workspaceID: workspaceID, selectedTaskID: UUID()) == nil)
+
+        // A replacement composer that claims first keeps its entry when the
+        // old one leaves the screen.
+        store.claim(owner: second, workspaceID: workspaceID, draftID: draftID)
+        store.update(owner: first) { $0.isEnabled = true }
+        store.release(owner: first)
+        #expect(store.entry(workspaceID: workspaceID, selectedTaskID: draftID)?.owner == second)
+        #expect(store.entry(workspaceID: workspaceID, selectedTaskID: draftID)?.isEnabled == false)
+        store.release(owner: second)
+        #expect(store.entry == nil)
     }
 
     @Test("Task-creation problems use the failure tone and keep the choice available for retry")
