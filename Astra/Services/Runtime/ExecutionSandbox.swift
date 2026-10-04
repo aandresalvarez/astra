@@ -53,7 +53,7 @@ enum ExecutionSandboxEnforcement: String, Codable, Sendable, CaseIterable, Ident
         case .off:
             "Agent processes run without ASTRA's OS sandbox. ASTRA's in-app permission and privacy checks still apply."
         case .bestEffort:
-            "Confine agent file writes to the workspace using macOS Seatbelt. If the sandbox can't be applied, the run continues unconfined and is logged."
+            "Confine agent file writes to the workspace using macOS Seatbelt. If the sandbox can't be applied, the run continues unconfined and is logged, except Antigravity below Auto, which is blocked because its own sandbox doesn't cover file writes."
         case .strict:
             "Require the macOS Seatbelt sandbox. If it can't be applied, the run is blocked."
         }

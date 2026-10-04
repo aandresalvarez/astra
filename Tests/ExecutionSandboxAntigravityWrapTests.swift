@@ -127,6 +127,14 @@ struct ExecutionSandboxAntigravityWrapTests {
         #expect(message?.contains("Auto") == true)
     }
 
+    @Test("The Best effort help text names the Antigravity exception to its unconfined fallback")
+    func bestEffortHelpTextMentionsTheException() {
+        let text = ExecutionSandboxEnforcement.bestEffort.helpText
+
+        #expect(text.contains("Antigravity"))
+        #expect(text.contains("blocked"))
+    }
+
     private func makePlan(runtime: AgentRuntimeID, workspace: String) -> AgentRuntimeProcessLaunchPlan {
         AgentRuntimeProcessLaunchPlan(
             runtime: runtime,
