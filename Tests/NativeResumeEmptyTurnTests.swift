@@ -3,6 +3,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 /// A natively resumed turn that ends cleanly with reasoning only must be
@@ -88,7 +89,8 @@ struct NativeResumeEmptyTurnTests {
     /// Runs a Cursor task through its first turn and a follow-up whose native
     /// session exists, feeding the runner's scripts in order.
     private func runFollowUp(
-        scripts: [ScriptedStreamRunner.Script]
+        scripts: [ScriptedStreamRunner.Script],
+        configure: (AgentRuntimeWorker, AgentTask) -> Void = { _, _ in }
     ) async throws -> (runner: ScriptedStreamRunner, task: AgentTask, container: ModelContainer) {
         let root = "/tmp/native_empty_\(UUID().uuidString.prefix(8))"
         let home = "\(root)/home"
@@ -129,6 +131,7 @@ struct NativeResumeEmptyTurnTests {
         await worker.execute(task: task, modelContext: context) { _ in }
         #expect(task.sessionId == "chat-xyz")
 
+        configure(worker, task)
         DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(task: task, message: "What number did I give you?", modelContext: context) { _ in }
         try? FileManager.default.removeItem(atPath: root)
@@ -151,6 +154,59 @@ struct NativeResumeEmptyTurnTests {
         #expect(latest.output.contains("4172"))
         #expect(task.sessionId == "chat-new")
         #expect(latest.stopReason != "no_usable_result")
+    }
+
+    @Test("The re-run only gets the wall-clock allowance the first attempt left")
+    func rerunSharesTheRunDeadline() async throws {
+        let (runner, _, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn),
+            .init(lines: Self.freshAnswerTurn)
+        ], configure: { worker, _ in worker.maxRunSeconds = 600 })
+        defer { withExtendedLifetime(container) {} }
+
+        let resumed = try #require(runner.maxRunSeconds[1])
+        let rerun = try #require(runner.maxRunSeconds[2])
+        #expect(resumed == 600)
+        #expect(rerun < resumed)
+        #expect(rerun > 0)
+    }
+
+    @Test("The full-history prompt is budget-checked before the re-run, and a hard stop blocks it")
+    func rerunPromptIsBudgetChecked() async throws {
+        // Long earlier history: the standard window drops most of it, the extended one keeps it.
+        let padHistory: (AgentRuntimeWorker, AgentTask) -> Void = { _, task in
+            let outputs = (TaskWorkspaceAccess(task: task).taskFolder as NSString).appendingPathComponent("outputs")
+            try? FileManager.default.createDirectory(atPath: outputs, withIntermediateDirectories: true)
+            for turn in 2...9 {
+                let path = (outputs as NSString).appendingPathComponent(String(format: "turn_%03d.md", turn))
+                try? String(repeating: "Earlier turn \(turn) detail. ", count: 150).write(toFile: path, atomically: true, encoding: .utf8)
+            }
+        }
+        // Measure both prompts with an ample budget first.
+        let (measured, _, measuredContainer) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn),
+            .init(lines: Self.freshAnswerTurn)
+        ], configure: padHistory)
+        defer { withExtendedLifetime(measuredContainer) {} }
+        let compact = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[1])
+        let full = AgentProcessMonitor.estimatedTokenCount(for: measured.prompts[2])
+        try #require(full > compact, "the fallback prompt must be the larger one for this test to mean anything")
+
+        let (runner, _, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn),
+            .init(lines: Self.freshAnswerTurn)
+        ], configure: { worker, task in
+            padHistory(worker, task)
+            worker.budgetEnforcementModeOverride = .hardStop
+            task.tokenBudget = (compact + full) / 2
+        })
+        defer { withExtendedLifetime(container) {} }
+
+        // initial launch and the resumed attempt happen; the oversized re-run does not
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
     }
 
     @Test("A resumed turn that shows real output is not re-run")
@@ -191,6 +247,8 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
 
     private var scripts: [Script]
     private(set) var nativeSessionIDs: [String?] = []
+    private(set) var maxRunSeconds: [TimeInterval?] = []
+    private(set) var prompts: [String] = []
 
     init(scripts: [Script]) { self.scripts = scripts }
 
@@ -224,6 +282,8 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
         nativeSessionIDs.append(nativeContinuationSessionID)
+        self.maxRunSeconds.append(maxRunSeconds)
+        prompts.append(prompt)
         let script = scripts.isEmpty ? Script(lines: []) : scripts.removeFirst()
         for line in script.lines { onLine(line, true) }
         return AgentProcessResult(exitCode: script.exitCode)

@@ -223,11 +223,16 @@ final class TaskLifecycleCoordinator {
               let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
               let stopReason = latestRun.typedStopReason,
               [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason) else { return nil }
-        if let retryTurn,
-           let sourceEvent = task.events.first(where: { $0.id == retryTurn.sourceEventID }),
-           let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent),
-           source.launchMode == .approvedPlan || source.planSnapshot != nil {
-            return nil
+        // Scheduled, chained and approved-plan launches keep their own relaunch path.
+        guard task.originScheduleID == nil, task.chainedFromID == nil else { return nil }
+        if let retryTurn {
+            guard retryTurn.kind == .initial || retryTurn.kind == .retry else { return nil }
+            if let sourceEvent = task.events.first(where: { $0.id == retryTurn.sourceEventID }),
+               let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent),
+               source.launchMode != .initial || source.planSnapshot != nil
+                || source.scheduleID != nil || source.sourceTaskID != nil {
+                return nil
+            }
         }
         return Self.resumeContinuationMessage(for: task)
     }

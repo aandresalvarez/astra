@@ -48,7 +48,9 @@ struct RetryInterruptedRunTests {
         runtime: AgentRuntimeID = .claudeCode,
         sessionID: String? = "claude-session-1",
         stopReason: String,
-        followUp: String? = nil
+        followUp: String? = nil,
+        scheduleID: UUID? = nil,
+        chainedFromID: UUID? = nil
     ) async throws -> Submitted {
         let env = try makeEnvironment()
         defer { try? FileManager.default.removeItem(atPath: env.root) }
@@ -56,6 +58,8 @@ struct RetryInterruptedRunTests {
         let task = AgentTask(title: "Interrupted", goal: "Build the report", workspace: workspace, runtime: runtime)
         task.status = .cancelled
         task.sessionId = sessionID
+        task.originScheduleID = scheduleID
+        task.chainedFromID = chainedFromID
         task.tokensUsed = 500
         env.context.insert(workspace)
         env.context.insert(task)
@@ -113,6 +117,15 @@ struct RetryInterruptedRunTests {
     func failedRunStillRelaunches() async throws {
         let submitted = try await retry(stopReason: "failed")
         #expect(submitted.mode == .initial)
+    }
+
+    @Test("A scheduled or chained launch keeps its own from-scratch relaunch")
+    func internalLaunchesRelaunch() async throws {
+        let scheduled = try await retry(stopReason: "cancelled", scheduleID: UUID())
+        #expect(scheduled.mode == .initial)
+        #expect(scheduled.task.tokensUsed == 0)
+        let chained = try await retry(stopReason: "cancelled", chainedFromID: UUID())
+        #expect(chained.mode == .initial)
     }
 
     @Test("A pending user follow-up still wins over the generic resume message")

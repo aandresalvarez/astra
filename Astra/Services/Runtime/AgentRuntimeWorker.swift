@@ -709,6 +709,16 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
         )
+        // OpenCode keeps its database under XDG_DATA_HOME, which an attached skill may redirect for the launch.
+        let providerLaunchEnvironment = selectedRuntime == .openCodeCLI
+            ? ProcessInfo.processInfo.environment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: executionTask,
+                capabilityScope: capabilityResolutionSnapshot.providerLaunch,
+                contextText: providerLaunchContextText,
+                executionPolicy: executionPolicy,
+                runtimeRequirements: appliedRuntime.requirements
+            )) { _, scoped in scoped }
+            : ProcessInfo.processInfo.environment
         let nativeContinuationDecision = Self.nativeContinuationSessionID(
             for: task,
             currentRun: run,
@@ -717,7 +727,8 @@ final class AgentRuntimeWorker {
             currentLaunchSignature: launchSignature,
             grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest),
             providerHomeDirectory: launchSettings.homeDirectory,
-            userHome: providerSessionStoreHome
+            userHome: providerSessionStoreHome,
+            environment: providerLaunchEnvironment
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
         // What a launch without the resume sends, kept in case a resumed turn comes back empty.
@@ -852,7 +863,7 @@ final class AgentRuntimeWorker {
         let launchTimeoutSeconds = timeoutSeconds
         let launchLiveApprovalsEnabled = liveApprovalsEnabled
         let launchMaxRunSeconds = maxRunSeconds
-        let launchProcess: (String, String?, NativeResumeEmptyTurnGate?) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate in
+        let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun in
             await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: launchPrompt,
@@ -874,7 +885,7 @@ final class AgentRuntimeWorker {
             runtimeRequirements: appliedRuntime.requirements,
             liveApprovalsEnabled: launchLiveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
-            maxRunSeconds: launchMaxRunSeconds,
+            maxRunSeconds: launchMaxRun,
             onInteractiveAsk: Self.interactiveAskHandler(
                 runtime: selectedRuntime, task: task, run: run,
                 permissionPolicy: runPermissionPolicy, manifest: manifest,
@@ -886,7 +897,8 @@ final class AgentRuntimeWorker {
             }
             )
         }
-        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate)
+        let firstAttemptStartedAt = Date()
+        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds)
         if let emptyTurnGate {
             if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested {
                 // The resumed turn ended cleanly with reasoning only. Re-run it once without the resume.
@@ -897,9 +909,23 @@ final class AgentRuntimeWorker {
                     "prompt_chars": String(promptWithoutResume.count)
                 ], level: .warning)
                 emptyTurnGate.discard()
+                // The full-history prompt is larger than the compact one that was budget-checked.
+                guard AgentRuntimeBudgetPolicy.enforcePromptBudgetIfNeeded(
+                    prompt: promptWithoutResume,
+                    task: task,
+                    run: run,
+                    modelContext: modelContext,
+                    phase: auditPhase,
+                    runtime: selectedRuntime,
+                    budgetEnforcementMode: budgetEnforcementMode
+                ) else {
+                    return
+                }
                 prompt = promptWithoutResume
                 run.providerSessionId = nil
-                result = await launchProcess(prompt, nil, nil)
+                // maxRunSeconds bounds the whole run, so the re-run only gets what the first attempt left.
+                let remainingRunSeconds = max(1, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt))
+                result = await launchProcess(prompt, nil, nil, remainingRunSeconds)
             } else {
                 emptyTurnGate.flush(forward: handleLine)
             }
@@ -1337,7 +1363,8 @@ final class AgentRuntimeWorker {
         currentLaunchSignature: ProviderLaunchSignaturePayload,
         grantNeutralizingStrings: Set<String> = [],
         providerHomeDirectory: String = "",
-        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path
+        userHome: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> NativeContinuationDecision {
         guard phase == .resume,
               runtimeAdapter.descriptor.supportsNativeContinuation else {
@@ -1361,7 +1388,8 @@ final class AgentRuntimeWorker {
             runtime: runtimeAdapter.descriptor.id,
             sessionID: sessionID,
             providerHomeDirectory: providerHomeDirectory,
-            userHome: userHome
+            userHome: userHome,
+            environment: environment
         ) else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "provider_session_missing", signatureMatched: false)
         }
