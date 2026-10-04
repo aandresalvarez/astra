@@ -226,12 +226,8 @@ enum SidebarTaskActionPresentation {
 }
 
 enum SidebarTaskAccessoryPresentation {
-    static let controlSize: CGFloat = 24
+    static let controlSize = SidebarOverflowPresentation.controlSize
     static let trailingPadding: CGFloat = 8
-    static let backgroundCornerRadius: CGFloat = 6
-    /// Keep the menu glyph readable even when a long task title extends below
-    /// its overlaid frame. The surface is intentionally opaque and borderless.
-    static let backgroundOpacity = 1.0
     /// Wider than the accessory footprint so the title disappears gradually
     /// before it reaches the overlaid control instead of ending at a hard edge.
     static let trailingFadeWidth: CGFloat = 64
@@ -2042,28 +2038,16 @@ struct TaskSidebarView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(Stanford.ui(12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .buttonStyle(SidebarOverflowButtonStyle())
+            .tint(Stanford.textSecondary)
             .fixedSize()
             .frame(
                 width: SidebarTaskAccessoryPresentation.controlSize,
                 height: SidebarTaskAccessoryPresentation.controlSize,
                 alignment: .center
-            )
-            .background(
-                RoundedRectangle(
-                    cornerRadius: SidebarTaskAccessoryPresentation.backgroundCornerRadius,
-                    style: .continuous
-                )
-                .fill(
-                    Stanford.cardBackground.opacity(
-                        SidebarTaskAccessoryPresentation.backgroundOpacity
-                    )
-                )
             )
             .opacity(isVisible ? 1 : 0)
             .allowsHitTesting(isVisible)
