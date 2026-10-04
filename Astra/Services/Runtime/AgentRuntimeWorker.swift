@@ -849,12 +849,11 @@ final class AgentRuntimeWorker {
                     .agentEvents.contains(where: NativeResumeEmptyTurnGate.isSubstantive)
             })
             : nil
-        let processRunner = self.processRunner
         let launchTimeoutSeconds = timeoutSeconds
         let launchLiveApprovalsEnabled = liveApprovalsEnabled
         let launchMaxRunSeconds = maxRunSeconds
         let launchProcess: (String, String?, NativeResumeEmptyTurnGate?) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate in
-            await processRunner.runRuntimeProcess(
+            await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: launchPrompt,
             task: executionTask,
