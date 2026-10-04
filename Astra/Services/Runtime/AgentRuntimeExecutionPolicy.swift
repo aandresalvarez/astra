@@ -32,6 +32,9 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// local: a re-run's monitor starts its turn counter at zero, so the task's
     /// turn ceiling is reduced by this much to keep it a ceiling on the whole run.
     var providerTurnsAlreadyUsed = 0
+    /// Provider tokens an earlier attempt of the same run already spent, taken off the
+    /// token budget the re-run's monitor enforces for the same reason.
+    var providerTokensAlreadyUsed = 0
 
     static let `default` = AgentRuntimeExecutionPolicy()
 

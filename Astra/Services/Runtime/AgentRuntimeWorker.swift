@@ -817,6 +817,7 @@ final class AgentRuntimeWorker {
         // Fresh launches acquire their session ID from the provider's start event.
         run.providerSessionId = nativeContinuationSessionID
         ProviderLaunchSignatureService.record(launchSignature, task: task, run: run, modelContext: modelContext)
+        let discardedUsage = DiscardedAttemptUsage()
         let handleLine: (String, Bool) -> Void = { line, parsesJSONLines in
             PerformanceSignposts.processStreamLine {
                 streamTelemetry?.recordRawLine(parsesJSONLines: parsesJSONLines)
@@ -826,9 +827,9 @@ final class AgentRuntimeWorker {
                 }
                 parsedBatch.recordParsed(to: streamTelemetry)
                 parsedBatch.recordParsed(to: streamDebugCapture, rawLine: line)
-                let emittedEvents = parsedBatch.events.flatMap {
+                let emittedEvents = discardedUsage.apply(to: parsedBatch.events.flatMap {
                     runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
-                }
+                })
                 let emittedBatch = AgentRuntimeStreamEventBatch(events: emittedEvents)
                 emittedBatch.recordEmitted(to: streamTelemetry)
                 emittedBatch.recordEmitted(to: streamDebugCapture)
@@ -863,9 +864,10 @@ final class AgentRuntimeWorker {
         let launchTimeoutSeconds = timeoutSeconds
         let launchLiveApprovalsEnabled = liveApprovalsEnabled
         let launchMaxRunSeconds = maxRunSeconds
-        let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval, Int) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun, priorTurns in
+        let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval, Int, Int) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun, priorTurns, priorTokens in
             var attemptPolicy = launchExecutionPolicy
             attemptPolicy.providerTurnsAlreadyUsed = priorTurns
+            attemptPolicy.providerTokensAlreadyUsed = priorTokens
             return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: launchPrompt,
@@ -900,7 +902,7 @@ final class AgentRuntimeWorker {
             )
         }
         let firstAttemptStartedAt = Date()
-        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0)
+        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0, 0)
         if let emptyTurnGate {
             if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested {
                 // The resumed turn ended cleanly with reasoning only. Re-run it once without the resume.
@@ -910,7 +912,10 @@ final class AgentRuntimeWorker {
                     "native_session_prefix": nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
                     "prompt_chars": String(promptWithoutResume.count)
                 ], level: .warning)
-                emptyTurnGate.discard()
+                // The attempt's output is not shown, but what it cost still counts against the run.
+                discardedUsage.record(from: emptyTurnGate.discard().flatMap {
+                    runtimeAdapter.parseWorkerStreamEvents(line: $0.text, parsesJSONLines: $0.parsesJSONLines).agentEvents
+                })
                 // The abandoned session must not stay the task's resumable one, however this re-run ends
                 // (a hard budget stop below, a failure before its init frame); a successful init replaces it.
                 run.providerSessionId = nil
@@ -931,7 +936,7 @@ final class AgentRuntimeWorker {
                 // maxRunSeconds bounds the whole run, so the re-run only gets what the first attempt left.
                 let remainingRunSeconds = max(1, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt))
                 // The empty attempt spent one provider turn of the run's maxTurns.
-                result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1)
+                result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens)
             } else {
                 emptyTurnGate.flush(forward: handleLine)
             }
@@ -939,7 +944,7 @@ final class AgentRuntimeWorker {
         let flushedBatch = runtimeAdapter.flushWorkerStreamEvents(pipeline: eventPipeline)
         flushedBatch.recordEmitted(to: streamTelemetry)
         flushedBatch.recordEmitted(to: streamDebugCapture)
-        for event in flushedBatch.events {
+        for event in flushedBatch.events + discardedUsage.unappliedEvents() {
             pendingEvents.add { [weak self] in
                 guard self != nil else { return }
                 PerformanceSignposts.persistProviderEvent {

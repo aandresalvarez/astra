@@ -769,6 +769,9 @@ final class AgentRuntimeProcessRunner {
                 hostControlBrokerSessionManager.stop(taskID: task.id, runID: runID)
             }
         }
+        let remainingTokenBudget = Self.remainingTokenBudget(
+            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed
+        )
         let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
@@ -802,6 +805,7 @@ final class AgentRuntimeProcessRunner {
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 maxRunSeconds: maxRunSeconds,
                 maxTurns: remainingTurns,
+                tokenBudget: remainingTokenBudget,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -827,6 +831,7 @@ final class AgentRuntimeProcessRunner {
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             maxRunSeconds: maxRunSeconds,
             maxTurns: remainingTurns,
+            tokenBudget: remainingTokenBudget,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -836,6 +841,12 @@ final class AgentRuntimeProcessRunner {
     /// same run spent. 0 stays "unlimited"; a limit is never reduced below one turn.
     static func remainingTurns(maxTurns: Int, alreadyUsed: Int) -> Int {
         maxTurns > 0 ? max(1, maxTurns - alreadyUsed) : maxTurns
+    }
+
+    /// The token ceiling a monitor should enforce, less what an earlier attempt of the same run spent.
+    /// Unlimited (`Int.max`) and malformed (non-positive) budgets are left as they are.
+    static func remainingTokenBudget(_ budget: Int, alreadyUsed: Int) -> Int {
+        budget == Int.max || budget <= 0 ? budget : max(1, budget - alreadyUsed)
     }
 
     @MainActor
@@ -850,10 +861,10 @@ final class AgentRuntimeProcessRunner {
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         maxRunSeconds: TimeInterval?,
         maxTurns: Int,
+        tokenBudget: Int,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        let tokenBudget = Self.effectiveTokenBudget(for: task)
         let taskID = task.id
 
         // The one place that owns a live agent process, so the one place that

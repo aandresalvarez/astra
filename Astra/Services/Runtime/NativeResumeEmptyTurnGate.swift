@@ -67,11 +67,15 @@ final class NativeResumeEmptyTurnGate: @unchecked Sendable {
         for item in pending { forward(item.text, item.parsesJSONLines) }
     }
 
-    /// Drops the held output of an attempt that is about to be re-run.
-    func discard() {
+    /// Drops the held output of an attempt that is about to be re-run, handing it back so its
+    /// usage can still be accounted for.
+    @discardableResult
+    func discard() -> [Line] {
         lock.lock()
+        let dropped = held
         held = []
         lock.unlock()
+        return dropped
     }
 
     /// Whether an event is real output rather than reasoning or bookkeeping.
@@ -89,5 +93,69 @@ final class NativeResumeEmptyTurnGate: @unchecked Sendable {
         case .control, .started, .thinking, .stats:
             return false
         }
+    }
+}
+
+/// The provider usage an attempt spent before it was discarded.
+///
+/// The re-run is a second process of the same run, so its token and cost
+/// totals start at zero while the run's budget and spend do not. The discarded
+/// attempt's final usage is added to every usage event the re-run reports, which
+/// the recorder takes as that run's cumulative totals; if the re-run reports
+/// none, it is recorded on its own once the re-run ends.
+final class DiscardedAttemptUsage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var input = 0
+    private var output = 0
+    private var cost: Double?
+    private var applied = false
+
+    /// Tokens (input plus output) the discarded attempt spent.
+    var totalTokens: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return input + output
+    }
+
+    /// Takes the attempt's final usage, which is cumulative within its process.
+    func record(from events: [AgentEvent]) {
+        let final = events.reversed().compactMap { event -> (Int, Int, Double?)? in
+            if case .stats(let input, let output, let cost, _, _) = event { return (input, output, cost) }
+            return nil
+        }.first
+        guard let final else { return }
+        lock.lock()
+        input = final.0
+        output = final.1
+        cost = final.2
+        lock.unlock()
+    }
+
+    func apply(to events: [AgentRuntimeRecordedEvent]) -> [AgentRuntimeRecordedEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard input + output > 0 || cost != nil else { return events }
+        return events.map { recorded in
+            guard case .agent(.stats(let eventInput, let eventOutput, let eventCost, let duration, let turns)) = recorded else {
+                return recorded
+            }
+            applied = true
+            return .agent(.stats(
+                inputTokens: eventInput + input,
+                outputTokens: eventOutput + output,
+                costUSD: eventCost.map { $0 + (cost ?? 0) } ?? cost,
+                durationMs: duration,
+                turns: turns
+            ))
+        }
+    }
+
+    /// The discarded attempt's usage as an event of its own, when the re-run never reported any.
+    func unappliedEvents() -> [AgentRuntimeRecordedEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !applied, input + output > 0 || cost != nil else { return [] }
+        applied = true
+        return [.agent(.stats(inputTokens: input, outputTokens: output, costUSD: cost, durationMs: nil, turns: nil))]
     }
 }

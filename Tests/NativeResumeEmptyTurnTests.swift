@@ -80,6 +80,15 @@ struct NativeResumeEmptyTurnTests {
         #"{"type":"thinking","subtype":"completed","session_id":"chat-xyz","timestamp_ms":2}"#,
         #"{"type":"result","subtype":"success","duration_ms":5,"is_error":false,"result":"","session_id":"chat-xyz"}"#
     ]
+    private static let reasoningOnlyWithUsage = [
+        reasoningOnlyTurn[0], reasoningOnlyTurn[1], reasoningOnlyTurn[2],
+        #"{"type":"result","subtype":"success","duration_ms":5,"is_error":false,"result":"","session_id":"chat-xyz","usage":{"inputTokens":100,"outputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0}}"#
+    ]
+    private static let freshAnswerWithUsage = [
+        #"{"type":"system","subtype":"init","session_id":"chat-new","model":"Composer 2.5 Fast","permissionMode":"default"}"#,
+        #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4172"}]},"session_id":"chat-new"}"#,
+        #"{"type":"result","subtype":"success","duration_ms":5,"is_error":false,"result":"4172","session_id":"chat-new","usage":{"inputTokens":50,"outputTokens":5,"cacheReadTokens":0,"cacheWriteTokens":0}}"#
+    ]
     private static let freshAnswerTurn = [
         #"{"type":"system","subtype":"init","session_id":"chat-new","model":"Composer 2.5 Fast","permissionMode":"default"}"#,
         #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"4172"}]},"session_id":"chat-new"}"#,
@@ -271,6 +280,71 @@ struct NativeResumeEmptyTurnTests {
         #expect(task.sessionId == nil)
     }
 
+    @Test("The discarded attempt's usage still counts: it is added to the run and taken off the re-run's budget")
+    func discardedAttemptUsageIsKept() async throws {
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyWithUsage),
+            .init(lines: Self.freshAnswerWithUsage)
+        ])
+        defer { withExtendedLifetime(container) {} }
+
+        #expect(runner.tokensAlreadyUsed == [0, 0, 110])
+        let latest = try #require(task.runs.max { $0.startedAt < $1.startedAt })
+        #expect(latest.inputTokens == 150)
+        #expect(latest.outputTokens == 15)
+        #expect(latest.tokensUsed == 165)
+    }
+
+    @Test("Usage the re-run never reports is recorded from the discarded attempt on its own")
+    func discardedUsageIsRecordedWhenTheRerunReportsNone() async throws {
+        let (_, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyWithUsage),
+            .init(lines: Self.freshAnswerTurn)
+        ])
+        defer { withExtendedLifetime(container) {} }
+
+        let latest = try #require(task.runs.max { $0.startedAt < $1.startedAt })
+        #expect(latest.tokensUsed == 110)
+    }
+
+    @Test("Usage carry adds to every later usage event and stands alone only when none came")
+    func usageCarryArithmetic() {
+        let carry = DiscardedAttemptUsage()
+        carry.record(from: [
+            .thinking(text: "t"),
+            .stats(inputTokens: 100, outputTokens: 10, costUSD: 0.5, durationMs: nil, turns: nil)
+        ])
+        #expect(carry.totalTokens == 110)
+
+        let events = carry.apply(to: [
+            .agent(.text(text: "hi")),
+            .agent(.stats(inputTokens: 50, outputTokens: 5, costUSD: 0.25, durationMs: 7, turns: 1))
+        ])
+        guard case .agent(.stats(let input, let output, let cost, let duration, _)) = events[1] else {
+            Issue.record("expected a stats event"); return
+        }
+        #expect(input == 150 && output == 15 && cost == 0.75 && duration == 7)
+        #expect(carry.unappliedEvents().isEmpty)
+
+        let alone = DiscardedAttemptUsage()
+        alone.record(from: [.stats(inputTokens: 3, outputTokens: 2, costUSD: nil, durationMs: nil, turns: nil)])
+        #expect(alone.unappliedEvents().count == 1)
+        #expect(alone.unappliedEvents().isEmpty)
+
+        #expect(DiscardedAttemptUsage().apply(to: [.agent(.text(text: "x"))]).count == 1)
+    }
+
+    @Test("The token ceiling shrinks by what an earlier attempt spent; unlimited and malformed budgets are left alone")
+    func remainingTokenBudgetArithmetic() {
+        #expect(AgentRuntimeProcessRunner.remainingTokenBudget(1000, alreadyUsed: 110) == 890)
+        #expect(AgentRuntimeProcessRunner.remainingTokenBudget(100, alreadyUsed: 110) == 1)
+        #expect(AgentRuntimeProcessRunner.remainingTokenBudget(Int.max, alreadyUsed: 110) == Int.max)
+        #expect(AgentRuntimeProcessRunner.remainingTokenBudget(0, alreadyUsed: 110) == 0)
+        #expect(AgentRuntimeProcessRunner.remainingTokenBudget(-5, alreadyUsed: 110) == -5)
+    }
+
     @Test("A resumed turn that shows real output is not re-run")
     func realResumedTurnIsKept() async throws {
         let answered = [
@@ -311,6 +385,7 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
     private(set) var nativeSessionIDs: [String?] = []
     private(set) var maxRunSeconds: [TimeInterval?] = []
     private(set) var turnsAlreadyUsed: [Int] = []
+    private(set) var tokensAlreadyUsed: [Int] = []
     private(set) var prompts: [String] = []
 
     init(scripts: [Script]) { self.scripts = scripts }
@@ -347,6 +422,7 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
         nativeSessionIDs.append(nativeContinuationSessionID)
         self.maxRunSeconds.append(maxRunSeconds)
         turnsAlreadyUsed.append(executionPolicy.providerTurnsAlreadyUsed)
+        tokensAlreadyUsed.append(executionPolicy.providerTokensAlreadyUsed)
         prompts.append(prompt)
         let script = scripts.isEmpty ? Script(lines: []) : scripts.removeFirst()
         for line in script.lines { onLine(line, true) }
