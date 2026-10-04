@@ -769,6 +769,7 @@ final class AgentRuntimeProcessRunner {
                 hostControlBrokerSessionManager.stop(taskID: task.id, runID: runID)
             }
         }
+        let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
                 try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
@@ -800,6 +801,7 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 maxRunSeconds: maxRunSeconds,
+                maxTurns: remainingTurns,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -824,9 +826,16 @@ final class AgentRuntimeProcessRunner {
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             maxRunSeconds: maxRunSeconds,
+            maxTurns: remainingTurns,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
+    }
+
+    /// The turn ceiling a process monitor should enforce: the task's, less what an earlier attempt of the
+    /// same run spent. 0 stays "unlimited"; a limit is never reduced below one turn.
+    static func remainingTurns(maxTurns: Int, alreadyUsed: Int) -> Int {
+        maxTurns > 0 ? max(1, maxTurns - alreadyUsed) : maxTurns
     }
 
     @MainActor
@@ -840,6 +849,7 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         maxRunSeconds: TimeInterval?,
+        maxTurns: Int,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
@@ -902,7 +912,7 @@ final class AgentRuntimeProcessRunner {
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
                 budgetEnforcementMode: budgetEnforcementMode,
-                maxTurns: task.maxTurns,
+                maxTurns: maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,

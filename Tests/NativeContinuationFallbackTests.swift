@@ -109,6 +109,25 @@ struct NativeContinuationFallbackTests {
         ))
     }
 
+    @Test("A launch-scoped HOME with no XDG_DATA_HOME moves OpenCode's database with it")
+    func openCodeFollowsTheLaunchHome() throws {
+        let userHome = try makeHome()
+        let skillHome = try makeHome()
+        defer {
+            try? FileManager.default.removeItem(atPath: userHome)
+            try? FileManager.default.removeItem(atPath: skillHome)
+        }
+        try makeOpenCodeDatabase(at: "\(skillHome)/.local/share/opencode/opencode.db", sessionIDs: ["ses_scoped"])
+
+        #expect(ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_scoped", userHome: userHome, environment: ["HOME": skillHome]
+        ))
+        // The user's own home has no such database.
+        #expect(!ProviderNativeSessionStore.sessionExists(
+            runtime: .openCodeCLI, sessionID: "ses_scoped", userHome: userHome, environment: [:]
+        ))
+    }
+
     @Test("An OpenCode database that cannot be read reads as missing, never as a crash")
     func openCodeUnreadableDatabase() throws {
         let home = try makeHome()

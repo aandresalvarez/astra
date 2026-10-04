@@ -73,8 +73,12 @@ enum ProviderNativeSessionStore {
         environment: [String: String],
         fileManager: FileManager
     ) -> Bool {
+        // The launch's own XDG_DATA_HOME wins, then the launch's HOME (a skill can scope either), then ASTRA's.
         let configured = environment["XDG_DATA_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let dataHome = configured.isEmpty ? path(userHome, ".local", "share") : configured
+        let launchHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let dataHome = !configured.isEmpty
+            ? configured
+            : path(launchHome.isEmpty ? userHome : launchHome, ".local", "share")
         let databasePath = path(dataHome, "opencode", "opencode.db")
         guard fileManager.fileExists(atPath: databasePath) else { return false }
 

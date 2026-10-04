@@ -209,6 +209,37 @@ struct NativeResumeEmptyTurnTests {
         #expect(runner.nativeSessionIDs == [nil, "chat-xyz"])
     }
 
+    @Test("The re-run is told how many provider turns the empty attempt spent")
+    func rerunCarriesTheTurnCount() async throws {
+        let (runner, _, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn),
+            .init(lines: Self.freshAnswerTurn)
+        ])
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.turnsAlreadyUsed == [0, 0, 1])
+    }
+
+    @Test("The turn ceiling shrinks by what an earlier attempt spent, and never below one")
+    func remainingTurnsArithmetic() {
+        #expect(AgentRuntimeProcessRunner.remainingTurns(maxTurns: 0, alreadyUsed: 1) == 0)
+        #expect(AgentRuntimeProcessRunner.remainingTurns(maxTurns: 5, alreadyUsed: 0) == 5)
+        #expect(AgentRuntimeProcessRunner.remainingTurns(maxTurns: 5, alreadyUsed: 1) == 4)
+        #expect(AgentRuntimeProcessRunner.remainingTurns(maxTurns: 1, alreadyUsed: 1) == 1)
+    }
+
+    @Test("If the re-run fails before its init frame, the abandoned session is no longer the task's")
+    func failedRerunDoesNotLeaveTheOldSession() async throws {
+        let (runner, task, container) = try await runFollowUp(scripts: [
+            .init(lines: Self.initialTurn),
+            .init(lines: Self.reasoningOnlyTurn),
+            .init(lines: [], exitCode: 1)
+        ])
+        defer { withExtendedLifetime(container) {} }
+        #expect(runner.nativeSessionIDs == [nil, "chat-xyz", nil])
+        #expect(task.sessionId == nil)
+    }
+
     @Test("A resumed turn that shows real output is not re-run")
     func realResumedTurnIsKept() async throws {
         let answered = [
@@ -248,6 +279,7 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
     private var scripts: [Script]
     private(set) var nativeSessionIDs: [String?] = []
     private(set) var maxRunSeconds: [TimeInterval?] = []
+    private(set) var turnsAlreadyUsed: [Int] = []
     private(set) var prompts: [String] = []
 
     init(scripts: [Script]) { self.scripts = scripts }
@@ -283,6 +315,7 @@ final class ScriptedStreamRunner: AgentRuntimeProcessRunning {
     ) async -> AgentProcessResult {
         nativeSessionIDs.append(nativeContinuationSessionID)
         self.maxRunSeconds.append(maxRunSeconds)
+        turnsAlreadyUsed.append(executionPolicy.providerTurnsAlreadyUsed)
         prompts.append(prompt)
         let script = scripts.isEmpty ? Script(lines: []) : scripts.removeFirst()
         for line in script.lines { onLine(line, true) }

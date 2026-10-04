@@ -863,8 +863,10 @@ final class AgentRuntimeWorker {
         let launchTimeoutSeconds = timeoutSeconds
         let launchLiveApprovalsEnabled = liveApprovalsEnabled
         let launchMaxRunSeconds = maxRunSeconds
-        let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun in
-            await self.processRunner.runRuntimeProcess(
+        let launchProcess: (String, String?, NativeResumeEmptyTurnGate?, TimeInterval, Int) async -> AgentProcessResult = { launchPrompt, nativeSessionID, gate, launchMaxRun, priorTurns in
+            var attemptPolicy = launchExecutionPolicy
+            attemptPolicy.providerTurnsAlreadyUsed = priorTurns
+            return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: launchPrompt,
             task: executionTask,
@@ -872,7 +874,7 @@ final class AgentRuntimeWorker {
             executablePath: launchSettings.executablePath,
             homeDirectory: launchSettings.homeDirectory,
             permissionPolicy: runPermissionPolicy,
-            executionPolicy: launchExecutionPolicy,
+            executionPolicy: attemptPolicy,
             permissionManifest: manifest,
             budgetEnforcementMode: budgetEnforcementMode,
             timeoutSeconds: launchTimeoutSeconds,
@@ -898,7 +900,7 @@ final class AgentRuntimeWorker {
             )
         }
         let firstAttemptStartedAt = Date()
-        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds)
+        var result = await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0)
         if let emptyTurnGate {
             if emptyTurnGate.producedNothing, result.exitCode == 0, !result.stoppedByASTRA, !cancellationRequested {
                 // The resumed turn ended cleanly with reasoning only. Re-run it once without the resume.
@@ -923,9 +925,12 @@ final class AgentRuntimeWorker {
                 }
                 prompt = promptWithoutResume
                 run.providerSessionId = nil
+                // The abandoned session must not stay the task's resumable one if this attempt fails before its init frame.
+                task.sessionId = nil
                 // maxRunSeconds bounds the whole run, so the re-run only gets what the first attempt left.
                 let remainingRunSeconds = max(1, launchMaxRunSeconds - Date().timeIntervalSince(firstAttemptStartedAt))
-                result = await launchProcess(prompt, nil, nil, remainingRunSeconds)
+                // The empty attempt spent one provider turn of the run's maxTurns.
+                result = await launchProcess(prompt, nil, nil, remainingRunSeconds, 1)
             } else {
                 emptyTurnGate.flush(forward: handleLine)
             }
