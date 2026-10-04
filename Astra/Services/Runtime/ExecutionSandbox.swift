@@ -53,7 +53,7 @@ enum ExecutionSandboxEnforcement: String, Codable, Sendable, CaseIterable, Ident
         case .off:
             "Agent processes run without ASTRA's OS sandbox. ASTRA's in-app permission and privacy checks still apply."
         case .bestEffort:
-            "Confine agent file writes to the workspace using macOS Seatbelt. If the sandbox can't be applied, the run continues unconfined and is logged."
+            "Confine agent file writes to the workspace using macOS Seatbelt. If the sandbox can't be applied, the run continues unconfined and is logged, except Antigravity below Auto, which is blocked because its own sandbox doesn't cover file writes."
         case .strict:
             "Require the macOS Seatbelt sandbox. If it can't be applied, the run is blocked."
         }
@@ -140,8 +140,8 @@ struct ExecutionSandboxResolution: Sendable, Equatable {
 /// decision logic is testable without touching `UserDefaults`.
 struct ExecutionSandboxSettings: Sendable, Equatable {
     var enforcement: ExecutionSandboxEnforcement
-    /// Runtimes ASTRA wraps with its own Seatbelt profile. Providers that ship a
-    /// native OS sandbox (Codex, Cursor, Antigravity) are excluded by default to
+    /// Runtimes ASTRA wraps with its own Seatbelt profile. Providers whose own OS
+    /// sandbox confines file writes (Codex, Cursor) are excluded by default to
     /// avoid double-confinement breakage; they enforce via their own flags.
     var wrappedRuntimes: Set<AgentRuntimeID>
     /// Whether the profile permits outbound network. The provider CLI itself
@@ -151,14 +151,23 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     /// Whether runtime filesystem reads are open, audited against the strict
     /// allowlist, or enforced by the Seatbelt profile.
     var readScope: ExecutionSandboxReadScope
+    /// Runtimes whose run must be blocked, not run unconfined, when the wrap
+    /// cannot be applied even under best-effort. See `failClosedRuntimes(...)`.
+    var failClosedRuntimes: Set<AgentRuntimeID>
 
-    /// Providers without a native OS sandbox today — wrapped by default.
-    static let defaultWrappedRuntimes: Set<AgentRuntimeID> = [.claudeCode, .copilotCLI, .openCodeCLI]
+    /// Providers without an OS sandbox that confines file writes — wrapped by
+    /// default. Antigravity is here because its `--sandbox` only restricts the
+    /// terminal: its file-write tool is unconfined, so below Auto a write outside
+    /// the workspace succeeded and ASTRA's guard could only report it afterwards.
+    /// Its terminal sandbox nests inside ASTRA's profile (verified against the
+    /// real `agy`: a shell write in the workspace works, one outside is denied).
+    static let defaultWrappedRuntimes: Set<AgentRuntimeID> =
+        [.claudeCode, .copilotCLI, .openCodeCLI, .antigravityCLI]
 
-    /// Providers that ship their own OS sandbox (enforced via per-run flags).
+    /// Providers that ship their own OS sandbox over file writes (enforced via per-run flags).
     /// Excluded by default to avoid double-confinement breakage; the user can
     /// opt in to layer ASTRA's Seatbelt over them for defense-in-depth.
-    static let nativeSandboxRuntimes: Set<AgentRuntimeID> = [.codexCLI, .cursorCLI, .antigravityCLI]
+    static let nativeSandboxRuntimes: Set<AgentRuntimeID> = [.codexCLI, .cursorCLI]
 
     /// Providers that drop their own confinement in autonomous mode (the
     /// `--dangerously-bypass…` / `--force --sandbox disabled` /
@@ -167,7 +176,7 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
     /// the most dangerous mode runs with no kernel boundary at all. Because the
     /// provider sandbox is bypassed here, wrapping is NOT double-confinement.
     static let autonomousForcedWrapRuntimes: Set<AgentRuntimeID> =
-        nativeSandboxRuntimes.union([.openCodeCLI])
+        nativeSandboxRuntimes.union([.openCodeCLI, .antigravityCLI])
 
     /// Single source of truth for the unset-defaults behavior. `current(...)`
     /// (which reads `UserDefaults`) and the `SettingsView` `@AppStorage`
@@ -182,12 +191,28 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         enforcement: ExecutionSandboxEnforcement,
         wrappedRuntimes: Set<AgentRuntimeID> = ExecutionSandboxSettings.defaultWrappedRuntimes,
         allowNetwork: Bool = ExecutionSandboxSettings.defaultAllowNetwork,
-        readScope: ExecutionSandboxReadScope? = nil
+        readScope: ExecutionSandboxReadScope? = nil,
+        failClosedRuntimes: Set<AgentRuntimeID> = []
     ) {
         self.enforcement = enforcement
         self.wrappedRuntimes = wrappedRuntimes
         self.allowNetwork = allowNetwork
         self.readScope = readScope ?? Self.defaultReadScope(for: enforcement)
+        self.failClosedRuntimes = failClosedRuntimes
+    }
+
+    /// Runtimes for which the wrap is the only thing that makes Ask mean
+    /// anything. Antigravity's own sandbox does not reach its file-write tool,
+    /// so below Auto, running it unconfined is Auto in all but name: the guard
+    /// can only report a write after it happened. Best-effort therefore blocks
+    /// these runs instead of falling back. Auto is exempt (the user chose to
+    /// drop the gates), strict already blocks, and Off is the user's call.
+    static func failClosedRuntimes(
+        enforcement: ExecutionSandboxEnforcement,
+        permissionPolicy: PermissionPolicy
+    ) -> Set<AgentRuntimeID> {
+        guard enforcement == .bestEffort, permissionPolicy != .autonomous else { return [] }
+        return [.antigravityCLI]
     }
 
     func shouldWrap(runtime: AgentRuntimeID) -> Bool {
@@ -206,7 +231,8 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         return ExecutionSandboxSettings(
             enforcement: snapshot,
             wrappedRuntimes: runtimes,
-            allowNetwork: snapshot == .off ? Self.defaultAllowNetwork : allowNetwork
+            allowNetwork: snapshot == .off ? Self.defaultAllowNetwork : allowNetwork,
+            failClosedRuntimes: Self.failClosedRuntimes(enforcement: snapshot, permissionPolicy: permissionPolicy)
         )
     }
 
@@ -307,7 +333,8 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
                 enforcement: enforcement,
                 wrappedRuntimes: wrappedRuntimes,
                 allowNetwork: allowNetwork,
-                readScope: readScope
+                readScope: readScope,
+                failClosedRuntimes: failClosedRuntimes(enforcement: enforcement, permissionPolicy: permissionPolicy)
             ),
             reason: resolutionReason
         )
@@ -616,8 +643,10 @@ enum ExecutionSandbox: Sendable {
             return .skipped(reason: "runtime_excluded")
         }
 
+        let blocksWhenUnavailable = settings.enforcement == .strict
+            || settings.failClosedRuntimes.contains(plan.runtime)
         let unavailable: (String) -> ExecutionSandboxDecision = { reason in
-            settings.enforcement == .strict ? .failClosed(reason: reason) : .fallback(reason: reason)
+            blocksWhenUnavailable ? .failClosed(reason: reason) : .fallback(reason: reason)
         }
 
         guard let workspace = canonicalize(plan.currentDirectory), !workspace.isEmpty else {

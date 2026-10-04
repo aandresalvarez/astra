@@ -73,7 +73,7 @@ struct MarkdownTextViewTests {
         host.frame = NSRect(x: 0, y: 0, width: 1600, height: 600)
         host.layoutSubtreeIfNeeded()
 
-        // Natural table width is well past the 720pt prose measure; with room
+        // Natural table width is well past the prose measure; with room
         // to spare it must not be clipped to it.
         #expect(host.fittingSize.width > Stanford.chatParagraphMaxWidth + 100)
     }
