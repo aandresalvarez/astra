@@ -127,6 +127,17 @@ struct ExecutionSandboxAntigravityWrapTests {
         #expect(message?.contains("Auto") == true)
     }
 
+    @Test("A utility block never offers Auto, since utility runs use a fixed restricted policy")
+    func utilityBlockDoesNotOfferAuto() {
+        let bestEffort = blockedMessage(enforcement: .bestEffort, isUtility: true)
+        #expect(bestEffort?.contains("Auto") == false)
+        #expect(bestEffort?.contains("narrower workspace") == true)
+
+        let strict = blockedMessage(enforcement: .strict, isUtility: true)
+        #expect(strict?.contains("Auto") == false)
+        #expect(strict?.contains("sandbox enforcement") == true)
+    }
+
     @Test("The Best effort help text names the Antigravity exception to its unconfined fallback")
     func bestEffortHelpTextMentionsTheException() {
         let text = ExecutionSandboxEnforcement.bestEffort.helpText
@@ -167,11 +178,15 @@ struct ExecutionSandboxAntigravityWrapTests {
         )
     }
 
-    private func blockedMessage(enforcement: ExecutionSandboxEnforcement) -> String? {
+    private func blockedMessage(
+        enforcement: ExecutionSandboxEnforcement,
+        isUtility: Bool = false
+    ) -> String? {
         let outcome = AgentRuntimeProcessRunner.sandboxOutcome(
             for: .failClosed(reason: "unsafe_execution_path"),
             originalPlan: makePlan(runtime: .antigravityCLI, workspace: "/"),
-            enforcement: enforcement
+            enforcement: enforcement,
+            isUtility: isUtility
         )
         guard case .blocked(let result) = outcome else { return nil }
         return result.runtimeStopMessage

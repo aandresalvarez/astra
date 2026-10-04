@@ -150,7 +150,8 @@ final class AgentRuntimeProcessRunner {
     static func sandboxOutcome(
         for decision: ExecutionSandboxDecision,
         originalPlan: AgentRuntimeProcessLaunchPlan,
-        enforcement: ExecutionSandboxEnforcement = .strict
+        enforcement: ExecutionSandboxEnforcement = .strict,
+        isUtility: Bool = false
     ) -> SandboxedPlanOutcome {
         switch decision {
         case .applied(let wrapped, _):
@@ -161,9 +162,16 @@ final class AgentRuntimeProcessRunner {
             // Strict blocks every runtime and switching to Auto would not unblock it,
             // so the way out differs from the best-effort block of a runtime whose
             // Ask depends on the sandbox (`ExecutionSandboxSettings.failClosedRuntimes`).
-            let message = enforcement == .strict
-                ? "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked. Use a narrower workspace folder, or change the sandbox enforcement in Settings."
-                : "ASTRA could not apply the macOS execution sandbox (\(reason)), which this run depends on below Auto, so it was blocked. Use a narrower workspace folder, or switch to Auto to run without it."
+            // Utility runs use a fixed restricted policy, so Auto never helps there.
+            let narrower = "Use a narrower workspace folder"
+            let message: String
+            if enforcement == .strict {
+                message = "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked. \(narrower), or change the sandbox enforcement in Settings."
+            } else if isUtility {
+                message = "ASTRA could not apply the macOS execution sandbox (\(reason)), which this run depends on, so it was blocked. \(narrower)."
+            } else {
+                message = "ASTRA could not apply the macOS execution sandbox (\(reason)), which this run depends on below Auto, so it was blocked. \(narrower), or switch to Auto to run without it."
+            }
             return .blocked(AgentProcessResult(
                 exitCode: -1,
                 error: message,
@@ -601,7 +609,7 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
         }
 
-        switch Self.sandboxOutcome(for: decision, originalPlan: plan, enforcement: settings.enforcement) {
+        switch Self.sandboxOutcome(for: decision, originalPlan: plan, enforcement: settings.enforcement, isUtility: true) {
         case .plan(let resolvedPlan):
             return .plan(AgentUtilityLaunchPlan(
                 process: resolvedPlan,
