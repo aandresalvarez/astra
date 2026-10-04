@@ -50,7 +50,8 @@ struct RetryInterruptedRunTests {
         stopReason: String,
         followUp: String? = nil,
         scheduleID: UUID? = nil,
-        chainedFromID: UUID? = nil
+        chainedFromID: UUID? = nil,
+        runOwnsSession: Bool = true
     ) async throws -> Submitted {
         let env = try makeEnvironment()
         defer { try? FileManager.default.removeItem(atPath: env.root) }
@@ -64,6 +65,7 @@ struct RetryInterruptedRunTests {
         env.context.insert(workspace)
         env.context.insert(task)
         let run = TaskRun(task: task)
+        if !runOwnsSession { run.providerSessionId = nil }
         run.status = .cancelled
         run.stopReason = stopReason
         run.completedAt = Date()
@@ -116,6 +118,12 @@ struct RetryInterruptedRunTests {
     @Test("A failed run keeps its from-scratch Retry; Resume is the continuation action")
     func failedRunStillRelaunches() async throws {
         let submitted = try await retry(stopReason: "failed")
+        #expect(submitted.mode == .initial)
+    }
+
+    @Test("A run that never learned a session does not resume an older run's")
+    func runWithoutItsOwnSessionRelaunches() async throws {
+        let submitted = try await retry(stopReason: "cancelled", runOwnsSession: false)
         #expect(submitted.mode == .initial)
     }
 

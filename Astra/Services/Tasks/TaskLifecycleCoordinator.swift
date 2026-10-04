@@ -222,7 +222,12 @@ final class TaskLifecycleCoordinator {
               AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: task.resolvedRuntimeID),
               let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
               let stopReason = latestRun.typedStopReason,
-              [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason) else { return nil }
+              [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason),
+              // A from-scratch run cut off before its init frame never learned a session, while
+              // task.sessionId can still name an older run's: only a run that owns it can be resumed.
+              let runSession = latestRun.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !runSession.isEmpty,
+              runSession == task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
         // Scheduled, chained and approved-plan launches keep their own relaunch path.
         guard task.originScheduleID == nil, task.chainedFromID == nil else { return nil }
         if let retryTurn {
