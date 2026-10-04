@@ -70,8 +70,9 @@ starts:
 
 Uncommitted changes are never copied, and the repository needs at least one
 commit. While the box is checked, the Repository card previews the new
-worktree: Branch reads *New · from main*, Checkout reads *New worktree*, and
-Changes and Commit & push are labelled as acting on the base checkout.
+worktree: the repository is marked *Worktree source*, Branch reads *New · from
+main*, Checkout reads *New worktree*, and Changes and Commit & push are
+labelled as acting on the base checkout.
 
 The branch is named `astra/<title words>-<task id>`, for example
 `astra/fix-login-button-alignment-25e8279e`: up to 32 characters of whole

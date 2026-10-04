@@ -24,7 +24,9 @@ struct WorkspaceGitNewWorktreePreview: Equatable {
         self.baseLabel = trimmed.isEmpty ? nil : trimmed
     }
 
-    static let scopeLabel = "Next task · new worktree"
+    /// As short as the card's other scope labels ("Workspace default"), so
+    /// it fits beside the repository path at rail width.
+    static let scopeLabel = "Worktree source"
     static let checkoutValue = "New worktree"
     static let checkoutHelp = "The task gets its own folder when it starts. The checkout shown here is not changed."
     static let changesCaption = "Base checkout · not copied"

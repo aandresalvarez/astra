@@ -174,6 +174,10 @@ struct NewTaskWorktreeDockPresentationTests {
         #expect(preview.branchHelp.contains("astra/"))
         #expect(WorkspaceGitNewWorktreePreview.checkoutValue == "New worktree")
         #expect(WorkspaceGitNewWorktreePreview.changesCaption == "Base checkout · not copied")
+        // The scope label sits beside the repository path; longer than the
+        // card's own "Workspace default" it truncates at rail width.
+        #expect(WorkspaceGitNewWorktreePreview.scopeLabel == "Worktree source")
+        #expect(WorkspaceGitNewWorktreePreview.scopeLabel.count <= "Workspace default".count)
         #expect(WorkspaceGitNewWorktreePreview(base: .currentBranch, baseLabel: " ").branchValue == "New · from current branch")
 
         var unchecked = entry
