@@ -16,6 +16,36 @@ struct ComposerPresentationTests {
         #expect(TaskComposerPresentation.inputBottomPadding == 9)
     }
 
+    @Test("new task worktree controls are opt-in and use a native repository choice")
+    func newTaskWorktreeControlsAreWiredIntoComposer() throws {
+        let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let options = try sourceFile("Astra/Views/NewTaskWorktreeOptionsView.swift")
+        #expect(composer.contains("NewTaskWorktreeOptionsView(workspace: workspace, selection: $worktreeSelection)"))
+        #expect(composer.contains("hasInput: hasInput && canSubmitWorktreeSelection"))
+        #expect(options.contains("if !selection.repositories.isEmpty || selection.isEnabled"))
+        #expect(options.contains("Toggle(\"Start in a new worktree\", isOn: $selection.isEnabled)"))
+        #expect(options.contains(".toggleStyle(.checkbox)"))
+        #expect(options.contains("Picker(\"Repository\", selection: $selection.repositoryPath)"))
+        #expect(options.contains(".pickerStyle(.radioGroup)"))
+    }
+
+    @Test("planning context uses the prepared checkout before either provider call")
+    func planningContextUsesPreparedWorktree() throws {
+        let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
+        for method in ["private func sendMessage()", "private func generatePlanFromConversation()"] {
+            let start = try #require(composer.range(of: method))
+            let call = try #require(composer.range(
+                of: "let result = await SpecEngine.chat(",
+                range: start.upperBound..<composer.endIndex
+            ))
+            let preparation = String(composer[start.upperBound..<call.lowerBound])
+            let save = try #require(preparation.range(of: "let planningDraft = try await saveDraft()"))
+            let context = try #require(preparation.range(of: "baseNewTaskSkillContext(for: planningDraft)"))
+            #expect(save.lowerBound < context.lowerBound)
+        }
+        #expect(composer.contains("task.map { TaskWorkspaceAccess(task: $0).runtimeWorkspaceFolders }"))
+    }
+
     @Test("task decision dock stays compact")
     func taskDecisionDockStaysCompact() {
         #expect(TaskComposerPresentation.decisionRowUsesNestedChrome == false)

@@ -50,6 +50,21 @@ agent -> delegated work -> supervision
 
 Tasks may begin as a simple request, but ASTRA keeps the surrounding context: workspace memory, access, schedules, tools, policies, artifacts, and trust signals.
 
+### Starting a Task in a Worktree
+
+When a workspace has Git repositories in its primary or additional folders, the
+new-task composer offers **Start in a new worktree**. Enable it and choose one
+repository from the list. ASTRA creates a task-specific `astra/...` branch from
+that checkout's current commit before starting the task or its Goal Mode draft.
+The repository needs at least one commit; uncommitted changes are not copied.
+
+The task stays pinned to that worktree, including when its draft becomes a
+queued task. Other tasks and the workspace's default checkout are unchanged.
+Task history and outputs remain in the workspace's task folder. Worktrees are
+kept after execution and can be managed from the Repository panel. Leave the
+checkbox off to use the existing checkout behavior. If a task's new worktree is
+removed, launch fails rather than falling back to the original repository.
+
 ## Requirements
 
 - macOS 14 or newer

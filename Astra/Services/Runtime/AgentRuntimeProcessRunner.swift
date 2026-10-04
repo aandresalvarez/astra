@@ -1329,10 +1329,7 @@ final class AgentRuntimeProcessRunner {
         workspaceAccess: TaskExecutionResourceAccess = .exclusive
     ) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
-        var paths = workspaceAccess == .exclusive ? access.runtimeWritablePaths : []
-        if workspaceAccess == .exclusive, !access.effectiveWorkspacePath.isEmpty {
-            paths.append(access.effectiveWorkspacePath)
-        }
+        var paths = workspaceAccess == .exclusive ? access.runtimeWorkspacePaths : []
         if !access.taskFolder.isEmpty {
             paths.append(access.taskFolder)
         }

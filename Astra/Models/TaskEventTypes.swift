@@ -56,6 +56,7 @@ public enum TaskEventTypes {
         public static let checkpoint: TaskEventType = "task.checkpoint"
         public static let stats: TaskEventType = "task.stats"
         public static let chained: TaskEventType = "task.chained"
+        public static let worktreePrepared: TaskEventType = "task.worktree.prepared"
     }
 
     public enum Conversation {
@@ -291,7 +292,8 @@ public enum TaskEventTypes {
         Mission.checkpointCreated,
         Mission.auditBundleCreated,
         RoleProfile.selected,
-        RoleProfile.changed
+        RoleProfile.changed,
+        Task.worktreePrepared
     ]
 
     private static let conversationTypes: Set<TaskEventType> = [

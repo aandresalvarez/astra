@@ -292,8 +292,7 @@ enum TaskLaunchResourceResolver {
         fileManager: FileManager,
         to grants: inout [RuntimePathGrant]
     ) {
-        guard let workspace = task.workspace else { return }
-        for path in [workspace.primaryPath] + workspace.additionalPaths {
+        for path in TaskWorkspaceAccess(task: task).runtimeWorkspacePaths {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
             grants.append(RuntimePathGrant(
                 path: normalized,

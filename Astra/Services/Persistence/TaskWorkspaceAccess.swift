@@ -17,11 +17,12 @@ public struct TaskWorkspaceAccess {
 
     public var codeWorkingDirectory: String {
         // A thread pinned to a repository/worktree always runs in that code root,
-        // as long as it still exists. If the pin was removed, fall through to the
-        // workspace default instead of failing on a missing directory.
+        // as long as it still exists. Legacy pins degrade to the workspace
+        // default; an explicitly created task worktree must instead fail launch
+        // if removed, never silently send work to the original checkout.
         if let pinned = task.executionRootPath,
            !pinned.isEmpty,
-           fileSystem.fileExists(atPath: pinned) {
+           fileSystem.fileExists(atPath: pinned) || worktreeEvent != nil {
             return pinned
         }
         if let workspace = task.workspace {
@@ -38,11 +39,63 @@ public struct TaskWorkspaceAccess {
     }
 
     public var runtimeWritablePaths: [String] {
-        normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+        projectedRuntimePaths(task.workspace?.additionalPaths ?? [])
+    }
+
+    public var runtimeWorkspacePaths: [String] {
+        guard let workspace = task.workspace else { return [] }
+        return projectedRuntimePaths([workspace.primaryPath] + workspace.additionalPaths)
+    }
+
+    public var runtimeWorkspaceFolders: [WorkspacePathDescriptor] {
+        let paths = runtimeWorkspacePaths
+        return WorkspacePathPresentation.descriptors(
+            primaryPath: paths.first ?? codeWorkingDirectory,
+            additionalPaths: Array(paths.dropFirst())
+        )
     }
 
     public var runtimeReadOnlyInputPaths: [String] {
         normalizedUniquePaths(inputPaths)
+    }
+
+    private var worktreeEvent: TaskEvent? {
+        task.events.filter { $0.hasType(TaskEventTypes.Task.worktreePrepared) }
+            .max { $0.timestamp < $1.timestamp }
+    }
+
+    private func projectedRuntimePaths(_ paths: [String]) -> [String] {
+        guard let pinned = task.executionRootPath, let event = worktreeEvent else {
+            return normalizedUniquePaths(paths)
+        }
+        let binding: TaskWorktreePayload
+        switch event.decodePayload(as: TaskWorktreePayload.self) {
+        case .success(let payload):
+            binding = payload
+        case .failure(let error):
+            AuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: task.id, fields: [
+                "reason": "worktree_binding_invalid",
+                "error": error.description
+            ], level: .error)
+            // Never restore access to the original checkout from a broken binding.
+            return []
+        }
+        guard WorkspacePathPresentation.standardizedPath(pinned)
+                == WorkspacePathPresentation.standardizedPath(binding.worktreePath) else {
+            // A draft can still be explicitly retargeted from the Repository panel.
+            return normalizedUniquePaths(paths)
+        }
+        let repository = URL(fileURLWithPath: binding.repositoryPath)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        return normalizedUniquePaths(paths.map { path in
+            let resolved = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+                .resolvingSymlinksInPath().standardizedFileURL.path
+            if resolved == repository { return pinned }
+            if resolved.hasPrefix(repository + "/") {
+                return pinned + resolved.dropFirst(repository.count)
+            }
+            return path
+        })
     }
 
     private func normalizedUniquePaths(_ paths: [String]) -> [String] {

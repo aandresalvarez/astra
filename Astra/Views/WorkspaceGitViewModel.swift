@@ -285,12 +285,18 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func scanRepositories() async {
         guard let workspace = workspace else { return }
+        let taskID = selectedTask?.id
+        let activePath = activeWorkingPath
         let repos = await git.scanForGitRepositories(
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths
         )
+        let preferred = await preferredRepository(in: repos)
+        guard self.workspace?.id == workspace.id,
+              selectedTask?.id == taskID,
+              activeWorkingPath == activePath else { return }
         self.repositories = repos
-        if let preferred = preferredRepository(in: repos) {
+        if let preferred {
             self.selectedRepository = preferred
         } else if self.selectedRepository == nil {
             self.selectedRepository = repos.first
@@ -347,7 +353,7 @@ final class WorkspaceGitViewModel: ObservableObject {
         return nil
     }
 
-    private func preferredRepository(in repos: [GitRepositoryInfo]) -> GitRepositoryInfo? {
+    private func preferredRepository(in repos: [GitRepositoryInfo]) async -> GitRepositoryInfo? {
         let candidates = [
             activeWorkingPath,
             selectedTask?.executionRootPath,
@@ -361,6 +367,15 @@ final class WorkspaceGitViewModel: ObservableObject {
         for candidate in candidates {
             if let exact = repos.first(where: { $0.path == candidate }) {
                 return exact
+            }
+            let resolved = URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path
+            for repository in repos {
+                let worktrees = await git.listWorktrees(at: repository.path)
+                if worktrees.contains(where: {
+                    URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == resolved
+                }) {
+                    return repository
+                }
             }
         }
         return nil

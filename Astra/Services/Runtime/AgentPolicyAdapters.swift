@@ -1374,10 +1374,7 @@ enum AgentPolicyManifestService {
 
     private static func runtimeWritablePaths(for task: AgentTask) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
-        var paths = access.runtimeWritablePaths
-        if !access.effectiveWorkspacePath.isEmpty {
-            paths.append(access.effectiveWorkspacePath)
-        }
+        var paths = access.runtimeWritablePaths + access.runtimeWorkspacePaths
         if !access.taskFolder.isEmpty {
             paths.append(access.taskFolder)
         }
