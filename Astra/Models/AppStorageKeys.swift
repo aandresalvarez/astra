@@ -67,8 +67,9 @@ public enum AppStorageKeys {
     public static let sandboxEnforcement = "astra.runtime.sandboxEnforcement.v1"
     // When false, the Seatbelt profile denies outbound network (offline runs).
     public static let sandboxAllowNetwork = "astra.runtime.sandboxAllowNetwork.v1"
-    // When true, ASTRA also wraps providers that ship their own OS sandbox
-    // (Codex, Cursor, Antigravity) for defense-in-depth.
+    // When true, ASTRA also wraps providers whose own OS sandbox confines file
+    // writes (Codex, Cursor) for defense-in-depth. Antigravity is always wrapped:
+    // its sandbox covers only its terminal.
     public static let sandboxLayerNativeProviders = "astra.runtime.sandboxLayerNativeProviders.v1"
     // Runtime read-scope mode: open | audit | enforce. Strict enforcement always
     // resolves to enforce even if this preference is broader.

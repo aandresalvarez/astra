@@ -45,3 +45,23 @@ Validate changes to the entrypoint itself with:
 script/runtime_security_tests_tests.sh
 bash -n script/runtime_security_tests.sh script/runtime_security_tests_tests.sh
 ```
+
+## Policy level × runtime contract
+
+`Tests/AgentPolicyRuntimeMatrixTests.swift` pins the whole runtime × level grid:
+only Auto renders a provider's bypass flags, Ask and the legacy presets never do
+and keep each provider's own sandbox on, and a new runtime fails the suite until
+its Auto flags are declared. Per-runtime flag builders are still tested in their
+own suites; the matrix is what stops a shared change from moving a level in a
+runtime nobody was looking at.
+
+The unit tests never run a real CLI, so they cannot see a provider dropping a
+flag. Run this locally after upgrading any provider CLI:
+
+```bash
+script/check_provider_cli_flags.sh
+```
+
+It checks that each flag ASTRA passes is still in the installed CLI's `--help`
+(and, for OpenCode's undocumented `--dangerously-skip-permissions` alias, that the
+parser still accepts it). CLIs that are not installed are skipped.

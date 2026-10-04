@@ -149,7 +149,9 @@ final class AgentRuntimeProcessRunner {
     /// unconfined under strict/autonomous with no test to catch it.
     static func sandboxOutcome(
         for decision: ExecutionSandboxDecision,
-        originalPlan: AgentRuntimeProcessLaunchPlan
+        originalPlan: AgentRuntimeProcessLaunchPlan,
+        enforcement: ExecutionSandboxEnforcement = .strict,
+        isUtility: Bool = false
     ) -> SandboxedPlanOutcome {
         switch decision {
         case .applied(let wrapped, _):
@@ -157,7 +159,25 @@ final class AgentRuntimeProcessRunner {
         case .skipped, .fallback:
             return .plan(originalPlan)
         case .failClosed(let reason):
-            let message = "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked."
+            // The way out depends on why the sandbox failed and on what the user can
+            // change. A narrower workspace helps only the path reasons; a missing
+            // sandbox-exec needs it restored. Strict blocks every runtime, so Auto
+            // would not unblock it; utility runs use a fixed restricted policy, so
+            // Auto never helps there either. Below strict, turning the sandbox off
+            // is always an option. See `ExecutionSandboxSettings.failClosedRuntimes`.
+            var options = [reason == "sandbox_exec_missing"
+                ? "Restore /usr/bin/sandbox-exec"
+                : "Use a narrower workspace folder"]
+            if enforcement == .strict {
+                options.append("change the sandbox enforcement in Settings")
+            } else {
+                if !isUtility { options.append("switch to Auto to run without it") }
+                options.append("turn the execution sandbox off in Settings")
+            }
+            let intro = enforcement == .strict
+                ? "ASTRA could not apply the macOS execution sandbox (\(reason)) and strict enforcement is enabled, so the run was blocked."
+                : "ASTRA could not apply the macOS execution sandbox (\(reason)), which this run depends on\(isUtility ? "" : " below Auto"), so it was blocked."
+            let message = "\(intro) \(options.joined(separator: ", or "))."
             return .blocked(AgentProcessResult(
                 exitCode: -1,
                 error: message,
@@ -548,7 +568,7 @@ final class AgentRuntimeProcessRunner {
             }
             return .plan(finalPlan)
         }
-        return Self.sandboxOutcome(for: decision, originalPlan: plan)
+        return Self.sandboxOutcome(for: decision, originalPlan: plan, enforcement: settings.enforcement)
     }
 
     enum SandboxedUtilityPlanOutcome {
@@ -595,7 +615,7 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
         }
 
-        switch Self.sandboxOutcome(for: decision, originalPlan: plan) {
+        switch Self.sandboxOutcome(for: decision, originalPlan: plan, enforcement: settings.enforcement, isUtility: true) {
         case .plan(let resolvedPlan):
             return .plan(AgentUtilityLaunchPlan(
                 process: resolvedPlan,
