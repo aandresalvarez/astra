@@ -118,6 +118,10 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     /// be discarded and re-run once without the resume. For a runtime whose CLI
     /// sometimes answers a resumed turn with reasoning only (Cursor).
     public let retriesEmptyResumedTurnWithoutResume: Bool
+    /// Whether the usage a resumed launch reports covers the provider's whole session
+    /// (Antigravity's result, Copilot's session shutdown), not just that launch. The
+    /// recorder takes off what earlier runs of the same session already recorded.
+    public let reportsCumulativeSessionUsage: Bool
     /// Whether capability-package MCP servers are materialized into this
     /// runtime's launches. Runtimes without support surface the skip
     /// explicitly instead of silently dropping declared servers.
@@ -140,6 +144,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         supportsAstraRunProtocol: Bool,
         supportsNativeContinuation: Bool = false,
         retriesEmptyResumedTurnWithoutResume: Bool = false,
+        reportsCumulativeSessionUsage: Bool = false,
         supportsMCPServers: Bool = false,
         supportsReasoningEffort: Bool = false
     ) {
@@ -160,6 +165,7 @@ public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
         self.supportsAstraRunProtocol = supportsAstraRunProtocol
         self.supportsNativeContinuation = supportsNativeContinuation
         self.retriesEmptyResumedTurnWithoutResume = retriesEmptyResumedTurnWithoutResume
+        self.reportsCumulativeSessionUsage = reportsCumulativeSessionUsage
         self.supportsMCPServers = supportsMCPServers
         self.supportsReasoningEffort = supportsReasoningEffort
     }

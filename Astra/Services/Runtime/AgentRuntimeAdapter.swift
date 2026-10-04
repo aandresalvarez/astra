@@ -1836,7 +1836,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.copilot,
         defaultModel: CopilotCLIRuntime.defaultModel,
         defaultModels: CopilotCLIRuntime.defaultModels,
-        supportsAstraRunProtocol: true, supportsNativeContinuation: true,
+        supportsAstraRunProtocol: true, supportsNativeContinuation: true, reportsCumulativeSessionUsage: true,
         supportsMCPServers: true,
         supportsReasoningEffort: true
     )
@@ -2429,7 +2429,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.antigravity,
         defaultModel: AntigravityCLIRuntime.defaultModelName(),
         defaultModels: AntigravityCLIRuntime.availableModelNames(),
-        supportsAstraRunProtocol: true, supportsNativeContinuation: true
+        supportsAstraRunProtocol: true, supportsNativeContinuation: true, reportsCumulativeSessionUsage: true
     )
     let readinessCheckID = "antigravity-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .antigravityCLI, launchOverheadTokens: 0)

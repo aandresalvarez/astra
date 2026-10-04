@@ -819,6 +819,8 @@ final class AgentRuntimeWorker {
         run.providerSessionId = nativeContinuationSessionID
         ProviderLaunchSignatureService.record(launchSignature, task: task, run: run, modelContext: modelContext)
         let discardedUsage = DiscardedAttemptUsage()
+        let sessionUsageBaseline = nativeContinuationSessionID == nil || !runtimeAdapter.descriptor.reportsCumulativeSessionUsage ? 0
+            : { let prior = AgentEventRecorder.priorSessionUsage(for: run, in: task); return prior.input + prior.output }()
         let persistRecordedEvent: (AgentRuntimeRecordedEvent) -> Void = { event in
             pendingEvents.add { [weak self] in
                 guard self != nil else { return }
@@ -887,6 +889,7 @@ final class AgentRuntimeWorker {
             var attemptPolicy = launchExecutionPolicy
             attemptPolicy.providerTurnsAlreadyUsed = priorTurns
             attemptPolicy.providerTokensAlreadyUsed = priorTokens
+            attemptPolicy.providerSessionUsageBaseline = sessionUsageBaseline
             return await self.processRunner.runRuntimeProcess(
             adapter: runtimeAdapter,
             prompt: launchPrompt,
@@ -1403,16 +1406,22 @@ final class AgentRuntimeWorker {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_session_run", signatureMatched: false)
         }
 
-        guard ProviderNativeSessionStore.sessionExists(
+        let storeLookup = ProviderNativeSessionStore.lookup(
             runtime: runtimeAdapter.descriptor.id,
             sessionID: sessionID,
             providerHomeDirectory: providerHomeDirectory,
             userHome: userHome,
             environment: environment
-        ) else {
-            // Known gone: stop advertising it, so a fresh launch that fails early cannot leave Resume pointing at it.
-            task.sessionId = nil
-            return NativeContinuationDecision(sessionID: nil, skipReason: "provider_session_missing", signatureMatched: false)
+        )
+        guard storeLookup == .present else {
+            // Only a confirmed absence stops the task advertising the session; a store that could not be
+            // read says nothing about it, so the session stays for a later attempt.
+            if storeLookup == .absent { task.sessionId = nil }
+            return NativeContinuationDecision(
+                sessionID: nil,
+                skipReason: storeLookup == .absent ? "provider_session_missing" : "provider_session_unverifiable",
+                signatureMatched: false
+            )
         }
 
         guard let previousSignature = ProviderLaunchSignatureService.storedSignature(for: task, run: previousRun) else {

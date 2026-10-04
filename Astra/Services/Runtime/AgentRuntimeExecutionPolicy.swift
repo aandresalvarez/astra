@@ -35,6 +35,9 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// Provider tokens an earlier attempt of the same run already spent, taken off the
     /// token budget the re-run's monitor enforces for the same reason.
     var providerTokensAlreadyUsed = 0
+    /// Tokens an earlier run of the same provider session already spent, which the resumed launch's
+    /// stream reports again as part of the session's cumulative total.
+    var providerSessionUsageBaseline = 0
 
     static let `default` = AgentRuntimeExecutionPolicy()
 

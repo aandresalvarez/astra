@@ -1018,6 +1018,10 @@ enum AgentEventRecorder {
         run: TaskRun,
         recordingMode: AgentRuntimeRecordingMode
     ) {
+        // A resumed session's reported usage includes its earlier runs, which are already recorded.
+        let prior = priorSessionUsage(for: run, in: task)
+        let inputTokens = max(0, inputTokens - prior.input)
+        let outputTokens = max(0, outputTokens - prior.output)
         let totalTokens = inputTokens + outputTokens
         switch recordingMode {
         case .initial:
@@ -1032,6 +1036,18 @@ enum AgentEventRecorder {
             run.outputTokens = max(run.outputTokens, outputTokens)
             task.tokensUsed += max(0, run.tokensUsed - previousRunTokens)
         }
+    }
+
+    /// Tokens earlier runs of this run's provider session recorded, for runtimes whose resumed launches
+    /// report the whole session's usage. Zero for every other runtime and for a run's first launch.
+    @MainActor
+    static func priorSessionUsage(for run: TaskRun, in task: AgentTask) -> (input: Int, output: Int) {
+        guard let runtime = run.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)),
+              AgentRuntimeAdapterRegistry.adapter(for: runtime).descriptor.reportsCumulativeSessionUsage,
+              let session = run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !session.isEmpty else { return (0, 0) }
+        let earlier = task.runs.filter { $0.id != run.id && $0.providerSessionId == session }
+        return (earlier.reduce(0) { $0 + $1.inputTokens }, earlier.reduce(0) { $0 + $1.outputTokens })
     }
 
     @MainActor

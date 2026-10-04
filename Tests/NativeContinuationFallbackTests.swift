@@ -192,6 +192,39 @@ struct NativeContinuationFallbackTests {
         ))
     }
 
+    @Test("A store that cannot be read is unverifiable, not absent: only a confirmed absence may clear a session")
+    func lookupDistinguishesAbsenceFromUnverifiable() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        func opencode(_ id: String) -> ProviderNativeSessionStore.Lookup {
+            ProviderNativeSessionStore.lookup(runtime: .openCodeCLI, sessionID: id, userHome: home, environment: [:])
+        }
+        // no database at all: confirmed absent
+        #expect(opencode("ses_a") == .absent)
+        // a database that is not SQLite: nothing can be concluded
+        try touch("\(home)/.local/share/opencode/opencode.db")
+        FileManager.default.createFile(atPath: "\(home)/.local/share/opencode/opencode.db", contents: Data("not a database".utf8))
+        #expect(opencode("ses_a") == .unverifiable)
+        // a readable database: a missing row is a confirmed absence, a present row is present
+        try FileManager.default.removeItem(atPath: "\(home)/.local/share/opencode/opencode.db")
+        try makeOpenCodeDatabase(at: "\(home)/.local/share/opencode/opencode.db", sessionIDs: ["ses_a"])
+        #expect(opencode("ses_a") == .present)
+        #expect(opencode("ses_b") == .absent)
+
+        // Cursor: no chats directory is absent; a directory that cannot be listed is unverifiable
+        #expect(ProviderNativeSessionStore.lookup(
+            runtime: .cursorCLI, sessionID: "chat-1", userHome: home, environment: [:]
+        ) == .absent)
+        let chats = "\(home)/.cursor/chats"
+        try FileManager.default.createDirectory(atPath: chats, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: chats)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: chats) }
+        #expect(ProviderNativeSessionStore.lookup(
+            runtime: .cursorCLI, sessionID: "chat-1", userHome: home, environment: [:]
+        ) == .unverifiable)
+    }
+
     @Test("An OpenCode database that cannot be read reads as missing, never as a crash")
     func openCodeUnreadableDatabase() throws {
         let home = try makeHome()

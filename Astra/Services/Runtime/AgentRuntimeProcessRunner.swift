@@ -770,7 +770,7 @@ final class AgentRuntimeProcessRunner {
             }
         }
         let remainingTokenBudget = Self.remainingTokenBudget(
-            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed
+            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed - executionPolicy.providerSessionUsageBaseline
         )
         let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
