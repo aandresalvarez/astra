@@ -754,6 +754,7 @@ struct AgentRuntimePostProcessContext {
     let runStartedAt: Date
     let modelContext: ModelContext
     let recordingState: AgentEventRecordingState
+    let recordingMode: AgentRuntimeRecordingMode
     let onEvent: (ParsedEvent) -> Void
 }
 struct AgentRuntimeProcessLaunchPlan: Equatable {
@@ -2140,7 +2141,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     @MainActor
     func recordWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
-        mode _: AgentRuntimeRecordingMode,
+        mode: AgentRuntimeRecordingMode,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -2151,7 +2152,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             agentEvent,
             to: task,
             run: run,
-            modelContext: modelContext,
+            modelContext: modelContext, recordingMode: mode,
             recordingState: recordingState
         )
     }
@@ -2276,7 +2277,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             metrics.event,
             to: context.task,
             run: context.run,
-            modelContext: context.modelContext,
+            modelContext: context.modelContext, recordingMode: context.recordingMode,
             recordingState: context.recordingState
         )
         if let parsed = AgentEventRecorder.parsedEvent(from: metrics.event) {
@@ -2728,7 +2729,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     @MainActor
     func recordWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
-        mode _: AgentRuntimeRecordingMode,
+        mode: AgentRuntimeRecordingMode,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -2739,7 +2740,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             agentEvent,
             to: task,
             run: run,
-            modelContext: modelContext,
+            modelContext: modelContext, recordingMode: mode,
             recordingState: recordingState
         )
     }

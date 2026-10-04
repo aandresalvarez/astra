@@ -989,6 +989,7 @@ final class AgentRuntimeWorker {
             runStartedAt: startTime,
             modelContext: modelContext,
             recordingState: recordingState,
+            recordingMode: recordingMode,
             onEvent: onEvent
         ))
         Self.recordEstimatedUsageIfProviderDidNotReport(

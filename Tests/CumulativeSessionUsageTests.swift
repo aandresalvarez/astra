@@ -123,7 +123,7 @@ struct CumulativeSessionUsageTests {
         #expect(resumed.costUSD == 0.25)
     }
 
-    @Test("A Copilot session found only in its state directory becomes the task's, but never replaces a known one")
+    @Test("A Copilot session found for a run with none of its own replaces the task's stale one, but a resumed run keeps its own")
     func discoveredCopilotSessionIsAdopted() throws {
         let (context, container) = try makeContext()
         defer { withExtendedLifetime(container) {} }
@@ -141,11 +141,54 @@ struct CumulativeSessionUsageTests {
         #expect(task.sessionId == "found-session")
         #expect(run.providerSessionId == "found-session")
 
+        // A deliberately fresh launch leaves the task naming an older session: the new one replaces it.
+        let fresh = TaskRun(task: task)
+        context.insert(fresh)
+        task.sessionId = "stale"
+        fresh.providerSessionId = nil
+        CopilotSessionMetricsReader.adoptSession(metrics, task: task, run: fresh)
+        #expect(task.sessionId == "found-session")
+        #expect(fresh.providerSessionId == "found-session")
+
+        // A run that already carries its session (a resumed one) is left alone.
         task.sessionId = "known"
         run.providerSessionId = "known-run"
         CopilotSessionMetricsReader.adoptSession(metrics, task: task, run: run)
         #expect(task.sessionId == "known")
         #expect(run.providerSessionId == "known-run")
+    }
+
+    @Test("A resumed turn adds its own usage to the task's totals instead of replacing them")
+    func taskTotalsAccumulateAcrossResumedTurns() throws {
+        for runtime in [AgentRuntimeID.antigravityCLI, .copilotCLI] {
+            let (task, resumed, container) = try twoTurns(runtime, first: (100, 20), cumulative: (130, 45))
+            defer { withExtendedLifetime(container) {} }
+            #expect(resumed.tokensUsed == 55, "\(runtime.rawValue)")
+            #expect(task.tokensUsed == 120 + 55, "\(runtime.rawValue)")
+        }
+    }
+
+    @Test("A resumed turn's cost delta accumulates on the task")
+    func taskCostAccumulatesAcrossResumedTurns() throws {
+        let (context, container) = try makeContext()
+        defer { withExtendedLifetime(container) {} }
+        let task = AgentTask(title: "Cost", goal: "Count once", runtime: .antigravityCLI)
+        context.insert(task)
+        func recordCost(_ cost: Double, run: TaskRun, mode: AgentRuntimeRecordingMode) {
+            AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI).recordWorkerStreamEvent(
+                .agent(.stats(inputTokens: 10, outputTokens: 1, costUSD: cost, durationMs: nil, turns: nil)),
+                mode: mode, task: task, run: run, modelContext: context, recordingState: AgentEventRecordingState()
+            )
+        }
+        let first = TaskRun(task: task)
+        first.providerSessionId = "session-1"
+        context.insert(first)
+        recordCost(1.00, run: first, mode: .initial)
+        let resumed = TaskRun(task: task)
+        resumed.providerSessionId = "session-1"
+        context.insert(resumed)
+        recordCost(1.25, run: resumed, mode: .followUp)
+        #expect(abs(task.costUSD - 1.25) < 0.0001)
     }
 
     @Test("The session baseline offsets the cumulative reported usage only, never the live estimate")

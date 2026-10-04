@@ -25,13 +25,16 @@ struct CopilotSessionMetrics: Equatable {
 
 enum CopilotSessionMetricsReader {
     /// A launch whose stream never carried a `result` frame still left its session in Copilot's state
-    /// directory; keep that id so the next follow-up can resume it. Never overrides one already known.
+    /// directory; keep that id so the next follow-up can resume it. A run that already knows its session
+    /// (a resumed one) is left alone; a run that does not is a fresh launch, so what it created replaces
+    /// whatever older session the task still names, as a streamed start event would.
     @MainActor
     static func adoptSession(_ metrics: CopilotSessionMetrics, task: AgentTask, run: TaskRun) {
         let discovered = metrics.sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !discovered.isEmpty else { return }
-        if task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true { task.sessionId = discovered }
-        if run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true { run.providerSessionId = discovered }
+        guard !discovered.isEmpty,
+              run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
+        run.providerSessionId = discovered
+        task.sessionId = discovered
     }
 
     static func finalMetrics(

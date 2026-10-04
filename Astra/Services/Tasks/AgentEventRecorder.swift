@@ -508,6 +508,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -518,6 +519,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -528,6 +530,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -538,6 +541,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
