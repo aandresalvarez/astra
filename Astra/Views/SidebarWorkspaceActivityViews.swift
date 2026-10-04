@@ -20,19 +20,22 @@ struct WorkspaceRowActions: View {
     /// row's right edge does not move; its title just truncates a little earlier.
     private static let newTaskTargetExtraWidth: CGFloat = 40
 
-    @State private var isEllipsisHovered = false
+    @FocusState private var isEllipsisFocused: Bool
+    @FocusState private var isNewTaskFocused: Bool
     @State private var isNewTaskHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var hoverAnimation: Animation? { reduceMotion ? nil : .easeOut(duration: 0.10) }
 
+    private var showsActions: Bool { isRowHovered || isEllipsisFocused || isNewTaskFocused }
+
     var body: some View {
         ZStack(alignment: .trailing) {
-            metadata.opacity(isRowHovered ? 0 : 1).accessibilityHidden(isRowHovered)
-            actions.opacity(isRowHovered ? 1 : 0).allowsHitTesting(isRowHovered)
+            metadata.opacity(showsActions ? 0 : 1).accessibilityHidden(showsActions)
+            actions.opacity(showsActions ? 1 : 0).allowsHitTesting(showsActions)
         }
         .frame(width: SidebarLeanPresentation.workspaceRowTrailingSlotWidth + (isNewTaskTarget ? Self.newTaskTargetExtraWidth : 0), alignment: .trailing)
-        .animation(hoverAnimation, value: isRowHovered)
+        .animation(hoverAnimation, value: showsActions)
     }
 
     private var metadata: some View {
@@ -70,16 +73,19 @@ struct WorkspaceRowActions: View {
                 Divider()
                 Button(role: .destructive, action: onDelete) { Label("Remove", systemImage: "trash") }
             } label: {
-                accessoryGlyph("ellipsis", size: 14, weight: .semibold, isHovered: isEllipsisHovered)
+                Image(systemName: "ellipsis")
+                    .font(Stanford.ui(12, weight: .medium))
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).tint(Stanford.lagunita).fixedSize()
-            .onHover { isEllipsisHovered = $0 }.help("Workspace options")
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .buttonStyle(SidebarOverflowButtonStyle()).tint(Stanford.textSecondary)
+            .focused($isEllipsisFocused).help("Workspace options")
             .accessibilityLabel("Options for \(workspace.name)")
 
             Button(action: onNewTask) {
                 accessoryGlyph("square.and.pencil", size: 13, weight: .medium, isHovered: isNewTaskHovered)
             }
             .buttonStyle(.plain).onHover { isNewTaskHovered = $0 }
+            .focused($isNewTaskFocused)
             .help("Start new chat in Astra").accessibilityLabel("Start new chat in \(workspace.name)")
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
