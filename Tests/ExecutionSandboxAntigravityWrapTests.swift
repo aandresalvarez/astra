@@ -138,6 +138,35 @@ struct ExecutionSandboxAntigravityWrapTests {
         #expect(strict?.contains("sandbox enforcement") == true)
     }
 
+    @Test("A missing sandbox-exec is not fixed by a narrower workspace; the message says what is")
+    func missingSandboxExecGetsAMatchingRecovery() {
+        for (enforcement, isUtility) in [
+            (ExecutionSandboxEnforcement.bestEffort, false),
+            (.bestEffort, true),
+            (.strict, false)
+        ] {
+            let message = blockedMessage(enforcement: enforcement, isUtility: isUtility, reason: "sandbox_exec_missing")
+            #expect(message?.contains("narrower workspace") == false, "\(enforcement) utility=\(isUtility)")
+            #expect(message?.contains("sandbox-exec") == true, "\(enforcement) utility=\(isUtility)")
+        }
+
+        // Below strict the user can also turn the sandbox off; Auto only for non-utility runs.
+        let bestEffort = blockedMessage(enforcement: .bestEffort, reason: "sandbox_exec_missing")
+        #expect(bestEffort?.contains("turn the execution sandbox off") == true)
+        #expect(bestEffort?.contains("Auto") == true)
+        let utility = blockedMessage(enforcement: .bestEffort, isUtility: true, reason: "sandbox_exec_missing")
+        #expect(utility?.contains("turn the execution sandbox off") == true)
+        #expect(utility?.contains("Auto") == false)
+    }
+
+    @Test("A path-related block still offers a narrower workspace and, below strict, turning the sandbox off")
+    func pathBlockOffersANarrowerWorkspace() {
+        let message = blockedMessage(enforcement: .bestEffort, reason: "no_execution_path")
+
+        #expect(message?.contains("narrower workspace") == true)
+        #expect(message?.contains("turn the execution sandbox off") == true)
+    }
+
     @Test("The Best effort help text names the Antigravity exception to its unconfined fallback")
     func bestEffortHelpTextMentionsTheException() {
         let text = ExecutionSandboxEnforcement.bestEffort.helpText
@@ -180,10 +209,11 @@ struct ExecutionSandboxAntigravityWrapTests {
 
     private func blockedMessage(
         enforcement: ExecutionSandboxEnforcement,
-        isUtility: Bool = false
+        isUtility: Bool = false,
+        reason: String = "unsafe_execution_path"
     ) -> String? {
         let outcome = AgentRuntimeProcessRunner.sandboxOutcome(
-            for: .failClosed(reason: "unsafe_execution_path"),
+            for: .failClosed(reason: reason),
             originalPlan: makePlan(runtime: .antigravityCLI, workspace: "/"),
             enforcement: enforcement,
             isUtility: isUtility
