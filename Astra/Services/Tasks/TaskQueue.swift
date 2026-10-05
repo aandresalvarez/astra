@@ -404,9 +404,6 @@ final class TaskQueue {
             "pool_size": String(poolSize)
         ])
 
-        // Inject template hooks if present
-        let hooksBackup = injectTemplateHooks(for: task)
-
         await worker.execute(
             task: task,
             modelContext: modelContext,
@@ -418,9 +415,6 @@ final class TaskQueue {
             ),
             onEvent: onEvent
         )
-
-        // Restore hooks
-        restoreTemplateHooks(for: task, backup: hooksBackup)
 
         taskWorkerMap.removeValue(forKey: task.id)
         activeTasks.remove(task.id)
@@ -1550,6 +1544,15 @@ final class TaskQueue {
             return
         }
         let launchSnapshot = TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task)
+        guard let scope = launchSnapshot?.resourceScope, scope.isValid,
+              scope.workspacePath == TaskWorkspaceAccess(task: task).effectiveWorkspacePath else {
+            failPersistedTurn(request, reason: "execution_resource_scope_requires_resubmission", modelContext: modelContext)
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+                payload: "This queued request has no valid accepted resource scope. Submit a new turn to authorize its execution folders. The original request and message have been retained."))
+            WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext,
+                auditFields: ["operation": "execution_resource_scope_requires_resubmission"])
+            return
+        }
         let resourceAccess = resourceAccess(for: request, task: task)
         guard let sourceEvent = task.events.first(where: { $0.id == request.sourceEventID }) else {
             failPersistedTurn(request, reason: "source_event_missing", modelContext: modelContext)
@@ -2084,38 +2087,4 @@ final class TaskQueue {
         )
     }
 
-    // MARK: - Template Hooks Injection
-
-    /// Injects template hooks into .claude/settings.local.json before task execution.
-    /// Returns the original file data for restoration, or nil if no hooks to inject.
-    private func injectTemplateHooks(for task: AgentTask) -> Data? {
-        let backup = ClaudeSettingsStore.injectTemplateHooks(
-            hooksJSON: task.templateHooksJSON,
-            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath
-        )
-        if backup != nil || (!task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}") {
-            AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
-                "event": "template_hooks_injected"
-            ])
-        }
-        return backup
-    }
-
-    /// Restores .claude/settings.local.json after task execution.
-    private func restoreTemplateHooks(for task: AgentTask, backup: Data?) {
-        ClaudeSettingsStore.restoreTemplateHooks(
-            hooksJSON: task.templateHooksJSON,
-            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
-            backup: backup
-        )
-        if backup != nil {
-            AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
-                "event": "template_hooks_restored"
-            ])
-        } else if !task.templateHooksJSON.isEmpty, task.templateHooksJSON != "{}" {
-            AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
-                "event": "template_hooks_removed"
-            ])
-        }
-    }
 }

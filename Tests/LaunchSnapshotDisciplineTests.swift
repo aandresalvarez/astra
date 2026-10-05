@@ -73,7 +73,7 @@ struct LaunchSnapshotDisciplineTests {
         //    which detachedTask copies from the source task, not the snapshot).
         let snapshotProperties = try Set(
             capturedNames(in: snapshotSource, pattern: #"(?m)^    let ([A-Za-z_]\w*):"#)
-        ).subtracting(["id"])
+        ).subtracting(["id", "resourceScope"])
         #expect(
             snapshotProperties == Self.snapshotOwnedFields,
             "AgentTaskLaunchSnapshot gained or lost a field. Update snapshotOwnedFields and re-audit the allowlists below: \(symmetricDifference(snapshotProperties, Self.snapshotOwnedFields))"
@@ -106,6 +106,9 @@ struct LaunchSnapshotDisciplineTests {
             Self.snapshotOwnedFields.subtracting(capturedByInit).isEmpty,
             "AgentTaskLaunchSnapshot(task:) must capture every snapshot-owned field: \(Self.snapshotOwnedFields.subtracting(capturedByInit).sorted())"
         )
+        #expect(snapshotSource.contains("resourceScope = task.acceptedResourceScope"))
+        #expect(applicatorSource.contains("task.acceptedResourceScope = snapshot.resourceScope"))
+        #expect(requestSource.contains("self.resourceScope = resourceScope"))
     }
 
     // MARK: - Live reads
@@ -154,30 +157,6 @@ struct LaunchSnapshotDisciplineTests {
             count: 1,
             classification: .benign,
             reason: "benign: audit logging only, and the same shadowed launchTask parameter as the read above."
-        ),
-        .init(
-            file: Self.queuePath,
-            symbol: "task.templateHooksJSON",
-            line: #"hooksJSON: task.templateHooksJSON,"#,
-            count: 2,
-            classification: .knownGap,
-            reason: "KNOWN GAP (behavioural): inject/restoreTemplateHooks bracket the launch in executeTask, but read the live task. templateHooksJSON is snapshot-owned and executionPolicy.launchSnapshot is already in scope at both call sites."
-        ),
-        .init(
-            file: Self.queuePath,
-            symbol: "task.templateHooksJSON",
-            line: #"if backup != nil || (!task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}") {"#,
-            count: 2,
-            classification: .knownGap,
-            reason: "KNOWN GAP (audit accuracy): decides whether the injection is reported, from the same live value as the injection itself."
-        ),
-        .init(
-            file: Self.queuePath,
-            symbol: "task.templateHooksJSON",
-            line: #"} else if !task.templateHooksJSON.isEmpty, task.templateHooksJSON != "{}" {"#,
-            count: 2,
-            classification: .knownGap,
-            reason: "KNOWN GAP (behavioural): restore is graded against a value the user may have edited after the hooks were injected, so injected and restored state can disagree."
         )
     ]
 

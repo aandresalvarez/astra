@@ -22,7 +22,8 @@ struct AgentRuntimeRunEnvironmentContext: Sendable, Equatable {
             currentDirectory: currentDirectory,
             workspaceAccess: workspaceAccess
         )
-        let attachmentPaths = AgentRuntimeAttachmentProjection.readablePaths(
+        let attachmentPaths = task.acceptedResourceScope?.resources.filter { $0.role == .input }.map(\.path)
+            ?? AgentRuntimeAttachmentProjection.readablePaths(
             for: task,
             contextText: providerLaunchContextText
         )
@@ -34,7 +35,7 @@ struct AgentRuntimeRunEnvironmentContext: Sendable, Equatable {
         // this prompt guidance from drifting out of sync with what actually gets
         // mounted, which would otherwise point the provider at the wrong file.
         var seenCanonical: Set<String> = []
-        let additionalReadOnlyInputPaths = (attachmentPaths + approvedSandboxReadablePaths)
+        let additionalReadOnlyInputPaths = (attachmentPaths + (task.acceptedResourceScope == nil ? approvedSandboxReadablePaths : []))
             .compactMap { path -> String? in
                 guard let canonical = ExecutionSandbox.canonicalize(path),
                       seenCanonical.insert(canonical).inserted else {

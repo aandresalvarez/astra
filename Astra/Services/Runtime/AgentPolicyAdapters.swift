@@ -1117,7 +1117,7 @@ enum AgentPolicyManifestService {
             ?? AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
-        let runtimePaths = runtimeWritablePaths(for: task)
+        let runtimePaths = launchResourcePlan?.resourceScope?.providerWritableFolders ?? runtimeWritablePaths(for: task)
         let additionalReadOnlyPaths = brokeredReadOnlyPaths(from: launchResourcePlan)
         let context = PolicyRenderContext(
             runtimeID: runtime,
@@ -1375,7 +1375,7 @@ enum AgentPolicyManifestService {
     private static func runtimeWritablePaths(for task: AgentTask) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
         var paths = access.runtimeWritablePaths
-        if !access.effectiveWorkspacePath.isEmpty {
+        if task.acceptedResourceScope == nil, !access.effectiveWorkspacePath.isEmpty {
             paths.append(access.effectiveWorkspacePath)
         }
         if !access.taskFolder.isEmpty {

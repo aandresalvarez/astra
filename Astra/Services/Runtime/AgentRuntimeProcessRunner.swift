@@ -228,6 +228,13 @@ final class AgentRuntimeProcessRunner {
         )
         let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
         var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)
+        if let message = plan.preparationError {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue, "reason": "launch_configuration_invalid"
+            ], level: .error)
+            return .blocked(AgentProcessResult(exitCode: -1, error: message,
+                runtimeStopReason: "launch_configuration_invalid", runtimeStopMessage: message))
+        }
         // Immediately, before anything else reads `plan.environment`. Each
         // adapter builds its environment from `ProcessInfo`, so the brokered
         // strip its overlay went through does not cover a credential ASTRA was
@@ -487,6 +494,7 @@ final class AgentRuntimeProcessRunner {
             additionalWritablePaths: runtimeWritablePaths + launchResourcePlan.hostWritablePaths,
             additionalReadablePaths: runtimeWritablePaths + launchResourcePlan.hostReadablePaths,
             workspaceWritable: launchResourcePlan.workspaceAccess == .exclusive,
+            resourceScope: launchResourcePlan.resourceScope,
             settings: settings
         )
         let taskID = context.taskSnapshot.id
@@ -1349,8 +1357,8 @@ final class AgentRuntimeProcessRunner {
         workspaceAccess: TaskExecutionResourceAccess = .exclusive
     ) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
-        var paths = workspaceAccess == .exclusive ? access.runtimeWritablePaths : []
-        if workspaceAccess == .exclusive, !access.effectiveWorkspacePath.isEmpty {
+        var paths = task.acceptedResourceScope != nil || workspaceAccess == .exclusive ? access.runtimeWritablePaths : []
+        if task.acceptedResourceScope == nil, workspaceAccess == .exclusive, !access.effectiveWorkspacePath.isEmpty {
             paths.append(access.effectiveWorkspacePath)
         }
         if !access.taskFolder.isEmpty {
@@ -1451,6 +1459,11 @@ final class AgentRuntimeProcessRunner {
         }
         for (key, value) in taskEnv {
             extraVars[key] = value
+        }
+        if task.acceptedResourceScope?.resources.contains(where: {
+            $0.role == .gitMetadata && $0.access == .shared
+        }) == true {
+            extraVars["GIT_OPTIONAL_LOCKS"] = "0"
         }
         let env = RuntimeProcessEnvironment.enriched(
             additionalPaths: prefixPaths,

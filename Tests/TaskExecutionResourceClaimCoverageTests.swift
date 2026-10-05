@@ -26,10 +26,8 @@ import ASTRAPersistence
 struct TaskExecutionResourceClaimCoverageTests {
     /// Kinds ASTRA declares but does **not** claim today.
     ///
-    /// Each entry states why no claim exists and what concurrent runs can
-    /// therefore race on. These are tracked gaps, not approved designs: the
-    /// documenting tests further down pin the current behavior so that fixing
-    /// a gap fails loudly here and forces this list to shrink.
+    /// Each entry documents either a tracked gap (#480) or a resource whose
+    /// concrete filesystem claims intentionally replace a coarse kind.
     private static let knownUnclaimedKinds: Set<TaskExecutionResourceKind> = [
         // No per-session identity exists to claim: ASTRA's browser bridge is a
         // single process-wide `ShelfBrowserBridgeRegistry.shared` that holds
@@ -39,13 +37,9 @@ struct TaskExecutionResourceClaimCoverageTests {
         // concurrent browser tasks are admitted together and fight over one
         // bridge binding (whichever binds last owns the session).
         .browserSession,
-        // Per-task Docker state (container name, `DOCKER_CONFIG` directory) is
-        // already task/run scoped, so the unclaimed part is the *environment*:
-        // `WorkspaceExecutionEnvironment.mounts` and `credentialProjections`
-        // project the same host paths into every container using that
-        // environment, `rw` included. Risk: two runs sharing one environment
-        // write the same host directory through their containers with nothing
-        // serializing them (see `dockerEnvironmentMountsAreGrantedWritableWithoutADockerClaim`).
+        // Containers and DOCKER_CONFIG are task/run scoped. Concrete mounted
+        // host paths are filesystem claims, including writable credential
+        // projections. An environment-wide Docker lock would over-serialize.
         .docker,
         // The remote host, its working directory, and the local SSH state used
         // to reach it are all keyed outside the workspace, so the
@@ -135,13 +129,14 @@ struct TaskExecutionResourceClaimCoverageTests {
         let readerClaims = TaskExecutionResourceClaimResolver.claims(for: reader)
         let writerClaims = TaskExecutionResourceClaimResolver.claims(for: writer)
 
-        #expect(readerClaims.allSatisfy { $0.kind == .workspace })
-        #expect(readerClaims.map(\.key) == [
+        #expect(readerClaims.allSatisfy { $0.kind == .workspace || $0.kind == .taskStorage })
+        #expect(Array(readerClaims.prefix(2).map(\.key)) == [
             "/tmp/astra-claim-coverage-primary",
             "/tmp/astra-claim-coverage-extra"
         ])
-        #expect(readerClaims.allSatisfy { $0.access == .shared })
-        #expect(writerClaims.allSatisfy { $0.kind == .workspace && $0.access == .exclusive })
+        #expect(readerClaims.prefix(2).allSatisfy { $0.access == .shared })
+        #expect(readerClaims.last?.access == .exclusive)
+        #expect(writerClaims.allSatisfy { ($0.kind == .workspace || $0.kind == .taskStorage) && $0.access == .exclusive })
     }
 
     @Test("Network Git work claims the shared Git common directory")
@@ -169,10 +164,7 @@ struct TaskExecutionResourceClaimCoverageTests {
         let gitClaim = try #require(pushingClaims.first { $0.kind == .gitCommonDirectory })
 
         #expect(gitClaim.key == repository.commonDirectory.standardizedFileURL.path)
-        // The claim exists only where the grant does: a worktree writer with no
-        // Git intent receives no external Git metadata grant, so claiming it
-        // would serialize sibling worktrees for nothing.
-        #expect(!localClaims.contains { $0.kind == .gitCommonDirectory })
+        #expect(localClaims.contains { $0.kind == .gitCommonDirectory && $0.access == .shared })
     }
 
     @Test("Local Git inspection also claims the Git common directory")
@@ -279,8 +271,8 @@ struct TaskExecutionResourceClaimCoverageTests {
         // time. When `.remoteDirectory` claims land, these expectations must
         // flip; that is the point of pinning them.
         #expect(!firstClaims.contains { $0.kind == .remoteDirectory })
-        #expect(firstClaims.allSatisfy { $0.kind == .workspace })
-        #expect(secondClaims.allSatisfy { $0.kind == .workspace })
+        #expect(firstClaims.allSatisfy { $0.kind == .workspace || $0.kind == .taskStorage })
+        #expect(secondClaims.allSatisfy { $0.kind == .workspace || $0.kind == .taskStorage })
         #expect(!firstClaims.contains {
             $0.key == sshDirectory.standardizedFileURL.path
                 || $0.key == knownHosts.standardizedFileURL.path
@@ -291,8 +283,8 @@ struct TaskExecutionResourceClaimCoverageTests {
         ))
     }
 
-    @Test("Shared Docker environment mounts are granted read-write with no docker claim")
-    func dockerEnvironmentMountsAreGrantedWritableWithoutADockerClaim() throws {
+    @Test("Docker mount expansion is rejected and accepted mounts receive filesystem claims")
+    func dockerEnvironmentMountsRequireAcceptedFilesystemClaims() throws {
         let fileManager = FileManager.default
         let root = try makeTempDirectory("claim-coverage-docker")
         defer { try? fileManager.removeItem(at: root) }
@@ -301,9 +293,8 @@ struct TaskExecutionResourceClaimCoverageTests {
         try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: sharedCache, withIntermediateDirectories: true)
 
-        // A mount declared on the execution environment, not on the workspace:
-        // every task pinned to this environment gets it, and no workspace claim
-        // covers the host path.
+        // Custom mounts must be accepted before launch, not appended after
+        // admission merely because an environment requests them.
         let mount = ExecutionEnvironmentMount(
             hostPath: sharedCache.path,
             containerPath: "/shared-build-cache",
@@ -322,7 +313,7 @@ struct TaskExecutionResourceClaimCoverageTests {
             goal: "Update the build outputs.",
             workspace: Workspace(name: "Containerized", primaryPath: workspaceRoot.path)
         )
-
+        task.acceptedResourceScope = TaskExecutionResourceScopeResolver.resolve(task: task)
         let plan = TaskLaunchResourceResolver.resolve(
             task: task,
             runID: UUID(),
@@ -334,13 +325,15 @@ struct TaskExecutionResourceClaimCoverageTests {
             executionEnvironment: environment,
             gitCredentialContextProvider: { _, _, _, _ in .empty }
         )
-        let claims = TaskExecutionResourceClaimResolver.claims(for: task)
-
         #expect(plan.containerMounts.contains {
             $0.hostPath == mount.hostPath && $0.access == ExecutionEnvironmentMountAccess.readWrite.rawValue
         })
+        #expect(plan.diagnostics.contains { $0.code == "execution_resource_scope_expansion" && $0.severity == .error })
+        task.acceptedResourceScope = nil
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+        let claims = TaskExecutionResourceClaimResolver.claims(for: task)
         #expect(!claims.contains { $0.kind == .docker })
-        #expect(!claims.contains { $0.key == mount.hostPath })
+        #expect(claims.contains { $0.kind == .workspace && $0.key == mount.hostPath && $0.access == .exclusive })
     }
 
     @Test("Provider account state is writable for every run without an account-session claim")

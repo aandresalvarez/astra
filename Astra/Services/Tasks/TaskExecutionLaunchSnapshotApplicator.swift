@@ -37,7 +37,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
             executionEnvironmentSnapshotJSON: policy.executionEnvironmentSnapshotJSON,
             templateHooksJSON: policy.templateHooksJSON,
             skillSnapshotsJSON: policy.skillSnapshotsJSON,
-            runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON
+            runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON,
+            resourceScope: policy.resourceScope
         )
     }
 
@@ -53,6 +54,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         )
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
         task.id = source.id
+        task.acceptedResourceScope = snapshot.resourceScope
         task.inputs = source.inputs
         task.constraints = source.constraints
         task.acceptanceCriteria = source.acceptanceCriteria

@@ -2025,10 +2025,9 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.arguments.contains("Edit"))
         #expect(plan.arguments.contains("Bash"))
 
-        let settingsURL = workspaceURL
-            .appendingPathComponent(".claude", isDirectory: true)
-            .appendingPathComponent("settings.local.json")
-        let data = try Data(contentsOf: settingsURL)
+        #expect(!FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent(".claude/settings.local.json").path))
+        let settingsIndex = try #require(plan.arguments.firstIndex(of: "--settings"))
+        let data = Data(plan.arguments[settingsIndex + 1].utf8)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let permissions = try #require(json["permissions"] as? [String: Any])
         let allow = try #require(permissions["allow"] as? [String])
@@ -2296,12 +2295,10 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "2")
         #expect(plan.commandPlannedFields["uses_live_approvals"] == "true")
 
-        // The generated settings.local.json must not pre-allow ask-first tools
-        // either — that was the floor hole that bypassed the live channel.
-        let settingsURL = workspaceURL
-            .appendingPathComponent(".claude", isDirectory: true)
-            .appendingPathComponent("settings.local.json")
-        let data = try Data(contentsOf: settingsURL)
+        // Run-scoped settings must not pre-allow ask-first tools either.
+        #expect(!FileManager.default.fileExists(atPath: workspaceURL.appendingPathComponent(".claude/settings.local.json").path))
+        let settingsIndex = try #require(plan.arguments.firstIndex(of: "--settings"))
+        let data = Data(plan.arguments[settingsIndex + 1].utf8)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let permissions = try #require(json["permissions"] as? [String: Any])
         let allow = try #require(permissions["allow"] as? [String])

@@ -392,6 +392,10 @@ enum ExecutionRequestSubmissionService {
             sourcePayload: encoded,
             acceptedTurn: payload.message,
             permissionContinuation: payload.permissionContinuation,
+            approvedResourcePaths: TaskLaunchResourceResolver.approvedSandboxReadablePaths(
+                from: payload.executionPolicyOverride?.permissionGrants ?? [],
+                homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path
+            ),
             task: task,
             modelContext: modelContext,
             at: date,
@@ -407,6 +411,7 @@ enum ExecutionRequestSubmissionService {
         sourcePayload: String,
         acceptedTurn: String? = nil,
         permissionContinuation: PermissionApprovalContinuation? = nil,
+        approvedResourcePaths: [String] = [],
         attachmentPaths: [String] = [],
         task: AgentTask,
         modelContext: ModelContext,
@@ -449,9 +454,10 @@ enum ExecutionRequestSubmissionService {
             messageEventID: event.id,
             sequence: nextSequence,
             kind: kind,
-            resourceClaims: TaskExecutionResourceClaimResolver.claims(
-                for: task,
-                acceptedTurn: acceptedTurn
+            resourceScope: TaskExecutionResourceScopeResolver.resolve(
+                task: task,
+                acceptedTurn: acceptedTurn,
+                attachmentPaths: attachmentPaths + approvedResourcePaths
             ),
             turnIntentSnapshot: turnIntentSnapshot,
             submittedAt: date
@@ -464,9 +470,21 @@ enum ExecutionRequestSubmissionService {
             request.runtimeIDSnapshot = origin.runtimeIDSnapshot
             request.modelSnapshot = origin.modelSnapshot
             request.tokenBudgetSnapshot = origin.tokenBudgetSnapshot
+            let expandedScope = snapshot.resourceScope.map { scope in
+                TaskExecutionResourceScope(
+                    workingDirectory: scope.workingDirectory,
+                    workspacePath: scope.workspacePath,
+                    resources: scope.resources + approvedResourcePaths.map {
+                        .init(path: $0, access: .shared, role: .input)
+                    },
+                    replacedCheckoutPaths: scope.replacedCheckoutPaths
+                )
+            }
             request.executionPolicySnapshotJSON = TaskEvent.payloadString(TaskExecutionPolicySnapshotV1(
-                task: frozenTask, turnIntentSnapshot: turnIntentSnapshot))
-            request.resourceClaimsJSON = origin.resourceClaimsJSON
+                task: frozenTask, turnIntentSnapshot: turnIntentSnapshot,
+                resourceScope: expandedScope))
+            request.resourceClaimsJSON = approvedResourcePaths.isEmpty ? origin.resourceClaimsJSON
+                : expandedScope.map { TaskEvent.payloadString($0.claims) } ?? origin.resourceClaimsJSON
         }
         if let binding = permissionContinuation, let run = task.runs.first(where: { $0.id == binding.runID }),
            let runtime = run.runtimeID, AgentRuntimeID(rawValue: runtime) != nil {

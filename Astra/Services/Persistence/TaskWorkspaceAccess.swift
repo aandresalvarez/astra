@@ -12,10 +12,11 @@ public struct TaskWorkspaceAccess {
     }
 
     public var effectiveWorkspacePath: String {
-        task.workspace?.primaryPath ?? ""
+        task.acceptedResourceScope?.workspacePath ?? task.workspace?.primaryPath ?? ""
     }
 
     public var codeWorkingDirectory: String {
+        if let scope = task.acceptedResourceScope { return scope.workingDirectory }
         // A thread pinned to a repository/worktree always runs in that code root,
         // as long as it still exists. If the pin was removed, fall through to the
         // workspace default instead of failing on a missing directory.
@@ -38,11 +39,17 @@ public struct TaskWorkspaceAccess {
     }
 
     public var runtimeWritablePaths: [String] {
-        normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+        if let scope = task.acceptedResourceScope {
+            return normalizedUniquePaths(scope.providerWritableFolders)
+        }
+        return normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
     }
 
     public var runtimeReadOnlyInputPaths: [String] {
-        normalizedUniquePaths(inputPaths)
+        if let scope = task.acceptedResourceScope {
+            return normalizedUniquePaths(scope.resources.filter { $0.role == .input }.map(\.path))
+        }
+        return normalizedUniquePaths(inputPaths)
     }
 
     private func normalizedUniquePaths(_ paths: [String]) -> [String] {

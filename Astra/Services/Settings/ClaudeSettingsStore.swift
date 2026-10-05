@@ -39,6 +39,36 @@ enum ClaudeSettingsStore {
         return writeSettings(settings, workspacePath: workspacePath, fileManager: fileManager)
     }
 
+    static func launchSettingsJSON(hooksJSON: String, policy: PermissionPolicy, allowedTools: [String]) throws -> String {
+        var settings: [String: Any] = [:]
+        if let permissions = policy.subAgentPermissions(allowedTools: allowedTools).first {
+            settings["permissions"] = permissions
+        }
+        if !hooksJSON.isEmpty, hooksJSON != "{}" {
+            guard let data = hooksJSON.data(using: .utf8),
+                  let hooks = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CocoaError(.propertyListReadCorrupt)
+            }
+            var supported: [String: [[String: Any]]] = [:]
+            for (type, value) in hooks {
+                guard injectableHookTypes.contains(type), let entries = value as? [[String: Any]] else {
+                    throw CocoaError(.propertyListReadCorrupt)
+                }
+                supported[type] = entries
+            }
+            settings["hooks"] = supported
+        }
+        return String(decoding: try JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys]), as: UTF8.self)
+    }
+
+    static func launchSettings(hooksJSON: String, policy: PermissionPolicy, allowedTools: [String]) -> (arguments: [String], error: String?) {
+        do {
+            return (["--settings", try launchSettingsJSON(hooksJSON: hooksJSON, policy: policy, allowedTools: allowedTools)], nil)
+        } catch {
+            return ([], "ASTRA could not prepare Claude's run-scoped settings. Check the template hook configuration.")
+        }
+    }
+
     static func configOwnership(at workspacePath: String, fileManager: FileManager = .default) -> PolicyConfigOwnership {
         let settings = loadSettings(workspacePath: workspacePath, fileManager: fileManager)
         guard !settings.isEmpty else { return .generated }

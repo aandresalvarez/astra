@@ -27,6 +27,8 @@ public enum ValidationStrategy: String, Codable, CaseIterable, Sendable {
 
 @Model
 public final class AgentTask {
+    /// Only set on detached launch views, from the accepted request snapshot.
+    @Transient public var acceptedResourceScope: TaskExecutionResourceScope? = nil
     public var id: UUID
     public var title: String
     public var goal: String

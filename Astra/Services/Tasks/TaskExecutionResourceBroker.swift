@@ -93,7 +93,7 @@ enum TaskExecutionResourceBroker {
         guard let conflict = firstConflict(requested: requested, active: active) else {
             return "resource lock unavailable"
         }
-        return "Waiting for \(displayName(conflict.requested)) held by another active task."
+        return "Waiting for \(displayName(conflict.requested)) \(conflict.requested.resourceKey), held by task \(conflict.holder.taskID.uuidString)."
     }
 
     static func displayName(_ claim: TaskResourceLockClaim) -> String {
@@ -104,9 +104,17 @@ enum TaskExecutionResourceBroker {
         _ lhs: TaskResourceLockClaim,
         _ rhs: TaskResourceLockClaim
     ) -> Bool {
-        guard lhs.resourceKind == rhs.resourceKind else { return false }
+        guard lhs.resourceKind == rhs.resourceKind
+            || (isFilesystemKind(lhs.resourceKind) && isFilesystemKind(rhs.resourceKind)) else { return false }
         let left = canonicalKey(kind: lhs.resourceKind, key: lhs.resourceKey)
         let right = canonicalKey(kind: rhs.resourceKind, key: rhs.resourceKey)
+        // Runtime output is mutable even for read-only execution. A broad
+        // workspace reader does not lease sibling task ledgers; a request
+        // targeting a ledger itself, or any overlapping writer, still conflicts.
+        if lhs.resourceKind == .taskStorage, rhs.resourceKind == .workspace,
+           rhs.accessMode == .readOnly, isPath(right, ancestorOf: left) { return false }
+        if rhs.resourceKind == .taskStorage, lhs.resourceKind == .workspace,
+           lhs.accessMode == .readOnly, isPath(left, ancestorOf: right) { return false }
         if isFilesystemKind(lhs.resourceKind) {
             return left == right || isPath(left, ancestorOf: right) || isPath(right, ancestorOf: left)
         }
@@ -115,7 +123,7 @@ enum TaskExecutionResourceBroker {
 
     private static func isFilesystemKind(_ kind: TaskExecutionResourceKind) -> Bool {
         switch kind {
-        case .workspace, .gitCommonDirectory:
+        case .workspace, .gitCommonDirectory, .taskStorage:
             true
         case .browserSession, .docker, .remoteDirectory, .accountSession:
             false

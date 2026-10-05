@@ -123,9 +123,22 @@ enum TaskLaunchResourceResolver {
         // approval path and must retain the credentials needed by private repos.
         let brokersNetworkGitThroughAstra = permissionPolicy != .autonomous
             && astraOwnsAskPublication
-        let gitCredentialContext = routesGitHubMetadataThroughHostControl || brokersNetworkGitThroughAstra
+        var gitCredentialContext = routesGitHubMetadataThroughHostControl || brokersNetworkGitThroughAstra
             ? .empty
             : gitCredentialContextProvider(prompt, task, contextText, workspacePath)
+        if let scope = task.acceptedResourceScope {
+            let metadata = scope.resources.filter { $0.role == .gitMetadata }
+            if !metadata.isEmpty, gitCredentialContext.isEmpty,
+               !routesGitHubMetadataThroughHostControl, !brokersNetworkGitThroughAstra {
+                gitCredentialContext = GitCredentialContextResolver.localGitConfigSandboxContext(
+                    repositoryPath: workspacePath, homeDirectory: homeDirectoryPath, fileManager: fileManager)
+            }
+            let unapprovedWrites = gitCredentialContext.writablePaths.filter { !scope.coversWrite(to: $0) }
+            gitCredentialContext.readablePaths += unapprovedWrites
+            gitCredentialContext.writablePaths.removeAll { !scope.coversWrite(to: $0) }
+            gitCredentialContext.readablePaths += metadata.filter { $0.access == .shared }.map(\.path)
+            gitCredentialContext.writablePaths += metadata.filter { $0.access == .exclusive }.map(\.path)
+        }
         let gitResource = gitCredentialContext.isEmpty ? nil : RuntimeGitCredentialResource(
             readablePaths: uniquePaths(gitCredentialContext.readablePaths),
             writablePaths: uniquePaths(gitCredentialContext.writablePaths),
@@ -183,6 +196,28 @@ enum TaskLaunchResourceResolver {
             diagnostics: &diagnostics
         )
 
+        if let scope = task.acceptedResourceScope {
+            if !scope.isValid || TaskExecutionResourceScope.canonicalPath(workspacePath) != TaskExecutionResourceScope.canonicalPath(scope.workingDirectory) {
+                diagnostics.append(RuntimeResourceDiagnostic(
+                    severity: .error, code: "execution_resource_scope_invalid",
+                    message: "The accepted execution root or a resource identity changed.",
+                    repairAction: "Submit a new turn to authorize the current folders."
+                ))
+            }
+            let taskDataSources: Set<TaskLaunchResourceSource> = [.workspace, .taskInput, .userAttachment, .gitCredential, .dockerEnvironment]
+            let uncovered = hostPathGrants.filter {
+                taskDataSources.contains($0.source) && $0.access != .read && !scope.coversWrite(to: $0.path)
+            }.map(\.path) + containerMounts.filter {
+                $0.access != "ro" && !scope.coversWrite(to: $0.hostPath)
+            }.map(\.hostPath)
+            for path in uniquePaths(uncovered) {
+                diagnostics.append(RuntimeResourceDiagnostic(
+                    severity: .error, code: "execution_resource_scope_expansion",
+                    message: "Launch requested unadmitted write access to \(path).",
+                    repairAction: "Submit a new turn with this folder included in its resource scope."
+                ))
+            }
+        }
         return TaskLaunchResourcePlan(
             taskID: task.id,
             runID: runID,
@@ -201,7 +236,8 @@ enum TaskLaunchResourceResolver {
             providerRequirements: uniqueProviderRequirements(providerRequirements),
             controlPlaneResources: uniqueControlPlaneResources(controlPlaneResources),
             diagnostics: diagnostics,
-            gitCredential: gitResource
+            gitCredential: gitResource,
+            resourceScope: task.acceptedResourceScope
         )
     }
 
@@ -292,6 +328,21 @@ enum TaskLaunchResourceResolver {
         fileManager: FileManager,
         to grants: inout [RuntimePathGrant]
     ) {
+        if let scope = task.acceptedResourceScope {
+            for resource in scope.resources where resource.role != .gitMetadata
+                && resource.role != .isolationSource && resource.role != .environmentMount {
+                grants.append(RuntimePathGrant(
+                    path: resource.path,
+                    access: resource.access == .exclusive ? .readWrite : .read,
+                    source: resource.role == .input ? .taskInput : .workspace,
+                    reason: "Accepted execution resource: \(resource.role.rawValue).",
+                    sensitivity: .normal,
+                    lifetime: .run,
+                    exists: fileManager.fileExists(atPath: resource.path)
+                ))
+            }
+            return
+        }
         guard let workspace = task.workspace else { return }
         for path in [workspace.primaryPath] + workspace.additionalPaths {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
@@ -314,6 +365,9 @@ enum TaskLaunchResourceResolver {
         grants: inout [RuntimePathGrant],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
+        // Accepted inputs were already projected by appendWorkspacePathGrants.
+        // Historical/runtime context must not expand a queued request's scope.
+        guard task.acceptedResourceScope == nil else { return }
         for path in task.inputs {
             appendInputPathGrant(
                 rawPath: path,

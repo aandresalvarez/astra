@@ -534,6 +534,14 @@ enum DockerExecutionPlanner {
         additionalReadOnlyInputPaths: [String] = []
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
+        if let scope = task.acceptedResourceScope {
+            mounts = mounts.map { mount in
+                guard mount.role != .credential else { return mount }
+                var projection = mount
+                projection.access = scope.coversWrite(to: mount.hostPath) ? .readWrite : .readOnly
+                return projection
+            }
+        }
         if workspaceAccess == .shared {
             // Environment snapshots are durable and may have been produced by
             // an earlier exclusive run.  Do not let a stale rw mount survive
@@ -636,7 +644,7 @@ enum DockerExecutionPlanner {
             currentDirectory,
             environment.containerWorkingDirectory,
             .workspace,
-            access: workspaceAccess == .shared ? .readOnly : .readWrite
+            access: (task.acceptedResourceScope?.executionAccess ?? workspaceAccess) == .shared ? .readOnly : .readWrite
         )
         let taskAccess = TaskWorkspaceAccess(task: task)
         append(taskAccess.taskFolder, "/astra/task", .taskFolder)
@@ -649,6 +657,24 @@ enum DockerExecutionPlanner {
             }
             append(standardized, "/mnt/astra/path-\(index)", .additionalPath)
             index += 1
+        }
+        if let scope = task.acceptedResourceScope {
+            // Preserve Git's absolute gitdir/commondir references inside linked
+            // worktrees, without mounting their source checkout writable.
+            for resource in scope.resources where resource.role == .gitMetadata {
+                if resource.access == .shared {
+                    appendReadOnlyInput(resource.path, fallbackContainerPath: resource.path)
+                } else {
+                    append(resource.path, resource.path, .additionalPath)
+                }
+            }
+            for resource in scope.resources where resource.access == .shared
+                && (resource.role == .execution || resource.role == .additionalFolder) {
+                if resource.path != currentDirectory {
+                    append(resource.path, "/mnt/astra/path-\(index)", .additionalPath, access: .readOnly)
+                    index += 1
+                }
+            }
         }
         var inputIndex = 1
         var seenInputs: Set<String> = []

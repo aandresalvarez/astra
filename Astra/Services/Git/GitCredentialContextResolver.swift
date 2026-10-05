@@ -24,6 +24,17 @@ struct GitCredentialSandboxContext: Equatable, Sendable {
 }
 
 enum GitOperationIntentDetector {
+    static func detectsGitMutation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
+        let text = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        return ["git fetch", "git pull", "git push", "git clone", "git remote update", "git submodule update",
+                "gh pr checkout", "git add", "git commit", "git checkout", "git switch", "git restore",
+                "git reset", "git clean", "git merge", "git rebase", "git cherry-pick",
+                "git revert", "git stash", "git branch", "git tag", "git update-ref",
+                "git worktree", "git gc", "git maintenance", "git config",
+                "commit the changes", "commit changes", "create a branch",
+                "push to github", "push changes", "pull latest", "pull the latest", "sync with origin"]
+                .contains { containsTokenPhrase($0, in: text) }
+    }
     static func detectsRuntimeGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         detectsNetworkGitOperation(prompt: prompt, task: task, contextText: contextText)
             || detectsLocalGitInspectionOperation(prompt: prompt, task: task, contextText: contextText)

@@ -23,6 +23,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     let templateHooksJSON: String
     let skillSnapshotsJSON: String
     let runtimePermissionGrantsJSON: String?
+    let resourceScope: TaskExecutionResourceScope?
 
     init(task: AgentTask) {
         id = task.id
@@ -43,6 +44,7 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         templateHooksJSON = task.templateHooksJSON
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
+        resourceScope = task.acceptedResourceScope
     }
 
     init(
@@ -63,7 +65,8 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         executionEnvironmentSnapshotJSON: String?,
         templateHooksJSON: String,
         skillSnapshotsJSON: String,
-        runtimePermissionGrantsJSON: String?
+        runtimePermissionGrantsJSON: String?,
+        resourceScope: TaskExecutionResourceScope? = nil
     ) {
         self.id = id
         self.model = model
@@ -83,5 +86,6 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.templateHooksJSON = templateHooksJSON
         self.skillSnapshotsJSON = skillSnapshotsJSON
         self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
+        self.resourceScope = resourceScope
     }
 }

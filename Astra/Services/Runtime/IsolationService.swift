@@ -55,7 +55,8 @@ enum IsolationService {
     /// Prepare the workspace according to the isolation strategy.
     /// Returns the actual working directory path to use for execution.
     static func prepare(task: AgentTask) async throws -> String {
-        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        let codeDir = task.acceptedResourceScope?.resources.first { $0.role == .isolationSource }?.path
+            ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory
         switch task.isolationStrategy {
         case .sameDirectory:
             return codeDir
@@ -221,12 +222,16 @@ enum IsolationService {
             .appendingPathComponent("WorkspaceCopies", isDirectory: true)
     }
 
-    private static func copyWorkspace(workspacePath: String, taskId: UUID) throws -> String {
-        let fm = FileManager.default
+    static func copyPath(workspacePath: String, taskId: UUID) -> String {
         let originalName = URL(fileURLWithPath: workspacePath).lastPathComponent
         let copyName = "\(originalName)-astra-\(taskId.uuidString.prefix(8).lowercased())"
+        return copyScratchRoot().appendingPathComponent(copyName, isDirectory: true).path
+    }
+
+    private static func copyWorkspace(workspacePath: String, taskId: UUID) throws -> String {
+        let fm = FileManager.default
         let scratchRoot = copyScratchRoot(fileManager: fm)
-        let copyPath = scratchRoot.appendingPathComponent(copyName, isDirectory: true).path
+        let copyPath = copyPath(workspacePath: workspacePath, taskId: taskId)
 
         AppLogger.audit(.isolationPrepared, category: "Isolation", fields: [
             "strategy": "copy",

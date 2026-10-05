@@ -633,6 +633,7 @@ enum ExecutionSandbox: Sendable {
         additionalWritablePaths: [String] = [],
         additionalReadablePaths: [String]? = nil,
         workspaceWritable: Bool = true,
+        resourceScope: TaskExecutionResourceScope? = nil,
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxDecision {
@@ -648,6 +649,7 @@ enum ExecutionSandbox: Sendable {
         let unavailable: (String) -> ExecutionSandboxDecision = { reason in
             blocksWhenUnavailable ? .failClosed(reason: reason) : .fallback(reason: reason)
         }
+        guard resourceScope?.isValid != false else { return .failClosed(reason: "invalid_execution_resource_scope") }
 
         guard let workspace = canonicalize(plan.currentDirectory), !workspace.isEmpty else {
             return unavailable("no_execution_path")
@@ -719,6 +721,7 @@ enum ExecutionSandbox: Sendable {
             writableRoots: roots
         )
         let hostControlBrokerSockets = hostControlBrokerSockets(plan: plan)
+        let scopeBoundary = ExecutionResourceScopeSandbox(scope: resourceScope)
         let profile = makeProfile(
             writableRootCount: roots.count,
             readableRootCount: readableRoots.count,
@@ -731,8 +734,8 @@ enum ExecutionSandbox: Sendable {
             allowNetwork: settings.allowNetwork,
             readScope: settings.readScope
         )
-        let arguments = makeArguments(
-            profile: profile,
+        let arguments = scopeBoundary.arguments + makeArguments(
+            profile: profile + scopeBoundary.profile,
             writableRoots: roots,
             readableRoots: readableRoots,
             readableMetadataRoots: readableMetadataRoots,
@@ -752,7 +755,7 @@ enum ExecutionSandbox: Sendable {
         )
         wrapped.executionSandboxBoundaryReceipt = ExecutionSandboxBoundaryReceipt(
             writableRoots: roots + ["/dev"],
-            writeDeniedRoots: protectedWriteDenyRoots,
+            writeDeniedRoots: protectedWriteDenyRoots + scopeBoundary.deniedRoots,
             readScope: settings.readScope,
             readableRoots: readableRoots + ["/dev"],
             readDeniedRoots: protectedReadRoots,

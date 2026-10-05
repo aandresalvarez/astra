@@ -365,7 +365,8 @@ enum AgentPromptBuilder {
     }
     private static func appendWorkspacePaths(for task: AgentTask, to sections: inout [PromptContextSection]) {
         let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
-        if let section = AgentPromptExecutionEnvironmentSection.section(for: task, codeDir: codeDir) { sections.append(section) }
+        sections += AgentPromptExecutionEnvironmentSection.sections(for: task, codeDir: codeDir)
+        guard task.acceptedResourceScope == nil else { return }
         guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
         if codeDir != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
             appendSection(
@@ -1459,7 +1460,9 @@ enum AgentPromptBuilder {
                 contextParts.append("Remote server: ssh \(conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias) — remote path: \(conn.remotePath)")
             }
 
-            if !ws.additionalPaths.isEmpty {
+            if let scope = task.acceptedResourceScope {
+                contextParts.append(scope.folderGuidance)
+            } else if !ws.additionalPaths.isEmpty {
                 let paths = WorkspacePathPresentation.descriptors(
                     primaryPath: ws.primaryPath,
                     additionalPaths: ws.additionalPaths

@@ -5,6 +5,17 @@ import ASTRAPersistence
 
 @MainActor
 enum AgentPromptExecutionEnvironmentSection {
+    static func sections(for task: AgentTask, codeDir: String) -> [PromptContextSection] {
+        var sections = section(for: task, codeDir: codeDir).map { [$0] } ?? []
+        if let scope = task.acceptedResourceScope {
+            sections.append(PromptContextSection(kind: .supportingContext, text: scope.folderGuidance,
+                sourcePointers: scope.resources.map {
+                    PromptContextSourcePointer(label: "accepted resource", target: $0.path)
+                }))
+        }
+        return sections
+    }
+
     static func section(for task: AgentTask, codeDir: String) -> PromptContextSection? {
         let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
         guard environment.isContainerized else { return nil }

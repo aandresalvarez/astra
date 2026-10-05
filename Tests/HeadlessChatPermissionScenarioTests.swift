@@ -843,7 +843,10 @@ extension HeadlessChatScenarioTests {
         let settingsURL = harness.workspaceURL
             .appendingPathComponent(".claude", isDirectory: true)
             .appendingPathComponent("settings.local.json")
-        let settingsData = try Data(contentsOf: settingsURL)
+        #expect(!FileManager.default.fileExists(atPath: settingsURL.path))
+        let argumentLines = args.components(separatedBy: .newlines)
+        let settingsIndex = try #require(argumentLines.firstIndex(of: "--settings"))
+        let settingsData = Data(argumentLines[settingsIndex + 1].utf8)
         let settingsJSON = try #require(JSONSerialization.jsonObject(with: settingsData) as? [String: Any])
         let permissions = try #require(settingsJSON["permissions"] as? [String: Any])
         let allow = try #require(permissions["allow"] as? [String])

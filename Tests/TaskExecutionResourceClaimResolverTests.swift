@@ -47,12 +47,12 @@ struct TaskExecutionResourceClaimResolverTests {
 
         let claims = TaskExecutionResourceClaimResolver.claims(for: task)
 
-        #expect(claims.map(\.key) == [
+        #expect(Array(claims.prefix(3).map(\.key)) == [
             "/tmp/astra-claim-primary",
             "/tmp/astra-claim-shared",
             "/tmp/astra-claim-secondary"
         ])
-        #expect(claims.allSatisfy { $0.kind == .workspace && $0.access == .exclusive })
+        #expect(claims.allSatisfy { ($0.kind == .workspace || $0.kind == .taskStorage) && $0.access == .exclusive })
 
         let otherWorkspace = Workspace(
             name: "Other multi-root",
@@ -241,7 +241,7 @@ struct TaskExecutionResourceClaimResolverTests {
         #expect(secondClaim.access == .shared)
     }
 
-    @Test("Template-hook injection claims the settings-owning workspace exclusively")
+    @Test("Run-scoped hooks do not upgrade read-only execution")
     func templateHookInjectionRequiresExclusiveWorkspaceClaim() throws {
         let workspace = Workspace(name: "Hooks", primaryPath: "/tmp/astra-claim-hooks")
         let task = AgentTask(
@@ -257,15 +257,13 @@ struct TaskExecutionResourceClaimResolverTests {
         task.templateHooksJSON = "{}"
         #expect(TaskExecutionResourceClaimResolver.claims(for: task).first?.access == .shared)
 
-        // But ASTRA rewrites `.claude/settings.local.json` for real hooks, so
-        // two of these must never run concurrently in one workspace.
         task.templateHooksJSON = #"{"PreToolUse":[{"matcher":"Bash","hooks":[]}]}"#
         let claims = TaskExecutionResourceClaimResolver.claims(for: task)
-        #expect(claims.allSatisfy { $0.access == .exclusive })
+        #expect(claims.first?.access == .shared)
         #expect(claims.contains { $0.kind == .workspace && $0.key == "/tmp/astra-claim-hooks" })
     }
 
-    @Test("A pinned execution root still claims the hook-injected workspace root")
+    @Test("Pinned hooks no longer claim the shared workspace root")
     func templateHookInjectionClaimsWorkspaceRootFromPinnedRoot() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-claim-hook-roots-\(UUID().uuidString)", isDirectory: true)
@@ -288,18 +286,16 @@ struct TaskExecutionResourceClaimResolverTests {
         let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
 
-        // The pinned roots stay first (and distinct), but hook injection targets
-        // the workspace root, so both tasks must claim it exclusively.
         #expect(firstClaims.first?.key == firstRoot.standardizedFileURL.path)
         #expect(secondClaims.first?.key == secondRoot.standardizedFileURL.path)
         for claims in [firstClaims, secondClaims] {
-            #expect(claims.contains {
+            #expect(!claims.contains {
                 $0.kind == .workspace
                     && $0.key == workspaceRoot.standardizedFileURL.path
                     && $0.access == .exclusive
             })
         }
-        #expect(!TaskExecutionResourceBroker.canAcquire(
+        #expect(TaskExecutionResourceBroker.canAcquire(
             lease(for: secondClaims, taskID: second.id),
             active: lease(for: firstClaims, taskID: first.id)
         ))
@@ -467,12 +463,9 @@ struct TaskExecutionResourceClaimResolverTests {
         let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
 
-        // Both mutate their own worktree, so both are exclusive on the
-        // workspace — but neither reaches external Git metadata, so neither
-        // receives the read-write grant that would make them race on it.
-        #expect(firstClaims.allSatisfy { $0.access == .exclusive })
-        #expect(!firstClaims.contains { $0.kind == .gitCommonDirectory })
-        #expect(!secondClaims.contains { $0.kind == .gitCommonDirectory })
+        #expect(firstClaims.filter { $0.kind == .workspace }.allSatisfy { $0.access == .exclusive })
+        #expect(firstClaims.contains { $0.kind == .gitCommonDirectory && $0.access == .shared })
+        #expect(secondClaims.contains { $0.kind == .gitCommonDirectory && $0.access == .shared })
         #expect(TaskExecutionResourceBroker.canAcquire(
             lease(for: secondClaims, taskID: second.id),
             active: lease(for: firstClaims, taskID: first.id)

@@ -147,6 +147,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var controlPlaneResources: [RuntimeControlPlaneResource]
     var diagnostics: [RuntimeResourceDiagnostic]
     var gitCredential: RuntimeGitCredentialResource?
+    var resourceScope: TaskExecutionResourceScope?
 
     init(
         version: Int = TaskLaunchResourcePlan.currentVersion,
@@ -169,7 +170,8 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         providerRequirements: [RuntimeProviderRequirement] = [],
         controlPlaneResources: [RuntimeControlPlaneResource] = [],
         diagnostics: [RuntimeResourceDiagnostic] = [],
-        gitCredential: RuntimeGitCredentialResource? = nil
+        gitCredential: RuntimeGitCredentialResource? = nil,
+        resourceScope: TaskExecutionResourceScope? = nil
     ) {
         self.version = version
         self.taskID = taskID
@@ -204,6 +206,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         self.controlPlaneResources = controlPlaneResources
         self.diagnostics = diagnostics
         self.gitCredential = gitCredential
+        self.resourceScope = resourceScope
     }
 
     var hostReadablePaths: [String] {
@@ -230,11 +233,19 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
 
     var hostProtectedWriteDenyPaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
-            grant.access == .read && grant.source != .workspace ? grant.path : nil
+            guard grant.access == .read else { return nil }
+            if grant.source != .workspace { return grant.path }
+            guard let scope = resourceScope,
+                  scope.resources.contains(where: {
+                      $0.access == .exclusive && TaskExecutionResourceScope.contains(
+                        $0.canonicalPath, TaskExecutionResourceScope.canonicalPath(grant.path))
+                  }) else { return nil }
+            return grant.path
         })
     }
 
     var workspaceAccess: TaskExecutionResourceAccess {
+        if let scope = resourceScope { return scope.executionAccess }
         let workspaceGrants = hostPathGrants.filter { $0.source == .workspace }
         guard !workspaceGrants.isEmpty,
               workspaceGrants.allSatisfy({ $0.access == .read }) else {
@@ -244,7 +255,9 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     }
 
     var requiresSharedWorkspaceBoundary: Bool {
-        workspaceAccess == .shared
+        workspaceAccess == .shared || resourceScope?.replacedCheckoutPaths.isEmpty == false || resourceScope?.resources.contains {
+            $0.access == .shared && $0.role == .gitMetadata
+        } == true
     }
 
     var readOnlyResourceContract: ReadOnlyResourceContract {
@@ -368,6 +381,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         case controlPlaneResources
         case diagnostics
         case gitCredential
+        case resourceScope
     }
 
     init(from decoder: Decoder) throws {
@@ -409,6 +423,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         controlPlaneResources = try container.decodeIfPresent([RuntimeControlPlaneResource].self, forKey: .controlPlaneResources) ?? []
         diagnostics = try container.decodeIfPresent([RuntimeResourceDiagnostic].self, forKey: .diagnostics) ?? []
         gitCredential = try container.decodeIfPresent(RuntimeGitCredentialResource.self, forKey: .gitCredential)
+        resourceScope = try container.decodeIfPresent(TaskExecutionResourceScope.self, forKey: .resourceScope)
     }
 
     private static func defaultWorkspaceCommandPlacement(

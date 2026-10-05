@@ -414,7 +414,8 @@ final class AgentRuntimeWorker {
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { return }
-        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
+        let executionWorkspaceAccess = launchTask.acceptedResourceScope?.executionAccess
+            ?? executionPolicy.workspaceAccessOverride
             ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
@@ -508,7 +509,8 @@ final class AgentRuntimeWorker {
             runtime: selectedRuntime
         )
 
-        let codeDir = TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
+        let codeDir = launchTask.acceptedResourceScope?.resources.first { $0.role == .isolationSource }?.path
+            ?? TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
         if TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: turnBegin.request,
             task: launchTask

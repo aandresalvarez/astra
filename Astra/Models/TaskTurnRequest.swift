@@ -32,10 +32,12 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// Optional for backward compatibility with V16 requests written before
     /// turn-scoped capability admission was introduced.
     public let turnIntentSnapshot: TaskTurnIntentSnapshot?
+    public let resourceScope: TaskExecutionResourceScope?
 
     public init(
         task: AgentTask,
-        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil
+        turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
+        resourceScope: TaskExecutionResourceScope? = nil
     ) {
         version = 1
         reasoningEffort = task.reasoningEffort
@@ -53,11 +55,13 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
         self.turnIntentSnapshot = turnIntentSnapshot
+        self.resourceScope = resourceScope
     }
 }
 
 public enum TaskExecutionResourceKind: String, Codable, CaseIterable, Sendable {
     case workspace
+    case taskStorage = "task_storage"
     case gitCommonDirectory = "git_common_directory"
     case browserSession = "browser_session"
     case docker
@@ -180,6 +184,7 @@ public final class TaskTurnRequest {
         sequence: Int,
         kind: TaskExecutionRequestKind = .followUp,
         resourceClaims: [TaskExecutionResourceClaim] = [],
+        resourceScope: TaskExecutionResourceScope? = nil,
         turnIntentSnapshot: TaskTurnIntentSnapshot? = nil,
         state: TaskTurnRequestState = .waitingForWorker,
         submittedAt: Date = Date()
@@ -207,9 +212,10 @@ public final class TaskTurnRequest {
         self.tokenBudgetSnapshot = task.tokenBudget
         self.executionPolicySnapshotJSON = Self.encode(TaskExecutionPolicySnapshotV1(
             task: task,
-            turnIntentSnapshot: turnIntentSnapshot
+            turnIntentSnapshot: turnIntentSnapshot,
+            resourceScope: resourceScope
         ))
-        self.resourceClaimsJSON = Self.encode(resourceClaims) ?? "[]"
+        self.resourceClaimsJSON = Self.encode(resourceScope?.claims ?? resourceClaims) ?? "[]"
     }
 
     /// Import the immutable owner ledger without submitting or admitting work.
@@ -251,7 +257,8 @@ public final class TaskTurnRequest {
     }
 
     public var resourceClaims: [TaskExecutionResourceClaim] {
-        Self.decode([TaskExecutionResourceClaim].self, from: resourceClaimsJSON) ?? []
+        if let scope = executionPolicySnapshot?.resourceScope { return scope.claims }
+        return Self.decode([TaskExecutionResourceClaim].self, from: resourceClaimsJSON) ?? []
     }
 
     public var snapshot: TaskTurnRequestSnapshot {
