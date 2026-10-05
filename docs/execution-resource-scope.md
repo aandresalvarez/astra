@@ -7,6 +7,12 @@ scope, not that independently decodable column. `AgentTask.acceptedResourceScope
 is transient and populated only on detached launch views. Editing the live task
 does not edit an accepted scope.
 
+Run-bound validation, inferred discovery, plan settlement and session persistence
+require an immutable `TaskExecutionContext` derived from that authority. Durable
+settlement checks checkpoint/task/request ownership and scope equality before
+filesystem effects. A missing or malformed scope cannot select legacy execution.
+Compatibility overloads for historical unit fixtures live in tests, not production.
+
 Version 3 records original paths, canonical identities, access and provenance:
 execution root, additional folder, task storage, input, Git metadata, environment
 mount, and copy-isolation source. Admission, native directory arguments, runtime
@@ -61,6 +67,19 @@ waits and before folder preparation. Workspace drift fails the retained request
 with resubmission guidance, without exporting task state into the unaccepted
 workspace or acquiring its resources.
 
+The first accepted request records `task.storage.bound` alongside its request.
+`TaskWorkspaceAccess` derives every task-owned folder from this durable binding;
+subsequent workspace edits do not move context state, evidence, session history,
+handoffs or output. Once execution starts, it remains on the accepted folders
+through validation and restart recovery. Future submissions may select the edited
+execution workspace while retaining the existing task-storage binding. Invalid
+bindings fail explicitly; they never fall back to a live workspace path.
+Settlement saves database events separately from whole-workspace mirror exports.
+Conversation forks do not inherit the source's storage authority. File imports
+quarantine bindings alongside runtime authority; trusted local recovery retains
+them. Moving task files is an explicit import/migration operation, not a side
+effect of editing the workspace path.
+
 Copilot's native directory arguments include accepted read-only additional
 folders, while the outer boundary still denies writes. Single-file inputs are
 never widened to their parent directories, and replaced source checkouts remain
@@ -73,6 +92,10 @@ Prompt inputs distinguish prose, accepted filesystem paths, and paths unavailabl
 at acceptance. A missing path becoming available later does not authorize a new
 read. Ordinary accepted files are read at their accepted identities, not stored
 as immutable content snapshots.
+Attachment arguments and the typed attachment ledger establish explicit path
+identity. Ambiguous nonexistent strings such as `/health` and `~5 minutes` stay
+verbatim text. Existing files in legacy string inputs retain compatibility, but
+captured text is never promoted to a file on a later launch.
 
 ## Git and hooks
 
@@ -81,7 +104,7 @@ Git metadata includes both the common directory and each selected worktree's
 their common directory, including native write denial and read-only Docker
 overlays for inspection. Copy-isolated linked pointers remain read-only alongside
 their external metadata.
-Copy isolation from a linked worktree cannot admit Git writes: mutation intent,
+Copy isolation from a linked worktree cannot admit Git writes: a typed requirement,
 an explicit write declaration, or a workflow requiring writes is rejected at
 submission with guidance to use a regular checkout or a non-copy worktree.
 Scope validation also rejects older inconsistent values that advertise Git
@@ -93,7 +116,7 @@ protects metadata from writes and Docker overlays metadata read-only under a
 writable checkout mount. Native credential routing remains separate: GitHub
 host-control routing does not implicitly expose native network credentials.
 
-Accepted Git mutation intent, branch preparation and test validation conservatively
+Explicit Git write requirements, branch preparation and test validation conservatively
 claim shared metadata exclusively. This is not authorization to run a command:
 the existing permission policy still applies. Arbitrary provider Git mutations
 are **not** operation-leased yet. They retain their turn-long exclusive lease;
@@ -101,11 +124,15 @@ do not relax it without a service boundary that also prevents uncoordinated
 provider writes. Runtime context cannot upgrade a metadata reader into a writer;
 submit a new turn with the required operation.
 
-Approved-plan requests derive Git intent from the selected executable step in
+Approved-plan requests derive Git requirements from the selected executable step in
 next-step mode, or the full approved plan in full-plan mode. Later steps do not
 upgrade a next-step reader. Scoped execution uses that accepted plan payload,
-not a subsequently edited live plan; explicit Git declarations and preserved
-permission-continuation scopes still take precedence.
+not a subsequently edited live plan, including final proof and required outputs.
+Only progress status is projected onto the accepted plan during settlement.
+Steps carry a Codable `gitAccessRequirement` (`readOnly` or `readWrite`), displayed
+as **Git writes** in the plan's permission summary and editable in its Permissions
+menu before approval. A read-only constraint conflicting with a write-requiring
+plan is rejected rather than silently weakening either requirement.
 
 `ASTRA_GIT_ACCESS=read_only` or `ASTRA_GIT_ACCESS=read_write` explicitly selects
 the captured Git requirement. Invalid, conflicting, or workflow-incompatible
@@ -113,14 +140,12 @@ declarations are rejected. A write declaration requires write-capable execution;
 branch preparation and test validation retain their conservative mutation
 requirement.
 
-For unstructured turns, compatibility hints recognize commands case-insensitively and common commit
-instructions, while distinguishing inspection such as `git branch --show-current`,
-`git config --get`, and `git worktree list`. Hints are not a complete shell parser
-and apply negation within an instruction clause, not to unrelated positive
-commands elsewhere in the same line.
-They are not a command permission. The typed captured requirement owns subsequent launches;
-when an operation was not admitted, request a new turn with the explicit write
-declaration rather than retrying or upgrading the current lease.
+Prose and regex hints no longer grant Git writes. For an unstructured turn that
+needs mutations, set `ASTRA_GIT_ACCESS=read_write`, or approve a plan with the
+typed Git write requirement. Wording such as "Without delay, git commit" and
+"Do not git commit" cannot change the permission decision. Existing accepted
+requests retain their already captured requirement; new operations require a
+new admission, not an in-place lease upgrade.
 
 Claude receives template hooks and subagent permissions through its launch
 `--settings` JSON, on both initial and continuation launches. ASTRA no longer
@@ -149,11 +174,18 @@ Static artifact, text-content, and browser-evidence assertions share an accepted
 storage projection: captured task storage first, then the accepted execution
 root. Live workspace edits cannot redirect their reads or evidence writes.
 Symlink escapes are rejected, and browser evidence read/write failures are
-reported rather than converted to passing assertions. If storage has drifted,
-the live-task context mirror refresh is deferred with an audit warning; durable
-validation and corrective-work events remain on the original task.
-Tool-restricted AI verification retains its existing validation contract; these
-boundaries are not a new browser/provider-state isolation guarantee.
+reported rather than converted to passing assertions. Inferred validation uses
+the same context for discovery and evaluation, and only the contract owns its
+final refresh. Invalid authority is a failed evaluation, never `notRequired`.
+
+Scoped verifier assertions and AI utility checks currently fail before launching
+a child provider: the utility adapters cannot enforce inherited filesystem read
+authority. A Read/Glob/Grep allowlist or an audit-only read sandbox is not adequate
+confinement. Automatic objective-assessment utility launches are likewise deferred
+with a warning for scoped runs. Use deterministic assertions or supplied evidence.
+Legacy unscoped utility behavior is unchanged. Main-provider read sandbox settings
+are not redefined here; this is not a new whole-host confidentiality or
+browser/provider-state isolation guarantee.
 
 ## Continuation, drift and compatibility
 
@@ -170,8 +202,9 @@ with a `legacy_permission_request_scope_captured` audit event. An existing reque
 with an absent or invalid scope is never reconstructed this way.
 
 Live additional-folder edits do not alter the frozen scope. Moving the owning
-workspace, retargeting a selected symlink, or launching at a different execution
-root requires resubmission. A missing pinned root never falls back to the source
+workspace while waiting for admission, retargeting a selected symlink, or launching
+at a different execution root requires resubmission. Editing a workspace during an
+active run does not redirect that run's accepted folders. A missing pinned root never falls back to the source
 checkout for an accepted request. Copy isolation claims its source and
 deterministically selected destination before copying. Every shared resource
 participates in read-only boundary selection and denial generation, including

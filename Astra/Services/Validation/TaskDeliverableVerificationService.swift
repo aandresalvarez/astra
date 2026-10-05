@@ -31,18 +31,25 @@ enum TaskDeliverableVerificationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext? = nil,
-        workspacePath: String? = nil,
+        executionContext: TaskExecutionContext,
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
+        do { try executionContext.validate(task: task) }
+        catch {
+            AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id,
+                fields: ["reason": "invalid_deliverable_context", "error": error.localizedDescription], level: .error)
+            return result(profile: .notRequired, level: .failed, status: "failed", canComplete: false,
+                requiresHumanReview: true, summary: error.localizedDescription, checks: [], evidencePaths: [], run: run)
+        }
         let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
         let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(
             task,
             requiredOutputFilenames: requiredFilenames
         )
         let discoveredFiles = TaskOutputDiscovery.files(
-            for: task,
+            taskFolder: executionContext.taskFolder,
             run: run,
-            workspacePath: workspacePath
+            workspacePath: executionContext.workingDirectory
         )
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             discoveredFiles,
@@ -109,12 +116,12 @@ enum TaskDeliverableVerificationService {
         }
 
         let hostFileAccess = HostFileAccessBroker()
-        let taskAccess = TaskWorkspaceAccess(task: task)
-        let artifactRoots = [taskAccess.taskFolder, workspacePath ?? taskAccess.effectiveWorkspacePath]
+        let artifactRoots = [executionContext.taskFolder, executionContext.workingDirectory]
             .filter { !$0.isEmpty }
         for file in files.prefix(12) {
+            guard executionContext.isValid else { break }
             let artifactRoot = artifactRoot(for: file, allowedRoots: artifactRoots)
-                ?? URL(fileURLWithPath: taskAccess.taskFolder, isDirectory: true)
+                ?? URL(fileURLWithPath: executionContext.taskFolder, isDirectory: true)
             checks.append(contentsOf: await checksForFile(
                 file,
                 environment: environment,
@@ -123,6 +130,10 @@ enum TaskDeliverableVerificationService {
             ))
         }
 
+        if !executionContext.isValid {
+            checks.append(TaskDeliverableCheck(id: "authority.scope", title: "Execution authority", status: .failed,
+                summary: "The accepted resource identities changed during verification.", path: nil))
+        }
         let hasFailure = checks.contains { $0.status == .failed }
         let hasSyntaxPass = checks.contains { $0.id.contains("syntax") && $0.status == .passed }
         let needsReview = checks.contains { $0.status == .warning || $0.status == .skipped }

@@ -33,17 +33,26 @@ public enum TaskOutputDiscovery {
         workspacePath: String? = nil,
         fileManager: FileManager = .default
     ) -> [TaskOutputDiscoveredFile] {
-        var discovered = files(for: task, fileManager: fileManager)
+        let access = TaskWorkspaceAccess(task: task)
+        return files(taskFolder: access.taskFolder, run: run,
+            workspacePath: workspacePath ?? access.effectiveWorkspacePath, fileManager: fileManager)
+    }
+
+    @MainActor
+    public static func files(
+        taskFolder: String, run: TaskRun?, workspacePath: String,
+        fileManager: FileManager = .default
+    ) -> [TaskOutputDiscoveredFile] {
+        var discovered = files(in: taskFolder, fileManager: fileManager)
         guard let run else { return discovered }
 
         var seen = Set(discovered.map { URL(fileURLWithPath: $0.path).standardizedFileURL.path })
-        let taskAccess = TaskWorkspaceAccess(task: task)
-        let executionPath = workspacePath ?? taskAccess.effectiveWorkspacePath
+        let executionPath = workspacePath
 
         // Resolved once for the loop: `discoveredRunFile` compares each path
         // against both roots in standardized *and* symlink-resolved form, and
         // re-resolving the roots per file change is pure repetition.
-        let roots = RunFileRoots(taskFolder: taskAccess.taskFolder, workspacePath: executionPath)
+        let roots = RunFileRoots(taskFolder: taskFolder, workspacePath: executionPath)
         for change in run.fileChanges {
             guard let file = discoveredRunFile(
                 path: change.path,
@@ -55,7 +64,7 @@ public enum TaskOutputDiscovery {
         }
         let workspaceFiles = TaskOutputWorkspaceDiscovery.filesChangedDuringRun(
             workspacePath: executionPath,
-            taskFolder: taskAccess.taskFolder,
+            taskFolder: taskFolder,
             run: run,
             fileManager: fileManager
         )

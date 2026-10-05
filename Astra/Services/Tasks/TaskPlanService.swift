@@ -487,7 +487,8 @@ extension TaskPlanService {
                 risk: step.risk,
                 likelyTools: likelyTools,
                 doneSignal: doneSignal,
-                outputs: outputs
+                outputs: outputs,
+                gitAccessRequirement: step.gitAccessRequirement
             ))
         }
 

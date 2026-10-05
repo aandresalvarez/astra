@@ -1867,6 +1867,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/RuntimeTurnOutcomeService.swift": ["run"],
             "Astra/Services/Runtime/RuntimeTurnSettlementService.swift": ["run"],
             "Astra/Services/Runtime/ApprovedPlanRuntimeSettlement.swift": ["run?"],
+            "Astra/Services/Runtime/ApprovedPlanSettlementProjection.swift": ["result.steps[index]"],
             "Astra/Models/AgentTaskForkService.swift": ["newRun"],
             "Astra/Services/Tasks/DatabaseQueryService.swift": ["self"],
             "Astra/Services/Tasks/TaskPlanService.swift": ["plan.steps[index]", "merged.steps[index]"],

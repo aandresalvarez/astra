@@ -51,15 +51,21 @@ enum PlanStepCheckpointVerifier {
         workspacePath: String? = nil,
         fileManager: FileManager = .default
     ) -> PlanStepCheckpointOutcome {
-        let access = TaskWorkspaceAccess(task: task)
+        verify(step: step, plan: plan, task: task,
+            executionContext: .legacy(task: task, workingDirectory: workspacePath), fileManager: fileManager)
+    }
+
+    @MainActor
+    static func verify(step: TaskPlanPayloadStep, plan: TaskPlanPayload, task: AgentTask,
+        executionContext: TaskExecutionContext, fileManager: FileManager = .default) -> PlanStepCheckpointOutcome {
         return verify(
             step: step,
             plan: plan,
-            taskFolder: access.taskFolder,
+            taskFolder: executionContext.taskFolder,
             // The provider executes in the pinned worktree (or resolved working
             // path), not necessarily the workspace primary path — verify where
             // the work actually happened.
-            workspacePath: workspacePath ?? access.codeWorkingDirectory,
+            workspacePath: executionContext.workingDirectory,
             fileManager: fileManager
         )
     }
@@ -121,10 +127,13 @@ enum PlanStepCheckpointVerifier {
         plan: TaskPlanPayload,
         task: AgentTask,
         run: TaskRun?,
-        workspacePath: String? = nil,
+        executionContext: TaskExecutionContext,
         modelContext: ModelContext
     ) -> String? {
-        let unverified = verifyAllSteps(plan: plan, task: task, workspacePath: workspacePath)
+        let unverified = plan.steps.filter { $0.status != .skipped }.compactMap { step -> (step: TaskPlanPayloadStep, missing: [String])? in
+            let outcome = verify(step: step, plan: plan, task: task, executionContext: executionContext)
+            return outcome.missingRequiredPaths.isEmpty ? nil : (step, outcome.missingRequiredPaths)
+        }
         guard !unverified.isEmpty else { return nil }
         for entry in unverified {
             _ = recordCheckpointBlock(

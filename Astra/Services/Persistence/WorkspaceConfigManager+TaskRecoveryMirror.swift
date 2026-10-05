@@ -13,7 +13,8 @@ extension WorkspaceConfigManager {
     /// Execution evidence is not presentation text. Keep its structured payload
     /// and source identities intact even when display history is bounded.
     static func isTaskRecoveryEvent(_ type: String) -> Bool {
-        ["runtime.", "execution.request.", "permission.", "plan.", "validation."].contains { type.hasPrefix($0) }
+        type == TaskStorageBinding.eventType
+            || ["runtime.", "execution.request.", "permission.", "plan.", "validation."].contains { type.hasPrefix($0) }
     }
 
     /// Recovery authority is explicit and independent of schedule enablement.
@@ -25,7 +26,8 @@ extension WorkspaceConfigManager {
 
     static func importedRecoveryEventType(_ type: String, trust: TaskRecoveryImportTrustPolicy) -> String {
         guard trust == .quarantine,
-              type.hasPrefix("runtime.") || type == "permission.live_approval.committed" else { return type }
+              type.hasPrefix("runtime.") || type == TaskStorageBinding.eventType
+                || type == "permission.live_approval.committed" else { return type }
         return "imported." + type
     }
 

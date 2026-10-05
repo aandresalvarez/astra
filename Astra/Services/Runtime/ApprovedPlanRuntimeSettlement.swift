@@ -15,12 +15,12 @@ enum ApprovedPlanRuntimeSettlement {
         _ step: TaskPlanPayloadStep,
         plan: TaskPlanPayload,
         task: AgentTask,
-        workspacePath: String? = nil,
+        executionContext: TaskExecutionContext,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
-        resourceScope: TaskExecutionResourceScope? = nil,
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
+        if executionContext.prepareValidation(task: task, modelContext: modelContext) != nil { return false }
         let stateAfterRun = TaskPlanService.reconstruct(for: task)
         let currentStepStatus = stateAfterRun.plan?.steps.first(where: { $0.id == step.id })?.status
         let lastRun = task.runs.sorted { $0.startedAt < $1.startedAt }.last
@@ -35,7 +35,7 @@ enum ApprovedPlanRuntimeSettlement {
             step: step,
             plan: plan,
             task: task,
-            workspacePath: workspacePath
+            executionContext: executionContext
         )
         let latestBlockIsCheckpointImposed = PlanStepCheckpointVerifier.latestBlockIsCheckpointImposed(
             task: task,
@@ -94,7 +94,7 @@ enum ApprovedPlanRuntimeSettlement {
             ))
         }
 
-        let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        let refreshedPlan = settledPlan(plan, task: task)
         if let blockedStep = refreshedPlan.steps.first(where: { $0.id == step.id && $0.status == .blocked }) {
             pauseApprovedPlanForUser(
                 task: task,
@@ -118,9 +118,8 @@ enum ApprovedPlanRuntimeSettlement {
             guard await validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: refreshedPlan,
-                workspacePath: workspacePath,
+                executionContext: executionContext,
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
-                resourceScope: resourceScope,
                 modelContext: modelContext, verifierRuntime: verifierRuntime
             ) else {
                 return false
@@ -136,13 +135,13 @@ enum ApprovedPlanRuntimeSettlement {
     static func finalizeApprovedFullPlan(
         _ plan: TaskPlanPayload,
         task: AgentTask,
-        workspacePath: String? = nil,
+        executionContext: TaskExecutionContext,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
-        resourceScope: TaskExecutionResourceScope? = nil,
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
-        let refreshedPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        if executionContext.prepareValidation(task: task, modelContext: modelContext) != nil { return false }
+        let refreshedPlan = settledPlan(plan, task: task)
         if let blockedStep = refreshedPlan.steps.first(where: { $0.status == .blocked }) {
             pauseApprovedPlanForUser(
                 task: task,
@@ -162,7 +161,7 @@ enum ApprovedPlanRuntimeSettlement {
             plan: refreshedPlan,
             task: task,
             run: lastRun,
-            workspacePath: workspacePath,
+            executionContext: executionContext,
             modelContext: modelContext
         ) {
             pauseApprovedPlanForUser(task: task, modelContext: modelContext, message: message, run: lastRun)
@@ -172,9 +171,8 @@ enum ApprovedPlanRuntimeSettlement {
         guard await validateApprovedPlanContractForFinalCompletion(
             task: task,
             plan: refreshedPlan,
-            workspacePath: workspacePath,
+            executionContext: executionContext,
             sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
-            resourceScope: resourceScope,
             modelContext: modelContext, verifierRuntime: verifierRuntime
         ) else {
             return false
@@ -187,9 +185,8 @@ enum ApprovedPlanRuntimeSettlement {
     static func validateApprovedPlanContractForFinalCompletion(
         task: AgentTask,
         plan: TaskPlanPayload,
-        workspacePath: String? = nil,
+        executionContext: TaskExecutionContext,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
-        resourceScope: TaskExecutionResourceScope? = nil,
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
@@ -198,12 +195,11 @@ enum ApprovedPlanRuntimeSettlement {
             plan: plan,
             run: task.runs.sorted { $0.startedAt < $1.startedAt }.last,
             modelContext: modelContext,
-            workspacePath: workspacePath,
+            executionContext: executionContext,
             verifierRuntime: verifierRuntime,
             commandRunner: ShellValidationCommandRunner(
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
-            ),
-            resourceScope: resourceScope
+            )
         )
         let decision = TaskCompletionPolicy.decide(validationContract: contractEvaluation)
         guard decision.canComplete else {

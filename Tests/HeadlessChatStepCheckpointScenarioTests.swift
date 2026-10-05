@@ -278,7 +278,8 @@ extension HeadlessChatScenarioTests {
             task: rejectedTask,
             plan: plan,
             worker: worker,
-            executionRequestID: rejectedRequest.id
+            executionRequestID: rejectedRequest.id,
+            executionPolicy: .default.withLaunchSnapshot(try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: rejectedRequest, from: rejectedTask)))
         )
 
         // report.md never appeared, so the checkpoint rejected a run the
@@ -296,7 +297,8 @@ extension HeadlessChatScenarioTests {
             task: acceptedTask,
             plan: plan,
             worker: worker,
-            executionRequestID: acceptedRequest.id
+            executionRequestID: acceptedRequest.id,
+            executionPolicy: .default.withLaunchSnapshot(try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: acceptedRequest, from: acceptedTask)))
         )
 
         // Deferring terminalization must not strand the accepted turn active.
@@ -312,6 +314,7 @@ extension HeadlessChatScenarioTests {
             messageEventID: event.id,
             sequence: 1,
             kind: .planStep,
+            resourceScope: TaskExecutionResourceScopeResolver.resolve(task: task),
             state: .admitted
         )
         context.insert(request)

@@ -75,7 +75,7 @@ struct TaskExecutionResourceScopeTests {
         #expect(try fixture.git(["--no-optional-locks", "status", "--porcelain"], at: fixture.first).isEmpty)
 
         let mutating = fixture.task(root: fixture.second)
-        let mutationScope = TaskExecutionResourceScopeResolver.resolve(task: mutating, acceptedTurn: "git commit the fix")
+        let mutationScope = TaskExecutionResourceScopeResolver.resolve(task: mutating, gitAccessRequirement: .readWrite)
         #expect(conflicts(task, try #require(task.acceptedResourceScope), mutating, mutationScope))
     }
 
@@ -142,7 +142,7 @@ struct TaskExecutionResourceScopeTests {
         let injected = fixture.root.appendingPathComponent("injected.txt")
         try "accepted-content".write(to: accepted, atomically: true, encoding: .utf8)
         task.inputs = ["Keep this prose", accepted.path, late.path]
-        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task, attachmentPaths: [late.path])
         let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceScope: scope)
         try "late-content".write(to: late, atomically: true, encoding: .utf8)
         try "injected-content".write(to: injected, atomically: true, encoding: .utf8)
@@ -215,7 +215,7 @@ struct TaskExecutionResourceScopeTests {
         #expect(scope.promptInputs.contains { $0.value == "preserved prose" && $0.kind == .text })
     }
 
-    @Test("Git requirements preserve explicit declarations and classify common instructions")
+    @Test("Git requirements are explicit and independent of prose or negation")
     func gitRequirements() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -227,8 +227,10 @@ struct TaskExecutionResourceScopeTests {
                             "Do not git push, but commit your changes",
                             "git commit the changes without git push",
                             "git commit the changes. Do not git push",
-                            "Avoid git reset; then git -C '/tmp/a.b' commit -m done"] {
-            let scope = TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction)
+                            "Avoid git reset; then git -C '/tmp/a.b' commit -m done",
+                            "Without delay, git commit the changes", "Without further changes, git push"] {
+            #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction).gitAccess == .readOnly)
+            let scope = TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction, gitAccessRequirement: .readWrite)
             #expect(scope.gitAccess == .readWrite)
             #expect(scope.resources.contains { $0.role == .gitMetadata && $0.access == .exclusive })
         }
@@ -275,7 +277,7 @@ struct TaskExecutionResourceScopeTests {
         context.insert(fixture.workspace)
         context.insert(task)
         for instruction in ["commit your changes", "GIT COMMIT -m done"] {
-            #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction).gitAccess == .invalid)
+            #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction, gitAccessRequirement: .readWrite).gitAccess == .invalid)
         }
         task.constraints = ["ASTRA_GIT_ACCESS=read_write"]
         guard case .failure(.persistenceFailed(let message)) = ExecutionRequestSubmissionService.submitInitial(
@@ -338,7 +340,7 @@ struct TaskExecutionResourceScopeTests {
         #expect(plan.requiresSharedWorkspaceBoundary)
     }
 
-    @Test("Approved plans capture Git intent from the selected step or the full plan",
+    @Test("Approved plans capture typed Git requirements from the selected step or the full plan",
           arguments: [TaskPlanPayloadStepStatus.pending, .running, .blocked, .done, .skipped])
     func approvedPlanGitIntent(firstStatus: TaskPlanPayloadStepStatus) throws {
         let fixture = try Fixture()
@@ -349,7 +351,7 @@ struct TaskExecutionResourceScopeTests {
         context.insert(fixture.workspace)
         let plan = TaskPlanPayload(title: "Update parser", goal: "Improve parsing", steps: [
             .init(id: "inspect", title: "Inspect", detail: "git status", status: firstStatus),
-            .init(id: "commit", title: "Save work", detail: "git commit -am 'Fix parser'")
+            .init(id: "commit", title: "Save work", detail: "git commit -am 'Fix parser'", gitAccessRequirement: .readWrite)
         ])
         for mode in [TaskPlanExecutionMode.nextStep, .fullPlan] {
             let task = fixture.task(root: fixture.first)
@@ -373,10 +375,11 @@ struct TaskExecutionResourceScopeTests {
         let task = fixture.task(root: fixture.first)
         task.constraints = ["ASTRA_GIT_ACCESS=read_only"]
         context.insert(task)
-        let submission = try ExecutionRequestSubmissionService.submitPlan(plan: plan, mode: .fullPlan,
-            mutation: .existingTask, for: task, into: context).get()
-        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
-        #expect(request.executionPolicySnapshot?.resourceScope?.gitAccess == .readOnly)
+        guard case .failure = ExecutionRequestSubmissionService.submitPlan(plan: plan, mode: .fullPlan,
+            mutation: .existingTask, for: task, into: context) else {
+            Issue.record("A plan requiring Git writes overrode an explicit read-only constraint")
+            return
+        }
     }
 
     @Test("Copilot exposes accepted read-only folders without widening file or write grants")

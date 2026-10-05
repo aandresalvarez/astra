@@ -833,13 +833,13 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private func permissionSummary(for step: TaskPlanStep) -> String {
-        guard !step.likelyTools.isEmpty else { return "Needs: none" }
-        return "Needs: \(step.likelyTools.joined(separator: ", "))"
+        let labels = step.likelyTools + (step.gitAccessRequirement == .readWrite ? ["Git writes"] : [])
+        return labels.isEmpty ? "Needs: none" : "Needs: \(labels.joined(separator: ", "))"
     }
 
     private func toolSummary(for step: TaskPlanStep) -> String {
-        guard !step.likelyTools.isEmpty else { return "No tools" }
-        return step.likelyTools.joined(separator: ", ")
+        let labels = step.likelyTools + (step.gitAccessRequirement == .readWrite ? ["Git writes"] : [])
+        return labels.isEmpty ? "No tools" : labels.joined(separator: ", ")
     }
 
     private var fieldShape: RoundedRectangle {
@@ -1018,6 +1018,11 @@ struct WorkspaceCanvasPanelView: View {
                         }
                     }
                 }
+                Divider()
+                Toggle("Git writes", isOn: Binding(
+                    get: { step.gitAccessRequirement == .readWrite },
+                    set: { enabled in updateStep(at: index) { $0.gitAccessRequirement = enabled ? .readWrite : .readOnly } }
+                ))
             } label: {
                 Label("Permissions", systemImage: "slider.horizontal.3")
                     .font(Stanford.caption(11).weight(.semibold))
@@ -1194,7 +1199,9 @@ struct WorkspaceCanvasPanelView: View {
                 status: step.status,
                 risk: step.risk,
                 likelyTools: Array(Set(step.likelyTools)).sorted(),
-                doneSignal: step.doneSignal.trimmingCharacters(in: .whitespacesAndNewlines)
+                doneSignal: step.doneSignal.trimmingCharacters(in: .whitespacesAndNewlines),
+                outputs: step.outputs,
+                gitAccessRequirement: step.gitAccessRequirement
             ))
         }
         guard !steps.isEmpty else { return nil }

@@ -309,8 +309,7 @@ struct TaskExecutionResourceClaimResolverTests {
         defer { try? FileManager.default.removeItem(at: otherRepository.root) }
 
         let workspace = Workspace(name: "Worktrees", primaryPath: repository.root.path)
-        // The Git claim is only emitted for tasks that reach external Git
-        // metadata, matching the condition that grants them write access to it.
+        // Explicit Git writers must serialize on their common metadata.
         let first = AgentTask(
             title: "Ship feature A",
             goal: "Update the parser, then git push the result.",
@@ -329,6 +328,9 @@ struct TaskExecutionResourceClaimResolverTests {
         first.executionRootPath = repository.worktrees["wt-a"]?.path
         second.executionRootPath = repository.worktrees["wt-b"]?.path
         unrelated.executionRootPath = otherRepository.worktrees["wt-a"]?.path
+        for task in [first, second, unrelated] {
+            task.constraints = ["ASTRA_GIT_ACCESS=read_write"]
+        }
 
         let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)

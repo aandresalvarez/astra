@@ -299,7 +299,8 @@ final class HeadlessChatHarness {
         plan: TaskPlanPayload,
         worker: AgentRuntimeWorker,
         mode: TaskPlanExecutionMode = .fullPlan,
-        executionRequestID: UUID? = nil
+        executionRequestID: UUID? = nil,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
         DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: context)
@@ -308,7 +309,8 @@ final class HeadlessChatHarness {
             plan: plan,
             mode: mode,
             executionRequestID: executionRequestID,
-            modelContext: context
+            modelContext: context,
+            executionPolicy: executionPolicy
         ) { event in
             events.append(event)
         }

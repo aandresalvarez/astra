@@ -66,20 +66,47 @@ public struct TaskWorkspaceAccess {
         if let scope = task.acceptedResourceScope {
             return scope.resources.first { $0.role == .taskStorage }?.path ?? ""
         }
+        if let path = boundStoragePath { return path }
         return WorkspaceFileLayout.readableTaskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
     }
 
     public var canonicalTaskFolder: String {
-        WorkspaceFileLayout.taskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
+        if let scope = task.acceptedResourceScope {
+            return scope.resources.first { $0.role == .taskStorage }?.canonicalPath ?? ""
+        }
+        if let path = boundStoragePath { return path }
+        return WorkspaceFileLayout.taskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
+    }
+
+    private var boundStoragePath: String? {
+        do { return try TaskStorageBinding.load(for: task)?.path }
+        catch {
+            AuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: task.id,
+                fields: ["reason": "invalid_task_storage_binding", "error": error.localizedDescription], level: .error)
+            return ""
+        }
     }
 
     @discardableResult
     public func ensureTaskFolder(fileSystem overrideFileSystem: FileSystem? = nil) throws -> String {
         let fileSystem = overrideFileSystem ?? self.fileSystem
-        let path = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(
-            workspacePath: effectiveWorkspacePath,
-            taskID: task.id
-        )
+        let binding = try TaskStorageBinding.load(for: task)
+        let path: String
+        if let scope = task.acceptedResourceScope {
+            guard scope.isValid, let storage = scope.resources.first(where: { $0.role == .taskStorage }),
+                  scope.coversWrite(to: storage.path),
+                  binding == nil || binding?.path == storage.canonicalPath else { throw TaskStorageBinding.BindingError.invalid }
+            path = storage.canonicalPath
+        } else if let binding {
+            path = binding.path
+            let legacy = WorkspaceFileLayout.legacyTaskFolder(workspacePath: binding.workspacePath, taskID: task.id)
+            if !fileSystem.fileExists(atPath: path), fileSystem.fileExists(atPath: legacy) {
+                let migrated = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(workspacePath: binding.workspacePath, taskID: task.id)
+                guard migrated == path, !fileSystem.fileExists(atPath: legacy) else { throw TaskStorageBinding.BindingError.invalid }
+            }
+        } else {
+            path = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(workspacePath: effectiveWorkspacePath, taskID: task.id)
+        }
         guard !path.isEmpty else {
             AuditLoggingSeam.required.audit(.taskFailed, category: "General", taskID: task.id, fields: [
                 "reason": "task_folder_empty_path"

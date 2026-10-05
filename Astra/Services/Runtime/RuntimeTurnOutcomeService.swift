@@ -107,7 +107,7 @@ enum RuntimeTurnOutcomeService {
             )
             let blockedFromCompleting = await AgentRuntimeCompletionValidation.applyCompletionBlocksIfNeeded(
                 task: task, run: run, modelContext: modelContext,
-                workspacePath: executionPath,
+                executionContext: checkpoint.executionContext(for: task),
                 agentReportedError: checkpoint.agentReportedError
             )
             if !blockedFromCompleting {
@@ -127,9 +127,8 @@ enum RuntimeTurnOutcomeService {
                                 task: task,
                                 run: run,
                                 modelContext: modelContext,
-                                workspacePath: executionPath,
-                                sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
-                                resourceScope: checkpoint.launchSnapshot.resourceScope
+                                executionContext: checkpoint.executionContext(for: task),
+                                sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )
                         }
                     case .runTests:
@@ -142,6 +141,7 @@ enum RuntimeTurnOutcomeService {
                         // the run actually used, so tests execute where it ran.
                         let testResult = await ValidationService.runTests(
                             task: executionTask,
+                            executionContext: checkpoint.executionContext(for: task),
                             commandRunner: ShellValidationCommandRunner(
                                 sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                             )
@@ -176,7 +176,7 @@ enum RuntimeTurnOutcomeService {
                             claudePath: claudePath,
                             model: validationModel,
                             utilityRuntime: checkpoint.verifierRuntime,
-                            workspacePath: executionPath
+                            executionContext: checkpoint.executionContext(for: task)
                         )
                         switch aiResult {
                         case .passed(let details):
@@ -192,6 +192,8 @@ enum RuntimeTurnOutcomeService {
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
+                            run.status = .failed
+                            run.typedStopReason = .custom("ai_validation_error")
                             TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
@@ -210,9 +212,8 @@ enum RuntimeTurnOutcomeService {
                             task: task,
                             run: run,
                             modelContext: modelContext,
-                            workspacePath: executionPath,
-                            sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
-                            resourceScope: checkpoint.launchSnapshot.resourceScope
+                            executionContext: checkpoint.executionContext(for: task),
+                            sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
                         )
                     }
                 }

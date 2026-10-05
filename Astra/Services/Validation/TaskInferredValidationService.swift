@@ -12,17 +12,15 @@ enum TaskInferredValidationService {
     @MainActor
     static func suggestion(
         for task: AgentTask,
-        workspacePath: String? = nil
+        executionContext: TaskExecutionContext
     ) -> TaskInferredValidationSuggestion? {
-        let files = if let workspacePath {
-            TaskOutputDiscovery.files(
-                for: task,
-                run: latestRun(for: task),
-                workspacePath: workspacePath
-            )
-        } else {
-            TaskOutputDiscovery.files(for: task)
+        guard executionContext.isValid, executionContext.taskID == task.id else {
+            AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id,
+                fields: ["reason": "invalid_inferred_validation_context"], level: .error)
+            return nil
         }
+        let files = TaskOutputDiscovery.files(taskFolder: executionContext.taskFolder,
+            run: latestRun(for: task), workspacePath: executionContext.workingDirectory)
         guard !files.isEmpty else { return nil }
 
         let primaryFile = preferredFile(from: files)
@@ -83,8 +81,8 @@ enum TaskInferredValidationService {
     }
 
     @MainActor
-    static func hasSuggestion(for task: AgentTask) -> Bool {
-        suggestion(for: task) != nil
+    static func hasSuggestion(for task: AgentTask, executionContext: TaskExecutionContext) -> Bool {
+        suggestion(for: task, executionContext: executionContext) != nil
     }
 
     @MainActor
@@ -92,11 +90,11 @@ enum TaskInferredValidationService {
     static func run(
         task: AgentTask,
         modelContext: ModelContext,
-        workspacePath: String? = nil,
-        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner(),
-        resourceScope: TaskExecutionResourceScope? = nil
+        executionContext: TaskExecutionContext,
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
     ) async -> TaskValidationContractEvaluation {
-        guard let suggestion = suggestion(for: task, workspacePath: workspacePath) else {
+        if let failure = executionContext.prepareValidation(task: task, modelContext: modelContext) { return failure }
+        guard let suggestion = suggestion(for: task, executionContext: executionContext) else {
             return .notRequired
         }
         recordDefinitionSnapshot(plan: suggestion.plan, task: task, modelContext: modelContext)
@@ -105,25 +103,23 @@ enum TaskInferredValidationService {
             plan: suggestion.plan,
             run: latestRun(for: task),
             modelContext: modelContext,
-            workspacePath: workspacePath,
-            commandRunner: commandRunner,
-            resourceScope: resourceScope
+            executionContext: executionContext,
+            commandRunner: commandRunner
         )
         task.updatedAt = Date()
-        TaskContextStateManager.refresh(task: task)
         return result
     }
 
     @MainActor
     static func shouldRunAutomaticBaseline(
         for task: AgentTask,
-        workspacePath: String? = nil
+        executionContext: TaskExecutionContext
     ) -> Bool {
         guard task.status == .completed,
               task.validationStrategy == .manual,
               !hasValidationContractEvidence(for: task),
               !hasTerminalDeliverableVerification(for: task),
-              suggestion(for: task, workspacePath: workspacePath) != nil else {
+              suggestion(for: task, executionContext: executionContext) != nil else {
             return false
         }
         return true
@@ -134,19 +130,18 @@ enum TaskInferredValidationService {
     static func runAutomaticBaselineIfNeeded(
         task: AgentTask,
         modelContext: ModelContext,
-        workspacePath: String? = nil,
-        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner(),
-        resourceScope: TaskExecutionResourceScope? = nil
+        executionContext: TaskExecutionContext,
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
     ) async -> TaskValidationContractEvaluation {
-        guard shouldRunAutomaticBaseline(for: task, workspacePath: workspacePath) else {
+        if let failure = executionContext.prepareValidation(task: task, modelContext: modelContext) { return failure }
+        guard shouldRunAutomaticBaseline(for: task, executionContext: executionContext) else {
             return .notRequired
         }
         return await run(
             task: task,
             modelContext: modelContext,
-            workspacePath: workspacePath,
-            commandRunner: commandRunner,
-            resourceScope: resourceScope
+            executionContext: executionContext,
+            commandRunner: commandRunner
         )
     }
 

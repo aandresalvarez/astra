@@ -12,7 +12,7 @@ enum AgentRuntimeCompletionValidation {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        workspacePath: String,
+        executionContext: TaskExecutionContext,
         agentReportedError: Bool
     ) async -> Bool {
         if applyAgentReportedErrorIfNeeded(
@@ -27,7 +27,7 @@ enum AgentRuntimeCompletionValidation {
             task: task,
             run: run,
             modelContext: modelContext,
-            workspacePath: workspacePath
+            executionContext: executionContext
         )
     }
 
@@ -64,13 +64,13 @@ enum AgentRuntimeCompletionValidation {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        workspacePath: String
+        executionContext: TaskExecutionContext
     ) async -> Bool {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: task,
             run: run,
             modelContext: modelContext,
-            workspacePath: workspacePath
+            executionContext: executionContext
         )
         guard let eventType = TaskDeliverableVerificationService.eventType(for: result) else {
             return false
@@ -120,18 +120,16 @@ enum AgentRuntimeCompletionValidation {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        workspacePath: String,
-        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?,
-        resourceScope: TaskExecutionResourceScope? = nil
+        executionContext: TaskExecutionContext,
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?
     ) async {
         let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
             task: task,
             modelContext: modelContext,
-            workspacePath: workspacePath,
+            executionContext: executionContext,
             commandRunner: ShellValidationCommandRunner(
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
-            ),
-            resourceScope: resourceScope
+            )
         )
         guard result.didRun else { return }
 

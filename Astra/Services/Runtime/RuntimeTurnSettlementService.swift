@@ -83,6 +83,7 @@ enum RuntimeTurnSettlementService {
                        sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
         do {
+            try checkpoint.bindExecutionStorage(task: task, modelContext: modelContext)
             if let id = checkpoint.requestID {
                 guard let owner = try TaskTurnRequestRepository.request(id: id, in: modelContext),
                       owner.taskID == task.id, owner.runID == run.id else { throw Failure.invalidRequestOwner }
@@ -114,7 +115,8 @@ enum RuntimeTurnSettlementService {
             }
             let request = try checkpoint.requestID.flatMap { try TaskTurnRequestRepository.request(id: $0, in: modelContext) }
             let message = checkpoint.sessionMessage ?? request?.executionPolicySnapshot?.turnIntentSnapshot?.acceptedTurn ?? task.goal
-            guard sessionProjection?() ?? AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run, message: message) else {
+            guard sessionProjection?() ?? AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run, message: message,
+                executionContext: checkpoint.executionContext(for: task)) else {
                 throw Failure.recoverySubmissionFailed
             }
             if alreadyPrepared {
@@ -122,7 +124,7 @@ enum RuntimeTurnSettlementService {
                     persist: verdictPersistence, autoExport: autoExport)
             }
             guard await AgentRuntimeRunPersistence.finalizeAndPersist(task: task, run: run,
-                modelContext: modelContext, phase: checkpoint.phase, autoExport: autoExport,
+                modelContext: modelContext, phase: checkpoint.phase, executionContext: checkpoint.executionContext(for: task), autoExport: autoExport,
                 persist: {
                     RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
                     do {
@@ -199,14 +201,12 @@ enum RuntimeTurnSettlementService {
             let accepted: Bool
             if let step = plan.step {
                 accepted = await ApprovedPlanRuntimeSettlement.finalizeApprovedPlanStep(step, plan: plan.plan,
-                    task: task, workspacePath: checkpoint.executionPath,
+                    task: task, executionContext: checkpoint.executionContext(for: task),
                     sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
-                    resourceScope: checkpoint.launchSnapshot.resourceScope,
                     modelContext: modelContext, verifierRuntime: checkpoint.verifierRuntime)
             } else {
                 accepted = await ApprovedPlanRuntimeSettlement.finalizeApprovedFullPlan(plan.plan, task: task,
-                    workspacePath: checkpoint.executionPath, sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
-                    resourceScope: checkpoint.launchSnapshot.resourceScope,
+                    executionContext: checkpoint.executionContext(for: task), sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
                     modelContext: modelContext, verifierRuntime: checkpoint.verifierRuntime)
             }
             if !accepted, run.status == .completed {
@@ -340,10 +340,7 @@ enum RuntimeTurnSettlementService {
     private static func save(task: AgentTask, modelContext: ModelContext, operation: String,
                              persist: (() throws -> Void)?, autoExport: Bool = true) throws {
         if let persist { try persist() }
-        else if autoExport {
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: task.workspace,
-                modelContext: modelContext, taskID: task.id, auditFields: ["operation": operation])
-        } else {
+        else {
             try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
                 modelContext: modelContext, taskID: task.id, auditFields: ["operation": operation])
         }

@@ -381,13 +381,16 @@ enum ValidationService {
     /// Run tests in the task's workspace using the configured test command.
     static func runTests(
         task: AgentTask,
+        executionContext: TaskExecutionContext,
         commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
     ) async -> ValidationResult {
+        do { try executionContext.validate(task: task) }
+        catch { return .error(error.localizedDescription) }
         let command = task.testCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
             return .error("No test command configured")
         }
-        let workingDirectory = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        let workingDirectory = executionContext.workingDirectory
         guard ValidationCommandPolicy.isRunTestsCommandAllowed(command, workspacePath: workingDirectory) else {
             AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id, fields: [
                 "reason": "command_not_allowed",
@@ -406,9 +409,11 @@ enum ValidationService {
             command: command,
             workingDirectory: workingDirectory,
             environment: validationCommandEnvironment(),
-            additionalWritablePaths: validationWritablePaths(task: task, scope: task.acceptedResourceScope),
-            resourceScope: task.acceptedResourceScope
+            additionalWritablePaths: validationWritablePaths(task: task, scope: executionContext.resourceScope),
+            resourceScope: executionContext.resourceScope
         )
+        do { try executionContext.validate(task: task) }
+        catch { return .error(error.localizedDescription) }
         let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
 
         if result.exitCode == 0 {
@@ -430,8 +435,10 @@ enum ValidationService {
         claudePath: String,
         model: String = "claude-haiku-4-5-20251001",
         utilityRuntime: AgentUtilityRuntimeConfiguration? = nil,
-        workspacePath: String? = nil
+        executionContext: TaskExecutionContext
     ) async -> ValidationResult {
+        do { try executionContext.validate(task: task) }
+        catch { return .error(error.localizedDescription) }
         let utilityRuntime = utilityRuntime ?? .claude(path: claudePath, model: model)
         guard let latestRun = task.runs.sorted(by: { $0.startedAt > $1.startedAt }).first else {
             return .error("No run to validate")
@@ -467,9 +474,9 @@ enum ValidationService {
             "changes_count": String(changes.count)
         ])
 
-        let result = await AgentUtilityRuntimeRunner.runPrompt(
+        let result = await AgentUtilityRuntimeRunner.runBoundPrompt(
             prompt,
-            workspacePath: workspacePath ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory,
+            executionContext: executionContext,
             configuration: utilityRuntime
         )
         guard result.exitCode == 0 else {
@@ -498,11 +505,11 @@ enum ValidationService {
         plan: TaskPlanPayload,
         run: TaskRun?,
         modelContext: ModelContext,
-        workspacePath: String? = nil,
+        executionContext: TaskExecutionContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration? = nil,
-        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner(),
-        resourceScope: TaskExecutionResourceScope? = nil
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
     ) async -> TaskValidationContractEvaluation {
+        if let failure = executionContext.prepareValidation(task: task, modelContext: modelContext) { return failure }
         guard let contract = plan.validationContract, !contract.assertions.isEmpty else {
             return .notRequired
         }
@@ -516,8 +523,6 @@ enum ValidationService {
 
         var finalPayloads: [TaskValidationAssertionEventPayload] = []
         finalPayloads.reserveCapacity(contract.assertions.count)
-        let acceptedScope = resourceScope ?? task.acceptedResourceScope
-        let executionPath = workspacePath ?? acceptedScope?.workingDirectory ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory
 
         for assertion in contract.assertions {
             recordAssertionEvent(
@@ -537,10 +542,9 @@ enum ValidationService {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                workspacePath: executionPath,
+                executionContext: executionContext,
                 verifierRuntime: verifierRuntime,
-                commandRunner: commandRunner,
-                resourceScope: acceptedScope
+                commandRunner: commandRunner
             )
             let payload = assertionResult.payload
             finalPayloads.append(payload)
@@ -572,6 +576,7 @@ enum ValidationService {
             )
         }
 
+        if let failure = executionContext.prepareValidation(task: task, modelContext: modelContext) { return failure }
         let requiredResults = finalPayloads.filter(\.required)
         let failedRequired = requiredResults.filter { $0.status != "passed" }
         let requiredPassed = requiredResults.count - failedRequired.count
@@ -620,7 +625,7 @@ enum ValidationService {
             ],
             level: canComplete ? .info : .warning
         )
-        if TaskExecutionResourcePreparation.isCurrent(task: task, scope: acceptedScope) {
+        if executionContext.isValid {
             TaskContextStateManager.refresh(task: task)
         } else {
             AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id,
@@ -662,7 +667,7 @@ enum ValidationService {
         switch failure.method {
         case .command:
             if failure.reason == "command_not_allowed" {
-                return "Replace this command assertion with structured artifact, text_contains, browser_behavior, or verifier assertions; do not use shell composition."
+                return "Replace this command assertion with structured artifact, text_contains, or browser_behavior assertions; do not use shell composition."
             }
             let command = failure.command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return command.isEmpty
@@ -683,6 +688,9 @@ enum ValidationService {
                 ? "Add the expected text to the required artifact, then rerun validation."
                 : "Update \(path) so it contains the expected text, then rerun validation."
         case .verifier:
+            if failure.reason == "scoped_verifier_not_supported" {
+                return "Replace this unsupported verifier with deterministic assertions or explicitly supplied evidence; rerunning the same utility cannot enforce its resource authority."
+            }
             return "Address the verifier finding, then rerun the independent verifier assertion."
         case .browserBehavior:
             return "Fix the browser-visible behavior or update the expected evidence, then rerun validation."
@@ -737,11 +745,12 @@ enum ValidationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext,
-        workspacePath: String,
+        executionContext: TaskExecutionContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration?,
-        commandRunner: ValidationCommandRunning,
-        resourceScope: TaskExecutionResourceScope?
+        commandRunner: ValidationCommandRunning
     ) async -> ValidationAssertionExecutionResult {
+        let workspacePath = executionContext.workingDirectory
+        let resourceScope = executionContext.resourceScope
         let artifacts = ValidationArtifactAccess(task: task, workspacePath: workspacePath, scope: resourceScope)
         guard artifacts.isValid else {
             return ValidationAssertionExecutionResult(payload: assertionPayload(
@@ -777,15 +786,21 @@ enum ValidationService {
                 artifacts: artifacts
             )
         case .verifier:
-            payload = await evaluateVerifier(
+            if resourceScope != nil {
+                payload = assertionPayload(assertion: assertion, planID: plan.planID, status: "failed",
+                    summary: "File-capable verifier runs cannot yet enforce accepted execution authority. Use deterministic assertions or explicitly supplied evidence instead.",
+                    reason: "scoped_verifier_not_supported")
+            } else {
+                payload = await evaluateVerifier(
                 assertion: assertion,
                 plan: plan,
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                workspacePath: workspacePath,
+                executionContext: executionContext,
                 verifierRuntime: verifierRuntime
-            )
+                )
+            }
         case .browserBehavior:
             payload = evaluateBrowserBehavior(
                 assertion: assertion,
@@ -1285,7 +1300,7 @@ enum ValidationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext,
-        workspacePath: String,
+        executionContext: TaskExecutionContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration?
     ) async -> TaskValidationAssertionEventPayload {
         let configuration = verifierRuntime ?? AgentUtilityRuntimeConfiguration(
@@ -1317,9 +1332,9 @@ enum ValidationService {
         ])
 
         let prompt = verifierPrompt(assertion: assertion, plan: plan, task: task, run: run)
-        let result = await AgentUtilityRuntimeRunner.runPrompt(
+        let result = await AgentUtilityRuntimeRunner.runBoundPrompt(
             prompt,
-            workspacePath: workspacePath,
+            executionContext: executionContext,
             configuration: configuration,
             toolMode: .readOnly
         )

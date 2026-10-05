@@ -43,7 +43,8 @@ struct RuntimeTurnSettlementTests {
                     launchSnapshot: AgentTaskLaunchSnapshot? = nil, executionPath: String? = nil,
                     enforcement: ExecutionSandboxEnforcement = .off) -> RuntimeTurnSettlementService.Checkpoint {
         .init(requestID: request.id, result: result, runtime: fixture.task.resolvedRuntimeID,
-            phase: .run, executionPath: executionPath ?? fixture.root.path, launchSnapshot: launchSnapshot ?? .init(task: fixture.task),
+            phase: .run, executionPath: executionPath ?? fixture.root.path,
+            launchSnapshot: launchSnapshot ?? TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: fixture.task) ?? .init(task: fixture.task),
             permissionPolicy: .autonomous, sandboxEnforcement: enforcement,
             verifierRuntime: .init(runtime: fixture.task.resolvedRuntimeID, claudePath: "/bin/sh"),
             timeoutSeconds: 10, budgetEnforcementMode: BudgetEnforcementMode.warning.rawValue,

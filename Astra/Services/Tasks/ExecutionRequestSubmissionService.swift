@@ -391,8 +391,8 @@ enum ExecutionRequestSubmissionService {
             sourceEventType: eventType,
             sourcePayload: encoded,
             acceptedTurn: payload.message,
-            acceptedGitIntent: payload.planSnapshot.flatMap { plan in
-                payload.planExecutionMode.map { TaskExecutionGitRequirementResolver.approvedPlanIntent(plan, mode: $0) }
+            gitAccessRequirement: payload.planSnapshot.flatMap { plan in
+                payload.planExecutionMode.flatMap { TaskExecutionGitRequirementResolver.approvedPlanRequirement(plan, mode: $0) }
             },
             permissionContinuation: payload.permissionContinuation,
             approvedResourcePaths: TaskLaunchResourceResolver.approvedSandboxReadablePaths(
@@ -413,7 +413,7 @@ enum ExecutionRequestSubmissionService {
         sourceEventType: String,
         sourcePayload: String,
         acceptedTurn: String? = nil,
-        acceptedGitIntent: String? = nil,
+        gitAccessRequirement: TaskExecutionResourceScope.GitAccess? = nil,
         permissionContinuation: PermissionApprovalContinuation? = nil,
         approvedResourcePaths: [String] = [],
         attachmentPaths: [String] = [],
@@ -476,9 +476,12 @@ enum ExecutionRequestSubmissionService {
         )
         let resourceScope = originSnapshot?.resourceScope?.addingReadOnlyInputs(approvedResourcePaths)
             ?? TaskExecutionResourceScopeResolver.resolve(
-                task: task, acceptedTurn: acceptedGitIntent ?? turnIntentSnapshot.activationText,
-                attachmentPaths: attachmentPaths + approvedResourcePaths)
+                task: task, acceptedTurn: turnIntentSnapshot.activationText,
+                attachmentPaths: attachmentPaths + approvedResourcePaths,
+                gitAccessRequirement: gitAccessRequirement)
         guard resourceScope.gitAccess != .invalid else {
+            modelContext.delete(event)
+            if let attachmentsEvent { modelContext.delete(attachmentsEvent) }
             task.inputs = originalInputs
             rollback()
             AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id,
@@ -494,6 +497,19 @@ enum ExecutionRequestSubmissionService {
             turnIntentSnapshot: turnIntentSnapshot,
             submittedAt: date
         )
+        let storageBindingEvent: TaskEvent?
+        do {
+            storageBindingEvent = try TaskStorageBindingService.bind(task: task, scope: resourceScope, modelContext: modelContext)
+        } catch {
+            modelContext.delete(request)
+            modelContext.delete(event)
+            if let attachmentsEvent { modelContext.delete(attachmentsEvent) }
+            task.inputs = originalInputs
+            rollback()
+            AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id,
+                fields: ["reason": "task_storage_binding_failed", "error": error.localizedDescription], level: .error)
+            return .failure(.persistenceFailed(error.localizedDescription))
+        }
         if let origin, let snapshot = originSnapshot {
             let frozenTask = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
             // Task authority can grow through this approval; execution settings
@@ -545,6 +561,7 @@ enum ExecutionRequestSubmissionService {
         } catch {
             modelContext.delete(request)
             modelContext.delete(event)
+            if let storageBindingEvent, !storageBindingEvent.isDeleted { modelContext.delete(storageBindingEvent) }
             if let attachmentsEvent { modelContext.delete(attachmentsEvent) }
             task.inputs = originalInputs
             rollback()

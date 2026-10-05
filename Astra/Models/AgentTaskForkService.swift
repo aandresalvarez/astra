@@ -208,7 +208,7 @@ public enum AgentTaskForkService {
             do {
                 manifest = try TaskForkManifestWritingSeam.required.writeManifest(TaskForkManifestRequest(
                 sourceTaskID: source.id,
-                sourceWorkspacePath: source.workspace?.primaryPath ?? "",
+                sourceWorkspacePath: try TaskStorageBinding.load(for: source)?.workspacePath ?? source.workspace?.primaryPath ?? "",
                 sourceArtifacts: source.artifacts.map { TaskForkArtifactFacts(createdAt: $0.createdAt, path: $0.path) },
                 sourceInputs: source.inputs,
                 sourceAttachments: attachments,
@@ -277,6 +277,7 @@ public enum AgentTaskForkService {
             TaskAttachmentLedger.userAuthoredMessageTypes.contains($0.type)
         }.map(\.id))
         let eventsToCopy = eventsToFork.filter { event in
+            guard event.type != TaskStorageBinding.eventType else { return false }
             guard event.type == TaskEventTypes.Conversation.attachments.rawValue else { return true }
             return TaskAttachmentsPayloadV1.decoded(from: event.payload)
                 .map { forkedMessageIDs.contains($0.messageEventID) } ?? false

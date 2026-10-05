@@ -24,10 +24,6 @@ struct GitCredentialSandboxContext: Equatable, Sendable {
 }
 
 enum GitOperationIntentDetector {
-    static func detectsGitMutation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
-        TaskExecutionGitRequirementResolver.mutationHint(
-            in: networkGitIntentText(prompt: prompt, task: task, contextText: contextText))
-    }
     static func detectsRuntimeGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         detectsNetworkGitOperation(prompt: prompt, task: task, contextText: contextText)
             || detectsLocalGitInspectionOperation(prompt: prompt, task: task, contextText: contextText)

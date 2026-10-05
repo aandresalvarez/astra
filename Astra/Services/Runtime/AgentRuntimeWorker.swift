@@ -139,14 +139,14 @@ final class AgentRuntimeWorker {
     ) async {
         let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
         let currentPlan = launchTask.acceptedResourceScope != nil ? plan : TaskPlanService.reconstruct(for: task).plan ?? plan
+        guard TaskExecutionContext.prepareLaunch(task: task, launchTask: launchTask, requestID: executionRequestID, modelContext: modelContext) else { return }
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
             guard await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: currentPlan,
-                workspacePath: TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory,
+                executionContext: .legacy(task: launchTask),
                 sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot,
-                resourceScope: launchTask.acceptedResourceScope,
                 modelContext: modelContext,
                 verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
@@ -270,6 +270,7 @@ final class AgentRuntimeWorker {
         retainIsolationAfterExecution: Bool = false,
         onExecutionContext: ((AgentRuntimeExecutionContext) -> Void)? = nil
     ) async {
+        guard TaskExecutionContext.prepareLaunch(task: task, launchTask: launchTask, requestID: turnRequestID, modelContext: modelContext) else { return }
         var executionPolicy = executionPolicy.turnIntentSnapshot == nil
             ? executionPolicy.withTurnIntentSnapshot(TaskTurnIntentResolver.capture(
                 for: launchTask,

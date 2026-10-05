@@ -24,6 +24,7 @@ enum TaskExecutionResourcePreparation {
     }
 
     static func prepare(task: AgentTask, materializeInputs: Bool) throws {
+        _ = try TaskStorageBinding.load(for: task)
         guard materializeInputs, task.inputs.contains(where: { EphemeralComposerAttachment.isEphemeralPath($0) }) else { return }
         guard !TaskWorkspaceAccess(task: task).effectiveWorkspacePath.isEmpty else { return }
         let folder = try ensureTaskFolder(task: task)

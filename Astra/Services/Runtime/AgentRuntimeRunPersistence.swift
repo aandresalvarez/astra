@@ -51,9 +51,21 @@ enum AgentRuntimeRunPersistence {
     static func recordSessionTurn(
         task: AgentTask,
         run: TaskRun,
-        message: String
+        message: String,
+        executionContext: TaskExecutionContext
     ) -> Bool {
-        let folder = (try? TaskWorkspaceAccess(task: task).ensureTaskFolder()) ?? ""
+        let folder: String
+        do {
+            try executionContext.validate(task: task)
+            folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+            if executionContext.resourceScope != nil, folder != executionContext.taskFolder {
+                throw TaskExecutionContext.ContextError.invalid
+            }
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: task.id,
+                fields: ["operation": "record_session_turn", "error": error.localizedDescription], level: .error)
+            return false
+        }
         guard !folder.isEmpty else { return false }
 
         let historySaved = SessionHistoryManager.recordTurn(
@@ -75,7 +87,10 @@ enum AgentRuntimeRunPersistence {
         // its own deterministic trigger predicate (turn/hash/staleness) so it
         // never runs on every turn even when the setting is on. Never awaited
         // here -- this must stay off the render/refresh path (INVARIANTS #2).
-        if UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) {
+        if UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled), executionContext.resourceScope != nil {
+            AppLogger.warning("Automatic objective assessment is deferred: utility providers cannot enforce the accepted resource scope.",
+                category: "Worker")
+        } else if UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) {
             Task { @MainActor in
                 await ObjectiveAssessmentService.assessIfNeeded(task: task)
             }
@@ -97,21 +112,24 @@ enum AgentRuntimeRunPersistence {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
+        executionContext: TaskExecutionContext,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil,
         autoExport: Bool = true,
         persist: (() -> Bool)? = nil
     ) async -> Bool {
+        if executionContext.prepareValidation(task: task, modelContext: modelContext) != nil { return false }
         let start = DispatchTime.now().uptimeNanoseconds
         // File discovery is independent of SwiftData. Prepare it asynchronously
         // before the ordered model commit so directory traversal does not
         // monopolize the main actor. No SwiftData model crosses actors.
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        let taskFolder = executionContext.taskFolder
         let discoveredFiles: [TaskOutputDiscoveredFile]
         if let handoffDiscoveredFiles {
             discoveredFiles = handoffDiscoveredFiles
         } else {
             discoveredFiles = await TaskOutputDiscovery.filesAsync(in: taskFolder)
         }
+        if executionContext.prepareValidation(task: task, modelContext: modelContext) != nil { return false }
         let traceID = AuditTrace.make("run-finalize")
         // Bound the inline output blob now that the run is finalized. Session
         // history already captured the full output via recordSessionTurn before

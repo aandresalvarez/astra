@@ -6,7 +6,8 @@ enum TaskExecutionResourceScopeResolver {
     static func resolve(
         task: AgentTask,
         acceptedTurn: String? = nil,
-        attachmentPaths: [String] = []
+        attachmentPaths: [String] = [],
+        gitAccessRequirement: TaskExecutionResourceScope.GitAccess? = nil
     ) -> TaskExecutionResourceScope {
         if let scope = task.acceptedResourceScope { return scope }
         let access = TaskWorkspaceAccess(task: task)
@@ -56,17 +57,22 @@ enum TaskExecutionResourceScopeResolver {
             }
             return resolved
         }
+        let explicitAttachments = Set(attachmentPaths + TaskAttachmentLedger.entries(
+            in: task.events.map(TaskAttachmentLedger.EventFacts.init)).map(\.path))
         let promptInputs = task.inputs.map { input -> TaskExecutionResourceScope.PromptInput in
-            guard input.hasPrefix("/") || input.hasPrefix("~") else {
+            let path = (input as NSString).expandingTildeInPath
+            let explicitAttachment = explicitAttachments.contains(input) || explicitAttachments.contains(path)
+            guard explicitAttachment || ((input.hasPrefix("/") || input.hasPrefix("~"))
+                && FileManager.default.fileExists(atPath: path)) else {
                 return .init(value: input, kind: .text)
             }
-            let path = (input as NSString).expandingTildeInPath
             return .init(value: path, kind: FileManager.default.fileExists(atPath: path) ? .path : .unavailablePath)
         }
         let approvedPaths = TaskLaunchResourceResolver.approvedSandboxReadablePaths(
             from: TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: task.resolvedRuntimeID),
             homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path)
-        for path in promptInputs.filter({ $0.kind == .path }).map(\.value) + attachmentPaths + approvedPaths {
+        let availableAttachments = attachmentPaths.filter { FileManager.default.fileExists(atPath: ($0 as NSString).expandingTildeInPath) }
+        for path in promptInputs.filter({ $0.kind == .path }).map(\.value) + availableAttachments + approvedPaths {
             append(path, .shared, .input)
         }
         if environment.isContainerized {
@@ -76,7 +82,7 @@ enum TaskExecutionResourceScopeResolver {
                 append(mount.hostPath, writable ? .exclusive : .shared, .environmentMount)
             }
         }
-        var gitAccess = TaskExecutionGitRequirementResolver.resolve(task: task, acceptedTurn: acceptedTurn, writable: mode == .exclusive)
+        var gitAccess = TaskExecutionGitRequirementResolver.resolve(task: task, requirement: gitAccessRequirement, writable: mode == .exclusive)
         let gitRoots = (task.isolationStrategy == .copy ? [] : [root]) + resources.filter {
             $0.role == .execution || $0.role == .additionalFolder
         }.map(\.path)

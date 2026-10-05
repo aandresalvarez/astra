@@ -143,6 +143,7 @@ public struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, H
     public var likelyTools: [String]
     public var doneSignal: String
     public var outputs: [TaskPlanStepOutput]
+    public var gitAccessRequirement: TaskExecutionResourceScope.GitAccess?
 
     public init(
         id: String,
@@ -152,7 +153,8 @@ public struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, H
         risk: TaskPlanPayloadRisk = .low,
         likelyTools: [String] = [],
         doneSignal: String = "",
-        outputs: [TaskPlanStepOutput] = []
+        outputs: [TaskPlanStepOutput] = [],
+        gitAccessRequirement: TaskExecutionResourceScope.GitAccess? = nil
     ) {
         self.id = id
         self.title = title
@@ -162,6 +164,7 @@ public struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, H
         self.likelyTools = likelyTools
         self.doneSignal = doneSignal
         self.outputs = outputs
+        self.gitAccessRequirement = gitAccessRequirement
     }
 
     public init(from decoder: Decoder) throws {
@@ -174,6 +177,7 @@ public struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, H
         likelyTools = try container.decodeIfPresent([String].self, forKey: .likelyTools) ?? []
         doneSignal = try container.decodeIfPresent(String.self, forKey: .doneSignal) ?? ""
         outputs = try container.decodeIfPresent([TaskPlanStepOutput].self, forKey: .outputs) ?? []
+        gitAccessRequirement = try container.decodeIfPresent(TaskExecutionResourceScope.GitAccess.self, forKey: .gitAccessRequirement)
     }
 }
 
