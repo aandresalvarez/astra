@@ -29,6 +29,12 @@ additional-folder mounts retain their declared paths.
 Native Git configuration/credential reads remain an explicit contract of the
 credential projection service, separate from task-data input embedding.
 
+Explicit submission settles a missing environment snapshot from the workspace's
+active environment before freezing the scope, including queued/imported tasks and
+historical retries. Existing explicit snapshots and permission-continuation scopes
+remain authoritative. The legacy direct worker path uses the same settlement rule;
+the display-time Host fallback for historical tasks is not an admission decision.
+
 ## Worktrees and folders
 
 A pinned linked worktree replaces an inherited additional **repository root**
@@ -66,6 +72,11 @@ Git metadata includes both the common directory and each selected worktree's
 their common directory, including native write denial and read-only Docker
 overlays for inspection. Copy-isolated linked pointers remain read-only alongside
 their external metadata.
+Copy isolation from a linked worktree cannot admit Git writes: mutation intent,
+an explicit write declaration, or a workflow requiring writes is rejected at
+submission with guidance to use a regular checkout or a non-copy worktree.
+Scope validation also rejects older inconsistent values that advertise Git
+writes while retaining read-only Git metadata.
 
 Git metadata is read-only by default, including when Git inspection is discovered
 only in runtime context. Inspection uses `GIT_OPTIONAL_LOCKS=0`; the host boundary
@@ -87,7 +98,7 @@ declarations are rejected. A write declaration requires write-capable execution;
 branch preparation and test validation retain their conservative mutation
 requirement.
 
-For unstructured turns, compatibility hints recognize commands and common commit
+For unstructured turns, compatibility hints recognize commands case-insensitively and common commit
 instructions, while distinguishing inspection such as `git branch --show-current`,
 `git config --get`, and `git worktree list`. Hints are not a complete shell parser
 or a command permission. The typed captured requirement owns subsequent launches;
@@ -98,6 +109,28 @@ Claude receives template hooks and subagent permissions through its launch
 `--settings` JSON, on both initial and continuation launches. ASTRA no longer
 injects/restores workspace `.claude/settings.local.json`. Invalid hook
 configuration blocks launch. Other providers do not inject Claude hooks.
+
+## Validation execution
+
+Test commands and validation-contract commands receive the accepted scope,
+including during approved-plan settlement and replay of a durable runtime
+checkpoint. Writable task-data paths are projected from that scope, not from live
+task settings. The command sandbox uses the same read-only denial rules as the
+provider sandbox, protecting copy sources and Git metadata even beneath ambient
+temporary-directory grants. Invalid scopes, mismatched roots, unadmitted writable
+paths, and unavailable boundaries fail closed for scoped commands, including
+best-effort sandbox mode.
+
+Scoped Swift/Xcode commands, and Make commands detected as delegating to those
+toolchains, are blocked when sandboxing is enabled: their existing outer-sandbox
+exclusions cannot enforce the accepted scope. Scoped container validation is also
+blocked rather than silently running its command on the host. These are explicit
+unsupported paths, not passing validation or automatic permissions upgrades.
+Use a supported host validation command or a compatible new execution setup.
+Unscoped legacy behavior and an explicitly admitted sandbox Off remain unchanged.
+Static artifact checks and tool-restricted AI verification retain their existing
+validation contracts; this command boundary is not a new browser/provider-state
+isolation guarantee.
 
 ## Continuation, drift and compatibility
 

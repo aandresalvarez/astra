@@ -201,10 +201,12 @@ enum RuntimeTurnSettlementService {
                 accepted = await ApprovedPlanRuntimeSettlement.finalizeApprovedPlanStep(step, plan: plan.plan,
                     task: task, workspacePath: checkpoint.executionPath,
                     sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
+                    resourceScope: checkpoint.launchSnapshot.resourceScope,
                     modelContext: modelContext, verifierRuntime: checkpoint.verifierRuntime)
             } else {
                 accepted = await ApprovedPlanRuntimeSettlement.finalizeApprovedFullPlan(plan.plan, task: task,
                     workspacePath: checkpoint.executionPath, sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
+                    resourceScope: checkpoint.launchSnapshot.resourceScope,
                     modelContext: modelContext, verifierRuntime: checkpoint.verifierRuntime)
             }
             if !accepted, run.status == .completed {

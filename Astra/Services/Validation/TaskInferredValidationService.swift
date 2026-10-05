@@ -93,7 +93,8 @@ enum TaskInferredValidationService {
         task: AgentTask,
         modelContext: ModelContext,
         workspacePath: String? = nil,
-        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner(),
+        resourceScope: TaskExecutionResourceScope? = nil
     ) async -> TaskValidationContractEvaluation {
         guard let suggestion = suggestion(for: task, workspacePath: workspacePath) else {
             return .notRequired
@@ -105,7 +106,8 @@ enum TaskInferredValidationService {
             run: latestRun(for: task),
             modelContext: modelContext,
             workspacePath: workspacePath,
-            commandRunner: commandRunner
+            commandRunner: commandRunner,
+            resourceScope: resourceScope
         )
         task.updatedAt = Date()
         TaskContextStateManager.refresh(task: task)
@@ -133,7 +135,8 @@ enum TaskInferredValidationService {
         task: AgentTask,
         modelContext: ModelContext,
         workspacePath: String? = nil,
-        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner(),
+        resourceScope: TaskExecutionResourceScope? = nil
     ) async -> TaskValidationContractEvaluation {
         guard shouldRunAutomaticBaseline(for: task, workspacePath: workspacePath) else {
             return .notRequired
@@ -142,7 +145,8 @@ enum TaskInferredValidationService {
             task: task,
             modelContext: modelContext,
             workspacePath: workspacePath,
-            commandRunner: commandRunner
+            commandRunner: commandRunner,
+            resourceScope: resourceScope
         )
     }
 

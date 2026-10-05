@@ -144,6 +144,9 @@ final class AgentRuntimeWorker {
             guard await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(
                 task: task,
                 plan: currentPlan,
+                workspacePath: TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory,
+                sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot,
+                resourceScope: launchTask.acceptedResourceScope,
                 modelContext: modelContext,
                 verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
@@ -325,21 +328,12 @@ final class AgentRuntimeWorker {
         defer { isRunning = false }
         cancellationRequested = false
 
-        // Settle executionEnvironmentSnapshotJSON before resolving
-        // requirements, not the whole TaskRun: the resolver's own
-        // DockerExecutionPlanner.resolveEnvironment fallback disagrees with
-        // TaskRun.init's for historical tasks with no snapshot yet, so
-        // resolving first risked stale requirements. An earlier version of
-        // this fix constructed TaskRun itself early, which fixed that but
-        // broke two other things that depend on TaskRun NOT existing yet at
-        // this point: clearMismatchedProviderSessionIfNeeded's "latest run"
-        // lookup (task.runs would include the new, not-yet-started run) and
-        // run.providerSessionId (would capture task.sessionId before a
-        // reroute clears it). Settling just the field TaskRun.init would
-        // otherwise settle avoids both.
+        // Scoped requests already settled this at acceptance. Legacy direct
+        // launches use the same settlement rule without constructing TaskRun
+        // before provider-session reconciliation.
         if launchTask.executionEnvironmentSnapshotJSON == nil {
             launchTask.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
-                ExecutionEnvironmentStore.decode(launchTask.workspace?.activeExecutionEnvironmentJSON)
+                DockerExecutionPlanner.environmentForAcceptance(for: launchTask)
             )
         }
 

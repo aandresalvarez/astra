@@ -249,6 +249,15 @@ enum DockerExecutionPlanner {
         let hasRuns: Bool
     }
 
+    static func environmentForAcceptance(for task: AgentTask) -> WorkspaceExecutionEnvironment {
+        if let scope = task.acceptedResourceScope { return scope.executionEnvironment }
+        if let snapshot = task.executionEnvironmentSnapshotJSON,
+           !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ExecutionEnvironmentStore.decode(snapshot)
+        }
+        return ExecutionEnvironmentStore.decode(task.workspace?.activeExecutionEnvironmentJSON)
+    }
+
     static func resolveEnvironment(for task: AgentTask) -> WorkspaceExecutionEnvironment {
         if let scope = task.acceptedResourceScope { return scope.executionEnvironment }
         if let snapshot = task.executionEnvironmentSnapshotJSON,

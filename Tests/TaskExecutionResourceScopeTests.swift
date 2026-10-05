@@ -220,12 +220,14 @@ struct TaskExecutionResourceScopeTests {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let task = fixture.task(root: fixture.first)
-        for instruction in ["commit your changes", "commit this change", "make a commit", "git -C '/tmp/a b' commit -m done"] {
+        for instruction in ["commit your changes", "commit this change", "make a commit", "git -C '/tmp/a b' commit -m done",
+                            "Git push origin main", "GIT COMMIT -m done", "GH PR CHECKOUT 1", "Git branch -D obsolete"] {
             let scope = TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction)
             #expect(scope.gitAccess == .readWrite)
             #expect(scope.resources.contains { $0.role == .gitMetadata && $0.access == .exclusive })
         }
-        for instruction in ["git branch --show-current", "git config --get user.name", "git worktree list", "git tag --list", "do not commit your changes"] {
+        for instruction in ["git branch --show-current", "git config --get user.name", "git worktree list", "git tag --list", "do not commit your changes",
+                            "Git branch -a", "GIT config --get user.name", "Git -C '/tmp/a b' status", "DO NOT GIT COMMIT -m done"] {
             #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction).gitAccess == .readOnly)
         }
         task.constraints = ["ASTRA_GIT_ACCESS=read_only"]
@@ -234,6 +236,67 @@ struct TaskExecutionResourceScopeTests {
         #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: "proceed").gitAccess == .readWrite)
         task.constraints = ["ASTRA_GIT_ACCESS=typo"]
         #expect(!TaskExecutionResourceScopeResolver.resolve(task: task).isValid)
+    }
+
+    @Test("Copied linked worktrees reject admitted Git writes instead of promising unavailable access")
+    func copiedLinkedGitWritesRejected() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let task = fixture.task(root: fixture.first)
+        task.isolationStrategy = .copy
+        context.insert(fixture.workspace)
+        context.insert(task)
+        for instruction in ["commit your changes", "GIT COMMIT -m done"] {
+            #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction).gitAccess == .invalid)
+        }
+        task.constraints = ["ASTRA_GIT_ACCESS=read_write"]
+        guard case .failure(.persistenceFailed(let message)) = ExecutionRequestSubmissionService.submitInitial(
+            for: task, into: context) else { Issue.record("Copied linked Git writes were admitted"); return }
+        #expect(message.contains("copied linked worktrees"))
+        #expect(try TaskTurnRequestRepository.requests(for: task, in: context).isEmpty)
+        task.constraints = []
+        task.validationStrategy = .runTests
+        #expect(!TaskExecutionResourceScopeResolver.resolve(task: task).isValid)
+        task.validationStrategy = .manual
+        #expect(TaskExecutionResourceScopeResolver.resolve(task: task).isValid)
+        task.executionRootPath = fixture.repository.path
+        task.constraints = ["ASTRA_GIT_ACCESS=read_write"]
+        #expect(TaskExecutionResourceScopeResolver.resolve(task: task).gitAccess == .readWrite)
+    }
+
+    @Test("Legacy submission settles the workspace environment before freezing it")
+    func legacyEnvironmentSettlement() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        context.insert(fixture.workspace)
+        let environment = WorkspaceExecutionEnvironment(id: "legacy", kind: .dockerImage,
+            displayName: "Legacy", image: "test:legacy")
+        fixture.workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+        for state in [TaskStatus.queued, .completed] {
+            let task = fixture.task(root: fixture.first)
+            task.status = state
+            task.executionEnvironmentSnapshotJSON = nil
+            context.insert(task)
+            let submission = try ExecutionRequestSubmissionService.submitRetry(
+                message: "Retry", continuation: false, for: task, into: context).get()
+            let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+            #expect(request.executionPolicySnapshot?.resourceScope?.executionEnvironment == environment)
+            let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+            fixture.workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+            let frozen = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+            #expect(DockerExecutionPlanner.resolveEnvironment(for: frozen) == environment)
+            fixture.workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+        }
+        let pinned = fixture.task(root: fixture.first)
+        pinned.status = .completed
+        pinned.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+        #expect(TaskExecutionResourceScopeResolver.resolve(task: pinned).executionEnvironment == .host)
     }
 
     @Test("Readers retain task output writes without gaining execution-root writes")

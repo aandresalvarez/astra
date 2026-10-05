@@ -39,10 +39,12 @@ struct RuntimeTurnSettlementTests {
     }
 
     func checkpoint(_ fixture: Fixture, request: TaskTurnRequest, result: AgentProcessResult = .init(exitCode: 0),
-                    plan: RuntimeTurnSettlementService.ApprovedPlan? = nil, chain: String = "") -> RuntimeTurnSettlementService.Checkpoint {
+                    plan: RuntimeTurnSettlementService.ApprovedPlan? = nil, chain: String = "",
+                    launchSnapshot: AgentTaskLaunchSnapshot? = nil, executionPath: String? = nil,
+                    enforcement: ExecutionSandboxEnforcement = .off) -> RuntimeTurnSettlementService.Checkpoint {
         .init(requestID: request.id, result: result, runtime: fixture.task.resolvedRuntimeID,
-            phase: .run, executionPath: fixture.root.path, launchSnapshot: .init(task: fixture.task),
-            permissionPolicy: .autonomous, sandboxEnforcement: .off,
+            phase: .run, executionPath: executionPath ?? fixture.root.path, launchSnapshot: launchSnapshot ?? .init(task: fixture.task),
+            permissionPolicy: .autonomous, sandboxEnforcement: enforcement,
             verifierRuntime: .init(runtime: fixture.task.resolvedRuntimeID, claudePath: "/bin/sh"),
             timeoutSeconds: 10, budgetEnforcementMode: BudgetEnforcementMode.warning.rawValue,
             effectiveTokenBudget: Int.max, tokensUsed: fixture.task.tokensUsed, agentReportedError: false,
@@ -55,6 +57,46 @@ struct RuntimeTurnSettlementTests {
         let id = fixture.task.id
         let task = try #require(try container.mainContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id })).first)
         return (container, task)
+    }
+
+    @Test("Restarted validation retains copy source protection for tests and approved plans", arguments: [false, true])
+    func restartedValidationKeepsScope(planRun: Bool) async throws {
+        let fixture = try Fixture(disk: true)
+        defer { fixture.cleanup() }
+        fixture.task.isolationStrategy = .copy
+        fixture.task.validationStrategy = planRun ? .manual : .runTests
+        fixture.task.testCommand = "make test"
+        let plan = TaskPlanPayload(title: "Inspect", goal: "Inspect tickets",
+            steps: [.init(id: "inspect", title: "Inspect")],
+            validationContract: TaskValidationContract(assertions: [
+                .init(id: "tests", description: "Tests pass", method: .command, command: "make test")
+            ]))
+        let envelope: RuntimeTurnSettlementService.ApprovedPlan? = planRun ? .init(plan: plan, step: nil) : nil
+        if planRun { TaskPlanService.recordCreated(plan, task: fixture.task, modelContext: fixture.context) }
+        let (run, request) = try runningTurn(fixture, plan: envelope)
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: fixture.task))
+        let scope = try #require(snapshot.resourceScope)
+        let copy = scope.workingDirectory
+        defer { try? FileManager.default.removeItem(atPath: copy) }
+        try FileManager.default.createDirectory(atPath: copy, withIntermediateDirectories: true)
+        let marker = fixture.root.appendingPathComponent("source-marker")
+        try "original".write(to: marker, atomically: true, encoding: .utf8)
+        try "test:\n\t@printf changed > '\(marker.path)'\n".write(
+            toFile: copy + "/Makefile", atomically: true, encoding: .utf8)
+        let captured = checkpoint(fixture, request: request, plan: envelope,
+            launchSnapshot: snapshot, executionPath: copy, enforcement: .strict)
+        try RuntimeTurnSettlementService.capture(captured, task: fixture.task, run: run, modelContext: fixture.context)
+        let (savedContainer, savedTask) = try reopen(fixture)
+        let savedRun = try #require(savedTask.runs.first)
+        let restored = try #require(try RuntimeTurnSettlementService.checkpoint(for: savedRun, task: savedTask))
+        savedTask.testCommand = "swift test"
+        #expect(await RuntimeTurnSettlementService.settle(checkpoint: restored, task: savedTask,
+            run: savedRun, modelContext: savedContainer.mainContext))
+        #expect(try String(contentsOf: marker, encoding: .utf8) == "original")
+        #expect(try TaskTurnRequestRepository.request(id: request.id, in: savedContainer.mainContext)?.state == .failed)
+        #expect(savedTask.events.contains {
+            $0.type == TaskValidationEventTypes.assertionFailed || $0.type == TaskEventTypes.System.error.rawValue
+        })
     }
 
     @Test("A captured acknowledgement and response survive restart before the verdict, without provider replay")

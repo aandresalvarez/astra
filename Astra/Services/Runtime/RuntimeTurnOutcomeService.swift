@@ -128,7 +128,8 @@ enum RuntimeTurnOutcomeService {
                                 run: run,
                                 modelContext: modelContext,
                                 workspacePath: executionPath,
-                                sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
+                                sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
+                                resourceScope: checkpoint.launchSnapshot.resourceScope
                             )
                         }
                     case .runTests:
@@ -155,10 +156,14 @@ enum RuntimeTurnOutcomeService {
                                 permissionPolicy: launchPermissionPolicy
                             )
                         case .failed(let details):
+                            run.status = .failed
+                            run.typedStopReason = .custom("test_validation_failed")
                             TaskStateMachine.failFromValidation(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
+                            run.status = .failed
+                            run.typedStopReason = .custom("test_validation_error")
                             TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.validationError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
@@ -206,7 +211,8 @@ enum RuntimeTurnOutcomeService {
                             run: run,
                             modelContext: modelContext,
                             workspacePath: executionPath,
-                            sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement
+                            sandboxEnforcementSnapshot: checkpoint.sandboxEnforcement,
+                            resourceScope: checkpoint.launchSnapshot.resourceScope
                         )
                     }
                 }

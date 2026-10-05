@@ -17,6 +17,7 @@ enum ApprovedPlanRuntimeSettlement {
         task: AgentTask,
         workspacePath: String? = nil,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
+        resourceScope: TaskExecutionResourceScope? = nil,
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
@@ -119,6 +120,7 @@ enum ApprovedPlanRuntimeSettlement {
                 plan: refreshedPlan,
                 workspacePath: workspacePath,
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
+                resourceScope: resourceScope,
                 modelContext: modelContext, verifierRuntime: verifierRuntime
             ) else {
                 return false
@@ -136,6 +138,7 @@ enum ApprovedPlanRuntimeSettlement {
         task: AgentTask,
         workspacePath: String? = nil,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
+        resourceScope: TaskExecutionResourceScope? = nil,
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
@@ -171,6 +174,7 @@ enum ApprovedPlanRuntimeSettlement {
             plan: refreshedPlan,
             workspacePath: workspacePath,
             sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
+            resourceScope: resourceScope,
             modelContext: modelContext, verifierRuntime: verifierRuntime
         ) else {
             return false
@@ -185,6 +189,7 @@ enum ApprovedPlanRuntimeSettlement {
         plan: TaskPlanPayload,
         workspacePath: String? = nil,
         sandboxEnforcementSnapshot: ExecutionSandboxEnforcement? = nil,
+        resourceScope: TaskExecutionResourceScope? = nil,
         modelContext: ModelContext,
         verifierRuntime: AgentUtilityRuntimeConfiguration
     ) async -> Bool {
@@ -197,7 +202,8 @@ enum ApprovedPlanRuntimeSettlement {
             verifierRuntime: verifierRuntime,
             commandRunner: ShellValidationCommandRunner(
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
-            )
+            ),
+            resourceScope: resourceScope
         )
         let decision = TaskCompletionPolicy.decide(validationContract: contractEvaluation)
         guard decision.canComplete else {

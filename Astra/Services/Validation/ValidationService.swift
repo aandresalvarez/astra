@@ -27,7 +27,7 @@ protocol ValidationCommandRunning: Sendable {
     /// validation command that legitimately writes outside the workspace's
     /// primary path (generated fixtures, build output in another workspace
     /// root) isn't denied by the Seatbelt floor's write jail.
-    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String], resourceScope: TaskExecutionResourceScope?) async -> ValidationCommandResult
 }
 
 struct ShellValidationCommandRunner: ValidationCommandRunning {
@@ -64,9 +64,9 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
     /// delegate to either tool — child processes inherit the parent's
     /// Seatbelt confinement, so a wrapped `make test` that shells out to
     /// `swift test`/`xcodebuild` hits the exact same nested-sandbox conflict.
-    /// All three fall through to today's behavior: gated by
-    /// `ValidationCommandPolicy` only, no OS-level confinement — this is a
-    /// documented limitation, not a silent gap.
+    /// Unscoped legacy commands retain that policy-only fallback. Scoped
+    /// validation instead fails closed unless sandbox Off was explicitly
+    /// admitted: a toolchain's own sandbox does not enforce ASTRA's scope.
     ///
     /// KNOWN RESIDUAL GAP (xcodebuild specifically): unlike `swift`, this
     /// exclusion for `xcodebuild` is a precaution against an UNCONFIRMED
@@ -207,7 +207,24 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
         }.joined(separator: "\n")
     }
 
-    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult {
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String], resourceScope: TaskExecutionResourceScope? = nil) async -> ValidationCommandResult {
+        func blocked(_ reason: String) -> ValidationCommandResult {
+            let message = "Validation cannot enforce the accepted execution scope (\(reason)). Use a supported host validation command or submit a new turn with a compatible execution environment."
+            AppLogger.audit(.sandboxFailed, category: "Validation", fields: ["reason": reason], level: .error)
+            return ValidationCommandResult(exitCode: -1, stdout: "", stderr: message, launchError: message)
+        }
+        if let scope = resourceScope {
+            guard scope.isValid,
+                  TaskExecutionResourceScope.canonicalPath(workingDirectory) == TaskExecutionResourceScope.canonicalPath(scope.workingDirectory),
+                  additionalWritablePaths.allSatisfy({ scope.coversWrite(to: $0) }) else {
+                return blocked("invalid_validation_resource_scope")
+            }
+            guard !scope.executionEnvironment.isContainerized else {
+                return blocked("container_validation_not_supported")
+            }
+        }
+        let settings = sandboxSettingsProvider().applyingAdmissionSnapshot(
+            sandboxEnforcementSnapshot, permissionPolicy: .restricted)
         // `rootToken` should always resolve here: ValidationCommandPolicy
         // already parsed and allowed this exact command upstream (`runTests`/
         // `evaluateCommand`'s guard clauses). Fail toward MORE confinement
@@ -217,6 +234,9 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
         let makefileMentions = root == "make" ? Self.makefileMentionedTools(workingDirectory: workingDirectory) : []
 
         guard !Self.isSelfSandboxingCommand(root: root, makefileMentions: makefileMentions) else {
+            if resourceScope != nil, settings.enforcement != .off {
+                return blocked("self_sandboxing_toolchain_requires_unavailable_scope_boundary")
+            }
             AppLogger.audit(.sandboxSkipped, category: "Validation", fields: [
                 "reason": "self_sandboxing_toolchain"
             ], level: .debug)
@@ -226,11 +246,6 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
         // Queue admission owns this decision for the whole run. Applying its
         // snapshot prevents a concurrent Settings change from introducing or
         // removing confinement between provider execution and validation.
-        let settings = sandboxSettingsProvider()
-            .applyingAdmissionSnapshot(
-                sandboxEnforcementSnapshot,
-                permissionPolicy: .restricted
-            )
         let decision = ExecutionSandbox.decideForCommand(
             executablePath: "/bin/zsh",
             arguments: ["-c", command],
@@ -238,6 +253,7 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
             environment: environment,
             additionalWritablePaths: additionalWritablePaths,
             homeWritableRelativePaths: Self.toolCacheHomeRelativePaths(forRoot: root, makefileMentions: makefileMentions),
+            resourceScope: resourceScope,
             settings: settings
         )
 
@@ -351,6 +367,11 @@ enum ValidationService {
     private static let maximumTextContainsBytes: UInt64 = 2 * 1024 * 1024
     static var textContainsFileSizeProbe: (String) -> UInt64? = defaultFileSize
 
+    private static func validationWritablePaths(task: AgentTask, scope: TaskExecutionResourceScope?) -> [String] {
+        guard let scope else { return AgentRuntimeProcessRunner.runtimeWritablePaths(for: task) }
+        return scope.resources.filter { $0.access == .exclusive && scope.coversWrite(to: $0.path) }.map(\.path)
+    }
+
     private static func validationCommandEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
@@ -385,7 +406,8 @@ enum ValidationService {
             command: command,
             workingDirectory: workingDirectory,
             environment: validationCommandEnvironment(),
-            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+            additionalWritablePaths: validationWritablePaths(task: task, scope: task.acceptedResourceScope),
+            resourceScope: task.acceptedResourceScope
         )
         let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
 
@@ -478,7 +500,8 @@ enum ValidationService {
         modelContext: ModelContext,
         workspacePath: String? = nil,
         verifierRuntime: AgentUtilityRuntimeConfiguration? = nil,
-        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner()
+        commandRunner: ValidationCommandRunning = ShellValidationCommandRunner(),
+        resourceScope: TaskExecutionResourceScope? = nil
     ) async -> TaskValidationContractEvaluation {
         guard let contract = plan.validationContract, !contract.assertions.isEmpty else {
             return .notRequired
@@ -514,7 +537,8 @@ enum ValidationService {
                 modelContext: modelContext,
                 workspacePath: workspacePath ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory,
                 verifierRuntime: verifierRuntime,
-                commandRunner: commandRunner
+                commandRunner: commandRunner,
+                resourceScope: resourceScope ?? task.acceptedResourceScope
             )
             let payload = assertionResult.payload
             finalPayloads.append(payload)
@@ -708,7 +732,8 @@ enum ValidationService {
         modelContext: ModelContext,
         workspacePath: String,
         verifierRuntime: AgentUtilityRuntimeConfiguration?,
-        commandRunner: ValidationCommandRunning
+        commandRunner: ValidationCommandRunning,
+        resourceScope: TaskExecutionResourceScope?
     ) async -> ValidationAssertionExecutionResult {
         let payload: TaskValidationAssertionEventPayload
         switch assertion.method {
@@ -718,7 +743,8 @@ enum ValidationService {
                 planID: plan.planID,
                 task: task,
                 workspacePath: workspacePath,
-                commandRunner: commandRunner
+                commandRunner: commandRunner,
+                resourceScope: resourceScope
             )
         case .artifact:
             payload = evaluateArtifact(
@@ -766,7 +792,8 @@ enum ValidationService {
         planID: UUID,
         task: AgentTask,
         workspacePath: String,
-        commandRunner: ValidationCommandRunning
+        commandRunner: ValidationCommandRunning,
+        resourceScope: TaskExecutionResourceScope?
     ) async -> TaskValidationAssertionEventPayload {
         guard let command = assertion.command?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else {
             return assertionPayload(
@@ -793,7 +820,8 @@ enum ValidationService {
             command: command,
             workingDirectory: workspacePath,
             environment: validationCommandEnvironment(),
-            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+            additionalWritablePaths: validationWritablePaths(task: task, scope: resourceScope),
+            resourceScope: resourceScope
         )
         let output = [result.stdout, result.stderr]
             .filter { !$0.isEmpty }

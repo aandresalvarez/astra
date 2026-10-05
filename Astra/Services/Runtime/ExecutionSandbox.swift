@@ -794,16 +794,24 @@ enum ExecutionSandbox: Sendable {
         additionalWritablePaths: [String] = [],
         homeDirectory: String = NSHomeDirectory(),
         homeWritableRelativePaths: [String],
+        resourceScope: TaskExecutionResourceScope? = nil,
         settings: ExecutionSandboxSettings,
         fileManager: FileManager = .default
     ) -> ExecutionSandboxCommandDecision {
+        if let scope = resourceScope {
+            guard scope.isValid,
+                  TaskExecutionResourceScope.canonicalPath(currentDirectory) == TaskExecutionResourceScope.canonicalPath(scope.workingDirectory),
+                  additionalWritablePaths.allSatisfy({ scope.coversWrite(to: $0) }) else {
+                return .failClosed(reason: "invalid_validation_resource_scope")
+            }
+        }
         guard settings.enforcement != .off else {
             return .skipped(reason: "sandbox_disabled")
         }
         let enforcement = settings.enforcement
 
         let unavailable: (String) -> ExecutionSandboxCommandDecision = { reason in
-            enforcement == .strict ? .failClosed(reason: reason) : .fallback(reason: reason)
+            enforcement == .strict || resourceScope != nil ? .failClosed(reason: reason) : .fallback(reason: reason)
         }
 
         guard let workspace = canonicalize(currentDirectory), !workspace.isEmpty else {
@@ -854,8 +862,9 @@ enum ExecutionSandbox: Sendable {
             allowNetwork: settings.allowNetwork,
             readScope: .open
         )
-        let args = makeArguments(
-            profile: profile,
+        let scopeBoundary = ExecutionResourceScopeSandbox(scope: resourceScope)
+        let args = scopeBoundary.arguments + makeArguments(
+            profile: profile + scopeBoundary.profile,
             writableRoots: roots,
             protectedReadRoots: protectedReadRoots,
             explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,

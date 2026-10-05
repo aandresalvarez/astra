@@ -27,7 +27,7 @@ private actor StubValidationCommandRunner: ValidationCommandRunning {
         self.results = results
     }
 
-    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult {
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String], resourceScope: TaskExecutionResourceScope?) async -> ValidationCommandResult {
         calls.append(Call(
             command: command,
             workingDirectory: workingDirectory,

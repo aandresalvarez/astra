@@ -121,6 +121,7 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
     public var isValid: Bool {
         version == Self.currentVersion
             && gitAccess != .invalid
+            && (gitAccess != .readWrite || !resources.contains { $0.role == .gitMetadata && $0.access == .shared })
             && resources.allSatisfy {
                 !$0.path.isEmpty && $0.path.hasPrefix("/")
                     && $0.path.rangeOfCharacter(from: .newlines) == nil

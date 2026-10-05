@@ -46,7 +46,7 @@ enum TaskExecutionResourceScopeResolver {
         if !access.effectiveWorkspacePath.isEmpty {
             append(access.canonicalTaskFolder, .exclusive, .taskStorage)
         }
-        var environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        var environment = DockerExecutionPlanner.environmentForAcceptance(for: task)
         environment.mounts = environment.mounts.map { mount in
             var resolved = mount
             switch mount.role {
@@ -76,7 +76,7 @@ enum TaskExecutionResourceScopeResolver {
                 append(mount.hostPath, writable ? .exclusive : .shared, .environmentMount)
             }
         }
-        let gitAccess = TaskExecutionGitRequirementResolver.resolve(task: task, acceptedTurn: acceptedTurn, writable: mode == .exclusive)
+        var gitAccess = TaskExecutionGitRequirementResolver.resolve(task: task, acceptedTurn: acceptedTurn, writable: mode == .exclusive)
         let gitRoots = (task.isolationStrategy == .copy ? [] : [root]) + resources.filter {
             $0.role == .execution || $0.role == .additionalFolder
         }.map(\.path)
@@ -95,6 +95,7 @@ enum TaskExecutionResourceScopeResolver {
             if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDirectory), isDirectory.boolValue {
                 append((executionRoot as NSString).appendingPathComponent(".git"), gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata)
             } else if let common {
+                if gitAccess == .readWrite { gitAccess = .invalid }
                 append(common, .shared, .gitMetadata)
                 append((executionRoot as NSString).appendingPathComponent(".git"), .shared, .gitMetadata)
             }

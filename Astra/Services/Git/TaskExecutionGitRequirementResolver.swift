@@ -23,10 +23,10 @@ enum TaskExecutionGitRequirementResolver {
             if line.range(of: #"\b(?:do not|don't|never|avoid|without)\b.*\b(?:commit|push|pull|git)\b"#,
                           options: [.regularExpression, .caseInsensitive]) != nil { continue }
             if line.range(of: git + #"(?:fetch|pull|push|clone|add|commit|checkout|switch|restore|reset|clean|merge|rebase|cherry-pick|revert|stash|update-ref|gc|maintenance|submodule\s+update|remote\s+(?:add|remove|rename|set-url|update))\b"#,
-                          options: .regularExpression) != nil { return true }
-            if line.range(of: #"\bgh\s+pr\s+checkout\b"#, options: .regularExpression) != nil { return true }
+                          options: [.regularExpression, .caseInsensitive]) != nil { return true }
+            if line.range(of: #"\bgh\s+pr\s+checkout\b"#, options: [.regularExpression, .caseInsensitive]) != nil { return true }
             for command in ["branch", "tag", "config", "worktree"] {
-                guard let match = line.range(of: git + command + #"\b"#, options: .regularExpression) else { continue }
+                guard let match = line.range(of: git + command + #"\b"#, options: [.regularExpression, .caseInsensitive]) else { continue }
                 let tail = line[match.upperBound...].prefix { !["&", "`"].contains($0) }
                 let arguments = tail.split(whereSeparator: \.isWhitespace).map(String.init)
                 if ambiguousCommandWrites(command, arguments: arguments) { return true }

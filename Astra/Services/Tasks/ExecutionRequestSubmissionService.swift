@@ -479,7 +479,7 @@ enum ExecutionRequestSubmissionService {
             rollback()
             AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id,
                 fields: ["reason": "invalid_git_access_requirement"], level: .error)
-            return .failure(.persistenceFailed("Use ASTRA_GIT_ACCESS=read_only or read_write, consistent with the task's workflow and folder access."))
+            return .failure(.persistenceFailed("Use ASTRA_GIT_ACCESS=read_only or read_write, consistent with the task's workflow and folder access. Git writes require independent writable metadata; copied linked worktrees are read-only. Use a regular checkout or a non-copy worktree for Git writes."))
         }
         let request = TaskTurnRequest(
             task: task,

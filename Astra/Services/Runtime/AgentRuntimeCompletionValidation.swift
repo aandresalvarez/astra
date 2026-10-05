@@ -121,7 +121,8 @@ enum AgentRuntimeCompletionValidation {
         run: TaskRun,
         modelContext: ModelContext,
         workspacePath: String,
-        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?
+        sandboxEnforcementSnapshot: ExecutionSandboxEnforcement?,
+        resourceScope: TaskExecutionResourceScope? = nil
     ) async {
         let result = await TaskInferredValidationService.runAutomaticBaselineIfNeeded(
             task: task,
@@ -129,7 +130,8 @@ enum AgentRuntimeCompletionValidation {
             workspacePath: workspacePath,
             commandRunner: ShellValidationCommandRunner(
                 sandboxEnforcementSnapshot: sandboxEnforcementSnapshot
-            )
+            ),
+            resourceScope: resourceScope
         )
         guard result.didRun else { return }
 
