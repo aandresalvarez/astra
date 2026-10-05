@@ -83,7 +83,7 @@ enum GitHubReviewPublicationEventTypes {
     static let receiptRecovery = "github.review.receipt-recovery"
 }
 
-private enum GitHubReviewTargetResolver {
+enum GitHubReviewTargetResolver {
     struct Target {
         let repository: String
         let number: Int
@@ -172,6 +172,7 @@ enum GitHubReviewPublicationRequirement {
     }
 
     static func isPending(task: AgentTask) -> Bool {
+        if GitHubReviewThreadRequirement.isPending(task: task) { return true }
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {
@@ -449,7 +450,8 @@ final class GitHubReviewPublicationService {
     }
 
     static func pendingCandidatePath(task: AgentTask, filePaths: [String]) -> String? {
-        filePaths.first { path in
+        if let path = GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) { return path }
+        return filePaths.first { path in
             GitHubReviewArtifactPolicy.isReviewFile(path)
                 && !hasDispatched(task: task, filePath: path)
                 && !hasDismissed(task: task, filePath: path)

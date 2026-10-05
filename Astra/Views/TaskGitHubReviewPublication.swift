@@ -6,6 +6,7 @@ import ASTRAModels
 @Observable
 final class TaskGitHubReviewPublicationState {
     var proposal: GitHubReviewProposal?
+    var threadProposal: GitHubReviewThreadProposal?
     var preparationError: String?
     private(set) var isPreparing = false
 
@@ -16,6 +17,11 @@ final class TaskGitHubReviewPublicationState {
         Task { @MainActor in
             defer { isPreparing = false }
             do {
+                if let path = GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) {
+                    threadProposal = try await GitHubReviewThreadPublicationService(modelContext: modelContext)
+                        .prepare(task: task, filePath: path)
+                    return
+                }
                 proposal = try await GitHubReviewPublicationService(modelContext: modelContext)
                     .prepareFirstAvailable(task: task, filePaths: filePaths)
             } catch {
@@ -61,6 +67,15 @@ private struct TaskGitHubReviewPublicationModifier: ViewModifier {
                     },
                     onCancel: { state.proposal = nil }
                 )
+            }
+            .sheet(item: $state.threadProposal) { proposal in
+                GitHubReviewThreadPublicationSheet(proposal: proposal, onPublish: {
+                    let receipt = try await GitHubReviewThreadPublicationService(modelContext: modelContext)
+                        .publish(task: task, proposal: proposal)
+                    state.threadProposal = nil
+                    onResolved()
+                    return receipt
+                }, onCancel: { state.threadProposal = nil })
             }
             .alert("Couldn’t Prepare GitHub Review", isPresented: Binding(
                 get: { state.preparationError != nil },

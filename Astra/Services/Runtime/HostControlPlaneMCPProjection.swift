@@ -478,7 +478,7 @@ enum HostControlPlaneMCPProjection {
         case "history":
             return "Retrieve bounded pages of this task's original durable evidence without database or arbitrary file access."
         case "github":
-            return "Run GitHub control-plane commands on the host through ASTRA without provider Bash."
+            return "Run GitHub control-plane commands on the host through ASTRA without provider Bash. " + GitHubReviewThreadReadOperation.publicationGuidance
         case "gcloud":
             return "Run read-only Google Cloud control-plane commands on the host through ASTRA without provider Bash."
         case "bq":

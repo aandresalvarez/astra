@@ -80,6 +80,12 @@ and `~/Documents/Astra Dev/Workspaces`.
 - Connectors are credential and configuration profiles, not execution surfaces.
   Execution must happen through ASTRA platform tools, local tools, browser
   bridge actions, or catalog-approved MCP servers.
+- GitHub review-thread reads use fixed, paginated GraphQL queries; the broker
+  never accepts provider query text. Replies and resolutions are task-folder
+  proposals reviewed in ASTRA, bound to the PR head and live discussion, and
+  sent by the app with durable dispatch and per-action receipts. Uncertain or
+  partial publication cannot automatically resend a proposal. See
+  `docs/github-review-threads.md`.
 - The Shelf browser bridge listens only on `127.0.0.1`, but localhost is still a
   shared machine boundary. Bridge requests require a per-session token.
 - Browser control remains an ASTRA-owned platform capability. Package
