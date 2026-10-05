@@ -482,7 +482,7 @@ enum TaskWorktreeService {
         _ discard: TaskWorktreeDiscard,
         modelContext: ModelContext,
         git: any GitRepositoryOperating = GitService.shared,
-        checkoutPins: @MainActor (UUID, ModelContext) throws -> Set<String> = durableCheckoutPins(excluding:modelContext:)
+        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:)
     ) async -> Bool {
         await discardOutcome(discard, modelContext: modelContext, git: git, checkoutPins: checkoutPins) == .removed
     }
@@ -491,7 +491,7 @@ enum TaskWorktreeService {
         _ discard: TaskWorktreeDiscard,
         modelContext: ModelContext,
         git: any GitRepositoryOperating = GitService.shared,
-        checkoutPins: @MainActor (UUID, ModelContext) throws -> Set<String> = durableCheckoutPins(excluding:modelContext:)
+        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:)
     ) async -> TaskWorktreeCleanupOutcome {
         let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
         func kept(_ reason: String, retry: Bool = false) -> TaskWorktreeCleanupOutcome {
@@ -504,7 +504,7 @@ enum TaskWorktreeService {
         }
         func referenceProblem() -> String? {
             do {
-                return try checkoutPins(discard.taskID, modelContext).contains(path) ? "referenced" : nil
+                return try checkoutPins(modelContext).contains(path) ? "referenced" : nil
             } catch {
                 return "reference_check_failed"
             }
@@ -561,12 +561,12 @@ enum TaskWorktreeService {
         return .removed
     }
 
-    /// Every checkout that another task or a workspace default still points
-    /// at. Throws when the store can't be read, so cleanup keeps the worktree
-    /// instead of mistaking an error for "no references".
-    static func durableCheckoutPins(excluding taskID: UUID, modelContext: ModelContext) throws -> Set<String> {
+    /// Every checkout that a surviving task or workspace default points at.
+    /// Cleanup follows saved deletion; never exclude task UUIDs, which
+    /// Duplicate imports preserve. Unreadable stores keep the worktree.
+    static func durableCheckoutPins(modelContext: ModelContext) throws -> Set<String> {
         let tasks = try modelContext.fetch(FetchDescriptor<AgentTask>(
-            predicate: #Predicate<AgentTask> { $0.id != taskID && $0.executionRootPath != nil }
+            predicate: #Predicate<AgentTask> { $0.executionRootPath != nil }
         ))
         let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
         return Set(tasks.compactMap { standardized($0.executionRootPath) }

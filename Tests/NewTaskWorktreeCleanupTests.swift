@@ -74,6 +74,77 @@ struct NewTaskWorktreeCleanupTests {
         #expect(await TaskWorktreeCleanupService.resumePending(modelContext: reopened.mainContext, store: fixture.cleanupStore) == 0)
     }
 
+    @Test("Deleting a duplicated draft keeps the original task's same-ID checkout", arguments: [false, true])
+    func duplicateDraftKeepsOriginalCheckout(resumeAfterRestart: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let storeURL = fixture.root.appendingPathComponent("duplicate.sqlite")
+        let store = try persistentContainer(at: storeURL)
+        let context = store.mainContext
+        let (original, _) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(original.workspace)
+        let originalIdentity = original.persistentModelID
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: repository.path))
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: configURL)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
+        )
+        let duplicateWorkspace = try #require(coordinator.importFromConfig(
+            at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .duplicate }
+        ))
+        let duplicate = try #require(duplicateWorkspace.tasks.first)
+        try context.save()
+        #expect(duplicateWorkspace.id != workspace.id)
+        #expect(duplicate.id == original.id)
+        #expect(duplicate.persistentModelID != originalIdentity)
+        #expect(duplicate.executionRootPath == original.executionRootPath)
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: duplicate))
+        if resumeAfterRestart { try fixture.cleanupStore.record(discard) }
+        context.delete(duplicate)
+        try context.save()
+
+        let reopened = try persistentContainer(at: storeURL)
+        let cleanupContext = resumeAfterRestart ? reopened.mainContext : context
+        if resumeAfterRestart {
+            #expect(await TaskWorktreeCleanupService.resumePending(
+                modelContext: cleanupContext, store: fixture.cleanupStore
+            ) == 0)
+            #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
+        } else {
+            #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: cleanupContext) == .kept("referenced"))
+        }
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+        let survivors = try cleanupContext.fetch(FetchDescriptor<AgentTask>())
+        #expect(survivors.count == 1)
+        let survivor = try #require(survivors.first)
+        #expect(survivor.id == original.id)
+        #expect(survivor.workspace?.id == workspace.id)
+        #expect(survivor.executionRootPath == discard.worktreePath)
+
+        cleanupContext.delete(survivor)
+        try cleanupContext.save()
+        #expect(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: cleanupContext))
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
+    @Test("Reference checks keep a checkout while its owning draft still exists")
+    func liveTaskPinPreventsPrematureCleanup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let (draft, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: store.mainContext) == .kept("referenced"))
+        #expect(!draft.isDeleted)
+        #expect(try store.mainContext.fetchCount(FetchDescriptor<AgentTask>()) == 1)
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
     @Test("The intent is saved before deletion and cleared only after cleanup finishes")
     func cleanupIntentPrecedesDeletion() async throws {
         let fixture = try Fixture()

@@ -585,12 +585,12 @@ struct NewTaskWorktreeBaseTests {
         try context.save()
 
         #expect(!(await TaskWorktreeService.discardUnusedWorktree(
-            discard, modelContext: context, checkoutPins: { _, _ in throw StoreUnavailable() }
+            discard, modelContext: context, checkoutPins: { _ in throw StoreUnavailable() }
         )))
         #expect(FileManager.default.fileExists(atPath: path))
         let calls = Calls()
         #expect(!(await TaskWorktreeService.discardUnusedWorktree(
-            discard, modelContext: context, checkoutPins: { _, _ in
+            discard, modelContext: context, checkoutPins: { _ in
                 calls.count += 1
                 if calls.count > 1 { throw StoreUnavailable() }
                 return []

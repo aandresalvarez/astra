@@ -125,10 +125,11 @@ Worktrees are kept after execution and can be managed from the Repository
 panel. **Start Over** or deleting a draft that never ran removes its worktree
 and branch once the deletion is saved, but only if nothing happened in them.
 ASTRA keeps a worktree that has edits, commits, or ignored files such as build
-output or `.env`; one that another task or the workspace default uses; and one
-it can't confirm is unused. Leave the checkbox off to use the existing checkout
-behavior. If a task's new worktree is removed, launch fails rather than falling
-back to the original repository.
+output or `.env`, that another task or the workspace default uses, or that it
+can't confirm is unused. Tasks copied by **Duplicate** import still protect their
+shared checkout, even when they retain the original task ID. Leave the checkbox
+off to use the existing checkout behavior. If a task's new worktree is removed,
+launch fails rather than falling back to the original repository.
 Pending draft cleanup is recorded in the channel's App Support
 `WorktreeCleanup/` outbox before the draft is deleted. If ASTRA quits during
 cleanup, startup retries it, including a branch left after its worktree was

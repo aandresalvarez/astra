@@ -123,13 +123,14 @@ enum TaskWorktreeCleanupService {
             guard try store.read(url) == discard else { throw TaskWorktreeCleanupStore.StoreError.invalidRecord }
             let outcome = await TaskWorktreeService.discardOutcome(
                 discard, modelContext: modelContext, git: git,
-                checkoutPins: { taskID, context in
+                checkoutPins: { context in
                     // A fresh context reads committed deletion/reference state,
                     // not a caller's unsaved deletion after a failed save.
                     let durable = ModelContext(context.container)
+                    let taskID = discard.taskID
                     let descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-                    var pins = try TaskWorktreeService.durableCheckoutPins(excluding: taskID, modelContext: durable)
-                    pins.formUnion(try TaskWorktreeService.durableCheckoutPins(excluding: taskID, modelContext: context))
+                    var pins = try TaskWorktreeService.durableCheckoutPins(modelContext: durable)
+                    pins.formUnion(try TaskWorktreeService.durableCheckoutPins(modelContext: context))
                     if try durable.fetchCount(descriptor) > 0 {
                         pins.insert(WorkspacePathPresentation.standardizedPath(discard.worktreePath))
                     }
