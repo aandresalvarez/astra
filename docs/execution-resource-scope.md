@@ -7,7 +7,7 @@ scope, not that independently decodable column. `AgentTask.acceptedResourceScope
 is transient and populated only on detached launch views. Editing the live task
 does not edit an accepted scope.
 
-Version 2 records original paths, canonical identities, access and provenance:
+Version 3 records original paths, canonical identities, access and provenance:
 execution root, additional folder, task storage, input, Git metadata, environment
 mount, and copy-isolation source. Admission, native directory arguments, runtime
 grants, Docker mounts and folder guidance consume these projections. Launch
@@ -60,6 +60,12 @@ read. Ordinary accepted files are read at their accepted identities, not stored
 as immutable content snapshots.
 
 ## Git and hooks
+
+Git metadata includes both the common directory and each selected worktree's
+`.git` entry. Linked-worktree pointer files receive the same accepted access as
+their common directory, including native write denial and read-only Docker
+overlays for inspection. Copy-isolated linked pointers remain read-only alongside
+their external metadata.
 
 Git metadata is read-only by default, including when Git inspection is discovered
 only in runtime context. Inspection uses `GIT_OPTIONAL_LOCKS=0`; the host boundary
@@ -116,7 +122,8 @@ participates in read-only boundary selection and denial generation, including
 copy sources beneath ambient writable temporary directories.
 
 Queued requests written before scopes existed, version-1 scopes lacking the
-frozen input/environment contract, and malformed or unsupported
+frozen input/environment contract, version-2 scopes lacking guaranteed Git pointer
+protection, and malformed or unsupported
 scopes, fail with `execution_resource_scope_requires_resubmission`. Their source
 events and request records are retained; the user can submit a new turn. They
 are not silently rebuilt from today's mutable folder settings. Existing recovery

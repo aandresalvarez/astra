@@ -83,6 +83,10 @@ enum TaskExecutionResourceScopeResolver {
         for gitRoot in gitRoots {
             if let directory = TaskExecutionResourceClaimResolver.gitCommonDirectory(for: gitRoot) {
                 append(directory, gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata)
+                if let worktree = TaskExecutionResourceClaimResolver.gitWorktreeRoot(for: gitRoot) {
+                    append((worktree as NSString).appendingPathComponent(".git"),
+                           gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata)
+                }
             }
         }
         if task.isolationStrategy == .copy {
@@ -92,6 +96,7 @@ enum TaskExecutionResourceScopeResolver {
                 append((executionRoot as NSString).appendingPathComponent(".git"), gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata)
             } else if let common {
                 append(common, .shared, .gitMetadata)
+                append((executionRoot as NSString).appendingPathComponent(".git"), .shared, .gitMetadata)
             }
         }
         return TaskExecutionResourceScope(

@@ -294,6 +294,62 @@ struct TaskExecutionResourceScopeTests {
         #expect(mounts.filter { $0.access == .readWrite }.allSatisfy { scope.coversWrite(to: $0.hostPath) })
     }
 
+    @Test("Linked worktree pointers follow accepted Git access in scope and Docker", arguments: [false, true])
+    func linkedWorktreePointerScope(writableGit: Bool) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let nested = fixture.first.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let pointer = fixture.first.appendingPathComponent(".git").path
+        for root in [fixture.first, nested] {
+            let task = fixture.task(root: root)
+            task.constraints = ["ASTRA_GIT_ACCESS=\(writableGit ? "read_write" : "read_only")"]
+            let environment = WorkspaceExecutionEnvironment(
+                id: "pointer", kind: .dockerImage, displayName: "Pointer", image: "test:latest")
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+            let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+            task.acceptedResourceScope = scope
+            #expect(scope.resources.contains {
+                $0.path == pointer && $0.role == .gitMetadata
+                    && $0.access == (writableGit ? .exclusive : .shared)
+            })
+            #expect(scope.coversWrite(to: pointer) == writableGit)
+            let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: root.path, environment: environment, task: task)
+            #expect(mounts.contains {
+                $0.hostPath == pointer && $0.access == (writableGit ? .readWrite : .readOnly)
+            })
+            if !writableGit, root == fixture.first {
+                #expect(mounts.contains {
+                    $0.hostPath == pointer && $0.containerPath == environment.containerWorkingDirectory + "/.git"
+                        && $0.access == .readOnly
+                })
+            }
+        }
+        let copy = fixture.task(root: fixture.first)
+        copy.isolationStrategy = .copy
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: copy)
+        #expect(scope.resources.contains {
+            $0.path == scope.workingDirectory + "/.git" && $0.role == .gitMetadata && $0.access == .shared
+        })
+        #expect(!scope.coversWrite(to: scope.workingDirectory + "/.git"))
+    }
+
+    @Test("Scopes accepted before pointer protection require resubmission")
+    func legacyPointerScopeRequiresResubmission() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = fixture.task(root: fixture.first)
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(scope)) as? [String: Any])
+        json["version"] = 2
+        let legacy = try JSONDecoder().decode(TaskExecutionResourceScope.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(!legacy.isValid)
+        task.acceptedResourceScope = legacy
+        #expect(launch(task, runtime: .claudeCode, home: fixture.root).diagnostics.contains {
+            $0.code == "execution_resource_scope_invalid" && $0.severity == .error
+        })
+    }
+
     @Test("An accepted symlink identity cannot silently move to another folder")
     func symlinkDrift() throws {
         let fixture = try Fixture()
@@ -328,6 +384,8 @@ struct TaskExecutionResourceScopeTests {
         let fixture = try Fixture(base: TestRepositoryRoot.resolve().appendingPathComponent(".build"))
         defer { fixture.remove() }
         let task = fixture.task(root: fixture.first)
+        let pointer = fixture.first.appendingPathComponent(".git")
+        let originalPointer = try String(contentsOf: pointer, encoding: .utf8)
         task.acceptedResourceScope = TaskExecutionResourceScopeResolver.resolve(task: task)
         let resourcePlan = launch(task, runtime: .claudeCode, home: fixture.root)
         var environment = ProcessInfo.processInfo.environment
@@ -341,7 +399,12 @@ struct TaskExecutionResourceScopeTests {
                 /usr/bin/touch scope-edit || exit 12
                 if /usr/bin/git update-ref refs/heads/unadmitted HEAD 2>/dev/null; then exit 13; fi
                 if /usr/bin/touch "$1/escaped" 2>/dev/null; then exit 14; fi
-                """, "scope-test", fixture.repository.path],
+                if (printf 'gitdir: /tmp/redirected\\n' > "$2") 2>/dev/null; then exit 15; fi
+                if /bin/rm "$2" 2>/dev/null; then exit 16; fi
+                printf 'replacement\\n' > replacement-pointer || exit 17
+                if /bin/mv -f replacement-pointer "$2" 2>/dev/null; then exit 18; fi
+                /usr/bin/git --no-optional-locks status --porcelain >/dev/null || exit 19
+                """, "scope-test", fixture.repository.path, pointer.path],
             currentDirectory: fixture.first.path, environment: environment,
             browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: false,
             sandboxReadablePaths: resourcePlan.hostReadablePaths,
@@ -363,6 +426,7 @@ struct TaskExecutionResourceScopeTests {
         try process.run()
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
+        #expect(try String(contentsOf: pointer, encoding: .utf8) == originalPointer)
         #expect(FileManager.default.fileExists(atPath: fixture.first.appendingPathComponent("scope-edit").path))
     }
 
@@ -493,7 +557,7 @@ struct TaskExecutionResourceScopeTests {
             try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
             try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
             _ = try git(["init", "-q"], at: repository)
-            _ = try git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            _ = try git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                          "commit", "-qm", "Initial", "--allow-empty"], at: repository)
             _ = try git(["worktree", "add", "-qb", "first", first.path], at: repository)
             _ = try git(["worktree", "add", "-qb", "second", second.path], at: repository)

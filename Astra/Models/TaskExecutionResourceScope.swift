@@ -4,7 +4,7 @@ import ASTRACore
 /// Accepted filesystem authority. Launch copies and manifests are projections
 /// of this value; they must never resolve a larger scope from live settings.
 public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
-    public static let currentVersion = 2
+    public static let currentVersion = 3
     public enum GitAccess: String, Codable, Sendable { case readOnly, readWrite, invalid }
 
     public struct PromptInput: Codable, Equatable, Sendable {
