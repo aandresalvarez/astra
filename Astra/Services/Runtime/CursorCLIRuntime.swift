@@ -65,6 +65,7 @@ enum CursorCLIRuntime {
         taskEnvironment: [String: String],
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
+        resumeSessionID: String? = nil,
         permissionArguments: [String]
     ) -> CursorCLICommandPlan {
         let providerModel = resolvedModelName(model)
@@ -76,6 +77,13 @@ enum CursorCLIRuntime {
             "--model", providerModel
         ]
         args += permissionArguments
+        // `--resume <chatId>` reloads that chat's history. cursor-agent does NOT
+        // reject an unknown id: it silently opens a fresh chat under it, so only
+        // ids captured from a prior ASTRA run of this task may reach here.
+        if let resumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resumeSessionID.isEmpty {
+            args += ["--resume", resumeSessionID]
+        }
         args.append(prompt)
 
         var extraVars: [String: String] = [

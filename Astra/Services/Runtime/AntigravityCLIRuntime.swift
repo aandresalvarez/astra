@@ -439,6 +439,7 @@ enum AntigravityCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         diagnosticLogPath: String? = nil,
+        resumeSessionID: String? = nil,
         permissionArguments: [String],
         structuredOutputAllowed: Bool = true,
         defaults: UserDefaults = .standard
@@ -461,6 +462,14 @@ enum AntigravityCLIRuntime {
             args += ["--output-format", "stream-json"]
         }
         args += ["--print-timeout", printTimeoutArgument(timeoutSeconds)]
+        // `--conversation <id>` reloads that conversation (verified: the second
+        // turn reports `num_turns: 2` under the same id). agy only warns on an
+        // unknown id and carries on in a fresh conversation, so only ids ASTRA
+        // captured from a prior stream-json `init` may reach here.
+        if let resumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resumeSessionID.isEmpty {
+            args += ["--conversation", resumeSessionID]
+        }
         if let diagnosticLogPath,
            !diagnosticLogPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             args += ["--log-file", diagnosticLogPath]
