@@ -405,6 +405,73 @@ struct NewTaskWorktreeBaseTests {
         #expect(reopened.base == .currentBranch)
     }
 
+    @Test("Saved draft controls persist without another chat message", arguments: ["enable", "base", "disable"])
+    func changedControlsSurviveNavigation(change: String) throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Draft", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        var selection = NewTaskWorktreeSelection()
+        if change != "enable" {
+            selection.isEnabled = true
+            NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        }
+        try context.save()
+
+        switch change {
+        case "base": selection.base = .currentBranch
+        case "disable": selection.isEnabled = false
+        default: selection.isEnabled = true
+        }
+        try NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: context)
+        try NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: context)
+
+        let reopened = try #require(ModelContext(store).fetch(FetchDescriptor<AgentTask>()).first)
+        var restored = NewTaskWorktreeSelection()
+        NewTaskWorktreeComposerFlow.restoreChoice(&restored, from: reopened)
+        #expect(restored.requestPayload == selection.requestPayload)
+        #expect(reopened.events.filter { $0.hasType(TaskEventTypes.Task.worktreeRequested) }.count == (change == "enable" ? 1 : 2))
+        let exported = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let importedStore = try Fixture.container()
+        let imported = WorkspaceConfigManager.importWorkspace(from: exported, modelContext: importedStore.mainContext)
+        #expect(TaskWorktreeService.latestRequest(for: try #require(imported.tasks.first)) == selection.requestPayload)
+    }
+
+    @Test("A failed control save surfaces an error and retains the previous durable choice")
+    func choiceSaveFailureKeepsPreviousRequest() throws {
+        struct StoreUnavailable: Error {}
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Draft", primaryPath: "/repos/app")
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        var selection = NewTaskWorktreeSelection()
+        selection.isEnabled = true
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        try context.save()
+        let previous = selection.requestPayload
+        selection.isEnabled = false
+
+        #expect(throws: TaskWorktreeCreationError.self) {
+            try NewTaskWorktreeComposerFlow.persistChoice(
+                selection, on: draft, modelContext: context, persist: { _, _ in throw StoreUnavailable() }
+            )
+        }
+        #expect(TaskWorktreeService.latestRequest(for: draft) == previous)
+        let reopened = try #require(ModelContext(store).fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(TaskWorktreeService.latestRequest(for: reopened) == previous)
+
+        try NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: context, persist: { _, context in
+            try context.save()
+        })
+        #expect(TaskWorktreeService.latestRequest(for: draft) == selection.requestPayload)
+    }
+
     // MARK: - Cleanup
 
     @Test("Discarding an untouched draft removes its worktree and branch")
@@ -551,14 +618,16 @@ struct NewTaskWorktreeBaseTests {
         context.delete(draft)
 
         let unsaved = TaskWorktreeService.saveDeletionThenDiscard(
-            discard, workspace: workspace, modelContext: context, persist: { _, _ in false }
+            discard, workspace: workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            persist: { _, _ in false }
         )
         #expect(unsaved == nil)
         try await Task.sleep(for: .milliseconds(50))
         #expect(FileManager.default.fileExists(atPath: path))
 
         let cleanup = try #require(TaskWorktreeService.saveDeletionThenDiscard(
-            discard, workspace: workspace, modelContext: context, persist: { _, context in
+            discard, workspace: workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            persist: { _, context in
                 (try? context.save()) != nil
             }
         ))
@@ -595,7 +664,9 @@ struct NewTaskWorktreeBaseTests {
         let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace(repository, in: context))
         try await prepare(draft, repository, context: context, fixture: fixture)
         let path = try #require(draft.executionRootPath)
-        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue(poolSize: 0))
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
+        )
 
         _ = coordinator.deleteTask(draft)
 

@@ -10,6 +10,7 @@ enum TaskWorktreeCreationError: LocalizedError {
     case baseUnavailable(String)
     case persistenceFailed(path: String, reason: String)
     case recoveryPersistenceFailed(String)
+    case choicePersistenceFailed(String)
     case noDraft
 
     var errorDescription: String? {
@@ -24,6 +25,8 @@ enum TaskWorktreeCreationError: LocalizedError {
             "The worktree was created at \(path), but ASTRA could not save the task. The worktree has been kept; no agent was launched. \(reason)"
         case .recoveryPersistenceFailed(let reason):
             "ASTRA could not save the recovered draft. Its checkout has been kept; no agent was launched. \(reason)"
+        case .choicePersistenceFailed(let reason):
+            "ASTRA could not save the worktree choice. The previous choice has been kept. \(reason)"
         case .noDraft:
             "ASTRA needs a saved draft to hold the new worktree. Describe the task in a message, then try again."
         }
@@ -52,7 +55,7 @@ struct TaskWorktreeBase: Equatable, Sendable {
 
 /// Value snapshot of a draft's worktree, taken before the draft is deleted so
 /// cleanup can run once the model object is gone.
-struct TaskWorktreeDiscard: Equatable, Sendable {
+struct TaskWorktreeDiscard: Codable, Equatable, Sendable {
     let taskID: UUID
     let repositoryPath: String
     let worktreePath: String
@@ -268,7 +271,7 @@ enum TaskWorktreeService {
 
     static func latestRequest(for task: AgentTask) -> TaskWorktreeRequestPayload? {
         task.events
-            .filter { $0.hasType(TaskEventTypes.Task.worktreeRequested) }
+            .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreeRequested) }
             .max { $0.timestamp < $1.timestamp }
             .flatMap { try? $0.decodePayload(as: TaskWorktreeRequestPayload.self).get() }
     }
@@ -481,14 +484,23 @@ enum TaskWorktreeService {
         git: any GitRepositoryOperating = GitService.shared,
         checkoutPins: @MainActor (UUID, ModelContext) throws -> Set<String> = durableCheckoutPins(excluding:modelContext:)
     ) async -> Bool {
+        await discardOutcome(discard, modelContext: modelContext, git: git, checkoutPins: checkoutPins) == .removed
+    }
+
+    static func discardOutcome(
+        _ discard: TaskWorktreeDiscard,
+        modelContext: ModelContext,
+        git: any GitRepositoryOperating = GitService.shared,
+        checkoutPins: @MainActor (UUID, ModelContext) throws -> Set<String> = durableCheckoutPins(excluding:modelContext:)
+    ) async -> TaskWorktreeCleanupOutcome {
         let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
-        func kept(_ reason: String) -> Bool {
+        func kept(_ reason: String, retry: Bool = false) -> TaskWorktreeCleanupOutcome {
             AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
                 "worktree": path,
                 "branch": discard.branch,
                 "reason": reason
             ])
-            return false
+            return retry ? .retry(reason) : .kept(reason)
         }
         func referenceProblem() -> String? {
             do {
@@ -497,36 +509,56 @@ enum TaskWorktreeService {
                 return "reference_check_failed"
             }
         }
-        if let problem = referenceProblem() { return kept(problem) }
-        guard FileManager.default.fileExists(atPath: path) else { return kept("missing") }
-        guard await git.getStatusFiles(at: path).isEmpty else { return kept("uncommitted_changes") }
-        guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
-        guard await git.getCurrentBranch(at: path) == discard.branch else { return kept("branch_switched") }
-        guard await git.getCommitSHA("refs/heads/\(discard.branch)", at: discard.repositoryPath)
-                == discard.baseCommit else { return kept("has_commits") }
-        if let problem = referenceProblem() { return kept(problem) }
-        do {
-            try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: false)
-        } catch {
-            return kept("remove_failed")
+        if Task.isCancelled { return kept("cancelled", retry: true) }
+        if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
+        guard await git.getCommitSHA("HEAD", at: discard.repositoryPath) != nil else {
+            return kept("repository_unavailable", retry: true)
         }
-        let branchInUse = await git.listWorktrees(at: discard.repositoryPath)
-            .contains { $0.branch == discard.branch }
-        var branchDeleted = false
-        if !branchInUse {
+        let exists = FileManager.default.fileExists(atPath: path)
+        if exists {
+            guard await git.getStatusFiles(at: path).isEmpty else { return kept("uncommitted_changes") }
+            guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
+            let branch = await git.getCurrentBranch(at: path)
+            guard branch != "unknown" else { return kept("branch_unavailable", retry: true) }
+            guard branch == discard.branch else { return kept("branch_switched") }
+        }
+        let commit = await git.getCommitSHA("refs/heads/\(discard.branch)", at: discard.repositoryPath)
+        if let commit {
+            guard commit == discard.baseCommit else { return kept("has_commits") }
+        } else if exists {
+            return kept("branch_unavailable", retry: true)
+        }
+        let registered = await git.listWorktrees(at: discard.repositoryPath)
+        guard !registered.isEmpty else { return kept("registry_unavailable", retry: true) }
+        if Task.isCancelled { return kept("cancelled", retry: true) }
+        if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
+        let isRegistered = registered.contains {
+            URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path
+                == URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        }
+        if exists || isRegistered {
+            do {
+                try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: false)
+            } catch {
+                return kept("remove_failed", retry: true)
+            }
+        }
+        let remaining = await git.listWorktrees(at: discard.repositoryPath)
+        guard !remaining.isEmpty else { return kept("registry_unavailable", retry: true) }
+        guard !remaining.contains(where: { $0.branch == discard.branch }) else { return kept("branch_in_use") }
+        if commit != nil {
             do {
                 try await git.deleteLocalBranch(discard.branch, ifAt: discard.baseCommit, at: discard.repositoryPath)
-                branchDeleted = true
             } catch {
-                branchDeleted = false
+                return kept("branch_delete_failed", retry: true)
             }
         }
         AppLogger.breadcrumb(action: "task_worktree_discarded", category: "Git", taskID: discard.taskID, fields: [
             "worktree": path,
             "branch": discard.branch,
-            "branch_deleted": branchDeleted ? "true" : "false"
+            "branch_deleted": "true"
         ])
-        return true
+        return .removed
     }
 
     /// Every checkout that another task or a workspace default still points
@@ -541,19 +573,36 @@ enum TaskWorktreeService {
             + workspaces.compactMap { standardized($0.activeWorkingPath) })
     }
 
-    /// Saves a task deletion, then removes the deleted draft's unused
-    /// worktree. Cleanup runs only once the deletion is durable: a draft that
-    /// reappears after a failed save still finds its checkout. Returns the
-    /// cleanup, if one started.
+    /// Records cleanup before deleting the draft, then saves the deletion.
+    /// Removal starts only after both are durable and resumes on next launch
+    /// if interrupted. A failed intent write never runs `delete`.
     @discardableResult
     static func saveDeletionThenDiscard(
         _ discard: TaskWorktreeDiscard?,
         workspace: Workspace?,
         modelContext: ModelContext,
+        cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
+        delete: @MainActor () -> Void = {},
         persist: @MainActor (Workspace?, ModelContext) -> Bool = { workspace, modelContext in
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         }
     ) -> Task<Bool, Never>? {
+        if let discard {
+            do {
+                try cleanupStore.record(discard)
+                AppLogger.breadcrumb(action: "task_worktree_cleanup_requested", category: "Git", taskID: discard.taskID, fields: [
+                    "worktree": discard.worktreePath,
+                    "branch": discard.branch
+                ])
+            } catch {
+                AppLogger.audit(.taskFailed, category: "Persistence", taskID: discard.taskID, fields: [
+                    "reason": "worktree_cleanup_intent_save_failed",
+                    "error": error.localizedDescription
+                ], level: .error)
+                return nil
+            }
+        }
+        delete()
         let saved = persist(workspace, modelContext)
         guard let discard else { return nil }
         guard saved else {
@@ -565,7 +614,7 @@ enum TaskWorktreeService {
             return nil
         }
         return Task { @MainActor in
-            await discardUnusedWorktree(discard, modelContext: modelContext)
+            await TaskWorktreeCleanupService.process(discard, store: cleanupStore, modelContext: modelContext)
         }
     }
 

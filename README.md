@@ -87,7 +87,8 @@ folder is the branch name with `/` replaced by `-`, under the app's
 The worktree is created only when it is needed: when the task starts, or
 when Goal Mode planning first reads the code. Plain chat messages don't create
 one. The strip shows the worktree being created and, if the task cannot start,
-the reason. A draft keeps its choice when reopened. A template started with the
+the reason. Changes to a saved draft's checkbox or starting branch are saved
+immediately, so navigating away and reopening keeps the latest choice. A template started with the
 box checked creates one worktree, named after the template's task title, and
 all of the template's tasks run in it. Template hooks are injected and restored
 in that checkout, not in the source repository. Switching workspaces cancels in-flight
@@ -116,6 +117,9 @@ Git-metadata restrictions. Write-capable tasks in sibling worktrees share a
 Git admission lock even when their prompts don't mention Git; read-only tasks
 use a shared lock. Docker also mounts read-only workspace ancestors so files
 outside the selected repository remain readable through mapped container paths.
+Those folders remain in execution and planning prompts under their original
+workspace labels, marked read-only, and hold shared admission claims so another
+task cannot write them while they are being read.
 
 Worktrees are kept after execution and can be managed from the Repository
 panel. **Start Over** or deleting a draft that never ran removes its worktree
@@ -125,6 +129,10 @@ output or `.env`; one that another task or the workspace default uses; and one
 it can't confirm is unused. Leave the checkbox off to use the existing checkout
 behavior. If a task's new worktree is removed, launch fails rather than falling
 back to the original repository.
+Pending draft cleanup is recorded in the channel's App Support
+`WorktreeCleanup/` outbox before the draft is deleted. If ASTRA quits during
+cleanup, startup retries it, including a branch left after its worktree was
+removed. Failed deletion saves or reference checks never authorize removal.
 
 ## Requirements
 

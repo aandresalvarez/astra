@@ -9,17 +9,20 @@ final class TaskLifecycleCoordinator {
     let modelContext: ModelContext
     let taskQueue: TaskQueue
     private let reviewOriginURL: (String) async -> String?
+    private let worktreeCleanupStore: TaskWorktreeCleanupStore
 
     init(
         modelContext: ModelContext,
         taskQueue: TaskQueue,
         reviewOriginURL: @escaping (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
-        }
+        },
+        worktreeCleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore()
     ) {
         self.modelContext = modelContext
         self.taskQueue = taskQueue
         self.reviewOriginURL = reviewOriginURL
+        self.worktreeCleanupStore = worktreeCleanupStore
     }
 
     /// Canonical follow-up message sent when the user resumes a previously
@@ -547,9 +550,13 @@ final class TaskLifecycleCoordinator {
         let unusedWorktree = task.status == .draft && task.runs.isEmpty
             ? TaskWorktreeService.discardSnapshot(for: task)
             : nil
-        cancelAndRemoveTurnRequests(for: task)
-        modelContext.delete(task)
-        TaskWorktreeService.saveDeletionThenDiscard(unusedWorktree, workspace: workspace, modelContext: modelContext)
+        TaskWorktreeService.saveDeletionThenDiscard(
+            unusedWorktree, workspace: workspace, modelContext: modelContext, cleanupStore: worktreeCleanupStore,
+            delete: {
+                cancelAndRemoveTurnRequests(for: task)
+                modelContext.delete(task)
+            }
+        )
         return workspace
     }
 

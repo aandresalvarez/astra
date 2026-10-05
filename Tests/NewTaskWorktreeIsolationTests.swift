@@ -133,6 +133,16 @@ struct NewTaskWorktreeIsolationTests {
         let access = TaskWorkspaceAccess(task: task)
         #expect(access.runtimeWorkspacePaths == [path])
         #expect(access.runtimeReadOnlyWorkspacePaths == [projects.path])
+        let configured = WorkspacePathPresentation.descriptors(
+            primaryPath: workspace.primaryPath, additionalPaths: workspace.additionalPaths
+        )
+        #expect(access.runtimeReadOnlyWorkspaceFolders == configured.filter { $0.path == projects.path })
+        #expect(access.runtimeWorkspaceFolders.map(\.path) == [path, projects.path])
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("- Primary Projects (read-only): \(projects.path)"))
+        #expect(prompt.contains("(active code root): \(path)"))
+        let followUp = AgentPromptBuilder.buildFollowUpMessage(message: "Continue", task: task)
+        #expect(followUp.contains("Primary Projects (read-only): \(projects.path)"))
         let nativePaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
         #expect(nativePaths.contains(path))
         #expect(!nativePaths.contains(projects.path))
@@ -143,6 +153,64 @@ struct NewTaskWorktreeIsolationTests {
         #expect(!plan.hostWritablePaths.contains(repository.path))
         #expect(plan.hostReadablePaths.contains(projects.path))
         #expect(plan.hostWritablePaths.contains(repository.appendingPathComponent(".git").path))
+    }
+
+    @Test("Read-only ancestors retain configured additional-folder labels and shared admission claims", arguments: [false, true])
+    func readOnlyAncestorsHaveContextAndClaims(hasTemplateHooks: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let projects = fixture.root.appendingPathComponent("Projects", isDirectory: true)
+        let repository = try fixture.repository("Projects/App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(
+            name: "Workspace", primaryPath: fixture.storage.path, additionalPaths: [projects.path, repository.path]
+        )
+        context.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Improve formatting", workspace: workspace)
+        if hasTemplateHooks {
+            task.templateHooksJSON = #"{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"true"}]}]}"#
+        }
+        let path = try await prepare(task, repository, context: context, fixture: fixture)
+        let access = TaskWorkspaceAccess(task: task)
+        let configured = try #require(WorkspacePathPresentation.descriptor(
+            for: projects.path, primaryPath: workspace.primaryPath, additionalPaths: workspace.additionalPaths
+        ))
+        #expect(access.runtimeReadOnlyWorkspaceFolders == [configured])
+        #expect(access.runtimeWorkspaceFolders.contains(configured))
+        #expect(AgentPromptBuilder.buildPrompt(for: task).contains("- Additional Projects (read-only): \(projects.path)"))
+        #expect(AgentPromptBuilder.buildFollowUpMessage(message: "Continue", task: task)
+            .contains("Additional Projects (read-only): \(projects.path)"))
+
+        let claims = TaskExecutionResourceClaimResolver.claims(for: task)
+        #expect(claims.first?.key == path)
+        #expect(claims.first?.access == .exclusive)
+        #expect(claims.contains { $0.kind == .workspace && $0.key == projects.path && $0.access == .shared })
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceClaims: claims)
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: request, task: task))
+        let legacy = TaskTurnRequest(
+            task: task, messageEventID: UUID(), sequence: 2, resourceClaims: claims.filter { $0.key != projects.path }
+        )
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: legacy, task: task))
+        let liveClaims = TaskExecutionResourceClaimResolver.admissionClaims(for: legacy, task: task)
+        #expect(liveClaims.contains { $0.kind == .workspace && $0.key == projects.path && $0.access == .shared })
+        let lease = TaskExecutionResourceAdmissionPolicy.lockClaims(for: legacy, task: task, runMode: "test")
+        #expect(lease.contains { $0.resourceKind == .workspace && $0.resourceKey == projects.path && $0.accessMode == .readOnly })
+        #expect(TaskExecutionResourceAdmissionPolicy.workspaceAccess(from: lease) == .exclusive)
+        let direct = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: nil, task: task, runMode: "test", fallbackAccess: .write
+        )
+        #expect(direct.contains { $0.resourceKind == .workspace && $0.resourceKey == projects.path && $0.accessMode == .readOnly })
+
+        let siblingWorkspace = Workspace(name: "Projects", primaryPath: projects.path)
+        let sibling = AgentTask(title: "Sibling", goal: "Update another project", workspace: siblingWorkspace)
+        let writer = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: sibling, runMode: "test")
+        #expect(!TaskExecutionResourceBroker.canAcquire(writer, active: lease))
+        #expect(!TaskExecutionResourceBroker.canAcquire(lease, active: writer))
+        let reader = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: nil, task: sibling, runMode: "test", fallbackAccess: .readOnly
+        )
+        #expect(TaskExecutionResourceBroker.canAcquire(reader, active: lease))
     }
 
     @Test("The worktree's Git metadata reaches ASTRA-confined processes only, and only while Git registers the worktree")

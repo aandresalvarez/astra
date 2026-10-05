@@ -18,6 +18,9 @@ enum TaskExecutionResourceClaimResolver {
         let workspaceClaims = keys.map {
             TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access)
         }
+        let readOnlyClaims = readOnlyWorkspaceKeys(for: task).map {
+            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .shared)
+        }
         // Prepared worktrees always receive their verified shared Git directory,
         // regardless of prompt intent. Other checkouts retain the credential
         // grant's Git-intent predicate, including its context-only known gap
@@ -30,7 +33,7 @@ enum TaskExecutionResourceClaimResolver {
         let credentialKeys = mutatesGitMetadata ? gitCommonDirectoryKeys(for: keys) : []
         let worktreeKeys = TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths
         var seen = Set<String>()
-        return workspaceClaims + (worktreeKeys + credentialKeys).compactMap { rawKey in
+        return workspaceClaims + readOnlyClaims + (worktreeKeys + credentialKeys).compactMap { rawKey in
             guard let key = standardizedPath(rawKey), seen.insert(key).inserted else { return nil }
             return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access)
         }
@@ -80,7 +83,8 @@ enum TaskExecutionResourceClaimResolver {
             claims = []
         }
         return applyingIntrinsicWorkflowClaims(
-            applyingWorktreeGitClaims(claims, task: task), request: request, task: task
+            applyingWorktreeGitClaims(applyingReadOnlyWorkspaceClaims(claims, task: task), task: task),
+            request: request, task: task
         )
     }
 
@@ -108,8 +112,9 @@ enum TaskExecutionResourceClaimResolver {
     /// when the primary working directory is unchanged.
     static func hasWorkspacePathDrift(request: TaskTurnRequest?, task: AgentTask) -> Bool {
         guard let request else { return false }
+        let readOnlyKeys = Set(readOnlyWorkspaceKeys(for: task))
         let persistedKeys = Set(request.resourceClaims
-            .filter { $0.kind == .workspace }
+            .filter { $0.kind == .workspace && !readOnlyKeys.contains($0.key) }
             .map(\.key))
         let liveKeys = Set(workspaceKeys(for: task))
         guard !persistedKeys.isEmpty, !liveKeys.isEmpty else { return false }
@@ -171,6 +176,15 @@ enum TaskExecutionResourceClaimResolver {
         }
     }
 
+    static func readOnlyWorkspaceKeys(for task: AgentTask) -> [String] {
+        let writable = Set(workspaceKeys(for: task))
+        var seen = Set<String>()
+        return TaskWorkspaceAccess(task: task).runtimeReadOnlyWorkspacePaths.compactMap { path in
+            guard let key = standardizedPath(path), !writable.contains(key), seen.insert(key).inserted else { return nil }
+            return key
+        }
+    }
+
     /// Mirrors `ClaudeSettingsStore.injectTemplateHooks`' own write guard: an
     /// empty or `{}` payload never touches the settings file.
     private static func injectsTemplateHooks(_ task: AgentTask) -> Bool {
@@ -184,6 +198,16 @@ enum TaskExecutionResourceClaimResolver {
     /// provider's read-only boundary.
     private static func requiresExclusiveWorkflowAccess(_ task: AgentTask) -> Bool {
         task.isolationStrategy == .gitBranch || task.validationStrategy == .runTests
+    }
+
+    private static func applyingReadOnlyWorkspaceClaims(
+        _ claims: [TaskExecutionResourceClaim],
+        task: AgentTask
+    ) -> [TaskExecutionResourceClaim] {
+        let existing = Set(claims.filter { $0.kind == .workspace }.map(\.key))
+        return claims + readOnlyWorkspaceKeys(for: task).filter { !existing.contains($0) }.map {
+            TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .shared)
+        }
     }
 
     private static func applyingWorktreeGitClaims(
@@ -211,16 +235,18 @@ enum TaskExecutionResourceClaimResolver {
         let policy = request?.executionPolicySnapshot
         let isolation = policy.flatMap { IsolationStrategy(rawValue: $0.isolationStrategyRawValue) }
             ?? task.isolationStrategy
+        let readOnlyKeys = Set(readOnlyWorkspaceKeys(for: task))
         var effective = claims.map { claim in
             guard claim.kind == .workspace || claim.kind == .gitCommonDirectory else {
                 return claim
             }
+            if claim.kind == .workspace && readOnlyKeys.contains(claim.key) { return claim }
             return TaskExecutionResourceClaim(kind: claim.kind, key: claim.key, access: .exclusive)
         }
         guard isolation == .gitBranch else { return effective }
 
         var seen = Set(effective.map { "\($0.kind.rawValue):\($0.key)" })
-        let workspaceRoots = effective.filter { $0.kind == .workspace }.map(\.key)
+        let workspaceRoots = effective.filter { $0.kind == .workspace && !readOnlyKeys.contains($0.key) }.map(\.key)
         for root in workspaceRoots {
             if let worktree = gitWorktreeRoot(for: root) {
                 let identity = "\(TaskExecutionResourceKind.workspace.rawValue):\(worktree)"

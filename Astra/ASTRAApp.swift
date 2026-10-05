@@ -930,12 +930,25 @@ public struct ASTRAApp: App {
 
     @MainActor private static var runtimeSettlementRecovery: Task<Void, Never>?
     @MainActor private static var runtimeSettlementAutoExportWorkspaces = true
+    @MainActor private static var worktreeCleanupRecovery: Task<Void, Never>?
 
     @MainActor
     static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
         runDeferredStartupWork(modelContext: modelContext)
         await recoverTaskFolderSnapshots(modelContext: modelContext)
+        await recoverPendingWorktreeCleanup(modelContext: modelContext)
         await recoverRuntimeSettlements(modelContext: modelContext, taskQueue: taskQueue)
+    }
+
+    @MainActor
+    private static func recoverPendingWorktreeCleanup(modelContext: ModelContext) async {
+        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
+        if let recovery = worktreeCleanupRecovery { await recovery.value; return }
+        let recovery = Task { @MainActor in
+            _ = await TaskWorktreeCleanupService.resumePending(modelContext: modelContext)
+        }
+        worktreeCleanupRecovery = recovery
+        await recovery.value
     }
 
     @MainActor

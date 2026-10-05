@@ -825,9 +825,10 @@ struct ChatPanelView: View {
                 if let draft = draftTask {
                     let worktree = TaskWorktreeService.discardSnapshot(for: draft)
                     let draftWorkspace = draft.workspace
-                    modelContext.delete(draft)
-                    draftTask = nil
-                    NewTaskWorktreeComposerFlow.discardWorktree(worktree, workspace: draftWorkspace, modelContext: modelContext)
+                    NewTaskWorktreeComposerFlow.discardWorktree(worktree, workspace: draftWorkspace, modelContext: modelContext) {
+                        modelContext.delete(draft)
+                        draftTask = nil
+                    }
                 }
                 messages = []
                 attachedFiles = []
@@ -1253,8 +1254,10 @@ struct ChatPanelView: View {
                 primaryPath: wsObj.primaryPath,
                 additionalPaths: wsObj.additionalPaths
             )
+            let readOnlyPaths = Set(task.map { TaskWorkspaceAccess(task: $0).runtimeReadOnlyWorkspaceFolders.map(\.path) } ?? [])
             let pathList = folders.map { descriptor -> String in
-                "- \(descriptor.roleLabel) \(descriptor.title): \(descriptor.path)"
+                let readOnly = readOnlyPaths.contains(descriptor.path) ? " (read-only)" : ""
+                return "- \(descriptor.roleLabel) \(descriptor.title)\(readOnly): \(descriptor.path)"
             }.joined(separator: "\n")
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
         }
@@ -2409,10 +2412,9 @@ struct ChatPanelView: View {
             let unusedWorktree = draft.executionRootPath == finalTask.executionRootPath
                 ? nil
                 : TaskWorktreeService.discardSnapshot(for: draft)
-            modelContext.delete(draft)
-            draftTask = nil
             TaskWorktreeService.saveDeletionThenDiscard(
-                unusedWorktree, workspace: draftWorkspace, modelContext: modelContext
+                unusedWorktree, workspace: draftWorkspace, modelContext: modelContext,
+                delete: { modelContext.delete(draft); draftTask = nil }
             )
         }
         // finalTask already captured the flag; reset it so a later, unrelated

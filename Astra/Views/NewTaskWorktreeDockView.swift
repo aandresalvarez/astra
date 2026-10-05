@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import ASTRACore
 import ASTRAModels
 
@@ -24,8 +25,10 @@ struct NewTaskWorktreeDockView: View {
     let isPreparing: Bool
     let problem: String?
     @Binding var selection: NewTaskWorktreeSelection
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.newTaskWorktreeIntents) private var intents
     @State private var intentOwner = UUID()
+    @State private var choiceProblem: String?
 
     private struct ScanRequest: Hashable {
         let workspaceID: UUID
@@ -77,7 +80,7 @@ struct NewTaskWorktreeDockView: View {
             pinnedPath: binding?.worktreePath,
             pinnedBase: binding?.baseRef,
             isPreparing: isPreparing,
-            problem: problem
+            problem: choiceProblem ?? problem
         ))
     }
 
@@ -99,7 +102,10 @@ struct NewTaskWorktreeDockView: View {
             await scanRepositories()
         }
         .onAppear { claimIntent() }
-        .onChange(of: workspace?.id) { claimIntent() }
+        .onChange(of: workspace?.id) {
+            choiceProblem = nil
+            claimIntent()
+        }
         .onChange(of: intentSnapshot) { publishIntent() }
         .onDisappear { intents?.release(owner: intentOwner) }
     }
@@ -181,6 +187,32 @@ struct NewTaskWorktreeDockView: View {
             entry.base = snapshot.base
             entry.baseLabel = snapshot.baseLabel
             entry.preparedDraft = snapshot.hasPreparedDraft ? draft : nil
+        }
+    }
+
+    private var enabledBinding: Binding<Bool> {
+        Binding(get: { selection.isEnabled }, set: { value in
+            updateChoice { $0.isEnabled = value }
+        })
+    }
+
+    private var baseBinding: Binding<TaskWorktreeBaseChoice> {
+        Binding(get: { selection.base }, set: { value in
+            updateChoice { $0.base = value }
+        })
+    }
+
+    private func updateChoice(_ update: (inout NewTaskWorktreeSelection) -> Void) {
+        let previous = selection
+        update(&selection)
+        guard allowsChoice,
+              let draft = NewTaskWorktreeComposerFlow.liveDraft(draft, in: workspace) else { return }
+        do {
+            try NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: modelContext)
+            choiceProblem = nil
+        } catch {
+            selection = previous
+            choiceProblem = error.localizedDescription
         }
     }
 
@@ -282,7 +314,7 @@ struct NewTaskWorktreeDockView: View {
                 if presentation.showsRepositoryMenu {
                     repositoryMenu
                 }
-                Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: $selection.isEnabled)
+                Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: enabledBinding)
                     .toggleStyle(.checkbox)
                     .font(Stanford.caption(12).weight(.medium))
                     .foregroundStyle(Stanford.black.opacity(0.84))
@@ -313,7 +345,7 @@ struct NewTaskWorktreeDockView: View {
                 }
             }
             Section(NewTaskWorktreeDockPresentation.baseSectionTitle) {
-                Picker(NewTaskWorktreeDockPresentation.baseSectionTitle, selection: $selection.base) {
+                Picker(NewTaskWorktreeDockPresentation.baseSectionTitle, selection: baseBinding) {
                     ForEach(TaskWorktreeBaseChoice.allCases, id: \.self) { base in
                         Text(NewTaskWorktreeDockPresentation.baseOptionTitle(base, label: label(for: base)))
                             .tag(base)

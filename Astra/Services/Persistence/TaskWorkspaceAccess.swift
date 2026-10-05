@@ -81,10 +81,20 @@ public struct TaskWorkspaceAccess {
 
     public var runtimeWorkspaceFolders: [WorkspacePathDescriptor] {
         let paths = runtimeWorkspacePaths
-        return WorkspacePathPresentation.descriptors(
+        let writable = WorkspacePathPresentation.descriptors(
             primaryPath: paths.first ?? codeWorkingDirectory,
             additionalPaths: Array(paths.dropFirst())
         )
+        let writablePaths = Set(writable.map(\.path))
+        return writable + runtimeReadOnlyWorkspaceFolders.filter { !writablePaths.contains($0.path) }
+    }
+
+    public var runtimeReadOnlyWorkspaceFolders: [WorkspacePathDescriptor] {
+        guard let workspace = task.workspace else { return [] }
+        let paths = Set(runtimeReadOnlyWorkspacePaths.map(WorkspacePathPresentation.standardizedPath))
+        return WorkspacePathPresentation.descriptors(
+            primaryPath: workspace.primaryPath, additionalPaths: workspace.additionalPaths
+        ).filter { paths.contains($0.path) }
     }
 
     public var runtimeReadOnlyInputPaths: [String] {

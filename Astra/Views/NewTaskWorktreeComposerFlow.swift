@@ -39,13 +39,45 @@ enum NewTaskWorktreeComposerFlow {
 
     /// Records the worktree choice on the draft so reopening it restores the
     /// checkbox and base. A draft that has its worktree no longer has a choice.
+    @discardableResult
     static func recordChoice(
         _ selection: NewTaskWorktreeSelection,
         on draft: AgentTask,
         modelContext: ModelContext
-    ) {
-        guard TaskWorktreeService.activeWorktreeBinding(for: draft) == nil else { return }
-        TaskWorktreeService.recordRequestIfChanged(selection.requestPayload, on: draft, modelContext: modelContext)
+    ) -> Bool {
+        guard TaskWorktreeService.activeWorktreeBinding(for: draft) == nil else { return false }
+        return TaskWorktreeService.recordRequestIfChanged(selection.requestPayload, on: draft, modelContext: modelContext)
+    }
+
+    static func persistChoice(
+        _ selection: NewTaskWorktreeSelection,
+        on draft: AgentTask,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) throws -> Void = { workspace, context in
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace, modelContext: context,
+                auditFields: ["operation": "draft_worktree_choice_changed"]
+            )
+        }
+    ) throws {
+        guard draft.status == .draft else { return }
+        let previousEvents = Set(draft.events.map(\.id))
+        let previousUpdatedAt = draft.updatedAt
+        guard recordChoice(selection, on: draft, modelContext: modelContext) else { return }
+        do {
+            try persist(draft.workspace, modelContext)
+        } catch {
+            for event in draft.events where event.hasType(TaskEventTypes.Task.worktreeRequested)
+                && !previousEvents.contains(event.id) {
+                modelContext.delete(event)
+            }
+            draft.updatedAt = previousUpdatedAt
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: draft.id, fields: [
+                "reason": "draft_worktree_choice_save_failed",
+                "error": error.localizedDescription
+            ], level: .error)
+            throw TaskWorktreeCreationError.choicePersistenceFailed(error.localizedDescription)
+        }
     }
 
     /// A task started straight from the composer into a new worktree keeps the
@@ -69,9 +101,12 @@ enum NewTaskWorktreeComposerFlow {
     static func discardWorktree(
         _ worktree: TaskWorktreeDiscard?,
         workspace: Workspace?,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        delete: @MainActor () -> Void = {}
     ) {
-        TaskWorktreeService.saveDeletionThenDiscard(worktree, workspace: workspace, modelContext: modelContext)
+        TaskWorktreeService.saveDeletionThenDiscard(
+            worktree, workspace: workspace, modelContext: modelContext, delete: delete
+        )
     }
 }
 

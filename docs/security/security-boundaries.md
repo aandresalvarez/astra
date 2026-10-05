@@ -119,7 +119,10 @@ and `~/Documents/Astra Dev/Workspaces`.
   commands mount the verified Git directory at its original absolute path,
   while saved source-checkout mounts become read-only or are replaced by the
   task worktree. Read-only workspace ancestors remain mounted at noncolliding
-  container paths and participate in host-to-container path mapping. Every
+  container paths and participate in host-to-container path mapping. Execution
+  and planning prompts retain their original workspace labels and mark them
+  read-only; shared workspace admission claims serialize writers against these
+  reads, including for legacy requests. Every
   worktree Git grant has a matching admission claim, independent of Git prompt
   intent, including legacy requests; shared runs claim it read-only. Template
   hooks are injected and restored at the same captured code checkout that
@@ -130,8 +133,15 @@ and `~/Documents/Astra Dev/Workspaces`.
   the binding, so they never fall back to the source checkout. Failed initial
   submissions save and export draft adoption and temporary-task deletion
   together; recovery save failures are surfaced rather than reported as success.
-  Automatic cleanup of a discarded draft's worktree runs only after the deletion is
-  saved. It keeps any worktree that has changes, ignored files, or new
+  Automatic cleanup records an atomic intent in the channel's App Support
+  `WorktreeCleanup/` outbox before deleting the draft, outside provider-writable
+  workspace paths. Removal runs only after deletion is saved. Startup retries
+  interrupted cleanup and reads committed task references through a fresh
+  context, so a failed deletion save cannot authorize removal. An interrupted
+  branch deletion can finish even after its worktree was removed. Intent write,
+  reference-read, and Git failures are logged; retryable failures retain the
+  intent until removal or a terminal preservation decision. Cleanup keeps any
+  worktree that has changes, ignored files, or new
   commits; that another task or workspace default references; or whose
   references cannot be read.
 - `current_state.json`, `current_state.md`, `session_history.md`, diagnostics,

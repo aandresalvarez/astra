@@ -55,7 +55,7 @@ struct ComposerPresentationTests {
         let controls = try #require(strip.range(of: "private func controls("))
         let menu = try #require(strip.range(of: "repositoryMenu", range: controls.upperBound..<strip.endIndex))
         let toggle = try #require(strip.range(
-            of: "Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: $selection.isEnabled)",
+            of: "Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: enabledBinding)",
             range: controls.upperBound..<strip.endIndex
         ))
         #expect(menu.lowerBound < toggle.lowerBound)
@@ -66,7 +66,11 @@ struct ComposerPresentationTests {
         #expect(repositorySection.lowerBound < baseSection.lowerBound)
         #expect(strip.contains("selectRepository(repository)"))
         #expect(strip.contains("TaskCodeLocationPin.set(repository.path"))
-        #expect(strip.contains("selection: $selection.base"))
+        #expect(strip.contains("selection: baseBinding"))
+        #expect(strip.contains("updateChoice { $0.isEnabled = value }"))
+        #expect(strip.contains("updateChoice { $0.base = value }"))
+        #expect(strip.contains("NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: modelContext)"))
+        #expect(strip.contains("choiceProblem = error.localizedDescription"))
         #expect(strip.contains(".pickerStyle(.inline)"))
         #expect(strip.contains(".menuStyle(.button)"))
         #expect(NewTaskWorktreeDockPresentation.toggleTitle == "Start in a new worktree")
@@ -100,6 +104,8 @@ struct ComposerPresentationTests {
             #expect(save.lowerBound < context.lowerBound)
         }
         #expect(composer.contains("task.map { TaskWorkspaceAccess(task: $0).runtimeWorkspaceFolders }"))
+        #expect(composer.contains("TaskWorkspaceAccess(task: $0).runtimeReadOnlyWorkspaceFolders.map(\\.path)"))
+        #expect(composer.contains("readOnlyPaths.contains(descriptor.path) ? \" (read-only)\" : \"\""))
     }
 
     @Test("switching workspaces detaches creation and stops old chat and planning work")

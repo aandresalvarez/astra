@@ -16,8 +16,10 @@ enum TaskExecutionResourceAdmissionPolicy {
         if request == nil,
            !TaskExecutionResourceClaimResolver.requiresExclusiveWorkflowAccess(for: request, task: task),
            let fallbackAccess {
+            let readOnlyKeys = Set(TaskExecutionResourceClaimResolver.readOnlyWorkspaceKeys(for: task))
             claims = claims.map { claim in
                 guard claim.kind == .workspace || claim.kind == .gitCommonDirectory else { return claim }
+                if claim.kind == .workspace && readOnlyKeys.contains(claim.key) { return claim }
                 return TaskExecutionResourceClaim(
                     kind: claim.kind, key: claim.key,
                     access: fallbackAccess == .readOnly ? .shared : .exclusive

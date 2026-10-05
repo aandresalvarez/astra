@@ -28,6 +28,10 @@ struct NewTaskWorktreeFixture {
         )
     }
 
+    var cleanupStore: TaskWorktreeCleanupStore {
+        TaskWorktreeCleanupStore(directory: root.appendingPathComponent("Cleanup", isDirectory: true))
+    }
+
     func cleanUp() {
         try? FileManager.default.removeItem(at: root)
     }
