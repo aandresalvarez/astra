@@ -1357,6 +1357,9 @@ final class AgentRuntimeProcessRunner {
         workspaceAccess: TaskExecutionResourceAccess = .exclusive
     ) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
+        if task.acceptedResourceScope != nil {
+            return Array(Set(access.runtimeWritablePaths)).sorted()
+        }
         var paths = task.acceptedResourceScope != nil || workspaceAccess == .exclusive ? access.runtimeWritablePaths : []
         if task.acceptedResourceScope == nil, workspaceAccess == .exclusive, !access.effectiveWorkspacePath.isEmpty {
             paths.append(access.effectiveWorkspacePath)

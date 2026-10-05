@@ -15,7 +15,7 @@ import ASTRAPersistence
 ///
 /// - Attachments on a new task land in `task.inputs`, which
 ///   `materialize(task:taskFolder:)` rewrites right after the task folder is
-///   prepared for launch.
+///   prepared before request submission (or at launch for legacy direct calls).
 /// - Attachments on a follow-up only ever appear in that message's text, so
 ///   `durableAttachmentPaths(_:for:)` swaps them before the text is composed.
 ///

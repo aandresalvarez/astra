@@ -432,11 +432,32 @@ enum ExecutionRequestSubmissionService {
             // Legacy requests have no snapshot. An existing but unreadable
             // snapshot must never turn into today's mutable launch settings.
             if origin?.executionPolicySnapshotJSON != nil, originSnapshot == nil { return .failure(.emptySource) }
+            if permissionContinuation != nil, origin != nil, originSnapshot?.resourceScope?.isValid != true {
+                AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id,
+                    fields: ["reason": "permission_origin_scope_requires_resubmission"], level: .error)
+                return .failure(.emptySource)
+            }
         } catch {
             return .failure(.persistenceFailed(String(describing: type(of: error))))
         }
 
         prepare()
+        if permissionContinuation != nil, origin == nil {
+            AppLogger.audit(.taskStats, category: "Queue", taskID: task.id,
+                fields: ["event": "legacy_permission_request_scope_captured"], level: .warning)
+        }
+        let originalInputs = task.inputs
+        do {
+            try TaskExecutionResourcePreparation.prepare(task: task, materializeInputs: originSnapshot == nil)
+        } catch {
+            task.inputs = originalInputs
+            rollback()
+            AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id, fields: [
+                "reason": "execution_resource_preparation_failed",
+                "error": error.localizedDescription
+            ], level: .error)
+            return .failure(.persistenceFailed(error.localizedDescription))
+        }
         let event = TaskEvent(task: task, type: sourceEventType, payload: sourcePayload)
         event.timestamp = date
         let attachmentsEvent = TaskEvent.attachmentsEvent(for: event, paths: attachmentPaths)
@@ -449,16 +470,23 @@ enum ExecutionRequestSubmissionService {
             includeTaskInputs: kind == .initial || kind == .scheduled,
             authorship: authorship(forSourceEventType: sourceEventType)
         )
+        let resourceScope = originSnapshot?.resourceScope?.addingReadOnlyInputs(approvedResourcePaths)
+            ?? TaskExecutionResourceScopeResolver.resolve(
+                task: task, acceptedTurn: turnIntentSnapshot.activationText,
+                attachmentPaths: attachmentPaths + approvedResourcePaths)
+        guard resourceScope.gitAccess != .invalid else {
+            task.inputs = originalInputs
+            rollback()
+            AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id,
+                fields: ["reason": "invalid_git_access_requirement"], level: .error)
+            return .failure(.persistenceFailed("Use ASTRA_GIT_ACCESS=read_only or read_write, consistent with the task's workflow and folder access."))
+        }
         let request = TaskTurnRequest(
             task: task,
             messageEventID: event.id,
             sequence: nextSequence,
             kind: kind,
-            resourceScope: TaskExecutionResourceScopeResolver.resolve(
-                task: task,
-                acceptedTurn: acceptedTurn,
-                attachmentPaths: attachmentPaths + approvedResourcePaths
-            ),
+            resourceScope: resourceScope,
             turnIntentSnapshot: turnIntentSnapshot,
             submittedAt: date
         )
@@ -470,21 +498,11 @@ enum ExecutionRequestSubmissionService {
             request.runtimeIDSnapshot = origin.runtimeIDSnapshot
             request.modelSnapshot = origin.modelSnapshot
             request.tokenBudgetSnapshot = origin.tokenBudgetSnapshot
-            let expandedScope = snapshot.resourceScope.map { scope in
-                TaskExecutionResourceScope(
-                    workingDirectory: scope.workingDirectory,
-                    workspacePath: scope.workspacePath,
-                    resources: scope.resources + approvedResourcePaths.map {
-                        .init(path: $0, access: .shared, role: .input)
-                    },
-                    replacedCheckoutPaths: scope.replacedCheckoutPaths
-                )
-            }
             request.executionPolicySnapshotJSON = TaskEvent.payloadString(TaskExecutionPolicySnapshotV1(
                 task: frozenTask, turnIntentSnapshot: turnIntentSnapshot,
-                resourceScope: expandedScope))
+                resourceScope: resourceScope))
             request.resourceClaimsJSON = approvedResourcePaths.isEmpty ? origin.resourceClaimsJSON
-                : expandedScope.map { TaskEvent.payloadString($0.claims) } ?? origin.resourceClaimsJSON
+                : TaskEvent.payloadString(resourceScope.claims)
         }
         if let binding = permissionContinuation, let run = task.runs.first(where: { $0.id == binding.runID }),
            let runtime = run.runtimeID, AgentRuntimeID(rawValue: runtime) != nil {
@@ -524,6 +542,7 @@ enum ExecutionRequestSubmissionService {
             modelContext.delete(request)
             modelContext.delete(event)
             if let attachmentsEvent { modelContext.delete(attachmentsEvent) }
+            task.inputs = originalInputs
             rollback()
             return .failure(.persistenceFailed(String(describing: type(of: error))))
         }

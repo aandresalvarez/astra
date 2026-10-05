@@ -390,7 +390,7 @@ final class TaskQueue {
             return
         }
 
-        guard prepareTaskFolder(task, modelContext: modelContext, mode: "task") else {
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "task", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
             if let executionRequest, executionRequest.state.isActive {
                 failPersistedTurn(executionRequest, reason: "task_folder_create_failed", modelContext: modelContext)
             }
@@ -666,7 +666,7 @@ final class TaskQueue {
             return false
         }
 
-        guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
             recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
@@ -839,7 +839,7 @@ final class TaskQueue {
                 )
                 continue
             }
-            guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
+            guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
                 releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 failPersistedTurn(request, reason: "task_folder_create_failed", modelContext: modelContext)
                 return false
@@ -1192,7 +1192,7 @@ final class TaskQueue {
             return
         }
 
-        guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan") else {
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
             if let executionRequest, executionRequest.state.isActive {
                 failPersistedTurn(executionRequest, reason: "task_folder_create_failed", modelContext: modelContext)
             }
@@ -1294,10 +1294,10 @@ final class TaskQueue {
     }
 
     @MainActor
-    private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
+    private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String, frozenInputs: Bool) -> Bool {
         do {
-            let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
-            if TaskInputMaterializer.materialize(task: task, taskFolder: folder).didChange {
+            let folder = try TaskExecutionResourcePreparation.ensureTaskFolder(task: task)
+            if !frozenInputs, TaskInputMaterializer.materialize(task: task, taskFolder: folder).didChange {
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext, taskID: task.id, auditFields: ["operation": "task_inputs_materialized"])
             }
             AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [

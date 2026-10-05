@@ -94,9 +94,10 @@ struct LaunchSnapshotDisciplineTests {
             capturedNames(in: requestSource, pattern: #"= task\.([A-Za-z_]\w*)"#)
         )
         #expect(
-            Self.snapshotOwnedFields.subtracting(capturedAtAdmission).isEmpty,
+            Self.snapshotOwnedFields.subtracting(capturedAtAdmission).subtracting(["executionEnvironmentSnapshotJSON"]).isEmpty,
             "TaskTurnRequest / TaskExecutionPolicySnapshotV1 must capture every snapshot-owned field at admission: \(Self.snapshotOwnedFields.subtracting(capturedAtAdmission).sorted())"
         )
+        #expect(requestSource.contains("ExecutionEnvironmentStore.encodeSnapshot($0.executionEnvironment)"))
 
         // 4. The direct AgentTaskLaunchSnapshot(task:) constructor agrees.
         let capturedByInit = try Set(

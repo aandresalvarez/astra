@@ -27,6 +27,7 @@ enum TaskExecutionResourceScopeResolver {
         var replaced: [String] = []
         for path in task.workspace?.additionalPaths ?? [] {
             let canonical = TaskExecutionResourceScope.canonicalPath(path)
+            if task.isolationStrategy == .copy, canonical == TaskExecutionResourceScope.canonicalPath(root) { continue }
             let explicitWrite = task.constraints.contains("ASTRA_RESOURCE_WRITE_PATH=\(path)")
             if !explicitWrite, task.executionRootPath != nil,
                let common,
@@ -43,36 +44,64 @@ enum TaskExecutionResourceScopeResolver {
             append(worktree, .exclusive, .additionalFolder)
         }
         if !access.effectiveWorkspacePath.isEmpty {
-            append(access.taskFolder, .exclusive, .taskStorage)
+            append(access.canonicalTaskFolder, .exclusive, .taskStorage)
         }
-        for path in access.runtimeReadOnlyInputPaths + attachmentPaths {
+        var environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        environment.mounts = environment.mounts.map { mount in
+            var resolved = mount
+            switch mount.role {
+            case .workspace: resolved.hostPath = executionRoot
+            case .taskFolder: resolved.hostPath = access.canonicalTaskFolder
+            case .additionalPath, .input, .credential: break
+            }
+            return resolved
+        }
+        let promptInputs = task.inputs.map { input -> TaskExecutionResourceScope.PromptInput in
+            guard input.hasPrefix("/") || input.hasPrefix("~") else {
+                return .init(value: input, kind: .text)
+            }
+            let path = (input as NSString).expandingTildeInPath
+            return .init(value: path, kind: FileManager.default.fileExists(atPath: path) ? .path : .unavailablePath)
+        }
+        let approvedPaths = TaskLaunchResourceResolver.approvedSandboxReadablePaths(
+            from: TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: task.resolvedRuntimeID),
+            homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path)
+        for path in promptInputs.filter({ $0.kind == .path }).map(\.value) + attachmentPaths + approvedPaths {
             append(path, .shared, .input)
         }
-        let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
         if environment.isContainerized {
             for mount in environment.mounts + environment.effectiveCredentialProjections.map(\.mount) {
                 let writable = mount.access == .readWrite && (mode == .exclusive
-                    || mount.role == .credential || mount.hostPath == access.taskFolder)
+                    || mount.role == .credential || mount.hostPath == access.canonicalTaskFolder)
                 append(mount.hostPath, writable ? .exclusive : .shared, .environmentMount)
             }
         }
-        let mutatesGit = mode == .exclusive && (
-            task.isolationStrategy == .gitBranch || task.validationStrategy == .runTests
-                || GitOperationIntentDetector.detectsGitMutation(prompt: acceptedTurn ?? "", task: task)
-        )
-        let gitRoots = [root] + resources.filter {
+        let gitAccess = TaskExecutionGitRequirementResolver.resolve(task: task, acceptedTurn: acceptedTurn, writable: mode == .exclusive)
+        let gitRoots = (task.isolationStrategy == .copy ? [] : [root]) + resources.filter {
             $0.role == .execution || $0.role == .additionalFolder
         }.map(\.path)
         for gitRoot in gitRoots {
             if let directory = TaskExecutionResourceClaimResolver.gitCommonDirectory(for: gitRoot) {
-                append(directory, mutatesGit ? .exclusive : .shared, .gitMetadata)
+                append(directory, gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata)
+            }
+        }
+        if task.isolationStrategy == .copy {
+            var isDirectory: ObjCBool = false
+            let gitPath = (root as NSString).appendingPathComponent(".git")
+            if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDirectory), isDirectory.boolValue {
+                append((executionRoot as NSString).appendingPathComponent(".git"), gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata)
+            } else if let common {
+                append(common, .shared, .gitMetadata)
             }
         }
         return TaskExecutionResourceScope(
             workingDirectory: executionRoot,
             workspacePath: access.effectiveWorkspacePath,
             resources: resources,
-            replacedCheckoutPaths: replaced
+            replacedCheckoutPaths: replaced,
+            promptInputs: promptInputs,
+            executionEnvironment: environment,
+            gitAccess: gitAccess
         )
     }
 }

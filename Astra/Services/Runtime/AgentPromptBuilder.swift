@@ -516,7 +516,7 @@ enum AgentPromptBuilder {
 
     private static func appendInputs(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard !task.inputs.isEmpty else { return }
-        let contextParts = PromptInputContextReader.contextParts(for: task.inputs)
+        let contextParts = PromptInputContextReader.contextParts(for: task)
         appendSection(
             "Context/Inputs:\n" + contextParts.joined(separator: "\n\n"),
             kind: .supportingContext,

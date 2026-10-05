@@ -250,6 +250,7 @@ enum DockerExecutionPlanner {
     }
 
     static func resolveEnvironment(for task: AgentTask) -> WorkspaceExecutionEnvironment {
+        if let scope = task.acceptedResourceScope { return scope.executionEnvironment }
         if let snapshot = task.executionEnvironmentSnapshotJSON,
            !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ExecutionEnvironmentStore.decode(snapshot)
@@ -535,7 +536,7 @@ enum DockerExecutionPlanner {
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
         if let scope = task.acceptedResourceScope {
-            mounts = mounts.map { mount in
+            mounts = mounts.filter { scope.coversRead(to: $0.hostPath) }.map { mount in
                 guard mount.role != .credential else { return mount }
                 var projection = mount
                 projection.access = scope.coversWrite(to: mount.hostPath) ? .readWrite : .readOnly

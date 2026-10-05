@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 /// The durable reason an execution request exists.
 public enum TaskExecutionRequestKind: String, Codable, CaseIterable, Sendable {
@@ -50,7 +51,9 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         teamSize = task.teamSize
         teamInstructions = task.teamInstructions
         executionRootPath = task.executionRootPath
-        executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
+        executionEnvironmentSnapshotJSON = resourceScope.map {
+            ExecutionEnvironmentStore.encodeSnapshot($0.executionEnvironment)
+        } ?? task.executionEnvironmentSnapshotJSON
         templateHooksJSON = task.templateHooksJSON
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON

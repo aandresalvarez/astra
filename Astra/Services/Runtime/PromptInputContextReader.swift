@@ -1,7 +1,29 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum PromptInputContextReader {
+    static func contextParts(for task: AgentTask) -> [String] {
+        task.acceptedResourceScope.map { contextParts(for: $0) } ?? contextParts(for: task.inputs)
+    }
+
+    static func contextParts(for scope: TaskExecutionResourceScope) -> [String] {
+        scope.promptInputs.map { input in
+            switch input.kind {
+            case .text: return "Context: \(input.value)"
+            case .path:
+                guard scope.isValid, scope.coversRead(to: input.value) else {
+                    AppLogger.audit(.workerBlocked, category: "Worker",
+                        fields: ["reason": "accepted_input_identity_changed"], level: .error)
+                    return "Input access changed after acceptance. Submit a new turn to authorize this input."
+                }
+                return contextPart(for: input.value, hostFileAccess: HostFileAccessBroker())
+            case .unavailablePath:
+                return "Input unavailable when this request was accepted: \(input.value). Submit a new turn to include it."
+            }
+        }
+    }
+
     static func contextParts(
         for inputs: [String],
         hostFileAccess: HostFileAccessBroker = HostFileAccessBroker()

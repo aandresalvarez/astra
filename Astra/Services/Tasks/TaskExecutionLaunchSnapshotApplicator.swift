@@ -55,7 +55,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
         task.id = source.id
         task.acceptedResourceScope = snapshot.resourceScope
-        task.inputs = source.inputs
+        task.inputs = snapshot.resourceScope?.promptInputs.map(\.value) ?? source.inputs
         task.constraints = source.constraints
         task.acceptanceCriteria = source.acceptanceCriteria
         task.isolationStrategy = snapshot.isolationStrategy

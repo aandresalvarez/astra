@@ -197,26 +197,9 @@ enum TaskLaunchResourceResolver {
         )
 
         if let scope = task.acceptedResourceScope {
-            if !scope.isValid || TaskExecutionResourceScope.canonicalPath(workspacePath) != TaskExecutionResourceScope.canonicalPath(scope.workingDirectory) {
-                diagnostics.append(RuntimeResourceDiagnostic(
-                    severity: .error, code: "execution_resource_scope_invalid",
-                    message: "The accepted execution root or a resource identity changed.",
-                    repairAction: "Submit a new turn to authorize the current folders."
-                ))
-            }
-            let taskDataSources: Set<TaskLaunchResourceSource> = [.workspace, .taskInput, .userAttachment, .gitCredential, .dockerEnvironment]
-            let uncovered = hostPathGrants.filter {
-                taskDataSources.contains($0.source) && $0.access != .read && !scope.coversWrite(to: $0.path)
-            }.map(\.path) + containerMounts.filter {
-                $0.access != "ro" && !scope.coversWrite(to: $0.hostPath)
-            }.map(\.hostPath)
-            for path in uniquePaths(uncovered) {
-                diagnostics.append(RuntimeResourceDiagnostic(
-                    severity: .error, code: "execution_resource_scope_expansion",
-                    message: "Launch requested unadmitted write access to \(path).",
-                    repairAction: "Submit a new turn with this folder included in its resource scope."
-                ))
-            }
+            diagnostics += TaskExecutionResourceScopeValidation.diagnostics(
+                task: task, scope: scope, workspacePath: workspacePath, environment: environment,
+                grants: hostPathGrants, mounts: containerMounts)
         }
         return TaskLaunchResourcePlan(
             taskID: task.id,

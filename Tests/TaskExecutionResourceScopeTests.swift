@@ -99,6 +99,143 @@ struct TaskExecutionResourceScopeTests {
         #expect(task.acceptedResourceScope == nil)
     }
 
+    @Test("Storage migration preserves the accepted canonical destination", arguments: [false, true])
+    func storageMigrationKeepsAcceptedDestination(readOnly: Bool) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = fixture.task(root: fixture.first)
+        if readOnly { task.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"] }
+        let access = TaskWorkspaceAccess(task: task)
+        let legacy = WorkspaceFileLayout.legacyTaskFolder(workspacePath: fixture.workspace.primaryPath, taskID: task.id)
+        try FileManager.default.createDirectory(atPath: legacy, withIntermediateDirectories: true)
+        try "retained".write(toFile: legacy + "/state.txt", atomically: true, encoding: .utf8)
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceScope: scope)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            WorkspaceExecutionEnvironment(id: "legacy-mounts", kind: .dockerImage, displayName: "Legacy", image: "test:latest",
+                mounts: [
+                    .init(hostPath: legacy, containerPath: "/astra/task", access: .readWrite, role: .taskFolder),
+                    .init(hostPath: fixture.repository.path, containerPath: "/workspace", access: .readWrite, role: .workspace)
+                ]))
+        let normalized = TaskExecutionResourceScopeResolver.resolve(task: task)
+        #expect(normalized.executionEnvironment.mounts.first { $0.role == .taskFolder }?.hostPath == access.canonicalTaskFolder)
+        #expect(normalized.executionEnvironment.mounts.first { $0.role == .workspace }?.hostPath == fixture.first.path)
+        #expect(!normalized.resources.contains { $0.path == legacy })
+        #expect(normalized.coversWrite(to: access.canonicalTaskFolder))
+        _ = try TaskExecutionResourcePreparation.ensureTaskFolder(task: task)
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let frozen = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        #expect(TaskWorkspaceAccess(task: frozen).taskFolder == access.canonicalTaskFolder)
+        #expect(try String(contentsOfFile: access.canonicalTaskFolder + "/state.txt") == "retained")
+        #expect(!FileManager.default.fileExists(atPath: legacy))
+        #expect(AgentRuntimeProcessRunner.runtimeWritablePaths(for: frozen).allSatisfy { scope.coversWrite(to: $0) })
+        #expect(launch(frozen, runtime: .claudeCode, home: fixture.root).diagnostics.allSatisfy { $0.severity != .error })
+    }
+
+    @Test("Prompt inputs cannot be replaced or promoted after admission")
+    func frozenPromptInputs() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = fixture.task(root: fixture.first)
+        let accepted = fixture.root.appendingPathComponent("accepted.txt")
+        let late = fixture.root.appendingPathComponent("late.txt")
+        let injected = fixture.root.appendingPathComponent("injected.txt")
+        try "accepted-content".write(to: accepted, atomically: true, encoding: .utf8)
+        task.inputs = ["Keep this prose", accepted.path, late.path]
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceScope: scope)
+        try "late-content".write(to: late, atomically: true, encoding: .utf8)
+        try "injected-content".write(to: injected, atomically: true, encoding: .utf8)
+        task.inputs = [injected.path]
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let frozen = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let context = AgentPromptBuilder.buildPrompt(for: frozen)
+        #expect(frozen.inputs == ["Keep this prose", accepted.path, late.path])
+        #expect(context.contains("Keep this prose"))
+        #expect(context.contains("accepted-content"))
+        #expect(context.contains("Input unavailable"))
+        #expect(!context.contains("late-content"))
+        #expect(!context.contains("injected-content"))
+        #expect(!scope.coversRead(to: injected.path))
+        #expect(!scope.coversRead(to: late.path))
+    }
+
+    @Test("Inherited environments freeze and unknown read-only mounts fail admission validation")
+    func frozenEnvironmentAndMounts() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = fixture.task(root: fixture.first)
+        let original = WorkspaceExecutionEnvironment(id: "accepted", kind: .dockerImage,
+            displayName: "Accepted", image: "test:accepted")
+        fixture.workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(original)
+        task.executionEnvironmentSnapshotJSON = nil
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceScope: scope)
+        let unaccepted = fixture.root.appendingPathComponent("private")
+        try FileManager.default.createDirectory(at: unaccepted, withIntermediateDirectories: true)
+        var changed = original
+        changed.mounts = [.init(hostPath: unaccepted.path, containerPath: "/private", access: .readOnly, role: .additionalPath)]
+        fixture.workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encodeSnapshot(changed)
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let frozen = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        #expect(DockerExecutionPlanner.resolveEnvironment(for: frozen) == original)
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: fixture.first.path, environment: changed, task: frozen)
+        #expect(!mounts.contains { $0.hostPath == unaccepted.path })
+        let plan = TaskLaunchResourceResolver.resolve(task: frozen, runID: nil, runtime: .claudeCode,
+            phase: "run", prompt: task.goal, contextText: "", workspacePath: fixture.first.path,
+            executionEnvironment: changed, homeDirectoryPath: fixture.root.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty })
+        #expect(plan.diagnostics.contains { $0.code == "execution_resource_scope_expansion" && $0.severity == .error })
+    }
+
+    @Test("Submission materializes ephemeral inputs before freezing the request")
+    func submissionMaterializesBeforeFreezing() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("astra_paste_\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try "pasted-content".write(to: temporary, atomically: true, encoding: .utf8)
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        let task = fixture.task(root: fixture.first)
+        task.inputs = [temporary.path, "preserved prose"]
+        context.insert(fixture.workspace)
+        context.insert(task)
+        let submission = try ExecutionRequestSubmissionService.submitInitial(for: task, into: context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        let scope = try #require(request.executionPolicySnapshot?.resourceScope)
+        let input = try #require(scope.promptInputs.first { $0.kind == .path })
+        #expect(input.value != temporary.path)
+        #expect(input.value.hasPrefix(TaskWorkspaceAccess(task: task).canonicalTaskFolder + "/inputs/"))
+        #expect(try String(contentsOfFile: input.value) == "pasted-content")
+        #expect(!scope.resources.contains { $0.path == temporary.path })
+        #expect(scope.coversRead(to: input.value))
+        #expect(!scope.coversWrite(to: input.value))
+        #expect(scope.promptInputs.contains { $0.value == "preserved prose" && $0.kind == .text })
+    }
+
+    @Test("Git requirements preserve explicit declarations and classify common instructions")
+    func gitRequirements() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = fixture.task(root: fixture.first)
+        for instruction in ["commit your changes", "commit this change", "make a commit", "git -C '/tmp/a b' commit -m done"] {
+            let scope = TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction)
+            #expect(scope.gitAccess == .readWrite)
+            #expect(scope.resources.contains { $0.role == .gitMetadata && $0.access == .exclusive })
+        }
+        for instruction in ["git branch --show-current", "git config --get user.name", "git worktree list", "git tag --list", "do not commit your changes"] {
+            #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction).gitAccess == .readOnly)
+        }
+        task.constraints = ["ASTRA_GIT_ACCESS=read_only"]
+        #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: "commit your changes").gitAccess == .readOnly)
+        task.constraints = ["ASTRA_GIT_ACCESS=read_write"]
+        #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: "proceed").gitAccess == .readWrite)
+        task.constraints = ["ASTRA_GIT_ACCESS=typo"]
+        #expect(!TaskExecutionResourceScopeResolver.resolve(task: task).isValid)
+    }
+
     @Test("Readers retain task output writes without gaining execution-root writes")
     func readerOutputs() throws {
         let fixture = try Fixture()
@@ -268,6 +405,50 @@ struct TaskExecutionResourceScopeTests {
         #expect(!receipt.explains(.init(operation: .write, path: output + "/allowed", detail: "POSIX denial")))
         #expect(receipt.explains(.init(operation: .write,
             path: fixture.workspace.primaryPath + "/forbidden", detail: "Scope denial")))
+    }
+
+    @Test("Copy isolation enforces source read-only access under ambient temporary roots")
+    func copySourceBoundary() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        fixture.workspace.additionalPaths = []
+        let task = fixture.task(root: URL(fileURLWithPath: fixture.workspace.primaryPath))
+        task.isolationStrategy = .copy
+        let captured = TaskExecutionResourceScopeResolver.resolve(task: task)
+        #expect(captured.readOnlyRoots.contains(fixture.workspace.primaryPath))
+        task.acceptedResourceScope = captured
+        #expect(launch(task, runtime: .claudeCode, home: fixture.root).requiresSharedWorkspaceBoundary)
+        let scope = TaskExecutionResourceScope(workingDirectory: fixture.first.path,
+            workspacePath: fixture.workspace.primaryPath, resources: [
+                .init(path: fixture.first.path, access: .exclusive, role: .execution),
+                .init(path: fixture.workspace.primaryPath, access: .shared, role: .isolationSource)
+            ])
+        let plan = AgentRuntimeProcessLaunchPlan(runtime: .claudeCode, executablePath: "/bin/sh",
+            arguments: ["-c", """
+                /usr/bin/touch allowed || exit 11
+                if /usr/bin/touch "$1/forbidden" 2>/dev/null; then exit 12; fi
+                """, "copy-source", fixture.workspace.primaryPath],
+            currentDirectory: fixture.first.path, environment: ProcessInfo.processInfo.environment,
+            browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: false)
+        let decision = ExecutionSandbox.decide(plan: plan, providerHomeDirectory: fixture.root.path,
+            resourceScope: scope,
+            settings: .init(enforcement: .strict, wrappedRuntimes: [.claudeCode], allowNetwork: false))
+        guard case .applied(let sandboxed, _) = decision else {
+            Issue.record("Expected an enforced copy boundary")
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: sandboxed.executablePath)
+        process.arguments = sandboxed.arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: sandboxed.currentDirectory)
+        process.environment = sandboxed.environment
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(!FileManager.default.fileExists(atPath: fixture.workspace.primaryPath + "/forbidden"))
+        let receipt = try #require(sandboxed.executionSandboxBoundaryReceipt)
+        #expect(receipt.explains(.init(operation: .write,
+            path: fixture.workspace.primaryPath + "/forbidden", detail: "copy source")))
     }
 
     @Test("Hooks and subagent permissions are launch settings, never workspace mutations")

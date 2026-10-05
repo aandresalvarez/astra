@@ -255,9 +255,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     }
 
     var requiresSharedWorkspaceBoundary: Bool {
-        workspaceAccess == .shared || resourceScope?.replacedCheckoutPaths.isEmpty == false || resourceScope?.resources.contains {
-            $0.access == .shared && $0.role == .gitMetadata
-        } == true
+        workspaceAccess == .shared || resourceScope?.readOnlyRoots.isEmpty == false
     }
 
     var readOnlyResourceContract: ReadOnlyResourceContract {

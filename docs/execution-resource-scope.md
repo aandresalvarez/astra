@@ -7,14 +7,27 @@ scope, not that independently decodable column. `AgentTask.acceptedResourceScope
 is transient and populated only on detached launch views. Editing the live task
 does not edit an accepted scope.
 
-The scope records original paths, canonical identities, access and provenance:
+Version 2 records original paths, canonical identities, access and provenance:
 execution root, additional folder, task storage, input, Git metadata, environment
 mount, and copy-isolation source. Admission, native directory arguments, runtime
 grants, Docker mounts and folder guidance consume these projections. Launch
 rejects changed canonical identities, a changed execution root, or unadmitted
-task-data write grants. Credential visibility is still owned by the existing
+task-data reads or writes. Final native writable paths no longer append a
+separately resolved task folder. Credential visibility is still owned by the existing
 credential projection services: claiming a container credential mount does not
 make it a native provider directory.
+
+The same request also captures typed prompt inputs and the fully resolved
+execution environment, including inherited settings. Prompt construction,
+provider placement, and mount planning do not reread live task inputs or the
+workspace's current environment. Unknown mounts are filtered from projections
+and reported as launch errors, not silently accepted as read-only. Supplied
+mount bindings must match accepted or deterministically generated bindings.
+ASTRA-owned workspace and task-folder mounts are rebound to the selected
+execution root and canonical storage destination before acceptance; custom
+additional-folder mounts retain their declared paths.
+Native Git configuration/credential reads remain an explicit contract of the
+credential projection service, separate from task-data input embedding.
 
 ## Worktrees and folders
 
@@ -33,6 +46,19 @@ conflict. This exception does not apply to arbitrary additional folders or Git
 metadata. Execution folders do not become writable merely because their task's
 output folder is writable.
 
+The captured storage path is always the canonical destination, even when only
+the legacy folder exists. Queue preparation checks migration success before
+creating the destination, preventing an unsuccessful migration from being hidden
+by an empty replacement folder.
+
+Ephemeral composer inputs are materialized through the existing task-owned
+storage service before submission freezes their paths. Later queue preparation
+does not materialize edited live inputs into an already accepted request.
+Prompt inputs distinguish prose, accepted filesystem paths, and paths unavailable
+at acceptance. A missing path becoming available later does not authorize a new
+read. Ordinary accepted files are read at their accepted identities, not stored
+as immutable content snapshots.
+
 ## Git and hooks
 
 Git metadata is read-only by default, including when Git inspection is discovered
@@ -49,6 +75,19 @@ do not relax it without a service boundary that also prevents uncoordinated
 provider writes. Runtime context cannot upgrade a metadata reader into a writer;
 submit a new turn with the required operation.
 
+`ASTRA_GIT_ACCESS=read_only` or `ASTRA_GIT_ACCESS=read_write` explicitly selects
+the captured Git requirement. Invalid, conflicting, or workflow-incompatible
+declarations are rejected. A write declaration requires write-capable execution;
+branch preparation and test validation retain their conservative mutation
+requirement.
+
+For unstructured turns, compatibility hints recognize commands and common commit
+instructions, while distinguishing inspection such as `git branch --show-current`,
+`git config --get`, and `git worktree list`. Hints are not a complete shell parser
+or a command permission. The typed captured requirement owns subsequent launches;
+when an operation was not admitted, request a new turn with the explicit write
+declaration rather than retrying or upgrading the current lease.
+
 Claude receives template hooks and subagent permissions through its launch
 `--settings` JSON, on both initial and continuation launches. ASTRA no longer
 injects/restores workspace `.claude/settings.local.json`. Invalid hook
@@ -61,14 +100,23 @@ at the durable submission boundary. Permission continuations preserve the
 originating scope and add explicitly approved sandbox input paths to their new
 request. They enter admission with their new sequence and submission time rather
 than acquiring extra resources while retaining the old lease.
+Read approvals do not automatically add file contents to the prompt; accepted
+prompt inputs, environment, and Git requirement remain unchanged.
+For legacy direct runs with no durable originating request at all, an explicit
+permission approval creates the first scoped request through normal admission,
+with a `legacy_permission_request_scope_captured` audit event. An existing request
+with an absent or invalid scope is never reconstructed this way.
 
 Live additional-folder edits do not alter the frozen scope. Moving the owning
 workspace, retargeting a selected symlink, or launching at a different execution
 root requires resubmission. A missing pinned root never falls back to the source
 checkout for an accepted request. Copy isolation claims its source and
-deterministically selected destination before copying.
+deterministically selected destination before copying. Every shared resource
+participates in read-only boundary selection and denial generation, including
+copy sources beneath ambient writable temporary directories.
 
-Queued requests written before scopes existed, and malformed or unsupported
+Queued requests written before scopes existed, version-1 scopes lacking the
+frozen input/environment contract, and malformed or unsupported
 scopes, fail with `execution_resource_scope_requires_resubmission`. Their source
 events and request records are retained; the user can submit a new turn. They
 are not silently rebuilt from today's mutable folder settings. Existing recovery

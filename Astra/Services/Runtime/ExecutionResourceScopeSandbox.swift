@@ -17,10 +17,7 @@ struct ExecutionResourceScopeSandbox: Equatable, Sendable {
             writableRoots = []
             return
         }
-        let readers = scope.resources.filter {
-            $0.access == .shared && ($0.role == .execution || $0.role == .additionalFolder)
-        }.compactMap { ExecutionSandbox.canonicalize($0.path) }
-        let roots = Array(Set(readers + scope.replacedCheckoutPaths.compactMap(ExecutionSandbox.canonicalize))).sorted()
+        let roots = Array(Set(scope.readOnlyRoots.compactMap(ExecutionSandbox.canonicalize))).sorted()
         let writers = scope.resources.filter { $0.access == .exclusive }.compactMap { ExecutionSandbox.canonicalize($0.path) }
         var rules: [String] = []
         var parameters: [String] = []

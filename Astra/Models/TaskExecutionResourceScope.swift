@@ -1,9 +1,22 @@
 import Foundation
+import ASTRACore
 
 /// Accepted filesystem authority. Launch copies and manifests are projections
 /// of this value; they must never resolve a larger scope from live settings.
 public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
+    public enum GitAccess: String, Codable, Sendable { case readOnly, readWrite, invalid }
+
+    public struct PromptInput: Codable, Equatable, Sendable {
+        public enum Kind: String, Codable, Sendable { case text, path, unavailablePath }
+        public let value: String
+        public let kind: Kind
+
+        public init(value: String, kind: Kind) {
+            self.value = value
+            self.kind = kind
+        }
+    }
 
     public enum Role: String, Codable, Sendable {
         case execution
@@ -34,18 +47,27 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
     public let workspacePath: String
     public let resources: [Resource]
     public let replacedCheckoutPaths: [String]
+    public let promptInputs: [PromptInput]
+    public let executionEnvironment: WorkspaceExecutionEnvironment
+    public let gitAccess: GitAccess
 
     public init(
         workingDirectory: String,
         workspacePath: String,
         resources: [Resource],
-        replacedCheckoutPaths: [String] = []
+        replacedCheckoutPaths: [String] = [],
+        promptInputs: [PromptInput] = [],
+        executionEnvironment: WorkspaceExecutionEnvironment = .host,
+        gitAccess: GitAccess = .readOnly
     ) {
         version = Self.currentVersion
         self.workingDirectory = workingDirectory
         self.workspacePath = workspacePath
         self.resources = resources
         self.replacedCheckoutPaths = replacedCheckoutPaths
+        self.promptInputs = promptInputs
+        self.executionEnvironment = executionEnvironment
+        self.gitAccess = gitAccess
     }
 
     public var claims: [TaskExecutionResourceClaim] {
@@ -78,8 +100,27 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         }.map(\.path)
     }
 
+    public var readOnlyRoots: [String] {
+        resources.filter { $0.access == .shared }.map(\.path) + replacedCheckoutPaths
+    }
+
+    public func coversRead(to path: String) -> Bool {
+        let canonical = Self.canonicalPath(path)
+        return resources.contains {
+            $0.role != .isolationSource && Self.contains($0.canonicalPath, canonical)
+        }
+    }
+
+    public func addingReadOnlyInputs(_ paths: [String]) -> Self {
+        Self(workingDirectory: workingDirectory, workspacePath: workspacePath,
+             resources: resources + paths.map { .init(path: $0, access: .shared, role: .input) },
+             replacedCheckoutPaths: replacedCheckoutPaths, promptInputs: promptInputs,
+             executionEnvironment: executionEnvironment, gitAccess: gitAccess)
+    }
+
     public var isValid: Bool {
         version == Self.currentVersion
+            && gitAccess != .invalid
             && resources.allSatisfy {
                 !$0.path.isEmpty && $0.path.hasPrefix("/")
                     && $0.path.rangeOfCharacter(from: .newlines) == nil
@@ -88,6 +129,7 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
             && replacedCheckoutPaths.allSatisfy {
                 $0.hasPrefix("/") && $0.rangeOfCharacter(from: .newlines) == nil
             }
+            && promptInputs.allSatisfy { $0.kind != .path || coversRead(to: $0.value) }
             && (workingDirectory.isEmpty || resources.contains {
                 $0.role == .execution && $0.canonicalPath == Self.canonicalPath(workingDirectory)
             })
@@ -107,7 +149,9 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         let folders = resources.filter { $0.role != .gitMetadata && $0.role != .isolationSource }
             .map { "- \($0.path) (\($0.access == .exclusive ? "read-write" : "read-only"); \($0.role.rawValue))" }
             .joined(separator: "\n")
-        return "Accepted execution folders:\n\(folders)\nOnly these folders are granted for this turn. Additional access requires a newly admitted request."
+        let git = gitAccess == .readWrite ? "Git metadata writes are admitted, subject to command permission."
+            : "Git metadata is read-only. If a mutation is required, request a new turn with ASTRA_GIT_ACCESS=read_write; do not retry the denied write."
+        return "Accepted execution folders:\n\(folders)\nOnly these folders are granted for this turn. Additional access requires a newly admitted request.\n\(git)"
     }
 
     public static func canonicalPath(_ path: String) -> String {

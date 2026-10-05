@@ -7,6 +7,48 @@ import ASTRAPersistence
 @testable import ASTRA
 
 extension PermissionApprovalContinuationTests {
+    @Test("Permission continuation preserves scope despite live edits and does not embed read approvals")
+    func continuationPreservesResourceAuthority() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let binding = try fixture.blockedRequest()
+        let requests = try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context)
+        let origin = try #require(requests.first { $0.runID == binding.runID })
+        let accepted = try #require(origin.executionPolicySnapshot?.resourceScope)
+        let approvedFile = FileManager.default.temporaryDirectory.appendingPathComponent("scope-approval-\(UUID().uuidString)")
+        try "approved-read-not-prompt".write(to: approvedFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: approvedFile) }
+        fixture.task.inputs = [approvedFile.path]
+        fixture.task.constraints = ["ASTRA_GIT_ACCESS=invalid-live-edit"]
+        fixture.task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            WorkspaceExecutionEnvironment(id: "edited", kind: .dockerImage, displayName: "Edited", image: "edited:latest"))
+        let policy = AgentRuntimeExecutionPolicy(permissionGrantsOverride: [.sandboxPath(path: approvedFile.path, access: "read")])
+        let submitted = try ExecutionRequestSubmissionService.submitPermissionResume(message: "Continue",
+            executionPolicy: policy, for: fixture.task, into: fixture.context, continuation: binding).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: fixture.context))
+        let resumed = try #require(request.executionPolicySnapshot?.resourceScope)
+        #expect(resumed.promptInputs == accepted.promptInputs)
+        #expect(resumed.executionEnvironment == accepted.executionEnvironment)
+        #expect(resumed.gitAccess == accepted.gitAccess)
+        #expect(resumed.coversRead(to: approvedFile.path))
+        #expect(!resumed.coversWrite(to: approvedFile.path))
+        #expect(!PromptInputContextReader.contextParts(for: resumed).joined().contains("approved-read-not-prompt"))
+    }
+
+    @Test("Permission continuation cannot reconstruct a legacy scope from live settings")
+    func legacyPermissionScopeRequiresResubmission() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let binding = try fixture.blockedRequest()
+        let requests = try TaskTurnRequestRepository.requests(for: fixture.task, in: fixture.context)
+        let origin = try #require(requests.first { $0.runID == binding.runID })
+        origin.executionPolicySnapshotJSON = TaskEvent.payloadString(TaskExecutionPolicySnapshotV1(task: fixture.task))
+        guard case .failure(.emptySource) = ExecutionRequestSubmissionService.submitPermissionResume(
+            message: "Continue", executionPolicy: .default, for: fixture.task, into: fixture.context,
+            continuation: binding) else { Issue.record("Legacy scope was silently reconstructed"); return }
+        #expect(!fixture.task.events.contains { $0.type == "execution.request.permission_resume" })
+    }
+
     @Test("Compaction preserves committed approvals and delivery receipts for restart recovery")
     func compactionPreservesLiveRecoveryEvents() throws {
         let fixture = try Fixture()

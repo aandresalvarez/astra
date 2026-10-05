@@ -63,7 +63,10 @@ public struct TaskWorkspaceAccess {
     }
 
     public var taskFolder: String {
-        WorkspaceFileLayout.readableTaskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
+        if let scope = task.acceptedResourceScope {
+            return scope.resources.first { $0.role == .taskStorage }?.path ?? ""
+        }
+        return WorkspaceFileLayout.readableTaskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
     }
 
     public var canonicalTaskFolder: String {
