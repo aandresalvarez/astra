@@ -2577,6 +2577,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             ? context.task.model
             : context.permissionManifest?.model ?? context.taskSnapshot.model
         let model = AgentRuntimeProcessRunner.model(launchModel, for: id)
+        if context.nativeContinuationSessionID == nil { ProviderLaunchSignatureService.recordLaunchedModel(launchModel, task: context.task, runID: context.runID) }
         let providerModel = AntigravityCLIRuntime.resolvedModelName(model, settingsURL: modelSettingsURL)
         let modelApplied = FileManager.default.isExecutableFile(atPath: executable)
             ? AntigravityCLIRuntime.applySelectedModel(providerModel, settingsURL: modelSettingsURL)
