@@ -40,6 +40,13 @@ struct NewTaskWorktreeSelection {
         TaskWorktreeRequestPayload(enabled: isEnabled, base: base)
     }
 
+    /// The repository follows the shared code location, so only the
+    /// per-task choices reset.
+    mutating func resetTaskChoice() {
+        isEnabled = false
+        base = .defaultBranch
+    }
+
     mutating func updateRepositories(
         _ repositories: [GitRepositoryInfo],
         selectedPath: String?,

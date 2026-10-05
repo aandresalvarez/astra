@@ -61,9 +61,11 @@ starts:
 
 - **Repository** is the same setting as the Repository card's repository and
   checkout pickers, so changing either one changes both.
-- **Start from › Default branch** (the default) fetches the repository's
-  remote default branch, usually `origin/main`, and starts there. If the fetch
-  fails, the last fetched remote branch or the local `main`/`master` is used.
+- **Start from › Default branch** (the default) asks the remote which branch
+  is its default, usually `main`, then fetches that branch and starts there.
+  This works even if your clone's `origin/HEAD` is missing or out of date, for
+  example after the remote renamed its default branch. If the remote can't be
+  reached, the last fetched remote branch or the local `main`/`master` is used.
   Commits on the branch you have checked out are not included.
 - **Start from › Current branch** starts from the selected checkout's current
   commit instead, including commits not yet on `main`.
@@ -85,18 +87,36 @@ folder is the branch name with `/` replaced by `-`, under the app's
 The worktree is created only when it is needed: when the task starts, or
 when Goal Mode planning first reads the code. Plain chat messages don't create
 one. The strip shows the worktree being created and, if the task cannot start,
-the reason. A draft keeps its choice when reopened.
+the reason. A draft keeps its choice when reopened. A template started with the
+box checked creates one worktree, named after the template's task title, and
+all of the template's tasks run in it. Switching workspaces cancels in-flight
+creation or planning; anything already saved stays in the workspace where it
+started.
 
 The task stays pinned to that worktree, including when its draft becomes a
-queued task; the draft's strip shows the pinned folder and its base. Other
-tasks and the workspace's default checkout are unchanged. Task history and
-outputs remain in the workspace's task folder. Worktrees are kept after
-execution and can be managed from the Repository panel. **Start Over** or
-deleting a draft that never ran removes its worktree and branch, but only if
-nothing changed in them. A worktree with edits or commits, or one another task
-or the workspace default uses, is kept. Leave the checkbox off to use the existing checkout behavior. If a
-task's new worktree is removed, launch fails rather than falling back to the
-original repository.
+queued task; the draft's strip shows the pinned folder and its base. Chained
+follow-up tasks, corrective work, and forks of the task run in the same
+worktree, and a task restored from the workspace's recovery file keeps it.
+Other tasks and the workspace's default checkout are unchanged. Task history
+and outputs remain in the workspace's task folder.
+
+While the task runs, the worktree is the only writable copy of its
+repository. A workspace folder that contains the original checkout, such as a
+parent folder of several repositories, is readable but not writable; a
+separate repository nested inside the checkout keeps its own path. ASTRA-confined
+commands and validation can also use the repository's shared Git folder,
+which holds the worktree's branches and history, once ASTRA confirms the
+worktree is registered there; provider-native sandboxes retain their own
+Git-metadata restrictions.
+
+Worktrees are kept after execution and can be managed from the Repository
+panel. **Start Over** or deleting a draft that never ran removes its worktree
+and branch once the deletion is saved, but only if nothing happened in them.
+ASTRA keeps a worktree that has edits, commits, or ignored files such as build
+output or `.env`; one that another task or the workspace default uses; and one
+it can't confirm is unused. Leave the checkbox off to use the existing checkout
+behavior. If a task's new worktree is removed, launch fails rather than falling
+back to the original repository.
 
 ## Requirements
 

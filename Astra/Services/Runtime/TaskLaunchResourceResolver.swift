@@ -292,7 +292,8 @@ enum TaskLaunchResourceResolver {
         fileManager: FileManager,
         to grants: inout [RuntimePathGrant]
     ) {
-        for path in TaskWorkspaceAccess(task: task).runtimeWorkspacePaths {
+        let access = TaskWorkspaceAccess(task: task)
+        for path in access.runtimeWorkspacePaths {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
             grants.append(RuntimePathGrant(
                 path: normalized,
@@ -301,6 +302,30 @@ enum TaskLaunchResourceResolver {
                 reason: "Workspace path selected by the user.",
                 sensitivity: .normal,
                 lifetime: .workspace,
+                exists: true
+            ))
+        }
+        for path in access.runtimeReadOnlyWorkspacePaths {
+            guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
+            grants.append(RuntimePathGrant(
+                path: normalized,
+                access: .read,
+                source: .workspace,
+                reason: "Workspace path containing the source checkout of this task's worktree; only the worktree is writable.",
+                sensitivity: .normal,
+                lifetime: .workspace,
+                exists: true
+            ))
+        }
+        for path in access.runtimeWorktreeGitMetadataPaths {
+            guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
+            grants.append(RuntimePathGrant(
+                path: normalized,
+                access: workspaceAccess == .shared ? .read : .readWrite,
+                source: .workspace,
+                reason: "Git metadata shared by this task's worktree and its source repository.",
+                sensitivity: .normal,
+                lifetime: .task,
                 exists: true
             ))
         }

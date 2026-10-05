@@ -283,7 +283,11 @@ public enum AgentTaskForkService {
         }
         var copiedEvents: [TaskEvent] = eventsToCopy.map { sourceEvent in
             let copiedRun = sourceEvent.run.flatMap { forkedRunsBySourceID[$0.id] }
-            let rewrittenPayload = TaskForkPathRewriter.rewrite(sourceEvent.payload, using: manifestPathMapping)
+            // The worktree binding must keep naming the exact checkout the fork
+            // stays pinned to, so its paths are never rewritten.
+            let rewrittenPayload = sourceEvent.hasType(TaskEventTypes.Task.worktreePrepared)
+                ? sourceEvent.payload
+                : TaskForkPathRewriter.rewrite(sourceEvent.payload, using: manifestPathMapping)
             let newEvent = TaskEvent(
                 task: forked,
                 type: sourceEvent.type,
@@ -297,6 +301,10 @@ public enum AgentTaskForkService {
             return newEvent
         }
         remapAttachmentRecords(from: eventsToCopy, into: copiedEvents, using: manifestPathMapping)
+        if let binding = TaskWorktreeBinding.eventForInheritance(from: source),
+           !eventsToCopy.contains(where: { $0.id == binding.id }) {
+            copiedEvents.append(TaskWorktreeBinding.copy(binding, to: forked))
+        }
 
         copiedEvents.append(TaskEvent(
             task: forked,

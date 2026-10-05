@@ -10,6 +10,15 @@ enum GitRemoteCommitLookupResult: Equatable, Sendable {
     case unavailable(String)
 }
 
+/// The branch a remote's own HEAD names. `refs/remotes/<remote>/HEAD` is only
+/// a local copy recorded at clone time, so it can be missing or stale.
+enum GitRemoteHeadLookupResult: Equatable, Sendable {
+    case branch(String)
+    /// The remote answered without naming a branch, e.g. an empty repository.
+    case unnamed
+    case unavailable
+}
+
 protocol GitRepositoryOperating: AnyObject {
     func acquireIndexGuard() -> Bool
     func releaseIndexGuard()
@@ -79,10 +88,15 @@ protocol GitRepositoryOperating: AnyObject {
         worktreesRoot: String
     ) async throws -> String
     func removeWorktree(repoPath: String, worktreePath: String, force: Bool) async throws
+    /// Asks `remote` which branch its HEAD names.
+    func lookupRemoteHead(remote: String, at repoPath: String) async -> GitRemoteHeadLookupResult
     /// Refreshes `refs/remotes/<remote>/<branch>`; false when the fetch failed.
     func fetchRemoteBranch(remote: String, branch: String, at repoPath: String) async -> Bool
     /// Deletes `refs/heads/<branch>` only while it still points at `expectedCommit`.
     func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws
+    /// True when the checkout holds ignored files, which a non-forced
+    /// `git worktree remove` deletes without asking; also true on error.
+    func hasIgnoredFiles(at repoPath: String) async -> Bool
     func getRemoteURL(at repoPath: String, remote: String?) async -> String?
     func createPullRequest(
         repoPath: String,
@@ -152,12 +166,17 @@ extension GitRepositoryOperating {
 
     /// Alternate operators never touch the network for task worktrees; the
     /// caller falls back to the existing remote-tracking ref.
+    func lookupRemoteHead(remote: String, at repoPath: String) async -> GitRemoteHeadLookupResult { .unavailable }
     func fetchRemoteBranch(remote: String, branch: String, at repoPath: String) async -> Bool { false }
 
     /// Alternate operators fail closed: an unused task branch is kept.
     func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws {
         throw GitWorktreeError.invalidBranchName(branch)
     }
+
+    /// Alternate operators fail closed: a checkout that may hold ignored files
+    /// is kept.
+    func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
 
     func normalizeBaseBranch(_ raw: String, remote: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

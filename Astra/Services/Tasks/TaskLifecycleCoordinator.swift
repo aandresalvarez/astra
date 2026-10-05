@@ -549,13 +549,7 @@ final class TaskLifecycleCoordinator {
             : nil
         cancelAndRemoveTurnRequests(for: task)
         modelContext.delete(task)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        if let unusedWorktree {
-            let modelContext = modelContext
-            Task { @MainActor in
-                await TaskWorktreeService.discardUnusedWorktree(unusedWorktree, modelContext: modelContext)
-            }
-        }
+        TaskWorktreeService.saveDeletionThenDiscard(unusedWorktree, workspace: workspace, modelContext: modelContext)
         return workspace
     }
 

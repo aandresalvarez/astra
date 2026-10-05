@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SwiftData
 import ASTRACore
 import ASTRAModels
@@ -11,9 +12,10 @@ import ASTRAPersistence
 /// planning first reads the code. Plain chats never create one.
 @MainActor
 enum NewTaskWorktreeComposerFlow {
-    /// The composer's draft, unless it is gone (deleted or promoted).
-    static func liveDraft(_ draft: AgentTask?) -> AgentTask? {
-        guard let draft, draft.modelContext != nil, !draft.isDeleted else { return nil }
+    /// The composer's draft, if it still exists in the selected workspace.
+    static func liveDraft(_ draft: AgentTask?, in workspace: Workspace?) -> AgentTask? {
+        guard let draft, draft.modelContext != nil, !draft.isDeleted,
+              draft.workspace?.id == workspace?.id else { return nil }
         return draft
     }
 
@@ -27,10 +29,11 @@ enum NewTaskWorktreeComposerFlow {
         return nil
     }
 
-    /// Keeps a brand-new draft without a worktree on the workspace default,
+    /// Keeps a brand-new draft without a worktree on its workspace's default,
     /// so planning reads the checkout the task will run in.
-    static func followWorkspaceDefault(_ draft: AgentTask, workspace: Workspace?) {
-        guard let workspace, TaskWorktreeService.activeWorktreeBinding(for: draft) == nil else { return }
+    static func followWorkspaceDefault(_ draft: AgentTask) {
+        guard let workspace = draft.workspace,
+              case .none = TaskWorktreeBinding.state(of: draft) else { return }
         TaskCodeLocationPin.set(workspace.activeWorkingPath, workspace: workspace, task: draft)
     }
 
@@ -45,23 +48,82 @@ enum NewTaskWorktreeComposerFlow {
         TaskWorktreeService.recordRequestIfChanged(selection.requestPayload, on: draft, modelContext: modelContext)
     }
 
+    /// A task started straight from the composer into a new worktree keeps the
+    /// conversation, so a failed launch can hand the worktree back as a draft.
+    static func keepConversation(_ messages: [ChatMessage], on task: AgentTask) throws {
+        guard task.draftMessages.isEmpty else { return }
+        let history = messages.isEmpty
+            ? [DraftChatMessagePayload(role: "user", content: task.goal)]
+            : messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
+        task.draftMessages = String(decoding: try JSONEncoder().encode(history), as: UTF8.self)
+    }
+
     static func restoreChoice(_ selection: inout NewTaskWorktreeSelection, from draft: AgentTask) {
         guard let request = TaskWorktreeService.latestRequest(for: draft) else { return }
         selection.isEnabled = request.enabled
         selection.base = request.base
     }
 
-    /// After a discarded draft is deleted, saves the deletion and removes its
-    /// worktree if nothing happened in it.
+    /// After a discarded draft is deleted, saves the deletion and, once it is
+    /// durable, removes its worktree if nothing happened in it.
     static func discardWorktree(
         _ worktree: TaskWorktreeDiscard?,
         workspace: Workspace?,
         modelContext: ModelContext
     ) {
-        guard let worktree else { return }
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        Task { @MainActor in
-            await TaskWorktreeService.discardUnusedWorktree(worktree, modelContext: modelContext)
+        TaskWorktreeService.saveDeletionThenDiscard(worktree, workspace: workspace, modelContext: modelContext)
+    }
+}
+
+/// The composer's task creation, plus the worktrees planning prepares. One
+/// creation runs at a time. A workspace switch detaches both, so work begun
+/// for the previous workspace can no longer change the composer.
+@MainActor
+@Observable
+final class NewTaskCreationRun {
+    private var preparations: Set<UUID> = []
+    @ObservationIgnored private var creation: (id: UUID, task: Task<Void, Never>)?
+
+    var isPreparing: Bool { !preparations.isEmpty }
+
+    /// Runs `action` unless a creation or preparation is in flight. Errors
+    /// are reported only while the run is still attached.
+    func start(
+        _ action: @escaping @MainActor () async throws -> Void,
+        onError: @escaping @MainActor (Error) -> Void
+    ) {
+        guard !isPreparing else { return }
+        let id = UUID()
+        preparations.insert(id)
+        let task = Task { @MainActor [weak self] in
+            defer { self?.finish(id) }
+            do {
+                try await action()
+            } catch {
+                if !Task.isCancelled { onError(error) }
+            }
         }
+        creation = (id, task)
+    }
+
+    /// Shows `body` as worktree preparation, e.g. while planning creates one.
+    func preparing(_ body: () async throws -> Void) async rethrows {
+        let id = UUID()
+        preparations.insert(id)
+        defer { preparations.remove(id) }
+        try await body()
+    }
+
+    /// Cancels the creation and stops waiting for it and any preparation, so
+    /// the composer is free at once.
+    func detach() {
+        creation?.task.cancel()
+        creation = nil
+        preparations.removeAll()
+    }
+
+    private func finish(_ id: UUID) {
+        preparations.remove(id)
+        if creation?.id == id { creation = nil }
     }
 }

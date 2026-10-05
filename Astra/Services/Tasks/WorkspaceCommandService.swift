@@ -140,10 +140,20 @@ enum WorkspaceCommandService {
         workspace: Workspace,
         modelContext: ModelContext,
         source: String,
+        checkoutSource: AgentTask? = nil,
         submitInitial: InitialExecutionSubmitter = { task, context in
             ExecutionRequestSubmissionService.submitInitial(for: task, into: context)
         }
     ) -> TemplateTaskCreation {
+        // The tasks run in the checkout of the conversation that chose the
+        // template, including its worktree; the after phase inherits it when
+        // it is chained.
+        let checkoutSource = checkoutSource?.workspace?.id == workspace.id ? checkoutSource : nil
+        func inheritCheckout(_ task: AgentTask) {
+            guard let checkoutSource,
+                  let binding = TaskWorktreeBinding.inheritPin(from: checkoutSource, into: task) else { return }
+            modelContext.insert(binding)
+        }
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let normalizedDefaultModel = RuntimeModelAvailability.normalizedModel(
             defaultModel,
@@ -210,12 +220,14 @@ enum WorkspaceCommandService {
                 : mainGoal
             task.chainedGoal = chainedMainGoal
             modelContext.insert(task)
+            inheritCheckout(task)
             mainTask.chainedFromID = task.id
             TaskStateMachine.restoreDraftForEditing(mainTask, modelContext: modelContext)
             beforeTask = task
         }
 
         modelContext.insert(mainTask)
+        inheritCheckout(mainTask)
         let runnableTask = beforeTask ?? mainTask
         guard case .success = submitInitial(runnableTask, modelContext) else {
             TaskStateMachine.restoreExecutionSubmissionFailure(

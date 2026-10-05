@@ -99,6 +99,29 @@ and `~/Documents/Astra Dev/Workspaces`.
 - A workspace's `activeWorkingPath` controls where new chats run. Existing
   tasks may keep an `executionRootPath` snapshot so later workspace focus
   changes do not move the thread into a different checkout.
+- A task started in a new worktree is bound to it by its newest
+  `task.worktree.prepared` event whose worktree is still the task's pin
+  (`TaskWorktreeBinding`). Launch grants the worktree as the only writable
+  copy of its repository: configured folders that contain the source checkout
+  are granted read-only, nested Git checkouts keep their own paths, and an
+  unreadable binding grants no workspace paths at all. The shared Git
+  directory is granted (read-only for shared-access runs) only when it is
+  derived from the recorded source repository, is a real Git directory, and
+  lists the worktree as a linked worktree. It is never derived from the
+  worktree's own `.git` file, which the task can rewrite. ASTRA's Seatbelt
+  receives it for both the agent and validation commands, so Git works in the
+  worktree as in a normal checkout, hooks and config included. Docker workspace
+  commands mount the verified Git directory at its original absolute path,
+  while saved source-checkout mounts become read-only or are replaced by the
+  task worktree. Provider-native sandboxes do not receive the Git directory:
+  Codex keeps `.git` read-only by design, and a writable
+  root over the shared Git directory would undo that. Derived tasks
+  (chained, corrective, fork, and template) and recovery-mirror imports copy
+  the binding, so they never fall back to the source checkout. Automatic
+  cleanup of a discarded draft's worktree runs only after the deletion is
+  saved. It keeps any worktree that has changes, ignored files, or new
+  commits; that another task or workspace default references; or whose
+  references cannot be read.
 - `current_state.json`, `current_state.md`, `session_history.md`, diagnostics,
   turn outputs, and runtime-bin folders are ASTRA-owned task state. Agents may
   read them for context when prompted, but they must not be treated as

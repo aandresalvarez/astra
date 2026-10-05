@@ -12,8 +12,8 @@ struct NewTaskWorktreeFixture {
     let storage: URL
     let worktrees: URL
 
-    init() throws {
-        root = FileManager.default.temporaryDirectory
+    init(parent: URL = FileManager.default.temporaryDirectory) throws {
+        root = parent
             .appendingPathComponent("astra-new-task-worktree-\(UUID().uuidString)", isDirectory: true)
             .resolvingSymlinksInPath()
         storage = root.appendingPathComponent("Workspace", isDirectory: true)

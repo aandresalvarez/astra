@@ -113,7 +113,7 @@ struct ComposerAttachmentsTests {
         #expect(restore.lowerBound < firstReturn.lowerBound)
 
         let save = try body(of: "saveDraft", in: chat)
-        let existingDraft = try #require(save.range(of: "if let draft = draftTask {"))
+        let existingDraft = try #require(save.range(of: "if let draft = composerDraft {"))
         let newDraft = try #require(save[existingDraft.upperBound...].range(of: "} else {"))
         #expect(save[existingDraft.upperBound..<newDraft.lowerBound].contains(
             "draft.inputs = ComposerAttachments.inputs(draft.inputs, replacingPathsWith: attachedFiles)"

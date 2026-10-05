@@ -8,6 +8,37 @@ extension GitService {
     /// network budget; the last fetched ref is used instead.
     static let taskWorktreeFetchTimeout: TimeInterval = 20
 
+    /// Asks the remote itself which branch its HEAD names, so a default branch
+    /// such as `develop`, or one renamed after this clone, is found even when
+    /// `refs/remotes/<remote>/HEAD` is missing or stale. Never writes refs.
+    func lookupRemoteHead(remote: String, at repoPath: String) async -> GitRemoteHeadLookupResult {
+        guard Self.isSafeRefComponent(remote) else { return .unavailable }
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: ["ls-remote", "--symref", remote, "HEAD"],
+                timeout: Self.taskWorktreeFetchTimeout,
+                failureLogLevel: .warning
+            )
+            return Self.remoteHead(fromLsRemote: output)
+        } catch {
+            return .unavailable
+        }
+    }
+
+    /// Parses `ref: refs/heads/<branch>\tHEAD` from `git ls-remote --symref`.
+    /// A remote with an unborn HEAD prints nothing.
+    static func remoteHead(fromLsRemote output: String) -> GitRemoteHeadLookupResult {
+        let prefix = "ref: refs/heads/"
+        for line in output.split(whereSeparator: \.isNewline) {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard fields.count == 2, fields[1] == "HEAD", fields[0].hasPrefix(prefix) else { continue }
+            let branch = String(fields[0].dropFirst(prefix.count))
+            return isSafeRefComponent(branch) ? .branch(branch) : .unnamed
+        }
+        return .unnamed
+    }
+
     /// Refreshes one remote-tracking branch so a new worktree starts from the
     /// remote's current tip. Returns false when the fetch failed; callers then
     /// fall back to the existing remote-tracking ref.
@@ -39,6 +70,24 @@ extension GitService {
             at: repoPath,
             arguments: ["update-ref", "-d", "refs/heads/\(branch)", expectedCommit]
         )
+    }
+
+    /// `git status` hides ignored files such as `.env` or local build output,
+    /// yet a non-forced `git worktree remove` deletes them. Any listed entry,
+    /// or a failure to list, means the checkout is kept.
+    func hasIgnoredFiles(at repoPath: String) async -> Bool {
+        do {
+            let output = try await runGit(
+                at: repoPath,
+                arguments: [
+                    "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+                    "--directory", "--no-empty-directory"
+                ]
+            )
+            return !output.isEmpty
+        } catch {
+            return true
+        }
     }
 
     /// Conservative subset of `git check-ref-format` for names ASTRA splices

@@ -36,7 +36,7 @@ enum ChainedTaskSubmissionService {
         nextTask.runtimeID = task.runtimeID
         nextTask.runtimeExplicitlySelected = task.runtimeExplicitlySelected
         nextTask.reasoningEffort = task.reasoningEffort
-        nextTask.executionRootPath = task.executionRootPath
+        let inheritedBinding = TaskWorktreeBinding.inheritPin(from: task, into: nextTask)
         nextTask.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         if !run.output.isEmpty {
             nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(run.output.prefix(5000)))"]
@@ -44,6 +44,7 @@ enum ChainedTaskSubmissionService {
         nextTask.skills = task.skills
         TaskCapabilitySnapshotter.capture(for: nextTask)
         modelContext.insert(nextTask)
+        if let inheritedBinding { modelContext.insert(inheritedBinding) }
         let chainEvent = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.chained,

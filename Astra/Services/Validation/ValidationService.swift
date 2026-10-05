@@ -23,10 +23,11 @@ struct ValidationCommandResult: Equatable, Sendable {
 protocol ValidationCommandRunning: Sendable {
     /// `additionalWritablePaths`: a multi-path workspace's writable
     /// `additionalPaths` (the same set the agent receives via
-    /// `AgentRuntimeProcessRunner.runtimeWritablePaths(for:)`) — so a
-    /// validation command that legitimately writes outside the workspace's
-    /// primary path (generated fixtures, build output in another workspace
-    /// root) isn't denied by the Seatbelt floor's write jail.
+    /// `AgentRuntimeProcessRunner.runtimeWritablePaths(for:)`, plus a task
+    /// worktree's shared Git directory) — so a validation command that
+    /// legitimately writes outside the workspace's primary path (generated
+    /// fixtures, build output in another workspace root, Git metadata) isn't
+    /// denied by the Seatbelt floor's write jail.
     func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult
 }
 
@@ -385,7 +386,7 @@ enum ValidationService {
             command: command,
             workingDirectory: workingDirectory,
             environment: validationCommandEnvironment(),
-            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+            additionalWritablePaths: AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task)
         )
         let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
 
@@ -793,7 +794,7 @@ enum ValidationService {
             command: command,
             workingDirectory: workspacePath,
             environment: validationCommandEnvironment(),
-            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+            additionalWritablePaths: AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task)
         )
         let output = [result.stdout, result.stderr]
             .filter { !$0.isEmpty }

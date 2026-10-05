@@ -9,6 +9,7 @@ enum TaskWorktreeCreationError: LocalizedError {
     case noCommit(String)
     case baseUnavailable(String)
     case persistenceFailed(path: String, reason: String)
+    case noDraft
 
     var errorDescription: String? {
         switch self {
@@ -17,9 +18,11 @@ enum TaskWorktreeCreationError: LocalizedError {
         case .noCommit(let path):
             "Could not read HEAD in \(path). Create an initial commit before starting a task in a worktree."
         case .baseUnavailable(let path):
-            "Could not find the default branch (main or master) of \(path). Choose Start from › Current branch instead."
+            "Could not find the default branch of \(path): its remote didn't name one, and there is no main or master. Choose Start from › Current branch instead."
         case .persistenceFailed(let path, let reason):
             "The worktree was created at \(path), but ASTRA could not save the task. The worktree has been kept; no agent was launched. \(reason)"
+        case .noDraft:
+            "ASTRA needs a saved draft to hold the new worktree. Describe the task in a message, then try again."
         }
     }
 }
@@ -73,8 +76,8 @@ enum TaskWorktreeService {
 
     /// `astra/<slug>-<first 8 of the task id>`, matching the task folder name
     /// under `.astra/tasks/`. Later attempts append `-2`, `-3`, … on collision.
-    static func branchName(for task: AgentTask, attempt: Int = 1) -> String {
-        branchName(title: task.title, taskID: task.id, attempt: attempt)
+    static func branchName(for task: AgentTask, title: String? = nil, attempt: Int = 1) -> String {
+        branchName(title: title ?? task.title, taskID: task.id, attempt: attempt)
     }
 
     static func branchName(title: String, taskID: UUID, attempt: Int = 1) -> String {
@@ -108,13 +111,14 @@ enum TaskWorktreeService {
 
     private static func availableName(
         for task: AgentTask,
+        title: String?,
         repositoryPath: String,
         worktreesRoot: String,
         git: any GitRepositoryOperating
     ) async -> (branch: String, destination: String) {
         var attempt = 1
         while true {
-            let branch = branchName(for: task, attempt: attempt)
+            let branch = branchName(for: task, title: title, attempt: attempt)
             let destination = GitService.worktreeLocation(
                 repoPath: repositoryPath, branch: branch, worktreesRoot: worktreesRoot
             )
@@ -130,8 +134,9 @@ enum TaskWorktreeService {
     // MARK: - Base
 
     /// Resolves the commit a new worktree starts from. The default branch is
-    /// fetched first so the task starts from the remote's current tip; when
-    /// the remote can't be reached the last fetched ref is used.
+    /// the one the remote's HEAD names, fetched first so the task starts from
+    /// the remote's current tip; when the remote can't be reached the last
+    /// fetched ref, then local `main` or `master`, is used.
     static func resolveBase(
         for request: TaskWorktreeRequest,
         git: any GitRepositoryOperating
@@ -155,15 +160,28 @@ enum TaskWorktreeService {
             )
         case .defaultBranch:
             var localCandidates = ["main", "master"]
-            if let remote = await git.getDefaultRemote(at: repository),
-               let branch = await remoteDefaultBranch(remote: remote, repository: repository, git: git) {
-                let fetched = await git.fetchRemoteBranch(remote: remote, branch: branch, at: repository)
-                if let commit = await git.getCommitSHA("refs/remotes/\(remote)/\(branch)", at: repository) {
-                    return TaskWorktreeBase(
-                        ref: "\(remote)/\(branch)", commit: commit, source: .defaultBranch, fetched: fetched
-                    )
+            if let remote = await git.getDefaultRemote(at: repository), GitService.isSafeRefComponent(remote) {
+                // The remote's own HEAD first: the local `<remote>/HEAD` is
+                // missing after `git remote add` and stale after a rename.
+                let head = await git.lookupRemoteHead(remote: remote, at: repository)
+                var branch: String?
+                if case .branch(let advertised) = head {
+                    branch = advertised
+                } else {
+                    branch = await remoteDefaultBranch(remote: remote, repository: repository, git: git)
                 }
-                localCandidates.insert(branch, at: 0)
+                if let branch {
+                    // A remote that just failed to answer is not asked again.
+                    let fetched = head == .unavailable
+                        ? false
+                        : await git.fetchRemoteBranch(remote: remote, branch: branch, at: repository)
+                    if let commit = await git.getCommitSHA("refs/remotes/\(remote)/\(branch)", at: repository) {
+                        return TaskWorktreeBase(
+                            ref: "\(remote)/\(branch)", commit: commit, source: .defaultBranch, fetched: fetched
+                        )
+                    }
+                    localCandidates.insert(branch, at: 0)
+                }
             }
             var seen = Set<String>()
             for branch in localCandidates where seen.insert(branch).inserted {
@@ -175,7 +193,9 @@ enum TaskWorktreeService {
         }
     }
 
-    /// The branch name a request would start from, for display. Never fetches.
+    /// The branch name a request would start from, for display. Reads local
+    /// refs only, so it can differ from the branch the remote names when the
+    /// task starts; the task's binding records the base actually used.
     static func baseLabel(
         for request: TaskWorktreeRequest,
         git: any GitRepositoryOperating
@@ -234,21 +254,11 @@ enum TaskWorktreeService {
     /// The worktree the task runs in: the latest prepared payload whose
     /// worktree is still the task's pin. A draft retargeted elsewhere has none.
     static func activeWorktreeBinding(for task: AgentTask) -> TaskWorktreePayload? {
-        activeWorktreeEvent(for: task).flatMap {
-            try? $0.decodePayload(as: TaskWorktreePayload.self).get()
-        }
+        TaskWorkspaceAccess(task: task).worktreeBinding
     }
 
-    private static func activeWorktreeEvent(for task: AgentTask) -> TaskEvent? {
-        guard let pinned = task.executionRootPath, !pinned.isEmpty,
-              let event = task.events
-                .filter({ $0.hasType(TaskEventTypes.Task.worktreePrepared) })
-                .max(by: { $0.timestamp < $1.timestamp }),
-              case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self),
-              WorkspacePathPresentation.standardizedPath(payload.worktreePath)
-                == WorkspacePathPresentation.standardizedPath(pinned)
-        else { return nil }
-        return event
+    static func activeWorktreeEvent(for task: AgentTask) -> TaskEvent? {
+        TaskWorkspaceAccess(task: task).worktreeBindingEvent
     }
 
     // MARK: - Intent
@@ -287,29 +297,30 @@ enum TaskWorktreeService {
     /// 2. a task that already has a worktree keeps it;
     /// 3. a request creates a new worktree from the requested base;
     /// 4. otherwise the task inherits the draft's pin, if any.
+    /// A draft from another workspace lends neither its worktree nor its pin.
+    /// `branchTitle` names a new worktree's branch instead of the task title.
     static func prepare(
         task: AgentTask,
         request: TaskWorktreeRequest?,
         inheritingFrom draft: AgentTask? = nil,
+        branchTitle: String? = nil,
         modelContext: ModelContext,
         git: any GitRepositoryOperating = GitService.shared,
         worktreesRoot: String = AppChannel.current.defaultWorktreesRoot
     ) async throws {
         try Task.checkCancellation()
-        let source = draft === task ? nil : draft
-        if let source, let prepared = activeWorktreeEvent(for: source) {
-            task.executionRootPath = source.executionRootPath
-            modelContext.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.Task.worktreePrepared,
-                payload: prepared.payload
-            ))
+        let source = draft === task || draft?.workspace?.id != task.workspace?.id ? nil : draft
+        if let source, request == nil || activeWorktreeEvent(for: source) != nil,
+           TaskWorktreeBinding.eventForInheritance(from: source) != nil,
+           let binding = TaskWorktreeBinding.inheritPin(from: source, into: task) {
+            modelContext.insert(binding)
             return
         }
         if activeWorktreeEvent(for: task) != nil { return }
         if let request {
             try await createWorktree(
-                for: task, request: request, modelContext: modelContext, git: git, worktreesRoot: worktreesRoot
+                for: task, request: request, branchTitle: branchTitle,
+                modelContext: modelContext, git: git, worktreesRoot: worktreesRoot
             )
         } else if let source {
             task.executionRootPath = source.executionRootPath
@@ -319,6 +330,7 @@ enum TaskWorktreeService {
     private static func createWorktree(
         for task: AgentTask,
         request: TaskWorktreeRequest,
+        branchTitle: String?,
         modelContext: ModelContext,
         git: any GitRepositoryOperating,
         worktreesRoot: String
@@ -340,7 +352,7 @@ enum TaskWorktreeService {
         let base = try await resolveBase(for: resolvedRequest, git: git)
         try Task.checkCancellation()
         let (branch, destination) = await availableName(
-            for: task, repositoryPath: path, worktreesRoot: worktreesRoot, git: git
+            for: task, title: branchTitle, repositoryPath: path, worktreesRoot: worktreesRoot, git: git
         )
         let payload = try TaskEvent.encodePayload(TaskWorktreePayload(
             repositoryPath: path,
@@ -403,7 +415,9 @@ enum TaskWorktreeService {
     ) -> AgentTask? {
         if existingDraft === task { return task }
         let prepared = activeWorktreeEvent(for: task)
-        if existingDraft == nil, prepared != nil {
+        // Only a draft of the task's own workspace may take over its worktree.
+        let adoptingDraft = existingDraft?.workspace?.id == task.workspace?.id ? existingDraft : nil
+        if adoptingDraft == nil, prepared != nil {
             if task.status == .queued {
                 TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             }
@@ -415,7 +429,7 @@ enum TaskWorktreeService {
             )
             return task
         }
-        if let draft = existingDraft, let prepared, activeWorktreeEvent(for: draft) == nil {
+        if let draft = adoptingDraft, let prepared, activeWorktreeEvent(for: draft) == nil {
             draft.executionRootPath = task.executionRootPath
             modelContext.insert(TaskEvent(
                 task: draft,
@@ -444,14 +458,16 @@ enum TaskWorktreeService {
     }
 
     /// Removes a discarded draft's worktree and branch only while nothing
-    /// happened in them: the checkout is clean, still on its branch, the branch
-    /// is still at its base commit, and no other task or workspace default
-    /// points at it. Anything else is kept for the user.
+    /// happened in them: the checkout is clean with no ignored files, still on
+    /// its branch, the branch is still at its base commit, and no other task
+    /// or workspace default points at it. Anything else, including a store
+    /// that can't be read, keeps the worktree for the user.
     @discardableResult
     static func discardUnusedWorktree(
         _ discard: TaskWorktreeDiscard,
         modelContext: ModelContext,
-        git: any GitRepositoryOperating = GitService.shared
+        git: any GitRepositoryOperating = GitService.shared,
+        checkoutPins: @MainActor (UUID, ModelContext) throws -> Set<String> = durableCheckoutPins(excluding:modelContext:)
     ) async -> Bool {
         let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
         func kept(_ reason: String) -> Bool {
@@ -462,17 +478,21 @@ enum TaskWorktreeService {
             ])
             return false
         }
-        guard !isReferenced(path, excluding: discard.taskID, modelContext: modelContext) else {
-            return kept("referenced")
+        func referenceProblem() -> String? {
+            do {
+                return try checkoutPins(discard.taskID, modelContext).contains(path) ? "referenced" : nil
+            } catch {
+                return "reference_check_failed"
+            }
         }
+        if let problem = referenceProblem() { return kept(problem) }
         guard FileManager.default.fileExists(atPath: path) else { return kept("missing") }
         guard await git.getStatusFiles(at: path).isEmpty else { return kept("uncommitted_changes") }
+        guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
         guard await git.getCurrentBranch(at: path) == discard.branch else { return kept("branch_switched") }
         guard await git.getCommitSHA("refs/heads/\(discard.branch)", at: discard.repositoryPath)
                 == discard.baseCommit else { return kept("has_commits") }
-        guard !isReferenced(path, excluding: discard.taskID, modelContext: modelContext) else {
-            return kept("referenced")
-        }
+        if let problem = referenceProblem() { return kept(problem) }
         do {
             try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: false)
         } catch {
@@ -497,13 +517,44 @@ enum TaskWorktreeService {
         return true
     }
 
-    private static func isReferenced(_ path: String, excluding taskID: UUID, modelContext: ModelContext) -> Bool {
-        let pinned = (try? modelContext.fetch(FetchDescriptor<AgentTask>(
+    /// Every checkout that another task or a workspace default still points
+    /// at. Throws when the store can't be read, so cleanup keeps the worktree
+    /// instead of mistaking an error for "no references".
+    static func durableCheckoutPins(excluding taskID: UUID, modelContext: ModelContext) throws -> Set<String> {
+        let tasks = try modelContext.fetch(FetchDescriptor<AgentTask>(
             predicate: #Predicate<AgentTask> { $0.id != taskID && $0.executionRootPath != nil }
-        ))) ?? []
-        if pinned.contains(where: { standardized($0.executionRootPath) == path }) { return true }
-        let workspaces = (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []
-        return workspaces.contains { standardized($0.activeWorkingPath) == path }
+        ))
+        let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
+        return Set(tasks.compactMap { standardized($0.executionRootPath) }
+            + workspaces.compactMap { standardized($0.activeWorkingPath) })
+    }
+
+    /// Saves a task deletion, then removes the deleted draft's unused
+    /// worktree. Cleanup runs only once the deletion is durable: a draft that
+    /// reappears after a failed save still finds its checkout. Returns the
+    /// cleanup, if one started.
+    @discardableResult
+    static func saveDeletionThenDiscard(
+        _ discard: TaskWorktreeDiscard?,
+        workspace: Workspace?,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = { workspace, modelContext in
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        }
+    ) -> Task<Bool, Never>? {
+        let saved = persist(workspace, modelContext)
+        guard let discard else { return nil }
+        guard saved else {
+            AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
+                "worktree": discard.worktreePath,
+                "branch": discard.branch,
+                "reason": "deletion_not_saved"
+            ])
+            return nil
+        }
+        return Task { @MainActor in
+            await discardUnusedWorktree(discard, modelContext: modelContext)
+        }
     }
 
     private static func standardized(_ path: String?) -> String? {

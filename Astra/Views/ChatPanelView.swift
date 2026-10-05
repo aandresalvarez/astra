@@ -12,7 +12,7 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
 }
 
-private struct DraftChatMessagePayload: Codable {
+struct DraftChatMessagePayload: Codable {
     let role: String
     let content: String
 }
@@ -102,9 +102,8 @@ struct ChatPanelView: View {
     // reply / pending plan that only lives in this view's @State and is discarded on recreate.
     @State private var chatReplyTask: Task<Void, Never>?
     @State private var planGenerationTask: Task<Void, Never>?
-    @State private var taskCreationTask: Task<Void, Never>?
+    @State private var taskCreation = NewTaskCreationRun()
     @State private var worktreeSelection = NewTaskWorktreeSelection()
-    @State private var isPreparingWorktree = false
     @State private var taskCreationError: String?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
@@ -127,8 +126,11 @@ struct ChatPanelView: View {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var isPreparingWorktree: Bool { taskCreation.isPreparing }
+
     private var composerDraft: AgentTask? {
-        NewTaskWorktreeComposerFlow.liveDraft(draftTask ?? draftToLoad)
+        NewTaskWorktreeComposerFlow.liveDraft(draftTask, in: workspace)
+            ?? NewTaskWorktreeComposerFlow.liveDraft(draftToLoad, in: workspace)
     }
 
     private var worktreeBinding: TaskWorktreePayload? {
@@ -503,7 +505,7 @@ struct ChatPanelView: View {
             removePasteMonitor()
             chatReplyTask?.cancel()
             planGenerationTask?.cancel()
-            taskCreationTask?.cancel()
+            taskCreation.detach()
         }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
@@ -511,11 +513,15 @@ struct ChatPanelView: View {
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignDefaultModelWithRuntime() }
         .onChange(of: workspace?.persistentModelID) {
-            // The policy defaults are global, so an in-place workspace switch
-            // keeps whatever level the user picked for this composer.
+            chatReplyTask?.cancel()
+            planGenerationTask?.cancel()
+            isThinking = false
+            activeSlashContext = nil
+            if draftTask?.workspace?.id != workspace?.id { draftTask = nil }
             loadSSHConnections()
             excludedSkillIDs = []
             if !isCapabilitySnapshotCurrent { capabilitySnapshot = .empty }
+            taskCreation.detach()
             worktreeSelection = NewTaskWorktreeSelection()
             taskCreationError = nil
         }
@@ -818,9 +824,10 @@ struct ChatPanelView: View {
             Button {
                 if let draft = draftTask {
                     let worktree = TaskWorktreeService.discardSnapshot(for: draft)
+                    let draftWorkspace = draft.workspace
                     modelContext.delete(draft)
                     draftTask = nil
-                    NewTaskWorktreeComposerFlow.discardWorktree(worktree, workspace: workspace, modelContext: modelContext)
+                    NewTaskWorktreeComposerFlow.discardWorktree(worktree, workspace: draftWorkspace, modelContext: modelContext)
                 }
                 messages = []
                 attachedFiles = []
@@ -831,7 +838,7 @@ struct ChatPanelView: View {
                 activeSlashContext = nil
                 isPlanMode = false
                 composerRuntimeExplicitlySelected = false
-                resetWorktreeChoice()
+                worktreeSelection.resetTaskChoice()
                 taskCreationError = nil
             } label: {
                 HStack(spacing: 5) {
@@ -845,6 +852,7 @@ struct ChatPanelView: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
+            .disabled(isThinking || isPreparingWorktree)
 
             Spacer()
         }
@@ -911,7 +919,7 @@ struct ChatPanelView: View {
                 NewTaskWorktreeDockView(
                     workspace: workspace,
                     draft: composerDraft,
-                    pinOwner: NewTaskWorktreeComposerFlow.liveDraft(draftToLoad),
+                    pinOwner: NewTaskWorktreeComposerFlow.liveDraft(draftToLoad, in: workspace),
                     allowsChoice: allowsWorktreeChoice,
                     binding: worktreeBinding,
                     isPreparing: isPreparingWorktree,
@@ -1104,52 +1112,29 @@ struct ChatPanelView: View {
 
     // MARK: - Actions
 
-    /// The repository follows the shared code location, so only the
-    /// per-task choices reset.
-    private func resetWorktreeChoice() {
-        worktreeSelection.isEnabled = false
-        worktreeSelection.base = .defaultBranch
-    }
-
     private func reportTaskCreationError(_ error: Error) {
-        guard !(error is CancellationError) else { return }
+        guard !Task.isCancelled, !(error is CancellationError) else { return }
         taskCreationError = error.localizedDescription
         AppLogger.error("Task creation failed: \(error.localizedDescription)", category: "UI")
     }
 
     private func performTaskCreation(_ action: @escaping @MainActor () async throws -> Void) {
-        guard !isPreparingWorktree, !isThinking, canSubmitWorktreeSelection else { return }
-        isPreparingWorktree = true
-        taskCreationError = nil
-        taskCreationTask = Task { @MainActor in
-            defer {
-                isPreparingWorktree = false
-                taskCreationTask = nil
-            }
-            do {
-                try await action()
-            } catch {
-                reportTaskCreationError(error)
-            }
+        guard !isPreparingWorktree, !isThinking else { return }
+        guard canSubmitWorktreeSelection else {
+            return taskCreationError = TaskWorktreeCreationError.repositoryUnavailable.localizedDescription
         }
+        taskCreationError = nil
+        taskCreation.start(action, onError: reportTaskCreationError)
     }
 
     private func prepareTaskCheckout(_ task: AgentTask) async throws {
         guard canSubmitWorktreeSelection else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
-        let wasPreparing = isPreparingWorktree
-        isPreparingWorktree = true
-        defer { isPreparingWorktree = wasPreparing }
         let draft = composerDraft
         let request = requestedWorktree
         do {
-            if draft == nil, request != nil, task.draftMessages.isEmpty {
-                let history = messages.isEmpty
-                    ? [DraftChatMessagePayload(role: "user", content: task.goal)]
-                    : messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
-                task.draftMessages = String(decoding: try JSONEncoder().encode(history), as: UTF8.self)
-            }
+            if draft == nil, request != nil { try NewTaskWorktreeComposerFlow.keepConversation(messages, on: task) }
             try await TaskWorktreeService.prepare(
                 task: task,
                 request: request,
@@ -1161,9 +1146,11 @@ struct ChatPanelView: View {
             // A completed Git operation may already have saved the task with its
             // worktree. The draft keeps that worktree for retry, never a second one.
             if task.modelContext != nil {
-                draftTask = TaskWorktreeService.recoverFailedSubmission(
+                let recovered = TaskWorktreeService.recoverFailedSubmission(
                     task: task, existingDraft: draft, modelContext: modelContext
                 )
+                // A detached creation's draft stays with the workspace it began in.
+                if !Task.isCancelled { draftTask = recovered }
             }
             throw error
         }
@@ -1171,13 +1158,25 @@ struct ChatPanelView: View {
 
     /// Planning reads the code the task will run in, so a requested worktree
     /// is created for the draft before the planner first runs.
-    private func ensurePlanningWorktree(for draft: AgentTask) async throws {
+    private func ensurePlanningWorktree(for draft: AgentTask, branchTitle: String? = nil) async throws {
         guard let request = requestedWorktree else { return }
-        let wasPreparing = isPreparingWorktree
-        isPreparingWorktree = true
-        defer { isPreparingWorktree = wasPreparing }
-        try await TaskWorktreeService.prepare(task: draft, request: request, modelContext: modelContext)
+        try await taskCreation.preparing {
+            try await TaskWorktreeService.prepare(
+                task: draft, request: request, branchTitle: branchTitle, modelContext: modelContext
+            )
+        }
         try Task.checkCancellation()
+    }
+
+    /// Template tasks take the checkout a quick run would; the conversation's
+    /// draft holds a requested worktree for them.
+    private func templateCheckoutSource(branchTitle: String) async throws -> AgentTask? {
+        guard requestedWorktree != nil else {
+            return NewTaskWorktreeComposerFlow.checkoutSource(draft: composerDraft, isSelectedDraft: draftToLoad != nil)
+        }
+        guard let draft = try await saveDraft() else { throw TaskWorktreeCreationError.noDraft }
+        try await ensurePlanningWorktree(for: draft, branchTitle: branchTitle)
+        return draft
     }
 
     private func focusComposerInput() {
@@ -1387,7 +1386,7 @@ struct ChatPanelView: View {
 
         chatReplyTask?.cancel()
         chatReplyTask = Task { @MainActor in
-            defer { isThinking = false }
+            defer { if !Task.isCancelled { isThinking = false } }
             do {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
@@ -1499,7 +1498,7 @@ struct ChatPanelView: View {
             pendingPlan = nil
             isApprovedPlanHistoryExpanded = false
             isPlanMode = false
-            resetWorktreeChoice()
+            worktreeSelection.resetTaskChoice()
             var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
             auditFields["trace_id"] = traceID
             auditFields["use_agent_team"] = String(useAgentTeam)
@@ -1535,7 +1534,7 @@ struct ChatPanelView: View {
         logChatCapabilityContext(source: "new_task_plan_generation", traceID: traceID)
         planGenerationTask?.cancel()
         planGenerationTask = Task { @MainActor in
-            defer { isThinking = false }
+            defer { if !Task.isCancelled { isThinking = false } }
             do {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
@@ -1731,7 +1730,7 @@ struct ChatPanelView: View {
             attachedFiles = []
             chainedGoal = ""
             isPlanMode = false
-            resetWorktreeChoice()
+            worktreeSelection.resetTaskChoice()
             var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
             auditFields["trace_id"] = traceID
             auditFields["inputs_count"] = String(task.inputs.count)
@@ -2104,20 +2103,24 @@ struct ChatPanelView: View {
             let taskTitle = json["taskTitle"] as? String ?? tmpl.name
             let variables = json["variables"] as? [String: String] ?? [:]
 
-            let creation = WorkspaceCommandService.createTemplateTasks(
-                template: tmpl,
-                taskTitle: taskTitle,
-                variables: variables,
-                selectedSkills: selectedSkills,
-                defaultModel: normalizedDefaultModel,
-                defaultRuntimeID: defaultRuntime.rawValue,
-                workspace: ws,
-                modelContext: modelContext,
-                source: "template"
-            )
-            activeSlashContext = nil
-            if !creation.initialRequestSubmitted { messages.append(ChatMessage(role: "assistant", content: "The template task was saved as a draft because ASTRA could not queue its initial run. Open the task and retry when ready.")) }
-            onTaskCreated?(creation.mainTask)
+            performTaskCreation {
+                let checkoutSource = try await templateCheckoutSource(branchTitle: taskTitle)
+                let creation = WorkspaceCommandService.createTemplateTasks(
+                    template: tmpl,
+                    taskTitle: taskTitle,
+                    variables: variables,
+                    selectedSkills: selectedSkills,
+                    defaultModel: normalizedDefaultModel,
+                    defaultRuntimeID: defaultRuntime.rawValue,
+                    workspace: ws,
+                    modelContext: modelContext,
+                    source: "template",
+                    checkoutSource: checkoutSource
+                )
+                activeSlashContext = nil
+                if !creation.initialRequestSubmitted { messages.append(ChatMessage(role: "assistant", content: "The template task was saved as a draft because ASTRA could not queue its initial run. Open the task and retry when ready.")) }
+                onTaskCreated?(creation.mainTask)
+            }
 
         case "create_schedule":
             let name = json["name"] as? String ?? "New Routine"
@@ -2200,12 +2203,12 @@ struct ChatPanelView: View {
 
     @discardableResult
     private func saveDraft() async throws -> AgentTask? {
-        guard !messages.isEmpty else { return draftTask }
+        guard !messages.isEmpty else { return composerDraft }
 
         let draftMessages = messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
         let json = String(decoding: try JSONEncoder().encode(draftMessages), as: UTF8.self)
 
-        if let draft = draftTask {
+        if let draft = composerDraft {
             let workerSelection = composerWorkerSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model
@@ -2227,7 +2230,7 @@ struct ChatPanelView: View {
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
             if draftToLoad == nil {
-                NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft, workspace: workspace)
+                NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
             }
             NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
             if TaskPolicyStore.latestSelectedLevel(for: draft) != currentAgentPolicyLevel {
@@ -2399,10 +2402,18 @@ struct ChatPanelView: View {
 
     private func promoteDraft(to finalTask: AgentTask) {
         if let draft = draftTask, draft !== finalTask {
-            // Delete the draft since we're creating the real task
+            // Delete the draft since we're creating the real task. A worktree
+            // the task didn't take over (a draft from another workspace) is
+            // given back like a discarded draft's.
+            let draftWorkspace = draft.workspace
+            let unusedWorktree = draft.executionRootPath == finalTask.executionRootPath
+                ? nil
+                : TaskWorktreeService.discardSnapshot(for: draft)
             modelContext.delete(draft)
             draftTask = nil
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: finalTask.workspace, modelContext: modelContext)
+            TaskWorktreeService.saveDeletionThenDiscard(
+                unusedWorktree, workspace: draftWorkspace, modelContext: modelContext
+            )
         }
         // finalTask already captured the flag; reset it so a later, unrelated
         // task in this same view instance isn't mismarked as explicit.

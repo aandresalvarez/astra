@@ -141,6 +141,98 @@ struct NewTaskWorktreeBaseTests {
         #expect(TaskWorktreeService.activeWorktreeBinding(for: task)?.baseRef == "trunk")
     }
 
+    @Test("After the remote renames its default branch, the base follows the remote's HEAD, not stale origin/HEAD")
+    func defaultBaseFollowsRemoteHead() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let remote = try fixture.bareRemote("App.git")
+        let seed = try fixture.repository("Seed")
+        try fixture.git(["remote", "add", "origin", remote.path], at: seed)
+        try fixture.push(["origin", "main"], at: seed)
+        let repository = try fixture.clone(remote, as: "App")
+        // The remote renames main to develop after this clone.
+        try fixture.push(["origin", "main:develop"], at: seed)
+        try fixture.git(["--git-dir", remote.path, "symbolic-ref", "HEAD", "refs/heads/develop"], at: fixture.root)
+        try fixture.push(["origin", ":main"], at: seed)
+        let teammate = try fixture.clone(remote, as: "Teammate")
+        let remoteTip = try fixture.commit("Sources/landed.txt", contents: "landed", message: "Land", at: teammate)
+        try fixture.push(["origin", "develop"], at: teammate)
+        #expect(try fixture.git(["symbolic-ref", "refs/remotes/origin/HEAD"], at: repository) == "refs/remotes/origin/main")
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Fix login", goal: "Fix login", workspace: workspace(repository, in: store.mainContext))
+
+        try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.baseRef == "origin/develop")
+        #expect(binding.baseCommit == remoteTip)
+        #expect(binding.baseFetched == true)
+        let worktree = URL(fileURLWithPath: try #require(task.executionRootPath))
+        #expect(try fixture.git(["rev-parse", "HEAD"], at: worktree) == remoteTip)
+    }
+
+    @Test("A remote added by hand, without origin/HEAD, main, or master, still yields its default branch")
+    func defaultBaseWithoutRemoteHeadRef() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let remote = try fixture.bareRemote("App.git")
+        let repository = try fixture.repository("App", branch: "develop")
+        try fixture.git(["remote", "add", "origin", remote.path], at: repository)
+        try fixture.push(["origin", "develop"], at: repository)
+        try fixture.git(["--git-dir", remote.path, "symbolic-ref", "HEAD", "refs/heads/develop"], at: fixture.root)
+        let teammate = try fixture.clone(remote, as: "Teammate")
+        let remoteTip = try fixture.commit("Sources/landed.txt", contents: "landed", message: "Land", at: teammate)
+        try fixture.push(["origin", "develop"], at: teammate)
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Fix login", goal: "Fix login", workspace: workspace(repository, in: store.mainContext))
+
+        try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.baseRef == "origin/develop")
+        #expect(binding.baseCommit == remoteTip)
+        #expect(binding.baseFetched == true)
+    }
+
+    @Test("Only a safe branch named by the remote's HEAD symref is accepted")
+    func remoteHeadParsing() {
+        let sha = String(repeating: "a", count: 40)
+        #expect(GitService.remoteHead(fromLsRemote: "ref: refs/heads/develop\tHEAD\n\(sha)\tHEAD\n") == .branch("develop"))
+        #expect(GitService.remoteHead(fromLsRemote: "ref: refs/heads/release/2.0\tHEAD\n") == .branch("release/2.0"))
+        #expect(GitService.remoteHead(fromLsRemote: "") == .unnamed)
+        #expect(GitService.remoteHead(fromLsRemote: "\(sha)\tHEAD\n") == .unnamed)
+        #expect(GitService.remoteHead(fromLsRemote: "ref: refs/heads/--upload-pack=x\tHEAD\n") == .unnamed)
+        #expect(GitService.remoteHead(fromLsRemote: "ref: refs/heads/a..b\tHEAD\n") == .unnamed)
+        #expect(GitService.remoteHead(fromLsRemote: "ref: refs/heads/main\trefs/heads/other\n") == .unnamed)
+    }
+
+    @Test("Current branch reads HEAD from the selected linked worktree; the worktree is added from the repository")
+    func currentBranchUsesSelectedCheckout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-side", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "side", linked.path], at: repository)
+        let sideTip = try fixture.commit("Sources/side.txt", contents: "side", message: "Side work", at: linked)
+        let store = try Fixture.container()
+        let task = AgentTask(title: "Continue", goal: "Continue", workspace: workspace(repository, in: store.mainContext))
+
+        try await TaskWorktreeService.prepare(
+            task: task,
+            request: TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: linked.path, base: .currentBranch),
+            modelContext: store.mainContext,
+            worktreesRoot: fixture.worktrees.path
+        )
+
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.baseRef == "side")
+        #expect(binding.baseCommit == sideTip)
+        #expect(binding.repositoryPath == repository.path)
+        let worktree = URL(fileURLWithPath: try #require(task.executionRootPath))
+        #expect(try fixture.git(["rev-parse", "HEAD"], at: worktree) == sideTip)
+        #expect(try fixture.git(["branch", "--show-current"], at: repository) == "main")
+    }
+
     // MARK: - Names
 
     @Test("Branch names keep whole words of the title and end with the task folder's short ID")
@@ -333,6 +425,114 @@ struct NewTaskWorktreeBaseTests {
         )).get()
         legacy.events = [TaskEvent(task: legacy, eventType: TaskEventTypes.Task.worktreePrepared, payload: payload)]
         #expect(TaskWorktreeService.discardSnapshot(for: legacy) == nil)
+    }
+
+    @Test("Ignored files are work too: a worktree holding only ignored files is kept")
+    func discardKeepsIgnoredFiles() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try fixture.commit(".gitignore", contents: "*.env\n", message: "Ignore env files", at: repository)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace(repository, in: context))
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        let worktree = URL(fileURLWithPath: try #require(draft.executionRootPath))
+        #expect(!(await GitService.shared.hasIgnoredFiles(at: worktree.path)))
+        let secret = worktree.appendingPathComponent("local.env")
+        try "TOKEN=local".write(to: secret, atomically: true, encoding: .utf8)
+        #expect(await GitService.shared.getStatusFiles(at: worktree.path).isEmpty)
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        context.delete(draft)
+        try context.save()
+
+        #expect(!(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context)))
+        #expect(FileManager.default.fileExists(atPath: secret.path))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty == false)
+    }
+
+    @Test("When references can't be read, before or after the Git checks, the worktree is kept")
+    func referenceFailureKeepsWorktree() async throws {
+        @MainActor final class Calls { var count = 0 }
+        struct StoreUnavailable: Error {}
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace(repository, in: context))
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        context.delete(draft)
+        try context.save()
+
+        #expect(!(await TaskWorktreeService.discardUnusedWorktree(
+            discard, modelContext: context, checkoutPins: { _, _ in throw StoreUnavailable() }
+        )))
+        #expect(FileManager.default.fileExists(atPath: path))
+        let calls = Calls()
+        #expect(!(await TaskWorktreeService.discardUnusedWorktree(
+            discard, modelContext: context, checkoutPins: { _, _ in
+                calls.count += 1
+                if calls.count > 1 { throw StoreUnavailable() }
+                return []
+            }
+        )))
+        #expect(calls.count == 2)
+        #expect(FileManager.default.fileExists(atPath: path))
+
+        #expect(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context))
+        #expect(!FileManager.default.fileExists(atPath: path))
+    }
+
+    @Test("Cleanup starts only after the deletion is saved; a failed save keeps the worktree")
+    func cleanupWaitsForDurableDeletion() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        let discard = TaskWorktreeService.discardSnapshot(for: draft)
+        context.delete(draft)
+
+        let unsaved = TaskWorktreeService.saveDeletionThenDiscard(
+            discard, workspace: workspace, modelContext: context, persist: { _, _ in false }
+        )
+        #expect(unsaved == nil)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(FileManager.default.fileExists(atPath: path))
+
+        let cleanup = try #require(TaskWorktreeService.saveDeletionThenDiscard(
+            discard, workspace: workspace, modelContext: context, persist: { _, context in
+                (try? context.save()) != nil
+            }
+        ))
+        #expect(await cleanup.value)
+        #expect(!FileManager.default.fileExists(atPath: path))
+    }
+
+    @Test("Start Over also saves the deletion of a plain draft without a worktree")
+    func discardingPlainDraftPersistsDeletion() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = try Fixture.container()
+        let context = ModelContext(store)
+        let workspace = Workspace(name: "Plain", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        try context.save()
+
+        context.delete(draft)
+        NewTaskWorktreeComposerFlow.discardWorktree(nil, workspace: workspace, modelContext: context)
+
+        let reloaded = ModelContext(store)
+        #expect(try reloaded.fetchCount(FetchDescriptor<AgentTask>()) == 0)
     }
 
     @Test("Deleting a draft that never ran gives back its untouched worktree")

@@ -102,6 +102,19 @@ struct ComposerPresentationTests {
         #expect(composer.contains("task.map { TaskWorkspaceAccess(task: $0).runtimeWorkspaceFolders }"))
     }
 
+    @Test("switching workspaces detaches creation and stops old chat and planning work")
+    func composerSwitchCancelsOldWorkspaceOperations() throws {
+        let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let start = try #require(composer.range(of: ".onChange(of: workspace?.persistentModelID)"))
+        let end = try #require(composer.range(of: "// MARK: - Scroll behavior", range: start.upperBound..<composer.endIndex))
+        let handler = composer[start.upperBound..<end.lowerBound]
+        #expect(handler.contains("chatReplyTask?.cancel()"))
+        #expect(handler.contains("planGenerationTask?.cancel()"))
+        #expect(handler.contains("taskCreation.detach()"))
+        #expect(handler.contains("if draftTask?.workspace?.id != workspace?.id { draftTask = nil }"))
+        #expect(composer.contains("defer { if !Task.isCancelled { isThinking = false } }"))
+    }
+
     @Test("task decision dock stays compact")
     func taskDecisionDockStaysCompact() {
         #expect(TaskComposerPresentation.decisionRowUsesNestedChrome == false)
