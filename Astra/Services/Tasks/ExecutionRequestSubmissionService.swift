@@ -391,6 +391,9 @@ enum ExecutionRequestSubmissionService {
             sourceEventType: eventType,
             sourcePayload: encoded,
             acceptedTurn: payload.message,
+            acceptedGitIntent: payload.planSnapshot.flatMap { plan in
+                payload.planExecutionMode.map { TaskExecutionGitRequirementResolver.approvedPlanIntent(plan, mode: $0) }
+            },
             permissionContinuation: payload.permissionContinuation,
             approvedResourcePaths: TaskLaunchResourceResolver.approvedSandboxReadablePaths(
                 from: payload.executionPolicyOverride?.permissionGrants ?? [],
@@ -410,6 +413,7 @@ enum ExecutionRequestSubmissionService {
         sourceEventType: String,
         sourcePayload: String,
         acceptedTurn: String? = nil,
+        acceptedGitIntent: String? = nil,
         permissionContinuation: PermissionApprovalContinuation? = nil,
         approvedResourcePaths: [String] = [],
         attachmentPaths: [String] = [],
@@ -472,7 +476,7 @@ enum ExecutionRequestSubmissionService {
         )
         let resourceScope = originSnapshot?.resourceScope?.addingReadOnlyInputs(approvedResourcePaths)
             ?? TaskExecutionResourceScopeResolver.resolve(
-                task: task, acceptedTurn: turnIntentSnapshot.activationText,
+                task: task, acceptedTurn: acceptedGitIntent ?? turnIntentSnapshot.activationText,
                 attachmentPaths: attachmentPaths + approvedResourcePaths)
         guard resourceScope.gitAccess != .invalid else {
             task.inputs = originalInputs

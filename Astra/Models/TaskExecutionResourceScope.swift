@@ -104,6 +104,10 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         resources.filter { $0.access == .shared }.map(\.path) + replacedCheckoutPaths
     }
 
+    public var providerReadOnlyFolders: [String] {
+        resources.filter { $0.role == .additionalFolder && $0.access == .shared }.map(\.path)
+    }
+
     public func coversRead(to path: String) -> Bool {
         let canonical = Self.canonicalPath(path)
         return resources.contains {

@@ -2,6 +2,14 @@ import Foundation
 import ASTRAModels
 
 enum TaskExecutionGitRequirementResolver {
+    static func approvedPlanIntent(_ plan: TaskPlanPayload, mode: TaskPlanExecutionMode) -> String {
+        let steps = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: plan).map { [$0] } ?? [] : plan.steps
+        let context = mode == .fullPlan ? [plan.title, plan.goal] : []
+        return (["Approved plan execution:"] + context + steps.flatMap {
+            [$0.title, $0.detail, $0.doneSignal] + $0.likelyTools
+        }).joined(separator: "\n")
+    }
+
     static func resolve(task: AgentTask, acceptedTurn: String?, writable: Bool) -> TaskExecutionResourceScope.GitAccess {
         let prefix = "ASTRA_GIT_ACCESS="
         let declarations = task.constraints.filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }

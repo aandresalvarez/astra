@@ -138,7 +138,7 @@ final class AgentRuntimeWorker {
         onEvent: @escaping (ParsedEvent) -> Void
     ) async {
         let launchTask = executionPolicy.launchSnapshot.map { TaskExecutionLaunchSnapshotApplicator.detachedTask($0, from: task) } ?? task
-        let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        let currentPlan = launchTask.acceptedResourceScope != nil ? plan : TaskPlanService.reconstruct(for: task).plan ?? plan
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
             guard await ApprovedPlanRuntimeSettlement.validateApprovedPlanContractForFinalCompletion(

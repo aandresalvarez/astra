@@ -56,6 +56,15 @@ The captured storage path is always the canonical destination, even when only
 the legacy folder exists. Queue preparation checks migration success before
 creating the destination, preventing an unsuccessful migration from being hidden
 by an empty replacement folder.
+Admission revalidates the accepted workspace and storage destination after resource
+waits and before folder preparation. Workspace drift fails the retained request
+with resubmission guidance, without exporting task state into the unaccepted
+workspace or acquiring its resources.
+
+Copilot's native directory arguments include accepted read-only additional
+folders, while the outer boundary still denies writes. Single-file inputs are
+never widened to their parent directories, and replaced source checkouts remain
+excluded.
 
 Ephemeral composer inputs are materialized through the existing task-owned
 storage service before submission freezes their paths. Later queue preparation
@@ -91,6 +100,12 @@ are **not** operation-leased yet. They retain their turn-long exclusive lease;
 do not relax it without a service boundary that also prevents uncoordinated
 provider writes. Runtime context cannot upgrade a metadata reader into a writer;
 submit a new turn with the required operation.
+
+Approved-plan requests derive Git intent from the selected executable step in
+next-step mode, or the full approved plan in full-plan mode. Later steps do not
+upgrade a next-step reader. Scoped execution uses that accepted plan payload,
+not a subsequently edited live plan; explicit Git declarations and preserved
+permission-continuation scopes still take precedence.
 
 `ASTRA_GIT_ACCESS=read_only` or `ASTRA_GIT_ACCESS=read_write` explicitly selects
 the captured Git requirement. Invalid, conflicting, or workflow-incompatible

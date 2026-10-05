@@ -313,6 +313,114 @@ struct TaskExecutionResourceScopeTests {
         #expect(plan.requiresSharedWorkspaceBoundary)
     }
 
+    @Test("Approved plans capture Git intent from the selected step or the full plan",
+          arguments: [TaskPlanPayloadStepStatus.pending, .running, .blocked, .done, .skipped])
+    func approvedPlanGitIntent(firstStatus: TaskPlanPayloadStepStatus) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let context = container.mainContext
+        context.insert(fixture.workspace)
+        let plan = TaskPlanPayload(title: "Update parser", goal: "Improve parsing", steps: [
+            .init(id: "inspect", title: "Inspect", detail: "git status", status: firstStatus),
+            .init(id: "commit", title: "Save work", detail: "git commit -am 'Fix parser'")
+        ])
+        for mode in [TaskPlanExecutionMode.nextStep, .fullPlan] {
+            let task = fixture.task(root: fixture.first)
+            context.insert(task)
+            let submission = try ExecutionRequestSubmissionService.submitPlan(plan: plan, mode: mode,
+                mutation: .existingTask, for: task, into: context).get()
+            let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+            let scope = try #require(request.executionPolicySnapshot?.resourceScope)
+            let writes = mode == .fullPlan || firstStatus == .done || firstStatus == .skipped
+            #expect(scope.gitAccess == (writes ? .readWrite : .readOnly))
+            #expect(scope.resources.filter { $0.role == .gitMetadata }.allSatisfy {
+                $0.access == (writes ? .exclusive : .shared)
+            })
+            var edited = plan
+            edited.steps = [.init(id: "different", title: "git push")]
+            TaskPlanService.recordApproved(edited, task: task, modelContext: context)
+            #expect(request.executionPolicySnapshot?.resourceScope == scope)
+            let source = try #require(task.events.first { $0.id == request.sourceEventID })
+            #expect(ExecutionRequestSubmissionService.decodeSourcePayload(source)?.planSnapshot == plan)
+        }
+        let task = fixture.task(root: fixture.first)
+        task.constraints = ["ASTRA_GIT_ACCESS=read_only"]
+        context.insert(task)
+        let submission = try ExecutionRequestSubmissionService.submitPlan(plan: plan, mode: .fullPlan,
+            mutation: .existingTask, for: task, into: context).get()
+        let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: context))
+        #expect(request.executionPolicySnapshot?.resourceScope?.gitAccess == .readOnly)
+    }
+
+    @Test("Copilot exposes accepted read-only folders without widening file or write grants")
+    func copilotSharedDirectories() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let shared = fixture.root.appendingPathComponent("shared")
+        let files = fixture.root.appendingPathComponent("files")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: files, withIntermediateDirectories: true)
+        let input = files.appendingPathComponent("input.txt")
+        try "input".write(to: input, atomically: true, encoding: .utf8)
+        fixture.workspace.additionalPaths.append(shared.path)
+        let task = fixture.task(root: fixture.first, runtime: .copilotCLI)
+        task.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        task.inputs = [input.path]
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        task.acceptedResourceScope = scope
+        let projection = AgentRuntimeProcessRunner.copilotNativeDirectoryProjection(for: task)
+        #expect(projection.additionalDirectories.contains(shared.path))
+        #expect(!projection.additionalDirectories.contains(fixture.repository.path))
+        #expect(!projection.additionalDirectories.contains(input.path))
+        #expect(!projection.additionalDirectories.contains(files.path))
+        #expect(projection.unreachableFiles == [input.path])
+        #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: task).contains(shared.path))
+        #expect(scope.coversRead(to: shared.path))
+        #expect(!scope.coversWrite(to: shared.path))
+        let capabilities = CopilotCLICapabilities(helpText: "--output-format=FORMAT --no-ask-user")
+        let command = CopilotCLIRuntime.buildCommand(executablePath: "/bin/copilot", prompt: "Read the shared folder",
+            model: "gpt-5.6-sol", workspacePath: fixture.first.path,
+            additionalPaths: projection.additionalDirectories, permissionPolicy: .restricted,
+            allowedTools: [], timeoutSeconds: 60, capabilities: capabilities, taskEnvironment: [:],
+            copilotHome: fixture.root.path,
+            permissionArguments: ProviderPolicyRender.copilotLaunchPermissionArguments(policy: .restricted,
+                allowedTools: [], capabilities: capabilities, localToolCommands: [], runtimeSupportTools: [],
+                allowAllPathsForSSHConnections: false))
+        let directories = command.arguments.indices.filter { command.arguments[$0] == "--add-dir" }
+            .map { command.arguments[$0 + 1] }
+        #expect(directories.contains(shared.path))
+        #expect(!command.arguments.contains("--allow-all-paths"))
+        let resources = launch(task, runtime: .copilotCLI, home: fixture.root)
+        #expect(resources.requiresSharedWorkspaceBoundary)
+        try "readable".write(to: shared.appendingPathComponent("content.txt"), atomically: true, encoding: .utf8)
+        let probe = AgentRuntimeProcessLaunchPlan(runtime: .copilotCLI, executablePath: "/bin/sh",
+            arguments: ["-c", """
+                /bin/cat "$1/content.txt" >/dev/null || exit 11
+                if /usr/bin/touch "$1/forbidden" 2>/dev/null; then exit 12; fi
+                """, "copilot-reader", shared.path],
+            currentDirectory: fixture.first.path, environment: ProcessInfo.processInfo.environment,
+            browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: false)
+        let decision = ExecutionSandbox.decide(plan: probe, providerHomeDirectory: fixture.root.path,
+            additionalWritablePaths: resources.hostWritablePaths, additionalReadablePaths: resources.hostReadablePaths,
+            workspaceWritable: false, resourceScope: scope,
+            settings: .init(enforcement: .strict, wrappedRuntimes: [.copilotCLI], allowNetwork: false))
+        guard case .applied(let sandboxed, _) = decision else {
+            Issue.record("Expected a confined Copilot reader, got \(decision)")
+            return
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: sandboxed.executablePath)
+        process.arguments = sandboxed.arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: sandboxed.currentDirectory)
+        process.environment = sandboxed.environment
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(!FileManager.default.fileExists(atPath: shared.appendingPathComponent("forbidden").path))
+    }
+
     @Test("Workspace readers share while task storage remains isolated from writers")
     func sharedReadersWithStorage() throws {
         let fixture = try Fixture()

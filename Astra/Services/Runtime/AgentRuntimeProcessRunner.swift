@@ -1343,7 +1343,8 @@ final class AgentRuntimeProcessRunner {
     static func copilotNativeDirectoryProjection(for task: AgentTask) -> ProviderNativeDirectoryProjection.Result {
         let writable = runtimeWritablePaths(for: task)
         let inputs = ProviderNativeDirectoryProjection.project(
-            resourcePaths: TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths,
+            resourcePaths: TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths
+                + (task.acceptedResourceScope?.providerReadOnlyFolders ?? []),
             alreadyReachableDirectories: writable
         )
         return .init(

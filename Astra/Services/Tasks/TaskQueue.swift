@@ -353,6 +353,8 @@ final class TaskQueue {
             task: task,
             claims: requestedResources,
             modelContext: modelContext,
+            scope: executionPolicy.launchSnapshot?.resourceScope,
+            request: executionRequest,
             shouldAbort: executionRequest.map { request in
                 { request.isDeleted || !request.state.isActive }
             }
@@ -390,7 +392,7 @@ final class TaskQueue {
             return
         }
 
-        guard prepareTaskFolder(task, modelContext: modelContext, mode: "task", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "task", scope: executionPolicy.launchSnapshot?.resourceScope) else {
             if let executionRequest, executionRequest.state.isActive {
                 failPersistedTurn(executionRequest, reason: "task_folder_create_failed", modelContext: modelContext)
             }
@@ -649,9 +651,11 @@ final class TaskQueue {
         guard let resourceLease = await waitForResourceLocks(
             task: task,
             claims: requestedResources,
-            modelContext: modelContext
+            modelContext: modelContext,
+            scope: executionPolicy.launchSnapshot?.resourceScope
         ) else {
-            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext,
+                scope: executionPolicy.launchSnapshot?.resourceScope)
             return false
         }
         defer {
@@ -666,7 +670,7 @@ final class TaskQueue {
             return false
         }
 
-        guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue", scope: executionPolicy.launchSnapshot?.resourceScope) else {
             recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
@@ -795,6 +799,8 @@ final class TaskQueue {
                 task: task,
                 claims: pendingClaims,
                 modelContext: modelContext,
+                scope: executionPolicy.launchSnapshot?.resourceScope,
+                request: request,
                 shouldAbort: { request.isDeleted || !request.state.isActive }
             ) else {
                 if !request.isDeleted, request.state.isActive {
@@ -839,7 +845,7 @@ final class TaskQueue {
                 )
                 continue
             }
-            guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
+            guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue", scope: executionPolicy.launchSnapshot?.resourceScope) else {
                 releaseResourceLocks(resourceLease, task: task, modelContext: modelContext)
                 failPersistedTurn(request, reason: "task_folder_create_failed", modelContext: modelContext)
                 return false
@@ -988,7 +994,7 @@ final class TaskQueue {
         wakeTurnAdmissionWaiters(taskID: request.taskID)
         let taskID = request.taskID
         let persisted: Bool
-        if state.isTerminal {
+        if state.isTerminal, terminalReason != "execution_resource_scope_requires_resubmission" {
             let workspace = (try? modelContext.fetch(
                 FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
             ))?.first?.workspace
@@ -1087,8 +1093,14 @@ final class TaskQueue {
     private func recordContinuationAdmissionFailure(
         _ task: AgentTask,
         lifecycle: ContinuationLaunchLifecycle,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        scope: TaskExecutionResourceScope? = nil
     ) {
+        guard TaskExecutionResourcePreparation.isCurrent(task: task, scope: scope) else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id,
+                fields: ["reason": "continuation_scope_rejection_preserved"], level: .warning)
+            return
+        }
         guard task.status == .running || task.status == lifecycle.previousStatus else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "continuation_not_admitted",
@@ -1154,6 +1166,8 @@ final class TaskQueue {
             task: task,
             claims: requestedResources,
             modelContext: modelContext,
+            scope: executionPolicy.launchSnapshot?.resourceScope,
+            request: executionRequest,
             shouldAbort: executionRequest.map { request in
                 { request.isDeleted || !request.state.isActive }
             }
@@ -1192,7 +1206,7 @@ final class TaskQueue {
             return
         }
 
-        guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan", frozenInputs: executionPolicy.launchSnapshot?.resourceScope != nil) else {
+        guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan", scope: executionPolicy.launchSnapshot?.resourceScope) else {
             if let executionRequest, executionRequest.state.isActive {
                 failPersistedTurn(executionRequest, reason: "task_folder_create_failed", modelContext: modelContext)
             }
@@ -1294,10 +1308,10 @@ final class TaskQueue {
     }
 
     @MainActor
-    private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String, frozenInputs: Bool) -> Bool {
+    private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String, scope: TaskExecutionResourceScope?) -> Bool {
         do {
-            let folder = try TaskExecutionResourcePreparation.ensureTaskFolder(task: task)
-            if !frozenInputs, TaskInputMaterializer.materialize(task: task, taskFolder: folder).didChange {
+            let folder = try TaskExecutionResourcePreparation.ensureTaskFolder(task: task, scope: scope)
+            if scope == nil, TaskInputMaterializer.materialize(task: task, taskFolder: folder).didChange {
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext, taskID: task.id, auditFields: ["operation": "task_inputs_materialized"])
             }
             AppLogger.audit(.taskStarted, category: "Queue", taskID: task.id, fields: [
@@ -1975,9 +1989,28 @@ final class TaskQueue {
         task: AgentTask,
         claims: [TaskResourceLockClaim],
         modelContext: ModelContext,
+        scope: TaskExecutionResourceScope? = nil,
+        request: TaskTurnRequest? = nil,
         shouldAbort: (() -> Bool)? = nil
     ) async -> [TaskResourceLockClaim]? {
+        func scopeIsCurrent() -> Bool {
+            guard !TaskExecutionResourcePreparation.isCurrent(task: task, scope: scope) else { return true }
+            waitingResourceLocks.removeValue(forKey: task.id)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+                payload: TaskExecutionResourcePreparation.ScopeError.changed.localizedDescription))
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id,
+                fields: ["reason": "execution_resource_scope_requires_resubmission"], level: .error)
+            if let request {
+                failPersistedTurn(request, reason: "execution_resource_scope_requires_resubmission", modelContext: modelContext)
+            } else {
+                WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext, taskID: task.id,
+                    auditFields: ["operation": "execution_resource_scope_requires_resubmission"])
+            }
+            return false
+        }
         guard !(shouldAbort?() ?? false) else { return nil }
+        guard scopeIsCurrent() else { return nil }
         // A claimless (no-workspace) request leases nothing and admission accepts
         // it; only the worker's preflight can terminalize it. nil redispatches forever.
         guard !claims.isEmpty else { return [] }
@@ -1995,6 +2028,7 @@ final class TaskQueue {
 
         var recordedWaiting = false
         while !Task.isCancelled && !(shouldAbort?() ?? false) {
+            guard scopeIsCurrent() else { return nil }
             if let acquired = acquireResourceLocksIfAvailable(
                 claims,
                 task: task,

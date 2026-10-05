@@ -185,6 +185,8 @@ extension PermissionApprovalContinuationTests {
             for: fixture.task, into: fixture.context)
         guard case .success(let submission) = result else { Issue.record("Plan not submitted"); return }
         let origin = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: fixture.context))
+        let acceptedScope = try #require(origin.executionPolicySnapshot?.resourceScope)
+        #expect(acceptedScope.gitAccess == .readOnly)
         let run = TaskRun(task: fixture.task)
         fixture.context.insert(run)
         _ = TaskTurnRequestStateMachine.transition(origin, to: .admitted)
@@ -195,6 +197,10 @@ extension PermissionApprovalContinuationTests {
         let binding = TaskPermissionContinuation.capture(task: fixture.task, run: run, modelContext: fixture.context)
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
             payload: TaskPermissionContinuation.attach(fixture.payload(requestID: "plan"), continuation: binding), task: fixture.task)
+        var editedPlan = plan
+        editedPlan.steps = [.init(id: "changed", title: "git commit the changes")]
+        TaskPlanService.recordCreated(editedPlan, task: fixture.task, modelContext: fixture.context)
+        fixture.task.constraints = ["ASTRA_GIT_ACCESS=read_write"]
         try fixture.context.save()
         guard case .queued(let resumed) = PermissionApprovalResolutionService.approve(task: fixture.task, scope: .once,
             modelContext: fixture.context) else { Issue.record("Plan continuation not queued"); return }
@@ -206,6 +212,7 @@ extension PermissionApprovalContinuationTests {
         #expect(payload.launchMode == .approvedPlan)
         #expect(payload.planSnapshot == plan)
         #expect(payload.planExecutionMode == mode)
+        #expect(request.executionPolicySnapshot?.resourceScope == acceptedScope)
         #expect(payload.executionPolicyOverride?.permissionGrants == [.credential(label: fixture.label)])
     }
 }
