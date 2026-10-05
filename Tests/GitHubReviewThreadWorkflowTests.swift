@@ -268,4 +268,60 @@ struct GitHubReviewThreadWorkflowTests {
         f.context.insert(typo)
         #expect(GitHubReviewThreadRequirement.request(task: f.task)?.id == typo.id.uuidString)
     }
+
+    // MARK: - What counts as a request to reply to or resolve threads
+
+    private func request(for goal: String) -> GitHubReviewThreadRequirement.Request? {
+        let workspace = Workspace(name: "Threads", primaryPath: "/tmp/astra-thread-intent")
+        return GitHubReviewThreadRequirement.request(task: AgentTask(title: "Task", goal: goal, workspace: workspace))
+    }
+
+    @Test("asking to reply to or resolve review threads on a PR is a request", arguments: [
+        "Reply to and resolve all comments on https://github.com/example/repo/pull/12",
+        "Reply to all the unresolved review threads on PR 476 and resolve them",
+        "Reply to the comments on PR #12",
+        "Please mark the review threads on pull request 12 as resolved",
+        "Address the review comments and resolve the threads on GitHub PR 12",
+        "Reply to the reviewer comments on this PR"
+    ])
+    func realRequestsAreDetected(goal: String) {
+        #expect(request(for: goal) != nil, "\(goal)")
+    }
+
+    @Test("ordinary GitHub work that mentions comments or resolving does not become a request", arguments: [
+        "Summarize the open GitHub PRs and reply to the Slack comments about the release",
+        "Draft a reply to the customer comments, then open a pull request with the fix",
+        "Draft a reply to the customer comments then open a pull request with the fix",
+        "Reply to the Slack comments about the release and resolve them. Then check the GitHub PR",
+        "Open a GitHub PR and mark the issue as resolved",
+        "Investigate why the GitHub workflow fails; do not resolve any threads",
+        "Resolve the merge conflicts in my GitHub PR and update the review"
+    ])
+    func ordinaryWorkIsNotARequest(goal: String) {
+        // A false positive blocks the task from finishing until the user types a
+        // cancellation phrase, so a miss is the cheaper error.
+        #expect(request(for: goal) == nil, "\(goal)")
+    }
+
+    @Test("a follow-up message can still reply to or resolve comments once a request is active")
+    func followUpsKeepWorkingAfterARequest() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "Do not resolve the comments"))
+        #expect(GitHubReviewThreadRequirement.request(task: f.task) == nil)
+
+        f.context.insert(TaskEvent(task: f.task, type: TaskPlanConversationEventTypes.userMessage,
+                                   payload: "Resolve the threads on PR #12"))
+        #expect(GitHubReviewThreadRequirement.request(task: f.task) != nil)
+    }
+
+    @Test("the user can drop a request in plain words")
+    func plainWordsDropARequest() throws {
+        for phrase in ["cancel it", "skip it", "forget that", "drop them", "never mind"] {
+            let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+            #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+            f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: phrase))
+            #expect(!GitHubReviewThreadRequirement.isPending(task: f.task), "\(phrase)")
+        }
+    }
 }

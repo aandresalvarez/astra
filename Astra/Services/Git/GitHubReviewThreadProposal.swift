@@ -104,7 +104,10 @@ enum GitHubReviewThreadRequirement {
             if let publish = intent(message.payload, allowPronoun: current != nil) {
                 current = publish ? Request(id: message.id.uuidString, text: message.payload) : nil
             } else if current != nil,
-                      message.payload.range(of: #"(?i)\b(?:cancel|stop|do not send|don't send)\s+(?:it|that|them|this)\b"#, options: .regularExpression) != nil {
+                      message.payload.range(
+                        of: #"(?i)\b(?:cancel|stop|skip|drop|forget|do not send|don't send)\s+(?:it|that|them|this)\b|\bnever\s?mind\b"#,
+                        options: .regularExpression
+                      ) != nil {
                 current = nil
             }
         }
@@ -121,9 +124,26 @@ enum GitHubReviewThreadRequirement {
         }
     }
 
+    /// What the user is asking for decides whether a task is held until ASTRA
+    /// publishes, so a false positive traps an unrelated task and a miss only
+    /// costs enforcement (a proposal file is still offered for approval). The
+    /// patterns therefore err toward missing.
+    ///
+    /// - A thread noun ("threads", "conversations", "review comments") is enough.
+    /// - A bare "comments" or "reviews" counts only when a pull request follows
+    ///   it ("comments on PR 12"), or when a request is already active and the
+    ///   message is a follow-up ("do not resolve the comments").
+    private static let threadNoun = #"(?:threads?|conversations?|(?:review|reviewer|inline)\s+comm?ents?)\b"#
+    private static let bareNoun = #"(?:comm?ents?|reviews?)\b"#
+    private static let pullRequestTail =
+        #"(?:\s+\S+){0,3}?\s+(?:on|in|for|of|from|to)\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:https?://github\.com/\S+/pull/\d+|PR\s*#?\d+|pull request\b|PR\b)"#
+
     private static func intent(_ text: String, allowPronoun: Bool = false) -> Bool? {
-        var pattern = #"(?i)\b(?:resolve|reslolve|resolving|reply|replying)\b(?:\s+\S+){0,6}?\s+\b(?:threads?|comm?ents?|conversations?|reviews?)\b|\bmark\b(?:\s+\S+){0,6}?\s+\bresolved\b"#
-        if allowPronoun || text.range(of: #"(?i)\b(?:threads?|comm?ents?|conversations?|reviews?)\b"#, options: .regularExpression) != nil {
+        let object = "(?:" + threadNoun + "|" + bareNoun + (allowPronoun ? "" : pullRequestTail) + ")"
+        var pattern = #"(?i)\b(?:resolve|reslolve|resolving|reply|replying)\b(?:\s+\S+){0,6}?\s+\b"# + object
+            + #"|\bmark\b(?:\s+\S+){0,4}?\s+\b(?:"# + threadNoun + "|" + bareNoun + #")(?:\s+\S+){0,7}?\s+\bresolved\b"#
+        let qualifyingObject = #"(?i)\b(?:"# + threadNoun + "|" + bareNoun + pullRequestTail + ")"
+        if allowPronoun || text.range(of: qualifyingObject, options: .regularExpression) != nil {
             pattern += #"|\b(?:resolve|reslolve)\s+(?:them|those|these)\b"#
         }
         guard let regex = try? NSRegularExpression(pattern: pattern),
