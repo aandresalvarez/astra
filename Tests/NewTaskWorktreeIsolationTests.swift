@@ -52,6 +52,72 @@ struct NewTaskWorktreeIsolationTests {
 
     // MARK: - Launch grants
 
+    @Test("Imported bindings cannot grant arbitrary or unrelated checkouts", arguments: [
+        "unregistered", "retargeted", "foreignRepository"
+    ])
+    func importedBindingsCannotGrantUntrustedPins(scenario: String) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let outside = fixture.root.appendingPathComponent("Outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        var recordedRepository = repository
+        var recordedWorktree = outside
+        if scenario == "retargeted" {
+            recordedWorktree = fixture.root.appendingPathComponent("Recorded", isDirectory: true)
+            try fixture.git(["worktree", "add", "--quiet", "-b", "recorded", recordedWorktree.path], at: repository)
+        } else if scenario == "foreignRepository" {
+            recordedRepository = try fixture.repository("Other")
+            try fixture.git(["worktree", "add", "--quiet", "-b", "outside", outside.path], at: recordedRepository)
+        }
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Imported", primaryPath: fixture.storage.path, additionalPaths: [repository.path])
+        context.insert(workspace)
+        let task = AgentTask(title: "Imported", goal: "Update files", workspace: workspace)
+        task.executionRootPath = outside.path
+        task.templateHooksJSON = #"{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"true"}]}]}"#
+        context.insert(task)
+        context.insert(TaskEvent(task: task, eventType: TaskEventTypes.Task.worktreePrepared, payload: try TaskEvent.encodePayload(
+            TaskWorktreePayload(repositoryPath: recordedRepository.path, worktreePath: recordedWorktree.path, branch: "astra/imported")
+        ).get()))
+        try context.save()
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let importedStore = try Fixture.container()
+        let importedContext = importedStore.mainContext
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContext)
+        let recovered = try #require(imported.tasks.first)
+
+        guard case .invalid = TaskWorktreeBinding.state(of: recovered) else {
+            Issue.record("An imported binding granted a checkout not registered by a configured repository")
+            return
+        }
+        let access = TaskWorkspaceAccess(task: recovered)
+        #expect(access.codeWorkingDirectory == outside.path)
+        #expect(access.worktreeBinding == nil)
+        #expect(access.runtimeWorkspacePaths.isEmpty)
+        #expect(access.runtimeWritablePaths.isEmpty)
+        #expect(access.runtimeWorktreeGitMetadataPaths.isEmpty)
+        #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: recovered).contains(outside.path))
+        let plan = launchPlan(recovered)
+        #expect(!plan.hostWritablePaths.contains(outside.path))
+        #expect(plan.diagnostics.contains { $0.code == "worktree_binding_invalid" && $0.severity == .error })
+
+        let settings = outside.appendingPathComponent(".claude/settings.local.json")
+        try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let original = Data(#"{"permissions":{"allow":["Read"]}}"#.utf8)
+        try original.write(to: settings)
+        TaskStateMachine.enqueueFromChatSubmission(recovered, modelContext: importedContext)
+        let fake = FakeAgentProcessRunner()
+        let worker = AgentRuntimeWorker(processRunner: fake, providerSettingsSnapshotProvider: { .headlessScenario })
+        let queue = TaskQueue(poolSize: 1, workerFactory: { worker })
+        await queue.executeTask(recovered, modelContext: importedContext)
+        #expect(recovered.status == .failed)
+        #expect(fake.receivedTaskIDs.isEmpty)
+        #expect(try Data(contentsOf: settings) == original)
+        #expect(recovered.events.contains { $0.payload.contains("could not verify this task's worktree") })
+    }
+
     @Test("A configured folder that contains the source checkout stays read-only; the worktree is the writable copy")
     func ancestorFolderStaysReadOnly() async throws {
         let fixture = try Fixture()
@@ -120,7 +186,9 @@ struct NewTaskWorktreeIsolationTests {
         forged.events = [TaskEvent(task: forged, eventType: TaskEventTypes.Task.worktreePrepared, payload: try TaskEvent.encodePayload(
             TaskWorktreePayload(repositoryPath: other.path, worktreePath: path, branch: "astra/forged")
         ).get())]
-        #expect(TaskWorkspaceAccess(task: forged).worktreeBinding?.repositoryPath == other.path)
+        #expect(TaskWorkspaceAccess(task: forged).worktreeBinding == nil)
+        #expect(TaskWorkspaceAccess(task: forged).runtimeWorkspacePaths.isEmpty)
+        #expect(launchPlan(forged).diagnostics.contains { $0.code == "worktree_binding_invalid" && $0.severity == .error })
         #expect(TaskWorkspaceAccess(task: forged).runtimeWorktreeGitMetadataPaths.isEmpty)
         #expect(!AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: forged)
             .contains(other.appendingPathComponent(".git").path))
@@ -171,6 +239,8 @@ struct NewTaskWorktreeIsolationTests {
         let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
         let path = try await prepare(task, source, context: store.mainContext, fixture: fixture)
         let metadata = source.appendingPathComponent(".git").path
+        let occupied = fixture.root.appendingPathComponent("Occupied", isDirectory: true)
+        try FileManager.default.createDirectory(at: occupied, withIntermediateDirectories: true)
         let environment = WorkspaceExecutionEnvironment(
             id: "image:test",
             kind: .dockerImage,
@@ -181,14 +251,21 @@ struct NewTaskWorktreeIsolationTests {
                 ExecutionEnvironmentMount(hostPath: source.path, containerPath: "/mnt/source", access: .readWrite, role: .additionalPath),
                 ExecutionEnvironmentMount(hostPath: other.path, containerPath: "/mnt/other", access: .readWrite, role: .additionalPath),
                 ExecutionEnvironmentMount(hostPath: generated.path, containerPath: "/mnt/generated", access: .readWrite, role: .additionalPath),
-                ExecutionEnvironmentMount(hostPath: nested.path, containerPath: "/mnt/nested", access: .readWrite, role: .additionalPath)
+                ExecutionEnvironmentMount(hostPath: nested.path, containerPath: "/mnt/nested", access: .readWrite, role: .additionalPath),
+                ExecutionEnvironmentMount(hostPath: occupied.path, containerPath: "/mnt/astra/read-only-workspace-1", access: .readOnly, role: .additionalPath)
             ]
         )
 
         let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
         #expect(mounts.first { $0.hostPath == path }?.containerPath == "/workspace")
         #expect(mounts.first { $0.hostPath == path }?.access == .readWrite)
-        #expect(!mounts.contains { $0.hostPath == projects.path })
+        let ancestorMount = try #require(mounts.first { $0.hostPath == projects.path })
+        #expect(ancestorMount.access == .readOnly)
+        #expect(ancestorMount.containerPath == "/mnt/astra/read-only-workspace-1-2")
+        #expect(Set(mounts.map(\.containerPath)).count == mounts.count)
+        let mapper = ExecutionEnvironmentPathMapper(mounts: mounts)
+        #expect(mapper.containerPath(forHostPath: projects.appendingPathComponent("notes.txt").path)
+            == ancestorMount.containerPath + "/notes.txt")
         #expect(mounts.first { $0.hostPath == source.path }?.access == .readOnly)
         #expect(mounts.first { $0.hostPath == generated.path }?.access == .readOnly)
         #expect(mounts.first { $0.hostPath == nested.path }?.access == .readWrite)
@@ -206,6 +283,19 @@ struct NewTaskWorktreeIsolationTests {
         #expect(projected.first { $0.hostPath == path }?.access == .readOnly)
         #expect(projected.first { $0.hostPath == metadata }?.access == .readOnly)
         #expect(projected.first { $0.hostPath == other.path }?.access == .readOnly)
+        #expect(projected.first { $0.hostPath == projects.path }?.access == .readOnly)
+
+        var freshEnvironment = environment
+        freshEnvironment.mounts = []
+        let freshMounts = DockerExecutionPlanner.mountPlan(
+            currentDirectory: path, environment: freshEnvironment, task: task
+        )
+        let freshAncestor = try #require(freshMounts.first { $0.hostPath == projects.path })
+        #expect(freshAncestor.access == .readOnly)
+        #expect(freshAncestor.containerPath == "/mnt/astra/read-only-workspace-1")
+        #expect(ExecutionEnvironmentPathMapper(mounts: freshMounts)
+            .containerPath(forHostPath: projects.appendingPathComponent("notes.txt").path)
+            == freshAncestor.containerPath + "/notes.txt")
     }
 
     @Test("Docker refuses a removed worktree or an unreadable binding instead of mounting a new empty checkout")
@@ -462,6 +552,132 @@ struct NewTaskWorktreeIsolationTests {
 
     // MARK: - Templates
 
+    @Test("Template hooks are injected and restored in the admitted worktree, leaving the source untouched")
+    func templateHooksStayInBoundWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let original = Data(#"{"permissions":{"allow":["Read"]}}"#.utf8)
+        try fixture.commit(
+            ".claude/settings.local.json", contents: String(decoding: original, as: UTF8.self),
+            message: "Local settings fixture", at: repository
+        )
+        let sourceSettings = repository.appendingPathComponent(".claude/settings.local.json")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "/template review", workspace: workspace)
+        let path = try await prepare(draft, repository, context: context, fixture: fixture)
+        let settings = URL(fileURLWithPath: path).appendingPathComponent(".claude/settings.local.json")
+        let template = TaskTemplate(name: "Review", mainGoal: "Review files", workspace: workspace)
+        template.hooksJSON = #"{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"true"}]}]}"#
+        context.insert(template)
+        let creation = WorkspaceCommandService.createTemplateTasks(
+            template: template, taskTitle: "Review files", variables: [:], selectedSkills: [],
+            defaultModel: "", defaultRuntimeID: "claude_code", workspace: workspace,
+            modelContext: context, source: "test", checkoutSource: draft
+        )
+        let task = creation.mainTask
+        #expect(creation.initialRequestSubmitted)
+        let request = try #require(try TaskTurnRequestRepository.activeRequests(for: task, in: context).first)
+        #expect(request.resourceClaims.contains { $0.kind == .workspace && $0.key == path && $0.access == .exclusive })
+        #expect(!request.resourceClaims.contains { $0.kind == .workspace && $0.key == repository.path })
+        #expect(TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: nil, task: task, runMode: "test", fallbackAccess: .readOnly
+        ).allSatisfy { $0.accessMode == .write })
+
+        let fake = FakeAgentProcessRunner()
+        var observedHooks = false
+        fake.onLaunch = { _, _ in
+            do {
+                let json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any])
+                let hooks = try #require(json["hooks"] as? [String: [[String: Any]]])
+                observedHooks = hooks["PreToolUse"]?.contains { $0["_astra_template"] as? Bool == true } == true
+                #expect(try Data(contentsOf: sourceSettings) == original)
+                task.executionRootPath = repository.path
+            } catch {
+                Issue.record(error)
+            }
+        }
+        fake.streamLines = [
+            #"{"type":"system","subtype":"init","session_id":"hooks-test","model":"claude-sonnet-4-6"}"#,
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reviewed files."}]}}"#
+        ]
+        let worker = AgentRuntimeWorker(processRunner: fake, providerSettingsSnapshotProvider: { .headlessScenario })
+        worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
+        worker.skipPermissions = true
+        worker.permissionPolicy = .autonomous
+        worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.autonomous.rawValue
+        worker.claudePath = "/bin/sh"
+        let queue = TaskQueue(poolSize: 1, workerFactory: { worker })
+        await queue.executeTask(task, modelContext: context, executionRequestID: request.id)
+
+        #expect(observedHooks)
+        #expect(fake.receivedWorkspacePaths.contains(path))
+        #expect(try Data(contentsOf: sourceSettings) == original)
+        let restored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any])
+        #expect(restored["hooks"] == nil)
+    }
+
+    @Test("Writable worktree Git grants always have matching admission claims, without Git prompt intent")
+    func worktreeGitGrantsAlwaysHaveClaims() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let first = AgentTask(title: "Update parser", goal: "Improve formatting", workspace: workspace)
+        let second = AgentTask(title: "Update renderer", goal: "Improve formatting", workspace: workspace)
+        _ = try await prepare(first, repository, context: context, fixture: fixture)
+        _ = try await prepare(second, repository, context: context, fixture: fixture)
+        let metadata = repository.appendingPathComponent(".git").path
+        let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
+        let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
+        #expect(Set(firstClaims.filter { $0.kind == .workspace }.map(\.key))
+            .isDisjoint(with: secondClaims.filter { $0.kind == .workspace }.map(\.key)))
+        for (task, claims) in [(first, firstClaims), (second, secondClaims)] {
+            #expect(launchPlan(task).hostPathGrants.contains { $0.path == metadata && $0.access == .readWrite })
+            #expect(claims.contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .exclusive })
+        }
+        let firstLease = TaskExecutionResourceBroker.lockClaims(for: firstClaims, taskID: first.id, requestID: nil, runMode: "test")
+        let secondLease = TaskExecutionResourceBroker.lockClaims(for: secondClaims, taskID: second.id, requestID: nil, runMode: "test")
+        #expect(!TaskExecutionResourceBroker.canAcquire(secondLease, active: firstLease))
+
+        let oldRequest = TaskTurnRequest(
+            task: first, messageEventID: UUID(), sequence: 1,
+            resourceClaims: firstClaims.filter { $0.kind == .workspace }
+        )
+        #expect(TaskExecutionResourceClaimResolver.admissionClaims(for: oldRequest, task: first)
+            .contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .exclusive })
+        let fallback = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: nil, task: first, runMode: "test", fallbackAccess: .readOnly
+        )
+        #expect(fallback.allSatisfy { $0.accessMode == .readOnly })
+        #expect(fallback.contains { $0.resourceKind == .gitCommonDirectory })
+        let wrongMetadata = TaskTurnRequest(
+            task: first, messageEventID: UUID(), sequence: 2,
+            resourceClaims: firstClaims.filter { $0.kind == .workspace } + [
+                TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: fixture.root.appendingPathComponent("other.git").path, access: .exclusive)
+            ]
+        )
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: wrongMetadata, task: first))
+
+        first.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        second.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+        let readers = [first, second].map { task in
+            let claims = TaskExecutionResourceClaimResolver.claims(for: task)
+            #expect(launchPlan(task, workspaceAccess: .shared).hostPathGrants
+                .contains { $0.path == metadata && $0.access == .read })
+            #expect(claims.contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .shared })
+            return TaskExecutionResourceBroker.lockClaims(for: claims, taskID: task.id, requestID: nil, runMode: "test")
+        }
+        #expect(TaskExecutionResourceBroker.canAcquire(readers[1], active: readers[0]))
+        #expect(!TaskExecutionResourceBroker.canAcquire(firstLease, active: readers[1]))
+    }
+
     @Test("Template tasks started from a worktree draft run in that worktree, named after the template")
     func templateTasksInheritWorktree() async throws {
         let fixture = try Fixture()
@@ -539,7 +755,7 @@ struct NewTaskWorktreeIsolationTests {
         let failedPath = try await prepare(failed, repository, context: context, fixture: fixture)
         TaskStateMachine.enqueueFromChatSubmission(failed, modelContext: context)
 
-        let recovered = TaskWorktreeService.recoverFailedSubmission(
+        let recovered = try TaskWorktreeService.recoverFailedSubmission(
             task: failed, existingDraft: otherDraft, modelContext: context
         )
 

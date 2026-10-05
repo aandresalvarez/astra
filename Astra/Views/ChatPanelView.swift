@@ -1146,7 +1146,7 @@ struct ChatPanelView: View {
             // A completed Git operation may already have saved the task with its
             // worktree. The draft keeps that worktree for retry, never a second one.
             if task.modelContext != nil {
-                let recovered = TaskWorktreeService.recoverFailedSubmission(
+                let recovered = try TaskWorktreeService.recoverFailedSubmission(
                     task: task, existingDraft: draft, modelContext: modelContext
                 )
                 // A detached creation's draft stays with the workspace it began in.
@@ -1485,8 +1485,8 @@ struct ChatPanelView: View {
             recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
             saveConversationAsEvents(on: task)
             guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-                draftTask = TaskWorktreeService.recoverFailedSubmission(
-                    task: task, existingDraft: draftTask, modelContext: modelContext
+                draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                    task: task, existingDraft: composerDraft, modelContext: modelContext
                 )
                 taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
                 return
@@ -1712,8 +1712,8 @@ struct ChatPanelView: View {
             saveConversationAsEvents(on: task)
 
             guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-                draftTask = TaskWorktreeService.recoverFailedSubmission(
-                    task: task, existingDraft: draftTask, modelContext: modelContext
+                draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                    task: task, existingDraft: composerDraft, modelContext: modelContext
                 )
                 taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
                 return

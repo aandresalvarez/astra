@@ -18,41 +18,22 @@ enum TaskExecutionResourceClaimResolver {
         let workspaceClaims = keys.map {
             TaskExecutionResourceClaim(kind: .workspace, key: $0, access: access)
         }
-        // Sibling linked worktrees share one Git common directory, so concurrent
-        // runs can otherwise race on the same refs, object store, and config.
-        //
-        // Emit this claim only when the task reaches external Git metadata,
-        // approximating the condition that grants it: the runtime gets a
-        // read-write grant for those paths only when Git intent is detected
-        // (`TaskLaunchResourceResolver.appendGitCredentialGrants` is fed by
-        // `gitCredentialContextProvider`, which returns `.empty` otherwise).
-        // Claiming unconditionally instead would serialize every writer across
-        // sibling worktrees, removing the parallelism the fork flow is built
-        // around. Access mirrors the workspace claim, so Git readers still
-        // share while Git writers exclude each other.
-        //
-        // KNOWN GAP — this is an approximation, not an exact mirror. Claims are
-        // frozen at submission, so this sees only `acceptedTurn + title + goal`,
-        // while the grant side also reads runtime `contextText` and suppresses
-        // itself for host-control-routed GitHub work. A Git operation evident
-        // only from runtime context therefore gets the grant with no claim
-        // (under-serialization); a host-control-routed task can get the claim
-        // with no grant (harmless over-serialization). Closing the first
-        // direction needs the claim decision to see the same inputs, which
-        // conflicts with freezing claims at submission — see
-        // Tests/TaskExecutionResourceClaimCoverageTests.swift.
+        // Prepared worktrees always receive their verified shared Git directory,
+        // regardless of prompt intent. Other checkouts retain the credential
+        // grant's Git-intent predicate, including its context-only known gap
+        // documented in TaskExecutionResourceClaimCoverageTests.
         let mutatesGitMetadata = task.isolationStrategy == .gitBranch
             || GitOperationIntentDetector.detectsRuntimeGitOperation(
                 prompt: acceptedTurn ?? "",
                 task: task
             )
-        guard mutatesGitMetadata else {
-            return workspaceClaims
+        let credentialKeys = mutatesGitMetadata ? gitCommonDirectoryKeys(for: keys) : []
+        let worktreeKeys = TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths
+        var seen = Set<String>()
+        return workspaceClaims + (worktreeKeys + credentialKeys).compactMap { rawKey in
+            guard let key = standardizedPath(rawKey), seen.insert(key).inserted else { return nil }
+            return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access)
         }
-        return workspaceClaims
-            + gitCommonDirectoryKeys(for: keys).map {
-                TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: $0, access: access)
-            }
     }
 
     static func workspaceClaim(
@@ -73,11 +54,9 @@ enum TaskExecutionResourceClaimResolver {
     /// snapshots fail closed to one exclusive workspace claim; a broken JSON
     /// envelope must never make a request appear resource-free.
     ///
-    /// The legacy fallback stays workspace-only on purpose. It is also the
-    /// direct/no-request path, whose access is supplied afterwards by
-    /// `TaskExecutionResourceAdmissionPolicy.lockClaims(fallbackAccess:)` — and
-    /// that override only reaches the workspace claim, so a synthesized Git
-    /// claim would stay exclusive for a caller that asked for read-only work.
+    /// Prepared-worktree metadata is also claimed for old requests that predate
+    /// that grant. Direct/no-request admission applies its fallback access to
+    /// both workspace and Git claims.
     static func admissionClaims(
         for request: TaskTurnRequest?,
         task: AgentTask
@@ -100,7 +79,9 @@ enum TaskExecutionResourceClaimResolver {
         } else {
             claims = []
         }
-        return applyingIntrinsicWorkflowClaims(claims, request: request, task: task)
+        return applyingIntrinsicWorkflowClaims(
+            applyingWorktreeGitClaims(claims, task: task), request: request, task: task
+        )
     }
 
     static func requiresExclusiveWorkflowAccess(
@@ -112,7 +93,8 @@ enum TaskExecutionResourceClaimResolver {
             ?? task.isolationStrategy
         let validation = policy.flatMap { ValidationStrategy(rawValue: $0.validationStrategyRawValue) }
             ?? task.validationStrategy
-        return isolation == .gitBranch || validation == .runTests
+        let hooks = policy?.templateHooksJSON ?? task.templateHooksJSON
+        return isolation == .gitBranch || validation == .runTests || (!hooks.isEmpty && hooks != "{}")
     }
 
     static func workspaceAccess(for request: TaskTurnRequest?) -> TaskExecutionResourceAccess {
@@ -131,14 +113,17 @@ enum TaskExecutionResourceClaimResolver {
             .map(\.key))
         let liveKeys = Set(workspaceKeys(for: task))
         guard !persistedKeys.isEmpty, !liveKeys.isEmpty else { return false }
-        return persistedKeys != liveKeys
+        if persistedKeys != liveKeys { return true }
+        let persistedGitKeys = Set(request.resourceClaims.filter { $0.kind == .gitCommonDirectory }.map(\.key))
+        let worktreeGitKeys = Set(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths.compactMap(standardizedPath))
+        return !persistedGitKeys.isEmpty && !worktreeGitKeys.isSubset(of: persistedGitKeys)
     }
 
     static func workspaceAccess(
         for task: AgentTask,
         acceptedTurn _: String? = nil
     ) -> TaskExecutionResourceAccess {
-        // ASTRA itself — not the prompt — rewrites the workspace's
+        // ASTRA itself — not the prompt — rewrites the checkout's
         // `.claude/settings.local.json` before the provider starts and restores
         // it afterwards (`TaskQueue.injectTemplateHooks`). That mutation happens
         // whatever the task declares or reads as its intent, so a hook-injecting
@@ -173,11 +158,6 @@ enum TaskExecutionResourceClaimResolver {
         let primary = access.codeWorkingDirectory.isEmpty
             ? access.effectiveWorkspacePath
             : access.codeWorkingDirectory
-        // Hook injection targets `effectiveWorkspacePath`, not the execution
-        // root, so a task pinned to a worktree still rewrites the *workspace*
-        // settings file. Claim that root too, or two pinned siblings of one
-        // workspace would hold disjoint claims and race on the same file.
-        let hookRoots = injectsTemplateHooks(task) ? [access.effectiveWorkspacePath] : []
         // `git checkout` accepts a repository subdirectory but changes the
         // entire containing worktree. Claim that root as well so sibling
         // subdirectory workspaces cannot switch one checkout concurrently.
@@ -185,7 +165,7 @@ enum TaskExecutionResourceClaimResolver {
             ? [gitWorktreeRoot(for: primary)].compactMap { $0 }
             : []
         var seen = Set<String>()
-        return ([primary] + branchRoots + access.runtimeWritablePaths + hookRoots).compactMap { rawPath in
+        return ([primary] + branchRoots + access.runtimeWorkspacePaths).compactMap { rawPath in
             guard let key = standardizedPath(rawPath), seen.insert(key).inserted else { return nil }
             return key
         }
@@ -204,6 +184,20 @@ enum TaskExecutionResourceClaimResolver {
     /// provider's read-only boundary.
     private static func requiresExclusiveWorkflowAccess(_ task: AgentTask) -> Bool {
         task.isolationStrategy == .gitBranch || task.validationStrategy == .runTests
+    }
+
+    private static func applyingWorktreeGitClaims(
+        _ claims: [TaskExecutionResourceClaim],
+        task: AgentTask
+    ) -> [TaskExecutionResourceClaim] {
+        var result = claims
+        var seen = Set(claims.filter { $0.kind == .gitCommonDirectory }.map(\.key))
+        let access = claims.first { $0.kind == .workspace }?.access ?? .exclusive
+        for path in TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths {
+            guard let key = standardizedPath(path), seen.insert(key).inserted else { continue }
+            result.append(TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access))
+        }
+        return result
     }
 
     private static func applyingIntrinsicWorkflowClaims(

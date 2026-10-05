@@ -89,7 +89,8 @@ when Goal Mode planning first reads the code. Plain chat messages don't create
 one. The strip shows the worktree being created and, if the task cannot start,
 the reason. A draft keeps its choice when reopened. A template started with the
 box checked creates one worktree, named after the template's task title, and
-all of the template's tasks run in it. Switching workspaces cancels in-flight
+all of the template's tasks run in it. Template hooks are injected and restored
+in that checkout, not in the source repository. Switching workspaces cancels in-flight
 creation or planning; anything already saved stays in the workspace where it
 started.
 
@@ -97,6 +98,10 @@ The task stays pinned to that worktree, including when its draft becomes a
 queued task; the draft's strip shows the pinned folder and its base. Chained
 follow-up tasks, corrective work, and forks of the task run in the same
 worktree, and a task restored from the workspace's recovery file keeps it.
+The binding is verified against a configured repository's linked-worktree
+registry, including after an import; an invalid binding blocks launch. If an
+initial submission fails, adopting its worktree into the open draft and
+deleting the temporary task are saved together before recovery returns.
 Other tasks and the workspace's default checkout are unchanged. Task history
 and outputs remain in the workspace's task folder.
 
@@ -107,7 +112,10 @@ separate repository nested inside the checkout keeps its own path. ASTRA-confine
 commands and validation can also use the repository's shared Git folder,
 which holds the worktree's branches and history, once ASTRA confirms the
 worktree is registered there; provider-native sandboxes retain their own
-Git-metadata restrictions.
+Git-metadata restrictions. Write-capable tasks in sibling worktrees share a
+Git admission lock even when their prompts don't mention Git; read-only tasks
+use a shared lock. Docker also mounts read-only workspace ancestors so files
+outside the selected repository remain readable through mapped container paths.
 
 Worktrees are kept after execution and can be managed from the Repository
 panel. **Start Over** or deleting a draft that never ran removes its worktree

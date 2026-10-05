@@ -62,8 +62,7 @@ public struct TaskWorkspaceAccess {
     /// the worktree's own `.git` file, which the task can rewrite.
     public var runtimeWorktreeGitMetadataPaths: [String] {
         guard let binding = worktreeBinding,
-              let commonDirectory = gitCommonDirectory(ofRepository: Self.resolvedPath(binding.repositoryPath)),
-              registersWorktree(binding.worktreePath, in: commonDirectory) else {
+              let commonDirectory = TaskWorktreeBinding.gitCommonDirectory(for: binding) else {
             return []
         }
         return [commonDirectory]
@@ -163,55 +162,6 @@ public struct TaskWorkspaceAccess {
             current = (current as NSString).deletingLastPathComponent
         }
         return false
-    }
-
-    private func gitCommonDirectory(ofRepository repository: String) -> String? {
-        let dotGit = (repository as NSString).appendingPathComponent(".git")
-        var isDirectory = false
-        guard fileSystem.fileExists(atPath: dotGit, isDirectory: &isDirectory) else { return nil }
-        var gitDirectory = dotGit
-        if !isDirectory {
-            // A submodule or linked checkout keeps its Git directory elsewhere.
-            guard let raw = try? String(contentsOfFile: dotGit, encoding: .utf8),
-                  raw.lowercased().hasPrefix("gitdir:"),
-                  let resolved = Self.resolvedGitPath(String(raw.dropFirst("gitdir:".count)), relativeTo: repository) else {
-                return nil
-            }
-            gitDirectory = resolved
-        }
-        let commonDirectoryFile = (gitDirectory as NSString).appendingPathComponent("commondir")
-        let commonDirectory = (try? String(contentsOfFile: commonDirectoryFile, encoding: .utf8))
-            .flatMap { Self.resolvedGitPath($0, relativeTo: gitDirectory) } ?? gitDirectory
-        // Only a real Git directory is granted, so a rewritten pointer cannot
-        // widen access to an arbitrary folder.
-        guard fileSystem.directoryExists(atPath: (commonDirectory as NSString).appendingPathComponent("objects")),
-              fileSystem.directoryExists(atPath: (commonDirectory as NSString).appendingPathComponent("refs")) else {
-            return nil
-        }
-        return commonDirectory
-    }
-
-    /// Whether the Git directory lists `worktree` among its linked worktrees,
-    /// so a binding edited to name another repository cannot open that
-    /// repository's Git directory.
-    private func registersWorktree(_ worktree: String, in commonDirectory: String) -> Bool {
-        let registry = URL(fileURLWithPath: commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
-        guard let entries = try? fileSystem.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil) else {
-            return false
-        }
-        let expected = Self.resolvedPath((worktree as NSString).appendingPathComponent(".git"))
-        return entries.contains { entry in
-            guard let raw = try? String(contentsOf: entry.appendingPathComponent("gitdir"), encoding: .utf8) else {
-                return false
-            }
-            return Self.resolvedGitPath(raw, relativeTo: entry.path) == expected
-        }
-    }
-
-    private static func resolvedGitPath(_ rawValue: String, relativeTo base: String) -> String? {
-        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
-        return resolvedPath(value.hasPrefix("/") ? value : (base as NSString).appendingPathComponent(value))
     }
 
     private func normalizedUniquePaths(_ paths: [String]) -> [String] {

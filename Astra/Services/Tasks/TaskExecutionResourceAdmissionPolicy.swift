@@ -15,14 +15,14 @@ enum TaskExecutionResourceAdmissionPolicy {
         var claims = TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: task)
         if request == nil,
            !TaskExecutionResourceClaimResolver.requiresExclusiveWorkflowAccess(for: request, task: task),
-           let fallbackAccess,
-           let index = claims.firstIndex(where: { $0.kind == .workspace }) {
-            let workspace = claims[index]
-            claims[index] = TaskExecutionResourceClaim(
-                kind: workspace.kind,
-                key: workspace.key,
-                access: fallbackAccess == .readOnly ? .shared : .exclusive
-            )
+           let fallbackAccess {
+            claims = claims.map { claim in
+                guard claim.kind == .workspace || claim.kind == .gitCommonDirectory else { return claim }
+                return TaskExecutionResourceClaim(
+                    kind: claim.kind, key: claim.key,
+                    access: fallbackAccess == .readOnly ? .shared : .exclusive
+                )
+            }
         }
         claims = effectiveClaims(claims, sandboxEnforcement: sandboxEnforcement)
         return TaskExecutionResourceBroker.lockClaims(

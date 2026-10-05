@@ -379,7 +379,8 @@ struct NewTaskWorktreeTests {
         let path = try #require(task.executionRootPath)
         try await GitService.shared.removeWorktree(repoPath: repository.path, worktreePath: path)
         #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == path)
-        #expect(TaskWorkspaceAccess(task: task).runtimeWorkspacePaths == [path])
+        #expect(TaskWorkspaceAccess(task: task).runtimeWorkspacePaths.isEmpty)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: task) == nil)
     }
 
     @Test("Invalid or removed repository choices fail before a task or worktree is persisted")
@@ -450,7 +451,7 @@ struct NewTaskWorktreeTests {
             task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: context, worktreesRoot: fixture.worktrees.path
         )
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
-        let recovered = TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: nil, modelContext: context)
+        let recovered = try TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: nil, modelContext: context)
         #expect(recovered === task)
         #expect(task.status == .draft)
         #expect(task.executionRootPath != nil)
@@ -459,7 +460,7 @@ struct NewTaskWorktreeTests {
         #expect(retry.executionRootPath == task.executionRootPath)
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
         TaskStateMachine.enqueueFromChatSubmission(retry, modelContext: context)
-        let original = TaskWorktreeService.recoverFailedSubmission(task: retry, existingDraft: task, modelContext: context)
+        let original = try TaskWorktreeService.recoverFailedSubmission(task: retry, existingDraft: task, modelContext: context)
         #expect(original === task)
         try context.save()
         #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == 1)

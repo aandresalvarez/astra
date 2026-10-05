@@ -101,7 +101,12 @@ and `~/Documents/Astra Dev/Workspaces`.
   changes do not move the thread into a different checkout.
 - A task started in a new worktree is bound to it by its newest
   `task.worktree.prepared` event whose worktree is still the task's pin
-  (`TaskWorktreeBinding`). Launch grants the worktree as the only writable
+  (`TaskWorktreeBinding`). The binding is accepted only when its source
+  repository belongs to the configured workspace and registers the pinned
+  checkout; matching paths in an imported event are not authority. Retargeted
+  pins must name that repository or one of its registered worktrees. Invalid
+  bindings block launch before template hooks or provider setup can write.
+  Launch grants the worktree as the only writable
   copy of its repository: configured folders that contain the source checkout
   are granted read-only, nested Git checkouts keep their own paths, and an
   unreadable binding grants no workspace paths at all. The shared Git
@@ -113,12 +118,19 @@ and `~/Documents/Astra Dev/Workspaces`.
   worktree as in a normal checkout, hooks and config included. Docker workspace
   commands mount the verified Git directory at its original absolute path,
   while saved source-checkout mounts become read-only or are replaced by the
-  task worktree. Provider-native sandboxes do not receive the Git directory:
+  task worktree. Read-only workspace ancestors remain mounted at noncolliding
+  container paths and participate in host-to-container path mapping. Every
+  worktree Git grant has a matching admission claim, independent of Git prompt
+  intent, including legacy requests; shared runs claim it read-only. Template
+  hooks are injected and restored at the same captured code checkout that
+  admission claims. Provider-native sandboxes do not receive the Git directory:
   Codex keeps `.git` read-only by design, and a writable
   root over the shared Git directory would undo that. Derived tasks
   (chained, corrective, fork, and template) and recovery-mirror imports copy
-  the binding, so they never fall back to the source checkout. Automatic
-  cleanup of a discarded draft's worktree runs only after the deletion is
+  the binding, so they never fall back to the source checkout. Failed initial
+  submissions save and export draft adoption and temporary-task deletion
+  together; recovery save failures are surfaced rather than reported as success.
+  Automatic cleanup of a discarded draft's worktree runs only after the deletion is
   saved. It keeps any worktree that has changes, ignored files, or new
   commits; that another task or workspace default references; or whose
   references cannot be read.

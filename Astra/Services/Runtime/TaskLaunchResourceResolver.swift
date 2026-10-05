@@ -79,6 +79,14 @@ enum TaskLaunchResourceResolver {
             || DockerWorkspaceMCPProjection.isEnabled(for: environment)
         let hostControlTools = deliversHostControlPlane ? offeredHostControlTools : []
 
+        if case .invalid(let reason) = TaskWorktreeBinding.state(of: task) {
+            diagnostics.append(RuntimeResourceDiagnostic(
+                severity: .error,
+                code: "worktree_binding_invalid",
+                message: TaskWorktreeBinding.ValidationError.invalid(reason).localizedDescription,
+                repairAction: "Choose a registered checkout or create a new task worktree."
+            ))
+        }
         appendWorkspacePathGrants(
             task: task,
             workspaceAccess: workspaceAccess,

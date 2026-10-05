@@ -9,6 +9,7 @@ enum TaskWorktreeCreationError: LocalizedError {
     case noCommit(String)
     case baseUnavailable(String)
     case persistenceFailed(path: String, reason: String)
+    case recoveryPersistenceFailed(String)
     case noDraft
 
     var errorDescription: String? {
@@ -21,6 +22,8 @@ enum TaskWorktreeCreationError: LocalizedError {
             "Could not find the default branch of \(path): its remote didn't name one, and there is no main or master. Choose Start from › Current branch instead."
         case .persistenceFailed(let path, let reason):
             "The worktree was created at \(path), but ASTRA could not save the task. The worktree has been kept; no agent was launched. \(reason)"
+        case .recoveryPersistenceFailed(let reason):
+            "ASTRA could not save the recovered draft. Its checkout has been kept; no agent was launched. \(reason)"
         case .noDraft:
             "ASTRA needs a saved draft to hold the new worktree. Describe the task in a message, then try again."
         }
@@ -411,34 +414,43 @@ enum TaskWorktreeService {
     static func recoverFailedSubmission(
         task: AgentTask,
         existingDraft: AgentTask?,
-        modelContext: ModelContext
-    ) -> AgentTask? {
-        if existingDraft === task { return task }
-        let prepared = activeWorktreeEvent(for: task)
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext, UUID) throws -> Void = { workspace, context, taskID in
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace, modelContext: context, taskID: taskID,
+                auditFields: ["operation": "worktree_submission_failed"]
+            )
+        }
+    ) throws -> AgentTask? {
+        let workspace = task.workspace
+        let taskID = task.id
+        let prepared = TaskWorktreeBinding.eventForInheritance(from: task)
         // Only a draft of the task's own workspace may take over its worktree.
-        let adoptingDraft = existingDraft?.workspace?.id == task.workspace?.id ? existingDraft : nil
-        if adoptingDraft == nil, prepared != nil {
+        let adoptingDraft = existingDraft?.workspace?.id == workspace?.id ? existingDraft : nil
+        let recovered: AgentTask?
+        if existingDraft === task || (adoptingDraft == nil && prepared != nil) {
             if task.status == .queued {
                 TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             }
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "worktree_submission_failed"]
-            )
-            return task
+            recovered = task
+        } else {
+            if let draft = adoptingDraft, let prepared, activeWorktreeEvent(for: draft) == nil {
+                draft.executionRootPath = task.executionRootPath
+                modelContext.insert(TaskWorktreeBinding.copy(prepared, to: draft))
+            }
+            modelContext.delete(task)
+            recovered = adoptingDraft
         }
-        if let draft = adoptingDraft, let prepared, activeWorktreeEvent(for: draft) == nil {
-            draft.executionRootPath = task.executionRootPath
-            modelContext.insert(TaskEvent(
-                task: draft,
-                eventType: TaskEventTypes.Task.worktreePrepared,
-                payload: prepared.payload
-            ))
+        do {
+            try persist(workspace, modelContext, recovered?.id ?? taskID)
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: recovered?.id ?? taskID, fields: [
+                "reason": "worktree_submission_recovery_save_failed",
+                "error": error.localizedDescription
+            ], level: .error)
+            throw TaskWorktreeCreationError.recoveryPersistenceFailed(error.localizedDescription)
         }
-        modelContext.delete(task)
-        return existingDraft
+        return recovered
     }
 
     // MARK: - Cleanup

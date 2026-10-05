@@ -293,17 +293,18 @@ enum DockerExecutionPlanner {
         dockerRuntime: DockerRuntimeResolution = .environmentLookup
     ) -> Result<AgentRuntimeProcessLaunchPlan, DockerExecutionPlanningError> {
         guard environment.isContainerized else { return .success(base) }
-        switch TaskWorktreeBinding.state(of: task) {
-        case .none:
-            break
-        case .invalid:
-            return .failure(.invalidWorktreeBinding)
-        case .bound, .retargeted:
+        if TaskWorktreeBinding.eventForInheritance(from: task) != nil {
             var isDirectory = ObjCBool(false)
             guard FileManager.default.fileExists(atPath: base.currentDirectory, isDirectory: &isDirectory),
                   isDirectory.boolValue else {
                 return .failure(.worktreeUnavailable(base.currentDirectory))
             }
+        }
+        switch TaskWorktreeBinding.state(of: task) {
+        case .none, .bound, .retargeted:
+            break
+        case .invalid:
+            return .failure(.invalidWorktreeBinding)
         }
         guard environment.kind == .dockerImage || environment.kind == .dockerfile else {
             return .failure(.unsupportedEnvironment(environment.kind.rawValue))
@@ -625,7 +626,16 @@ enum DockerExecutionPlanner {
                 role: role
             ))
         }
-        func appendReadOnlyInput(_ rawHostPath: String, fallbackContainerPath: String) {
+        func unusedContainerPath(_ preferred: String) -> String {
+            var path = preferred
+            var suffix = 1
+            while mounts.contains(where: { $0.containerPath == path }) {
+                suffix += 1
+                path = "\(preferred)-\(suffix)"
+            }
+            return path
+        }
+        func appendReadOnlyPath(_ rawHostPath: String, fallbackContainerPath: String) {
             let hostPath = WorkspacePathPresentation.standardizedPath(rawHostPath)
             guard !hostPath.isEmpty else { return }
             let canonicalHostPath = ExecutionSandbox.canonicalize(hostPath) ?? hostPath
@@ -645,7 +655,7 @@ enum DockerExecutionPlanner {
                 return
             }
 
-            // If the input lives under a writable mount, overlay it read-only at
+            // If the path lives under a writable mount, overlay it read-only at
             // the same container path. Mounting it only at /mnt/astra/input-N
             // would leave the writable parent spelling as a bypass.
             let parentMount = mounts
@@ -668,7 +678,7 @@ enum DockerExecutionPlanner {
                 let suffix = String(canonicalHostPath.dropFirst(root.count + 1))
                 containerPath = (parentMount.containerPath as NSString).appendingPathComponent(suffix)
             } else {
-                containerPath = fallbackContainerPath
+                containerPath = unusedContainerPath(fallbackContainerPath)
             }
             appendMount(ExecutionEnvironmentMount(
                 hostPath: hostPath,
@@ -695,6 +705,9 @@ enum DockerExecutionPlanner {
             append(standardized, "/mnt/astra/path-\(index)", .additionalPath)
             index += 1
         }
+        for (index, path) in taskAccess.runtimeReadOnlyWorkspacePaths.enumerated() {
+            appendReadOnlyPath(path, fallbackContainerPath: "/mnt/astra/read-only-workspace-\(index + 1)")
+        }
         for metadata in taskAccess.runtimeWorktreeGitMetadataPaths {
             let path = WorkspacePathPresentation.standardizedPath(metadata)
             guard !mounts.contains(where: { $0.hostPath == path && $0.containerPath == path }) else { continue }
@@ -714,7 +727,7 @@ enum DockerExecutionPlanner {
             guard !standardized.isEmpty else { continue }
             let identity = ExecutionSandbox.canonicalize(standardized) ?? standardized
             guard seenInputs.insert(identity).inserted else { continue }
-            appendReadOnlyInput(standardized, fallbackContainerPath: "/mnt/astra/input-\(inputIndex)")
+            appendReadOnlyPath(standardized, fallbackContainerPath: "/mnt/astra/input-\(inputIndex)")
             inputIndex += 1
         }
         for projection in environment.effectiveCredentialProjections {

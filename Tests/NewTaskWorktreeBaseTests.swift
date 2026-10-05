@@ -295,8 +295,8 @@ struct NewTaskWorktreeBaseTests {
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
     }
 
-    @Test("A failed start hands its new worktree to the open draft so retry reuses it")
-    func failedStartAdoptsWorktreeIntoDraft() async throws {
+    @Test("A failed start durably adopts its worktree into an unbound draft", arguments: [false, true])
+    func failedStartAdoptsWorktreeIntoDraft(invalidOriginalBinding: Bool) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
@@ -305,6 +305,10 @@ struct NewTaskWorktreeBaseTests {
         let workspace = workspace(repository, in: context)
         let draft = AgentTask(title: "Chat", goal: "Explore", workspace: workspace)
         context.insert(draft)
+        if invalidOriginalBinding {
+            draft.executionRootPath = fixture.root.appendingPathComponent("missing").path
+            context.insert(TaskEvent(task: draft, eventType: TaskEventTypes.Task.worktreePrepared, payload: "{"))
+        }
         // An unselected draft without a worktree is not a checkout source.
         #expect(NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: false) == nil)
         #expect(NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: true) === draft)
@@ -313,18 +317,64 @@ struct NewTaskWorktreeBaseTests {
         let path = try #require(task.executionRootPath)
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
 
-        let recovered = TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: draft, modelContext: context)
+        let recovered = try TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: draft, modelContext: context)
 
         #expect(recovered === draft)
         #expect(draft.executionRootPath == path)
         #expect(TaskWorktreeService.activeWorktreeBinding(for: draft)?.worktreePath == path)
-        try context.save()
-        #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == 1)
+        let recoveredContext = ModelContext(store)
+        let persistedDraft = try #require(try recoveredContext.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(try recoveredContext.fetchCount(FetchDescriptor<AgentTask>()) == 1)
+        #expect(persistedDraft.id == draft.id)
+        #expect(persistedDraft.executionRootPath == path)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: persistedDraft)?.worktreePath == path)
         #expect(NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: false) === draft)
         let retry = AgentTask(title: "Retry", goal: "Explore", workspace: workspace)
         try await prepare(retry, repository, inheritingFrom: draft, context: context, fixture: fixture)
         #expect(retry.executionRootPath == path)
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
+    }
+
+    @Test("Failed recovery saves are surfaced and never remove the prepared checkout", arguments: [false, true])
+    func recoverySaveFailureKeepsWorktree(adoptingDraft: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        let draft = adoptingDraft ? AgentTask(title: "Chat", goal: "Explore", workspace: workspace) : nil
+        if let draft { context.insert(draft) }
+        let task = AgentTask(title: "Run", goal: "Explore", workspace: workspace)
+        try await prepare(task, repository, context: context, fixture: fixture)
+        let path = try #require(task.executionRootPath)
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
+        var attemptedSave = false
+        do {
+            _ = try TaskWorktreeService.recoverFailedSubmission(
+                task: task, existingDraft: draft, modelContext: context,
+                persist: { savedWorkspace, _, taskID in
+                    attemptedSave = true
+                    #expect(savedWorkspace === workspace)
+                    #expect(taskID == (draft?.id ?? task.id))
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            )
+            Issue.record("A failed recovery save must not report a recovered draft")
+        } catch let error as TaskWorktreeCreationError {
+            guard case .recoveryPersistenceFailed = error else {
+                Issue.record(error)
+                return
+            }
+            #expect(error.localizedDescription.contains("could not save the recovered draft"))
+        }
+        #expect(attemptedSave)
+        #expect(FileManager.default.fileExists(atPath: path))
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
+        let recoveredContext = ModelContext(store)
+        let durableTask = try #require(try recoveredContext.fetch(FetchDescriptor<AgentTask>()).first { $0.id == task.id })
+        #expect(durableTask.executionRootPath == path)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: durableTask)?.worktreePath == path)
     }
 
     @Test("The composer's choice is recorded on the draft once enabled and restored on reopen")

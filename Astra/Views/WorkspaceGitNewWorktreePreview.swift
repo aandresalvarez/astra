@@ -13,8 +13,8 @@ struct WorkspaceGitNewWorktreePreview: Equatable {
     @MainActor
     init?(entry: NewTaskWorktreeIntentStore.Entry?, contextTask: AgentTask?) {
         guard let entry, entry.isEnabled else { return nil }
-        // A draft that already has its worktree shows that worktree instead.
-        if let contextTask, TaskWorktreeService.activeWorktreeBinding(for: contextTask) != nil { return nil }
+        // A prepared checkout, even an unavailable one, is not a new request.
+        if let contextTask, TaskWorktreeBinding.eventForInheritance(from: contextTask) != nil { return nil }
         self.init(base: entry.base, baseLabel: entry.baseLabel)
     }
 

@@ -265,7 +265,7 @@ struct TaskExecutionResourceClaimResolverTests {
         #expect(claims.contains { $0.kind == .workspace && $0.key == "/tmp/astra-claim-hooks" })
     }
 
-    @Test("A pinned execution root still claims the hook-injected workspace root")
+    @Test("A pinned execution root claims its hooks and all configured writable roots")
     func templateHookInjectionClaimsWorkspaceRootFromPinnedRoot() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-claim-hook-roots-\(UUID().uuidString)", isDirectory: true)
@@ -288,8 +288,8 @@ struct TaskExecutionResourceClaimResolverTests {
         let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
 
-        // The pinned roots stay first (and distinct), but hook injection targets
-        // the workspace root, so both tasks must claim it exclusively.
+        // Hooks target the distinct pinned roots. The configured parent is
+        // independently writable for these legacy pins, so it is also claimed.
         #expect(firstClaims.first?.key == firstRoot.standardizedFileURL.path)
         #expect(secondClaims.first?.key == secondRoot.standardizedFileURL.path)
         for claims in [firstClaims, secondClaims] {
@@ -312,18 +312,17 @@ struct TaskExecutionResourceClaimResolverTests {
         let otherRepository = try makeWorktreeLayout(worktrees: ["wt-a"])
         defer { try? FileManager.default.removeItem(at: otherRepository.root) }
 
-        let workspace = Workspace(name: "Worktrees", primaryPath: repository.root.path)
         // The Git claim is only emitted for tasks that reach external Git
         // metadata, matching the condition that grants them write access to it.
         let first = AgentTask(
             title: "Ship feature A",
             goal: "Update the parser, then git push the result.",
-            workspace: workspace
+            workspace: Workspace(name: "First", primaryPath: try #require(repository.worktrees["wt-a"]).path)
         )
         let second = AgentTask(
             title: "Ship feature B",
             goal: "Update the renderer, then git push the result.",
-            workspace: workspace
+            workspace: Workspace(name: "Second", primaryPath: try #require(repository.worktrees["wt-b"]).path)
         )
         let unrelated = AgentTask(
             title: "Ship other repository",
@@ -453,23 +452,27 @@ struct TaskExecutionResourceClaimResolverTests {
         })
     }
 
-    @Test("Writers in sibling worktrees stay parallel when neither touches Git")
+    @Test("Unbound sibling checkouts stay parallel when neither receives a Git grant")
     func nonGitWorktreeWritersDoNotSerialize() throws {
         let repository = try makeWorktreeLayout(worktrees: ["wt-a", "wt-b"])
         defer { try? FileManager.default.removeItem(at: repository.root) }
 
-        let workspace = Workspace(name: "Worktrees", primaryPath: repository.root.path)
-        let first = AgentTask(title: "Ship feature A", goal: "Update the parser.", workspace: workspace)
-        let second = AgentTask(title: "Ship feature B", goal: "Update the renderer.", workspace: workspace)
+        let first = AgentTask(
+            title: "Ship feature A", goal: "Update the parser.",
+            workspace: Workspace(name: "First", primaryPath: try #require(repository.worktrees["wt-a"]).path)
+        )
+        let second = AgentTask(
+            title: "Ship feature B", goal: "Update the renderer.",
+            workspace: Workspace(name: "Second", primaryPath: try #require(repository.worktrees["wt-b"]).path)
+        )
         first.executionRootPath = repository.worktrees["wt-a"]?.path
         second.executionRootPath = repository.worktrees["wt-b"]?.path
 
         let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
 
-        // Both mutate their own worktree, so both are exclusive on the
-        // workspace — but neither reaches external Git metadata, so neither
-        // receives the read-write grant that would make them race on it.
+        // These legacy pins have no prepared-worktree binding, so the grant
+        // and claim of external Git metadata still depend on Git intent.
         #expect(firstClaims.allSatisfy { $0.access == .exclusive })
         #expect(!firstClaims.contains { $0.kind == .gitCommonDirectory })
         #expect(!secondClaims.contains { $0.kind == .gitCommonDirectory })
