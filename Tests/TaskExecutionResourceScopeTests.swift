@@ -264,6 +264,10 @@ struct TaskExecutionResourceScopeTests {
         #expect(process.terminationStatus == 0)
         #expect(FileManager.default.fileExists(atPath: output + "/allowed"))
         #expect(!FileManager.default.fileExists(atPath: fixture.workspace.primaryPath + "/forbidden"))
+        let receipt = try #require(sandboxed.executionSandboxBoundaryReceipt)
+        #expect(!receipt.explains(.init(operation: .write, path: output + "/allowed", detail: "POSIX denial")))
+        #expect(receipt.explains(.init(operation: .write,
+            path: fixture.workspace.primaryPath + "/forbidden", detail: "Scope denial")))
     }
 
     @Test("Hooks and subagent permissions are launch settings, never workspace mutations")

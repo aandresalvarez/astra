@@ -409,6 +409,7 @@ struct ExecutionSandboxBoundaryReceipt: Equatable, Sendable {
     let readableRoots: [String]
     let readDeniedRoots: [String]
     let readAllowedRoots: [String]
+    let resourceScopeBoundary: ExecutionResourceScopeSandbox?
 
     init(
         writableRoots: [String],
@@ -416,7 +417,8 @@ struct ExecutionSandboxBoundaryReceipt: Equatable, Sendable {
         readScope: ExecutionSandboxReadScope = .open,
         readableRoots: [String] = [],
         readDeniedRoots: [String] = [],
-        readAllowedRoots: [String] = []
+        readAllowedRoots: [String] = [],
+        resourceScopeBoundary: ExecutionResourceScopeSandbox? = nil
     ) {
         self.writableRoots = writableRoots
         self.writeDeniedRoots = writeDeniedRoots
@@ -424,6 +426,7 @@ struct ExecutionSandboxBoundaryReceipt: Equatable, Sendable {
         self.readableRoots = readableRoots
         self.readDeniedRoots = readDeniedRoots
         self.readAllowedRoots = readAllowedRoots
+        self.resourceScopeBoundary = resourceScopeBoundary
     }
 
     func explains(_ denial: RuntimeSandboxFileDenial) -> Bool {
@@ -437,7 +440,8 @@ struct ExecutionSandboxBoundaryReceipt: Equatable, Sendable {
             return readScope == .enforce
                 && !isWithin(path, roots: readableRoots + readAllowedRoots)
         case .write:
-            if writeDeniedRoots.contains(where: { contains(path, root: $0) }) {
+            if writeDeniedRoots.contains(where: { contains(path, root: $0) })
+                || resourceScopeBoundary?.deniesWrite(to: path) == true {
                 return true
             }
             return !writableRoots.contains(where: { contains(path, root: $0) })
@@ -755,11 +759,12 @@ enum ExecutionSandbox: Sendable {
         )
         wrapped.executionSandboxBoundaryReceipt = ExecutionSandboxBoundaryReceipt(
             writableRoots: roots + ["/dev"],
-            writeDeniedRoots: protectedWriteDenyRoots + scopeBoundary.deniedRoots,
+            writeDeniedRoots: protectedWriteDenyRoots,
             readScope: settings.readScope,
             readableRoots: readableRoots + ["/dev"],
             readDeniedRoots: protectedReadRoots,
-            readAllowedRoots: explicitProtectedReadAllowRoots
+            readAllowedRoots: explicitProtectedReadAllowRoots,
+            resourceScopeBoundary: scopeBoundary
         )
         return .applied(plan: wrapped, writableRoots: roots)
     }

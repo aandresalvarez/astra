@@ -3,16 +3,18 @@ import ASTRAModels
 
 /// Scope denials override ambient writable support roots (for example /tmp),
 /// while preserving explicitly owned descendants such as this task's ledger.
-struct ExecutionResourceScopeSandbox {
+struct ExecutionResourceScopeSandbox: Equatable, Sendable {
     let profile: String
     let arguments: [String]
     let deniedRoots: [String]
+    private let writableRoots: [String]
 
     init(scope: TaskExecutionResourceScope?) {
         guard let scope else {
             profile = ""
             arguments = []
             deniedRoots = []
+            writableRoots = []
             return
         }
         let readers = scope.resources.filter {
@@ -39,5 +41,16 @@ struct ExecutionResourceScopeSandbox {
         profile = "\n" + rules.joined(separator: "\n")
         arguments = parameters
         deniedRoots = roots
+        writableRoots = writers
+    }
+
+    func deniesWrite(to path: String) -> Bool {
+        guard let path = ExecutionSandbox.canonicalize(path) else { return false }
+        return deniedRoots.contains { root in
+            TaskExecutionResourceScope.contains(root, path) && !writableRoots.contains { writer in
+                writer != root && TaskExecutionResourceScope.contains(root, writer)
+                    && TaskExecutionResourceScope.contains(writer, path)
+            }
+        }
     }
 }
