@@ -516,6 +516,8 @@ enum ValidationService {
 
         var finalPayloads: [TaskValidationAssertionEventPayload] = []
         finalPayloads.reserveCapacity(contract.assertions.count)
+        let acceptedScope = resourceScope ?? task.acceptedResourceScope
+        let executionPath = workspacePath ?? acceptedScope?.workingDirectory ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory
 
         for assertion in contract.assertions {
             recordAssertionEvent(
@@ -535,10 +537,10 @@ enum ValidationService {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                workspacePath: workspacePath ?? TaskWorkspaceAccess(task: task).codeWorkingDirectory,
+                workspacePath: executionPath,
                 verifierRuntime: verifierRuntime,
                 commandRunner: commandRunner,
-                resourceScope: resourceScope ?? task.acceptedResourceScope
+                resourceScope: acceptedScope
             )
             let payload = assertionResult.payload
             finalPayloads.append(payload)
@@ -618,7 +620,12 @@ enum ValidationService {
             ],
             level: canComplete ? .info : .warning
         )
-        TaskContextStateManager.refresh(task: task)
+        if TaskExecutionResourcePreparation.isCurrent(task: task, scope: acceptedScope) {
+            TaskContextStateManager.refresh(task: task)
+        } else {
+            AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id,
+                fields: ["reason": "context_refresh_deferred_scope_drift"], level: .warning)
+        }
 
         return TaskValidationContractEvaluation(
             didRun: true,
@@ -735,6 +742,13 @@ enum ValidationService {
         commandRunner: ValidationCommandRunning,
         resourceScope: TaskExecutionResourceScope?
     ) async -> ValidationAssertionExecutionResult {
+        let artifacts = ValidationArtifactAccess(task: task, workspacePath: workspacePath, scope: resourceScope)
+        guard artifacts.isValid else {
+            return ValidationAssertionExecutionResult(payload: assertionPayload(
+                assertion: assertion, planID: plan.planID, status: "failed",
+                summary: "The accepted validation resource scope is no longer valid. Submit a new turn.",
+                reason: "execution_resource_scope_requires_resubmission"))
+        }
         let payload: TaskValidationAssertionEventPayload
         switch assertion.method {
         case .command:
@@ -750,8 +764,7 @@ enum ValidationService {
             payload = evaluateArtifact(
                 assertion: assertion,
                 planID: plan.planID,
-                task: task,
-                workspacePath: workspacePath
+                artifacts: artifacts
             )
         case .manual:
             payload = evaluateManual(assertion: assertion, planID: plan.planID, task: task)
@@ -761,8 +774,7 @@ enum ValidationService {
             payload = evaluateTextContains(
                 assertion: assertion,
                 planID: plan.planID,
-                task: task,
-                workspacePath: workspacePath
+                artifacts: artifacts
             )
         case .verifier:
             payload = await evaluateVerifier(
@@ -781,7 +793,7 @@ enum ValidationService {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                workspacePath: workspacePath
+                artifacts: artifacts
             )
         }
         return ValidationAssertionExecutionResult(payload: payload)
@@ -846,8 +858,7 @@ enum ValidationService {
     private static func evaluateArtifact(
         assertion: TaskValidationAssertion,
         planID: UUID,
-        task: AgentTask,
-        workspacePath: String
+        artifacts: ValidationArtifactAccess
     ) -> TaskValidationAssertionEventPayload {
         guard let requestedPath = assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedPath.isEmpty else {
             return assertionPayload(
@@ -872,8 +883,7 @@ enum ValidationService {
 
         let scopedCandidate = scopedExistingArtifactPath(
             requestedPath,
-            task: task,
-            workspacePath: workspacePath,
+            artifacts: artifacts,
             allowDirectory: artifactAssertionAllowsDirectory(assertion)
         )
         let existingPath = scopedCandidate.path
@@ -985,8 +995,7 @@ enum ValidationService {
     private static func evaluateTextContains(
         assertion: TaskValidationAssertion,
         planID: UUID,
-        task: AgentTask,
-        workspacePath: String
+        artifacts: ValidationArtifactAccess
     ) -> TaskValidationAssertionEventPayload {
         guard let requestedPath = assertion.path?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedPath.isEmpty else {
             return assertionPayload(
@@ -1023,8 +1032,7 @@ enum ValidationService {
 
         let scopedCandidate = scopedExistingArtifactPath(
             requestedPath,
-            task: task,
-            workspacePath: workspacePath,
+            artifacts: artifacts,
             allowDirectory: false
         )
         guard let existingPath = scopedCandidate.path else {
@@ -1072,11 +1080,7 @@ enum ValidationService {
             )
         }
 
-        guard let content = readScopedArtifactText(
-            at: existingPath,
-            task: task,
-            workspacePath: workspacePath
-        ) else {
+        guard let content = artifacts.readText(at: existingPath) else {
             return assertionPayload(
                 assertion: assertion,
                 planID: planID,
@@ -1109,7 +1113,7 @@ enum ValidationService {
         task: AgentTask,
         run: TaskRun?,
         modelContext: ModelContext,
-        workspacePath: String
+        artifacts: ValidationArtifactAccess
     ) -> TaskValidationAssertionEventPayload {
         recordBehaviorEvent(
             type: TaskValidationBehaviorEventTypes.started,
@@ -1171,8 +1175,7 @@ enum ValidationService {
 
         let scopedCandidate = scopedExistingArtifactPath(
             requestedPath,
-            task: task,
-            workspacePath: workspacePath,
+            artifacts: artifacts,
             allowDirectory: false
         )
         guard let existingPath = scopedCandidate.path else {
@@ -1210,38 +1213,42 @@ enum ValidationService {
             )
         }
 
-        let content = readScopedArtifactText(
-            at: existingPath,
-            task: task,
-            workspacePath: workspacePath
-        ) ?? ""
+        guard let content = artifacts.readText(at: existingPath) else {
+            let summary = "Browser behavior artifact could not be read within the accepted scope."
+            recordBehaviorEvent(type: TaskValidationBehaviorEventTypes.failed, auditEvent: .validationBehaviorFailed,
+                planID: planID, assertionID: assertion.id, path: existingPath, summary: summary,
+                reason: "artifact_text_unreadable", task: task, run: run, modelContext: modelContext)
+            return assertionPayload(assertion: assertion, planID: planID, status: "failed",
+                summary: summary, path: existingPath, reason: "artifact_text_unreadable")
+        }
         let renderedSummary = renderedTextSummary(from: content)
         let expected = firstNonEmpty(assertion.evidenceQuery, assertion.description)
         let matched = expected.isEmpty || renderedSummary.localizedCaseInsensitiveContains(expected)
-        let evidencePath = writeBehaviorEvidence(
-            assertionID: assertion.id,
-            planID: planID,
-            sourcePath: existingPath,
-            expected: expected,
-            matched: matched,
-            renderedSummary: renderedSummary,
-            task: task,
-            workspacePath: workspacePath
-        )
-        if let evidencePath {
-            recordBehaviorEvent(
-                type: TaskValidationBehaviorEventTypes.evidenceAttached,
-                auditEvent: .validationBehaviorEvidenceAttached,
-                planID: planID,
-                assertionID: assertion.id,
-                path: existingPath,
-                evidencePath: evidencePath,
-                summary: "Attached browser behavior evidence.",
-                task: task,
-                run: run,
-                modelContext: modelContext
-            )
+        let evidencePath: String
+        do {
+            evidencePath = try writeBehaviorEvidence(
+                assertionID: assertion.id, planID: planID, sourcePath: existingPath,
+                expected: expected, matched: matched, renderedSummary: renderedSummary, artifacts: artifacts)
+        } catch {
+            let summary = "Browser behavior evidence could not be saved: \(error.localizedDescription)"
+            recordBehaviorEvent(type: TaskValidationBehaviorEventTypes.failed, auditEvent: .validationBehaviorFailed,
+                planID: planID, assertionID: assertion.id, path: existingPath, summary: summary,
+                reason: "validation_evidence_write_failed", task: task, run: run, modelContext: modelContext)
+            return assertionPayload(assertion: assertion, planID: planID, status: "failed",
+                summary: summary, path: existingPath, reason: "validation_evidence_write_failed")
         }
+        recordBehaviorEvent(
+            type: TaskValidationBehaviorEventTypes.evidenceAttached,
+            auditEvent: .validationBehaviorEvidenceAttached,
+            planID: planID,
+            assertionID: assertion.id,
+            path: existingPath,
+            evidencePath: evidencePath,
+            summary: "Attached browser behavior evidence.",
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
 
         let summary = matched
             ? "Browser behavior evidence matched expected text in \(existingPath)."
@@ -1266,7 +1273,7 @@ enum ValidationService {
             status: matched ? "passed" : (assertion.required ? "failed" : "skipped"),
             summary: summary,
             path: existingPath,
-            evidence: evidencePath ?? renderedSummary,
+            evidence: evidencePath,
             reason: matched ? nil : "expected_text_missing"
         )
     }
@@ -1587,19 +1594,11 @@ enum ValidationService {
         expected: String,
         matched: Bool,
         renderedSummary: String,
-        task: AgentTask,
-        workspacePath: String
-    ) -> String? {
-        let base = TaskWorkspaceAccess(task: task).taskFolder.isEmpty
-            ? workspacePath
-            : TaskWorkspaceAccess(task: task).taskFolder
-        guard !base.isEmpty else { return nil }
-        let directory = (base as NSString).appendingPathComponent("validation-evidence")
-        try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        artifacts: ValidationArtifactAccess
+    ) throws -> String {
         let safeID = assertionID
             .map { character in character.isLetter || character.isNumber || character == "-" || character == "_" ? character : "-" }
             .reduce(into: "") { $0.append($1) }
-        let path = (directory as NSString).appendingPathComponent("\(safeID)-behavior.json")
         let payload: [String: Any] = [
             "version": 1,
             "planID": planID.uuidString,
@@ -1609,16 +1608,8 @@ enum ValidationService {
             "matched": matched,
             "renderedSummary": renderedSummary
         ]
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else {
-            return nil
-        }
-        do {
-            try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
-            return path
-        } catch {
-            return nil
-        }
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+        return try artifacts.writeEvidence(data, filename: "\(safeID)-behavior.json")
     }
 
     private static func defaultFileSize(atPath path: String) -> UInt64? {
@@ -1631,42 +1622,21 @@ enum ValidationService {
         return nil
     }
 
-    private static func artifactCandidatePaths(
-        _ path: String,
-        task: AgentTask,
-        workspacePath: String
-    ) -> [String] {
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        var candidates: [String] = []
-        if !taskFolder.isEmpty {
-            candidates.append((taskFolder as NSString).appendingPathComponent(path))
-        }
-        if !workspacePath.isEmpty {
-            candidates.append((workspacePath as NSString).appendingPathComponent(path))
-        }
-        return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
-    }
-
     private static func scopedExistingArtifactPath(
         _ path: String,
-        task: AgentTask,
-        workspacePath: String,
+        artifacts: ValidationArtifactAccess,
         allowDirectory: Bool
     ) -> (path: String?, rejectedOutOfScope: Bool, rejectedDirectory: Bool, checked: [String]) {
-        let candidates = artifactCandidatePaths(path, task: task, workspacePath: workspacePath)
+        let candidates = artifacts.candidates(for: path)
         var rejectedOutOfScope = false
         var rejectedDirectory = false
         for candidate in candidates {
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory) else { continue }
-            guard resolvedArtifactCandidateIsInScope(
-                candidate,
-                task: task,
-                workspacePath: workspacePath
-            ) else {
+            guard artifacts.root(containing: candidate) != nil else {
                 rejectedOutOfScope = true
                 continue
             }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue && !allowDirectory {
                 rejectedDirectory = true
                 continue
@@ -1674,70 +1644,6 @@ enum ValidationService {
             return (candidate, false, false, candidates)
         }
         return (nil, rejectedOutOfScope, rejectedDirectory, candidates)
-    }
-
-    private static func resolvedArtifactCandidateIsInScope(
-        _ candidate: String,
-        task: AgentTask,
-        workspacePath: String
-    ) -> Bool {
-        let resolvedCandidate = URL(fileURLWithPath: candidate)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-        return validationArtifactScopeRoots(task: task, workspacePath: workspacePath).contains { root in
-            resolvedCandidate == root || resolvedCandidate.hasPrefix(root.hasSuffix("/") ? root : root + "/")
-        }
-    }
-
-    private static func readScopedArtifactText(
-        at path: String,
-        task: AgentTask,
-        workspacePath: String
-    ) -> String? {
-        guard let root = validationArtifactScopeRoot(
-            containing: path,
-            task: task,
-            workspacePath: workspacePath
-        ) else {
-            return nil
-        }
-        return try? HostFileAccessBroker().readString(
-            at: URL(fileURLWithPath: path),
-            encoding: .utf8,
-            intent: .astraManagedStorage(root: URL(fileURLWithPath: root, isDirectory: true))
-        )
-    }
-
-    private static func validationArtifactScopeRoot(
-        containing path: String,
-        task: AgentTask,
-        workspacePath: String
-    ) -> String? {
-        let resolvedPath = URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-        return validationArtifactScopeRoots(task: task, workspacePath: workspacePath).first { root in
-            resolvedPath == root || resolvedPath.hasPrefix(root.hasSuffix("/") ? root : root + "/")
-        }
-    }
-
-    private static func validationArtifactScopeRoots(
-        task: AgentTask,
-        workspacePath: String
-    ) -> [String] {
-        let access = TaskWorkspaceAccess(task: task)
-        let roots = [access.taskFolder, workspacePath]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map {
-                URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
-                    .resolvingSymlinksInPath()
-                    .standardizedFileURL
-                    .path
-            }
-        return Array(NSOrderedSet(array: roots)) as? [String] ?? roots
     }
 
     private static func isScopedValidationArtifactPath(_ path: String) -> Bool {

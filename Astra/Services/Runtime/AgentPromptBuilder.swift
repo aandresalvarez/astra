@@ -1460,9 +1460,7 @@ enum AgentPromptBuilder {
                 contextParts.append("Remote server: ssh \(conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias) — remote path: \(conn.remotePath)")
             }
 
-            if let scope = task.acceptedResourceScope {
-                contextParts.append(scope.folderGuidance)
-            } else if !ws.additionalPaths.isEmpty {
+            if task.acceptedResourceScope == nil, !ws.additionalPaths.isEmpty {
                 let paths = WorkspacePathPresentation.descriptors(
                     primaryPath: ws.primaryPath,
                     additionalPaths: ws.additionalPaths

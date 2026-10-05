@@ -52,7 +52,6 @@ enum TaskCorrectiveWorkService {
             "corrective_step_id": stepID,
             "repair": suggestedRepair
         ], level: .warning)
-        TaskContextStateManager.refresh(task: task)
     }
 
     @MainActor

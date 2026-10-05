@@ -27,9 +27,17 @@ enum TaskExecutionGitRequirementResolver {
     /// Explicit declarations and workflow requirements own the captured decision.
     static func mutationHint(in text: String) -> Bool {
         let git = #"\bgit(?:\s+(?:(?:-C|-c|--git-dir|--work-tree)(?:=|\s+)(?:'[^']*'|"[^"]*"|\S+)|--no-optional-locks))*\s+"#
-        for line in text.components(separatedBy: CharacterSet(charactersIn: "\n;")) {
-            if line.range(of: #"\b(?:do not|don't|never|avoid|without)\b.*\b(?:commit|push|pull|git)\b"#,
-                          options: [.regularExpression, .caseInsensitive]) != nil { continue }
+        let clauses = text.replacingOccurrences(
+            of: #"(?i)[.!?](?=\s|$)|,\s*(?:but|then|instead)\b|\b(?:but|then|instead)\b"#,
+            with: "\n", options: .regularExpression)
+        for clause in clauses.components(separatedBy: CharacterSet(charactersIn: "\n;")) {
+            let line: String
+            if let negation = clause.range(of: #"\b(?:do not|don't|never|avoid|without)\b.*\b(?:commit|push|pull|git)\b"#,
+                                           options: [.regularExpression, .caseInsensitive]) {
+                line = String(clause[..<negation.lowerBound])
+            } else {
+                line = clause
+            }
             if line.range(of: git + #"(?:fetch|pull|push|clone|add|commit|checkout|switch|restore|reset|clean|merge|rebase|cherry-pick|revert|stash|update-ref|gc|maintenance|submodule\s+update|remote\s+(?:add|remove|rename|set-url|update))\b"#,
                           options: [.regularExpression, .caseInsensitive]) != nil { return true }
             if line.range(of: #"\bgh\s+pr\s+checkout\b"#, options: [.regularExpression, .caseInsensitive]) != nil { return true }

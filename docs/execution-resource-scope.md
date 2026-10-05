@@ -116,7 +116,9 @@ requirement.
 For unstructured turns, compatibility hints recognize commands case-insensitively and common commit
 instructions, while distinguishing inspection such as `git branch --show-current`,
 `git config --get`, and `git worktree list`. Hints are not a complete shell parser
-or a command permission. The typed captured requirement owns subsequent launches;
+and apply negation within an instruction clause, not to unrelated positive
+commands elsewhere in the same line.
+They are not a command permission. The typed captured requirement owns subsequent launches;
 when an operation was not admitted, request a new turn with the explicit write
 declaration rather than retrying or upgrading the current lease.
 
@@ -143,9 +145,15 @@ blocked rather than silently running its command on the host. These are explicit
 unsupported paths, not passing validation or automatic permissions upgrades.
 Use a supported host validation command or a compatible new execution setup.
 Unscoped legacy behavior and an explicitly admitted sandbox Off remain unchanged.
-Static artifact checks and tool-restricted AI verification retain their existing
-validation contracts; this command boundary is not a new browser/provider-state
-isolation guarantee.
+Static artifact, text-content, and browser-evidence assertions share an accepted
+storage projection: captured task storage first, then the accepted execution
+root. Live workspace edits cannot redirect their reads or evidence writes.
+Symlink escapes are rejected, and browser evidence read/write failures are
+reported rather than converted to passing assertions. If storage has drifted,
+the live-task context mirror refresh is deferred with an audit warning; durable
+validation and corrective-work events remain on the original task.
+Tool-restricted AI verification retains its existing validation contract; these
+boundaries are not a new browser/provider-state isolation guarantee.
 
 ## Continuation, drift and compatibility
 
@@ -168,6 +176,8 @@ checkout for an accepted request. Copy isolation claims its source and
 deterministically selected destination before copying. Every shared resource
 participates in read-only boundary selection and denial generation, including
 copy sources beneath ambient writable temporary directories.
+Follow-up prompts render accepted-folder guidance once, through the shared
+execution-environment section, rather than duplicating it in conversation context.
 
 Queued requests written before scopes existed, version-1 scopes lacking the
 frozen input/environment contract, version-2 scopes lacking guaranteed Git pointer

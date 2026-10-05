@@ -187,4 +187,93 @@ struct ValidationExecutionAuthorityTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root.path
     }
+
+    @Test("Static contract assertions use accepted storage after workspace drift", arguments: [false, true])
+    @MainActor
+    func staticAssertionsKeepAcceptedStorage(acceptedArtifactExists: Bool) async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let original = root + "/original"
+        let moved = root + "/moved"
+        try FileManager.default.createDirectory(atPath: original, withIntermediateDirectories: true)
+        let container = try makeValidationExecutionAuthorityContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Static validation", primaryPath: original)
+        let task = AgentTask(title: "Report", goal: "Create a report", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let acceptedFolder = try TaskExecutionResourcePreparation.ensureTaskFolder(task: task)
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        if acceptedArtifactExists {
+            try "<h1>Accepted report</h1>".write(toFile: acceptedFolder + "/report.html", atomically: true, encoding: .utf8)
+        }
+        workspace.primaryPath = moved
+        let unacceptedFolder = TaskWorkspaceAccess(task: task).canonicalTaskFolder
+        if !acceptedArtifactExists {
+            try FileManager.default.createDirectory(atPath: unacceptedFolder, withIntermediateDirectories: true)
+            try "<h1>Accepted report</h1>".write(toFile: unacceptedFolder + "/report.html", atomically: true, encoding: .utf8)
+        }
+        let plan = TaskPlanPayload(title: "Proof", goal: task.goal, steps: [],
+            validationContract: .init(assertions: [
+                .init(id: "artifact", description: "Report exists", method: .artifact, path: "report.html"),
+                .init(id: "text", description: "Report content", method: .textContains, path: "report.html", evidenceQuery: "Accepted report"),
+                .init(id: "browser", description: "Report content", method: .browserBehavior, path: "report.html", evidenceQuery: "Accepted report")
+            ]))
+        let result = await ValidationService.runContract(task: task, plan: plan, run: nil,
+            modelContext: context, resourceScope: scope)
+        #expect(result.canComplete == acceptedArtifactExists)
+        #expect(!FileManager.default.fileExists(atPath: unacceptedFolder + "/validation-evidence"))
+        #expect(!FileManager.default.fileExists(atPath: unacceptedFolder + "/current_state.json"))
+        if acceptedArtifactExists {
+            #expect(!FileManager.default.fileExists(atPath: moved))
+            let evidence = try String(contentsOfFile: acceptedFolder + "/validation-evidence/browser-behavior.json")
+            #expect(evidence.contains("Accepted report"))
+            #expect(!evidence.contains(moved))
+            let passed = try task.events.filter { $0.type == TaskValidationEventTypes.assertionPassed }.map {
+                try JSONDecoder().decode(TaskValidationAssertionEventPayload.self, from: Data($0.payload.utf8))
+            }
+            #expect(passed.count == 3)
+            #expect(passed.allSatisfy { $0.path == acceptedFolder + "/report.html" })
+        } else {
+            #expect(Set(result.failedRequiredAssertionIDs) == ["artifact", "text", "browser"])
+            #expect(try FileManager.default.contentsOfDirectory(atPath: unacceptedFolder) == ["report.html"])
+        }
+    }
+
+    @Test("Static validation rejects artifact and evidence symlink escapes", arguments: [false, true])
+    @MainActor
+    func staticValidationRejectsSymlinks(evidenceEscape: Bool) async throws {
+        let root = try temporaryRoot()
+        let outside = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: outside)
+        }
+        let container = try makeValidationExecutionAuthorityContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Symlink validation", primaryPath: root)
+        let task = AgentTask(title: "Report", goal: "Validate report", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        let folder = try TaskExecutionResourcePreparation.ensureTaskFolder(task: task)
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        try "Proof".write(toFile: outside + "/report.html", atomically: true, encoding: .utf8)
+        if evidenceEscape {
+            try "Proof".write(toFile: folder + "/report.html", atomically: true, encoding: .utf8)
+            try FileManager.default.createSymbolicLink(atPath: folder + "/validation-evidence", withDestinationPath: outside)
+        } else {
+            try FileManager.default.createSymbolicLink(atPath: folder + "/report.html", withDestinationPath: outside + "/report.html")
+        }
+        let plan = TaskPlanPayload(title: "Proof", goal: task.goal, steps: [],
+            validationContract: .init(assertions: [
+                .init(id: "browser", description: "Proof", method: .browserBehavior, path: "report.html", evidenceQuery: "Proof")
+            ]))
+        let result = await ValidationService.runContract(task: task, plan: plan, run: nil,
+            modelContext: context, resourceScope: scope)
+        #expect(!result.canComplete)
+        let event = try #require(task.events.first { $0.type == TaskValidationEventTypes.assertionFailed })
+        let payload = try JSONDecoder().decode(TaskValidationAssertionEventPayload.self, from: Data(event.payload.utf8))
+        #expect(payload.reason == (evidenceEscape ? "validation_evidence_write_failed" : "path_outside_scope"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside) == ["report.html"])
+    }
 }

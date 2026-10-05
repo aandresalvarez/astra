@@ -540,10 +540,12 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Task deliverable expectation scans should use HostFileAccessBroker: \(matches)")
     }
 
-    @Test("Validation service artifact reads go through the file access broker")
-    func validationServiceArtifactReadsGoThroughFileAccessBroker() throws {
+    @Test("Validation service artifact reads go through the file access broker", arguments: [
+        "Astra/Services/Validation/ValidationService.swift",
+        "Astra/Services/Validation/ValidationArtifactAccess.swift"
+    ])
+    func validationServiceArtifactReadsGoThroughFileAccessBroker(relativePath: String) throws {
         let root = try repositoryRoot()
-        let relativePath = "Astra/Services/Validation/ValidationService.swift"
         let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
         let forbiddenPatterns = [
             "String(contentsOfFile:",

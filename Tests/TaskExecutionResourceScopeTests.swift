@@ -221,13 +221,21 @@ struct TaskExecutionResourceScopeTests {
         defer { fixture.remove() }
         let task = fixture.task(root: fixture.first)
         for instruction in ["commit your changes", "commit this change", "make a commit", "git -C '/tmp/a b' commit -m done",
-                            "Git push origin main", "GIT COMMIT -m done", "GH PR CHECKOUT 1", "Git branch -D obsolete"] {
+                            "Git push origin main", "GIT COMMIT -m done", "GH PR CHECKOUT 1", "Git branch -D obsolete",
+                            "Do not amend existing commits. git commit the changes",
+                            "Never git push! Git commit -m done",
+                            "Do not git push, but commit your changes",
+                            "git commit the changes without git push",
+                            "git commit the changes. Do not git push",
+                            "Avoid git reset; then git -C '/tmp/a.b' commit -m done"] {
             let scope = TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction)
             #expect(scope.gitAccess == .readWrite)
             #expect(scope.resources.contains { $0.role == .gitMetadata && $0.access == .exclusive })
         }
         for instruction in ["git branch --show-current", "git config --get user.name", "git worktree list", "git tag --list", "do not commit your changes",
-                            "Git branch -a", "GIT config --get user.name", "Git -C '/tmp/a b' status", "DO NOT GIT COMMIT -m done"] {
+                            "Git branch -a", "GIT config --get user.name", "Git -C '/tmp/a b' status", "DO NOT GIT COMMIT -m done",
+                            "Do not git commit. Never git push.", "Avoid git commit; git status",
+                            "Do not git commit or git push", "Do not git push, but git status"] {
             #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: instruction).gitAccess == .readOnly)
         }
         task.constraints = ["ASTRA_GIT_ACCESS=read_only"]
@@ -236,6 +244,23 @@ struct TaskExecutionResourceScopeTests {
         #expect(TaskExecutionResourceScopeResolver.resolve(task: task, acceptedTurn: "proceed").gitAccess == .readWrite)
         task.constraints = ["ASTRA_GIT_ACCESS=typo"]
         #expect(!TaskExecutionResourceScopeResolver.resolve(task: task).isValid)
+    }
+
+    @Test("Scoped follow-up prompts include folder guidance once", arguments: [false, true])
+    func followUpScopeGuidanceOnce(nativeContinuation: Bool) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = fixture.task(root: fixture.first)
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            .init(id: "container", kind: .dockerImage, displayName: "Accepted container", image: "test:latest"))
+        task.acceptedResourceScope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue the work", task: task,
+            usesNativeContinuation: nativeContinuation)
+        #expect(prompt.components(separatedBy: "Accepted execution folders:").count == 2)
+        #expect(prompt.contains("Execution Environment: Accepted container"))
+        #expect(prompt.contains("Container working directory:"))
+        #expect(prompt.contains("Continue the work"))
+        #expect(!AgentPromptBuilder.buildFollowUpMessage(message: "Continue", task: task).contains("Accepted execution folders:"))
     }
 
     @Test("Copied linked worktrees reject admitted Git writes instead of promising unavailable access")
