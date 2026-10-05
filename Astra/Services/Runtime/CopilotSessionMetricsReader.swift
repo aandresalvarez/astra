@@ -23,26 +23,52 @@ struct CopilotSessionMetrics: Equatable {
     }
 }
 
+/// A Copilot `session-state/<id>` session that mentions the task.
+struct CopilotSessionCandidate: Equatable {
+    let sessionID: String
+    let modifiedAt: Date
+    /// The session's final recorded usage, when it has one.
+    let metrics: CopilotSessionMetrics?
+}
+
 enum CopilotSessionMetricsReader {
-    /// A launch whose stream never carried a `result` frame still left its session in Copilot's state
-    /// directory; keep that id so the next follow-up can resume it. A run that already knows its session
-    /// (a resumed one) is left alone; a run that does not is a fresh launch, so what it created replaces
-    /// whatever older session the task still names, as a streamed start event would.
+    /// How long before a run started its own session may last have been written and still be read for usage.
+    static let metricsWindow: TimeInterval = 60
+
+    /// A launch whose stream never named its session still left it in Copilot's state directory; keep that
+    /// id so the next follow-up can resume it. A run that already knows its session (a resumed one) is left
+    /// alone; a run that does not is a fresh launch, so what it created replaces whatever older session the
+    /// task still names, as a streamed start event would.
     @MainActor
-    static func adoptSession(_ metrics: CopilotSessionMetrics, task: AgentTask, run: TaskRun) {
-        let discovered = metrics.sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+    static func adoptSession(_ sessionID: String, task: AgentTask, run: TaskRun) {
+        let discovered = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !discovered.isEmpty,
               run.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true else { return }
         run.providerSessionId = discovered
         task.sessionId = discovered
     }
 
-    static func finalMetrics(
+    /// Accepts only a session a fresh launch created: written during this run (whole-second file-system
+    /// timestamps allowed for), and neither the session the task still names nor one another run recorded.
+    /// An older conversation that merely falls inside the pre-run metrics window is one the fresh launch
+    /// deliberately did not continue, so it is never adopted as this run's output.
+    @MainActor
+    static func launchCreatedSessionFilter(task: AgentTask, run: TaskRun, runStartedAt: Date) -> (String, Date) -> Bool {
+        let startedAt = Date(timeIntervalSince1970: runStartedAt.timeIntervalSince1970.rounded(.down))
+        let claimed = Set(([task.sessionId] + task.runs.filter { $0.id != run.id }.map(\.providerSessionId))
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) })
+        return { sessionID, modifiedAt in modifiedAt >= startedAt && !claimed.contains(sessionID) }
+    }
+
+    /// The newest session under `copilotHome` written at or after `modifiedSince` that `accepts` (checked
+    /// before its events are read) and whose events mention the task.
+    static func newestTaskSession(
         copilotHome: String,
         taskID: UUID,
-        runStartedAt: Date,
-        fileManager: FileManager = .default
-    ) -> CopilotSessionMetrics? {
+        modifiedSince: Date,
+        fileManager: FileManager = .default,
+        accepts: (_ sessionID: String, _ modifiedAt: Date) -> Bool
+    ) -> CopilotSessionCandidate? {
         guard !copilotHome.isEmpty else { return nil }
         let copilotHomeURL = URL(fileURLWithPath: copilotHome, isDirectory: true)
         let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
@@ -60,14 +86,14 @@ enum CopilotSessionMetricsReader {
 
         let lowerTaskID = taskID.uuidString.lowercased()
         let shortTaskID = String(lowerTaskID.prefix(8))
-        let candidates = children.compactMap { sessionURL -> (url: URL, modified: Date)? in
+        let candidates = children.compactMap { sessionURL -> (url: URL, sessionID: String, modified: Date)? in
             let eventsURL = sessionURL.appendingPathComponent("events.jsonl")
             guard hostFileAccess.fileExists(at: eventsURL, intent: accessIntent) else { return nil }
             let modified = (try? eventsURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
-            return (eventsURL, modified)
+            return (eventsURL, sessionURL.lastPathComponent, modified)
         }
-        .filter { $0.modified >= runStartedAt.addingTimeInterval(-60) }
+        .filter { $0.modified >= modifiedSince && accepts($0.sessionID, $0.modified) }
         .sorted { $0.modified > $1.modified }
 
         for candidate in candidates {
@@ -82,17 +108,17 @@ enum CopilotSessionMetricsReader {
             guard lowerContent.contains(lowerTaskID) || lowerContent.contains(shortTaskID) else {
                 continue
             }
-            guard let stats = finalStatsEvent(in: content) else {
-                continue
+            let metrics = finalStatsEvent(in: content).map { stats in
+                CopilotSessionMetrics(
+                    sessionID: candidate.sessionID,
+                    inputTokens: stats.input,
+                    outputTokens: stats.output,
+                    costUSD: stats.cost,
+                    durationMs: stats.duration,
+                    turns: stats.turns
+                )
             }
-            return CopilotSessionMetrics(
-                sessionID: candidate.url.deletingLastPathComponent().lastPathComponent,
-                inputTokens: stats.input,
-                outputTokens: stats.output,
-                costUSD: stats.cost,
-                durationMs: stats.duration,
-                turns: stats.turns
-            )
+            return CopilotSessionCandidate(sessionID: candidate.sessionID, modifiedAt: candidate.modified, metrics: metrics)
         }
 
         return nil

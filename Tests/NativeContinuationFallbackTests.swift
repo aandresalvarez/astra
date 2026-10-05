@@ -225,6 +225,40 @@ struct NativeContinuationFallbackTests {
         ) == .unverifiable)
     }
 
+    @Test("A session behind a directory that cannot be searched is unverifiable, not absent")
+    func unreachableStoreEntryIsUnverifiable() throws {
+        let home = try makeHome()
+        let probes: [(runtime: AgentRuntimeID, session: String, blocked: String)] = [
+            (.antigravityCLI, "conv-1", "\(home)/.gemini"),
+            (.copilotCLI, "sess-1", "\(home)/.copilot"),
+            (.cursorCLI, "chat-1", "\(home)/.cursor"),
+            (.cursorCLI, "chat-1", "\(home)/.cursor/chats/aaaa"),
+            (.openCodeCLI, "ses_a", "\(home)/.local/share/opencode")
+        ]
+        defer {
+            for probe in probes {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: probe.blocked)
+            }
+            try? FileManager.default.removeItem(atPath: home)
+        }
+        try touch("\(home)/.gemini/antigravity-cli/conversations/conv-1.db")
+        try touch("\(home)/.copilot/session-state/sess-1", directory: true)
+        try touch("\(home)/.cursor/chats/aaaa/chat-1", directory: true)
+        try makeOpenCodeDatabase(at: "\(home)/.local/share/opencode/opencode.db", sessionIDs: ["ses_a"])
+
+        for probe in probes {
+            func lookup(_ id: String) -> ProviderNativeSessionStore.Lookup {
+                ProviderNativeSessionStore.lookup(runtime: probe.runtime, sessionID: id, userHome: home, environment: [:])
+            }
+            #expect(lookup(probe.session) == .present, "\(probe.blocked)")
+            #expect(lookup("gone-1") == .absent, "\(probe.blocked)")
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: probe.blocked)
+            #expect(lookup(probe.session) == .unverifiable, "\(probe.blocked)")
+            #expect(lookup("gone-1") == .unverifiable, "\(probe.blocked)")
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: probe.blocked)
+        }
+    }
+
     @Test("An OpenCode database that cannot be read reads as missing, never as a crash")
     func openCodeUnreadableDatabase() throws {
         let home = try makeHome()

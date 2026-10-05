@@ -351,8 +351,9 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     let tokenBudget: Int
-    /// Tokens already inside the cumulative usage a resumed session reports; offsets only those comparisons.
-    let reportedUsageBaseline: Int
+    /// Usage already inside the cumulative totals a resumed session reports; offsets only those comparisons,
+    /// until a report shows the provider restarted its counters and later reports count in full.
+    private var reportedUsageBaseline: ProviderSessionUsageBaseline
     let budgetEnforcementMode: BudgetEnforcementMode
     let maxTurns: Int
     let maxRepetitions: Int
@@ -511,7 +512,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     var runtimeStopped: Bool { lock.lock(); defer { lock.unlock() }; return _runtimeStopReason?.isEmpty == false }
     init(
         tokenBudget: Int,
-        reportedUsageBaseline: Int = 0,
+        reportedUsageBaseline: ProviderSessionUsageBaseline = .zero,
         budgetEnforcementMode: BudgetEnforcementMode = .hardStop,
         maxTurns: Int = 0,
         maxRepetitions: Int = 8,
@@ -549,6 +550,13 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     static func estimatedTokenCount(for text: String) -> Int {
         guard !text.isEmpty else { return 0 }
         return max(1, text.count / 4)
+    }
+
+    /// This run's share of a cumulative usage report; a reset report starts a new epoch. Caller holds `lock`.
+    private func reportedRunShare(input: Int, output: Int) -> Int {
+        if reportedUsageBaseline.isReset(input: input, output: output) { reportedUsageBaseline = .zero }
+        let share = reportedUsageBaseline.runShare(input: input, output: output)
+        return share.input + share.output
     }
 
     func processEvent(_ parsed: ParsedEvent, process: AgentRuntimeProcessControl?) -> Bool {
@@ -725,7 +733,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
 
         if case .usage(let totalInput, let totalOutput) = parsed {
             let totalTokens = totalInput + totalOutput
-            if totalTokens - reportedUsageBaseline > tokenBudget {
+            if reportedRunShare(input: totalInput, output: totalOutput) > tokenBudget {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "stream_usage_budget_exceeded",
@@ -747,7 +755,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             }
         } else if case .result(_, _, let totalInput, let totalOutput, _, _, let isError) = parsed {
             let totalTokens = totalInput + totalOutput
-            if totalTokens - reportedUsageBaseline > tokenBudget {
+            if reportedRunShare(input: totalInput, output: totalOutput) > tokenBudget {
                 if budgetEnforcementMode == .warning {
                     return recordBudgetWarning(
                         reason: "reported_budget_exceeded",

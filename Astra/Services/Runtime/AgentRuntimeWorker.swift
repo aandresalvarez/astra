@@ -819,8 +819,8 @@ final class AgentRuntimeWorker {
         run.providerSessionId = nativeContinuationSessionID
         ProviderLaunchSignatureService.record(launchSignature, task: task, run: run, modelContext: modelContext)
         let discardedUsage = DiscardedAttemptUsage()
-        let sessionUsageBaseline = nativeContinuationSessionID == nil || !runtimeAdapter.descriptor.reportsCumulativeSessionUsage ? 0
-            : { let prior = AgentEventRecorder.priorSessionUsage(for: run, in: task); return prior.input + prior.output }()
+        let sessionUsageBaseline = nativeContinuationSessionID == nil ? .zero
+            : ProviderSessionUsageEpoch.baseline(for: run, in: task)
         let persistRecordedEvent: (AgentRuntimeRecordedEvent) -> Void = { event in
             pendingEvents.add { [weak self] in
                 guard self != nil else { return }

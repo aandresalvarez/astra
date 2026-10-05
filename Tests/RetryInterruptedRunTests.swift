@@ -51,7 +51,8 @@ struct RetryInterruptedRunTests {
         followUp: String? = nil,
         scheduleID: UUID? = nil,
         chainedFromID: UUID? = nil,
-        runOwnsSession: Bool = true
+        runOwnsSession: Bool = true,
+        runtimeAfterInterruption: AgentRuntimeID? = nil
     ) async throws -> Submitted {
         let env = try makeEnvironment()
         defer { try? FileManager.default.removeItem(atPath: env.root) }
@@ -70,6 +71,7 @@ struct RetryInterruptedRunTests {
         run.stopReason = stopReason
         run.completedAt = Date()
         env.context.insert(run)
+        if let runtimeAfterInterruption { task.runtimeID = runtimeAfterInterruption.rawValue }
         if let followUp {
             env.context.insert(TaskEvent(
                 task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: followUp, run: run
@@ -125,6 +127,16 @@ struct RetryInterruptedRunTests {
     func runWithoutItsOwnSessionRelaunches() async throws {
         let submitted = try await retry(stopReason: "cancelled", runOwnsSession: false)
         #expect(submitted.mode == .initial)
+    }
+
+    @Test("A run interrupted under another runtime is retried from scratch, with the usual reset")
+    func runtimeSwitchRelaunches() async throws {
+        let submitted = try await retry(
+            runtime: .claudeCode, stopReason: "cancelled", runtimeAfterInterruption: .codexCLI
+        )
+        #expect(submitted.mode == .initial)
+        #expect(submitted.message == nil)
+        #expect(submitted.task.tokensUsed == 0)
     }
 
     @Test("A scheduled or chained launch keeps its own from-scratch relaunch")

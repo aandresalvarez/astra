@@ -14,7 +14,8 @@ import ASTRACore
 ///
 /// The layouts below were read off the real CLIs. A layout change reads as
 /// "missing", which degrades to the rebuilt-prompt continuation ASTRA used
-/// before native resume — never to a broken launch.
+/// before native resume — never to a broken launch. An entry that cannot be
+/// reached (an unreadable directory on its path) is unverifiable, not missing.
 enum ProviderNativeSessionStore {
     /// What a lookup could establish. Only a confirmed absence may be acted on destructively; a store
     /// that could not be read (busy, unreadable, unexpected layout) proves nothing about the session.
@@ -60,13 +61,13 @@ enum ProviderNativeSessionStore {
             // else the launch's own HOME (a skill can scope it), else ASTRA's.
             let launchHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let base = !home.isEmpty ? home : (launchHome.isEmpty ? userHome : launchHome)
-            return fileManager.fileExists(atPath: path(
-                base, ".gemini", "antigravity-cli", "conversations", "\(sessionID).db"
-            )) ? .present : .absent
+            return entryLookup(
+                path(base, ".gemini", "antigravity-cli", "conversations", "\(sessionID).db"), fileManager: fileManager
+            )
         case .copilotCLI:
-            return fileManager.fileExists(atPath: path(
-                CopilotCLIRuntime.defaultHome(userHome: userHome), "session-state", sessionID
-            )) ? .present : .absent
+            return entryLookup(
+                path(CopilotCLIRuntime.defaultHome(userHome: userHome), "session-state", sessionID), fileManager: fileManager
+            )
         case .openCodeCLI:
             return openCodeSessionExists(sessionID, userHome: userHome, environment: environment, fileManager: fileManager)
         default:
@@ -85,14 +86,17 @@ enum ProviderNativeSessionStore {
     /// document, so look for the chat id one level down.
     private static func cursorChatExists(_ sessionID: String, userHome: String, fileManager: FileManager) -> Lookup {
         let chatsRoot = path(userHome, ".cursor", "chats")
-        guard fileManager.fileExists(atPath: chatsRoot) else { return .absent }
+        let root = entryLookup(chatsRoot, fileManager: fileManager)
+        guard root == .present else { return root }
         guard let workspaces = try? fileManager.contentsOfDirectory(atPath: chatsRoot) else { return .unverifiable }
-        return workspaces.contains { fileManager.fileExists(atPath: path(chatsRoot, $0, sessionID)) } ? .present : .absent
+        let lookups = workspaces.map { entryLookup(path(chatsRoot, $0, sessionID), fileManager: fileManager) }
+        if lookups.contains(.present) { return .present }
+        return lookups.contains(.unverifiable) ? .unverifiable : .absent
     }
 
     /// OpenCode keeps sessions as rows of its SQLite database. Opened read-only
     /// with a short busy timeout so a running OpenCode never blocks a launch;
-    /// any failure to read it counts as "missing".
+    /// a database that cannot be read proves nothing about the session.
     private static func openCodeSessionExists(
         _ sessionID: String,
         userHome: String,
@@ -110,7 +114,8 @@ enum ProviderNativeSessionStore {
         let databasePath = override.isEmpty
             ? path(dataHome, "opencode", "opencode.db")
             : (override.hasPrefix("/") ? override : path(dataHome, "opencode", override))
-        guard fileManager.fileExists(atPath: databasePath) else { return .absent }
+        let databaseEntry = entryLookup(databasePath, fileManager: fileManager)
+        guard databaseEntry == .present else { return databaseEntry }
 
         var database: OpaquePointer?
         guard sqlite3_open_v2(databasePath, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let database else {
@@ -132,6 +137,15 @@ enum ProviderNativeSessionStore {
         case SQLITE_DONE: return .absent
         default: return .unverifiable // busy past the timeout, a read error
         }
+    }
+
+    /// `fileExists` is false for an entry it could not reach as well as for a missing one, so only
+    /// a lookup that fails with "no such entry" confirms absence.
+    private static func entryLookup(_ path: String, fileManager: FileManager) -> Lookup {
+        if fileManager.fileExists(atPath: path) { return .present }
+        var info = stat()
+        guard stat(path, &info) != 0 else { return .present }
+        return errno == ENOENT || errno == ENOTDIR ? .absent : .unverifiable
     }
 
     private static func isPlainSessionToken(_ value: String) -> Bool {

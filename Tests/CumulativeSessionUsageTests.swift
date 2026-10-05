@@ -75,12 +75,13 @@ struct CumulativeSessionUsageTests {
         #expect(resumed.outputTokens == 33)
     }
 
-    @Test("Usage cannot go negative when a session's counters reset")
-    func resetCountersClampAtZero() throws {
-        let (_, resumed, container) = try twoTurns(.antigravityCLI, first: (500, 100), cumulative: (300, 50))
+    @Test("A session whose counters reset counts the report in full as a new accounting epoch")
+    func resetCountersStartANewEpoch() throws {
+        let (task, resumed, container) = try twoTurns(.antigravityCLI, first: (500, 100), cumulative: (300, 50))
         defer { withExtendedLifetime(container) {} }
-        #expect(resumed.inputTokens == 0)
-        #expect(resumed.outputTokens == 0)
+        #expect(resumed.inputTokens == 300)
+        #expect(resumed.outputTokens == 50)
+        #expect(task.tokensUsed == 600 + 350)
     }
 
     @Test("Only Antigravity and Copilot declare cumulative session usage")
@@ -133,11 +134,9 @@ struct CumulativeSessionUsageTests {
         context.insert(run)
         task.sessionId = nil
         run.providerSessionId = nil
-        let metrics = CopilotSessionMetrics(
-            sessionID: "found-session", inputTokens: 1, outputTokens: 1, costUSD: nil, durationMs: nil, turns: nil
-        )
+        let found = "found-session"
 
-        CopilotSessionMetricsReader.adoptSession(metrics, task: task, run: run)
+        CopilotSessionMetricsReader.adoptSession(found, task: task, run: run)
         #expect(task.sessionId == "found-session")
         #expect(run.providerSessionId == "found-session")
 
@@ -146,14 +145,14 @@ struct CumulativeSessionUsageTests {
         context.insert(fresh)
         task.sessionId = "stale"
         fresh.providerSessionId = nil
-        CopilotSessionMetricsReader.adoptSession(metrics, task: task, run: fresh)
+        CopilotSessionMetricsReader.adoptSession(found, task: task, run: fresh)
         #expect(task.sessionId == "found-session")
         #expect(fresh.providerSessionId == "found-session")
 
         // A run that already carries its session (a resumed one) is left alone.
         task.sessionId = "known"
         run.providerSessionId = "known-run"
-        CopilotSessionMetricsReader.adoptSession(metrics, task: task, run: run)
+        CopilotSessionMetricsReader.adoptSession(found, task: task, run: run)
         #expect(task.sessionId == "known")
         #expect(run.providerSessionId == "known-run")
     }
@@ -193,14 +192,14 @@ struct CumulativeSessionUsageTests {
 
     @Test("The session baseline offsets the cumulative reported usage only, never the live estimate")
     func monitorBaselineOffsetsReportedUsageOnly() {
-        let reported = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1_000, reportedUsageBaseline: 5_000)
+        let reported = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1_000, reportedUsageBaseline: .init(input: 5_000))
         // 5,900 reported is 900 of this run once the 5,000 already in the session total is set aside
         #expect(!reported.processEvent(.usage(totalInputTokens: 5_500, totalOutputTokens: 400), process: nil))
         #expect(reported.processEvent(.usage(totalInputTokens: 5_900, totalOutputTokens: 400), process: nil))
         #expect(reported.budgetExceeded)
 
         // What the current process itself has produced is not offset: the configured ceiling still stops it.
-        let estimated = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1_000, reportedUsageBaseline: 5_000)
+        let estimated = AgentRuntimeWorker.ProcessMonitor(tokenBudget: 1_000, reportedUsageBaseline: .init(input: 5_000))
         #expect(estimated.processEvent(.text(text: String(repeating: "word ", count: 6_000)), process: nil))
         #expect(estimated.budgetExceeded)
     }

@@ -221,6 +221,9 @@ final class TaskLifecycleCoordinator {
         guard task.hasProviderSession,
               AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: task.resolvedRuntimeID),
               let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
+              // A session belongs to the runtime that opened it: after a runtime switch the worker
+              // drops it, so Retry must take the from-scratch path with its reset instead.
+              latestRun.runtimeID == task.resolvedRuntimeID.rawValue,
               let stopReason = latestRun.typedStopReason,
               [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason),
               // A from-scratch run cut off before its init frame never learned a session, while

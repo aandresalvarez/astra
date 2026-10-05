@@ -872,7 +872,7 @@ final class AgentRuntimeProcessRunner {
         maxRunSeconds: TimeInterval?,
         maxTurns: Int,
         tokenBudget: Int,
-        reportedUsageBaseline: Int,
+        reportedUsageBaseline: ProviderSessionUsageBaseline,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
