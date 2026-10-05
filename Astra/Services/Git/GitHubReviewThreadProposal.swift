@@ -57,12 +57,21 @@ struct GitHubReviewThreadReceipt: Codable {
     var approvedPayload: GitHubReviewThreadPayload? = nil
 }
 
+/// A thread proposal ASTRA found unusable (stale head, resolved or edited thread,
+/// foreign target, invalid file). It is not offered again; the agent prepares a
+/// corrected proposal under a new versioned filename.
+struct GitHubReviewThreadDismissal: Codable {
+    let filePath: String
+    let reason: String
+}
+
 enum GitHubReviewThreadEvents {
     static let dispatched = "github.review-threads.dispatched"
     static let actionReceipt = "github.review-threads.action-receipt"
     static let receipt = "github.review-threads.receipt"
     static let receiptRecovery = "github.review-threads.receipt-recovery"
     static let indeterminate = "github.review-threads.indeterminate"
+    static let dismissed = "github.review-threads.dismissed"
 }
 
 enum GitHubReviewThreadArtifactPolicy {

@@ -26,18 +26,87 @@ final class GitHubReviewThreadPublicationService {
         }
     }
 
+    static func hasDismissed(task: AgentTask, filePath: String) -> Bool {
+        task.events.contains {
+            guard $0.type == GitHubReviewThreadEvents.dismissed,
+                  let data = $0.payload.data(using: .utf8),
+                  let record = try? JSONDecoder().decode(GitHubReviewThreadDismissal.self, from: data) else { return false }
+            return record.filePath == filePath
+        }
+    }
+
     static func pendingCandidatePath(task: AgentTask, filePaths: [String]) -> String? {
-        filePaths.first { GitHubReviewThreadArtifactPolicy.isProposalFile($0) && !hasDispatched(task: task, filePath: $0) }
+        filePaths.first {
+            GitHubReviewThreadArtifactPolicy.isProposalFile($0)
+                && !hasDispatched(task: task, filePath: $0) && !hasDismissed(task: task, filePath: $0)
+        }
+    }
+
+    /// The first proposal that validates. One that cannot be used (stale head, a
+    /// thread resolved or edited since, a foreign target, an invalid file) is
+    /// dismissed durably and skipped, so a dead file never hides a usable one or
+    /// a review proposal. Anything else, such as a GitHub outage, leaves the file
+    /// in place to be tried again.
+    func prepareFirstAvailable(task: AgentTask, filePaths: [String]) async throws -> GitHubReviewThreadProposal {
+        var lastUnusable: Error?
+        var dismissals: [GitHubReviewThreadDismissal] = []
+        for path in filePaths where GitHubReviewThreadArtifactPolicy.isProposalFile(path)
+            && !Self.hasDispatched(task: task, filePath: path) && !Self.hasDismissed(task: task, filePath: path) {
+            do {
+                let proposal = try await prepare(task: task, filePath: path)
+                try persistDismissals(dismissals, task: task)
+                return proposal
+            } catch GitHubReviewPublicationError.unusableArtifact(let reason) {
+                lastUnusable = GitHubReviewPublicationError.unusableArtifact(reason)
+                dismissals.append(.init(filePath: path, reason: reason))
+            }
+        }
+        try persistDismissals(dismissals, task: task)
+        throw lastUnusable ?? GitHubReviewPublicationError.invalid("No thread proposal is available to send.")
+    }
+
+    private func persistDismissals(_ records: [GitHubReviewThreadDismissal], task: AgentTask) throws {
+        guard !records.isEmpty else { return }
+        let events = records.map {
+            TaskEvent.structuredPayloadEvent(task: task, type: GitHubReviewThreadEvents.dismissed, payload: $0)
+        }
+        events.forEach(modelContext.insert)
+        do { try save(task: task, operation: "github_review_threads_dismissed") }
+        catch {
+            events.forEach { modelContext.delete($0) }
+            task.events.removeAll { event in events.contains { $0.id == event.id } }
+            throw error
+        }
+    }
+
+    /// Failures of the proposal itself, as opposed to failing to reach GitHub.
+    private static func unusable<T>(_ body: () throws -> T) rethrows -> T {
+        do { return try body() }
+        catch let error as GitHubReviewPublicationError {
+            if case .invalid(let message) = error { throw GitHubReviewPublicationError.unusableArtifact(message) }
+            throw error
+        } catch { throw GitHubReviewPublicationError.unusableArtifact(error.localizedDescription) }
+    }
+
+    private static func unusable<T>(_ body: () async throws -> T) async rethrows -> T {
+        do { return try await body() }
+        catch let error as GitHubReviewPublicationError {
+            if case .invalid(let message) = error { throw GitHubReviewPublicationError.unusableArtifact(message) }
+            throw error
+        } catch { throw GitHubReviewPublicationError.unusableArtifact(error.localizedDescription) }
     }
 
     func prepare(task: AgentTask, filePath: String) async throws -> GitHubReviewThreadProposal {
         guard !Self.hasDispatched(task: task, filePath: filePath) else { throw GitHubReviewPublicationError.alreadyDispatched }
-        let (data, payload) = try readPayload(task: task, filePath: filePath)
-        try await validateTarget(task: task, payload: payload, filePath: filePath)
+        guard !Self.hasDismissed(task: task, filePath: filePath) else {
+            throw GitHubReviewPublicationError.unusableArtifact("This thread proposal was dismissed after validation failed. Save a corrected proposal under a new versioned filename.")
+        }
+        let (data, payload) = try Self.unusable { try readPayload(task: task, filePath: filePath) }
+        try await Self.unusable { try await validateTarget(task: task, payload: payload, filePath: filePath) }
         var snapshots: [GitHubReviewThreadSnapshot] = []
         for action in payload.threads {
             let snapshot = try await loadThread(task: task, id: action.threadId)
-            try validate(snapshot, action: action, payload: payload)
+            try Self.unusable { try validate(snapshot, action: action, payload: payload) }
             snapshots.append(snapshot)
         }
         let requestID = GitHubReviewThreadRequirement.request(task: task)?.id

@@ -16,16 +16,26 @@ final class TaskGitHubReviewPublicationState {
         preparationError = nil
         Task { @MainActor in
             defer { isPreparing = false }
-            do {
-                if let path = GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) {
+            // A thread proposal that cannot be used is dismissed by the service, so
+            // it must not stop a review proposal from being offered.
+            var threadError: Error?
+            if GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) != nil {
+                do {
                     threadProposal = try await GitHubReviewThreadPublicationService(modelContext: modelContext)
-                        .prepare(task: task, filePath: path)
+                        .prepareFirstAvailable(task: task, filePaths: filePaths)
                     return
+                } catch {
+                    threadError = error
                 }
+            }
+            do {
                 proposal = try await GitHubReviewPublicationService(modelContext: modelContext)
                     .prepareFirstAvailable(task: task, filePaths: filePaths)
             } catch {
-                preparationError = error.localizedDescription
+                // With no review proposal to fall back on, the thread failure is the
+                // useful one to show.
+                let hasReview = filePaths.contains(where: GitHubReviewArtifactPolicy.isReviewFile)
+                preparationError = (hasReview ? error : (threadError ?? error)).localizedDescription
             }
         }
     }

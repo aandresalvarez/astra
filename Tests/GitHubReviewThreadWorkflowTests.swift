@@ -17,7 +17,7 @@ struct GitHubReviewThreadWorkflowTests {
         var comments: [[String: Any]] = [["id": "C1", "body": "Please fix this", "url": "https://github.com/example/repo/pull/12#discussion_r1", "author": ["login": "reviewer"]]]
         var replies = 0; var resolutions = 0; var reads = 0
         var failResolution = false; var loseReplyResponse = false; var wrongReceipt = false
-        var paginate = false; var replacement: (URL, Data)?
+        var paginate = false; var replacement: (URL, Data)?; var failReads = false
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             #expect(arguments.contains("github.com"))
@@ -42,6 +42,7 @@ struct GitHubReviewThreadWorkflowTests {
                 return try json(["data": ["change": result]])
             }
             reads += 1
+            if failReads { throw NSError(domain: "offline", code: 1) }
             #expect(arguments.contains { $0.hasPrefix("query=query(") })
             if let (url, data) = replacement { replacement = nil; try data.write(to: url) }
             let after = arguments.contains { $0.hasPrefix("after=") }
@@ -58,7 +59,9 @@ struct GitHubReviewThreadWorkflowTests {
             String(data: try JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
         }
         func counts() -> (Int, Int, Int) { (replies, resolutions, reads) }
+        func setReadFailure(_ on: Bool) { failReads = on }
         func changeHead() { head = String(repeating: "b", count: 40) }
+        func changeHead(to value: String) { head = value }
         func changeTarget() { target = "https://github.com/example/other/pull/12" }
         func editComment() { comments[0]["body"] = "Changed review" }
         func setFailure(resolve: Bool = false, lostReply: Bool = false, wrong: Bool = false) {
@@ -323,5 +326,89 @@ struct GitHubReviewThreadWorkflowTests {
             f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: phrase))
             #expect(!GitHubReviewThreadRequirement.isPending(task: f.task), "\(phrase)")
         }
+    }
+
+    // MARK: - A proposal that can no longer be used must not block the next one
+
+    private func dismissals(_ task: AgentTask) -> [String] {
+        task.events.filter { $0.type == GitHubReviewThreadEvents.dismissed }.map(\.payload)
+    }
+
+    @Test("a stale thread proposal is dismissed and no longer offered, so it cannot shadow a review")
+    func staleProposalIsDismissedAndStopsShadowingReviews() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI(); await cli.changeHead()
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+        let review = f.file.deletingLastPathComponent().appendingPathComponent("pr12_review.json")
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+
+        #expect(dismissals(f.task).count == 1)
+        #expect(GitHubReviewThreadPublicationService.pendingCandidatePath(task: f.task, filePaths: [f.file.path]) == nil)
+        // The dock now falls through to the review proposal instead of the dead thread file.
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(task: f.task, filePaths: [f.file.path, review.path]) == review.path)
+    }
+
+    @Test("a dismissed proposal stays dismissed, and a corrected one under a new name is accepted")
+    func dismissedStaysDismissedAndANewNameWorks() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI(); await cli.changeHead()
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+
+        // Asking again does not re-validate the dismissed file or add a second record.
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+        #expect(dismissals(f.task).count == 1)
+
+        let corrected = f.file.deletingLastPathComponent().appendingPathComponent("pr12_threads_2.json")
+        try payload().write(to: corrected)
+        await cli.changeHead(to: Self.head)
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path, corrected.path])
+        #expect(proposal.filePath == corrected.path)
+    }
+
+    @Test("a good proposal after a stale one is returned, and the stale one is dismissed")
+    func goodProposalAfterAStaleOne() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let folder = f.file.deletingLastPathComponent()
+        let stale = folder.appendingPathComponent("pr12_threads_1.json")
+        try payload(last: "C-old").write(to: stale)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [stale.path, f.file.path])
+
+        #expect(proposal.filePath == f.file.path)
+        #expect(dismissals(f.task).count == 1)
+        #expect(GitHubReviewThreadPublicationService.pendingCandidatePath(task: f.task, filePaths: [stale.path, f.file.path]) == f.file.path)
+    }
+
+    @Test("a GitHub outage does not dismiss a proposal that may be perfectly good")
+    func transientFailureDoesNotDismiss() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI(); await cli.setReadFailure(true)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+
+        await #expect(throws: Error.self) {
+            _ = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+
+        #expect(dismissals(f.task).isEmpty)
+        #expect(GitHubReviewThreadPublicationService.pendingCandidatePath(task: f.task, filePaths: [f.file.path]) == f.file.path)
+
+        await cli.setReadFailure(false)
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        #expect(proposal.filePath == f.file.path)
+    }
+
+    @Test("dismissal records are durable evidence and are quarantined when imported")
+    func dismissalEvidenceIsDurable() {
+        #expect(WorkspaceConfigManager.isTaskRecoveryEvent(GitHubReviewThreadEvents.dismissed))
+        #expect(WorkspaceConfigManager.importedRecoveryEventType(GitHubReviewThreadEvents.dismissed, trust: .quarantine).hasPrefix("imported."))
     }
 }
