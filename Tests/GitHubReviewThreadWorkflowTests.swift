@@ -308,7 +308,11 @@ struct GitHubReviewThreadWorkflowTests {
         "Reply to the review threads on PR 12 but do not resolve them",
         "Reply to the PR #12 review comments",
         "Reply to the GitHub PR comments",
-        "Resolve the pull request's review comments"
+        "Resolve the pull request's review comments",
+        "Reply to review comments on GitHub PR #12",
+        "Reply to the comments on GitHub",
+        "Reply to the GitHub review thread with the answer from Slack",
+        "Resolve the threads on PR 12 using the Jira ticket notes"
     ])
     func realRequestsAreDetected(goal: String) {
         #expect(request(for: goal) != nil, "\(goal)")
@@ -356,7 +360,8 @@ struct GitHubReviewThreadWorkflowTests {
 
     @Test("the user can drop a request in plain words")
     func plainWordsDropARequest() throws {
-        for phrase in ["cancel it", "skip it", "forget that", "drop them", "never mind"] {
+        for phrase in ["cancel it", "skip it", "forget that", "drop them", "never mind",
+                       "Don't reply to them", "Stop replying to those", "do not post them", "never reply to it"] {
             let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
             #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
             f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: phrase))

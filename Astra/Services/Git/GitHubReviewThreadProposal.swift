@@ -130,7 +130,7 @@ enum GitHubReviewThreadRequirement {
                     : nil
             } else if current != nil,
                       message.payload.range(
-                        of: #"(?i)\b(?:cancel|stop|skip|drop|forget|do not send|don't send)\s+(?:it|that|them|this)\b|\bnever\s?mind\b"#,
+                        of: #"(?i)\b(?:cancel|stop|skip|drop|forget|do not send|don't send)\s+(?:it|that|them|this)\b|\bnever\s?mind\b|\b(?:do not|don't|dont|never|stop|cancel|skip)\s+(?:replying|reply|resolving|resolve|posting|post|sending|send)\b(?:\s+to)?\s+(?:it|that|them|this|those|these)\b"#,
                         options: .regularExpression
                       ) != nil {
                 current = nil
@@ -187,7 +187,7 @@ enum GitHubReviewThreadRequirement {
     private static let threadNoun = #"(?:threads?|conversations?)\b"#
     private static let bareNoun = #"(?:(?:(?:review|reviewer|inline)\s+)?comm?ents?|reviews?)\b"#
     private static let pullRequestTail =
-        #"(?:\s+\S+){0,3}?\s+(?:on|in|for|of|from|to)\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:https?://github\.com/\S+/pull/\d+|PR\s*#?\d+|pull request\b|PR\b)"#
+        #"(?:\s+\S+){0,3}?\s+(?:on|in|for|of|from|to)\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:https?://github\.com/\S+/pull/\d+|(?:GitHub\s+)?PR\s*#?\d+|(?:GitHub\s+)?pull request\b|(?:GitHub\s+)?PR\b|GitHub\b)"#
 
     /// The pull request named before the noun: "the PR #12 review comments".
     private static let pullRequestHead =
@@ -218,7 +218,10 @@ enum GitHubReviewThreadRequirement {
         let boundaries = try? NSRegularExpression(pattern: boundary)
         // Thread work that names another service ("Reply to the Slack thread") is not
         // GitHub work, whatever else the task mentions, so it never renews a request.
-        let otherService = #"(?i)\b(?:slack|jira|e-?mail|teams|discord|linear|notion|confluence|asana|trello|zendesk|intercom|whatsapp|sms|chat)\b"#
+        let services = "slack|jira|e-?mail|teams|discord|linear|notion|confluence|asana|trello|zendesk|intercom|whatsapp|sms|chat"
+        let otherService = #"(?i)\b(?:"# + services + #")\b"#
+        // "with the answer from Slack" names where the content comes from, not where it goes.
+        let serviceAsSource = #"(?i)\b(?:from|using|based on|according to)\b(?:\s+(?:the|a|an|our|my))?\s+(?:"# + services + #")\b"#
         let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool, elsewhere: Bool, continuation: Bool)? in
             guard let span = Range(candidate.range, in: text) else { return nil }
             let head = String(text[..<span.lowerBound])
@@ -238,7 +241,8 @@ enum GitHubReviewThreadRequirement {
                 || operation.range(of: #"(?i)^\s*(?:resolve|reslolve|resolving|mark)\b"#, options: .regularExpression) != nil
             return (named: clause.range(of: context, options: .regularExpression) != nil,
                     negated: phrase.range(of: negation, options: .regularExpression) != nil,
-                    elsewhere: clause.range(of: otherService, options: .regularExpression) != nil,
+                    elsewhere: clause.replacingOccurrences(of: serviceAsSource, with: "", options: .regularExpression)
+                        .range(of: otherService, options: .regularExpression) != nil,
                     continuation: continuation)
         }
         guard let operation = operations.last(where: { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }) else { return nil }
