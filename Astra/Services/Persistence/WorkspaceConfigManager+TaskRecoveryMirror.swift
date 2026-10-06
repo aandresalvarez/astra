@@ -16,6 +16,19 @@ extension WorkspaceConfigManager {
         ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "github.review-threads."].contains { type.hasPrefix($0) }
     }
 
+    /// The user message a GitHub thread record says it answers. The records are kept
+    /// whole, so the message that made the request has to be kept with them, or a
+    /// recovered task no longer owes the rest of a partly sent batch.
+    static func threadRequestEventIDs(_ task: AgentTask) -> Set<UUID> {
+        Set(task.events.compactMap { event -> UUID? in
+            guard event.type.hasPrefix("github.review-threads."),
+                  let data = event.payload.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = object["requestID"] as? String else { return nil }
+            return UUID(uuidString: id)
+        })
+    }
+
     /// Recovery authority is explicit and independent of schedule enablement.
     /// File imports remain quarantined; missing-store recovery opts in locally.
     public enum TaskRecoveryImportTrustPolicy {

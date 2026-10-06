@@ -1878,11 +1878,12 @@ public enum WorkspaceConfigManager {
             $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
         }
             .suffix(MirrorLimits.maxEventsPerTask).map(\.id))
+        let retainedSourceIDs = recovery.sourceEventIDs.union(threadRequestEventIDs(task))
         let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
-            || recovery.sourceEventIDs.contains($0.id) || isTaskRecoveryEvent($0.type)) }
+            || retainedSourceIDs.contains($0.id) || isTaskRecoveryEvent($0.type)) }
             .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         let eventConfigs = mirroredEvents.compactMap { event -> EventConfig? in
-            guard let payload = isTaskRecoveryEvent(event.type) || recovery.sourceEventIDs.contains(event.id)
+            guard let payload = isTaskRecoveryEvent(event.type) || retainedSourceIDs.contains(event.id)
                 ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters) else { return nil }
             return EventConfig(
                 id: event.id.uuidString,

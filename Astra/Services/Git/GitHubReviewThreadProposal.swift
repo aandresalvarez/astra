@@ -117,11 +117,9 @@ enum GitHubReviewThreadRequirement {
         let messages = userMessages.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         for message in messages {
             if let publish = intent(message.payload, allowPronoun: current != nil) {
-                let namesTarget = message.payload.range(of: "github.com/", options: .caseInsensitive) != nil
-                    || GitHubReviewTargetResolver.shorthandNumber(in: message.payload) != nil
                 current = publish
                     ? Request(id: message.id.uuidString, text: message.payload,
-                              targetSource: namesTarget ? nil : current?.targetText)
+                              targetSource: carriedTarget(message.payload, prior: current))
                     : nil
             } else if current != nil,
                       message.payload.range(
@@ -132,6 +130,17 @@ enum GitHubReviewThreadRequirement {
             }
         }
         return current
+    }
+
+    /// The text that names the pull request for a renewed request. A message with
+    /// its own full URL names it; one with no target keeps the earlier one; one
+    /// with only a PR number keeps the earlier owner and repository.
+    private static func carriedTarget(_ payload: String, prior: Request?) -> String? {
+        if payload.range(of: "github.com/", options: .caseInsensitive) != nil { return nil }
+        guard let prior else { return nil }
+        guard GitHubReviewTargetResolver.shorthandNumber(in: payload) != nil else { return prior.targetText }
+        guard let repository = GitHubReviewTargetResolver.repository(in: prior.targetText) else { return nil }
+        return "https://github.com/\(repository) " + payload
     }
 
     static func isPending(task: AgentTask) -> Bool {

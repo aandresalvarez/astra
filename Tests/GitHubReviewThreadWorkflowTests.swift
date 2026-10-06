@@ -719,4 +719,61 @@ struct GitHubReviewThreadWorkflowTests {
         // Every operation is confirmed, only the final batch receipt was never written.
         #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
     }
+
+    // MARK: - A continuation that gives only a PR number keeps the repository
+
+    @Test("a follow-up naming only a PR number keeps the repository of the earlier URL")
+    func shorthandFollowUpKeepsTheRepository() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Look at the open review feedback"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "Reply to the threads on https://github.com/example/repo/pull/12"))
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "resolve those on PR 12"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        #expect(request.text == "resolve those on PR 12")
+
+        // No workspace origin: owner and repository must still come from the earlier URL.
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI(), originURL: { _ in nil })
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        #expect(proposal.filePath == f.file.path)
+
+        // A different number is a different PR in that repository, so this file no longer fits.
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "resolve those on PR 13"))
+        let other = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI(), originURL: { _ in nil })
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await other.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+    }
+
+    // MARK: - The recovery mirror keeps what decides the request
+
+    private func mirroredEventIDs(_ f: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, run: TaskRun, file: URL)) throws -> Set<String> {
+        let workspace = try #require(f.task.workspace)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: f.context))
+        let mirrored = try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString })
+        return Set(mirrored.events.compactMap(\.id))
+    }
+
+    private func addNoise(_ f: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, run: TaskRun, file: URL), count: Int) {
+        for index in 0..<count {
+            f.context.insert(TaskEvent(task: f.task, eventType: TaskEventTypes.System.info, payload: "noise \(index)"))
+        }
+    }
+
+    @Test("the message that started the request survives the bounded event history once thread records point at it")
+    func mirrorKeepsTheRequestMessage() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Look at the open review feedback"
+        let request = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                payload: "Resolve the threads on https://github.com/example/repo/pull/12")
+        f.context.insert(request)
+        let record = GitHubReviewThreadReceipt(proposalID: "p1", filePath: f.file.path, requestID: request.id.uuidString,
+                                               pullRequestURL: "https://github.com/example/repo/pull/12", actions: [])
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.dispatched, payload: record))
+        addNoise(f, count: WorkspaceConfigManager.MirrorLimits.maxEventsPerTask + 5)
+
+        #expect(try mirroredEventIDs(f).contains(request.id.uuidString))
+    }
 }
