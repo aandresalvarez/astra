@@ -40,9 +40,13 @@ enum AgentRuntimeBudgetPolicy {
         modelContext: ModelContext,
         phase: RunPhase,
         runtime: AgentRuntimeID,
-        budgetEnforcementMode: BudgetEnforcementMode
+        budgetEnforcementMode: BudgetEnforcementMode,
+        alreadyUsedTokens: Int = 0
     ) -> Bool {
-        let tokenBudget = AgentRuntimeProcessRunner.effectiveTokenBudget(for: task)
+        // `alreadyUsedTokens`: spent by an earlier attempt of the same run, so the prompt is judged against what is left.
+        let tokenBudget = AgentRuntimeProcessRunner.remainingTokenBudget(
+            AgentRuntimeProcessRunner.effectiveTokenBudget(for: task), alreadyUsed: alreadyUsedTokens
+        )
 
         let promptTokens = AgentProcessMonitor.estimatedTokenCount(for: prompt)
         let launchOverhead = AgentRuntimeProcessRunner.launchOverheadTokens(for: runtime)

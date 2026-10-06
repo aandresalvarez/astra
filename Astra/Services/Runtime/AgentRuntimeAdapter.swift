@@ -754,6 +754,7 @@ struct AgentRuntimePostProcessContext {
     let runStartedAt: Date
     let modelContext: ModelContext
     let recordingState: AgentEventRecordingState
+    let recordingMode: AgentRuntimeRecordingMode
     let onEvent: (ParsedEvent) -> Void
 }
 struct AgentRuntimeProcessLaunchPlan: Equatable {
@@ -1835,7 +1836,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.copilot,
         defaultModel: CopilotCLIRuntime.defaultModel,
         defaultModels: CopilotCLIRuntime.defaultModels,
-        supportsAstraRunProtocol: true,
+        supportsAstraRunProtocol: true, supportsNativeContinuation: true, reportsCumulativeSessionUsage: true,
         supportsMCPServers: true,
         supportsReasoningEffort: true
     )
@@ -2039,7 +2040,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
-            reasoningEffort: reasoningEffort,
+            reasoningEffort: reasoningEffort, resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
@@ -2140,7 +2141,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     @MainActor
     func recordWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
-        mode _: AgentRuntimeRecordingMode,
+        mode: AgentRuntimeRecordingMode,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -2151,7 +2152,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             agentEvent,
             to: task,
             run: run,
-            modelContext: modelContext,
+            modelContext: modelContext, recordingMode: mode,
             recordingState: recordingState
         )
     }
@@ -2251,47 +2252,6 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                     ?? AgentUtilityRunResult(exitCode: -1, output: "", error: "Process timed out.")
             }
         )
-    }
-
-    @MainActor
-    func recordPostProcessEvents(context: AgentRuntimePostProcessContext) {
-        guard context.run.tokensUsed == 0 else {
-            return
-        }
-        let homes = [context.homeDirectory, CopilotCLIRuntime.defaultHome()]
-        var seenHomes: Set<String> = []
-        var metrics: CopilotSessionMetrics?
-        for home in homes {
-            let trimmed = home.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seenHomes.insert(trimmed).inserted else { continue }
-            metrics = CopilotSessionMetricsReader.finalMetrics(
-                copilotHome: trimmed,
-                taskID: context.task.id,
-                runStartedAt: context.runStartedAt
-            )
-            if metrics != nil { break }
-        }
-        guard let metrics else { return }
-
-        AgentEventRecorder.recordCopilotEvent(
-            metrics.event,
-            to: context.task,
-            run: context.run,
-            modelContext: context.modelContext,
-            recordingState: context.recordingState
-        )
-        if let parsed = AgentEventRecorder.parsedEvent(from: metrics.event) {
-            context.onEvent(parsed)
-        }
-        AppLogger.audit(.taskStats, category: "Worker", taskID: context.task.id, fields: [
-            "source": "copilot_session_state",
-            "session_id_prefix": String(metrics.sessionID.prefix(8)),
-            "tokens_total": String(metrics.totalTokens),
-            "tokens_input": String(metrics.inputTokens),
-            "tokens_output": String(metrics.outputTokens),
-            "turns": metrics.turns.map(String.init) ?? "unknown",
-            "duration_ms": metrics.durationMs.map(String.init) ?? "unknown"
-        ])
     }
 
     @MainActor
@@ -2429,7 +2389,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.antigravity,
         defaultModel: AntigravityCLIRuntime.defaultModelName(),
         defaultModels: AntigravityCLIRuntime.availableModelNames(),
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true, supportsNativeContinuation: true, reportsCumulativeSessionUsage: true
     )
     let readinessCheckID = "antigravity-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .antigravityCLI, launchOverheadTokens: 0)
@@ -2607,10 +2567,17 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         // Antigravity is the only adapter with a non-nil `sharedLaunchStateKey`, so this is the
         // only `makeProcessLaunchPlan` that can run after an unbounded await on
         // `AgentRuntimeSharedStateGate` (queued behind another task sharing the same provider
-        // home directory). Reading the live `context.task.model` here (rather than
-        // `context.taskSnapshot.model`, captured before that wait) ensures a model edit made
-        // while this launch was queued is still honored when writing the shared settings file.
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        // home directory). A fresh launch reads the live `context.task.model` (rather than
+        // `context.taskSnapshot.model`, captured before that wait) so a model edit made while
+        // queued is still honored when writing the shared settings file. A native resume keeps the
+        // model its launch signature approved: the continuation decision was made before the wait,
+        // so the old conversation never continues under a model the signature did not record; the
+        // edit applies from the next turn, where the signature change falls back to a fresh launch.
+        let launchModel = context.nativeContinuationSessionID == nil
+            ? context.task.model
+            : context.permissionManifest?.model ?? context.taskSnapshot.model
+        let model = AgentRuntimeProcessRunner.model(launchModel, for: id)
+        if context.nativeContinuationSessionID == nil { ProviderLaunchSignatureService.recordLaunchedModel(launchModel, task: context.task, runID: context.runID) }
         let providerModel = AntigravityCLIRuntime.resolvedModelName(model, settingsURL: modelSettingsURL)
         let modelApplied = FileManager.default.isExecutableFile(atPath: executable)
             ? AntigravityCLIRuntime.applySelectedModel(providerModel, settingsURL: modelSettingsURL)
@@ -2644,7 +2611,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
                 || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
-            diagnosticLogPath: diagnosticLogPath,
+            diagnosticLogPath: diagnosticLogPath, resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()
         )
         var commandPlannedFields = [
@@ -2729,7 +2696,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     @MainActor
     func recordWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
-        mode _: AgentRuntimeRecordingMode,
+        mode: AgentRuntimeRecordingMode,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -2740,7 +2707,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             agentEvent,
             to: task,
             run: run,
-            modelContext: modelContext,
+            modelContext: modelContext, recordingMode: mode,
             recordingState: recordingState
         )
     }

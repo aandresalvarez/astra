@@ -352,6 +352,7 @@ enum CopilotLaunchDiagnostics {
             "phase": phase.rawValue,
             "model": model,
             "parses_json_lines": String(plan.parsesJSONLines),
+            "uses_native_continuation": String(plan.arguments.contains { $0.hasPrefix("--resume=") }),
             "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),
             "supports_streaming_flag": String(capabilities.supportsStreamingFlag),
             "supports_no_ask_user": String(capabilities.supportsNoAskUser),

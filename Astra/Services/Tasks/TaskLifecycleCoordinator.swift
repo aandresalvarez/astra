@@ -167,14 +167,23 @@ final class TaskLifecycleCoordinator {
             ?? Self.latestRetryableFollowUpMessage(for: task, excludingMessageEventIDs: durableMessageEventIDs)
                 .map { RetryLaunchSource.userTurn($0) }
         let retryFollowUpMessage = retrySource?.userTurnMessage
-        let retryMode = retryFollowUpMessage == nil ? "initial_task" : "continuation"
+        // A first run the user (or an ASTRA restart) cut short still has a
+        // provider session. Retry continues it rather than relaunching the
+        // initial prompt into a brand-new session.
+        let interruptedResumeMessage = retryFollowUpMessage == nil
+            ? interruptedRunResumeMessage(for: task, retryTurn: retryTurn)
+            : nil
+        let launchMessage = retryFollowUpMessage ?? interruptedResumeMessage
+        let retryMode = interruptedResumeMessage != nil
+            ? "interrupted_resume"
+            : (launchMessage == nil ? "initial_task" : "continuation")
         AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
             "retry_mode": retryMode
         ])
         let snapshot = ExecutionMutationSnapshot(task)
-        let continuation = retryFollowUpMessage != nil
+        let continuation = launchMessage != nil
         let result = ExecutionRequestSubmissionService.submitRetry(
-            message: retryFollowUpMessage,
+            message: launchMessage,
             continuation: continuation,
             for: task,
             into: modelContext,
@@ -187,7 +196,9 @@ final class TaskLifecycleCoordinator {
                 modelContext.insert(TaskEvent(
                     task: task,
                     eventType: TaskEventTypes.Task.retried,
-                    payload: continuation ? "Latest follow-up re-queued for retry." : "Task re-queued for retry."
+                    payload: interruptedResumeMessage != nil
+                        ? "Interrupted run re-queued — resuming the previous session."
+                        : (continuation ? "Latest follow-up re-queued for retry." : "Task re-queued for retry.")
                 ))
             },
             rollback: { snapshot.restore(task, in: modelContext) }
@@ -198,6 +209,43 @@ final class TaskLifecycleCoordinator {
             task: task,
             modelContext: modelContext
         )
+    }
+
+    /// The continuation message Retry sends when the latest run was cut short
+    /// (cancelled by the user, queue stop, or ASTRA restart) and its provider
+    /// session can be picked up again; nil keeps Retry a from-scratch relaunch.
+    ///
+    /// Deliberately narrow: failed runs keep their own Resume action and a
+    /// from-scratch Retry, an approved-plan run must relaunch through the plan
+    /// path, and a runtime without native resume would only get a thinner
+    /// prompt than the initial one. Whether the session is actually resumable
+    /// is the worker's call; if not, it falls back to a history-carrying prompt.
+    private func interruptedRunResumeMessage(for task: AgentTask, retryTurn: TaskTurnRequest?) -> String? {
+        guard task.hasProviderSession,
+              AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: task.resolvedRuntimeID),
+              let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
+              // A session belongs to the runtime that opened it: after a runtime switch the worker
+              // drops it, so Retry must take the from-scratch path with its reset instead.
+              latestRun.runtimeID == task.resolvedRuntimeID.rawValue,
+              let stopReason = latestRun.typedStopReason,
+              [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason),
+              // A from-scratch run cut off before its init frame never learned a session, while
+              // task.sessionId can still name an older run's: only a run that owns it can be resumed.
+              let runSession = latestRun.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !runSession.isEmpty,
+              runSession == task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        // Scheduled, chained and approved-plan launches keep their own relaunch path.
+        guard task.originScheduleID == nil, task.chainedFromID == nil else { return nil }
+        if let retryTurn {
+            guard retryTurn.kind == .initial || retryTurn.kind == .retry else { return nil }
+            if let sourceEvent = task.events.first(where: { $0.id == retryTurn.sourceEventID }),
+               let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent),
+               source.launchMode != .initial || source.planSnapshot != nil
+                || source.scheduleID != nil || source.sourceTaskID != nil {
+                return nil
+            }
+        }
+        return Self.resumeContinuationMessage(for: task)
     }
 
     /// The durable turn Retry may resurrect: the task's newest request, only

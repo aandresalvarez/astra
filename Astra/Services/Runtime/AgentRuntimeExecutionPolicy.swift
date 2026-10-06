@@ -28,6 +28,16 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// agrees with what the launch actually attaches. The static profile table
     /// is a guess about the installed Copilot binary; this is the answer.
     var runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
+    /// Provider turns an earlier attempt of the same run already spent. Process
+    /// local: a re-run's monitor starts its turn counter at zero, so the task's
+    /// turn ceiling is reduced by this much to keep it a ceiling on the whole run.
+    var providerTurnsAlreadyUsed = 0
+    /// Provider tokens an earlier attempt of the same run already spent, taken off the
+    /// token budget the re-run's monitor enforces for the same reason.
+    var providerTokensAlreadyUsed = 0
+    /// Usage earlier runs of the same provider session already recorded in its current accounting
+    /// epoch, which the resumed launch's stream reports again as part of the session's cumulative total.
+    var providerSessionUsageBaseline = ProviderSessionUsageBaseline.zero
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
