@@ -38,7 +38,9 @@ public enum GitHubReviewThreadReadOperation {
     }
 
     public static func isRepository(_ value: String) -> Bool {
-        value.range(of: #"^[A-Za-z0-9-]+/[A-Za-z0-9_][A-Za-z0-9_.-]*$"#, options: .regularExpression) != nil
+        // GitHub allows dot-leading names such as owner/.github; only "." and ".." are not names.
+        value.range(of: #"^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+            && !value.hasSuffix("/.") && !value.hasSuffix("/..")
             && value.utf8.count <= 200
     }
 

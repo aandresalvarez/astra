@@ -139,11 +139,11 @@ enum GitHubReviewThreadRequirement {
     /// patterns therefore err toward missing.
     ///
     /// - A thread noun ("threads", "conversations", "review comments") is enough.
-    /// - A bare "comments" or "reviews" counts only when a pull request follows
+    /// - Any "comments", "review comments" or "reviews" counts only when a pull request follows
     ///   it ("comments on PR 12"), or when a request is already active and the
     ///   message is a follow-up ("do not resolve the comments").
-    private static let threadNoun = #"(?:threads?|conversations?|(?:review|reviewer|inline)\s+comm?ents?)\b"#
-    private static let bareNoun = #"(?:comm?ents?|reviews?)\b"#
+    private static let threadNoun = #"(?:threads?|conversations?)\b"#
+    private static let bareNoun = #"(?:(?:(?:review|reviewer|inline)\s+)?comm?ents?|reviews?)\b"#
     private static let pullRequestTail =
         #"(?:\s+\S+){0,3}?\s+(?:on|in|for|of|from|to)\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:https?://github\.com/\S+/pull/\d+|PR\s*#?\d+|pull request\b|PR\b)"#
 

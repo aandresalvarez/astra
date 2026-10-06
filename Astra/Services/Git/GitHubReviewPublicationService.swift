@@ -172,7 +172,13 @@ enum GitHubReviewPublicationRequirement {
     }
 
     static func isPending(task: AgentTask) -> Bool {
-        if GitHubReviewThreadRequirement.isPending(task: task) { return true }
+        if let threadRequest = GitHubReviewThreadRequirement.request(task: task) {
+            if GitHubReviewThreadRequirement.isPending(task: task) { return true }
+            // "Post a reply to every review thread" also reads as a request to post
+            // a review. When the same text asked for threads, their receipt settles
+            // it; a new review needs its own, separate request.
+            if postingRequest(task: task)?.text == threadRequest.text { return false }
+        }
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {

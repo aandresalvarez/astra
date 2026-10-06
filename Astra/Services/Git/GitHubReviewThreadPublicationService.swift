@@ -298,16 +298,29 @@ final class GitHubReviewThreadPublicationService {
         let data: ResponseData?
         let errors: [GraphQLError]?
     }
-    private struct GraphQLError: Decodable { let message: String }
+    private struct GraphQLError: Decodable { let message: String; let type: String? }
+    private static let missingThreadMessage = "A thread in this proposal no longer exists or is not accessible. Read the pull request again and prepare a new proposal."
+    /// GitHub answers an unknown or inaccessible node id with this text. A transport,
+    /// rate-limit or sign-in failure does not, so those stay retryable.
+    private static func isMissingNode(_ text: String) -> Bool { text.contains("Could not resolve to a node") }
 
     private func loadThread(task: AgentTask, id: String) async throws -> GitHubReviewThreadSnapshot {
         var cursor: String?; var seen: Set<String> = []; var snapshot: GitHubReviewThreadSnapshot?
         for _ in 0..<50 {
             var input = ["review-thread", "--id", id]
             if let cursor { input += ["--after", cursor] }
-            let output = try await cli.run(at: task.executionRootPath ?? task.workspace?.primaryPath ?? "",
+            let output: String
+            do {
+                output = try await cli.run(at: task.executionRootPath ?? task.workspace?.primaryPath ?? "",
                                           arguments: GitHubReviewThreadReadOperation.arguments(for: input), label: "Read GitHub review thread")
+            } catch GitHubCLIError.commandFailed(let detail) where Self.isMissingNode(detail) {
+                throw GitHubReviewPublicationError.unusableArtifact(Self.missingThreadMessage)
+            }
             let response = try JSONDecoder().decode(ThreadResponse.self, from: Data(output.utf8))
+            if response.errors?.contains(where: { $0.type == "NOT_FOUND" || Self.isMissingNode($0.message) }) == true
+                || (response.errors?.isEmpty ?? true) && response.data?.node == nil {
+                throw GitHubReviewPublicationError.unusableArtifact(Self.missingThreadMessage)
+            }
             guard response.errors?.isEmpty ?? true, let node = response.data?.node else {
                 throw GitHubReviewPublicationError.invalid("GitHub did not return the requested review thread.")
             }

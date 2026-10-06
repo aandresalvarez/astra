@@ -25,6 +25,13 @@ final class TaskGitHubReviewPublicationState {
                         .prepareFirstAvailable(task: task, filePaths: filePaths)
                     return
                 } catch {
+                    // A file that is still a candidate failed for a transient reason (an
+                    // outage, a rate limit). Offering an unrelated review in its place
+                    // would swap one GitHub change for another, so show the failure.
+                    if GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) != nil {
+                        preparationError = error.localizedDescription
+                        return
+                    }
                     threadError = error
                 }
             }

@@ -17,7 +17,7 @@ struct GitHubReviewThreadWorkflowTests {
         var comments: [[String: Any]] = [["id": "C1", "body": "Please fix this", "url": "https://github.com/example/repo/pull/12#discussion_r1", "author": ["login": "reviewer"]]]
         var replies = 0; var resolutions = 0; var reads = 0
         var failResolution = false; var loseReplyResponse = false; var wrongReceipt = false
-        var paginate = false; var replacement: (URL, Data)?; var failReads = false
+        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             #expect(arguments.contains("github.com"))
@@ -43,6 +43,9 @@ struct GitHubReviewThreadWorkflowTests {
             }
             reads += 1
             if failReads { throw NSError(domain: "offline", code: 1) }
+            if let id = arguments.first(where: { $0.hasPrefix("id=") }).map({ String($0.dropFirst(3)) }), missingThreads.contains(id) {
+                throw GitHubCLIError.commandFailed("gh: Could not resolve to a node with the global id of '\(id)'")
+            }
             #expect(arguments.contains { $0.hasPrefix("query=query(") })
             if let (url, data) = replacement { replacement = nil; try data.write(to: url) }
             let after = arguments.contains { $0.hasPrefix("after=") }
@@ -60,6 +63,7 @@ struct GitHubReviewThreadWorkflowTests {
         }
         func counts() -> (Int, Int, Int) { (replies, resolutions, reads) }
         func setReadFailure(_ on: Bool) { failReads = on }
+        func setMissing(_ ids: Set<String>) { missingThreads = ids }
         func changeHead() { head = String(repeating: "b", count: 40) }
         func changeHead(to value: String) { head = value }
         func changeTarget() { target = "https://github.com/example/other/pull/12" }
@@ -298,7 +302,9 @@ struct GitHubReviewThreadWorkflowTests {
         "Reply to the Slack comments about the release and resolve them. Then check the GitHub PR",
         "Open a GitHub PR and mark the issue as resolved",
         "Investigate why the GitHub workflow fails; do not resolve any threads",
-        "Resolve the merge conflicts in my GitHub PR and update the review"
+        "Resolve the merge conflicts in my GitHub PR and update the review",
+        "Review this GitHub PR and reply with your comments here",
+        "Review the pull request and reply with your review comments in this chat"
     ])
     func ordinaryWorkIsNotARequest(goal: String) {
         // A false positive blocks the task from finishing until the user types a
@@ -410,5 +416,55 @@ struct GitHubReviewThreadWorkflowTests {
     func dismissalEvidenceIsDurable() {
         #expect(WorkspaceConfigManager.isTaskRecoveryEvent(GitHubReviewThreadEvents.dismissed))
         #expect(WorkspaceConfigManager.importedRecoveryEventType(GitHubReviewThreadEvents.dismissed, trust: .quarantine).hasPrefix("imported."))
+    }
+
+    // MARK: - Overlap with the generic review-publication request
+
+    @Test("a thread request satisfied by its receipt does not leave the generic review requirement pending")
+    func threadReceiptSatisfiesAnOverlappingReviewRequest() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        // "post ... review" and "reply ... thread" both match this one sentence.
+        f.task.goal = "Post a reply to every review thread on https://github.com/example/repo/pull/12"
+        #expect(GitHubReviewPublicationRequirement.isPending(task: f.task))
+
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: f.task))
+    }
+
+    // MARK: - A thread that no longer exists
+
+    @Test("a proposal for a deleted thread is dismissed so a later one can be reached")
+    func missingThreadIsDismissed() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let folder = f.file.deletingLastPathComponent()
+        let gone = folder.appendingPathComponent("pr12_threads_1.json")
+        let object: [String: Any] = ["pull_request_url": "https://github.com/example/repo/pull/12", "commit_id": Self.head,
+            "threads": [["thread_id": "T9", "expected_last_comment_id": "C1", "reply": "Done", "resolve": true]]]
+        try JSONSerialization.data(withJSONObject: object).write(to: gone)
+        let cli = FakeCLI(); await cli.setMissing(["T9"])
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [gone.path, f.file.path])
+
+        #expect(proposal.filePath == f.file.path)
+        #expect(dismissals(f.task).count == 1)
+        #expect(GitHubReviewThreadPublicationService.hasDismissed(task: f.task, filePath: gone.path))
+    }
+
+    // MARK: - Repository names
+
+    @Test("repository names such as owner/.github are accepted and dot directories are not")
+    func dotPrefixedRepositoryNames() throws {
+        #expect(GitHubReviewThreadReadOperation.isRepository("owner/.github"))
+        #expect(GitHubReviewThreadReadOperation.isRepository("owner/repo.name"))
+        #expect(!GitHubReviewThreadReadOperation.isRepository("owner/."))
+        #expect(!GitHubReviewThreadReadOperation.isRepository("owner/.."))
+        #expect(!GitHubReviewThreadReadOperation.isRepository("owner/repo/extra"))
+        _ = try GitHubReviewThreadReadOperation.arguments(for: ["review-threads", "--repo", "owner/.github", "--pr", "3"])
+        #expect(GitHubReviewThreadArtifactPolicy.target("https://github.com/owner/.github/pull/3")?.repository == "owner/.github")
     }
 }
