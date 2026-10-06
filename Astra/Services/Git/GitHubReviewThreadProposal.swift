@@ -171,31 +171,29 @@ enum GitHubReviewThreadRequirement {
         }
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
-        guard let match = matches.last, let range = Range(match.range, in: text) else { return nil }
-        if !allowPronoun {
-            // GitHub has to be named in the same job as the thread operation, not
-            // merely in the same sentence: "Reply to the Slack thread and inspect
-            // GitHub PR #12" asks nothing of GitHub threads. A job ends at
-            // punctuation or a conjunction. An active request already established
-            // the context for its follow-ups.
-            let boundary = #"(?i)[.!?;,\n]|\b(?:and|but|also|plus)\b"#
-            let context = #"(?i)github\.com/|\bgithub\b|\bPR\b|\bpull request\b"#
-            let boundaries = try? NSRegularExpression(pattern: boundary)
-            let named = matches.contains { candidate in
-                guard let span = Range(candidate.range, in: text) else { return false }
-                let head = String(text[..<span.lowerBound])
-                let headStart = boundaries?.matches(in: head, range: NSRange(head.startIndex..<head.endIndex, in: head))
-                    .last.flatMap { Range($0.range, in: head)?.upperBound } ?? head.startIndex
-                let tail = String(text[span.upperBound...])
-                let tailEnd = tail.range(of: boundary, options: .regularExpression)?.lowerBound ?? tail.endIndex
-                return (head[headStart...] + text[span] + tail[..<tailEnd]).range(of: context, options: .regularExpression) != nil
-            }
-            guard named else { return nil }
+        // Each match is one operation. Its GitHub context and its negation are read
+        // from the same clause around it, so a prohibition on one job never decides
+        // another and a mention of GitHub elsewhere never qualifies it. A job ends at
+        // punctuation or a conjunction ("Reply to the Slack thread and inspect GitHub
+        // PR #12" asks nothing of GitHub threads). An active request already
+        // established the context for its follow-ups.
+        let boundary = #"(?i)[.!?;,\n]|\b(?:and|but|also|plus)\b"#
+        let context = #"(?i)github\.com/|\bgithub\b|\bPR\b|\bpull request\b"#
+        let negation = #"\b(?:do not|don't|dont|never|without|not|no|stop|cancel|skip|abort)\b"#
+        let boundaries = try? NSRegularExpression(pattern: boundary)
+        let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool)? in
+            guard let span = Range(candidate.range, in: text) else { return nil }
+            let head = String(text[..<span.lowerBound])
+            let headStart = boundaries?.matches(in: head, range: NSRange(head.startIndex..<head.endIndex, in: head))
+                .last.flatMap { Range($0.range, in: head)?.upperBound } ?? head.startIndex
+            let tail = String(text[span.upperBound...])
+            let tailEnd = tail.range(of: boundary, options: .regularExpression)?.lowerBound ?? tail.endIndex
+            let lead = head[headStart...].split(whereSeparator: \.isWhitespace).suffix(4).joined(separator: " ")
+            let phrase = (lead + " " + text[span]).lowercased()
+            return (named: (head[headStart...] + text[span] + tail[..<tailEnd]).range(of: context, options: .regularExpression) != nil,
+                    negated: phrase.range(of: negation, options: .regularExpression) != nil)
         }
-        let clause = String(text[..<range.lowerBound].suffix(64))
-            .components(separatedBy: CharacterSet(charactersIn: ".!?;\n")).last ?? ""
-        let lead = clause.split(whereSeparator: \.isWhitespace).suffix(4).joined(separator: " ")
-        let phrase = (lead + " " + text[range]).lowercased()
-        return phrase.range(of: #"\b(?:do not|don't|dont|never|without|not|no|stop|cancel|skip|abort)\b"#, options: .regularExpression) == nil
+        guard let operation = allowPronoun ? operations.last : operations.last(where: \.named) else { return nil }
+        return !operation.negated
     }
 }

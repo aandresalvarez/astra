@@ -59,6 +59,11 @@ final class GitHubReviewThreadPublicationService {
             } catch GitHubReviewPublicationError.unusableArtifact(let reason) {
                 lastUnusable = GitHubReviewPublicationError.unusableArtifact(reason)
                 dismissals.append(.init(filePath: path, reason: reason))
+            } catch {
+                // A transient failure leaves this candidate pending, but what was already
+                // found unusable stays skipped instead of being retried every time.
+                try? persistDismissals(dismissals, task: task)
+                throw error
             }
         }
         try persistDismissals(dismissals, task: task)
