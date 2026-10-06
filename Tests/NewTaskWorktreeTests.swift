@@ -91,7 +91,9 @@ struct NewTaskWorktreeFixture {
     func git(_ arguments: [String], at directory: URL) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
+        // A developer-wide excludes file can hide fixture paths such as
+        // `.claude/`, which would make these repositories unreproducible.
+        process.arguments = ["-c", "core.excludesFile=/dev/null"] + arguments
         process.currentDirectoryURL = directory
         process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         let pipe = Pipe()
@@ -153,7 +155,9 @@ struct NewTaskWorktreeTests {
         #expect(selection.checkoutPath == api.path)
         selection.base = .currentBranch
         #expect(selection.request?.base == .currentBranch)
-        #expect(selection.requestPayload == TaskWorktreeRequestPayload(enabled: true, base: .currentBranch))
+        #expect(selection.requestPayload == TaskWorktreeRequestPayload(
+            enabled: true, base: .currentBranch, repositoryPath: api.path
+        ))
         selection.updateRepositories([app, api], selectedPath: app.path)
         #expect(selection.repositoryPath == app.path)
         #expect(selection.defaultBaseLabel == nil)

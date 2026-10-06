@@ -13,10 +13,17 @@ public enum TaskWorktreeBaseChoice: String, Codable, Sendable, CaseIterable {
 public struct TaskWorktreeRequestPayload: Codable, Equatable, Sendable {
     public let enabled: Bool
     public let base: TaskWorktreeBaseChoice
+    /// Repository the draft explicitly chose. Absent on requests recorded
+    /// before the repository was part of the intent. A nil draft pin means
+    /// "follow the workspace default", so this path is what keeps an explicit
+    /// primary-repository choice from drifting when that default changes.
+    public let repositoryPath: String?
 
-    public init(enabled: Bool, base: TaskWorktreeBaseChoice) {
+    public init(enabled: Bool, base: TaskWorktreeBaseChoice, repositoryPath: String? = nil) {
         self.enabled = enabled
         self.base = base
+        let trimmed = repositoryPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.repositoryPath = trimmed?.isEmpty == false ? trimmed : nil
     }
 }
 

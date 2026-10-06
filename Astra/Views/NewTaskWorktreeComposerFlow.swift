@@ -30,10 +30,19 @@ enum NewTaskWorktreeComposerFlow {
     }
 
     /// Keeps a brand-new draft without a worktree on its workspace's default,
-    /// so planning reads the checkout the task will run in.
+    /// so planning reads the checkout the task will run in. An explicit pin or
+    /// a recorded repository is left alone.
     static func followWorkspaceDefault(_ draft: AgentTask) {
         guard let workspace = draft.workspace,
-              case .none = TaskWorktreeBinding.state(of: draft) else { return }
+              case .none = TaskWorktreeBinding.state(of: draft),
+              draft.executionRootPath?.isEmpty != false else { return }
+        if let request = TaskWorktreeService.latestRequest(for: draft),
+           request.enabled,
+           let repository = request.repositoryPath,
+           !repository.isEmpty {
+            TaskCodeLocationPin.set(repository, workspace: workspace, task: draft)
+            return
+        }
         TaskCodeLocationPin.set(workspace.activeWorkingPath, workspace: workspace, task: draft)
     }
 
@@ -94,6 +103,9 @@ enum NewTaskWorktreeComposerFlow {
         guard let request = TaskWorktreeService.latestRequest(for: draft) else { return }
         selection.isEnabled = request.enabled
         selection.base = request.base
+        if let repository = request.repositoryPath, !repository.isEmpty {
+            selection.repositoryPath = WorkspacePathPresentation.standardizedPath(repository)
+        }
     }
 
     /// After a discarded draft is deleted, saves the deletion and, once it is

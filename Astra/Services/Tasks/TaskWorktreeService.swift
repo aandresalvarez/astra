@@ -148,9 +148,9 @@ enum TaskWorktreeService {
         git: any GitRepositoryOperating
     ) async throws -> TaskWorktreeBase {
         let repository = WorkspacePathPresentation.standardizedPath(request.repositoryPath)
-        guard await git.getCommitSHA("HEAD", at: repository) != nil else {
-            throw TaskWorktreeCreationError.noCommit(repository)
-        }
+        // The repository checkout's HEAD is not the base. An unborn orphan
+        // branch there must not reject a default-branch ref, or Current branch
+        // pointed at a linked worktree that already has a commit.
         switch request.base {
         case .currentBranch:
             let checkout = existingCheckout(for: request) ?? repository

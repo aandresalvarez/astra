@@ -8,14 +8,16 @@ import ASTRAModels
 /// so they always describe the same checkout.
 @MainActor
 enum TaskCodeLocationPin {
-    /// Stores `path`; nil or the workspace's primary path clears the override.
+    /// Stores `path`. For the workspace default, nil or the primary path clears
+    /// the override so new tasks follow the primary checkout. A draft keeps an
+    /// explicit path, including the primary repository: nil on a draft means
+    /// the draft has not chosen and still follows the workspace default.
     /// Returns true when the stored value changed.
     @discardableResult
     static func set(_ path: String?, workspace: Workspace, task: AgentTask?) -> Bool {
         let normalized = normalize(path)
-        let stored = normalized == WorkspacePathPresentation.standardizedPath(workspace.primaryPath)
-            ? nil
-            : normalized
+        let primary = WorkspacePathPresentation.standardizedPath(workspace.primaryPath)
+        let stored = task == nil && normalized == primary ? nil : normalized
         // Skip no-op writes so reselecting the same checkout (or a scan) never
         // bumps updatedAt or marks the model dirty.
         if let task {

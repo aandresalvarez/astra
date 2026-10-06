@@ -692,6 +692,86 @@ struct NewTaskWorktreeBaseTests {
         #expect(TaskCodeLocationPin.set(" /repos/other ", workspace: workspace, task: draft))
         #expect(draft.executionRootPath == "/repos/other")
         #expect(workspace.activeWorkingPath == nil)
+        #expect(TaskCodeLocationPin.set("/repos/app", workspace: workspace, task: draft))
+        #expect(draft.executionRootPath == "/repos/app")
+    }
+
+    @Test("An explicit primary-repository draft stays there after the workspace default moves")
+    func explicitPrimaryRepositorySurvivesWorkspaceDefaultChange() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let primary = try fixture.repository("Primary")
+        let other = try fixture.repository("Other")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: primary.path, additionalPaths: [other.path])
+        context.insert(workspace)
+        let draft = AgentTask(title: "Stay on primary", goal: "Stay", workspace: workspace)
+        context.insert(draft)
+        #expect(TaskCodeLocationPin.set(primary.path, workspace: workspace, task: draft))
+        var selection = NewTaskWorktreeSelection()
+        selection.isEnabled = true
+        selection.repositoryPath = primary.path
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+
+        workspace.activeWorkingPath = other.path
+        NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
+        #expect(draft.executionRootPath == primary.path)
+        var restored = NewTaskWorktreeSelection()
+        NewTaskWorktreeComposerFlow.restoreChoice(&restored, from: draft)
+        restored.repositories = [GitRepositoryInfo(name: "Primary", path: primary.path)]
+        #expect(restored.repositoryPath == primary.path)
+        #expect(restored.request?.repositoryPath == primary.path)
+
+        let task = AgentTask(title: "Run", goal: "Run", workspace: workspace)
+        context.insert(task)
+        try await TaskWorktreeService.prepare(
+            task: task,
+            request: restored.request,
+            modelContext: context,
+            worktreesRoot: fixture.worktrees.path
+        )
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.repositoryPath == primary.path)
+        #expect(binding.worktreePath != other.path)
+    }
+
+    @Test("An unborn repository checkout still starts from the chosen base")
+    func unbornCheckoutDoesNotRejectAValidBase() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let remote = try fixture.bareRemote("App.git")
+        try fixture.git(["remote", "add", "origin", remote.path], at: repository)
+        try fixture.push(["-u", "origin", "main"], at: repository)
+        let mainTip = try fixture.git(["rev-parse", "HEAD"], at: repository)
+        let linked = fixture.root.appendingPathComponent("App-side", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "side", linked.path], at: repository)
+        try fixture.git(["checkout", "--orphan", "unborn"], at: repository)
+        #expect(await GitService.shared.getCommitSHA("HEAD", at: repository.path) == nil)
+
+        let defaultBase = try await TaskWorktreeService.resolveBase(
+            for: TaskWorktreeRequest(repositoryPath: repository.path),
+            git: GitService.shared
+        )
+        #expect(defaultBase.commit == mainTip)
+        #expect(defaultBase.ref == "origin/main")
+
+        let linkedBase = try await TaskWorktreeService.resolveBase(
+            for: TaskWorktreeRequest(
+                repositoryPath: repository.path, checkoutPath: linked.path, base: .currentBranch
+            ),
+            git: GitService.shared
+        )
+        #expect(linkedBase.commit == mainTip)
+        #expect(linkedBase.ref == "side")
+
+        await #expect(throws: TaskWorktreeCreationError.self) {
+            try await TaskWorktreeService.resolveBase(
+                for: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+                git: GitService.shared
+            )
+        }
     }
 
     @Test("The strip picks the repository that holds the shared code location, including its worktrees")

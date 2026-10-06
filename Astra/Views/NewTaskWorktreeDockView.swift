@@ -49,6 +49,13 @@ struct NewTaskWorktreeDockView: View {
     /// Where the next task runs before any worktree is created.
     private var sharedCodePath: String? {
         if let pinned = pinOwner?.executionRootPath, !pinned.isEmpty { return pinned }
+        if let draft,
+           let request = TaskWorktreeService.latestRequest(for: draft),
+           request.enabled,
+           let repository = request.repositoryPath,
+           !repository.isEmpty {
+            return repository
+        }
         return workspace?.activeWorkingPath
     }
 
@@ -220,11 +227,22 @@ struct NewTaskWorktreeDockView: View {
     /// Repository card's picker does.
     private func selectRepository(_ repository: GitRepositoryInfo) {
         guard let workspace, repository.path != selection.repositoryPath else { return }
+        let previous = selection
         TaskCodeLocationPin.set(repository.path, workspace: workspace, task: pinOwner)
         selection.repositoryPath = repository.path
         selection.checkoutPath = repository.path
         selection.defaultBaseLabel = nil
         selection.currentBaseLabel = nil
+        guard allowsChoice,
+              let draft = NewTaskWorktreeComposerFlow.liveDraft(draft, in: workspace) else { return }
+        do {
+            try NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: modelContext)
+            choiceProblem = nil
+        } catch {
+            selection = previous
+            TaskCodeLocationPin.set(previous.checkoutPath ?? previous.repositoryPath, workspace: workspace, task: pinOwner)
+            choiceProblem = error.localizedDescription
+        }
     }
 
     private func dockRow(_ presentation: NewTaskWorktreeDockPresentation) -> some View {
