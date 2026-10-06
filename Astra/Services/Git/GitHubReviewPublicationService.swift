@@ -332,7 +332,11 @@ enum GitHubReviewPublicationRequirement {
     /// wording is not a request to post a review; a sentence that also asks for a
     /// review ("Post a review and reply to every review thread") still is.
     private static func neutralizingThreadWording(_ request: String) -> String {
-        request.replacingOccurrences(of: #"(?i)\breview\s+(?:threads?|conversations?)\b"#, with: "threads", options: .regularExpression)
+        request
+            .replacingOccurrences(of: #"(?i)\breview\s+(?:threads?|conversations?)\b"#, with: "threads", options: .regularExpression)
+            // A reply to a review comment is a thread reply, whichever verb posts it.
+            .replacingOccurrences(of: #"(?i)(\brepl(?:y|ies|ying)\b(?:\s+\S+){0,3}?\s+)(?:review|reviewer|inline)\s+comm?ents?\b"#,
+                                  with: "$1threads", options: .regularExpression)
     }
 
     private static func publicationIntent(in request: String) -> Intent? {

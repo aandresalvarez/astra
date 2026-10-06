@@ -17,7 +17,7 @@ struct GitHubReviewThreadWorkflowTests {
         var comments: [[String: Any]] = [["id": "C1", "body": "Please fix this", "url": "https://github.com/example/repo/pull/12#discussion_r1", "author": ["login": "reviewer"]]]
         var replies = 0; var resolutions = 0; var reads = 0
         var failResolution = false; var loseReplyResponse = false; var wrongReceipt = false
-        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []
+        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []; var editAfterReply = false
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             #expect(arguments.contains("github.com"))
@@ -30,6 +30,7 @@ struct GitHubReviewThreadWorkflowTests {
                     replies += 1
                     let comment: [String: Any] = ["id": "C2", "body": variables["body"]!, "url": target + "#discussion_r2", "author": ["login": "owner"]]
                     comments.append(comment)
+                    if editAfterReply { comments[0]["body"] = "Edited after the reply" }
                     if loseReplyResponse { throw NSError(domain: "lost-response", code: 1) }
                     var receiptComment = comment; receiptComment["pullRequest"] = ["url": target]
                     result["comment"] = receiptComment
@@ -73,6 +74,7 @@ struct GitHubReviewThreadWorkflowTests {
         func setMissing(_ ids: Set<String>) { missingThreads = ids }
         func setNotThreads(_ ids: Set<String>) { notThreads = ids }
         func setTransient(_ ids: Set<String>) { transientThreads = ids }
+        func setEditAfterReply(_ on: Bool) { editAfterReply = on }
         func changeHead() { head = String(repeating: "b", count: 40) }
         func changeHead(to value: String) { head = value }
         func changeTarget() { target = "https://github.com/example/other/pull/12" }
@@ -636,5 +638,85 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(GitHubReviewThreadPublicationService.hasDismissed(task: f.task, filePath: stale.path))
         #expect(!GitHubReviewThreadPublicationService.hasDismissed(task: f.task, filePath: flaky.path))
         #expect(GitHubReviewThreadPublicationService.pendingCandidatePath(task: f.task, filePaths: [stale.path, flaky.path]) == flaky.path)
+    }
+
+    // MARK: - Follow-ups scoped to another service
+
+    @Test("a thread follow-up scoped to another service does not reopen a settled request")
+    func otherServiceFollowUpDoesNotReopenASettledRequest() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+        let settled = try #require(GitHubReviewThreadRequirement.request(task: f.task)).id
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
+
+        for phrase in ["Reply to the Slack thread", "Reply to the comments on the Jira ticket", "Resolve the email thread about it"] {
+            f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: phrase))
+            #expect(GitHubReviewThreadRequirement.request(task: f.task)?.id == settled, "\(phrase)")
+            #expect(!GitHubReviewThreadRequirement.isPending(task: f.task), "\(phrase)")
+        }
+    }
+
+    // MARK: - Replies to review comments are thread work
+
+    @Test("a request to post replies to review comments owes thread receipts and no new review")
+    func repliesToReviewCommentsAreThreadWork() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Post replies to every review comment on https://github.com/example/repo/pull/12"
+        #expect(GitHubReviewThreadRequirement.request(task: f.task) != nil)
+
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: f.task))
+    }
+
+    // MARK: - Resolution rechecks the whole discussion
+
+    @Test("an earlier comment edited after the reply stops the resolution")
+    func resolutionRechecksTheWholeDiscussion() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI(); await cli.setEditAfterReply(true)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.publish(task: f.task, proposal: proposal)
+        }
+
+        let counts = await cli.counts()
+        #expect(counts.0 == 1)
+        #expect(counts.1 == 0)
+    }
+
+    // MARK: - A fully receipted batch survives a crash before the final receipt
+
+    @Test("action receipts that cover every operation of a dispatched batch satisfy the request")
+    func actionReceiptsCoveringTheBatchSatisfyTheRequest() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        let url = "https://github.com/example/repo/pull/12"
+        let payload = GitHubReviewThreadPayload(pullRequestUrl: url, commitId: Self.head, threads: [
+            .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: true)])
+        func receipt(_ actions: [GitHubReviewThreadReceipt.Action], approved: Bool = false) -> GitHubReviewThreadReceipt {
+            var value = GitHubReviewThreadReceipt(proposalID: "p1", filePath: f.file.path, requestID: request.id,
+                                                  pullRequestURL: url, actions: actions)
+            if approved { value.approvedPayload = payload }
+            return value
+        }
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.dispatched,
+                                                          payload: receipt([], approved: true)))
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.actionReceipt,
+            payload: receipt([.init(threadID: "T1", operation: "reply", commentID: "C2", url: url + "#discussion_r2")])))
+        // The reply is confirmed but the resolution is not: still owed.
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.actionReceipt,
+            payload: receipt([.init(threadID: "T1", operation: "resolve", commentID: nil, url: nil)])))
+        // Every operation is confirmed, only the final batch receipt was never written.
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
     }
 }

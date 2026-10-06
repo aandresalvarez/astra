@@ -165,10 +165,17 @@ final class GitHubReviewThreadPublicationService {
                     let latest = try await loadThread(task: task, id: action.threadId)
                     let lastID = receipts.last?.threadID == action.threadId && receipts.last?.operation == "reply"
                         ? receipts.last?.commentID : action.expectedLastCommentId
+                    // The approved discussion must still be exactly what was approved, with only
+                    // our own reply after it: an earlier comment edited or deleted since the
+                    // snapshot would leave the reply as the last comment and pass a last-id check.
+                    let replied = receipts.last?.threadID == action.threadId && receipts.last?.operation == "reply"
+                    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                    let approvedComments = try encoder.encode(proposal.snapshots[index].comments)
+                    let currentComments = try encoder.encode(replied ? Array(latest.comments.dropLast()) : latest.comments)
                     guard latest.pullRequest.url.caseInsensitiveCompare(proposal.payload.pullRequestUrl) == .orderedSame,
                           latest.pullRequest.headRefOid.caseInsensitiveCompare(proposal.payload.commitId) == .orderedSame,
                           latest.pullRequest.state == "OPEN", !latest.isResolved, latest.viewerCanResolve,
-                          latest.comments.last?.id == lastID else {
+                          latest.comments.last?.id == lastID, currentComments == approvedComments else {
                         throw GitHubReviewPublicationError.invalid("The PR or thread changed after posting the reply; resolution was not sent.")
                     }
                     let receipt = try await mutate(task: task, proposal: proposal, action: action, body: nil)

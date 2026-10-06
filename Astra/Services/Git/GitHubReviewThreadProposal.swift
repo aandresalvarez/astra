@@ -136,11 +136,26 @@ enum GitHubReviewThreadRequirement {
 
     static func isPending(task: AgentTask) -> Bool {
         guard let request = request(task: task) else { return false }
-        return !task.events.contains { event in
-            guard [GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery].contains(event.type),
-                  let data = event.payload.data(using: .utf8),
-                  let receipt = try? JSONDecoder().decode(GitHubReviewThreadReceipt.self, from: data) else { return false }
-            return receipt.requestID == request.id && !receipt.actions.isEmpty
+        func records(_ types: [String]) -> [GitHubReviewThreadReceipt] {
+            task.events.compactMap { event in
+                guard types.contains(event.type), let data = event.payload.data(using: .utf8) else { return nil }
+                return try? JSONDecoder().decode(GitHubReviewThreadReceipt.self, from: data)
+            }
+        }
+        if records([GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery])
+            .contains(where: { $0.requestID == request.id && !$0.actions.isEmpty }) { return false }
+        // ASTRA can stop after the last confirmed operation but before it writes the
+        // final batch receipt. Every operation of the approved payload is then already
+        // durably confirmed, and there is nothing left to propose or send.
+        let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
+        return !records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
+            guard dispatch.requestID == request.id, let payload = dispatch.approvedPayload else { return false }
+            let done = Set(confirmed.filter { $0.proposalID == dispatch.proposalID }
+                .flatMap(\.actions).map { "\($0.threadID):\($0.operation)" })
+            let required = payload.threads.flatMap { thread in
+                (thread.reply != nil ? ["\(thread.threadId):reply"] : []) + (thread.resolve ? ["\(thread.threadId):resolve"] : [])
+            }
+            return !required.isEmpty && required.allSatisfy(done.contains)
         }
     }
 
@@ -163,7 +178,7 @@ enum GitHubReviewThreadRequirement {
         // inspect GitHub PR #12" is two jobs.
         let text = rawText.replacingOccurrences(of: #"(?i)\bthen\b"#, with: ",", options: .regularExpression)
         let object = "(?:" + threadNoun + "|" + bareNoun + (allowPronoun ? "" : pullRequestTail) + ")"
-        var pattern = #"(?i)\b(?:resolve|reslolve|resolving|reply|replying)\b(?:\s+\S+){0,6}?\s+\b"# + object
+        var pattern = #"(?i)\b(?:resolve|reslolve|resolving|reply|replying|replies)\b(?:\s+\S+){0,6}?\s+\b"# + object
             + #"|\bmark\b(?:\s+\S+){0,4}?\s+\b(?:"# + threadNoun + "|" + bareNoun + #")(?:\s+\S+){0,7}?\s+\bresolved\b"#
         let qualifyingObject = #"(?i)\b(?:"# + threadNoun + "|" + bareNoun + pullRequestTail + ")"
         if allowPronoun || text.range(of: qualifyingObject, options: .regularExpression) != nil {
@@ -181,7 +196,10 @@ enum GitHubReviewThreadRequirement {
         let context = #"(?i)github\.com/|\bgithub\b|\bPR\b|\bpull request\b"#
         let negation = #"\b(?:do not|don't|dont|never|without|not|no|stop|cancel|skip|abort)\b"#
         let boundaries = try? NSRegularExpression(pattern: boundary)
-        let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool)? in
+        // Thread work that names another service ("Reply to the Slack thread") is not
+        // GitHub work, whatever else the task mentions, so it never renews a request.
+        let otherService = #"(?i)\b(?:slack|jira|e-?mail|teams|discord|linear|notion|confluence|asana|trello|zendesk|intercom|whatsapp|sms|chat)\b"#
+        let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool, elsewhere: Bool)? in
             guard let span = Range(candidate.range, in: text) else { return nil }
             let head = String(text[..<span.lowerBound])
             let headStart = boundaries?.matches(in: head, range: NSRange(head.startIndex..<head.endIndex, in: head))
@@ -190,10 +208,12 @@ enum GitHubReviewThreadRequirement {
             let tailEnd = tail.range(of: boundary, options: .regularExpression)?.lowerBound ?? tail.endIndex
             let lead = head[headStart...].split(whereSeparator: \.isWhitespace).suffix(4).joined(separator: " ")
             let phrase = (lead + " " + text[span]).lowercased()
-            return (named: (head[headStart...] + text[span] + tail[..<tailEnd]).range(of: context, options: .regularExpression) != nil,
-                    negated: phrase.range(of: negation, options: .regularExpression) != nil)
+            let clause = String(head[headStart...] + text[span] + tail[..<tailEnd])
+            return (named: clause.range(of: context, options: .regularExpression) != nil,
+                    negated: phrase.range(of: negation, options: .regularExpression) != nil,
+                    elsewhere: clause.range(of: otherService, options: .regularExpression) != nil)
         }
-        guard let operation = allowPronoun ? operations.last : operations.last(where: \.named) else { return nil }
+        guard let operation = operations.last(where: { !$0.elsewhere && (allowPronoun || $0.named) }) else { return nil }
         return !operation.negated
     }
 }
