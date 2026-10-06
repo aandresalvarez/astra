@@ -172,13 +172,7 @@ enum GitHubReviewPublicationRequirement {
     }
 
     static func isPending(task: AgentTask) -> Bool {
-        if let threadRequest = GitHubReviewThreadRequirement.request(task: task) {
-            if GitHubReviewThreadRequirement.isPending(task: task) { return true }
-            // "Post a reply to every review thread" also reads as a request to post
-            // a review. When the same text asked for threads, their receipt settles
-            // it; a new review needs its own, separate request.
-            if postingRequest(task: task)?.text == threadRequest.text { return false }
-        }
+        if GitHubReviewThreadRequirement.isPending(task: task) { return true }
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {
@@ -333,8 +327,16 @@ enum GitHubReviewPublicationRequirement {
         return regex.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) != nil
     }
 
+    /// "Post a reply to every review thread" reads as "post ... review" to the
+    /// matcher below. Thread work has its own requirement and receipt, so that
+    /// wording is not a request to post a review; a sentence that also asks for a
+    /// review ("Post a review and reply to every review thread") still is.
+    private static func neutralizingThreadWording(_ request: String) -> String {
+        request.replacingOccurrences(of: #"(?i)\breview\s+(?:threads?|conversations?)\b"#, with: "threads", options: .regularExpression)
+    }
+
     private static func publicationIntent(in request: String) -> Intent? {
-        let lower = request.lowercased()
+        let lower = neutralizingThreadWording(request).lowercased()
         // Bind the publishing verb to the review object. A request to add
         // tests while reviewing a PR must not become permission to post.
         guard let regex = publicationRegex else { return nil }

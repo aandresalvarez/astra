@@ -304,7 +304,10 @@ struct GitHubReviewThreadWorkflowTests {
         "Investigate why the GitHub workflow fails; do not resolve any threads",
         "Resolve the merge conflicts in my GitHub PR and update the review",
         "Review this GitHub PR and reply with your comments here",
-        "Review the pull request and reply with your review comments in this chat"
+        "Review the pull request and reply with your review comments in this chat",
+        "Reply to the Slack thread, then inspect GitHub PR #12",
+        "Reply to the Slack thread then inspect GitHub PR #12",
+        "Reply to the Slack thread. Afterwards look at the GitHub PR"
     ])
     func ordinaryWorkIsNotARequest(goal: String) {
         // A false positive blocks the task from finishing until the user types a
@@ -466,5 +469,49 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(!GitHubReviewThreadReadOperation.isRepository("owner/repo/extra"))
         _ = try GitHubReviewThreadReadOperation.arguments(for: ["review-threads", "--repo", "owner/.github", "--pr", "3"])
         #expect(GitHubReviewThreadArtifactPolicy.target("https://github.com/owner/.github/pull/3")?.repository == "owner/.github")
+    }
+
+    @Test("GitHub context must be in the clause that asked for it, not elsewhere in the task")
+    func contextIsScopedToTheMatchedClause() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Review PR 12 and summarize it"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "Reply to the Slack thread about the release"))
+        #expect(GitHubReviewThreadRequirement.request(task: f.task) == nil)
+
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "Now resolve the threads on PR 12"))
+        #expect(GitHubReviewThreadRequirement.request(task: f.task) != nil)
+    }
+
+    // MARK: - Thread wording is not a request to post a review
+
+    @Test("a request for both a review and thread replies needs both receipts")
+    func dualIntentNeedsBothReceipts() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Post a review and reply to every review thread on https://github.com/example/repo/pull/12"
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
+        // The review the same sentence asked for is still owed.
+        #expect(GitHubReviewPublicationRequirement.isPending(task: f.task))
+    }
+
+    @Test("cancelling a thread-only request does not leave a review requirement behind")
+    func cancellingAThreadOnlyRequestLeavesNothingPending() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Post a reply to every review thread on https://github.com/example/repo/pull/12"
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+
+        for phrase in ["skip it", "never mind", "drop them", "forget that"] {
+            f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: phrase))
+            #expect(!GitHubReviewThreadRequirement.isPending(task: f.task), "\(phrase)")
+            #expect(!GitHubReviewPublicationRequirement.isPending(task: f.task), "\(phrase)")
+            f.context.insert(TaskEvent(task: f.task, type: TaskPlanConversationEventTypes.userMessage,
+                                       payload: "Reply to every review thread on https://github.com/example/repo/pull/12"))
+            #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+        }
     }
 }

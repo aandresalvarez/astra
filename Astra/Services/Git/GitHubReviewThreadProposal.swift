@@ -105,8 +105,6 @@ enum GitHubReviewThreadRequirement {
         let userMessages = task.events.filter {
             $0.type == TaskEventTypes.Conversation.userMessage.rawValue || $0.type == TaskPlanConversationEventTypes.userMessage
         }
-        let context = ([task.goal] + userMessages.map(\.payload)).joined(separator: "\n")
-        guard context.range(of: #"(?i)github\.com/|\bgithub\b|\bPR\b|\bpull request\b"#, options: .regularExpression) != nil else { return nil }
         var current = intent(task.goal) == true ? Request(id: "goal:" + GitHubReviewThreadArtifactPolicy.digest(Data(task.goal.utf8)), text: task.goal) : nil
         let messages = userMessages.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         for message in messages {
@@ -147,7 +145,10 @@ enum GitHubReviewThreadRequirement {
     private static let pullRequestTail =
         #"(?:\s+\S+){0,3}?\s+(?:on|in|for|of|from|to)\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:https?://github\.com/\S+/pull/\d+|PR\s*#?\d+|pull request\b|PR\b)"#
 
-    private static func intent(_ text: String, allowPronoun: Bool = false) -> Bool? {
+    private static func intent(_ rawText: String, allowPronoun: Bool = false) -> Bool? {
+        // "then" ends a clause as a comma does: "Reply to the Slack thread, then
+        // inspect GitHub PR #12" is two jobs.
+        let text = rawText.replacingOccurrences(of: #"(?i)\bthen\b"#, with: ",", options: .regularExpression)
         let object = "(?:" + threadNoun + "|" + bareNoun + (allowPronoun ? "" : pullRequestTail) + ")"
         var pattern = #"(?i)\b(?:resolve|reslolve|resolving|reply|replying)\b(?:\s+\S+){0,6}?\s+\b"# + object
             + #"|\bmark\b(?:\s+\S+){0,4}?\s+\b(?:"# + threadNoun + "|" + bareNoun + #")(?:\s+\S+){0,7}?\s+\bresolved\b"#
@@ -158,6 +159,18 @@ enum GitHubReviewThreadRequirement {
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)).last,
               let range = Range(match.range, in: text) else { return nil }
+        if !allowPronoun {
+            // GitHub has to be named in the clause that asked for the work. Anywhere
+            // else in the task is another job: "Reply to the Slack thread, then
+            // inspect GitHub PR #12" asks nothing of GitHub threads. An active
+            // request already established the context for its follow-ups.
+            let separators = CharacterSet(charactersIn: ".!?;,\n")
+            let head = text[..<range.lowerBound].components(separatedBy: separators).last ?? ""
+            let tail = text[range.upperBound...].components(separatedBy: separators).first ?? ""
+            guard (head + text[range] + tail).range(
+                of: #"(?i)github\.com/|\bgithub\b|\bPR\b|\bpull request\b"#, options: .regularExpression
+            ) != nil else { return nil }
+        }
         let clause = String(text[..<range.lowerBound].suffix(64))
             .components(separatedBy: CharacterSet(charactersIn: ".!?;\n")).last ?? ""
         let lead = clause.split(whereSeparator: \.isWhitespace).suffix(4).joined(separator: " ")
