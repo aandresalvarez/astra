@@ -41,6 +41,7 @@ enum OpenCodeCLIRuntime {
         taskEnvironment: [String: String],
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
+        resumeSessionID: String? = nil,
         permissionArguments: [String]
     ) -> OpenCodeCLICommandPlan {
         let providerModel = resolvedModelName(model)
@@ -54,6 +55,12 @@ enum OpenCodeCLIRuntime {
             "--dir", launchDirectory,
             "--model", providerModel
         ]
+        // `--session <id>` continues that session; an unknown id exits 1 with
+        // "Session not found", so only ids that still exist may reach here.
+        if let resumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resumeSessionID.isEmpty {
+            args += ["--session", resumeSessionID]
+        }
         args += permissionArguments
         args.append(prompt)
 

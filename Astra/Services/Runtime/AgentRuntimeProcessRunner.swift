@@ -3,19 +3,6 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
-struct AgentRuntimeBudgetProfile: Sendable, Equatable {
-    let runtime: AgentRuntimeID
-    let launchOverheadTokens: Int
-
-    func estimatedLaunchInputTokens(prompt: String) -> Int {
-        AgentProcessMonitor.estimatedTokenCount(for: prompt) + launchOverheadTokens
-    }
-
-    static func profile(for runtime: AgentRuntimeID) -> AgentRuntimeBudgetProfile {
-        AgentRuntimeAdapterRegistry.adapter(for: runtime).budgetProfile
-    }
-}
-
 private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
     private let lock = NSLock()
     private var completed = false
@@ -797,6 +784,10 @@ final class AgentRuntimeProcessRunner {
                 hostControlBrokerSessionManager.stop(taskID: task.id, runID: runID)
             }
         }
+        let remainingTokenBudget = Self.remainingTokenBudget(
+            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed
+        )
+        let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
                 try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
@@ -828,6 +819,9 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 maxRunSeconds: maxRunSeconds,
+                maxTurns: remainingTurns,
+                tokenBudget: remainingTokenBudget,
+                reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -852,6 +846,9 @@ final class AgentRuntimeProcessRunner {
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             maxRunSeconds: maxRunSeconds,
+            maxTurns: remainingTurns,
+            tokenBudget: remainingTokenBudget,
+            reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -868,10 +865,12 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         maxRunSeconds: TimeInterval?,
+        maxTurns: Int,
+        tokenBudget: Int,
+        reportedUsageBaseline: ProviderSessionUsageBaseline,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        let tokenBudget = Self.effectiveTokenBudget(for: task)
         let taskID = task.id
 
         // The one place that owns a live agent process, so the one place that
@@ -929,8 +928,9 @@ final class AgentRuntimeProcessRunner {
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
+                reportedUsageBaseline: reportedUsageBaseline,
                 budgetEnforcementMode: budgetEnforcementMode,
-                maxTurns: task.maxTurns,
+                maxTurns: maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
@@ -1392,45 +1392,6 @@ final class AgentRuntimeProcessRunner {
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
         })).sorted()
-    }
-
-    @MainActor
-    static func effectiveTokenBudget(for task: AgentTask) -> Int {
-        let baseBudget = task.tokenBudget
-        let tokenBudget = effectiveTokenBudget(
-            baseBudget: baseBudget,
-            usesAgentTeam: task.useAgentTeam,
-            teamSize: task.teamSize
-        )
-        if task.useAgentTeam, baseBudget != 0 {
-            AppLogger.audit(.taskStats, category: "Worker", taskID: task.id, fields: [
-                "event": "team_budget_scaled",
-                "base_budget": String(baseBudget),
-                "team_size": String(max(2, task.teamSize)),
-                "token_budget": String(tokenBudget)
-            ])
-        }
-        return tokenBudget
-    }
-
-    static func effectiveTokenBudget(baseBudget: Int, usesAgentTeam: Bool, teamSize: Int) -> Int {
-        // Zero is the persisted sentinel for Disabled. Resolve it before team
-        // scaling so an unlimited budget stays unlimited instead of overflowing
-        // when multiplied by the number of agents. A negative value is not a
-        // sentinel — it is a malformed persisted config (workspace imports
-        // assign budgets without normalizing) — so it keeps the pre-existing
-        // enforcement behaviour instead of silently becoming unlimited.
-        if baseBudget == 0 { return Int.max }
-        guard baseBudget > 0 else { return baseBudget }
-        return usesAgentTeam ? baseBudget * max(2, teamSize) : baseBudget
-    }
-
-    static func estimatedLaunchInputTokens(prompt: String, runtime: AgentRuntimeID) -> Int {
-        AgentRuntimeBudgetProfile.profile(for: runtime).estimatedLaunchInputTokens(prompt: prompt)
-    }
-
-    static func launchOverheadTokens(for runtime: AgentRuntimeID) -> Int {
-        AgentRuntimeBudgetProfile.profile(for: runtime).launchOverheadTokens
     }
 
     static func model(_ model: String, for runtime: AgentRuntimeID) -> String {
