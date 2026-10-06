@@ -1109,4 +1109,48 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(!proposals.contains("settled-0"))
         #expect(proposals.count <= 1 + WorkspaceConfigManager.MirrorLimits.maxSettledThreadBatches)
     }
+
+    // MARK: - Every clause of one message counts
+
+    @Test("a message with separately qualified clauses keeps every requested operation")
+    func multiClauseMessageKeepsEveryOperation() {
+        let both = request(for: "Reply to the review threads on PR 12, and resolve the review threads on PR 12")
+        #expect(both?.operations == ["reply", "resolve"])
+
+        // A negated clause is not an operation, and another job's clause is not either.
+        let onlyReply = request(for: "Reply to the review threads on PR 12 but do not resolve the review threads on PR 12")
+        #expect(onlyReply?.operations == ["reply"])
+        let slack = request(for: "Reply to the Slack thread, and resolve the review threads on PR 12")
+        #expect(slack?.operations == ["resolve"])
+    }
+
+    // MARK: - Unsettled evidence is compacted, never dropped
+
+    @Test("unsettled batches beyond the newest few lose their embedded payload but stay in the mirror")
+    func unsettledBatchesAreCompactedNotDropped() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let url = "https://github.com/example/repo/pull/12"
+        let payload = GitHubReviewThreadPayload(pullRequestUrl: url, commitId: Self.head, threads: [
+            .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: true)])
+        let total = WorkspaceConfigManager.MirrorLimits.maxActiveThreadBatches + 5
+        for index in 0..<total {
+            var record = GitHubReviewThreadReceipt(proposalID: "unsettled-\(index)", filePath: "/x/pr12_threads_\(index).json",
+                                                   requestID: nil, pullRequestURL: url, actions: [])
+            record.approvedPayload = payload
+            f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.dispatched, payload: record))
+        }
+
+        let workspace = try #require(f.task.workspace)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: f.context))
+        let mirrored = try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString })
+        var withPayload: [String: Bool] = [:]
+        for event in mirrored.events where event.type == GitHubReviewThreadEvents.dispatched {
+            let object = (try? JSONSerialization.jsonObject(with: Data(event.payload.utf8))) as? [String: Any]
+            if let id = object?["proposalID"] as? String { withPayload[id] = object?["approvedPayload"] != nil }
+        }
+
+        #expect(withPayload.count == total)                       // every unsettled dispatch is still there
+        #expect(withPayload["unsettled-0"] == false)               // the oldest ones are compacted
+        #expect(withPayload["unsettled-\(total - 1)"] == true)     // the newest keep what recovery may need
+    }
 }

@@ -28,8 +28,9 @@ public enum WorkspaceConfigManager {
         /// longest one worth keeping: a request or a cancellation is a short sentence.
         public static let maxThreadLanguageEvents = 30
         public static let maxThreadLanguagePayloadCharacters = 400
-        /// GitHub thread batches kept in the mirror: every unsettled one (up to a ceiling),
-        /// and only the newest settled ones. Each dispatch embeds its approved payload.
+        /// GitHub thread batches in the mirror: every unsettled one stays (the newest
+        /// `maxActiveThreadBatches` whole, older ones without the embedded payload), and only
+        /// the newest settled ones. Each dispatch embeds its approved payload.
         public static let maxSettledThreadBatches = 5
         public static let maxActiveThreadBatches = 20
         public static let maxThreadDismissals = 20
@@ -1891,15 +1892,16 @@ public enum WorkspaceConfigManager {
         // are bounded in number and size and keep the usual payload truncation.
         let fullPayloadIDs = recovery.sourceEventIDs.union(threadRequestEventIDs(task))
         let retainedSourceIDs = fullPayloadIDs.union(threadRequestLanguageEventIDs(task))
-        let retainedThreadEventIDs = retainedThreadWorkflowEventIDs(task)
+        let threadRetention = threadWorkflowRetention(task)
         let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
             || retainedSourceIDs.contains($0.id)
             || (isTaskRecoveryEvent($0.type) && !isThreadWorkflowEvent($0.type))
-            || retainedThreadEventIDs.contains($0.id)) }
+            || threadRetention.kept.contains($0.id)) }
             .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         let eventConfigs = mirroredEvents.compactMap { event -> EventConfig? in
-            guard let payload = isTaskRecoveryEvent(event.type) || fullPayloadIDs.contains(event.id)
+            guard var payload = isTaskRecoveryEvent(event.type) || fullPayloadIDs.contains(event.id)
                 ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters) else { return nil }
+            if threadRetention.compact.contains(event.id) { payload = compactedThreadPayload(payload) }
             return EventConfig(
                 id: event.id.uuidString,
                 type: event.type,

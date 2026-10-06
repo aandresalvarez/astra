@@ -138,7 +138,7 @@ enum GitHubReviewThreadRequirement {
         var current = intentDetail(task.goal).flatMap { detail in
             detail.publish
                 ? Request(id: "goal:" + GitHubReviewThreadArtifactPolicy.digest(Data(task.goal.utf8)), text: task.goal,
-                          operations: requestedOperations(detail.operation))
+                          operations: detail.operations)
                 : nil
         }
         let messages = userMessages.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
@@ -151,7 +151,7 @@ enum GitHubReviewThreadRequirement {
                     ? Request(id: message.id.uuidString, text: message.payload,
                               targetSource: carriedTarget(message.payload, prior: current),
                               sourceEventIDs: (current?.sourceEventIDs ?? []) + [message.id],
-                              operations: requestedOperations(detail.operation).union(additive ? current?.operations ?? [] : []),
+                              operations: detail.operations.union(additive ? current?.operations ?? [] : []),
                               priorRequestIDs: additive ? (current.map { $0.priorRequestIDs + [$0.id] } ?? []) : [])
                     : nil
             } else if current != nil,
@@ -233,7 +233,7 @@ enum GitHubReviewThreadRequirement {
         return operations
     }
 
-    private static func intentDetail(_ rawText: String, allowPronoun: Bool = false) -> (publish: Bool, operation: String)? {
+    private static func intentDetail(_ rawText: String, allowPronoun: Bool = false) -> (publish: Bool, operations: Set<String>)? {
         // "then" ends a clause as a comma does: "Reply to the Slack thread, then
         // inspect GitHub PR #12" is two jobs.
         let text = rawText.replacingOccurrences(of: #"(?i)\bthen\b"#, with: ",", options: .regularExpression)
@@ -290,7 +290,14 @@ enum GitHubReviewThreadRequirement {
                         .range(of: otherService, options: .regularExpression) != nil,
                     continuation: continuation, text: operationText)
         }
-        guard let operation = operations.last(where: { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }) else { return nil }
-        return (!operation.negated, operation.text)
+        // Every operation of the message counts, not only the last: "reply ..., and resolve ..."
+        // asks for both, and "reply ..., but do not resolve ..." asks for the reply alone. What
+        // is left after the refused operations is the request; nothing left is a cancellation.
+        let qualifying = operations.filter { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }
+        guard !qualifying.isEmpty else { return nil }
+        let wanted = qualifying.filter { !$0.negated }.reduce(into: Set<String>()) { $0.formUnion(requestedOperations($1.text)) }
+        let refused = qualifying.filter(\.negated).reduce(into: Set<String>()) { $0.formUnion(requestedOperations($1.text)) }
+        let remaining = wanted.subtracting(refused)
+        return (!remaining.isEmpty, remaining)
     }
 }

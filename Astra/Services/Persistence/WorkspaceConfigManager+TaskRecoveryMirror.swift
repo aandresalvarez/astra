@@ -33,12 +33,14 @@ extension WorkspaceConfigManager {
 
     static func isThreadWorkflowEvent(_ type: String) -> Bool { type.hasPrefix("github.review-threads.") }
 
-    /// The thread workflow events the mirror keeps. Keeping the whole namespace forever
-    /// made every export and import grow with each batch, and each dispatch embeds its
-    /// approved payload, up to 256 KiB. A batch that is not settled, because it was sent
-    /// and never receipted, is recovery evidence and is kept; settled batches are
-    /// compacted to the newest few, and dismissals to a bounded number.
-    static func retainedThreadWorkflowEventIDs(_ task: AgentTask) -> Set<UUID> {
+    /// The thread workflow events the mirror keeps, and which of them to compact. Keeping
+    /// the whole namespace whole forever made every export grow with each batch, and each
+    /// dispatch embeds its approved payload, up to 256 KiB. A batch that was sent and never
+    /// receipted is recovery evidence, so every one of them stays: the newest few whole,
+    /// older ones without the embedded payload (their file and recorded actions are what
+    /// stop a duplicate send). Settled batches are compacted to the newest few, and
+    /// dismissals to a bounded number.
+    static func threadWorkflowRetention(_ task: AgentTask) -> (kept: Set<UUID>, compact: Set<UUID>) {
         struct Entry { let id: UUID; let type: String; let proposalID: String?; let timestamp: Date }
         let entries = task.events.compactMap { event -> Entry? in
             guard !event.isDeleted, isThreadWorkflowEvent(event.type) else { return nil }
@@ -47,24 +49,35 @@ extension WorkspaceConfigManager {
             return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String, timestamp: event.timestamp)
         }
         let settledTypes: Set<String> = ["github.review-threads.receipt", "github.review-threads.receipt-recovery"]
-        let batches = Dictionary(grouping: entries.filter { $0.proposalID != nil }, by: { $0.proposalID ?? "" })
+        typealias Batch = (events: [Entry], last: Date, settled: Bool)
+        let batches: [Batch] = Dictionary(grouping: entries.filter { $0.proposalID != nil }, by: { $0.proposalID ?? "" })
             .values.map { events in
                 (events: events, last: events.map(\.timestamp).max() ?? .distantPast,
                  settled: events.contains { settledTypes.contains($0.type) })
             }
-        let newestFirst = { (lhs: (events: [Entry], last: Date, settled: Bool), rhs: (events: [Entry], last: Date, settled: Bool)) in
-            lhs.last > rhs.last
-        }
-        var kept = Set<UUID>()
-        for batch in batches.filter({ !$0.settled }).sorted(by: newestFirst).prefix(MirrorLimits.maxActiveThreadBatches) {
+        let newestFirst = { (lhs: Batch, rhs: Batch) in lhs.last > rhs.last }
+        var kept = Set<UUID>(), compact = Set<UUID>()
+        for (index, batch) in batches.filter({ !$0.settled }).sorted(by: newestFirst).enumerated() {
             kept.formUnion(batch.events.map(\.id))
+            if index >= MirrorLimits.maxActiveThreadBatches {
+                compact.formUnion(batch.events.filter { $0.type == "github.review-threads.dispatched" }.map(\.id))
+            }
         }
         for batch in batches.filter({ $0.settled }).sorted(by: newestFirst).prefix(MirrorLimits.maxSettledThreadBatches) {
             kept.formUnion(batch.events.map(\.id))
         }
         kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
             .prefix(MirrorLimits.maxThreadDismissals).map(\.id))
-        return kept
+        return (kept, compact)
+    }
+
+    /// A dispatch record without its embedded approved payload.
+    static func compactedThreadPayload(_ payload: String) -> String {
+        guard var object = (try? JSONSerialization.jsonObject(with: Data(payload.utf8))) as? [String: Any],
+              object.removeValue(forKey: "approvedPayload") != nil,
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let compacted = String(data: data, encoding: .utf8) else { return payload }
+        return compacted
     }
 
     /// User messages that may start, renew or cancel a GitHub thread request. The
