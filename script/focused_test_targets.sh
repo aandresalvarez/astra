@@ -119,6 +119,14 @@ target_for_path() {
       add_target "GitHubReviewPublicationTests"
       add_target "HostControlToolSupportTests"
       ;;
+    Astra/Services/Validation/TaskCompletionPolicy.swift)
+      add_target "GitHubReviewThreadWorkflowTests"
+      add_target "TaskCompletionPolicyTests"
+      ;;
+    Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspaceConfigManager+TaskRecoveryMirror.swift)
+      add_target "GitHubReviewThreadWorkflowTests"
+      add_target "WorkspacePersistenceTests"
+      ;;
     Tests/HostControlToolSupportTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
       add_target "HostControlToolSupportTests"
       ;;

@@ -189,14 +189,18 @@ enum GitHubReviewThreadRequirement {
     private static let pullRequestTail =
         #"(?:\s+\S+){0,3}?\s+(?:on|in|for|of|from|to)\s+(?:the\s+|this\s+|that\s+|my\s+|our\s+)?(?:https?://github\.com/\S+/pull/\d+|PR\s*#?\d+|pull request\b|PR\b)"#
 
+    /// The pull request named before the noun: "the PR #12 review comments".
+    private static let pullRequestHead =
+        #"(?:https?://github\.com/\S+/pull/\d+|\bPR\b\s*#?\d*|pull request(?:'s)?\s*#?\d*|\bGitHub\b(?:\s+PR)?)(?:\s+\S+){0,2}?\s+"#
+
     private static func intent(_ rawText: String, allowPronoun: Bool = false) -> Bool? {
         // "then" ends a clause as a comma does: "Reply to the Slack thread, then
         // inspect GitHub PR #12" is two jobs.
         let text = rawText.replacingOccurrences(of: #"(?i)\bthen\b"#, with: ",", options: .regularExpression)
-        let object = "(?:" + threadNoun + "|" + bareNoun + (allowPronoun ? "" : pullRequestTail) + ")"
+        let object = "(?:" + threadNoun + "|" + bareNoun + (allowPronoun ? "" : pullRequestTail) + "|" + pullRequestHead + bareNoun + ")"
         var pattern = #"(?i)\b(?:resolve|reslolve|resolving|reply|replying|replies)\b(?:\s+\S+){0,6}?\s+\b"# + object
             + #"|\bmark\b(?:\s+\S+){0,4}?\s+\b(?:"# + threadNoun + "|" + bareNoun + #")(?:\s+\S+){0,7}?\s+\bresolved\b"#
-        let qualifyingObject = #"(?i)\b(?:"# + threadNoun + "|" + bareNoun + pullRequestTail + ")"
+        let qualifyingObject = #"(?i)\b(?:"# + threadNoun + "|" + bareNoun + pullRequestTail + "|" + pullRequestHead + bareNoun + ")"
         if allowPronoun || text.range(of: qualifyingObject, options: .regularExpression) != nil {
             pattern += #"|\b(?:resolve|reslolve)\s+(?:them|those|these)\b"#
         }

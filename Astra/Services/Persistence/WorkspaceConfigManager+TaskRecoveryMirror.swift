@@ -34,16 +34,19 @@ extension WorkspaceConfigManager {
     /// User messages that may start, renew or cancel a GitHub thread request. The
     /// request is derived from the conversation, so a cancellation dropped by the
     /// bounded history would bring a cancelled request back after recovery. This
-    /// cannot call the request logic from here, so it keeps any message that uses
-    /// its vocabulary: keeping too many is harmless, keeping too few is not.
+    /// cannot call the request logic from here, so it keeps the newest short messages
+    /// that use its vocabulary, within a fixed bound.
     static func threadRequestLanguageEventIDs(_ task: AgentTask) -> Set<UUID> {
         let types: Set<String> = [TaskEventTypes.Conversation.userMessage.rawValue, TaskEventTypes.Plan.userMessage.rawValue]
         let words = ["thread", "resolv", "reslolv", "conversation", "comment", "coment", "repl",
                      "never mind", "nevermind", "cancel", "skip", "forget", "drop", "stop", "do not send", "don't send"]
-        return Set(task.events.compactMap { event in
-            types.contains(event.type) && words.contains(where: { event.payload.localizedCaseInsensitiveContains($0) })
-                ? event.id : nil
-        })
+        let matching = task.events.filter { event in
+            types.contains(event.type)
+                && event.payload.count <= MirrorLimits.maxThreadLanguagePayloadCharacters
+                && words.contains(where: { event.payload.localizedCaseInsensitiveContains($0) })
+        }
+        return Set(matching.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString > $1.id.uuidString : $0.timestamp > $1.timestamp }
+            .prefix(MirrorLimits.maxThreadLanguageEvents).map(\.id))
     }
 
     /// Recovery authority is explicit and independent of schedule enablement.

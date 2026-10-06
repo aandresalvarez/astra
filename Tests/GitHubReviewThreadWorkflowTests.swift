@@ -305,7 +305,10 @@ struct GitHubReviewThreadWorkflowTests {
         "Reply to the review threads and resolve them on GitHub PR 12",
         "In PR 12 reply to the threads",
         "Reply to the Slack thread and resolve the threads on GitHub PR 12",
-        "Reply to the review threads on PR 12 but do not resolve them"
+        "Reply to the review threads on PR 12 but do not resolve them",
+        "Reply to the PR #12 review comments",
+        "Reply to the GitHub PR comments",
+        "Resolve the pull request's review comments"
     ])
     func realRequestsAreDetected(goal: String) {
         #expect(request(for: goal) != nil, "\(goal)")
@@ -880,5 +883,31 @@ struct GitHubReviewThreadWorkflowTests {
         addNoise(f, count: WorkspaceConfigManager.MirrorLimits.maxEventsPerTask + 5)
 
         #expect(try mirroredEventIDs(f).contains(cancel.id.uuidString))
+    }
+
+    // MARK: - Recovery retention is bounded
+
+    @Test("thread-vocabulary retention is capped and keeps long pasted text out")
+    func languageRetentionIsBounded() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let long = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                             payload: "Here is a long log with a comment in it: " + String(repeating: "x", count: 10_000))
+        f.context.insert(long)
+        var ordinary: [TaskEvent] = []
+        for index in 0..<80 {
+            let event = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "please comment on item \(index)")
+            f.context.insert(event); ordinary.append(event)
+        }
+        addNoise(f, count: WorkspaceConfigManager.MirrorLimits.maxEventsPerTask + 5)
+
+        let workspace = try #require(f.task.workspace)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: f.context))
+        let mirrored = try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString })
+        let kept = Set(mirrored.events.compactMap(\.id))
+        let userMessages = mirrored.events.filter { $0.type == TaskEventTypes.Conversation.userMessage.rawValue }
+
+        #expect(!kept.contains(long.id.uuidString))
+        #expect(userMessages.count <= WorkspaceConfigManager.MirrorLimits.maxThreadLanguageEvents + WorkspaceConfigManager.MirrorLimits.maxEventsPerTask)
+        #expect(userMessages.allSatisfy { $0.payload.count <= WorkspaceConfigManager.MirrorLimits.maxEventPayloadCharacters })
     }
 }

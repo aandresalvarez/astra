@@ -24,6 +24,10 @@ public enum WorkspaceConfigManager {
     public enum MirrorLimits {
         public static let maxRunsPerTask = 10
         public static let maxEventsPerTask = 10
+        /// User messages kept for their thread-request vocabulary, newest first, and the
+        /// longest one worth keeping: a request or a cancellation is a short sentence.
+        public static let maxThreadLanguageEvents = 30
+        public static let maxThreadLanguagePayloadCharacters = 400
         public static let maxWorkspaceAppRuns = 10
         public static let maxWorkspaceAppRunEvents = 10
         public static let maxRunOutputCharacters = 8_000
@@ -1878,13 +1882,15 @@ public enum WorkspaceConfigManager {
             $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
         }
             .suffix(MirrorLimits.maxEventsPerTask).map(\.id))
-        let retainedSourceIDs = recovery.sourceEventIDs
-            .union(threadRequestEventIDs(task)).union(threadRequestLanguageEventIDs(task))
+        // The messages thread records point at are kept whole. The vocabulary-based ones
+        // are bounded in number and size and keep the usual payload truncation.
+        let fullPayloadIDs = recovery.sourceEventIDs.union(threadRequestEventIDs(task))
+        let retainedSourceIDs = fullPayloadIDs.union(threadRequestLanguageEventIDs(task))
         let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
             || retainedSourceIDs.contains($0.id) || isTaskRecoveryEvent($0.type)) }
             .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         let eventConfigs = mirroredEvents.compactMap { event -> EventConfig? in
-            guard let payload = isTaskRecoveryEvent(event.type) || retainedSourceIDs.contains(event.id)
+            guard let payload = isTaskRecoveryEvent(event.type) || fullPayloadIDs.contains(event.id)
                 ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters) else { return nil }
             return EventConfig(
                 id: event.id.uuidString,

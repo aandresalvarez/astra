@@ -40,6 +40,13 @@ assert_targets $'GitHubReviewThreadWorkflowTests\nGitHubReviewPublicationTests\n
   "Tools/HostControlToolSupport/GitHubReviewThreadReadOperation.swift" \
   "Tests/GitHubReviewThreadWorkflowTests.swift"
 
+assert_targets $'GitHubReviewThreadWorkflowTests\nTaskCompletionPolicyTests' \
+  "Astra/Services/Validation/TaskCompletionPolicy.swift"
+
+assert_targets $'GitHubReviewThreadWorkflowTests\nWorkspacePersistenceTests' \
+  "Astra/Services/Persistence/WorkspaceConfigManager.swift" \
+  "Astra/Services/Persistence/WorkspaceConfigManager+TaskRecoveryMirror.swift"
+
 assert_targets $'MCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
   "Package.swift"
 
