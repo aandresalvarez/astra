@@ -17,7 +17,7 @@ struct GitHubReviewThreadWorkflowTests {
         var comments: [[String: Any]] = [["id": "C1", "body": "Please fix this", "url": "https://github.com/example/repo/pull/12#discussion_r1", "author": ["login": "reviewer"]]]
         var replies = 0; var resolutions = 0; var reads = 0
         var failResolution = false; var loseReplyResponse = false; var wrongReceipt = false
-        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []; var editAfterReply = false; var canReply = true
+        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []; var editAfterReply = false; var canReply = true; var failFromRead: Int?
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             #expect(arguments.contains("github.com"))
@@ -44,6 +44,7 @@ struct GitHubReviewThreadWorkflowTests {
             }
             reads += 1
             if failReads { throw NSError(domain: "offline", code: 1) }
+            if let limit = failFromRead, reads >= limit { throw NSError(domain: "offline", code: 3) }
             if let id = arguments.first(where: { $0.hasPrefix("id=") }).map({ String($0.dropFirst(3)) }), transientThreads.contains(id) {
                 throw NSError(domain: "offline", code: 2)
             }
@@ -76,6 +77,7 @@ struct GitHubReviewThreadWorkflowTests {
         func setTransient(_ ids: Set<String>) { transientThreads = ids }
         func setEditAfterReply(_ on: Bool) { editAfterReply = on }
         func setCanReply(_ on: Bool) { canReply = on }
+        func setFailFromRead(_ n: Int?) { failFromRead = n }
         func changeHead() { head = String(repeating: "b", count: 40) }
         func changeHead(to value: String) { head = value }
         func changeTarget() { target = "https://github.com/example/other/pull/12" }
@@ -312,6 +314,8 @@ struct GitHubReviewThreadWorkflowTests {
         "Reply to review comments on GitHub PR #12",
         "Reply to the comments on GitHub",
         "Reply to the GitHub review thread with the answer from Slack",
+        "Reply but do not resolve the GitHub review threads on PR 12",
+        "Reply and don't resolve the threads on PR 12",
         "Resolve the threads on PR 12 using the Jira ticket notes"
     ])
     func realRequestsAreDetected(goal: String) {
@@ -914,5 +918,45 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(!kept.contains(long.id.uuidString))
         #expect(userMessages.count <= WorkspaceConfigManager.MirrorLimits.maxThreadLanguageEvents + WorkspaceConfigManager.MirrorLimits.maxEventsPerTask)
         #expect(userMessages.allSatisfy { $0.payload.count <= WorkspaceConfigManager.MirrorLimits.maxEventPayloadCharacters })
+    }
+
+    // MARK: - Reads stay under the broker output cap
+
+    @Test("thread reads keep pages small and leave comment bodies out of the thread list")
+    func readsStayUnderTheOutputCap() throws {
+        func query(_ input: [String]) throws -> String {
+            try #require(GitHubReviewThreadReadOperation.arguments(for: input).first { $0.hasPrefix("query=") })
+        }
+        let list = try query(["review-threads", "--repo", "owner/repo", "--pr", "12"])
+        let thread = try query(["review-thread", "--id", "T1"])
+
+        #expect(!list.contains("body"))
+        #expect(list.contains("comments(first: 1)"))
+        #expect(thread.contains("body"))
+        #expect(thread.contains("comments(first: 5"))
+    }
+
+    // MARK: - A failure before any write leaves the proposal sendable
+
+    @Test("a read that fails before anything is sent does not consume the proposal")
+    func preWriteFailureDoesNotConsumeTheProposal() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI()
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)   // read 1
+        await cli.setFailFromRead(3)   // the send's own preparation (read 2) passes; the loop's read fails
+
+        await #expect(throws: Error.self) {
+            _ = try await service.publish(task: f.task, proposal: proposal)
+        }
+
+        #expect(await cli.counts().0 == 0)
+        #expect(!GitHubReviewThreadPublicationService.hasDispatched(task: f.task, filePath: f.file.path))
+        #expect(!f.task.events.contains { $0.type == GitHubReviewThreadEvents.indeterminate })
+
+        await cli.setFailFromRead(nil)
+        let again = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: again)
+        #expect(await cli.counts().0 == 1)
     }
 }

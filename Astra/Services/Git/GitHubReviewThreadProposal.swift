@@ -230,7 +230,12 @@ enum GitHubReviewThreadRequirement {
             let tail = String(text[span.upperBound...])
             let tailEnd = tail.range(of: boundary, options: .regularExpression)?.lowerBound ?? tail.endIndex
             let lead = head[headStart...].split(whereSeparator: \.isWhitespace).suffix(4).joined(separator: " ")
-            let phrase = (lead + " " + text[span]).lowercased()
+            // A negation in front of a later verb ("reply but do not resolve ...") belongs to
+            // that verb, not to the operation that began with the first one.
+            let operationText = String(text[span]).replacingOccurrences(
+                of: #"(?i)\b(?:do not|don't|dont|never|not)\s+(?:resolve|reslolve|resolving|reply|replying|replies)\b"#,
+                with: "", options: .regularExpression)
+            let phrase = (lead + " " + operationText).lowercased()
             let clause = String(head[headStart...] + text[span] + tail[..<tailEnd])
             // What a follow-up needs to count without naming GitHub: "resolve them", an
             // explicit thread or conversation, or the resolve verb itself, which is

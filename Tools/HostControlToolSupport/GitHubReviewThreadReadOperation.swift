@@ -6,7 +6,7 @@ public enum GitHubReviewThreadReadOperation {
     public static let names: Set<String> = ["review-threads", "review-thread"]
 
     public static let publicationGuidance = """
-    To reply to or resolve existing PR review threads, read them with review-threads --repo OWNER/REPO --pr NUMBER and review-thread --id THREAD_ID. Both accept --after CURSOR; follow pageInfo.hasNextPage for threads and comments. Prepare pr<NUMBER>_threads.json (or a versioned pr<NUMBER>_threads_2.json) in the task folder: {"pull_request_url":"https://github.com/OWNER/REPO/pull/NUMBER","commit_id":"40-character headRefOid","threads":[{"thread_id":"thread node id","expected_last_comment_id":"last comment node id after reading all pages","reply":"exact reply text, or omit for resolution only","resolve":true}]}. Include only addressed threads. In Ask obtain normal Write approval for this proposal. The file is a proposal: ASTRA shows the exact changes and sends them after the user presses Send thread changes. Report publication as pending until ASTRA records receipts. Raw api and direct credential workarounds remain unavailable through this capability.
+    To reply to or resolve existing PR review threads, read them with review-threads --repo OWNER/REPO --pr NUMBER and review-thread --id THREAD_ID. review-threads lists threads with only each thread's first comment (identity, no body) and review-thread returns the bodies; both accept --after CURSOR, so follow pageInfo.hasNextPage for threads and, for a thread, for its comments. Prepare pr<NUMBER>_threads.json (or a versioned pr<NUMBER>_threads_2.json) in the task folder: {"pull_request_url":"https://github.com/OWNER/REPO/pull/NUMBER","commit_id":"40-character headRefOid","threads":[{"thread_id":"thread node id","expected_last_comment_id":"last comment node id after reading all pages","reply":"exact reply text, or omit for resolution only","resolve":true}]}. Include only addressed threads. In Ask obtain normal Write approval for this proposal. The file is a proposal: ASTRA shows the exact changes and sends them after the user presses Send thread changes. Report publication as pending until ASTRA records receipts. Raw api and direct credential workarounds remain unavailable through this capability.
     """
 
     public static func arguments(for input: [String]) throws -> [String] {
@@ -54,8 +54,11 @@ public enum GitHubReviewThreadReadOperation {
         }
     }
 
+    /// The thread list carries only who opened each thread, never comment bodies: twenty
+    /// threads of twenty long comments would pass the broker's 256 KiB output cap and
+    /// return truncated, unparseable JSON. The bodies come from `review-thread`.
     private static let comments = """
-    comments(first: 20) { totalCount pageInfo { hasNextPage endCursor } nodes { id body url author { login } } }
+    comments(first: 1) { totalCount nodes { id url author { login } } }
     """
     private static let listQuery = """
     query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -70,7 +73,7 @@ public enum GitHubReviewThreadReadOperation {
     private static let threadQuery = """
     query($id: ID!, $after: String) { node(id: $id) { ... on PullRequestReviewThread {
       id path line isResolved viewerCanResolve viewerCanReply pullRequest { url headRefOid state }
-      comments(first: 20, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { id body url author { login } } }
+      comments(first: 5, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { id body url author { login } } }
     } } }
     """
 }

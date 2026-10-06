@@ -148,6 +148,9 @@ final class GitHubReviewThreadPublicationService {
         catch { modelContext.delete(event); task.events.removeAll { $0.id == event.id }; throw error }
 
         var receipts: [GitHubReviewThreadReceipt.Action] = []
+        // Set just before the first request that can write. A failure before that left GitHub
+        // untouched, so it must not consume the proposal.
+        var attemptedWrite = false
         do {
             for (index, action) in proposal.payload.threads.enumerated() {
                 // Revalidate each thread immediately before its writes, since a
@@ -160,6 +163,7 @@ final class GitHubReviewThreadPublicationService {
                     throw GitHubReviewPublicationError.invalid("A review discussion changed before sending.")
                 }
                 if let body = action.reply {
+                    attemptedWrite = true
                     let receipt = try await mutate(task: task, proposal: proposal, action: action, body: body)
                     receipts.append(receipt)
                     try saveActionReceipt(record(proposal, actions: [receipt]), task: task, run: run)
@@ -182,12 +186,19 @@ final class GitHubReviewThreadPublicationService {
                           latest.comments.last?.id == lastID, currentComments == approvedComments else {
                         throw GitHubReviewPublicationError.invalid("The PR or thread changed after posting the reply; resolution was not sent.")
                     }
+                    attemptedWrite = true
                     let receipt = try await mutate(task: task, proposal: proposal, action: action, body: nil)
                     receipts.append(receipt)
                     try saveActionReceipt(record(proposal, actions: [receipt]), task: task, run: run)
                 }
             }
         } catch {
+            if !attemptedWrite {
+                // Nothing was sent: take the dispatch back so the unchanged proposal can be sent again.
+                modelContext.delete(event); task.events.removeAll { $0.id == event.id }
+                try? save(task: task, operation: "github_review_threads_dispatch_withdrawn")
+                throw GitHubReviewPublicationError.invalid("GitHub could not be checked before anything was sent, so nothing changed. Send the proposal again. \(error.localizedDescription)")
+            }
             modelContext.insert(TaskEvent.structuredPayloadEvent(task: task, type: GitHubReviewThreadEvents.indeterminate,
                                                                 payload: record(proposal, actions: receipts), run: run))
             try? save(task: task, operation: "github_review_threads_indeterminate")
@@ -355,7 +366,7 @@ final class GitHubReviewThreadPublicationService {
 
     private func loadThread(task: AgentTask, id: String) async throws -> GitHubReviewThreadSnapshot {
         var cursor: String?; var seen: Set<String> = []; var snapshot: GitHubReviewThreadSnapshot?
-        for _ in 0..<50 {
+        for _ in 0..<200 {
             var input = ["review-thread", "--id", id]
             if let cursor { input += ["--after", cursor] }
             let output: String
