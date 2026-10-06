@@ -834,4 +834,51 @@ struct GitHubReviewThreadWorkflowTests {
         let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
         #expect(proposal.payload.threads[0].reply == nil)
     }
+
+    // MARK: - Permissions and ambiguity are not defects of the file
+
+    @Test("a missing viewer permission leaves the proposal retryable instead of dismissing it")
+    func missingViewerPermissionDoesNotDismiss() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI(); await cli.setCanReply(false)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+        #expect(dismissals(f.task).isEmpty)
+        #expect(GitHubReviewThreadPublicationService.pendingCandidatePath(task: f.task, filePaths: [f.file.path]) == f.file.path)
+
+        // After permission is granted the unchanged file works again.
+        await cli.setCanReply(true)
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        #expect(proposal.filePath == f.file.path)
+    }
+
+    @Test("a request naming several pull requests is rejected, not satisfied by one receipt")
+    func multiplePullRequestsAreRejected() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Resolve the review threads on PR 12 and PR 13"
+        let service = GitHubReviewThreadPublicationService(
+            modelContext: f.context, cli: FakeCLI(), originURL: { _ in "https://github.com/example/repo.git" })
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+
+        #expect(dismissals(f.task).isEmpty)
+        #expect(!f.task.events.contains { $0.type == GitHubReviewThreadEvents.dispatched })
+    }
+
+    // MARK: - Cancellations survive recovery
+
+    @Test("a cancellation of a goal-level request older than the bounded history is kept")
+    func mirrorKeepsAnOldCancellation() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cancel = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "never mind")
+        f.context.insert(cancel)
+        addNoise(f, count: WorkspaceConfigManager.MirrorLimits.maxEventsPerTask + 5)
+
+        #expect(try mirroredEventIDs(f).contains(cancel.id.uuidString))
+    }
 }

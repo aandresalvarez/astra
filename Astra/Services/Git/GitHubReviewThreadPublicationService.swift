@@ -112,6 +112,7 @@ final class GitHubReviewThreadPublicationService {
         for action in payload.threads {
             let snapshot = try await loadThread(task: task, id: action.threadId)
             try Self.unusable { try validate(snapshot, action: action, payload: payload) }
+            try requirePermissions(snapshot, action: action)
             snapshots.append(snapshot)
         }
         let request = GitHubReviewThreadRequirement.request(task: task)
@@ -153,6 +154,7 @@ final class GitHubReviewThreadPublicationService {
                 // prior thread may have taken time or triggered new review activity.
                 let snapshot = try await loadThread(task: task, id: action.threadId)
                 try validate(snapshot, action: action, payload: proposal.payload)
+                try requirePermissions(snapshot, action: action)
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
                 guard try encoder.encode(snapshot) == encoder.encode(proposal.snapshots[index]) else {
                     throw GitHubReviewPublicationError.invalid("A review discussion changed before sending.")
@@ -265,6 +267,16 @@ final class GitHubReviewThreadPublicationService {
         return (data, payload)
     }
 
+    private static func pullRequestNumbers(in text: String) -> [String] {
+        let patterns = [#"(?i)\b(?:PR|pull request)\s*#?([1-9][0-9]*)\b"#, #"(?i)github\.com/[^/\s]+/[^/\s]+/pull/([1-9][0-9]*)"#]
+        return patterns.flatMap { pattern -> [String] in
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+            return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+                Range($0.range(at: 1), in: text).map { String(text[$0]) }
+            }
+        }
+    }
+
     /// A defect of the proposal (its name, or a PR other than the request names) is
     /// `unusableArtifact` and dismisses it. Missing repository context, such as a
     /// workspace with no readable GitHub origin, is `invalid`: the user can supply
@@ -275,6 +287,11 @@ final class GitHubReviewThreadPublicationService {
             throw GitHubReviewPublicationError.unusableArtifact("The thread proposal filename does not match its pull request.")
         }
         let request = GitHubReviewThreadRequirement.request(task: task)?.targetText ?? task.goal
+        // One proposal targets one pull request and one receipt settles the request, so
+        // a request naming several would be marked done after the first.
+        if Set(Self.pullRequestNumbers(in: request)).count > 1 {
+            throw GitHubReviewPublicationError.invalid("The request names more than one pull request. Ask for one pull request at a time.")
+        }
         if request.range(of: "github.com/", options: .caseInsensitive) != nil,
            GitHubReviewTargetResolver.durableTarget(task: task, request: request) == nil {
             throw GitHubReviewPublicationError.invalid("The request must identify one GitHub pull request.")
@@ -295,11 +312,23 @@ final class GitHubReviewThreadPublicationService {
         }
     }
 
+    /// What the signed-in account may do is not a defect of the proposal: it changes
+    /// when the user switches account or is granted access, so it stays retryable
+    /// instead of dismissing the file.
+    private func requirePermissions(_ snapshot: GitHubReviewThreadSnapshot, action: GitHubReviewThreadPayload.Action) throws {
+        if action.reply != nil, !snapshot.viewerCanReply {
+            throw GitHubReviewPublicationError.invalid("The signed-in GitHub account cannot reply to this thread. Switch account or ask for access, then review the proposal again.")
+        }
+        if action.resolve, !snapshot.viewerCanResolve {
+            throw GitHubReviewPublicationError.invalid("The signed-in GitHub account cannot resolve this thread. Switch account or ask for access, then review the proposal again.")
+        }
+    }
+
     private func validate(_ snapshot: GitHubReviewThreadSnapshot, action: GitHubReviewThreadPayload.Action, payload: GitHubReviewThreadPayload) throws {
         guard snapshot.id == action.threadId,
               snapshot.pullRequest.url.caseInsensitiveCompare(payload.pullRequestUrl) == .orderedSame,
               snapshot.pullRequest.state == "OPEN", snapshot.pullRequest.headRefOid.caseInsensitiveCompare(payload.commitId) == .orderedSame,
-              !snapshot.isResolved, (!action.resolve || snapshot.viewerCanResolve), (action.reply == nil || snapshot.viewerCanReply),
+              !snapshot.isResolved,
               snapshot.comments.last?.id == action.expectedLastCommentId else {
             throw GitHubReviewPublicationError.invalid("The thread is unavailable, resolved, changed, or belongs to another PR/head. Read it again and prepare a new proposal.")
         }
