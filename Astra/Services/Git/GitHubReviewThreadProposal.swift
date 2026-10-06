@@ -196,6 +196,6 @@ enum GitHubReviewThreadRequirement {
             .components(separatedBy: CharacterSet(charactersIn: ".!?;\n")).last ?? ""
         let lead = clause.split(whereSeparator: \.isWhitespace).suffix(4).joined(separator: " ")
         let phrase = (lead + " " + text[range]).lowercased()
-        return phrase.range(of: #"\b(?:do not|don't|dont|never|without|not|no)\b"#, options: .regularExpression) == nil
+        return phrase.range(of: #"\b(?:do not|don't|dont|never|without|not|no|stop|cancel|skip|abort)\b"#, options: .regularExpression) == nil
     }
 }

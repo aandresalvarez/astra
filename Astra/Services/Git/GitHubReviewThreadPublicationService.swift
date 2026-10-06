@@ -321,6 +321,12 @@ final class GitHubReviewThreadPublicationService {
             } catch GitHubCLIError.commandFailed(let detail) where Self.isMissingNode(detail) {
                 throw GitHubReviewPublicationError.unusableArtifact(Self.missingThreadMessage)
             }
+            // A node id of another GitHub type matches none of the query's inline
+            // fragment, so GitHub answers `"node": {}`, which has no thread to decode.
+            if let object = try? JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any],
+               let data = object["data"] as? [String: Any], let node = data["node"] as? [String: Any], node.isEmpty {
+                throw GitHubReviewPublicationError.unusableArtifact("A thread id in this proposal does not refer to a review thread. Read the pull request again and prepare a new proposal.")
+            }
             let response = try JSONDecoder().decode(ThreadResponse.self, from: Data(output.utf8))
             if response.errors?.contains(where: { $0.type == "NOT_FOUND" || Self.isMissingNode($0.message) }) == true
                 || (response.errors?.isEmpty ?? true) && response.data?.node == nil {

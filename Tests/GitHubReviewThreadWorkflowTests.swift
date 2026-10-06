@@ -17,7 +17,7 @@ struct GitHubReviewThreadWorkflowTests {
         var comments: [[String: Any]] = [["id": "C1", "body": "Please fix this", "url": "https://github.com/example/repo/pull/12#discussion_r1", "author": ["login": "reviewer"]]]
         var replies = 0; var resolutions = 0; var reads = 0
         var failResolution = false; var loseReplyResponse = false; var wrongReceipt = false
-        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []
+        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             #expect(arguments.contains("github.com"))
@@ -43,6 +43,10 @@ struct GitHubReviewThreadWorkflowTests {
             }
             reads += 1
             if failReads { throw NSError(domain: "offline", code: 1) }
+            if let id = arguments.first(where: { $0.hasPrefix("id=") }).map({ String($0.dropFirst(3)) }), notThreads.contains(id) {
+                // An id of another GitHub type: the inline fragment matches nothing.
+                return try json(["data": ["node": [String: Any]()]])
+            }
             if let id = arguments.first(where: { $0.hasPrefix("id=") }).map({ String($0.dropFirst(3)) }), missingThreads.contains(id) {
                 throw GitHubCLIError.commandFailed("gh: Could not resolve to a node with the global id of '\(id)'")
             }
@@ -64,6 +68,7 @@ struct GitHubReviewThreadWorkflowTests {
         func counts() -> (Int, Int, Int) { (replies, resolutions, reads) }
         func setReadFailure(_ on: Bool) { failReads = on }
         func setMissing(_ ids: Set<String>) { missingThreads = ids }
+        func setNotThreads(_ ids: Set<String>) { notThreads = ids }
         func changeHead() { head = String(repeating: "b", count: 40) }
         func changeHead(to value: String) { head = value }
         func changeTarget() { target = "https://github.com/example/other/pull/12" }
@@ -305,6 +310,9 @@ struct GitHubReviewThreadWorkflowTests {
         "Reply to the Slack comments about the release and resolve them. Then check the GitHub PR",
         "Open a GitHub PR and mark the issue as resolved",
         "Investigate why the GitHub workflow fails; do not resolve any threads",
+        "Stop resolving the review threads on PR 12",
+        "Cancel replying to the threads on PR 12",
+        "Skip resolving the threads on GitHub PR 12",
         "Resolve the merge conflicts in my GitHub PR and update the review",
         "Review this GitHub PR and reply with your comments here",
         "Review the pull request and reply with your review comments in this chat",
@@ -574,5 +582,30 @@ struct GitHubReviewThreadWorkflowTests {
         let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
         #expect(proposal.filePath == f.file.path)
         #expect(dismissals(f.task).isEmpty)
+    }
+
+    @Test("an explicit stop phrase with an object clears an active request")
+    func stopPhraseClearsAnActiveRequest() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "Stop resolving the review threads on PR 12"))
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
+    }
+
+    @Test("a node id of another GitHub type is an unusable proposal, not a decoding failure")
+    func nonThreadNodeIsDismissed() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let wrong = f.file.deletingLastPathComponent().appendingPathComponent("pr12_threads_1.json")
+        let object: [String: Any] = ["pull_request_url": "https://github.com/example/repo/pull/12", "commit_id": Self.head,
+            "threads": [["thread_id": "PR_kwDOnotAThread", "expected_last_comment_id": "C1", "reply": "Done", "resolve": true]]]
+        try JSONSerialization.data(withJSONObject: object).write(to: wrong)
+        let cli = FakeCLI(); await cli.setNotThreads(["PR_kwDOnotAThread"])
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [wrong.path, f.file.path])
+
+        #expect(proposal.filePath == f.file.path)
+        #expect(GitHubReviewThreadPublicationService.hasDismissed(task: f.task, filePath: wrong.path))
     }
 }
