@@ -102,7 +102,7 @@ final class GitHubReviewThreadPublicationService {
             throw GitHubReviewPublicationError.unusableArtifact("This thread proposal was dismissed after validation failed. Save a corrected proposal under a new versioned filename.")
         }
         let (data, payload) = try Self.unusable { try readPayload(task: task, filePath: filePath) }
-        try await Self.unusable { try await validateTarget(task: task, payload: payload, filePath: filePath) }
+        try await validateTarget(task: task, payload: payload, filePath: filePath)
         var snapshots: [GitHubReviewThreadSnapshot] = []
         for action in payload.threads {
             let snapshot = try await loadThread(task: task, id: action.threadId)
@@ -250,10 +250,14 @@ final class GitHubReviewThreadPublicationService {
         return (data, payload)
     }
 
+    /// A defect of the proposal (its name, or a PR other than the request names) is
+    /// `unusableArtifact` and dismisses it. Missing repository context, such as a
+    /// workspace with no readable GitHub origin, is `invalid`: the user can supply
+    /// it, and the same proposal must work afterwards.
     private func validateTarget(task: AgentTask, payload: GitHubReviewThreadPayload, filePath: String) async throws {
         guard let target = GitHubReviewThreadArtifactPolicy.target(payload.pullRequestUrl),
               URL(fileURLWithPath: filePath).lastPathComponent.hasPrefix("pr\(target.number)_threads") else {
-            throw GitHubReviewPublicationError.invalid("The thread proposal filename does not match its pull request.")
+            throw GitHubReviewPublicationError.unusableArtifact("The thread proposal filename does not match its pull request.")
         }
         let request = GitHubReviewThreadRequirement.request(task: task)?.text ?? task.goal
         if request.range(of: "github.com/", options: .caseInsensitive) != nil,
@@ -262,15 +266,16 @@ final class GitHubReviewThreadPublicationService {
         }
         if let expected = GitHubReviewTargetResolver.durableTarget(task: task, request: request) {
             guard expected.url.caseInsensitiveCompare(payload.pullRequestUrl) == .orderedSame else {
-                throw GitHubReviewPublicationError.invalid("The thread proposal targets a different PR from the user's request.")
+                throw GitHubReviewPublicationError.unusableArtifact("The thread proposal targets a different PR from the user's request.")
             }
         } else {
-            guard request.range(of: "github.com/", options: .caseInsensitive) == nil,
-                  let origin = await originURL(task.executionRootPath ?? task.workspace?.primaryPath ?? ""),
+            guard let origin = await originURL(task.executionRootPath ?? task.workspace?.primaryPath ?? ""),
                   let repository = GitService.githubRepositoryArgument(from: origin),
-                  repository.caseInsensitiveCompare("github.com/" + target.repository) == .orderedSame,
-                  GitHubReviewTargetResolver.shorthandNumber(in: request).map({ $0 == target.number }) ?? true else {
+                  repository.caseInsensitiveCompare("github.com/" + target.repository) == .orderedSame else {
                 throw GitHubReviewPublicationError.invalid("Add the full PR URL to the task request or connect its workspace to the target GitHub repository.")
+            }
+            if let requested = GitHubReviewTargetResolver.shorthandNumber(in: request), requested != target.number {
+                throw GitHubReviewPublicationError.unusableArtifact("The thread proposal targets a different PR from the user's request.")
             }
         }
     }

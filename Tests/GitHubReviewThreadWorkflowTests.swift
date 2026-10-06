@@ -514,4 +514,39 @@ struct GitHubReviewThreadWorkflowTests {
             #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
         }
     }
+
+    // MARK: - Missing repository context is retryable, a wrong file is not
+
+    @Test("a missing workspace origin leaves a valid proposal retryable instead of dismissing it")
+    func missingOriginDoesNotDismiss() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Resolve the threads on PR 12"
+        let offline = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI(), originURL: { _ in nil })
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await offline.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+        #expect(dismissals(f.task).isEmpty)
+        #expect(GitHubReviewThreadPublicationService.pendingCandidatePath(task: f.task, filePaths: [f.file.path]) == f.file.path)
+
+        // Connecting the workspace afterwards makes the same file usable.
+        let connected = GitHubReviewThreadPublicationService(
+            modelContext: f.context, cli: FakeCLI(), originURL: { _ in "https://github.com/example/repo.git" })
+        let proposal = try await connected.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        #expect(proposal.filePath == f.file.path)
+    }
+
+    @Test("a proposal for a different PR than the request names is a defect of the file and is dismissed")
+    func wrongPullRequestIsDismissed() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Resolve the threads on PR 99"
+        let service = GitHubReviewThreadPublicationService(
+            modelContext: f.context, cli: FakeCLI(), originURL: { _ in "https://github.com/example/repo.git" })
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        }
+
+        #expect(dismissals(f.task).count == 1)
+    }
 }
