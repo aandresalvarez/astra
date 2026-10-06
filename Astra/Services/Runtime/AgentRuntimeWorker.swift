@@ -591,7 +591,9 @@ final class AgentRuntimeWorker {
 
         let executionPath: String
         let shouldCleanupIsolation: Bool
-        if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) {
+        let scopedCopyRequiresIsolation = launchTask.acceptedResourceScope?.resources
+            .contains { $0.role == .isolationSource } == true
+        if runtimeAdapter.shouldPrepareIsolation(phase: auditPhase) || scopedCopyRequiresIsolation {
             do {
                 executionPath = try await IsolationService.prepare(task: launchTask)
                 shouldCleanupIsolation = true

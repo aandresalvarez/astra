@@ -82,6 +82,11 @@ enum RuntimeTurnSettlementService {
                        verdictPersistence: (() throws -> Void)? = nil,
                        sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
+        // A workspace edited while the run was suspended must not receive this run's export.
+        var autoExport = autoExport
+        if !TaskExecutionResourcePreparation.isCurrent(task: task, scope: checkpoint.launchSnapshot.resourceScope) {
+            autoExport = false
+        }
         do {
             try checkpoint.bindExecutionStorage(task: task, modelContext: modelContext)
             if let id = checkpoint.requestID {

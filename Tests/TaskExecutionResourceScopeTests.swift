@@ -13,6 +13,20 @@ struct TaskExecutionResourceScopeTests {
         .claudeCode, .copilotCLI, .codexCLI, .cursorCLI, .antigravityCLI, .openCodeCLI
     ]
 
+    @Test("A removed pinned execution root falls back to the workspace path")
+    func removedPinnedRootFallsBackToWorkspace() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-scope-pin-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Pin", primaryPath: root.path)
+        let task = AgentTask(title: "Pin", goal: "Edit", workspace: workspace, runtime: .claudeCode)
+        task.executionRootPath = root.appendingPathComponent("removed-checkout").path
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        #expect(scope.workingDirectory == TaskWorkspaceAccess(task: task).codeWorkingDirectory)
+        #expect(!scope.workingDirectory.hasSuffix("removed-checkout"))
+    }
+
     @Test("Accepted input files are rejected when replaced by directories")
     func acceptedInputFileReplacedByDirectoryIsInvalid() throws {
         let root = FileManager.default.temporaryDirectory

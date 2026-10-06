@@ -11,8 +11,7 @@ enum TaskExecutionResourceScopeResolver {
     ) -> TaskExecutionResourceScope {
         if let scope = task.acceptedResourceScope { return scope }
         let access = TaskWorkspaceAccess(task: task)
-        let root = task.executionRootPath.flatMap { $0.isEmpty ? nil : $0 }
-            ?? access.codeWorkingDirectory
+        let root = access.codeWorkingDirectory
         let mode = TaskExecutionResourceClaimResolver.workspaceAccess(for: task)
         var resources: [TaskExecutionResourceScope.Resource] = []
         func append(_ path: String, _ access: TaskExecutionResourceAccess, _ role: TaskExecutionResourceScope.Role) {
