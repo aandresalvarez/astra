@@ -1151,6 +1151,70 @@ struct GitHubReviewThreadWorkflowTests {
 
         #expect(withPayload.count == total)                       // every unsettled dispatch is still there
         #expect(withPayload["unsettled-0"] == false)               // the oldest ones are compacted
+        let oldest = mirrored.events.first { $0.payload.contains("unsettled-0\"") && $0.type == GitHubReviewThreadEvents.dispatched }
+        let oldestObject = oldest.flatMap { (try? JSONSerialization.jsonObject(with: Data($0.payload.utf8))) as? [String: Any] }
+        #expect((oldestObject?["requiredActions"] as? [String])?.sorted() == ["T1:reply", "T1:resolve"])
         #expect(withPayload["unsettled-\(total - 1)"] == true)     // the newest keep what recovery may need
+    }
+
+    // MARK: - Selective negation keeps what is still asked for
+
+    @Test("negating an operation for one thread does not cancel it for another")
+    func selectiveNegationKeepsThePositive() {
+        let selective = request(for: "Do not resolve the first GitHub review thread, but resolve the second GitHub review thread")
+        #expect(selective?.operations == ["resolve"])
+
+        // The last mention decides: a change of mind within the message cancels.
+        #expect(request(for: "Resolve the review threads on PR 12. Do not resolve the review threads on PR 12.") == nil)
+    }
+
+    // MARK: - Compaction keeps the required actions
+
+    @Test("a compacted dispatch still lets full receipt coverage settle the request")
+    func compactedDispatchStillSettlesFromReceipts() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        let url = "https://github.com/example/repo/pull/12"
+        func record(_ actions: [GitHubReviewThreadReceipt.Action] = [], required: [String]? = nil) -> GitHubReviewThreadReceipt {
+            var value = GitHubReviewThreadReceipt(proposalID: "old", filePath: f.file.path, requestID: request.id,
+                                                  pullRequestURL: url, actions: actions)
+            value.requiredActions = required
+            return value
+        }
+        // A dispatch as the mirror leaves it once compacted: no approved payload, only the summary.
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.dispatched,
+                                                          payload: record(required: ["T1:reply", "T1:resolve"])))
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.actionReceipt,
+            payload: record([.init(threadID: "T1", operation: "reply", commentID: "C2", url: url)])))
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))   // the resolution is not confirmed yet
+
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.actionReceipt,
+            payload: record([.init(threadID: "T1", operation: "resolve", commentID: nil, url: nil)])))
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
+    }
+
+    // MARK: - Request messages follow the retained batches
+
+    @Test("the request message of a batch the mirror dropped is not kept forever")
+    func droppedBatchesDoNotKeepTheirRequestMessages() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Look at the open review feedback"
+        let url = "https://github.com/example/repo/pull/12"
+        var messages: [TaskEvent] = []
+        for index in 0..<12 {
+            let message = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "go ahead, number \(index)")
+            f.context.insert(message); messages.append(message)
+            for type in [GitHubReviewThreadEvents.dispatched, GitHubReviewThreadEvents.receipt] {
+                let record = GitHubReviewThreadReceipt(proposalID: "settled-\(index)", filePath: "/x/pr12_threads_\(index).json",
+                    requestID: message.id.uuidString, pullRequestURL: url, actions: [.init(threadID: "T1", operation: "reply", commentID: "C", url: url)],
+                    requestEventIDs: [message.id.uuidString])
+                f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
+            }
+        }
+        addNoise(f, count: WorkspaceConfigManager.MirrorLimits.maxEventsPerTask + 5)
+
+        let kept = try mirroredEventIDs(f)
+        #expect(kept.contains(messages[11].id.uuidString))    // its batch is among the newest
+        #expect(!kept.contains(messages[0].id.uuidString))    // its batch was compacted away
     }
 }

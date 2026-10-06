@@ -19,9 +19,11 @@ extension WorkspaceConfigManager {
     /// The user message a GitHub thread record says it answers. The records are kept
     /// whole, so the message that made the request has to be kept with them, or a
     /// recovered task no longer owes the rest of a partly sent batch.
-    static func threadRequestEventIDs(_ task: AgentTask) -> Set<UUID> {
+    static func threadRequestEventIDs(_ task: AgentTask, retained: Set<UUID>) -> Set<UUID> {
         Set(task.events.flatMap { event -> [UUID] in
-            guard event.type.hasPrefix("github.review-threads."),
+            // Only for records the mirror keeps: a batch it dropped must not keep its request
+            // message, whole and past every bound, forever.
+            guard retained.contains(event.id), event.type.hasPrefix("github.review-threads."),
                   let data = event.payload.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
             // The whole chain: a continuation like "resolve them" only means something
@@ -71,11 +73,19 @@ extension WorkspaceConfigManager {
         return (kept, compact)
     }
 
-    /// A dispatch record without its embedded approved payload.
+    /// A dispatch record with a summary of the required actions in place of its approved payload.
     static func compactedThreadPayload(_ payload: String) -> String {
         guard var object = (try? JSONSerialization.jsonObject(with: Data(payload.utf8))) as? [String: Any],
-              object.removeValue(forKey: "approvedPayload") != nil,
-              let data = try? JSONSerialization.data(withJSONObject: object),
+              let approved = object.removeValue(forKey: "approvedPayload") as? [String: Any] else { return payload }
+        // What completion recovery needs from the payload: which operations it required.
+        var required: [String] = []
+        for thread in (approved["threads"] as? [[String: Any]]) ?? [] {
+            guard let id = thread["threadId"] as? String else { continue }
+            if thread["reply"] is String { required.append("\(id):reply") }
+            if thread["resolve"] as? Bool == true { required.append("\(id):resolve") }
+        }
+        object["requiredActions"] = required
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
               let compacted = String(data: data, encoding: .utf8) else { return payload }
         return compacted
     }

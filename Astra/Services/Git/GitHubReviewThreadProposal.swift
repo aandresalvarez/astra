@@ -59,6 +59,9 @@ struct GitHubReviewThreadReceipt: Codable {
     let actions: [Action]
     var approvedPayload: GitHubReviewThreadPayload? = nil
     var requestEventIDs: [String]? = nil
+    /// The operations the approved payload required ("thread:reply", "thread:resolve"). The
+    /// recovery mirror compacts old dispatches to this summary in place of the payload.
+    var requiredActions: [String]? = nil
 }
 
 /// A thread proposal ASTRA found unusable (stale head, resolved or edited thread,
@@ -196,13 +199,19 @@ enum GitHubReviewThreadRequirement {
         // durably confirmed, and there is nothing left to propose or send.
         let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
         return !records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
-            guard requestIDs.contains(dispatch.requestID ?? ""), let payload = dispatch.approvedPayload else { return false }
+            guard requestIDs.contains(dispatch.requestID ?? "") else { return false }
             let confirmedActions = confirmed.filter { $0.proposalID == dispatch.proposalID }.flatMap(\.actions)
             guard covers(finalActions + confirmedActions) else { return false }
             let done = Set(confirmedActions.map { "\($0.threadID):\($0.operation)" })
-            let required = payload.threads.flatMap { thread in
-                (thread.reply != nil ? ["\(thread.threadId):reply"] : []) + (thread.resolve ? ["\(thread.threadId):resolve"] : [])
-            }
+            // The approved payload, or the summary a compacted dispatch keeps in its place.
+            let required: [String]
+            if let payload = dispatch.approvedPayload {
+                required = payload.threads.flatMap { thread in
+                    (thread.reply != nil ? ["\(thread.threadId):reply"] : []) + (thread.resolve ? ["\(thread.threadId):resolve"] : [])
+                }
+            } else if let summary = dispatch.requiredActions {
+                required = summary
+            } else { return false }
             return !required.isEmpty && required.allSatisfy(done.contains)
         }
     }
@@ -295,9 +304,14 @@ enum GitHubReviewThreadRequirement {
         // is left after the refused operations is the request; nothing left is a cancellation.
         let qualifying = operations.filter { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }
         guard !qualifying.isEmpty else { return nil }
-        let wanted = qualifying.filter { !$0.negated }.reduce(into: Set<String>()) { $0.formUnion(requestedOperations($1.text)) }
-        let refused = qualifying.filter(\.negated).reduce(into: Set<String>()) { $0.formUnion(requestedOperations($1.text)) }
-        let remaining = wanted.subtracting(refused)
+        // The last mention of each verb decides it, so refusing it for one thread ("do not
+        // resolve the first thread, but resolve the second") does not cancel it for the other,
+        // while a plain change of mind ("resolve them. Do not resolve them.") does.
+        var refusedAtLastMention: [String: Bool] = [:]
+        for operation in qualifying {
+            for verb in requestedOperations(operation.text) { refusedAtLastMention[verb] = operation.negated }
+        }
+        let remaining = Set(refusedAtLastMention.filter { !$0.value }.keys)
         return (!remaining.isEmpty, remaining)
     }
 }
