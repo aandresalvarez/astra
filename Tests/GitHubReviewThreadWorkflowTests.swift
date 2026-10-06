@@ -17,7 +17,7 @@ struct GitHubReviewThreadWorkflowTests {
         var comments: [[String: Any]] = [["id": "C1", "body": "Please fix this", "url": "https://github.com/example/repo/pull/12#discussion_r1", "author": ["login": "reviewer"]]]
         var replies = 0; var resolutions = 0; var reads = 0
         var failResolution = false; var loseReplyResponse = false; var wrongReceipt = false
-        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []; var editAfterReply = false; var canReply = true; var failFromRead: Int?
+        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []; var editAfterReply = false; var canReply = true; var failFromRead: Int?; var replaceAtRead: (Int, URL, Data)?
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             #expect(arguments.contains("github.com"))
@@ -45,6 +45,7 @@ struct GitHubReviewThreadWorkflowTests {
             reads += 1
             if failReads { throw NSError(domain: "offline", code: 1) }
             if let limit = failFromRead, reads >= limit { throw NSError(domain: "offline", code: 3) }
+            if let (at, url, data) = replaceAtRead, reads == at { replaceAtRead = nil; try data.write(to: url) }
             if let id = arguments.first(where: { $0.hasPrefix("id=") }).map({ String($0.dropFirst(3)) }), transientThreads.contains(id) {
                 throw NSError(domain: "offline", code: 2)
             }
@@ -78,6 +79,7 @@ struct GitHubReviewThreadWorkflowTests {
         func setEditAfterReply(_ on: Bool) { editAfterReply = on }
         func setCanReply(_ on: Bool) { canReply = on }
         func setFailFromRead(_ n: Int?) { failFromRead = n }
+        func setReplaceAtRead(_ at: Int, _ url: URL, _ data: Data) { replaceAtRead = (at, url, data) }
         func changeHead() { head = String(repeating: "b", count: 40) }
         func changeHead(to value: String) { head = value }
         func changeTarget() { target = "https://github.com/example/other/pull/12" }
@@ -933,7 +935,7 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(!list.contains("body"))
         #expect(list.contains("comments(first: 1)"))
         #expect(thread.contains("body"))
-        #expect(thread.contains("comments(first: 5"))
+        #expect(thread.contains("comments(first: 3"))
     }
 
     // MARK: - A failure before any write leaves the proposal sendable
@@ -958,5 +960,63 @@ struct GitHubReviewThreadWorkflowTests {
         let again = try await service.prepare(task: f.task, filePath: f.file.path)
         _ = try await service.publish(task: f.task, proposal: again)
         #expect(await cli.counts().0 == 1)
+    }
+
+    // MARK: - A failure before the request goes out consumes nothing
+
+    @Test("a proposal edited while the send reads GitHub is withdrawn, not left indeterminate")
+    func editDuringTheSendWithdrawsTheDispatch() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI()
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)   // read 1
+        // The send's own preparation is read 2; the file changes during the loop's read 3.
+        await cli.setReplaceAtRead(3, f.file, try payload(reply: "Changed after approval"))
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.publish(task: f.task, proposal: proposal)
+        }
+
+        #expect(await cli.counts().0 == 0)
+        #expect(!GitHubReviewThreadPublicationService.hasDispatched(task: f.task, filePath: f.file.path))
+        #expect(!f.task.events.contains { $0.type == GitHubReviewThreadEvents.indeterminate })
+    }
+
+    // MARK: - A receipt has to cover what was asked for
+
+    @Test("a request for resolutions is not settled by a reply that leaves the thread open")
+    func resolutionRequestNeedsAResolution() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Resolve the review threads on https://github.com/example/repo/pull/12"
+        try payload(reply: "Fixed in abc123", resolve: false).write(to: f.file)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+    }
+
+    @Test("a request for replies and resolutions needs both")
+    func repliesAndResolutionsNeedBoth() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        // The fixture goal asks to reply to and resolve the comments.
+        try payload(reply: nil, resolve: true).write(to: f.file)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+    }
+
+    @Test("a request for replies alone is settled by a reply")
+    func replyRequestIsSettledByAReply() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on https://github.com/example/repo/pull/12"
+        try payload(reply: "Fixed in abc123", resolve: false).write(to: f.file)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
     }
 }

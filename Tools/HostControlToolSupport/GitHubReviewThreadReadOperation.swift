@@ -73,7 +73,7 @@ public enum GitHubReviewThreadReadOperation {
     private static let threadQuery = """
     query($id: ID!, $after: String) { node(id: $id) { ... on PullRequestReviewThread {
       id path line isResolved viewerCanResolve viewerCanReply pullRequest { url headRefOid state }
-      comments(first: 5, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { id body url author { login } } }
+      comments(first: 3, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { id body url author { login } } }
     } } }
     """
 }

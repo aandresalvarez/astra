@@ -112,6 +112,9 @@ enum GitHubReviewThreadRequirement {
         var targetSource: String?
         /// The messages that built this request, so recovery can rebuild a continuation.
         var sourceEventIDs: [UUID] = []
+        /// What the request asked ASTRA to do: "reply", "resolve", or both. A receipt only
+        /// settles the request if it covers these.
+        var operations: Set<String> = []
         var targetText: String { targetSource ?? text }
     }
 
@@ -119,14 +122,20 @@ enum GitHubReviewThreadRequirement {
         let userMessages = task.events.filter {
             $0.type == TaskEventTypes.Conversation.userMessage.rawValue || $0.type == TaskPlanConversationEventTypes.userMessage
         }
-        var current = intent(task.goal) == true ? Request(id: "goal:" + GitHubReviewThreadArtifactPolicy.digest(Data(task.goal.utf8)), text: task.goal) : nil
+        var current = intentDetail(task.goal).flatMap { detail in
+            detail.publish
+                ? Request(id: "goal:" + GitHubReviewThreadArtifactPolicy.digest(Data(task.goal.utf8)), text: task.goal,
+                          operations: requestedOperations(detail.operation))
+                : nil
+        }
         let messages = userMessages.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         for message in messages {
-            if let publish = intent(message.payload, allowPronoun: current != nil) {
-                current = publish
+            if let detail = intentDetail(message.payload, allowPronoun: current != nil) {
+                current = detail.publish
                     ? Request(id: message.id.uuidString, text: message.payload,
                               targetSource: carriedTarget(message.payload, prior: current),
-                              sourceEventIDs: (current?.sourceEventIDs ?? []) + [message.id])
+                              sourceEventIDs: (current?.sourceEventIDs ?? []) + [message.id],
+                              operations: requestedOperations(detail.operation))
                     : nil
             } else if current != nil,
                       message.payload.range(
@@ -158,16 +167,20 @@ enum GitHubReviewThreadRequirement {
                 return try? JSONDecoder().decode(GitHubReviewThreadReceipt.self, from: data)
             }
         }
+        func covers(_ actions: [GitHubReviewThreadReceipt.Action]) -> Bool {
+            !actions.isEmpty && request.operations.isSubset(of: Set(actions.map(\.operation)))
+        }
         if records([GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery])
-            .contains(where: { $0.requestID == request.id && !$0.actions.isEmpty }) { return false }
+            .contains(where: { $0.requestID == request.id && covers($0.actions) }) { return false }
         // ASTRA can stop after the last confirmed operation but before it writes the
         // final batch receipt. Every operation of the approved payload is then already
         // durably confirmed, and there is nothing left to propose or send.
         let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
         return !records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
             guard dispatch.requestID == request.id, let payload = dispatch.approvedPayload else { return false }
-            let done = Set(confirmed.filter { $0.proposalID == dispatch.proposalID }
-                .flatMap(\.actions).map { "\($0.threadID):\($0.operation)" })
+            let confirmedActions = confirmed.filter { $0.proposalID == dispatch.proposalID }.flatMap(\.actions)
+            guard covers(confirmedActions) else { return false }
+            let done = Set(confirmedActions.map { "\($0.threadID):\($0.operation)" })
             let required = payload.threads.flatMap { thread in
                 (thread.reply != nil ? ["\(thread.threadId):reply"] : []) + (thread.resolve ? ["\(thread.threadId):resolve"] : [])
             }
@@ -193,7 +206,15 @@ enum GitHubReviewThreadRequirement {
     private static let pullRequestHead =
         #"(?:https?://github\.com/\S+/pull/\d+|\bPR\b\s*#?\d*|pull request(?:'s)?\s*#?\d*|\bGitHub\b(?:\s+PR)?)(?:\s+\S+){0,2}?\s+"#
 
-    private static func intent(_ rawText: String, allowPronoun: Bool = false) -> Bool? {
+    /// The verbs of the operation that made this a request, with negated ones already removed.
+    private static func requestedOperations(_ operation: String) -> Set<String> {
+        var operations: Set<String> = []
+        if operation.range(of: #"(?i)\b(?:reply|replying|replies)\b"#, options: .regularExpression) != nil { operations.insert("reply") }
+        if operation.range(of: #"(?i)\b(?:resolve|reslolve|resolving|resolved)\b"#, options: .regularExpression) != nil { operations.insert("resolve") }
+        return operations
+    }
+
+    private static func intentDetail(_ rawText: String, allowPronoun: Bool = false) -> (publish: Bool, operation: String)? {
         // "then" ends a clause as a comma does: "Reply to the Slack thread, then
         // inspect GitHub PR #12" is two jobs.
         let text = rawText.replacingOccurrences(of: #"(?i)\bthen\b"#, with: ",", options: .regularExpression)
@@ -222,7 +243,7 @@ enum GitHubReviewThreadRequirement {
         let otherService = #"(?i)\b(?:"# + services + #")\b"#
         // "with the answer from Slack" names where the content comes from, not where it goes.
         let serviceAsSource = #"(?i)\b(?:from|using|based on|according to)\b(?:\s+(?:the|a|an|our|my))?\s+(?:"# + services + #")\b"#
-        let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool, elsewhere: Bool, continuation: Bool)? in
+        let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool, elsewhere: Bool, continuation: Bool, text: String)? in
             guard let span = Range(candidate.range, in: text) else { return nil }
             let head = String(text[..<span.lowerBound])
             let headStart = boundaries?.matches(in: head, range: NSRange(head.startIndex..<head.endIndex, in: head))
@@ -248,9 +269,9 @@ enum GitHubReviewThreadRequirement {
                     negated: phrase.range(of: negation, options: .regularExpression) != nil,
                     elsewhere: clause.replacingOccurrences(of: serviceAsSource, with: "", options: .regularExpression)
                         .range(of: otherService, options: .regularExpression) != nil,
-                    continuation: continuation)
+                    continuation: continuation, text: operationText)
         }
         guard let operation = operations.last(where: { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }) else { return nil }
-        return !operation.negated
+        return (!operation.negated, operation.text)
     }
 }

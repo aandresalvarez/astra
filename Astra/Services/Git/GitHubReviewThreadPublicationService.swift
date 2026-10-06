@@ -163,8 +163,8 @@ final class GitHubReviewThreadPublicationService {
                     throw GitHubReviewPublicationError.invalid("A review discussion changed before sending.")
                 }
                 if let body = action.reply {
-                    attemptedWrite = true
-                    let receipt = try await mutate(task: task, proposal: proposal, action: action, body: body)
+                    let receipt = try await mutate(task: task, proposal: proposal, action: action, body: body,
+                                                   willSend: { attemptedWrite = true })
                     receipts.append(receipt)
                     try saveActionReceipt(record(proposal, actions: [receipt]), task: task, run: run)
                 }
@@ -186,8 +186,8 @@ final class GitHubReviewThreadPublicationService {
                           latest.comments.last?.id == lastID, currentComments == approvedComments else {
                         throw GitHubReviewPublicationError.invalid("The PR or thread changed after posting the reply; resolution was not sent.")
                     }
-                    attemptedWrite = true
-                    let receipt = try await mutate(task: task, proposal: proposal, action: action, body: nil)
+                    let receipt = try await mutate(task: task, proposal: proposal, action: action, body: nil,
+                                                   willSend: { attemptedWrite = true })
                     receipts.append(receipt)
                     try saveActionReceipt(record(proposal, actions: [receipt]), task: task, run: run)
                 }
@@ -366,7 +366,7 @@ final class GitHubReviewThreadPublicationService {
 
     private func loadThread(task: AgentTask, id: String) async throws -> GitHubReviewThreadSnapshot {
         var cursor: String?; var seen: Set<String> = []; var snapshot: GitHubReviewThreadSnapshot?
-        for _ in 0..<200 {
+        for _ in 0..<340 {
             var input = ["review-thread", "--id", id]
             if let cursor { input += ["--after", cursor] }
             let output: String
@@ -412,8 +412,11 @@ final class GitHubReviewThreadPublicationService {
         throw GitHubReviewPublicationError.invalid("This discussion is too large to validate safely.")
     }
 
+    /// `willSend` runs immediately before the request that can write. Everything before it
+    /// (the digest and request rechecks, building the input) can fail without GitHub having
+    /// been touched.
     private func mutate(task: AgentTask, proposal: GitHubReviewThreadProposal, action: GitHubReviewThreadPayload.Action,
-                        body: String?) async throws -> GitHubReviewThreadReceipt.Action {
+                        body: String?, willSend: () -> Void) async throws -> GitHubReviewThreadReceipt.Action {
         let (data, _) = try readPayload(task: task, filePath: proposal.filePath)
         guard GitHubReviewThreadArtifactPolicy.digest(data) == proposal.digest,
               GitHubReviewThreadRequirement.request(task: task)?.id == proposal.requestID else {
@@ -426,6 +429,7 @@ final class GitHubReviewThreadPublicationService {
         let input = FileManager.default.temporaryDirectory.appendingPathComponent("astra-thread-\(UUID().uuidString).json")
         try JSONSerialization.data(withJSONObject: ["query": query, "variables": variables]).write(to: input, options: [.atomic])
         defer { try? FileManager.default.removeItem(at: input) }
+        willSend()
         let output = try await cli.run(at: task.executionRootPath ?? task.workspace?.primaryPath ?? "",
                                       arguments: ["api", "graphql", "--hostname", "github.com", "--input", input.path], label: "Send approved GitHub thread change")
         guard let object = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any],
