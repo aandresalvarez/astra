@@ -129,6 +129,17 @@ final class AgentRuntimeWorker {
         return executionContext
     }
 
+    /// The workspace changed while validation was suspended: terminalize without
+    /// exporting the old run's state into the edited workspace.
+    @MainActor
+    private func failScopeDrift(task: AgentTask, modelContext: ModelContext) {
+        TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
+        modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+            payload: TaskExecutionResourcePreparation.ScopeError.changed.localizedDescription))
+        WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: modelContext, taskID: task.id,
+            auditFields: ["operation": "execution_resource_scope_requires_resubmission"])
+    }
+
     @MainActor
     func executeApprovedPlan(
         task: AgentTask,
@@ -155,7 +166,15 @@ final class AgentRuntimeWorker {
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
                     preferredModel: validationModel, modelContext: modelContext)
             ) else {
+                guard TaskExecutionResourcePreparation.isCurrent(task: task, scope: launchTask.acceptedResourceScope) else {
+                    failScopeDrift(task: task, modelContext: modelContext)
+                    return
+                }
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                return
+            }
+            guard TaskExecutionResourcePreparation.isCurrent(task: task, scope: launchTask.acceptedResourceScope) else {
+                failScopeDrift(task: task, modelContext: modelContext)
                 return
             }
             TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)

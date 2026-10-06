@@ -33,12 +33,22 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         public let canonicalPath: String
         public let access: TaskExecutionResourceAccess
         public let role: Role
+        /// Accepted file/directory kind for inputs and Git metadata, so a
+        /// replacement of the other kind is rejected instead of widening access.
+        public let isDirectory: Bool?
 
         public init(path: String, access: TaskExecutionResourceAccess, role: Role) {
             self.path = (path as NSString).expandingTildeInPath
             canonicalPath = TaskExecutionResourceScope.canonicalPath(path)
             self.access = access
             self.role = role
+            isDirectory = role == .input || role == .gitMetadata ? Self.currentKind(of: self.path) : nil
+        }
+
+        static func currentKind(of path: String) -> Bool? {
+            var directory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &directory) else { return nil }
+            return directory.boolValue
         }
     }
 
@@ -105,10 +115,8 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
     /// a file path is not a directory root and must not widen to its parent.
     public var providerWritableGitMetadataFolders: [String] {
         resources.filter { resource in
-            var isDirectory: ObjCBool = false
-            return resource.role == .gitMetadata && resource.access == .exclusive
-                && FileManager.default.fileExists(atPath: resource.path, isDirectory: &isDirectory)
-                && isDirectory.boolValue
+            resource.role == .gitMetadata && resource.access == .exclusive
+                && Resource.currentKind(of: resource.path) == true
         }.map(\.path)
     }
 
@@ -142,6 +150,7 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
                 !$0.path.isEmpty && $0.path.hasPrefix("/")
                     && $0.path.rangeOfCharacter(from: .newlines) == nil
                     && $0.canonicalPath == Self.canonicalPath($0.path)
+                    && ($0.isDirectory == nil || $0.isDirectory == Resource.currentKind(of: $0.path))
             }
             && replacedCheckoutPaths.allSatisfy {
                 $0.hasPrefix("/") && $0.rangeOfCharacter(from: .newlines) == nil

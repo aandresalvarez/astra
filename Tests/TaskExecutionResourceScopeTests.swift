@@ -13,6 +13,23 @@ struct TaskExecutionResourceScopeTests {
         .claudeCode, .copilotCLI, .codexCLI, .cursorCLI, .antigravityCLI, .openCodeCLI
     ]
 
+    @Test("Accepted input files are rejected when replaced by directories")
+    func acceptedInputFileReplacedByDirectoryIsInvalid() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-scope-kind-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let input = root.appendingPathComponent("input.txt")
+        try Data("x".utf8).write(to: input)
+        let scope = TaskExecutionResourceScope(
+            workingDirectory: "", workspacePath: "",
+            resources: [.init(path: input.path, access: .shared, role: .input)])
+        #expect(scope.isValid)
+        try FileManager.default.removeItem(at: input)
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        #expect(!scope.isValid)
+    }
+
     @Test("All provider pairs admit independent worktrees without granting the source checkout")
     func providerPairs() throws {
         let fixture = try Fixture()
