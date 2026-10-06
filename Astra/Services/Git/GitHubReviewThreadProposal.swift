@@ -95,6 +95,17 @@ enum GitHubReviewThreadArtifactPolicy {
         return GitHubReviewThreadReadOperation.isRepository(repository) ? (repository, number) : nil
     }
 
+    /// A proposal's identity within its task folder, so evidence recorded under one
+    /// absolute path still matches after the workspace was moved or renamed.
+    static func identity(of path: String) -> String {
+        guard let range = path.range(of: "/tasks/", options: .backwards) else {
+            return URL(fileURLWithPath: path).lastPathComponent
+        }
+        let afterTasks = path[range.upperBound...]
+        guard let slash = afterTasks.firstIndex(of: "/") else { return String(afterTasks) }
+        return String(afterTasks[afterTasks.index(after: slash)...])
+    }
+
     static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -115,6 +126,8 @@ enum GitHubReviewThreadRequirement {
         /// What the request asked ASTRA to do: "reply", "resolve", or both. A receipt only
         /// settles the request if it covers these.
         var operations: Set<String> = []
+        /// The requests an additive follow-up extends. Their receipts still count.
+        var priorRequestIDs: [String] = []
         var targetText: String { targetSource ?? text }
     }
 
@@ -131,11 +144,15 @@ enum GitHubReviewThreadRequirement {
         let messages = userMessages.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         for message in messages {
             if let detail = intentDetail(message.payload, allowPronoun: current != nil) {
+                // "also resolve them" adds to what was asked; any other message restates it.
+                let additive = current != nil && message.payload.range(
+                    of: #"(?i)\b(?:also|too|as well|in addition|additionally|plus|and then)\b"#, options: .regularExpression) != nil
                 current = detail.publish
                     ? Request(id: message.id.uuidString, text: message.payload,
                               targetSource: carriedTarget(message.payload, prior: current),
                               sourceEventIDs: (current?.sourceEventIDs ?? []) + [message.id],
-                              operations: requestedOperations(detail.operation))
+                              operations: requestedOperations(detail.operation).union(additive ? current?.operations ?? [] : []),
+                              priorRequestIDs: additive ? (current.map { $0.priorRequestIDs + [$0.id] } ?? []) : [])
                     : nil
             } else if current != nil,
                       message.payload.range(
@@ -170,16 +187,18 @@ enum GitHubReviewThreadRequirement {
         func covers(_ actions: [GitHubReviewThreadReceipt.Action]) -> Bool {
             !actions.isEmpty && request.operations.isSubset(of: Set(actions.map(\.operation)))
         }
-        if records([GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery])
-            .contains(where: { $0.requestID == request.id && covers($0.actions) }) { return false }
+        let requestIDs = Set([request.id] + request.priorRequestIDs)
+        let finalActions = records([GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery])
+            .filter { requestIDs.contains($0.requestID ?? "") }.flatMap(\.actions)
+        if covers(finalActions) { return false }
         // ASTRA can stop after the last confirmed operation but before it writes the
         // final batch receipt. Every operation of the approved payload is then already
         // durably confirmed, and there is nothing left to propose or send.
         let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
         return !records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
-            guard dispatch.requestID == request.id, let payload = dispatch.approvedPayload else { return false }
+            guard requestIDs.contains(dispatch.requestID ?? ""), let payload = dispatch.approvedPayload else { return false }
             let confirmedActions = confirmed.filter { $0.proposalID == dispatch.proposalID }.flatMap(\.actions)
-            guard covers(confirmedActions) else { return false }
+            guard covers(finalActions + confirmedActions) else { return false }
             let done = Set(confirmedActions.map { "\($0.threadID):\($0.operation)" })
             let required = payload.threads.flatMap { thread in
                 (thread.reply != nil ? ["\(thread.threadId):reply"] : []) + (thread.resolve ? ["\(thread.threadId):resolve"] : [])

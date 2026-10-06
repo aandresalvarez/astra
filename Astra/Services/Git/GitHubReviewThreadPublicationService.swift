@@ -22,7 +22,7 @@ final class GitHubReviewThreadPublicationService {
             guard $0.type == GitHubReviewThreadEvents.dispatched,
                   let data = $0.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewThreadReceipt.self, from: data) else { return false }
-            return record.filePath == filePath
+            return GitHubReviewThreadArtifactPolicy.identity(of: record.filePath) == GitHubReviewThreadArtifactPolicy.identity(of: filePath)
         }
     }
 
@@ -31,7 +31,7 @@ final class GitHubReviewThreadPublicationService {
             guard $0.type == GitHubReviewThreadEvents.dismissed,
                   let data = $0.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewThreadDismissal.self, from: data) else { return false }
-            return record.filePath == filePath
+            return GitHubReviewThreadArtifactPolicy.identity(of: record.filePath) == GitHubReviewThreadArtifactPolicy.identity(of: filePath)
         }
     }
 
@@ -366,7 +366,7 @@ final class GitHubReviewThreadPublicationService {
 
     private func loadThread(task: AgentTask, id: String) async throws -> GitHubReviewThreadSnapshot {
         var cursor: String?; var seen: Set<String> = []; var snapshot: GitHubReviewThreadSnapshot?
-        for _ in 0..<340 {
+        for _ in 0..<1000 {
             var input = ["review-thread", "--id", id]
             if let cursor { input += ["--after", cursor] }
             let output: String

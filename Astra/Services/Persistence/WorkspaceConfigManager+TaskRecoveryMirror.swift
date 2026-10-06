@@ -31,6 +31,42 @@ extension WorkspaceConfigManager {
         })
     }
 
+    static func isThreadWorkflowEvent(_ type: String) -> Bool { type.hasPrefix("github.review-threads.") }
+
+    /// The thread workflow events the mirror keeps. Keeping the whole namespace forever
+    /// made every export and import grow with each batch, and each dispatch embeds its
+    /// approved payload, up to 256 KiB. A batch that is not settled, because it was sent
+    /// and never receipted, is recovery evidence and is kept; settled batches are
+    /// compacted to the newest few, and dismissals to a bounded number.
+    static func retainedThreadWorkflowEventIDs(_ task: AgentTask) -> Set<UUID> {
+        struct Entry { let id: UUID; let type: String; let proposalID: String?; let timestamp: Date }
+        let entries = task.events.compactMap { event -> Entry? in
+            guard !event.isDeleted, isThreadWorkflowEvent(event.type) else { return nil }
+            let object = event.payload.data(using: .utf8)
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String, timestamp: event.timestamp)
+        }
+        let settledTypes: Set<String> = ["github.review-threads.receipt", "github.review-threads.receipt-recovery"]
+        let batches = Dictionary(grouping: entries.filter { $0.proposalID != nil }, by: { $0.proposalID ?? "" })
+            .values.map { events in
+                (events: events, last: events.map(\.timestamp).max() ?? .distantPast,
+                 settled: events.contains { settledTypes.contains($0.type) })
+            }
+        let newestFirst = { (lhs: (events: [Entry], last: Date, settled: Bool), rhs: (events: [Entry], last: Date, settled: Bool)) in
+            lhs.last > rhs.last
+        }
+        var kept = Set<UUID>()
+        for batch in batches.filter({ !$0.settled }).sorted(by: newestFirst).prefix(MirrorLimits.maxActiveThreadBatches) {
+            kept.formUnion(batch.events.map(\.id))
+        }
+        for batch in batches.filter({ $0.settled }).sorted(by: newestFirst).prefix(MirrorLimits.maxSettledThreadBatches) {
+            kept.formUnion(batch.events.map(\.id))
+        }
+        kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
+            .prefix(MirrorLimits.maxThreadDismissals).map(\.id))
+        return kept
+    }
+
     /// User messages that may start, renew or cancel a GitHub thread request. The
     /// request is derived from the conversation, so a cancellation dropped by the
     /// bounded history would bring a cancelled request back after recovery. This
