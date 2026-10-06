@@ -20,12 +20,14 @@ extension WorkspaceConfigManager {
     /// whole, so the message that made the request has to be kept with them, or a
     /// recovered task no longer owes the rest of a partly sent batch.
     static func threadRequestEventIDs(_ task: AgentTask) -> Set<UUID> {
-        Set(task.events.compactMap { event -> UUID? in
+        Set(task.events.flatMap { event -> [UUID] in
             guard event.type.hasPrefix("github.review-threads."),
                   let data = event.payload.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let id = object["requestID"] as? String else { return nil }
-            return UUID(uuidString: id)
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+            // The whole chain: a continuation like "resolve them" only means something
+            // with the message that named the pull request kept beside it.
+            let ids = ((object["requestEventIDs"] as? [String]) ?? []) + [object["requestID"] as? String].compactMap { $0 }
+            return ids.compactMap { UUID(uuidString: $0) }
         })
     }
 

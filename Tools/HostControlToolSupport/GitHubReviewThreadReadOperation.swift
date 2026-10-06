@@ -62,14 +62,14 @@ public enum GitHubReviewThreadReadOperation {
       repository(owner: $owner, name: $name) { pullRequest(number: $number) {
         url headRefOid state reviewThreads(first: 20, after: $after) {
           totalCount pageInfo { hasNextPage endCursor }
-          nodes { id path line isResolved viewerCanResolve \(comments) }
+          nodes { id path line isResolved viewerCanResolve viewerCanReply \(comments) }
         }
       } }
     }
     """
     private static let threadQuery = """
     query($id: ID!, $after: String) { node(id: $id) { ... on PullRequestReviewThread {
-      id path line isResolved viewerCanResolve pullRequest { url headRefOid state }
+      id path line isResolved viewerCanResolve viewerCanReply pullRequest { url headRefOid state }
       comments(first: 20, after: $after) { totalCount pageInfo { hasNextPage endCursor } nodes { id body url author { login } } }
     } } }
     """

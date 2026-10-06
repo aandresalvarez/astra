@@ -17,7 +17,7 @@ struct GitHubReviewThreadWorkflowTests {
         var comments: [[String: Any]] = [["id": "C1", "body": "Please fix this", "url": "https://github.com/example/repo/pull/12#discussion_r1", "author": ["login": "reviewer"]]]
         var replies = 0; var resolutions = 0; var reads = 0
         var failResolution = false; var loseReplyResponse = false; var wrongReceipt = false
-        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []; var editAfterReply = false
+        var paginate = false; var replacement: (URL, Data)?; var failReads = false; var missingThreads: Set<String> = []; var notThreads: Set<String> = []; var transientThreads: Set<String> = []; var editAfterReply = false; var canReply = true
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             #expect(arguments.contains("github.com"))
@@ -59,7 +59,7 @@ struct GitHubReviewThreadWorkflowTests {
             let after = arguments.contains { $0.hasPrefix("after=") }
             let nodes = paginate ? (after ? Array(comments.dropFirst()) : Array(comments.prefix(1))) : comments
             return try json(["data": ["node": [
-                "id": "T1", "path": "src/main.swift", "line": 12, "isResolved": resolved, "viewerCanResolve": true,
+                "id": "T1", "path": "src/main.swift", "line": 12, "isResolved": resolved, "viewerCanResolve": true, "viewerCanReply": canReply,
                 "pullRequest": ["url": target, "headRefOid": head, "state": "OPEN"],
                 "comments": ["totalCount": comments.count, "nodes": nodes,
                              "pageInfo": ["hasNextPage": paginate && !after && comments.count > 1,
@@ -75,6 +75,7 @@ struct GitHubReviewThreadWorkflowTests {
         func setNotThreads(_ ids: Set<String>) { notThreads = ids }
         func setTransient(_ ids: Set<String>) { transientThreads = ids }
         func setEditAfterReply(_ on: Bool) { editAfterReply = on }
+        func setCanReply(_ on: Bool) { canReply = on }
         func changeHead() { head = String(repeating: "b", count: 40) }
         func changeHead(to value: String) { head = value }
         func changeTarget() { target = "https://github.com/example/other/pull/12" }
@@ -775,5 +776,62 @@ struct GitHubReviewThreadWorkflowTests {
         addNoise(f, count: WorkspaceConfigManager.MirrorLimits.maxEventsPerTask + 5)
 
         #expect(try mirroredEventIDs(f).contains(request.id.uuidString))
+    }
+
+    // MARK: - A generic follow-up is not a continuation
+
+    @Test("a generic follow-up about comments does not replace a settled request")
+    func genericFollowUpDoesNotReopenASettledRequest() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+        let settled = try #require(GitHubReviewThreadRequirement.request(task: f.task)).id
+
+        for phrase in ["Reply with your comments here", "Reply to the comments in this document", "Reply with the review"] {
+            f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: phrase))
+            #expect(GitHubReviewThreadRequirement.request(task: f.task)?.id == settled, "\(phrase)")
+            #expect(!GitHubReviewThreadRequirement.isPending(task: f.task), "\(phrase)")
+        }
+    }
+
+    // MARK: - The request chain is recorded with the dispatch
+
+    @Test("the target-bearing message of a continued request survives the recovery mirror")
+    func mirrorKeepsTheContinuationChain() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Look at the open review feedback"
+        let first = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                              payload: "Reply to the threads on https://github.com/example/repo/pull/12")
+        f.context.insert(first)
+        let second = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "resolve them")
+        f.context.insert(second)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI(), originURL: { _ in nil })
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        _ = try await service.publish(task: f.task, proposal: proposal)
+        addNoise(f, count: WorkspaceConfigManager.MirrorLimits.maxEventsPerTask + 5)
+
+        let kept = try mirroredEventIDs(f)
+        #expect(kept.contains(first.id.uuidString))
+        #expect(kept.contains(second.id.uuidString))
+    }
+
+    // MARK: - Replying needs permission to reply
+
+    @Test("a reply is rejected before dispatch when the viewer cannot reply")
+    func replyNeedsViewerCanReply() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI(); await cli.setCanReply(false)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli)
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepare(task: f.task, filePath: f.file.path)
+        }
+        #expect(!f.task.events.contains { $0.type == GitHubReviewThreadEvents.dispatched })
+
+        // A resolution without a reply does not need that permission.
+        try payload(reply: nil, resolve: true).write(to: f.file)
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        #expect(proposal.payload.threads[0].reply == nil)
     }
 }

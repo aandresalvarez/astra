@@ -29,6 +29,7 @@ struct GitHubReviewThreadSnapshot: Codable {
     let line: Int?
     let isResolved: Bool
     let viewerCanResolve: Bool
+    let viewerCanReply: Bool
     let pullRequest: PullRequest
     var comments: [Comment]
 }
@@ -38,6 +39,8 @@ struct GitHubReviewThreadProposal: Identifiable {
     let filePath: String
     let digest: String
     let requestID: String?
+    /// The user messages that built the request, oldest first, recorded with the dispatch.
+    let requestEventIDs: [String]
     let payload: GitHubReviewThreadPayload
     let snapshots: [GitHubReviewThreadSnapshot]
 }
@@ -55,6 +58,7 @@ struct GitHubReviewThreadReceipt: Codable {
     let pullRequestURL: String
     let actions: [Action]
     var approvedPayload: GitHubReviewThreadPayload? = nil
+    var requestEventIDs: [String]? = nil
 }
 
 /// A thread proposal ASTRA found unusable (stale head, resolved or edited thread,
@@ -106,6 +110,8 @@ enum GitHubReviewThreadRequirement {
         let id: String
         let text: String
         var targetSource: String?
+        /// The messages that built this request, so recovery can rebuild a continuation.
+        var sourceEventIDs: [UUID] = []
         var targetText: String { targetSource ?? text }
     }
 
@@ -119,7 +125,8 @@ enum GitHubReviewThreadRequirement {
             if let publish = intent(message.payload, allowPronoun: current != nil) {
                 current = publish
                     ? Request(id: message.id.uuidString, text: message.payload,
-                              targetSource: carriedTarget(message.payload, prior: current))
+                              targetSource: carriedTarget(message.payload, prior: current),
+                              sourceEventIDs: (current?.sourceEventIDs ?? []) + [message.id])
                     : nil
             } else if current != nil,
                       message.payload.range(
@@ -208,7 +215,7 @@ enum GitHubReviewThreadRequirement {
         // Thread work that names another service ("Reply to the Slack thread") is not
         // GitHub work, whatever else the task mentions, so it never renews a request.
         let otherService = #"(?i)\b(?:slack|jira|e-?mail|teams|discord|linear|notion|confluence|asana|trello|zendesk|intercom|whatsapp|sms|chat)\b"#
-        let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool, elsewhere: Bool)? in
+        let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool, elsewhere: Bool, continuation: Bool)? in
             guard let span = Range(candidate.range, in: text) else { return nil }
             let head = String(text[..<span.lowerBound])
             let headStart = boundaries?.matches(in: head, range: NSRange(head.startIndex..<head.endIndex, in: head))
@@ -218,11 +225,19 @@ enum GitHubReviewThreadRequirement {
             let lead = head[headStart...].split(whereSeparator: \.isWhitespace).suffix(4).joined(separator: " ")
             let phrase = (lead + " " + text[span]).lowercased()
             let clause = String(head[headStart...] + text[span] + tail[..<tailEnd])
+            // What a follow-up needs to count without naming GitHub: "resolve them", an
+            // explicit thread or conversation, or the resolve verb itself, which is
+            // GitHub thread work. A bare "reply with your comments here" is not.
+            let operation = String(text[span])
+            let continuation = operation.range(of: #"(?i)^\s*(?:resolve|reslolve)\s+(?:them|those|these)\b"#, options: .regularExpression) != nil
+                || operation.range(of: #"(?i)\b(?:threads?|conversations?)\b"#, options: .regularExpression) != nil
+                || operation.range(of: #"(?i)^\s*(?:resolve|reslolve|resolving|mark)\b"#, options: .regularExpression) != nil
             return (named: clause.range(of: context, options: .regularExpression) != nil,
                     negated: phrase.range(of: negation, options: .regularExpression) != nil,
-                    elsewhere: clause.range(of: otherService, options: .regularExpression) != nil)
+                    elsewhere: clause.range(of: otherService, options: .regularExpression) != nil,
+                    continuation: continuation)
         }
-        guard let operation = operations.last(where: { !$0.elsewhere && (allowPronoun || $0.named) }) else { return nil }
+        guard let operation = operations.last(where: { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }) else { return nil }
         return !operation.negated
     }
 }

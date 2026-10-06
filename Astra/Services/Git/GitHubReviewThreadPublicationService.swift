@@ -114,13 +114,15 @@ final class GitHubReviewThreadPublicationService {
             try Self.unusable { try validate(snapshot, action: action, payload: payload) }
             snapshots.append(snapshot)
         }
-        let requestID = GitHubReviewThreadRequirement.request(task: task)?.id
+        let request = GitHubReviewThreadRequirement.request(task: task)
+        let requestID = request?.id
         // Bind approval to the entire live discussion, including comment edits.
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let snapshotData = try encoder.encode(snapshots)
         let digest = GitHubReviewThreadArtifactPolicy.digest(data)
         let id = GitHubReviewThreadArtifactPolicy.digest(Data("\(filePath):\(digest):\(requestID ?? "")".utf8) + snapshotData)
         return GitHubReviewThreadProposal(id: id, filePath: filePath, digest: digest, requestID: requestID,
+                                         requestEventIDs: (request?.sourceEventIDs ?? []).map(\.uuidString),
                                          payload: payload, snapshots: snapshots)
     }
 
@@ -194,7 +196,8 @@ final class GitHubReviewThreadPublicationService {
 
     private func record(_ proposal: GitHubReviewThreadProposal, actions: [GitHubReviewThreadReceipt.Action]) -> GitHubReviewThreadReceipt {
         .init(proposalID: proposal.id, filePath: proposal.filePath, requestID: proposal.requestID,
-              pullRequestURL: proposal.payload.pullRequestUrl, actions: actions)
+              pullRequestURL: proposal.payload.pullRequestUrl, actions: actions,
+              requestEventIDs: proposal.requestEventIDs)
     }
 
     private func save(task: AgentTask, operation: String) throws {
@@ -296,7 +299,7 @@ final class GitHubReviewThreadPublicationService {
         guard snapshot.id == action.threadId,
               snapshot.pullRequest.url.caseInsensitiveCompare(payload.pullRequestUrl) == .orderedSame,
               snapshot.pullRequest.state == "OPEN", snapshot.pullRequest.headRefOid.caseInsensitiveCompare(payload.commitId) == .orderedSame,
-              !snapshot.isResolved, (!action.resolve || snapshot.viewerCanResolve),
+              !snapshot.isResolved, (!action.resolve || snapshot.viewerCanResolve), (action.reply == nil || snapshot.viewerCanReply),
               snapshot.comments.last?.id == action.expectedLastCommentId else {
             throw GitHubReviewPublicationError.invalid("The thread is unavailable, resolved, changed, or belongs to another PR/head. Read it again and prepare a new proposal.")
         }
@@ -308,7 +311,7 @@ final class GitHubReviewThreadPublicationService {
                 struct Page: Decodable { let hasNextPage: Bool; let endCursor: String? }
                 let totalCount: Int; let pageInfo: Page; let nodes: [GitHubReviewThreadSnapshot.Comment]
             }
-            let id: String; let path: String; let line: Int?; let isResolved: Bool; let viewerCanResolve: Bool
+            let id: String; let path: String; let line: Int?; let isResolved: Bool; let viewerCanResolve: Bool; let viewerCanReply: Bool
             let pullRequest: GitHubReviewThreadSnapshot.PullRequest; let comments: Comments
         }
         struct ResponseData: Decodable { let node: Node? }
@@ -349,7 +352,7 @@ final class GitHubReviewThreadPublicationService {
             }
             if snapshot == nil {
                 snapshot = .init(id: node.id, path: node.path, line: node.line, isResolved: node.isResolved,
-                                 viewerCanResolve: node.viewerCanResolve, pullRequest: node.pullRequest, comments: [])
+                                 viewerCanResolve: node.viewerCanResolve, viewerCanReply: node.viewerCanReply, pullRequest: node.pullRequest, comments: [])
             }
             guard snapshot?.id == node.id, snapshot?.pullRequest.headRefOid == node.pullRequest.headRefOid,
                   snapshot?.isResolved == node.isResolved else { throw GitHubReviewPublicationError.invalid("The discussion changed while paging.") }
