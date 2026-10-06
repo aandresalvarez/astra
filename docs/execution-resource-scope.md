@@ -103,7 +103,9 @@ Git metadata includes both the common directory and each selected worktree's
 `.git` entry. Linked-worktree pointer files receive the same accepted access as
 their common directory, including native write denial and read-only Docker
 overlays for inspection. Copy-isolated linked pointers remain read-only alongside
-their external metadata.
+their external metadata. With accepted `readWrite` Git access, exclusive Git
+metadata directories (never pointer files) are also projected into native
+provider writable roots such as Codex `--add-dir`.
 Copy isolation from a linked worktree cannot admit Git writes: a typed requirement,
 an explicit write declaration, or a workflow requiring writes is rejected at
 submission with guidance to use a regular checkout or a non-copy worktree.

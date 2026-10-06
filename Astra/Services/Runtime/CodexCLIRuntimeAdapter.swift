@@ -287,6 +287,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 + AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
         )
         let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
+            + (context.task.acceptedResourceScope?.providerWritableGitMetadataFolders ?? [])
             + nativeReachability.additionalDirectories
         let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)

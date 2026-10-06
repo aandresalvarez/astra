@@ -100,6 +100,18 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         }.map(\.path)
     }
 
+    /// Accepted writable Git metadata directories for providers whose native
+    /// sandbox needs them declared. Linked-worktree pointer files are excluded:
+    /// a file path is not a directory root and must not widen to its parent.
+    public var providerWritableGitMetadataFolders: [String] {
+        resources.filter { resource in
+            var isDirectory: ObjCBool = false
+            return resource.role == .gitMetadata && resource.access == .exclusive
+                && FileManager.default.fileExists(atPath: resource.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }.map(\.path)
+    }
+
     public var readOnlyRoots: [String] {
         resources.filter { $0.access == .shared }.map(\.path) + replacedCheckoutPaths
     }

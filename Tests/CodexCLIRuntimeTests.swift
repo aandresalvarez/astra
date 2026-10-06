@@ -366,6 +366,51 @@ struct CodexCLIRuntimeTests {
         #expect(boundaryPlan.commandPlannedFields["provider_native_unreachable_read_only_file_count"] == "1")
     }
 
+    @Test("Codex --add-dir includes only accepted writable Git metadata directories")
+    @MainActor
+    func codexAddDirIncludesWritableGitMetadataDirectories() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-codex-git-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: root) }
+        let worktree = root.appendingPathComponent("worktree", isDirectory: true)
+        let common = root.appendingPathComponent("source/.git", isDirectory: true)
+        let sharedCommon = root.appendingPathComponent("shared/.git", isDirectory: true)
+        let pointer = worktree.appendingPathComponent(".git")
+        let storage = root.appendingPathComponent("storage", isDirectory: true)
+        for directory in [worktree, common, sharedCommon, storage] {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try Data("gitdir: \(common.path)".utf8).write(to: pointer)
+
+        let task = AgentTask(title: "Codex", goal: "Commit", workspace: Workspace(name: "Git", primaryPath: worktree.path),
+            model: "gpt-5.5", runtime: .codexCLI)
+        task.acceptedResourceScope = TaskExecutionResourceScope(
+            workingDirectory: worktree.path,
+            workspacePath: worktree.path,
+            resources: [
+                .init(path: worktree.path, access: .exclusive, role: .execution),
+                .init(path: storage.path, access: .exclusive, role: .taskStorage),
+                .init(path: common.path, access: .exclusive, role: .gitMetadata),
+                .init(path: pointer.path, access: .exclusive, role: .gitMetadata),
+                .init(path: sharedCommon.path, access: .shared, role: .gitMetadata)
+            ],
+            gitAccess: .readWrite
+        )
+        let plan = CodexCLIRuntimeAdapter().makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+            prompt: "hello", task: task, workspacePath: worktree.path, executablePath: "/bin/codex-not-present",
+            providerHomeDirectory: "", permissionPolicy: .restricted, executionPolicy: .default,
+            permissionManifest: nil, timeoutSeconds: 30
+        ))
+        let values = plan.arguments.indices
+            .filter { plan.arguments[$0] == "--add-dir" }
+            .compactMap { plan.arguments.indices.contains($0 + 1) ? plan.arguments[$0 + 1] : nil }
+        let canonical = values.map { TaskExecutionResourceScope.canonicalPath($0) }
+        #expect(canonical.contains(TaskExecutionResourceScope.canonicalPath(common.path)))
+        #expect(!canonical.contains(TaskExecutionResourceScope.canonicalPath(pointer.path)))
+        #expect(!canonical.contains(TaskExecutionResourceScope.canonicalPath(sharedCommon.path)))
+    }
+
     @Test("Codex --add-dir never receives a non-input read grant (write-access regression)")
     @MainActor
     func codexAddDirExcludesNonInputReadGrants() throws {
