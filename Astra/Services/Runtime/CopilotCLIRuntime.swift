@@ -272,10 +272,18 @@ enum CopilotCLIRuntime {
         askFirstTools: [String] = [],
         additionalMCPConfigPaths: [String] = [],
         reasoningEffort: String? = nil,
+        resumeSessionID: String? = nil,
         disableCustomInstructions: Bool = false,
         permissionArguments: [String]
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
+        // Unlike cursor-agent, copilot exits 1 ("No session, task, or name
+        // matched") on an unknown id. The `=` form keeps the optional-value flag
+        // from swallowing a following argument.
+        if let resumeSessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !resumeSessionID.isEmpty {
+            args.append("--resume=\(resumeSessionID)")
+        }
         if capabilities.supportsReasoningEffort,
            let reasoningEffort = normalizedReasoningEffort(reasoningEffort) {
             args += ["--effort", reasoningEffort]

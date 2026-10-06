@@ -508,6 +508,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -518,6 +519,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -528,6 +530,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -538,6 +541,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -770,17 +774,21 @@ enum AgentEventRecorder {
 
         case .stats(let input, let output, let cost, let duration, let turns):
             recordingState?.breakConversationCoalescing(for: run)
+            // A resumed session reports its whole usage; earlier runs of it already recorded their share.
+            let sessionBaseline = ProviderSessionUsageEpoch.baseline(
+                forReport: input, output: output, run: run, task: task, modelContext: modelContext
+            )
             let total = input + output
             if total > 0 {
                 recordUsageTotals(
-                    inputTokens: input,
-                    outputTokens: output,
+                    sessionShare: sessionBaseline.runShare(input: input, output: output),
                     to: task,
                     run: run,
                     recordingMode: recordingMode
                 )
             }
-            if let cost {
+            // A resumed session's cost is cumulative too: record only what this run's turn added.
+            if let cost = cost.map({ max(0, $0 - sessionBaseline.cost) }) {
                 switch recordingMode {
                 case .initial:
                     task.costUSD = cost
@@ -1012,12 +1020,12 @@ enum AgentEventRecorder {
 
     @MainActor
     private static func recordUsageTotals(
-        inputTokens: Int,
-        outputTokens: Int,
+        sessionShare: (input: Int, output: Int),
         to task: AgentTask,
         run: TaskRun,
         recordingMode: AgentRuntimeRecordingMode
     ) {
+        let (inputTokens, outputTokens) = sessionShare
         let totalTokens = inputTokens + outputTokens
         switch recordingMode {
         case .initial:

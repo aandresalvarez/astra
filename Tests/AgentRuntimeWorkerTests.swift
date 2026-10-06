@@ -1559,12 +1559,12 @@ struct BuildPromptTests {
             $0.label == "provider native session" && $0.target.contains("session prefix claude-s")
         })
 
-        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
-        let copilotPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+        task.sessionId = nil // nothing left to resume, so no native-session notice
+        let rebuiltOnlyPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
             message: "continue with rebuilt context only",
             task: task
         )
-        #expect(copilotPrompt.contains("Native Continuation Policy:") == false)
+        #expect(rebuiltOnlyPrompt.contains("Native Continuation Policy:") == false)
     }
 
     @Test("Memory budget keeps compact preference and source pointer")

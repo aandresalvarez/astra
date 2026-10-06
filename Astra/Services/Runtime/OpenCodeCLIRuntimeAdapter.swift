@@ -21,7 +21,8 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         prerequisite: CommonCLIPrerequisites.openCode,
         defaultModel: OpenCodeCLIRuntime.defaultModelName(),
         defaultModels: OpenCodeCLIRuntime.availableModelNames(),
-        supportsAstraRunProtocol: true
+        supportsAstraRunProtocol: true,
+        supportsNativeContinuation: true
     )
     let readinessCheckID = "opencode-cli"
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .openCodeCLI, launchOverheadTokens: 0)
@@ -240,6 +241,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
                 || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
+            resumeSessionID: context.nativeContinuationSessionID,
             permissionArguments: context.requiredProviderPolicyRender(for: id).openCodeLaunchPermissionArguments()
         )
         var commandPlannedFields = [
@@ -255,6 +257,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
             "uses_json_format": String(plan.arguments.contains("json")),
             "uses_dir": String(plan.arguments.contains("--dir")),
             "uses_model": String(plan.arguments.contains("--model")),
+            "uses_native_continuation": String(plan.arguments.contains("--session")),
             "uses_dangerous_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
         ]
         commandPlannedFields.merge(

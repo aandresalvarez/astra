@@ -120,7 +120,9 @@ public enum OpenCodeStreamEventParser {
         }
 
         switch type {
-        case "session", "session.created", "session.updated":
+        // OpenCode 1.18's JSON stream has no `session` event: the id rides on every event, and
+        // `step_start` opens each step, so it is what names the session for a later resume.
+        case "session", "session.created", "session.updated", "step_start":
             let events = systemInit(from: object)
             return .recognized(events.isEmpty ? [.control(type: type)] : events)
         case "text":
