@@ -789,6 +789,10 @@ final class AgentRuntimeProcessRunner {
                 hostControlBrokerSessionManager.stop(taskID: task.id, runID: runID)
             }
         }
+        let remainingTokenBudget = Self.remainingTokenBudget(
+            Self.effectiveTokenBudget(for: task), alreadyUsed: executionPolicy.providerTokensAlreadyUsed
+        )
+        let remainingTurns = Self.remainingTurns(maxTurns: task.maxTurns, alreadyUsed: executionPolicy.providerTurnsAlreadyUsed)
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
                 try await AgentRuntimeSharedStateGate.shared.acquire(sharedStateKey)
@@ -820,6 +824,9 @@ final class AgentRuntimeProcessRunner {
                 timeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
                 maxRunSeconds: maxRunSeconds,
+                maxTurns: remainingTurns,
+                tokenBudget: remainingTokenBudget,
+                reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
                 onInteractiveAsk: onInteractiveAsk,
                 onLine: onLine
             )
@@ -844,6 +851,9 @@ final class AgentRuntimeProcessRunner {
             timeoutSeconds: timeoutSeconds,
             noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,
             maxRunSeconds: maxRunSeconds,
+            maxTurns: remainingTurns,
+            tokenBudget: remainingTokenBudget,
+            reportedUsageBaseline: executionPolicy.providerSessionUsageBaseline,
             onInteractiveAsk: onInteractiveAsk,
             onLine: onLine
         )
@@ -860,10 +870,12 @@ final class AgentRuntimeProcessRunner {
         timeoutSeconds: TimeInterval,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         maxRunSeconds: TimeInterval?,
+        maxTurns: Int,
+        tokenBudget: Int,
+        reportedUsageBaseline: ProviderSessionUsageBaseline,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
         onLine: @escaping (String, Bool) -> Void
     ) async -> AgentProcessResult {
-        let tokenBudget = Self.effectiveTokenBudget(for: task)
         let taskID = task.id
 
         // The one place that owns a live agent process, so the one place that
@@ -921,8 +933,9 @@ final class AgentRuntimeProcessRunner {
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
+                reportedUsageBaseline: reportedUsageBaseline,
                 budgetEnforcementMode: budgetEnforcementMode,
-                maxTurns: task.maxTurns,
+                maxTurns: maxTurns,
                 maxRepetitions: 8,
                 idleTimeoutSeconds: timeoutSeconds,
                 noSemanticProgressTimeoutSeconds: noSemanticProgressTimeoutSeconds,

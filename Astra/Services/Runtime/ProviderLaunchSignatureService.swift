@@ -4,9 +4,11 @@ import ASTRACore
 import ASTRAModels
 
 struct ProviderLaunchSignaturePayload: Codable, Equatable {
+    func withModel(_ model: String) -> Self { var copy = self; copy.model = model; return copy }
+
     let version: Int
     let runtimeID: String
-    let model: String
+    var model: String
     let policyLevel: String
     var policyScope: String
     let providerAdapterVersion: Int
@@ -181,6 +183,19 @@ enum ProviderLaunchSignatureService {
         }
         run.providerLaunchSignatureJSON = payload
         modelContext.insert(TaskEvent(task: task, type: eventType, payload: payload, run: run))
+    }
+
+    /// A launch that waited on a shared-state gate may start under a model edited while it queued, after
+    /// the signature was recorded from the pre-wait manifest. Records the model actually launched so the
+    /// next follow-up compares against it rather than rejecting a session this run really created.
+    @MainActor
+    static func recordLaunchedModel(_ model: String, task: AgentTask, runID: UUID?, modelContext: ModelContext? = nil) {
+        guard let runID, let run = task.runs.first(where: { $0.id == runID }),
+              let signature = storedSignature(for: task, run: run), signature.model != model,
+              let data = try? JSONEncoder().encode(signature.withModel(model)),
+              let payload = String(data: data, encoding: .utf8) else { return }
+        run.providerLaunchSignatureJSON = payload
+        (modelContext ?? task.modelContext)?.insert(TaskEvent(task: task, type: eventType, payload: payload, run: run))
     }
 
     static func storedSignature(for task: AgentTask, run: TaskRun) -> ProviderLaunchSignaturePayload? {
