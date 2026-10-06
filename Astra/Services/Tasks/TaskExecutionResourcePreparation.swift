@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
@@ -21,6 +22,23 @@ enum TaskExecutionResourcePreparation {
             && scope.resources.filter({ $0.role == .taskStorage }).allSatisfy {
                 $0.path == access.canonicalTaskFolder && scope.coversWrite(to: $0.path)
             }
+    }
+
+    /// Scoped runs export only while the accepted scope still matches the live
+    /// workspace; otherwise state is saved without writing into an edited workspace.
+    @discardableResult
+    static func saveAndExportIfCurrent(
+        task: AgentTask,
+        scope: TaskExecutionResourceScope?,
+        modelContext: ModelContext,
+        auditFields: [String: String] = [:]
+    ) -> Bool {
+        guard isCurrent(task: task, scope: scope) else {
+            return WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+                modelContext: modelContext, taskID: task.id, auditFields: auditFields)
+        }
+        return WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace, modelContext: modelContext, taskID: task.id, auditFields: auditFields)
     }
 
     static func prepare(task: AgentTask, materializeInputs: Bool) throws {

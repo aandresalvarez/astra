@@ -40,7 +40,7 @@ public struct TaskWorkspaceAccess {
 
     public var runtimeWritablePaths: [String] {
         if let scope = task.acceptedResourceScope {
-            return normalizedUniquePaths(scope.providerWritableFolders)
+            return normalizedUniquePaths(scope.providerWritableFolders + scope.providerWritableGitMetadataFolders)
         }
         return normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
     }

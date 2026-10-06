@@ -170,7 +170,7 @@ final class AgentRuntimeWorker {
                     failScopeDrift(task: task, modelContext: modelContext)
                     return
                 }
-                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                TaskExecutionResourcePreparation.saveAndExportIfCurrent(task: task, scope: launchTask.acceptedResourceScope, modelContext: modelContext)
                 return
             }
             guard TaskExecutionResourcePreparation.isCurrent(task: task, scope: launchTask.acceptedResourceScope) else {
@@ -179,7 +179,7 @@ final class AgentRuntimeWorker {
             }
             TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
             TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            TaskExecutionResourcePreparation.saveAndExportIfCurrent(task: task, scope: launchTask.acceptedResourceScope, modelContext: modelContext)
             return
         }
 
@@ -202,7 +202,7 @@ final class AgentRuntimeWorker {
             // forever with no way to retry from the UI. Fail it so it becomes
             // actionable again, mirroring the completion path above.
             TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            TaskExecutionResourcePreparation.saveAndExportIfCurrent(task: task, scope: launchTask.acceptedResourceScope, modelContext: modelContext)
             return
         }
 
@@ -718,7 +718,8 @@ final class AgentRuntimeWorker {
             precomputedRuntimeRequirements: appliedRuntime.requirements,
             modelContext: modelContext
         )
-        guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
+        guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase,
+            scope: launchTask.acceptedResourceScope) else {
             return
         }
         let launchSignature = ProviderLaunchSignatureService.make(
@@ -1283,7 +1284,8 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: RunPhase
+        phase: RunPhase,
+        scope: TaskExecutionResourceScope?
     ) -> Bool {
         let blockedDiagnostics = manifest.providerRender.diagnostics.filter { $0.severity == .blocked }
         guard !blockedDiagnostics.isEmpty else { return true }
@@ -1312,10 +1314,10 @@ final class AgentRuntimeWorker {
             run: run
         ))
         AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
+        TaskExecutionResourcePreparation.saveAndExportIfCurrent(
+            task: task,
+            scope: scope,
             modelContext: modelContext,
-            taskID: task.id,
             auditFields: AgentRuntimeRunPersistence.fields(task: task, run: run, phase: phase)
         )
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [

@@ -13,6 +13,44 @@ struct TaskExecutionResourceScopeTests {
         .claudeCode, .copilotCLI, .codexCLI, .cursorCLI, .antigravityCLI, .openCodeCLI
     ]
 
+    @Test("Writable Git metadata directories reach Copilot and other native projections")
+    func writableGitMetadataReachesCopilotProjection() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-scope-copilot-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worktree = root.appendingPathComponent("wt", isDirectory: true)
+        let common = root.appendingPathComponent("src/.git", isDirectory: true)
+        for directory in [worktree, common] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let task = AgentTask(title: "C", goal: "Commit", workspace: Workspace(name: "C", primaryPath: worktree.path),
+                             runtime: .copilotCLI)
+        task.acceptedResourceScope = TaskExecutionResourceScope(
+            workingDirectory: worktree.path, workspacePath: worktree.path,
+            resources: [.init(path: worktree.path, access: .exclusive, role: .execution),
+                        .init(path: common.path, access: .exclusive, role: .gitMetadata)],
+            gitAccess: .readWrite)
+        let directories = AgentRuntimeProcessRunner.copilotNativeDirectoryProjection(for: task).additionalDirectories
+        #expect(directories.contains(common.path))
+    }
+
+    @Test("Accepted environment mount files are rejected when replaced by directories")
+    func environmentMountKindIsPersisted() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-scope-mount-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("cred.json")
+        try Data("x".utf8).write(to: file)
+        let scope = TaskExecutionResourceScope(
+            workingDirectory: "", workspacePath: "",
+            resources: [.init(path: file.path, access: .shared, role: .environmentMount)])
+        #expect(scope.isValid)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+        #expect(!scope.isValid)
+    }
+
     @Test("A removed pinned execution root falls back to the workspace path")
     func removedPinnedRootFallsBackToWorkspace() throws {
         let root = FileManager.default.temporaryDirectory

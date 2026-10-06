@@ -42,7 +42,7 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
             canonicalPath = TaskExecutionResourceScope.canonicalPath(path)
             self.access = access
             self.role = role
-            isDirectory = role == .input || role == .gitMetadata ? Self.currentKind(of: self.path) : nil
+            isDirectory = role == .input || role == .gitMetadata || role == .environmentMount ? Self.currentKind(of: self.path) : nil
         }
 
         static func currentKind(of path: String) -> Bool? {
