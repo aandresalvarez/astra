@@ -99,7 +99,15 @@ enum GitHubReviewThreadArtifactPolicy {
 /// A request remains pending until ASTRA has receipts for the approved batch.
 /// Unrelated follow-ups retain the request; cancellation clears it.
 enum GitHubReviewThreadRequirement {
-    struct Request { let id: String; let text: String }
+    /// `targetSource` is the text that names the pull request. A follow-up such as
+    /// "resolve them" renews the request without repeating it, so it keeps the
+    /// target of the request it continues.
+    struct Request {
+        let id: String
+        let text: String
+        var targetSource: String?
+        var targetText: String { targetSource ?? text }
+    }
 
     static func request(task: AgentTask) -> Request? {
         let userMessages = task.events.filter {
@@ -109,7 +117,12 @@ enum GitHubReviewThreadRequirement {
         let messages = userMessages.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         for message in messages {
             if let publish = intent(message.payload, allowPronoun: current != nil) {
-                current = publish ? Request(id: message.id.uuidString, text: message.payload) : nil
+                let namesTarget = message.payload.range(of: "github.com/", options: .caseInsensitive) != nil
+                    || GitHubReviewTargetResolver.shorthandNumber(in: message.payload) != nil
+                current = publish
+                    ? Request(id: message.id.uuidString, text: message.payload,
+                              targetSource: namesTarget ? nil : current?.targetText)
+                    : nil
             } else if current != nil,
                       message.payload.range(
                         of: #"(?i)\b(?:cancel|stop|skip|drop|forget|do not send|don't send)\s+(?:it|that|them|this)\b|\bnever\s?mind\b"#,
@@ -156,20 +169,28 @@ enum GitHubReviewThreadRequirement {
         if allowPronoun || text.range(of: qualifyingObject, options: .regularExpression) != nil {
             pattern += #"|\b(?:resolve|reslolve)\s+(?:them|those|these)\b"#
         }
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)).last,
-              let range = Range(match.range, in: text) else { return nil }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        guard let match = matches.last, let range = Range(match.range, in: text) else { return nil }
         if !allowPronoun {
-            // GitHub has to be named in the clause that asked for the work. Anywhere
-            // else in the task is another job: "Reply to the Slack thread, then
-            // inspect GitHub PR #12" asks nothing of GitHub threads. An active
-            // request already established the context for its follow-ups.
-            let separators = CharacterSet(charactersIn: ".!?;,\n")
-            let head = text[..<range.lowerBound].components(separatedBy: separators).last ?? ""
-            let tail = text[range.upperBound...].components(separatedBy: separators).first ?? ""
-            guard (head + text[range] + tail).range(
-                of: #"(?i)github\.com/|\bgithub\b|\bPR\b|\bpull request\b"#, options: .regularExpression
-            ) != nil else { return nil }
+            // GitHub has to be named in the same job as the thread operation, not
+            // merely in the same sentence: "Reply to the Slack thread and inspect
+            // GitHub PR #12" asks nothing of GitHub threads. A job ends at
+            // punctuation or a conjunction. An active request already established
+            // the context for its follow-ups.
+            let boundary = #"(?i)[.!?;,\n]|\b(?:and|but|also|plus)\b"#
+            let context = #"(?i)github\.com/|\bgithub\b|\bPR\b|\bpull request\b"#
+            let boundaries = try? NSRegularExpression(pattern: boundary)
+            let named = matches.contains { candidate in
+                guard let span = Range(candidate.range, in: text) else { return false }
+                let head = String(text[..<span.lowerBound])
+                let headStart = boundaries?.matches(in: head, range: NSRange(head.startIndex..<head.endIndex, in: head))
+                    .last.flatMap { Range($0.range, in: head)?.upperBound } ?? head.startIndex
+                let tail = String(text[span.upperBound...])
+                let tailEnd = tail.range(of: boundary, options: .regularExpression)?.lowerBound ?? tail.endIndex
+                return (head[headStart...] + text[span] + tail[..<tailEnd]).range(of: context, options: .regularExpression) != nil
+            }
+            guard named else { return nil }
         }
         let clause = String(text[..<range.lowerBound].suffix(64))
             .components(separatedBy: CharacterSet(charactersIn: ".!?;\n")).last ?? ""

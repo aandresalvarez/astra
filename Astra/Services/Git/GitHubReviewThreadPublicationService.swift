@@ -259,7 +259,7 @@ final class GitHubReviewThreadPublicationService {
               URL(fileURLWithPath: filePath).lastPathComponent.hasPrefix("pr\(target.number)_threads") else {
             throw GitHubReviewPublicationError.unusableArtifact("The thread proposal filename does not match its pull request.")
         }
-        let request = GitHubReviewThreadRequirement.request(task: task)?.text ?? task.goal
+        let request = GitHubReviewThreadRequirement.request(task: task)?.targetText ?? task.goal
         if request.range(of: "github.com/", options: .caseInsensitive) != nil,
            GitHubReviewTargetResolver.durableTarget(task: task, request: request) == nil {
             throw GitHubReviewPublicationError.invalid("The request must identify one GitHub pull request.")

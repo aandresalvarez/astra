@@ -289,7 +289,10 @@ struct GitHubReviewThreadWorkflowTests {
         "Reply to the comments on PR #12",
         "Please mark the review threads on pull request 12 as resolved",
         "Address the review comments and resolve the threads on GitHub PR 12",
-        "Reply to the reviewer comments on this PR"
+        "Reply to the reviewer comments on this PR",
+        "Reply to the review threads and resolve them on GitHub PR 12",
+        "In PR 12 reply to the threads",
+        "Reply to the Slack thread and resolve the threads on GitHub PR 12"
     ])
     func realRequestsAreDetected(goal: String) {
         #expect(request(for: goal) != nil, "\(goal)")
@@ -307,7 +310,10 @@ struct GitHubReviewThreadWorkflowTests {
         "Review the pull request and reply with your review comments in this chat",
         "Reply to the Slack thread, then inspect GitHub PR #12",
         "Reply to the Slack thread then inspect GitHub PR #12",
-        "Reply to the Slack thread. Afterwards look at the GitHub PR"
+        "Reply to the Slack thread. Afterwards look at the GitHub PR",
+        "Reply to the Slack thread and inspect GitHub PR #12",
+        "Inspect GitHub PR #12 and reply to the Slack thread",
+        "Reply to the Slack thread but first look at the GitHub PR"
     ])
     func ordinaryWorkIsNotARequest(goal: String) {
         // A false positive blocks the task from finishing until the user types a
@@ -548,5 +554,25 @@ struct GitHubReviewThreadWorkflowTests {
         }
 
         #expect(dismissals(f.task).count == 1)
+    }
+
+    // MARK: - A pronoun follow-up keeps the target the request named
+
+    @Test("a follow-up that says only \"resolve them\" keeps the PR the earlier message named")
+    func pronounFollowUpKeepsTheTarget() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Look at the open review feedback"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "Reply to the threads on https://github.com/example/repo/pull/12"))
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "resolve them"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        #expect(request.text == "resolve them")
+
+        // No workspace origin: the target has to come from the message that named it.
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI(), originURL: { _ in nil })
+        let proposal = try await service.prepareFirstAvailable(task: f.task, filePaths: [f.file.path])
+        #expect(proposal.filePath == f.file.path)
+        #expect(dismissals(f.task).isEmpty)
     }
 }
