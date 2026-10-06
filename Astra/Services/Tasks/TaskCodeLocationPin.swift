@@ -8,6 +8,8 @@ import ASTRAModels
 /// so they always describe the same checkout.
 @MainActor
 enum TaskCodeLocationPin {
+    static let reservedCheckoutMessage = "That checkout is being removed and cannot be selected."
+
     /// Stores `path`. For the workspace default, nil or the primary path clears
     /// the override so new tasks follow the primary checkout. A draft keeps an
     /// explicit path, including the primary repository: nil on a draft means
@@ -18,6 +20,10 @@ enum TaskCodeLocationPin {
         let normalized = normalize(path)
         let primary = WorkspacePathPresentation.standardizedPath(workspace.primaryPath)
         let stored = task == nil && normalized == primary ? nil : normalized
+        // Cleanup owns this path until removal finishes. Refusing the write
+        // is what keeps a task from being pinned to a checkout that is going
+        // away and then falling back to the source repository.
+        guard !TaskWorktreeCheckoutReservation.isReserved(stored) else { return false }
         // Skip no-op writes so reselecting the same checkout (or a scan) never
         // bumps updatedAt or marks the model dirty.
         if let task {

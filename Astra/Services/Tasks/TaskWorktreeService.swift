@@ -4,9 +4,10 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
-enum TaskWorktreeCreationError: LocalizedError {
+enum TaskWorktreeCreationError: LocalizedError, Equatable {
     case repositoryUnavailable
     case noCommit(String)
+    case checkoutUnavailable(String)
     case baseUnavailable(String)
     case persistenceFailed(path: String, reason: String)
     case recoveryPersistenceFailed(String)
@@ -19,6 +20,8 @@ enum TaskWorktreeCreationError: LocalizedError {
             "The selected Git repository is no longer available in this workspace. Choose another repository."
         case .noCommit(let path):
             "Could not read HEAD in \(path). Create an initial commit before starting a task in a worktree."
+        case .checkoutUnavailable(let path):
+            "The selected checkout \(path) is no longer available. Choose the repository again before starting the task."
         case .baseUnavailable(let path):
             "Could not find the default branch of \(path): its remote didn't name one, and there is no main or master. Choose Start from › Current branch instead."
         case .persistenceFailed(let path, let reason):
@@ -55,6 +58,14 @@ struct TaskWorktreeBase: Equatable, Sendable {
 
 /// Value snapshot of a draft's worktree, taken before the draft is deleted so
 /// cleanup can run once the model object is gone.
+/// Whether draft deletion reached the store, and the cleanup that starts
+/// only after that save. `cleanup` is nil when there is no worktree or the
+/// deletion was not persisted.
+struct TaskWorktreeDeletionResult: Sendable {
+    var persisted: Bool
+    var cleanup: Task<Bool, Never>?
+}
+
 struct TaskWorktreeDiscard: Codable, Equatable, Sendable {
     let taskID: UUID
     let repositoryPath: String
@@ -153,7 +164,13 @@ enum TaskWorktreeService {
         // pointed at a linked worktree that already has a commit.
         switch request.base {
         case .currentBranch:
-            let checkout = existingCheckout(for: request) ?? repository
+            let checkout: String
+            switch resolveCurrentCheckout(request) {
+            case .missing(let path):
+                throw TaskWorktreeCreationError.checkoutUnavailable(path)
+            case .ready(let path):
+                checkout = path
+            }
             guard let commit = await git.getCommitSHA("HEAD", at: checkout) else {
                 throw TaskWorktreeCreationError.noCommit(checkout)
             }
@@ -209,7 +226,7 @@ enum TaskWorktreeService {
         let repository = WorkspacePathPresentation.standardizedPath(request.repositoryPath)
         switch request.base {
         case .currentBranch:
-            let checkout = existingCheckout(for: request) ?? repository
+            guard case .ready(let checkout) = resolveCurrentCheckout(request) else { return nil }
             let branch = await git.getCurrentBranch(at: checkout)
             if isNamedBranch(branch) { return branch }
             return await git.getCommitSHA("HEAD", at: checkout).map { String($0.prefix(8)) }
@@ -244,11 +261,22 @@ enum TaskWorktreeService {
         return GitService.isSafeRefComponent(branch) ? branch : nil
     }
 
-    private static func existingCheckout(for request: TaskWorktreeRequest) -> String? {
-        guard let checkout = request.checkoutPath?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !checkout.isEmpty,
-              FileManager.default.fileExists(atPath: checkout) else { return nil }
-        return WorkspacePathPresentation.standardizedPath(checkout)
+    /// Current branch uses the recorded checkout. A nonempty checkout that has
+    /// disappeared is missing; it must not fall back to the repository folder,
+    /// which can be a different branch. An empty checkout is the repository.
+    private enum CurrentCheckout {
+        case ready(String)
+        case missing(String)
+    }
+
+    private static func resolveCurrentCheckout(_ request: TaskWorktreeRequest) -> CurrentCheckout {
+        let repository = WorkspacePathPresentation.standardizedPath(request.repositoryPath)
+        let checkout = request.checkoutPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if checkout.isEmpty { return .ready(repository) }
+        guard FileManager.default.fileExists(atPath: checkout) else {
+            return .missing(WorkspacePathPresentation.standardizedPath(checkout))
+        }
+        return .ready(WorkspacePathPresentation.standardizedPath(checkout))
     }
 
     private static func isNamedBranch(_ branch: String) -> Bool {
@@ -329,7 +357,9 @@ enum TaskWorktreeService {
                 modelContext: modelContext, git: git, worktreesRoot: worktreesRoot
             )
         } else if let source {
-            task.executionRootPath = source.executionRootPath
+            guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: task) else {
+                throw TaskWorktreeCreationError.checkoutUnavailable(source.executionRootPath ?? "the selected checkout")
+            }
         }
     }
 
@@ -378,7 +408,9 @@ enum TaskWorktreeService {
             base: base.commit,
             worktreesRoot: worktreesRoot
         )
-        task.executionRootPath = createdPath
+        guard TaskWorktreeCheckoutReservation.commit(createdPath, to: task) else {
+            throw TaskWorktreeCreationError.checkoutUnavailable(createdPath)
+        }
         modelContext.insert(task)
         modelContext.insert(TaskEvent(
             task: task,
@@ -438,7 +470,9 @@ enum TaskWorktreeService {
             recovered = task
         } else {
             if let draft = adoptingDraft, let prepared, activeWorktreeEvent(for: draft) == nil {
-                draft.executionRootPath = task.executionRootPath
+                guard TaskWorktreeCheckoutReservation.commit(task.executionRootPath, to: draft) else {
+                    throw TaskWorktreeCreationError.checkoutUnavailable(task.executionRootPath ?? "the selected checkout")
+                }
                 modelContext.insert(TaskWorktreeBinding.copy(prepared, to: draft))
             }
             modelContext.delete(task)
@@ -491,7 +525,8 @@ enum TaskWorktreeService {
         _ discard: TaskWorktreeDiscard,
         modelContext: ModelContext,
         git: any GitRepositoryOperating = GitService.shared,
-        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:)
+        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:),
+        duringReservation: @MainActor () async -> Void = {}
     ) async -> TaskWorktreeCleanupOutcome {
         let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
         func kept(_ reason: String, retry: Bool = false) -> TaskWorktreeCleanupOutcome {
@@ -511,7 +546,9 @@ enum TaskWorktreeService {
         }
         if Task.isCancelled { return kept("cancelled", retry: true) }
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
-        guard await git.getCommitSHA("HEAD", at: discard.repositoryPath) != nil else {
+        // An unborn primary checkout is still a repository. Availability is the
+        // worktree registry, not whether that checkout's HEAD is a commit.
+        guard !(await git.listWorktrees(at: discard.repositoryPath)).isEmpty else {
             return kept("repository_unavailable", retry: true)
         }
         let exists = FileManager.default.fileExists(atPath: path)
@@ -536,12 +573,21 @@ enum TaskWorktreeService {
             URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path
                 == URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         }
+        // Hold the checkout through removal and branch deletion. Repository
+        // selection and task creation refuse the path while this is held, and
+        // a reference that lands before either Git call aborts cleanup.
+        let reservation = TaskWorktreeCheckoutReservation.acquire(path)
+        defer { TaskWorktreeCheckoutReservation.release(reservation) }
+        if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
+        await duringReservation()
+        if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
         if exists || isRegistered {
             do {
                 try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: false)
             } catch {
                 return kept("remove_failed", retry: true)
             }
+            if let problem = referenceProblem() { return kept(problem, retry: true) }
         }
         let remaining = await git.listWorktrees(at: discard.repositoryPath)
         guard !remaining.isEmpty else { return kept("registry_unavailable", retry: true) }
@@ -575,7 +621,8 @@ enum TaskWorktreeService {
 
     /// Records cleanup before deleting the draft, then saves the deletion.
     /// Removal starts only after both are durable and resumes on next launch
-    /// if interrupted. A failed intent write never runs `delete`.
+    /// if interrupted. A failed intent write never runs `delete`. A failed
+    /// save rolls the deletion back so the draft stays in the context.
     @discardableResult
     static func saveDeletionThenDiscard(
         _ discard: TaskWorktreeDiscard?,
@@ -586,7 +633,7 @@ enum TaskWorktreeService {
         persist: @MainActor (Workspace?, ModelContext) -> Bool = { workspace, modelContext in
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         }
-    ) -> Task<Bool, Never>? {
+    ) -> TaskWorktreeDeletionResult {
         if let discard {
             do {
                 try cleanupStore.record(discard)
@@ -599,23 +646,27 @@ enum TaskWorktreeService {
                     "reason": "worktree_cleanup_intent_save_failed",
                     "error": error.localizedDescription
                 ], level: .error)
-                return nil
+                return TaskWorktreeDeletionResult(persisted: false, cleanup: nil)
             }
         }
         delete()
         let saved = persist(workspace, modelContext)
-        guard let discard else { return nil }
         guard saved else {
-            AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
-                "worktree": discard.worktreePath,
-                "branch": discard.branch,
-                "reason": "deletion_not_saved"
-            ])
-            return nil
+            modelContext.rollback()
+            if let discard {
+                AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
+                    "worktree": discard.worktreePath,
+                    "branch": discard.branch,
+                    "reason": "deletion_not_saved"
+                ])
+            }
+            return TaskWorktreeDeletionResult(persisted: false, cleanup: nil)
         }
-        return Task { @MainActor in
+        guard let discard else { return TaskWorktreeDeletionResult(persisted: true, cleanup: nil) }
+        let cleanup = Task { @MainActor in
             await TaskWorktreeCleanupService.process(discard, store: cleanupStore, modelContext: modelContext)
         }
+        return TaskWorktreeDeletionResult(persisted: true, cleanup: cleanup)
     }
 
     private static func standardized(_ path: String?) -> String? {

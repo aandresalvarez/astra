@@ -865,6 +865,10 @@ final class WorkspaceGitViewModel: ObservableObject {
             errorMessage = activeCodePathChangeBlockedMessage
             return false
         }
+        if TaskWorktreeCheckoutReservation.isReserved(path) {
+            errorMessage = TaskCodeLocationPin.reservedCheckoutMessage
+            return false
+        }
 
         activeWorkingPath = TaskCodeLocationPin.normalize(path)
         guard let workspace else { return true }

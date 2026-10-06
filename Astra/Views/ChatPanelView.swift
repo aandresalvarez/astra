@@ -822,14 +822,10 @@ struct ChatPanelView: View {
             }
 
             Button {
-                if let draft = draftTask {
-                    let worktree = TaskWorktreeService.discardSnapshot(for: draft)
-                    let draftWorkspace = draft.workspace
-                    NewTaskWorktreeComposerFlow.discardWorktree(worktree, workspace: draftWorkspace, modelContext: modelContext) {
-                        modelContext.delete(draft)
-                        draftTask = nil
-                    }
-                }
+                guard NewTaskWorktreeComposerFlow.discardDraft(draftTask, modelContext: modelContext, delete: { draft in
+                    modelContext.delete(draft)
+                }) else { return }
+                draftTask = nil
                 messages = []
                 attachedFiles = []
                 extractedSpec = nil
@@ -2412,10 +2408,11 @@ struct ChatPanelView: View {
             let unusedWorktree = draft.executionRootPath == finalTask.executionRootPath
                 ? nil
                 : TaskWorktreeService.discardSnapshot(for: draft)
-            TaskWorktreeService.saveDeletionThenDiscard(
+            let deleted = TaskWorktreeService.saveDeletionThenDiscard(
                 unusedWorktree, workspace: draftWorkspace, modelContext: modelContext,
-                delete: { modelContext.delete(draft); draftTask = nil }
-            )
+                delete: { modelContext.delete(draft) }
+            ).persisted
+            if deleted { draftTask = nil }
         }
         // finalTask already captured the flag; reset it so a later, unrelated
         // task in this same view instance isn't mismarked as explicit.

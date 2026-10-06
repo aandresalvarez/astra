@@ -109,15 +109,34 @@ enum NewTaskWorktreeComposerFlow {
     }
 
     /// After a discarded draft is deleted, saves the deletion and, once it is
-    /// durable, removes its worktree if nothing happened in it.
+    /// durable, removes its worktree if nothing happened in it. False when
+    /// the intent or the deletion save failed; the draft is still present.
+    @discardableResult
     static func discardWorktree(
         _ worktree: TaskWorktreeDiscard?,
         workspace: Workspace?,
         modelContext: ModelContext,
         delete: @MainActor () -> Void = {}
-    ) {
+    ) -> Bool {
         TaskWorktreeService.saveDeletionThenDiscard(
             worktree, workspace: workspace, modelContext: modelContext, delete: delete
+        ).persisted
+    }
+
+    /// Deletes `draft` only when that deletion is saved. No draft is already
+    /// a successful reset. Callers clear composer state only when this is true.
+    @discardableResult
+    static func discardDraft(
+        _ draft: AgentTask?,
+        modelContext: ModelContext,
+        delete: @MainActor (AgentTask) -> Void
+    ) -> Bool {
+        guard let draft else { return true }
+        return discardWorktree(
+            TaskWorktreeService.discardSnapshot(for: draft),
+            workspace: draft.workspace,
+            modelContext: modelContext,
+            delete: { delete(draft) }
         )
     }
 }

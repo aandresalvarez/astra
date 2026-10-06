@@ -129,7 +129,9 @@ public enum AgentTaskForkService {
         // operational provider session or task-scoped authorization.
         // A fork continues the source's line of work, so it stays in the same
         // worktree the source was pinned to.
-        forked.executionRootPath = source.executionRootPath
+        if !TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: forked) {
+            forked.executionRootPath = nil
+        }
         forked.executionEnvironmentSnapshotJSON = source.executionEnvironmentSnapshotJSON
         forked.forkedAtRunIndex = cutoffIndex
 

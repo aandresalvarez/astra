@@ -64,6 +64,24 @@ struct NewTaskWorktreeSelection {
         repositoryPath = selected?.path
         self.checkoutPath = selected == nil ? nil : (checkoutPath ?? selected?.path)
     }
+
+    /// Keeps a recorded repository that the latest scan could not find.
+    /// Submitting stays blocked until that repository returns or the user
+    /// chooses another one.
+    mutating func updateRepositories(
+        _ repositories: [GitRepositoryInfo],
+        missingSelection missing: String
+    ) {
+        self.repositories = repositories
+        isLoading = false
+        let recorded = WorkspacePathPresentation.standardizedPath(missing)
+        if repositoryPath != recorded {
+            defaultBaseLabel = nil
+            currentBaseLabel = nil
+        }
+        repositoryPath = recorded
+        checkoutPath = nil
+    }
 }
 
 /// The strip above the new-task composer. It reuses the decision dock's
@@ -216,6 +234,17 @@ struct NewTaskWorktreeDockPresentation: Equatable {
         }
 
         guard let repository = selection.selectedRepository else {
+            if let recorded = nonEmpty(selection.repositoryPath),
+               !selection.repositories.contains(where: { $0.path == recorded }) {
+                let name = URL(fileURLWithPath: recorded).lastPathComponent
+                return make(
+                    tone: .attention,
+                    glyph: .symbol("exclamationmark.circle.fill"),
+                    title: "New worktree",
+                    meta: "repository unavailable",
+                    help: "\(name) is no longer available in this workspace. Restore it, or choose another repository. The task will not start from a different repository."
+                )
+            }
             let hasRepositories = !selection.repositories.isEmpty
             return make(
                 tone: .attention,

@@ -217,12 +217,63 @@ public enum TaskWorktreeBinding {
     /// back to the source checkout. Returns the copy for the caller to insert.
     @discardableResult
     public static func inheritPin(from source: AgentTask, into target: AgentTask) -> TaskEvent? {
-        target.executionRootPath = source.executionRootPath
+        guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: target) else { return nil }
         guard let binding = eventForInheritance(from: source) else { return nil }
         return copy(binding, to: target)
     }
 
     public static func copy(_ binding: TaskEvent, to target: AgentTask) -> TaskEvent {
         TaskEvent(task: target, eventType: TaskEventTypes.Task.worktreePrepared, payload: binding.payload)
+    }
+}
+
+/// Exclusive claim on a checkout path while unused-worktree cleanup removes
+/// it. Adoption refuses the pin until the claim is released, so a task cannot
+/// be saved onto a checkout that cleanup is deleting.
+public enum TaskWorktreeCheckoutReservation {
+    private static let lock = NSLock()
+    private static var leases: [String: UUID] = [:]
+
+    public struct Token: Sendable {
+        fileprivate let path: String
+        fileprivate let id: UUID
+    }
+
+    public static func acquire(_ path: String) -> Token {
+        let key = WorkspacePathPresentation.standardizedPath(path)
+        let id = UUID()
+        lock.lock()
+        leases[key] = id
+        lock.unlock()
+        return Token(path: key, id: id)
+    }
+
+    public static func release(_ token: Token) {
+        lock.lock()
+        if leases[token.path] == token.id {
+            leases.removeValue(forKey: token.path)
+        }
+        lock.unlock()
+    }
+
+    public static func isReserved(_ path: String?) -> Bool {
+        guard let path = key(path) else { return false }
+        lock.lock()
+        let reserved = leases[path] != nil
+        lock.unlock()
+        return reserved
+    }
+
+    /// Copies `path` onto `task` unless cleanup currently owns it.
+    @discardableResult
+    public static func commit(_ path: String?, to task: AgentTask) -> Bool {
+        guard !isReserved(path) else { return false }
+        task.executionRootPath = path
+        return true
+    }
+
+    private static func key(_ path: String?) -> String? {
+        guard let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return WorkspacePathPresentation.standardizedPath(path)
     }
 }

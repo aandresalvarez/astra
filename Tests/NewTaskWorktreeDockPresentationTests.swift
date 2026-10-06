@@ -87,8 +87,15 @@ struct NewTaskWorktreeDockPresentationTests {
 
         let unchosen = try #require(dock(selection(enabled: true, selected: "/tmp/astra-dock/removed")))
         #expect(unchosen.tone == .attention)
-        #expect(unchosen.meta == "choose a repository")
+        #expect(unchosen.meta == "repository unavailable")
+        #expect(unchosen.help.contains("removed"))
         #expect(unchosen.showsRepositoryMenu)
+        #expect(!selection(enabled: true, selected: "/tmp/astra-dock/removed").canSubmit)
+
+        var unset = selection(enabled: true)
+        unset.repositoryPath = nil
+        let choose = try #require(dock(unset))
+        #expect(choose.meta == "choose a repository")
 
         let missing = try #require(dock(selection(enabled: true, repositories: [])))
         #expect(missing.tone == .attention)

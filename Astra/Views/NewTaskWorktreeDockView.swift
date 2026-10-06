@@ -135,10 +135,11 @@ struct NewTaskWorktreeDockView: View {
             git: git
         )
         guard !Task.isCancelled, request == scanRequest else { return }
-        selection.updateRepositories(
-            repositories,
-            selectedPath: match?.repository.path,
-            checkoutPath: match?.checkoutPath
+        Self.applyScan(
+            to: &selection,
+            repositories: repositories,
+            recordedRepository: recordedRepositoryPath(),
+            match: match
         )
         guard let repository = selection.selectedRepository else { return }
         let base = TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: selection.checkoutPath)
@@ -149,6 +150,36 @@ struct NewTaskWorktreeDockView: View {
         guard !Task.isCancelled, request == scanRequest else { return }
         selection.defaultBaseLabel = defaultLabel
         selection.currentBaseLabel = currentLabel
+    }
+
+    /// A draft's recorded repository that is absent from `repositories` stays
+    /// selected and invalid. Anything else follows `match`, including the
+    /// primary-repository fallback `checkout` already computed.
+    static func applyScan(
+        to selection: inout NewTaskWorktreeSelection,
+        repositories: [GitRepositoryInfo],
+        recordedRepository: String?,
+        match: (repository: GitRepositoryInfo, checkoutPath: String)?
+    ) {
+        if let recorded = recordedRepository.map(WorkspacePathPresentation.standardizedPath),
+           !repositories.contains(where: { $0.path == recorded }) {
+            selection.updateRepositories(repositories, missingSelection: recorded)
+            return
+        }
+        selection.updateRepositories(
+            repositories,
+            selectedPath: match?.repository.path,
+            checkoutPath: match?.checkoutPath
+        )
+    }
+
+    private func recordedRepositoryPath() -> String? {
+        guard let draft,
+              let request = TaskWorktreeService.latestRequest(for: draft),
+              request.enabled,
+              let repository = request.repositoryPath,
+              !repository.isEmpty else { return nil }
+        return WorkspacePathPresentation.standardizedPath(repository)
     }
 
     /// The repository whose root or worktree is `codePath`, with that
@@ -228,6 +259,11 @@ struct NewTaskWorktreeDockView: View {
     private func selectRepository(_ repository: GitRepositoryInfo) {
         guard let workspace, repository.path != selection.repositoryPath else { return }
         let previous = selection
+        if TaskWorktreeCheckoutReservation.isReserved(repository.path) {
+            selection = previous
+            choiceProblem = TaskCodeLocationPin.reservedCheckoutMessage
+            return
+        }
         TaskCodeLocationPin.set(repository.path, workspace: workspace, task: pinOwner)
         selection.repositoryPath = repository.path
         selection.checkoutPath = repository.path

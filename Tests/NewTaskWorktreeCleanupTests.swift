@@ -153,7 +153,7 @@ struct NewTaskWorktreeCleanupTests {
         let store = try Fixture.container()
         let context = store.mainContext
         let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
-        let cleanup = try #require(TaskWorktreeService.saveDeletionThenDiscard(
+        let saved = TaskWorktreeService.saveDeletionThenDiscard(
             discard, workspace: draft.workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
             delete: {
                 #expect(FileManager.default.fileExists(atPath: fixture.cleanupStore.recordURL(for: discard.taskID).path))
@@ -163,7 +163,9 @@ struct NewTaskWorktreeCleanupTests {
                 #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
                 do { try context.save(); return true } catch { Issue.record(error); return false }
             }
-        ))
+        )
+        let cleanup = try #require(saved.cleanup)
+        #expect(saved.persisted)
         #expect(await cleanup.value)
         #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
         #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
@@ -183,12 +185,13 @@ struct NewTaskWorktreeCleanupTests {
         var deletionRan = false
         var persistenceRan = false
 
-        let cleanup = TaskWorktreeService.saveDeletionThenDiscard(
+        let failed = TaskWorktreeService.saveDeletionThenDiscard(
             discard, workspace: draft.workspace, modelContext: context, cleanupStore: unavailable,
             delete: { deletionRan = true; context.delete(draft) },
             persist: { _, _ in persistenceRan = true; return true }
         )
-        #expect(cleanup == nil)
+        #expect(failed.cleanup == nil)
+        #expect(!failed.persisted)
         #expect(!deletionRan)
         #expect(!persistenceRan)
         #expect(!draft.isDeleted)
@@ -204,11 +207,13 @@ struct NewTaskWorktreeCleanupTests {
         let store = try Fixture.container()
         let context = store.mainContext
         let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
-        let cleanup = TaskWorktreeService.saveDeletionThenDiscard(
+        let failed = TaskWorktreeService.saveDeletionThenDiscard(
             discard, workspace: draft.workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
             delete: { context.delete(draft) }, persist: { _, _ in false }
         )
-        #expect(cleanup == nil)
+        #expect(failed.cleanup == nil)
+        #expect(!failed.persisted)
+        #expect(!draft.isDeleted)
         #expect(try fixture.cleanupStore.pendingURLs().count == 1)
 
         let durable = ModelContext(store)
@@ -321,6 +326,66 @@ struct NewTaskWorktreeCleanupTests {
         #expect(await TaskWorktreeCleanupService.resumePending(modelContext: ModelContext(store), store: fixture.cleanupStore) == 0)
         #expect(try fixture.cleanupStore.pendingURLs().count == 1)
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("Cleanup removes an untouched worktree when the primary checkout is unborn")
+    func unbornPrimaryCheckoutCanBeCleanedUp() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let remote = try fixture.bareRemote("App.git")
+        try fixture.git(["remote", "add", "origin", remote.path], at: repository)
+        try fixture.push(["-u", "origin", "main"], at: repository)
+        try fixture.git(["checkout", "--orphan", "unborn"], at: repository)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Explore", goal: "Explore the implementation", workspace: workspace)
+        context.insert(draft)
+        try await TaskWorktreeService.prepare(
+            task: draft,
+            request: TaskWorktreeRequest(repositoryPath: repository.path, base: .defaultBranch),
+            modelContext: context,
+            worktreesRoot: fixture.worktrees.path
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
+    @Test("Cleanup refuses a new checkout pin until removal finishes")
+    func cleanupReservationBlocksAdoption() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(draft.workspace)
+        let successor = AgentTask(title: "Next", goal: "Next", workspace: workspace)
+        context.insert(successor)
+        context.delete(draft)
+        try context.save()
+
+        var adopted = true
+        let outcome = await TaskWorktreeService.discardOutcome(discard, modelContext: context) {
+            adopted = TaskCodeLocationPin.set(discard.worktreePath, workspace: workspace, task: successor)
+            let source = AgentTask(title: "Source", goal: "Source", workspace: workspace)
+            source.executionRootPath = discard.worktreePath
+            let child = AgentTask(title: "Child", goal: "Child", workspace: workspace)
+            #expect(TaskWorktreeBinding.inheritPin(from: source, into: child) == nil)
+            #expect(child.executionRootPath != discard.worktreePath)
+        }
+        #expect(outcome == .removed)
+        #expect(!adopted)
+        #expect(successor.executionRootPath != discard.worktreePath)
+        #expect(!TaskWorktreeCheckoutReservation.isReserved(discard.worktreePath))
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
     }
 
     @Test("Startup awaits pending cleanup before replaying recovered runtime work")

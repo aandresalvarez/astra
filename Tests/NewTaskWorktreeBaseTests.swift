@@ -615,22 +615,27 @@ struct NewTaskWorktreeBaseTests {
         try await prepare(draft, repository, context: context, fixture: fixture)
         let path = try #require(draft.executionRootPath)
         let discard = TaskWorktreeService.discardSnapshot(for: draft)
-        context.delete(draft)
 
         let unsaved = TaskWorktreeService.saveDeletionThenDiscard(
             discard, workspace: workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            delete: { context.delete(draft) },
             persist: { _, _ in false }
         )
-        #expect(unsaved == nil)
+        #expect(!unsaved.persisted)
+        #expect(unsaved.cleanup == nil)
+        #expect(!draft.isDeleted)
         try await Task.sleep(for: .milliseconds(50))
         #expect(FileManager.default.fileExists(atPath: path))
 
-        let cleanup = try #require(TaskWorktreeService.saveDeletionThenDiscard(
+        let saved = TaskWorktreeService.saveDeletionThenDiscard(
             discard, workspace: workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            delete: { context.delete(draft) },
             persist: { _, context in
                 (try? context.save()) != nil
             }
-        ))
+        )
+        let cleanup = try #require(saved.cleanup)
+        #expect(saved.persisted)
         #expect(await cleanup.value)
         #expect(!FileManager.default.fileExists(atPath: path))
     }
@@ -842,5 +847,55 @@ struct NewTaskWorktreeBaseTests {
         panel.setWorkspaceForTesting(workspace, selectedTask: draft)
         #expect(!panel.canChangeActiveCodePath)
         #expect(panel.activeCodePathChangeBlockedMessage.contains("own worktree"))
+    }
+
+    @Test("Current branch fails when the selected checkout disappears")
+    func missingSelectedCheckoutDoesNotUseRepositoryHead() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let missing = fixture.root.appendingPathComponent("gone").path
+        let request = TaskWorktreeRequest(
+            repositoryPath: repository.path, checkoutPath: missing, base: .currentBranch
+        )
+        do {
+            _ = try await TaskWorktreeService.resolveBase(for: request, git: GitService.shared)
+            Issue.record("A missing checkout must not fall back to the repository HEAD")
+        } catch let error as TaskWorktreeCreationError {
+            guard case .checkoutUnavailable(let path) = error else {
+                Issue.record(error)
+                return
+            }
+            #expect(path.hasSuffix("gone"))
+        }
+        #expect(await TaskWorktreeService.baseLabel(for: request, git: GitService.shared) == nil)
+    }
+
+    @Test("A recorded repository that disappears stays selected and cannot submit")
+    func missingRecordedRepositoryIsNotReplaced() {
+        let app = GitRepositoryInfo(name: "App", path: "/repos/app")
+        let other = GitRepositoryInfo(name: "Other", path: "/repos/other")
+        let missing = GitRepositoryInfo(name: "Missing", path: "/repos/missing")
+        var selection = NewTaskWorktreeSelection()
+        selection.isEnabled = true
+        NewTaskWorktreeDockView.applyScan(
+            to: &selection,
+            repositories: [app, other],
+            recordedRepository: missing.path,
+            match: (app, app.path)
+        )
+        #expect(selection.repositoryPath == missing.path)
+        #expect(selection.checkoutPath == nil)
+        #expect(selection.request == nil)
+        #expect(!selection.canSubmit)
+
+        NewTaskWorktreeDockView.applyScan(
+            to: &selection,
+            repositories: [app, other, missing],
+            recordedRepository: missing.path,
+            match: (missing, missing.path)
+        )
+        #expect(selection.repositoryPath == missing.path)
+        #expect(selection.canSubmit)
     }
 }
