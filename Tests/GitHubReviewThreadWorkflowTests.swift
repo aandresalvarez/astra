@@ -1448,4 +1448,36 @@ struct GitHubReviewThreadWorkflowTests {
         insertBatch(f, GitHubReviewThreadEvents.actionReceipt, "second", request: request.id, chain: request.chain, operation: "resolve")
         #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
     }
+
+    // MARK: - A proposal may not do what the request left out
+
+    @Test("a proposal that still resolves is not prepared after the user refused the resolution")
+    func proposalCannotDoWhatWasRefused() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to and resolve the review threads on https://github.com/example/repo/pull/12"
+        let refusal = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Don't resolve them")
+        f.context.insert(refusal)
+        let service = GitHubReviewThreadPublicationService(modelContext: f.context, cli: FakeCLI())
+
+        try payload(reply: "Fixed in abc123", resolve: true).write(to: f.file)
+        await #expect(throws: GitHubReviewPublicationError.self) { _ = try await service.prepare(task: f.task, filePath: f.file.path) }
+        #expect(!GitHubReviewThreadPublicationService.hasDismissed(task: f.task, filePath: f.file.path))   // retryable
+
+        try payload(reply: "Fixed in abc123", resolve: false).write(to: f.file)
+        let proposal = try await service.prepare(task: f.task, filePath: f.file.path)
+        #expect(proposal.payload.threads.allSatisfy { !$0.resolve })
+
+        // Asking for it again lifts the refusal.
+        let again = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Resolve the review threads on PR 12 too")
+        again.timestamp = refusal.timestamp.addingTimeInterval(1)
+        f.context.insert(again)
+        #expect(GitHubReviewThreadRequirement.request(task: f.task)?.refused.isEmpty == true)
+    }
+
+    @Test("an operation refused in the request itself is refused for the proposal")
+    func refusalInTheSameRequest() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on https://github.com/example/repo/pull/12 but do not resolve them"
+        #expect(GitHubReviewThreadRequirement.request(task: f.task)?.refused == ["resolve"])
+    }
 }

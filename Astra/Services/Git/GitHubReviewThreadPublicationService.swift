@@ -107,6 +107,7 @@ final class GitHubReviewThreadPublicationService {
             throw GitHubReviewPublicationError.unusableArtifact("This thread proposal was dismissed after validation failed. Save a corrected proposal under a new versioned filename.")
         }
         let (data, payload) = try Self.unusable { try readPayload(task: task, filePath: filePath) }
+        try requireNoRefusedOperations(task: task, payload: payload)
         try await validateTarget(task: task, payload: payload, filePath: filePath)
         var snapshots: [GitHubReviewThreadSnapshot] = []
         for action in payload.threads {
@@ -126,6 +127,19 @@ final class GitHubReviewThreadPublicationService {
                                          requestEventIDs: (request?.sourceEventIDs ?? []).map(\.uuidString),
                                          chainID: request?.chain,
                                          payload: payload, snapshots: snapshots)
+    }
+
+    /// A proposal may not do what the user refused: after "Don't resolve them", a file that still
+    /// resolves is not sent, whatever it was prepared against. Retryable, since the user can ask
+    /// for the operation again. What the request merely does not mention is for the user to
+    /// approve on the proposal.
+    private func requireNoRefusedOperations(task: AgentTask, payload: GitHubReviewThreadPayload) throws {
+        guard let refused = GitHubReviewThreadRequirement.request(task: task)?.refused, !refused.isEmpty else { return }
+        let proposed = Set(payload.threads.flatMap { ($0.reply != nil ? ["reply"] : []) + ($0.resolve ? ["resolve"] : []) })
+        let offending = proposed.intersection(refused)
+        guard offending.isEmpty else {
+            throw GitHubReviewPublicationError.invalid("This proposal would \(offending.sorted().joined(separator: " and ")) review threads, which you asked not to do. Prepare a proposal without it, or ask for it again.")
+        }
     }
 
     func publish(task: AgentTask, proposal: GitHubReviewThreadProposal) async throws -> GitHubReviewThreadReceipt {

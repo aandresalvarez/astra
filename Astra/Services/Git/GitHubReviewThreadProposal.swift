@@ -134,6 +134,8 @@ enum GitHubReviewThreadRequirement {
         /// What the request asked ASTRA to do: "reply", "resolve", or both. A receipt only
         /// settles the request if it covers these.
         var operations: Set<String> = []
+        /// What the user refused, until they ask for it again. A proposal that does it is not sent.
+        var refused: Set<String> = []
         /// The first request of the additive chain this belongs to. Receipts of any request
         /// of the chain count toward it.
         var chainID: String? = nil
@@ -151,7 +153,7 @@ enum GitHubReviewThreadRequirement {
         var current = intentDetail(task.goal).flatMap { detail in
             detail.publish
                 ? Request(id: "goal:" + GitHubReviewThreadArtifactPolicy.digest(Data(task.goal.utf8)), text: task.goal,
-                          operations: detail.operations)
+                          operations: detail.operations, refused: detail.refused)
                 : nil
         }
         let messages = userMessages.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
@@ -179,6 +181,7 @@ enum GitHubReviewThreadRequirement {
                               targetSource: carried,
                               sourceEventIDs: chain,
                               operations: operations,
+                              refused: (additive ? (current?.refused ?? []) : []).union(detail.refused).subtracting(operations),
                               chainID: additive ? current?.chain : nil,
                               operationEventIDs: pinned)
                     : (namesOtherPullRequest ? current : withoutRefused(current, detail.refused))
@@ -220,6 +223,7 @@ enum GitHubReviewThreadRequirement {
     private static func withoutRefused(_ request: Request?, _ refused: Set<String>) -> Request? {
         guard var request else { return nil }
         request.operations.subtract(refused)
+        request.refused.formUnion(refused)
         return request.operations.isEmpty ? nil : request
     }
 
