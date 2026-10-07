@@ -218,10 +218,14 @@ enum GitHubReviewThreadRequirement {
     /// Whether a message targets a different pull request than the request it would extend.
     private static func namesAnotherPullRequest(task: AgentTask, text: String, prior: Request?) -> Bool {
         guard let prior else { return false }
-        if let earlier = GitHubReviewTargetResolver.durableTarget(task: task, request: prior.targetText),
-           let later = GitHubReviewTargetResolver.durableTarget(task: task, request: text) {
+        let earlierTarget = GitHubReviewTargetResolver.durableTarget(task: task, request: prior.targetText)
+        let laterTarget = GitHubReviewTargetResolver.durableTarget(task: task, request: text)
+        if let earlier = earlierTarget, let later = laterTarget {
             return earlier.repository.lowercased() != later.repository.lowercased() || earlier.number != later.number
         }
+        // Only one side names its repository: an equal number does not make them the same
+        // pull request.
+        if (earlierTarget == nil) != (laterTarget == nil) { return true }
         // One side lacks a repository ("PR 12" against a full URL, or two shorthands): the
         // numbers alone tell them apart, whichever form carries them.
         func number(_ text: String) -> Int? {

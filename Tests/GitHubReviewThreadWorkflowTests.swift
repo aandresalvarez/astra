@@ -1274,10 +1274,10 @@ struct GitHubReviewThreadWorkflowTests {
 
     private func insertBatch(_ f: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, run: TaskRun, file: URL),
                              _ type: String, _ proposal: String, request: String, chain: String? = nil,
-                             operation: String, payload: GitHubReviewThreadPayload? = nil) {
+                             operation: String, payload: GitHubReviewThreadPayload? = nil, threads: Int = 1) {
         let url = "https://github.com/example/repo/pull/12"
         var record = GitHubReviewThreadReceipt(proposalID: proposal, filePath: "/x/\(proposal).json", requestID: request,
-            pullRequestURL: url, actions: [.init(threadID: "T1", operation: operation, commentID: "C", url: url)])
+            pullRequestURL: url, actions: (1...threads).map { .init(threadID: "T\($0)", operation: operation, commentID: "C", url: url) })
         record.chainID = chain
         record.approvedPayload = payload
         f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
@@ -1304,7 +1304,7 @@ struct GitHubReviewThreadWorkflowTests {
             let id = "batch-\(index)"
             insertBatch(f, GitHubReviewThreadEvents.dispatched, id, request: "r\(index)", operation: "reply", payload: payload)
             insertBatch(f, GitHubReviewThreadEvents.actionReceipt, id, request: "r\(index)", operation: "reply")
-            insertBatch(f, GitHubReviewThreadEvents.receipt, id, request: "r\(index)", operation: "reply", payload: payload)
+            insertBatch(f, GitHubReviewThreadEvents.receipt, id, request: "r\(index)", operation: "reply", payload: payload, threads: 3)
         }
         let events = try mirroredProposals(f)
         func record(_ type: String, _ proposal: String) -> [String: Any]? {
@@ -1317,6 +1317,9 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(record(GitHubReviewThreadEvents.dispatched, "batch-0") != nil)
         #expect(record(GitHubReviewThreadEvents.dispatched, "batch-0")?["approvedPayload"] == nil)
         #expect(record(GitHubReviewThreadEvents.receipt, "batch-0") != nil)
+        // One entry per operation is all completion reads from an old receipt.
+        #expect((record(GitHubReviewThreadEvents.receipt, "batch-0")?["actions"] as? [[String: Any]])?.count == 1)
+        #expect((record(GitHubReviewThreadEvents.receipt, "batch-7")?["actions"] as? [[String: Any]])?.count == 3)
         #expect(record(GitHubReviewThreadEvents.actionReceipt, "batch-0") == nil)
         #expect(record(GitHubReviewThreadEvents.dispatched, "batch-7")?["approvedPayload"] != nil)
         #expect(record(GitHubReviewThreadEvents.actionReceipt, "batch-7") != nil)
@@ -1374,5 +1377,33 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(request(for: "Reply to the GitHub review threads on PR 12, but don't reply to them") == nil)
         #expect(request(for: "Reply to the GitHub review threads on PR 12 and resolve them, but don't reply to them")?.operations == ["resolve"])
         #expect(request(for: "Reply to the GitHub review threads on PR 12 and resolve them")?.operations == ["reply", "resolve"])
+    }
+
+    // MARK: - Carrying the repository, not the old pull request number
+
+    @Test("a follow-up naming another PR number carries only the repository")
+    func carriedRepositoryDoesNotKeepTheOldNumber() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on https://github.com/example/repo/pull/12"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "resolve those review threads on PR 13"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        let target = try #require(GitHubReviewTargetResolver.durableTarget(task: f.task, request: request.targetText))
+
+        #expect(request.operations == ["resolve"])
+        #expect(target.number == 13)
+        #expect(!request.targetText.contains("/pull/12"))
+    }
+
+    @Test("an equal PR number in an unresolved and an explicit repository is not the same pull request")
+    func equalNumbersAcrossUnresolvedRepositoriesAreSeparate() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on PR 12"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "also resolve the review threads on https://github.com/other/repo/pull/12"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+
+        #expect(request.operations == ["resolve"])
+        #expect(request.chain == request.id)
     }
 }

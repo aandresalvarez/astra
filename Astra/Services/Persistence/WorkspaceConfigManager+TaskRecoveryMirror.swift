@@ -78,25 +78,32 @@ extension WorkspaceConfigManager {
             let identity = batch.events.filter { $0.type == "github.review-threads.dispatched" || settledTypes.contains($0.type) }
             kept.formUnion(identity.map(\.id))
             identityOnly.formUnion(identity.map(\.id))   // they do not keep their request messages alive
-            compact.formUnion(identity.filter { $0.type == "github.review-threads.dispatched" }.map(\.id))
+            compact.formUnion(identity.map(\.id))
         }
         kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
             .prefix(MirrorLimits.maxThreadDismissals).map(\.id))
         return (kept, compact, identityOnly)
     }
 
-    /// A dispatch record with a summary of the required actions in place of its approved payload.
-    static func compactedThreadPayload(_ payload: String) -> String {
-        guard var object = (try? JSONSerialization.jsonObject(with: Data(payload.utf8))) as? [String: Any],
-              let approved = object.removeValue(forKey: "approvedPayload") as? [String: Any] else { return payload }
-        // What completion recovery needs from the payload: which operations it required.
-        var required: [String] = []
-        for thread in (approved["threads"] as? [[String: Any]]) ?? [] {
-            guard let id = thread["threadId"] as? String else { continue }
-            if thread["reply"] is String { required.append("\(id):reply") }
-            if thread["resolve"] as? Bool == true { required.append("\(id):resolve") }
+    /// A record with a summary in place of what recovery no longer needs: the approved payload
+    /// of a dispatch becomes the actions it required, and, for a settled batch's receipt, the
+    /// per-thread actions become one entry per operation, which is all that completion reads.
+    static func compactedThreadPayload(_ payload: String, collapsingActions: Bool = false) -> String {
+        guard var object = (try? JSONSerialization.jsonObject(with: Data(payload.utf8))) as? [String: Any] else { return payload }
+        if let approved = object.removeValue(forKey: "approvedPayload") as? [String: Any] {
+            // What completion recovery needs from the payload: which operations it required.
+            var required: [String] = []
+            for thread in (approved["threads"] as? [[String: Any]]) ?? [] {
+                guard let id = thread["threadId"] as? String else { continue }
+                if thread["reply"] is String { required.append("\(id):reply") }
+                if thread["resolve"] as? Bool == true { required.append("\(id):resolve") }
+            }
+            object["requiredActions"] = required
         }
-        object["requiredActions"] = required
+        if collapsingActions, let actions = object["actions"] as? [[String: Any]] {
+            let operations = Set(actions.compactMap { $0["operation"] as? String }).sorted()
+            object["actions"] = operations.map { ["threadID": "*", "operation": $0] }
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let compacted = String(data: data, encoding: .utf8) else { return payload }
         return compacted

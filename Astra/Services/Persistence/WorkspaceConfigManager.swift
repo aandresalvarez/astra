@@ -1901,7 +1901,7 @@ public enum WorkspaceConfigManager {
         let eventConfigs = mirroredEvents.compactMap { event -> EventConfig? in
             guard var payload = isTaskRecoveryEvent(event.type) || fullPayloadIDs.contains(event.id)
                 ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters) else { return nil }
-            if threadRetention.compact.contains(event.id) { payload = compactedThreadPayload(payload) }
+            if threadRetention.compact.contains(event.id) { payload = compactedThreadPayload(payload, collapsingActions: event.type != "github.review-threads.dispatched") }
             return EventConfig(
                 id: event.id.uuidString,
                 type: event.type,
