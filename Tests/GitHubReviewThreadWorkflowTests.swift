@@ -274,7 +274,7 @@ struct GitHubReviewThreadWorkflowTests {
     func intentAndRecovery() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
-        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Do not resolve the comments"))
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Never mind"))
         #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
         f.context.insert(TaskEvent(task: f.task, type: TaskPlanConversationEventTypes.userMessage, payload: "Resolve the threads on PR #12"))
         #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
@@ -360,7 +360,7 @@ struct GitHubReviewThreadWorkflowTests {
     func followUpsKeepWorkingAfterARequest() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
-                                   payload: "Do not resolve the comments"))
+                                   payload: "Never mind"))
         #expect(GitHubReviewThreadRequirement.request(task: f.task) == nil)
 
         f.context.insert(TaskEvent(task: f.task, type: TaskPlanConversationEventTypes.userMessage,
@@ -371,7 +371,7 @@ struct GitHubReviewThreadWorkflowTests {
     @Test("the user can drop a request in plain words")
     func plainWordsDropARequest() throws {
         for phrase in ["cancel it", "skip it", "forget that", "drop them", "never mind",
-                       "Don't reply to them", "Stop replying to those", "do not post them", "never reply to it"] {
+                       "do not post them", "never reply to it"] {
             let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
             #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
             f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: phrase))
@@ -615,6 +615,7 @@ struct GitHubReviewThreadWorkflowTests {
     @Test("an explicit stop phrase with an object clears an active request")
     func stopPhraseClearsAnActiveRequest() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Resolve the review threads on https://github.com/example/repo/pull/12"
         #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
         f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
                                    payload: "Stop resolving the review threads on PR 12"))
@@ -1405,5 +1406,46 @@ struct GitHubReviewThreadWorkflowTests {
 
         #expect(request.operations == ["resolve"])
         #expect(request.chain == request.id)
+    }
+
+    // MARK: - Refusing one operation of an active request
+
+    @Test("refusing one operation of an active request keeps the other")
+    func refusingOneOperationKeepsTheOther() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to and resolve the review threads on https://github.com/example/repo/pull/12"
+        let refusal = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Don't resolve them")
+        f.context.insert(refusal)
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        #expect(request.operations == ["reply"])
+        #expect(request.id.hasPrefix("goal:"))
+
+        // Refusing what is left is a cancellation.
+        let second = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Don't reply to them")
+        second.timestamp = refusal.timestamp.addingTimeInterval(1)
+        f.context.insert(second)
+        #expect(GitHubReviewThreadRequirement.request(task: f.task) == nil)
+    }
+
+    // MARK: - Confirmed actions across recovery batches
+
+    @Test("a resolution-only batch completes a request whose reply was confirmed by an earlier batch")
+    func confirmedActionsCombineAcrossBatches() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let url = "https://github.com/example/repo/pull/12"
+        f.task.goal = "Reply to and resolve the review threads on \(url)"
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        let both = GitHubReviewThreadPayload(pullRequestUrl: url, commitId: Self.head, threads: [
+            .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: true)])
+        let resolveOnly = GitHubReviewThreadPayload(pullRequestUrl: url, commitId: Self.head, threads: [
+            .init(threadId: "T1", expectedLastCommentId: "C2", reply: nil, resolve: true)])
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "first", request: request.id, chain: request.chain, operation: "reply", payload: both)
+        insertBatch(f, GitHubReviewThreadEvents.actionReceipt, "first", request: request.id, chain: request.chain, operation: "reply")
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))   // the resolution is still owed
+
+        // The first batch failed before resolving; the user sent the resolution alone.
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "second", request: request.id, chain: request.chain, operation: "resolve", payload: resolveOnly)
+        insertBatch(f, GitHubReviewThreadEvents.actionReceipt, "second", request: request.id, chain: request.chain, operation: "resolve")
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
     }
 }

@@ -181,7 +181,7 @@ enum GitHubReviewThreadRequirement {
                               operations: operations,
                               chainID: additive ? current?.chain : nil,
                               operationEventIDs: pinned)
-                    : (namesOtherPullRequest ? current : nil)
+                    : (namesOtherPullRequest ? current : withoutRefused(current, detail.refused))
             } else if current != nil,
                       message.payload.range(
                         of: #"(?i)\b(?:cancel|stop|skip|drop|forget|do not send|don't send)\s+(?:it|that|them|this)\b|\bnever\s?mind\b|\b(?:do not|don't|dont|never|stop|cancel|skip)\s+(?:replying|reply|resolving|resolve|posting|post|sending|send)\b(?:\s+to)?\s+(?:it|that|them|this|those|these)\b"#,
@@ -214,6 +214,14 @@ enum GitHubReviewThreadRequirement {
         return ids.filter(keep.contains)
     }
 
+
+    /// The request after a follow-up refused some of its operations: it stays for the ones left
+    /// and ends when none are.
+    private static func withoutRefused(_ request: Request?, _ refused: Set<String>) -> Request? {
+        guard var request else { return nil }
+        request.operations.subtract(refused)
+        return request.operations.isEmpty ? nil : request
+    }
 
     /// Whether a message targets a different pull request than the request it would extend.
     private static func namesAnotherPullRequest(task: AgentTask, text: String, prior: Request?) -> Bool {
@@ -257,7 +265,9 @@ enum GitHubReviewThreadRequirement {
         let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
         return !records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
             guard inChain(dispatch) else { return false }
-            let confirmedActions = confirmed.filter { $0.proposalID == dispatch.proposalID }.flatMap(\.actions)
+            // Across the chain: a reply confirmed by a batch that failed before resolving, and a
+            // resolution-only batch sent to finish it, are one request completed.
+            let confirmedActions = confirmed.filter(inChain).flatMap(\.actions)
             guard covers(finalActions + confirmedActions) else { return false }
             let done = Set(confirmedActions.map { "\($0.threadID):\($0.operation)" })
             // The approved payload, or the summary a compacted dispatch keeps in its place.
@@ -299,7 +309,9 @@ enum GitHubReviewThreadRequirement {
         return operations
     }
 
-    private static func intentDetail(_ rawText: String, allowPronoun: Bool = false) -> (publish: Bool, operations: Set<String>)? {
+    /// `refused` are the operations the message refuses, so a follow-up that refuses one operation
+    /// of an active request can take it out of the request instead of cancelling the whole.
+    private static func intentDetail(_ rawText: String, allowPronoun: Bool = false) -> (publish: Bool, operations: Set<String>, refused: Set<String>)? {
         // "then" ends a clause as a comma does: "Reply to the Slack thread, then
         // inspect GitHub PR #12" is two jobs.
         let text = rawText.replacingOccurrences(of: #"(?i)\bthen\b"#, with: ",", options: .regularExpression)
@@ -395,6 +407,7 @@ enum GitHubReviewThreadRequirement {
             }
         }
         let remaining = Set(refusedAtLastMention.filter { $0.value.values.contains(false) }.keys)
-        return (!remaining.isEmpty, remaining)
+        let refused = Set(refusedAtLastMention.filter { !$0.value.values.contains(false) }.keys)
+        return (!remaining.isEmpty, remaining, refused)
     }
 }
