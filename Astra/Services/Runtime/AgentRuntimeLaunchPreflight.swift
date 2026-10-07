@@ -178,7 +178,10 @@ enum AgentRuntimeLaunchPreflight {
         preflightCache: PreflightCache = PreflightCache(),
         capabilityWorkingDirectory: String? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
-        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
+        persistAutoCredentialGrant: @MainActor (AgentTask, ModelContext) -> Bool = { task, modelContext in
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        }
     ) async -> AgentRuntimeLaunchPreflightResult {
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         if effectivePermissionPolicy == .autonomous {
@@ -270,23 +273,46 @@ enum AgentRuntimeLaunchPreflight {
         if let credentialRequest = ConnectorRuntimeProjection.CredentialApprovalRequest.merged(
             credentialProjection.unapprovedCredentialApprovalRequests()
         ) {
-            let autoGranted = !ExternalActionPolicy.asksUser(
+            let autoGrant: AutoCredentialGrant = ExternalActionPolicy.asksUser(
                 for: .connectorCredentialUse,
                 level: effectivePermissionPolicy.agentPolicyLevel
-            ) && grantConnectorCredentialsForAuto(
+            ) ? .notScopable : grantConnectorCredentialsForAuto(
                 task: task,
                 run: run,
                 modelContext: modelContext,
                 phase: phase,
-                credentialRequest: credentialRequest
+                credentialRequest: credentialRequest,
+                persist: persistAutoCredentialGrant
             )
-            if !autoGranted {
+            switch autoGrant {
+            case .granted:
+                break
+            case .notScopable:
                 return finishPreLaunchCredentialApprovalRequest(
                     task: task,
                     run: run,
                     modelContext: modelContext,
                     phase: phase,
                     credentialRequest: credentialRequest
+                )
+            case .notPersisted:
+                // Credentials are never used under an authorization the store
+                // does not hold: the grant was rolled back, and the run stops.
+                let reason = "auto_credential_grant_unpersisted"
+                finishPreLaunchFailure(
+                    task: task,
+                    run: run,
+                    modelContext: modelContext,
+                    reason: reason,
+                    payload: "Couldn't start this run — ASTRA could not save that Auto allowed "
+                        + "\(credentialRequest.connectorName), so nothing used its credentials. Try again in a moment."
+                )
+                return AgentRuntimeLaunchPreflightResult(
+                    status: .connectorPreflightFailed,
+                    phase: phase,
+                    reason: reason,
+                    detail: credentialRequest.displayName,
+                    auditFields: ["source": "connector_credential_egress", "phase": phase.rawValue, "result": reason]
                 )
             }
         }
@@ -363,18 +389,31 @@ enum AgentRuntimeLaunchPreflight {
         )
     }
 
+    enum AutoCredentialGrant: Equatable {
+        case granted
+        /// The broker would not scope the grant to the task; asking is the only
+        /// way left to give the user the decision.
+        case notScopable
+        /// The grant could not be saved and was rolled back.
+        case notPersisted
+    }
+
     /// Auto asks nothing, so the connectors this launch needs are allowed for
     /// the task exactly as "Allow for this task" would allow them, and the chat
     /// says so. The credentials stay where they were: in the Keychain, and
-    /// behind the broker for brokered connectors. Returns false when the grant
-    /// cannot be scoped to the task, which leaves asking as the only option.
+    /// behind the broker for brokered connectors. The grant must be durable
+    /// before the launch goes on: an authorization only the `ModelContext`
+    /// holds is rolled back rather than used.
     private static func grantConnectorCredentialsForAuto(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        credentialRequest: ConnectorRuntimeProjection.CredentialApprovalRequest
-    ) -> Bool {
+        credentialRequest: ConnectorRuntimeProjection.CredentialApprovalRequest,
+        persist: @MainActor (AgentTask, ModelContext) -> Bool
+    ) -> AutoCredentialGrant {
+        let grantsBefore = task.runtimePermissionGrantsJSON
+        let eventsBefore = Set(task.events.map(\.id))
         let request = PermissionRequest.connectorCredentials(
             connectorID: credentialRequest.connectorID,
             displayName: credentialRequest.displayName,
@@ -397,7 +436,7 @@ enum AgentRuntimeLaunchPreflight {
             "granted_count": String(granted.count),
             "result": granted.isEmpty ? "auto_policy_grant_refused" : "auto_policy_granted"
         ], level: granted.isEmpty ? .warning : .info, fieldMaxLength: 240)
-        guard !granted.isEmpty else { return false }
+        guard !granted.isEmpty else { return .notScopable }
         let several = ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: credentialRequest.labels).count > 1
         modelContext.insert(TaskEvent(
             task: task,
@@ -405,8 +444,19 @@ enum AgentRuntimeLaunchPreflight {
             payload: "Auto allowed \(credentialRequest.connectorName) to use \(several ? "their" : "its") saved credentials for this task.",
             run: run
         ))
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        return true
+        guard persist(task, modelContext) else {
+            task.runtimePermissionGrantsJSON = grantsBefore
+            for event in task.events where !eventsBefore.contains(event.id) {
+                modelContext.delete(event)
+            }
+            AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+                "source": "connector_credential_egress",
+                "phase": phase.rawValue,
+                "result": "auto_policy_grant_unpersisted"
+            ], level: .error)
+            return .notPersisted
+        }
+        return .granted
     }
 
     private static func finishPreLaunchCredentialApprovalRequest(

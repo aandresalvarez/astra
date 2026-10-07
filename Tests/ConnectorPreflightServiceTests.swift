@@ -497,6 +497,58 @@ struct ConnectorPreflightServiceTests {
         #expect(task.events.filter { $0.payload.hasPrefix("Auto allowed Internal API") }.count == 1)
     }
 
+    // An authorization only the ModelContext holds is not one: credentials are
+    // never used under a grant the store could not save.
+    @Test("Auto stops the launch rather than use credentials it could not record")
+    func autoStopsWhenTheGrantCannotBeSaved() async throws {
+        let container = try makeConnectorPreflightContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Auto Unsaved", primaryPath: "/tmp/auto-unsaved")
+        let connector = Connector(
+            name: "Internal API",
+            serviceType: "custom_api",
+            baseURL: "https://api.example.test/",
+            authMethod: "bearer"
+        )
+        connector.workspace = workspace
+        connector.credentialKeys = ["API_TOKEN"]
+        let task = AgentTask(title: "Use API", goal: "Use the Internal API connector", workspace: workspace)
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        context.insert(workspace)
+        context.insert(connector)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        let store = MockSecretStore()
+        store.save(
+            key: "API_TOKEN",
+            value: "secret-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+
+        let result = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "test",
+            contextText: task.goal,
+            permissionPolicy: .autonomous,
+            secretStore: store,
+            persistAutoCredentialGrant: { _, _ in false }
+        )
+
+        #expect(!result.didPass)
+        #expect(result.reason == "auto_credential_grant_unpersisted")
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task).isEmpty)
+        #expect(!task.events.contains { $0.payload.hasPrefix("Auto allowed") })
+        #expect(!task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType })
+        #expect(task.events.contains {
+            $0.type == TaskEventTypes.System.error.rawValue && $0.payload.contains("could not save that Auto allowed")
+        })
+    }
+
     @Test("Ask still asks before a connector's credentials are used")
     func askStillAsksBeforeConnectorCredentials() async throws {
         let container = try makeConnectorPreflightContainer()
