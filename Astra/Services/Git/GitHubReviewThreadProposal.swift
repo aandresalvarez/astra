@@ -136,6 +136,9 @@ enum GitHubReviewThreadRequirement {
         var operations: Set<String> = []
         /// The requests an additive follow-up extends. Their receipts still count.
         var priorRequestIDs: [String] = []
+        /// Messages that added an operation the request did not have. Bounding the chain
+        /// never drops them: without one, a recovered request would ask for less.
+        var operationEventIDs: [UUID] = []
         var targetText: String { targetSource ?? text }
     }
 
@@ -162,13 +165,18 @@ enum GitHubReviewThreadRequirement {
                 // leans on an earlier message for the target keeps that message, the first
                 // of the chain, and the newest few, within a fixed bound.
                 let leans = additive || (carried != nil && current != nil)
-                let chain = leans ? boundedChain((current?.sourceEventIDs ?? []) + [message.id]) : [message.id]
+                let operations = detail.operations.union(additive ? current?.operations ?? [] : [])
+                let pinned = leans
+                    ? (current?.operationEventIDs ?? []) + (operations.isSubset(of: current?.operations ?? []) ? [] : [message.id])
+                    : []
+                let chain = leans ? boundedChain((current?.sourceEventIDs ?? []) + [message.id], pinned: pinned) : [message.id]
                 current = detail.publish
                     ? Request(id: message.id.uuidString, text: message.payload,
                               targetSource: carried,
                               sourceEventIDs: chain,
-                              operations: detail.operations.union(additive ? current?.operations ?? [] : []),
-                              priorRequestIDs: additive ? (current.map { $0.priorRequestIDs + [$0.id] } ?? []) : [])
+                              operations: operations,
+                              priorRequestIDs: additive ? (current.map { Array(($0.priorRequestIDs + [$0.id]).suffix(maxPriorRequests)) } ?? []) : [],
+                              operationEventIDs: pinned)
                     : nil
             } else if current != nil,
                       message.payload.range(
@@ -195,17 +203,27 @@ enum GitHubReviewThreadRequirement {
     private static let maxChainMessages = 20
 
     /// The root message of a chain, which names the pull request, and its newest messages.
-    private static func boundedChain(_ ids: [UUID]) -> [UUID] {
+    /// Messages that added an operation stay, so the bound never weakens the request.
+    private static func boundedChain(_ ids: [UUID], pinned: [UUID]) -> [UUID] {
         guard ids.count > maxChainMessages, let root = ids.first else { return ids }
-        return [root] + ids.suffix(maxChainMessages - 1)
+        let keep = Set([root] + pinned + ids.suffix(max(1, maxChainMessages - 1 - pinned.count)))
+        return ids.filter(keep.contains)
     }
+
+    /// How many earlier requests an additive one remembers receipts for.
+    private static let maxPriorRequests = 20
 
     /// Whether a message targets a different pull request than the request it would extend.
     private static func namesAnotherPullRequest(task: AgentTask, text: String, prior: Request?) -> Bool {
-        guard let prior,
-              let earlier = GitHubReviewTargetResolver.durableTarget(task: task, request: prior.targetText),
-              let later = GitHubReviewTargetResolver.durableTarget(task: task, request: text) else { return false }
-        return earlier.repository.lowercased() != later.repository.lowercased() || earlier.number != later.number
+        guard let prior else { return false }
+        if let earlier = GitHubReviewTargetResolver.durableTarget(task: task, request: prior.targetText),
+           let later = GitHubReviewTargetResolver.durableTarget(task: task, request: text) {
+            return earlier.repository.lowercased() != later.repository.lowercased() || earlier.number != later.number
+        }
+        // Neither names a repository ("PR 12", "PR 13"): the numbers alone tell them apart.
+        guard let earlier = GitHubReviewTargetResolver.shorthandNumber(in: prior.targetText),
+              let later = GitHubReviewTargetResolver.shorthandNumber(in: text) else { return false }
+        return earlier != later
     }
 
     static func isPending(task: AgentTask) -> Bool {

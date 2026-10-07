@@ -1260,9 +1260,11 @@ struct GitHubReviewThreadWorkflowTests {
 
         for _ in 0..<40 {
             f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
-                                       payload: "also reply to the review threads"))
+                                       payload: "also resolve them"))
         }
-        #expect(try #require(GitHubReviewThreadRequirement.request(task: f.task)).sourceEventIDs.count <= 20)
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        #expect(request.operations.contains("resolve") && request.priorRequestIDs.count > 1)   // the follow-ups really chained
+        #expect(request.sourceEventIDs.count <= 20)
     }
 
     // MARK: - Receipts an additive request still needs survive compaction
@@ -1294,5 +1296,88 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(proposals.contains("original"))      // still named by the newer batches' chain
         #expect(proposals.contains("later-7"))
         #expect(!proposals.contains("later-1"))      // an old batch nothing depends on is compacted away
+    }
+
+    // MARK: - Shorthand pull request numbers
+
+    @Test("an additive follow-up about another shorthand pull request starts its own request")
+    func additiveFollowUpOnAnotherShorthandPullRequest() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on PR 12"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "also resolve the review threads on PR 13"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+
+        #expect(request.operations == ["resolve"])
+        #expect(request.priorRequestIDs.isEmpty)
+    }
+
+    // MARK: - Bounding the chain keeps what changed the request
+
+    @Test("bounding the message chain keeps the message that added an operation")
+    func boundedChainKeepsOperationChangingMessages() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let url = "https://github.com/example/repo/pull/12"
+        f.task.goal = "Resolve the review threads on \(url)"
+        let start = Date()
+        func message(_ text: String, _ offset: Int) -> TaskEvent {
+            let event = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: text)
+            event.timestamp = start.addingTimeInterval(TimeInterval(offset)); f.context.insert(event); return event
+        }
+        _ = message("also resolve them", 0)
+        let reply = message("also reply to the review threads on \(url)", 1)   // the message that adds the reply
+        for index in 2..<42 { _ = message("also resolve them", index) }
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+
+        #expect(request.operations == ["reply", "resolve"])
+        #expect(request.sourceEventIDs.count <= 20)
+        #expect(request.sourceEventIDs.contains(reply.id))
+    }
+
+    @Test("the ancestry an additive request keeps is bounded")
+    func additiveAncestryIsBounded() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on https://github.com/example/repo/pull/12"
+        let start = Date()
+        for index in 0..<60 {
+            let event = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "also resolve them")
+            event.timestamp = start.addingTimeInterval(TimeInterval(index))
+            f.context.insert(event)
+        }
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        #expect(request.priorRequestIDs.count > 1)
+        #expect(request.priorRequestIDs.count <= 20)
+    }
+
+    @Test("a settled ancestor kept for a newer batch is compacted, not kept whole")
+    func referencedAncestorsAreCompacted() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let url = "https://github.com/example/repo/pull/12"
+        let payload = GitHubReviewThreadPayload(pullRequestUrl: url, commitId: Self.head, threads: [
+            .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: false)])
+        func insert(_ type: String, _ proposal: String, request: String, prior: [String] = []) {
+            var record = GitHubReviewThreadReceipt(proposalID: proposal, filePath: "/x/\(proposal).json", requestID: request,
+                pullRequestURL: url, actions: [.init(threadID: "T1", operation: "reply", commentID: "C", url: url)])
+            record.priorRequestIDs = prior
+            record.approvedPayload = payload
+            f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
+        }
+        insert(GitHubReviewThreadEvents.dispatched, "original", request: "r0")
+        insert(GitHubReviewThreadEvents.receipt, "original", request: "r0")
+        for index in 1...7 {
+            insert(GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", prior: ["r0"])
+            insert(GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", prior: ["r0"])
+        }
+        let workspace = try #require(f.task.workspace)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: f.context))
+        let mirrored = try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString })
+        func dispatched(_ proposal: String) -> [String: Any]? {
+            mirrored.events.first { $0.type == GitHubReviewThreadEvents.dispatched && $0.payload.contains("\"\(proposal)\"") }
+                .flatMap { (try? JSONSerialization.jsonObject(with: Data($0.payload.utf8))) as? [String: Any] }
+        }
+
+        #expect(dispatched("original") != nil)
+        #expect(dispatched("original")?["approvedPayload"] == nil)
+        #expect(dispatched("later-7")?["approvedPayload"] != nil)
     }
 }

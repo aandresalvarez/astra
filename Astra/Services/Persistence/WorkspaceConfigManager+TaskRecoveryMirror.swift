@@ -72,9 +72,12 @@ extension WorkspaceConfigManager {
         }
         // An additive request is settled by the receipts of the requests it extends, so a
         // batch a kept one names stays however old it is.
-        let needed = Set(batches.filter { $0.events.contains { kept.contains($0.id) } }.flatMap { $0.events.flatMap(\.priors) })
+        // Only their recorded actions are needed, so they lose the embedded payload.
+        let windowKept = kept
+        let needed = Set(batches.filter { $0.events.contains { windowKept.contains($0.id) } }.flatMap { $0.events.flatMap(\.priors) })
         for batch in batches where batch.events.contains(where: { $0.requestID.map(needed.contains) ?? false }) {
             kept.formUnion(batch.events.map(\.id))
+            compact.formUnion(batch.events.filter { $0.type == "github.review-threads.dispatched" && !windowKept.contains($0.id) }.map(\.id))
         }
         kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
             .prefix(MirrorLimits.maxThreadDismissals).map(\.id))
