@@ -23,6 +23,13 @@ enum TaskDeliverableExpectation {
         case turn(String)
     }
 
+    /// A run's scope kept with the run it was read for, so a cached copy is
+    /// never applied to a later run.
+    struct RunScope: Equatable, Sendable {
+        let runID: UUID
+        let scope: Scope
+    }
+
     /// The scope `run` is graded against, read from the durable turn request
     /// that launched it. Runs without a readable request — legacy launches,
     /// unsaved tasks — keep the task's own request.
@@ -52,16 +59,6 @@ enum TaskDeliverableExpectation {
             return .task
         }
         return .turn(executedTurn.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    /// Whether a run whose task's own request names a deliverable still owes
-    /// it. Review surfaces ask this only after the task-level check passes, so
-    /// a follow-up can clear the original requirement there but never add one;
-    /// the completion gate grades the run's own scope in full.
-    @MainActor
-    static func runOwesTaskDeliverable(_ task: AgentTask, runID: UUID?) -> Bool {
-        let scope = scope(for: task, runID: runID)
-        return scope == .task || requiresDeliverableArtifact(task, scope: scope)
     }
 
     /// Whether `turn` is a message the user sent to the running task. Retries,

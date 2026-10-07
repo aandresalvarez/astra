@@ -166,10 +166,14 @@ enum PendingTaskReviewPolicy {
         return nil
     }
 
+    /// What `run` owed comes from its own turn: a follow-up can ask for a file
+    /// the task never named, or ask for none on a task that did.
     @MainActor
     private static func requiresDeliverableArtifact(_ task: AgentTask, run: TaskRun) -> Bool {
-        TaskDeliverableExpectation.requiresDeliverableArtifact(task)
-            && TaskDeliverableExpectation.runOwesTaskDeliverable(task, runID: run.id)
+        TaskDeliverableExpectation.requiresDeliverableArtifact(
+            task,
+            scope: TaskDeliverableExpectation.scope(for: task, run: run)
+        )
     }
 
     private static func unresolvedDismissalReason(

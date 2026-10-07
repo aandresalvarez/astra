@@ -41,6 +41,25 @@ struct TaskDeliverableTurnScopeTests {
         // The review surfaces must agree with the gate once the task completes.
         fixture.task.status = .completed
         #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: fixture.task, latestRun: commitRun))
+        #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(fixture.reviewInput(latestRun: commitRun)))
+    }
+
+    @Test("a follow-up that asks for a file is held to it in review when the task asked for none")
+    func followUpAddingFileRequirementKeepsReviewGate() throws {
+        let fixture = try Fixture(goal: "Explain how the scheduler orders queued work.")
+        defer { fixture.removeFiles() }
+        _ = try fixture.run(for: fixture.submitInitial())
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(fixture.task))
+
+        let summaryRun = try fixture.run(for: fixture.submitFollowUp("Now write summary.md with that explanation."))
+        summaryRun.status = .failed
+        summaryRun.stopReason = TaskRunStopReason.noUsableResult.rawValue
+        fixture.task.status = .pendingUser
+
+        // Approve must not complete a run that never produced what it owed.
+        #expect(PendingTaskReviewPolicy.dismissalReason(for: fixture.task, latestRun: summaryRun) == .noUsableResult)
+        #expect(PendingTaskReviewPolicy.reviewState(for: fixture.reviewInput(latestRun: summaryRun)).dismissalReason
+            == .noUsableResult)
     }
 
     @Test("the first turn still owes its named deliverable")
@@ -174,7 +193,7 @@ private final class Fixture {
     let context: ModelContext
     let task: AgentTask
 
-    init() throws {
+    init(goal: String = Fixture.goal) throws {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-deliverable-turn-scope-\(UUID().uuidString)", isDirectory: true)
         root = base.path
@@ -191,7 +210,7 @@ private final class Fixture {
         )
         context = ModelContext(container)
         let workspace = Workspace(name: "Turn Scope", primaryPath: workspaceRoot)
-        task = AgentTask(title: "Notes A", goal: Self.goal, workspace: workspace)
+        task = AgentTask(title: "Notes A", goal: goal, workspace: workspace)
         task.executionRootPath = worktree
         context.insert(workspace)
         context.insert(task)
@@ -226,6 +245,19 @@ private final class Fixture {
         TaskTurnRequestStateMachine.transition(request, to: .completed)
         try context.save()
         return run
+    }
+
+    /// The review dock's input, with the latest run's scope resolved the way
+    /// `recomputeDecisionOutcomes` caches it.
+    func reviewInput(latestRun: TaskRun) -> PendingTaskReviewSnapshotInput {
+        PendingTaskReviewSnapshotInput(
+            task: task,
+            snapshot: TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task)),
+            latestRunScope: TaskDeliverableExpectation.RunScope(
+                runID: latestRun.id,
+                scope: TaskDeliverableExpectation.scope(for: task, run: latestRun)
+            )
+        )
     }
 
     /// Turn 1 wrote notes-a.txt into the worktree well before any later turn.

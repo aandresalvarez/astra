@@ -20,27 +20,25 @@ extension PendingTaskReviewEventSnapshot {
 }
 
 extension PendingTaskReviewSnapshotInput {
-    @MainActor
-    init(task: AgentTask, snapshot: TaskThreadSnapshot) {
+    /// `latestRunScope` is read from the latest run's turn request off the body
+    /// pass (`recomputeDecisionOutcomes`). Until it is, or once a newer run
+    /// replaces it, the run is graded against the task's own request.
+    init(task: AgentTask, snapshot: TaskThreadSnapshot, latestRunScope: TaskDeliverableExpectation.RunScope?) {
         let latestRun = snapshot.latestRun
         let latestRunSnapshot = latestRun.map(PendingTaskReviewRunSnapshot.init)
         let runSnapshots = snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init)
         let eventSnapshots = snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init)
-        let taskRequiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+        let scope = latestRunScope.flatMap { $0.runID == latestRun?.id ? $0.scope : nil } ?? .task
+        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task, scope: scope)
         let requiresScopedArtifactEvidence = PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
             taskStatus: task.status,
             isTaskDone: task.isDone,
-            requiresDeliverableArtifact: taskRequiresDeliverableArtifact,
+            requiresDeliverableArtifact: requiresDeliverableArtifact,
             latestRun: latestRunSnapshot,
             runs: runSnapshots,
             events: eventSnapshots
         )
-        // This runs on every body pass, so only a run already held to the
-        // task's file reads its turn request.
-        let requiresDeliverableArtifact = requiresScopedArtifactEvidence
-            ? TaskDeliverableExpectation.runOwesTaskDeliverable(task, runID: latestRun?.id)
-            : taskRequiresDeliverableArtifact
-        let latestRunHasScopedArtifact = requiresScopedArtifactEvidence && requiresDeliverableArtifact && latestRun.map { latestRun in
+        let latestRunHasScopedArtifact = requiresScopedArtifactEvidence && latestRun.map { latestRun in
             TaskDeliverableExpectation.hasRunScopedArtifact(
                 for: task,
                 fileChanges: latestRun.fileChanges,
