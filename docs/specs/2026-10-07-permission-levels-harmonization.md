@@ -1,7 +1,9 @@
 # Permission levels mean one thing everywhere
 
-Status: **agreed 2026-10-07.** Every open question was settled with its
-recommended default; see [Decisions](#decisions).
+Status: **implemented on `codex/permission-levels-harmonization`.** Every
+open question was settled with its recommended default; see
+[Decisions](#decisions). Where the implementation refined the design, the
+section below says so.
 
 ## The rule (decided 2026-10-07)
 
@@ -130,6 +132,7 @@ enum ExternalActionKind: String, Codable, CaseIterable, Sendable {
     case githubReviewPublication
     case githubThreadReply          // PR #482
     case githubThreadResolution     // PR #482
+    case agentCommand               // git/gh the agent ran itself (A9)
 }
 
 enum ExternalActionDisposition: Equatable, Sendable {
@@ -187,30 +190,39 @@ Changes:
        let timestamp: Date
    }
 
-   protocol ExternalActionReceipt: Decodable {
-       static var eventType: String { get }
-       func record(eventID: UUID, timestamp: Date) -> ExternalActionRecord
+   protocol ExternalActionRecordSource {
+       static var eventTypes: Set<String> { get }
+       static func record(payload: Data, eventID: UUID, timestamp: Date) -> ExternalActionRecord?
    }
    ```
 
-   Receipts register by event type. PR #482 adds its reply/resolve receipts by
-   conforming and registering — nothing else in the chat changes.
+   Each source decodes only the receipt fields the row shows. Sources register
+   in `ExternalActionRecordProjection.sources`; PR #482 adds one for its
+   reply/resolve receipts — nothing else in the chat changes.
 3. `TaskThreadSnapshot` gains `.externalAction(ExternalActionRecord)`,
    rendered as one lean row (state, not a button): service symbol, noun-led
    title, destination as metadata, an **Auto** pill when the record came from
    `.autoPolicy`, and the row opens the link. It appears in every level; in Ask
    it confirms what the approval did, in Auto it is the only notice.
 4. The legacy text lines for the same receipt ("Posted GitHub review: …",
-   "Published draft pull request #N: …") stop being written; old tasks keep
-   them, and the thread hides a legacy line when a record for the same receipt
-   is present so nothing shows twice.
+   "Published draft pull request #N: …") are still written — other code reads
+   them — and the thread hides a legacy line when a record for the same
+   receipt is present, so nothing shows twice.
 5. A record is written only from a receipt, so it never claims an action that
    did not complete. Failures and indeterminate sends keep their existing error
    lines and are never auto-retried.
 
 Auto-granted connector credentials (B1/B2) are not external writes and have
-no receipt; they get one `system.info` line ("Auto allowed Jira for this
-task.") next to the existing grant event.
+no receipt; they get one `system.info` line ("Auto allowed Jira to use its
+saved credentials for this task.") next to the task-scoped grant, recorded with
+source `auto_policy`.
+
+What the agent sees also follows the level. The broker's reply to a Jira
+proposal says the write happens "only as the task's permission level allows",
+and in Auto an addendum to the prompt
+(`HostControlPlanePromptGuidance.appendingAutoSendGuidance`) tells the agent the
+write is sent when the turn ends, so it does not tell the user it is waiting
+for a review that will not happen.
 
 ### 3. Per-action changes
 
@@ -224,7 +236,7 @@ task.") next to the existing grant event.
 | B6 PR #482 | Uses `ExternalActionPolicy` + `ExternalActionReceipt`; specified there. |
 | A4/A7 Ask local tools | Apply `PolicyLocalToolGrants.levelScoped` in every adapter so Ask asks the same on every runtime (Decision 6). |
 | A4 Ask hard denies | Decision 5: `rm`, `chmod`, `chown`, `git push`, `deploy`, `publish` become ask-first in Ask; `sudo` stays denied. |
-| A9 agent-observed external actions (Auto) | Best effort, record only: classify observed shell commands (`git push`, `gh pr create\|merge\|comment\|review\|edit\|close`, `gh issue create\|comment\|edit\|close`, `gh release create`, `gh api` with a write method or fields) and write an `external.action.observed` event with the sanitized command and the first github.com URL from the tool result. Rendered with the same row and an "agent" provenance. Never a gate. |
+| A9 agent-observed external actions (Auto) | Best effort, record only (`AgentExternalActionObserver`): classify the run's shell calls (`git push`, `gh pr create\|merge\|comment\|review\|edit\|close\|ready`, `gh issue create\|comment\|edit\|close`, `gh release create`, `gh api` with a write method or fields) whose own result came back successful, and write an `external.action.observed` event with a title, the destination, and the first github.com URL from the result. The command text itself is not stored. Rendered with the same row and an "Agent" pill. Never a gate. |
 
 ### 4. Picker copy
 
@@ -330,7 +342,7 @@ Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
 The paused thread-reply workflow needs exactly two things from this spec:
 `ExternalActionPolicy.disposition(.githubThreadReply / .githubThreadResolution,
 level:)` to choose between the chat ask and immediate execution, and an
-`ExternalActionReceipt` conformance for its reply and resolve receipts so the
-chat shows the same row with the comment link. In Auto the operation's result
+`ExternalActionRecordSource` for its reply and resolve receipts so the chat
+shows the same row with the comment link. In Auto the operation's result
 goes back to the agent in the same turn; in Ask the existing permission
 continuation ("Allow once & continue" / "Allow for this task") resumes it.

@@ -55,6 +55,26 @@ its Auto flags are declared. Per-runtime flag builders are still tested in their
 own suites; the matrix is what stops a shared change from moving a level in a
 runtime nobody was looking at.
 
+The same suite pins Ask's command semantics on every runtime: destructive and
+publishing commands ask rather than being refused (`sudo` stays denied), and
+no runtime pre-grants a local tool in Ask.
+
+## Policy level × external action contract
+
+`Tests/PermissionLevelActionMatrixTests.swift` pins `ExternalActionPolicy` for
+every level and every external action ASTRA performs or owns: Auto performs and
+records, Ask and Custom ask, and a new action kind fails the suite until it is
+placed. The behaviour behind each answer has its own pins:
+
+- connector credentials — `ConnectorPreflightServiceTests` (launch gate) and
+  `BrokeredCredentialLevelTests` (run-boundary offer);
+- Jira writes — `ConnectorMutationAutoSendTests`;
+- GitHub review posting — the Auto cases in `GitHubReviewPublicationTests`;
+- commands the agent ran itself — `AgentExternalActionObserverTests`;
+- the chat record — `ExternalActionRecordTests`.
+
+Each of these was mutation-checked: removing the rule it pins makes it fail.
+
 The unit tests never run a real CLI, so they cannot see a provider dropping a
 flag. Run this locally after upgrading any provider CLI:
 

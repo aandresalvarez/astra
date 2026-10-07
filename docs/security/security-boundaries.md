@@ -113,6 +113,36 @@ and `~/Documents/Astra Dev/Workspaces`.
   labels, and MCP server IDs, but must not persist credential values or MCP
   environment values.
 
+## Permission Levels
+
+A level decides whether ASTRA asks; it never widens a sandbox or credential
+boundary. The full inventory is in
+`docs/specs/2026-10-07-permission-levels-harmonization.md`.
+
+- **Ask** asks before changing files, running commands, and acting outside
+  ASTRA. Reading files stays free; web reads still ask. Destructive and
+  publishing commands (`rm`, `chmod`, `chown`, `git push`, `deploy`,
+  `publish`) are asked about, not refused; `sudo` stays denied because it
+  cannot prompt in a non-interactive run. Local tools are never pre-granted,
+  on any runtime.
+- **Auto** asks nothing. Connector credentials are allowed for the task, staged
+  Jira writes are sent at the run boundary, and a requested GitHub review is
+  posted when the run finishes — each through the same checks an approved
+  action goes through (digest re-read, derived route, re-resolved destination,
+  dispatch recorded before the network call, no resend of an ambiguous
+  outcome). Every action outside ASTRA leaves a record in the chat, derived
+  from its receipt, with an **Auto** pill; recognised `git`/`gh` commands the
+  agent ran itself are recorded with an **Agent** pill.
+- **Custom** applies the saved per-item tool, shell, and network rules and
+  follows Ask for actions outside ASTRA.
+- `ExternalActionPolicy` is the only owner of "does this level ask before an
+  external action". It reads the user-facing level of the run that produced
+  the action, so a proposal composed under Ask is still reviewed after the task
+  switches to Auto, and only proposals the Auto run itself staged are sent.
+- Prompts that are not action approvals stay in every level: widening the
+  Seatbelt sandbox after a denial and the sensitive-data runtime-switch
+  acknowledgement.
+
 ## Repeatable Checks
 
 Run the security hunt script for a focused pass:
