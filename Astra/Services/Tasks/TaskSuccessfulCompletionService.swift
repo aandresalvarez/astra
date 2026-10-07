@@ -12,9 +12,10 @@ enum TaskSuccessfulCompletionService {
         modelContext: ModelContext,
         successPayload: String,
         permissionPolicy: PermissionPolicy,
-        reviewOriginURL: (String) async -> String? = { path in
+        reviewOriginURL: @escaping (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
-        }
+        },
+        reviewPublicationService: GitHubReviewPublicationService? = nil
     ) async -> Bool {
         do {
             if try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
@@ -26,6 +27,14 @@ enum TaskSuccessfulCompletionService {
             run: run,
             modelContext: modelContext,
             originURL: reviewOriginURL
+        )
+        await GitHubReviewAutoPost.postIfAuto(
+            task: task,
+            run: run,
+            policyLevel: permissionPolicy.agentPolicyLevel,
+            modelContext: modelContext,
+            service: reviewPublicationService
+                ?? GitHubReviewPublicationService(modelContext: modelContext, originURL: reviewOriginURL)
         )
         if ExternalActionPolicy.asksUser(for: .gitPullRequestPublication, level: permissionPolicy.agentPolicyLevel) {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(

@@ -788,6 +788,117 @@ struct GitHubReviewPublicationTests {
         #expect(task.status != .completed)
     }
 
+    // Auto asks nothing (docs/specs/2026-10-07-permission-levels-harmonization.md):
+    // the review the user asked to post goes out when the run finishes, through
+    // the same service checks, and the receipt says Auto posted it.
+    @Test("Auto posts the requested review when the run finishes and records that Auto did")
+    func autoPostsTheRequestedReview() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = try postingRun(fixture, request: "Post the PR review comments")
+        let cli = FakeCLI()
+
+        let completed = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .autonomous,
+            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        )
+
+        #expect(completed)
+        #expect(await cli.postCount() == 1)
+        #expect(await cli.postedPayload() == fixture.data)
+        #expect(!GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        let receipt = try #require(fixture.task.events.first { $0.type == GitHubReviewPublicationEventTypes.receipt })
+        let record = try #require(ExternalActionRecordProjection.record(
+            type: receipt.type, payload: receipt.payload, eventID: receipt.id, timestamp: receipt.timestamp
+        ))
+        #expect(record.authorization == .autoPolicy)
+    }
+
+    @Test("Ask and Custom leave the requested review for the user")
+    func askLeavesTheReviewForTheUser() async throws {
+        for policy in [PermissionPolicy.restricted, .interactive] {
+            let fixture = try makeFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let run = try postingRun(fixture, request: "Post the PR review comments")
+            let cli = FakeCLI()
+
+            let completed = await TaskSuccessfulCompletionService.apply(
+                task: fixture.task,
+                run: run,
+                modelContext: fixture.context,
+                successPayload: "Review prepared",
+                permissionPolicy: policy,
+                reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+            )
+
+            #expect(!completed, "\(policy.rawValue)")
+            #expect(await cli.postCount() == 0, "\(policy.rawValue)")
+            #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        }
+    }
+
+    @Test("Auto posts nothing nobody asked to post")
+    func autoPostsNothingUnrequested() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = try postingRun(fixture, request: "Thanks, that analysis is enough")
+        let cli = FakeCLI()
+
+        _ = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .autonomous,
+            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        )
+
+        #expect(await cli.postCount() == 0)
+    }
+
+    @Test("Auto leaves a review whose pull request moved on for the user and says why")
+    func autoLeavesAStaleReviewWaiting() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = try postingRun(fixture, request: "Post the PR review comments")
+        let cli = FakeCLI()
+        await cli.setHead(String(repeating: "b", count: 40))
+
+        let completed = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .autonomous,
+            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        )
+
+        #expect(!completed)
+        #expect(await cli.postCount() == 0)
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        #expect(fixture.task.events.contains { $0.payload.hasPrefix("Auto could not post the GitHub review") })
+    }
+
+    private func postingRun(
+        _ fixture: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, file: URL, data: Data),
+        request: String
+    ) throws -> TaskRun {
+        let run = TaskRun(task: fixture.task)
+        fixture.context.insert(run)
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: request,
+            run: run
+        ))
+        try fixture.context.save()
+        return run
+    }
+
     private func makeFixture(goal: String = "review this pr in detail https://github.com/example/repo/pull/12") throws -> (
         root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, file: URL, data: Data
     ) {

@@ -574,7 +574,14 @@ final class GitHubReviewPublicationService {
     /// The dispatch event is durably saved before the network call. If ASTRA
     /// exits or the response is lost, this file cannot be submitted again by a
     /// later click without first checking GitHub and creating a new proposal.
-    func publish(task: AgentTask, proposal: GitHubReviewProposal) async throws -> GitHubReviewPublicationRecord {
+    /// `authorization` says who let ASTRA post it: the user in the sheet, or
+    /// Auto without asking. It is recorded on the receipt and changes none of
+    /// the checks below.
+    func publish(
+        task: AgentTask,
+        proposal: GitHubReviewProposal,
+        authorization: ExternalActionAuthorization = .userReviewed
+    ) async throws -> GitHubReviewPublicationRecord {
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
@@ -661,7 +668,8 @@ final class GitHubReviewPublicationService {
             filePath: proposal.filePath,
             pullRequestURL: proposal.pullRequestURL,
             reviewURL: response.htmlUrl,
-            reviewID: response.id
+            reviewID: response.id,
+            authorization: authorization
         )
         let persistedEventIDs = Set(task.events.map(\.id))
         let priorState = TaskStateMachine.ExternalOutcomeReceiptSnapshot(task: task, run: run)
