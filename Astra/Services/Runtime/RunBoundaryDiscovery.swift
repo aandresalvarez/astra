@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRALogging
 import ASTRAModels
 import ASTRAPersistence
@@ -20,10 +21,15 @@ import ASTRAPersistence
 /// another branch in the outcome path.
 @MainActor
 enum RunBoundaryDiscovery {
+    /// `policyLevel` is the user-facing level the run launched with: it decides
+    /// whether what the run left behind is asked about or done (see
+    /// `ExternalActionPolicy`), so switching the task's level afterwards
+    /// changes nothing the run already produced.
     static func recordWhatTheRunLeftForTheUser(
         task: AgentTask,
         run: TaskRun,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        policyLevel: AgentPolicyLevel = .review
     ) {
         let discovered = ConnectorMutationDiscovery.recordStagedMutations(
             task: task,
@@ -61,7 +67,8 @@ enum RunBoundaryDiscovery {
         BrokeredCredentialApprovalDiscovery.recordWithheldCredentialRequests(
             task: task,
             run: run,
-            modelContext: modelContext
+            modelContext: modelContext,
+            policyLevel: policyLevel
         )
     }
 }

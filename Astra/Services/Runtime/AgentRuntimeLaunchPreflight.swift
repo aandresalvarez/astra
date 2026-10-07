@@ -270,13 +270,25 @@ enum AgentRuntimeLaunchPreflight {
         if let credentialRequest = ConnectorRuntimeProjection.CredentialApprovalRequest.merged(
             credentialProjection.unapprovedCredentialApprovalRequests()
         ) {
-            return finishPreLaunchCredentialApprovalRequest(
+            let autoGranted = !ExternalActionPolicy.asksUser(
+                for: .connectorCredentialUse,
+                level: effectivePermissionPolicy.agentPolicyLevel
+            ) && grantConnectorCredentialsForAuto(
                 task: task,
                 run: run,
                 modelContext: modelContext,
                 phase: phase,
                 credentialRequest: credentialRequest
             )
+            if !autoGranted {
+                return finishPreLaunchCredentialApprovalRequest(
+                    task: task,
+                    run: run,
+                    modelContext: modelContext,
+                    phase: phase,
+                    credentialRequest: credentialRequest
+                )
+            }
         }
         let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
             from: scopedConnectors,
@@ -349,6 +361,52 @@ enum AgentRuntimeLaunchPreflight {
             detail: issue.message,
             auditFields: fields
         )
+    }
+
+    /// Auto asks nothing, so the connectors this launch needs are allowed for
+    /// the task exactly as "Allow for this task" would allow them, and the chat
+    /// says so. The credentials stay where they were: in the Keychain, and
+    /// behind the broker for brokered connectors. Returns false when the grant
+    /// cannot be scoped to the task, which leaves asking as the only option.
+    private static func grantConnectorCredentialsForAuto(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: RunPhase,
+        credentialRequest: ConnectorRuntimeProjection.CredentialApprovalRequest
+    ) -> Bool {
+        let request = PermissionRequest.connectorCredentials(
+            connectorID: credentialRequest.connectorID,
+            displayName: credentialRequest.displayName,
+            labels: credentialRequest.labels
+        )
+        let runtime = registeredLaunchRuntime(task: task, run: run)
+        let granted = TaskRuntimePermissionGrants.record(
+            grants: PermissionBroker.approvalGrants(for: request),
+            providerID: runtime,
+            task: task,
+            modelContext: modelContext,
+            source: "auto_policy"
+        )
+        AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+            "source": "connector_credential_egress",
+            "phase": phase.rawValue,
+            "runtime": runtime.rawValue,
+            "connector_name": credentialRequest.connectorName,
+            "credential_label_count": String(credentialRequest.labels.count),
+            "granted_count": String(granted.count),
+            "result": granted.isEmpty ? "auto_policy_grant_refused" : "auto_policy_granted"
+        ], level: granted.isEmpty ? .warning : .info, fieldMaxLength: 240)
+        guard !granted.isEmpty else { return false }
+        let several = ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: credentialRequest.labels).count > 1
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: "Auto allowed \(credentialRequest.connectorName) to use \(several ? "their" : "its") saved credentials for this task.",
+            run: run
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        return true
     }
 
     private static func finishPreLaunchCredentialApprovalRequest(

@@ -1082,7 +1082,8 @@ final class AgentRuntimeWorker {
         RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: task,
             run: run,
-            modelContext: modelContext
+            modelContext: modelContext,
+            policyLevel: manifest.policyLevel
         )
 
 

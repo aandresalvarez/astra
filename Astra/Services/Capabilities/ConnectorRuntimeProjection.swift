@@ -573,7 +573,7 @@ struct ConnectorRuntimeProjection {
     }
 
     /// "A", "A and B", "A, B and C".
-    private static func joinedNames(_ names: [String]) -> String {
+    static func joinedNames(_ names: [String]) -> String {
         guard let last = names.last else { return "" }
         guard names.count > 1 else { return last }
         return names.dropLast().joined(separator: ", ") + " and " + last

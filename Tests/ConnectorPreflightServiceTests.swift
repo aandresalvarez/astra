@@ -413,8 +413,11 @@ struct ConnectorPreflightServiceTests {
         #expect(summary.rawPayload?.contains("connector:\(connector.id.uuidString)") == false)
     }
 
-    @Test("Auto does not bypass connector credential approval")
-    func autoDoesNotBypassConnectorCredentialApproval() async throws {
+    // Auto asks nothing (docs/specs/2026-10-07-permission-levels-harmonization.md):
+    // the connectors a launch needs are allowed for the task the way "Allow for
+    // this task" would, and the chat says so. This used to pin the opposite.
+    @Test("Auto allows connector credentials for the task and says so in the chat")
+    func autoAllowsConnectorCredentialsForTheTask() async throws {
         let container = try makeConnectorPreflightContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Auto Credential", primaryPath: "/tmp/auto-credential")
@@ -428,6 +431,7 @@ struct ConnectorPreflightServiceTests {
         connector.credentialKeys = ["API_TOKEN"]
         let task = AgentTask(title: "Use API", goal: "Use the Internal API connector", workspace: workspace)
         let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.claudeCode.rawValue
         context.insert(workspace)
         context.insert(connector)
         context.insert(task)
@@ -454,7 +458,6 @@ struct ConnectorPreflightServiceTests {
             requestID: "stale-auto-request"
         )
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: staleRequest, task: task)
-        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
         let result = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
             task: task,
@@ -466,20 +469,81 @@ struct ConnectorPreflightServiceTests {
             secretStore: store
         )
 
-        #expect(result.status == .connectorCredentialApprovalRequired)
-        #expect(!result.didPass)
-        #expect(task.events.contains { $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue })
-        #expect(task.events.contains {
-            $0.type == TaskEventTypes.System.info.rawValue &&
-                $0.payload.contains("Auto mode superseded 1 pending provider permission request")
-        })
-        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
-        #expect(task.runtimePermissionOpenRequestsJSON != "[]")
-        #expect(run.typedStopReason == .permissionApprovalRequired)
+        #expect(result.didPass)
+        #expect(!task.events.contains { $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue })
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
+        #expect(run.typedStopReason != .permissionApprovalRequired)
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .claudeCode)
+            .contains(.credential(label: credentialLabel)))
+        let notices = task.events.filter { $0.type == TaskEventTypes.System.info.rawValue }.map(\.payload)
+        #expect(notices.contains("Auto allowed Internal API to use its saved credentials for this task."))
+        #expect(notices.contains { $0.contains("Auto mode superseded 1 pending provider permission request") })
+
+        // The grant is the task's now: the next Auto launch neither asks nor
+        // narrates the same grant again.
+        let nextRun = TaskRun(task: task)
+        nextRun.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        context.insert(nextRun)
+        let next = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+            task: task,
+            run: nextRun,
+            modelContext: context,
+            phase: "test",
+            contextText: task.goal,
+            permissionPolicy: .autonomous,
+            secretStore: store
+        )
+        #expect(next.didPass)
+        #expect(task.events.filter { $0.payload.hasPrefix("Auto allowed Internal API") }.count == 1)
     }
 
-    @Test("Auto tombstones stale requests but preserves fresh credential and sandbox approvals")
-    func autoTombstonesStaleRequestsButPreservesFreshApprovals() async throws {
+    @Test("Ask still asks before a connector's credentials are used")
+    func askStillAsksBeforeConnectorCredentials() async throws {
+        let container = try makeConnectorPreflightContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Ask Credential", primaryPath: "/tmp/ask-credential")
+        let connector = Connector(
+            name: "Internal API",
+            serviceType: "custom_api",
+            baseURL: "https://api.example.test/",
+            authMethod: "bearer"
+        )
+        connector.workspace = workspace
+        connector.credentialKeys = ["API_TOKEN"]
+        let task = AgentTask(title: "Use API", goal: "Use the Internal API connector", workspace: workspace)
+        let run = TaskRun(task: task)
+        run.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        context.insert(workspace)
+        context.insert(connector)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+        let store = MockSecretStore()
+        store.save(
+            key: "API_TOKEN",
+            value: "secret-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+
+        for policy in [PermissionPolicy.restricted, .interactive] {
+            let result = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+                task: task,
+                run: run,
+                modelContext: context,
+                phase: "test",
+                contextText: task.goal,
+                permissionPolicy: policy,
+                secretStore: store
+            )
+            #expect(result.status == .connectorCredentialApprovalRequired, "\(policy.rawValue)")
+        }
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task).isEmpty)
+        #expect(!task.events.contains { $0.payload.hasPrefix("Auto allowed") })
+    }
+
+    @Test("Auto supersedes stale provider requests but keeps sandbox approvals explicit")
+    func autoSupersedesStaleRequestsButKeepsSandboxApprovals() async throws {
         let container = try makeConnectorPreflightContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Auto Sequence", primaryPath: "/tmp/auto-sequence")
@@ -493,6 +557,7 @@ struct ConnectorPreflightServiceTests {
         connector.credentialKeys = ["JIRA_API_TOKEN"]
         let task = AgentTask(title: "Auto Sequence", goal: "Use the Internal API connector", workspace: workspace)
         let firstRun = TaskRun(task: task)
+        firstRun.runtimeID = AgentRuntimeID.claudeCode.rawValue
         context.insert(workspace)
         context.insert(connector)
         context.insert(task)
@@ -531,8 +596,8 @@ struct ConnectorPreflightServiceTests {
             secretStore: store
         )
 
-        #expect(firstResult.status == .connectorCredentialApprovalRequired)
-        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
+        #expect(firstResult.didPass)
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
         let sandboxPayload = PermissionBroker.approvalPayloadString(
             providerID: .claudeCode,
@@ -543,6 +608,7 @@ struct ConnectorPreflightServiceTests {
         )
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: sandboxPayload, task: task)
         let secondRun = TaskRun(task: task)
+        secondRun.runtimeID = AgentRuntimeID.claudeCode.rawValue
         context.insert(secondRun)
 
         let secondResult = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
@@ -555,11 +621,8 @@ struct ConnectorPreflightServiceTests {
             secretStore: store
         )
 
-        #expect(secondResult.status == .connectorCredentialApprovalRequired)
-        let openPayloads = TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task)
-        #expect(openPayloads.count == 2)
-        #expect(openPayloads.contains(sandboxPayload))
-        #expect(openPayloads.contains { $0.contains("connectorCredentials") })
+        #expect(secondResult.didPass)
+        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task) == [sandboxPayload])
     }
 
     // Production task 06E0814E paused twelve times in a row. The gate asked
