@@ -59,11 +59,20 @@ public struct TaskWorkspaceAccess {
         else { return [] }
         let codeCheckout = GitCheckoutLayout.worktreeRoot(containing: codeRoot).map(Self.resolvedIdentity)
         let folders = [task.workspace?.primaryPath ?? ""] + (task.workspace?.additionalPaths ?? [])
-        return normalizedUniquePaths(folders).filter { path in
+        let candidates = normalizedUniquePaths(folders).filter { path in
             guard let checkout = GitCheckoutLayout.worktreeRoot(containing: path) else { return false }
             return checkout == URL(fileURLWithPath: path).standardizedFileURL.path
                 && Self.resolvedIdentity(checkout) != codeCheckout
                 && GitCheckoutLayout.commonDirectory(for: path).map(Self.resolvedIdentity) == commonDirectory
+        }
+        // A checkout beneath an additional folder that stays writable is still
+        // writable through that parent, so it is not treated as replaced.
+        let writableParents = normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+            .filter { !candidates.contains($0) }
+            .map(Self.resolvedIdentity)
+        return candidates.filter { candidate in
+            let path = Self.resolvedIdentity(candidate)
+            return !writableParents.contains { $0 != path && path.hasPrefix($0 + "/") }
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
@@ -351,6 +352,79 @@ struct TaskWorktreeResourceScopeTests {
         #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == fixture.checkout.path)
         #expect(AgentPromptBuilder.buildPrompt(for: task)
             .contains("(read-only for this task; write task files to the task output folder): \(fixture.workspaceFolder.path)"))
+    }
+
+    @Test("A checkout beneath a writable folder is not treated as replaced")
+    func checkoutUnderWritableParentStaysWritable() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        // The fixture root holds the checkout, so it stays writable through it.
+        let task = fixture.task(
+            "Ship feature A",
+            pinnedTo: "wt-a",
+            in: fixture.workspace(additionalPaths: [fixture.root.path, fixture.checkout.path])
+        )
+        let access = TaskWorkspaceAccess(task: task)
+
+        #expect(access.replacedSourceCheckoutPaths.isEmpty)
+        #expect(access.runtimeWritablePaths == [fixture.root.path, fixture.checkout.path])
+    }
+
+    @Test("Git inspection with global options counts as Git intent")
+    func gitInspectionWithGlobalOptionsIsDetected() {
+        let task = AgentTask(title: "Inspect", goal: "Look around.")
+        for command in ["git -C repo status", "git --no-pager -C '/tmp/a b' log --oneline", "git --git-dir=/x/.git diff"] {
+            #expect(GitOperationIntentDetector.detectsLocalGitInspectionOperation(prompt: command, task: task), "\(command)")
+        }
+    }
+
+    @Test("Preflight manifest keeps read-only workspace folders inside the boundary")
+    func preflightManifestKeepsReadOnlyWorkspaceFoldersReadable() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-read-only-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let durableWorkspace = root.appendingPathComponent("workspace").path
+        let codeRoot = root.appendingPathComponent("repo").path
+        try FileManager.default.createDirectory(atPath: durableWorkspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: codeRoot + "/.git", withIntermediateDirectories: true)
+        // The sole repository becomes the code root, so the durable workspace
+        // folder is read-only apart from the task folder.
+        let workspace = Workspace(name: "Read only", primaryPath: durableWorkspace)
+        workspace.additionalPaths = [codeRoot]
+        let task = AgentTask(
+            title: "OpenCode state read",
+            goal: "Read task state then answer",
+            workspace: workspace,
+            model: "opencode/big-pickle",
+            runtime: .openCodeCLI
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .openCodeCLI,
+            model: "opencode/big-pickle",
+            workspacePath: codeRoot,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == codeRoot)
+        #expect(manifest.additionalReadOnlyPaths.contains(durableWorkspace))
+        #expect(!manifest.additionalPaths.contains(durableWorkspace))
     }
 
     // MARK: - Fixtures

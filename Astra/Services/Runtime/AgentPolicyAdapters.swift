@@ -1118,7 +1118,10 @@ enum AgentPolicyManifestService {
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
         let runtimePaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+        // Workspace folders the run may only read stay inside the boundary, so
+        // reading a replaced source checkout does not ask for approval again.
         let additionalReadOnlyPaths = brokeredReadOnlyPaths(from: launchResourcePlan)
+            + TaskWorkspaceAccess(task: task).runtimeReadOnlyWorkspacePaths
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,

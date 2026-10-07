@@ -74,9 +74,12 @@ struct RunBoundary: Equatable, Sendable {
         )
 
         let taskFolderName = String(manifest.taskID.uuidString.prefix(8)).uppercased()
+        let taskFolderSuffix = "/.astra/tasks/\(taskFolderName)"
         self.taskOutputRoots = Array(Set(
             workspaceRoots
-                .map { ($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)") }
+                // When the code root is not the durable workspace, only the
+                // task's own folder is granted; that root is the output root.
+                .map { $0.hasSuffix(taskFolderSuffix) ? $0 : ($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)") }
                 .map(Self.standardizedAbsolutePath)
                 .filter { !$0.isEmpty }
         )).sorted()

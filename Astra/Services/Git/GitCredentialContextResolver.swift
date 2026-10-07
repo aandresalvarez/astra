@@ -31,9 +31,10 @@ enum GitOperationIntentDetector {
     }
 
     /// Local commands that write a linked worktree's shared Git metadata
-    /// (objects, refs, the worktree's admin directory). A false positive only
-    /// adds a Git-common-directory claim; a miss leaves that metadata
-    /// read-only, so the list leans toward matching.
+    /// (objects, refs, the worktree's admin directory). A false positive adds
+    /// an exclusive Git-common-directory claim and its matching write grant,
+    /// which is what the source checkout used to cover; a miss leaves that
+    /// metadata read-only. The list therefore leans toward matching.
     static func detectsLocalGitMutationOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
         if haystack.range(of: localGitMutationCommandPattern, options: .regularExpression) != nil {
@@ -44,17 +45,25 @@ enum GitOperationIntentDetector {
     }
 
     /// `git [global options] <subcommand>` for subcommands that write Git
-    /// metadata. Global options such as `-C <path>`, `-c key=value`, or
-    /// `--git-dir=<dir>` may sit between `git` and the subcommand; the text
-    /// is lowercased, so `-C` and `-c` share one alternative.
-    private static let localGitMutationCommandPattern: String = {
-        let subcommands = [
-            "add", "commit", "checkout", "switch", "restore", "merge", "rebase", "reset",
-            "revert", "cherry-pick", "stash", "tag", "am", "apply", "rm", "mv", "config",
-            "update-ref", "symbolic-ref", "notes", "replace", "worktree", "gc", "prune",
-            "pack-refs", "repack", "reflog", "update-index", "remote", "submodule",
-            "sparse-checkout", "bisect", "maintenance"
-        ]
+    /// metadata.
+    private static let localGitMutationCommandPattern = gitCommandPattern(subcommands: [
+        "add", "commit", "checkout", "switch", "restore", "merge", "rebase", "reset",
+        "revert", "cherry-pick", "stash", "tag", "am", "apply", "rm", "mv", "config",
+        "update-ref", "symbolic-ref", "notes", "replace", "worktree", "gc", "prune",
+        "pack-refs", "repack", "reflog", "update-index", "remote", "submodule",
+        "sparse-checkout", "bisect", "maintenance"
+    ])
+
+    /// `git [global options] <subcommand>` for subcommands that only read it.
+    private static let localGitInspectionCommandPattern = gitCommandPattern(subcommands: [
+        "status", "diff", "log", "show", "branch", "rev-parse", "describe",
+        "ls-files", "grep", "blame"
+    ])
+
+    /// Global options such as `-C <path>`, `-c key=value`, or `--git-dir=<dir>`
+    /// may sit between `git` and the subcommand; the text is lowercased, so
+    /// `-C` and `-c` share one alternative.
+    private static func gitCommandPattern(subcommands: [String]) -> String {
         let value = #"(?:'[^']*'|"[^"]*"|\S+)"#
         let option = #"(?:-c\s+"# + value
             + #"|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+"# + value
@@ -62,7 +71,7 @@ enum GitOperationIntentDetector {
         return #"(?<![a-z0-9_-])git(?:\s+"# + option + #")*\s+(?:"#
             + subcommands.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
             + #")(?![a-z0-9_-])"#
-    }()
+    }
 
     static func detectsNetworkGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         detectsNativeGitCredentialOperation(
@@ -353,7 +362,8 @@ enum GitOperationIntentDetector {
             "git rev-parse", "git describe", "git ls-files", "git grep",
             "git blame", "git stash list", "git worktree list"
         ]
-        if exactCommands.contains(where: { haystack.contains($0) }) {
+        if exactCommands.contains(where: { haystack.contains($0) })
+            || haystack.range(of: localGitInspectionCommandPattern, options: .regularExpression) != nil {
             return true
         }
 
