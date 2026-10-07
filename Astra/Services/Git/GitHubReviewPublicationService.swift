@@ -53,6 +53,9 @@ struct GitHubReviewPublicationRecord: Codable {
     let pullRequestURL: String
     let reviewURL: String?
     let reviewID: Int?
+    /// Who let ASTRA post it. Absent on receipts written before levels were
+    /// harmonized, every one of which the user reviewed in the sheet.
+    var authorization: ExternalActionAuthorization? = nil
 }
 
 private struct GitHubReviewUnusableArtifactRecord: Codable {

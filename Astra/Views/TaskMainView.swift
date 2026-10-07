@@ -1444,8 +1444,8 @@ struct TaskMainView: View {
                 return "Planning assistant: \(text)"
             case .scheduleResult(let text, _):
                 return "Routine result: \(text)"
-            case .systemInfo(let text, _, _):
-                return "System: \(text)"
+            case .systemInfo, .externalAction:
+                return item.systemContextLine
             case .recapResult(let text, _):
                 return "Recap: \(text)"
             case .userMessage, .agentResponse:
@@ -1481,9 +1481,9 @@ struct TaskMainView: View {
                 if includePlanningAndSystem {
                     lines.append("Routine result: \(text)")
                 }
-            case .systemInfo(let text, _, _):
-                if includePlanningAndSystem {
-                    lines.append("System: \(text)")
+            case .systemInfo, .externalAction:
+                if includePlanningAndSystem, let line = item.systemContextLine {
+                    lines.append(line)
                 }
             case .recapResult(let text, _):
                 if includePlanningAndSystem {
@@ -1846,6 +1846,8 @@ struct TaskMainView: View {
             systemInfoBubble(text: text, timestamp: timestamp, count: count)
         case .recapResult(let text, let timestamp):
             recapBubble(text: text, timestamp: timestamp)
+        case .externalAction(let record):
+            ExternalActionRecordRow(record: record)
         }
     }
 
@@ -5017,7 +5019,7 @@ struct TaskMainView: View {
                     return (role: "user", content: text)
                 case .planAssistantMessage(let text, _):
                     return (role: "assistant", content: text)
-                case .userMessage, .agentResponse, .scheduleResult, .systemInfo, .recapResult:
+                case .userMessage, .agentResponse, .scheduleResult, .systemInfo, .recapResult, .externalAction:
                     return nil
                 }
             })
@@ -5039,7 +5041,7 @@ struct TaskMainView: View {
                     ? currentThreadSnapshot.protocolState(for: run).completionSummary
                     : run.output
                 return response.map { (role: "assistant", content: String($0.prefix(2000))) }
-            case .scheduleResult, .systemInfo, .recapResult:
+            case .scheduleResult, .systemInfo, .recapResult, .externalAction:
                 return nil
             }
         })

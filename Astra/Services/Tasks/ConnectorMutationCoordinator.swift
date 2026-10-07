@@ -122,6 +122,9 @@ struct ConnectorMutationReceipt: Codable, Sendable, Equatable {
     /// did not name one.
     let createdKey: String?
     let createdURL: String?
+    /// Who let ASTRA send it. Absent on receipts written before levels were
+    /// harmonized, every one of which the user reviewed in the sheet.
+    let authorization: ExternalActionAuthorization?
 
     init(
         stagedPayloadPath: String,
@@ -132,7 +135,8 @@ struct ConnectorMutationReceipt: Codable, Sendable, Equatable {
         destinationURL: String,
         statusCode: Int,
         createdKey: String?,
-        createdURL: String?
+        createdURL: String?,
+        authorization: ExternalActionAuthorization? = nil
     ) {
         version = 2
         self.stagedPayloadPath = stagedPayloadPath
@@ -144,6 +148,7 @@ struct ConnectorMutationReceipt: Codable, Sendable, Equatable {
         self.statusCode = statusCode
         self.createdKey = createdKey
         self.createdURL = createdURL
+        self.authorization = authorization
     }
 }
 
