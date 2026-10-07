@@ -84,8 +84,10 @@ struct AgentPolicyTests {
         #expect(policy.allowedTools.contains("Grep"))
         #expect(policy.askFirstTools.contains("Write"))
         #expect(policy.askFirstTools.contains("Bash"))
-        #expect(policy.deniedShellPatterns.contains("rm:*"))
-        #expect(policy.deniedShellPatterns.contains("sudo:*"))
+        // Ask asks before effects instead of refusing them; only `sudo`,
+        // which cannot prompt in a non-interactive run, stays denied.
+        #expect(Set(policy.askFirstShellPatterns).isSuperset(of: ["rm:*", "git push:*", "chmod:*"]))
+        #expect(policy.deniedShellPatterns == ["sudo:*"])
     }
 
     @Test("Deny rules win over requested allowed tools")

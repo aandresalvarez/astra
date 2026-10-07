@@ -248,15 +248,19 @@ public struct AgentPolicy: Codable, Equatable, Sendable {
                 level: .review,
                 allowedTools: ["Read", "Glob", "Grep"],
                 askFirstTools: ["Write", "Edit", "MultiEdit", "Bash", "WebFetch", "WebSearch"],
-                deniedShellPatterns: [
+                // Ask asks before anything with an effect rather than refusing
+                // it, so these are named for approval, not denied. `sudo`
+                // stays denied: it cannot prompt in a non-interactive run, so
+                // an approval would still end in a failed command.
+                askFirstShellPatterns: [
                     "rm:*",
-                    "sudo:*",
                     "chmod:*",
                     "chown:*",
                     "git push:*",
                     "deploy:*",
                     "publish:*"
-                ]
+                ],
+                deniedShellPatterns: ["sudo:*"]
             )
         case .build:
             AgentPolicy(

@@ -128,14 +128,78 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(grants(.build).isStrictSubset(of: grants(.network)))
     }
 
+    // Ask asks before anything with an effect (docs/specs/2026-10-07-permission-levels-harmonization.md),
+    // so a destructive or publishing command is a question, not a refusal, on
+    // every runtime. `sudo` is the one exception: it cannot prompt in a
+    // non-interactive run.
+    @Test("Ask asks before destructive and publishing commands; sudo stays denied")
+    func askAsksBeforeEffectsInsteadOfRefusing() {
+        for runtime in Self.autonomousFlags.keys {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, level: .review))
+            for command in ["rm -rf build", "git push origin main", "chmod +x script.sh"] {
+                #expect(
+                    guardrail.disposition(toolName: "Bash", command: command) == .ask,
+                    "\(runtime.rawValue) Ask \(command)"
+                )
+            }
+            #expect(guardrail.disposition(toolName: "Bash", command: "sudo ls") == .denied, "\(runtime.rawValue) sudo")
+        }
+    }
+
+    // Local tools used to be pre-granted on Codex, Cursor, Antigravity and
+    // OpenCode while Claude and Copilot asked for the same command, so Ask meant
+    // a different thing per runtime. It now asks on every one.
+    @Test("Ask pre-grants no local tool on any runtime; the build preset still does")
+    func askPreGrantsNoLocalTool() {
+        let tools = ["bq", "astra-browser"]
+        for runtime in Self.autonomousFlags.keys {
+            let ask = Self.render(runtime: runtime, level: .review, localToolCommands: tools)
+            #expect(!ask.allowedShellPatterns.contains { $0.hasPrefix("bq") || $0.hasPrefix("astra-browser") }, "\(runtime.rawValue)")
+            #expect(!ask.allowedTools.contains { $0.contains("bq") || $0.contains("astra-browser") }, "\(runtime.rawValue)")
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, level: .review, localToolCommands: tools))
+            #expect(guardrail.disposition(toolName: "Bash", command: "astra-browser click --ref 12") == .ask, "\(runtime.rawValue)")
+        }
+        for runtime in [AgentRuntimeID.codexCLI, .cursorCLI, .antigravityCLI, .openCodeCLI] {
+            let build = Self.render(runtime: runtime, level: .build, localToolCommands: tools)
+            #expect(build.allowedShellPatterns.contains("bq *"), "\(runtime.rawValue) build")
+        }
+    }
+
     // MARK: - Helpers
+
+    private static func manifest(
+        runtime: AgentRuntimeID,
+        level: AgentPolicyLevel,
+        localToolCommands: [String] = []
+    ) -> RunPermissionManifest {
+        RunPermissionManifest(
+            taskID: UUID(),
+            runID: UUID(),
+            phase: "run",
+            providerID: runtime,
+            providerVersion: nil,
+            model: AgentRuntimeAdapterRegistry.defaultModel(for: runtime),
+            policyLevel: level,
+            policyScope: .builtInDefault,
+            providerRender: render(runtime: runtime, level: level, localToolCommands: localToolCommands),
+            workspacePath: "/tmp/astra-policy-matrix",
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: []
+        )
+    }
 
     private static func value(after flag: String, in args: [String]) -> String? {
         guard let index = args.firstIndex(of: flag), args.indices.contains(index + 1) else { return nil }
         return args[index + 1]
     }
 
-    private static func render(runtime: AgentRuntimeID, level: AgentPolicyLevel) -> ProviderPolicyRender {
+    private static func render(
+        runtime: AgentRuntimeID,
+        level: AgentPolicyLevel,
+        localToolCommands: [String] = []
+    ) -> ProviderPolicyRender {
         let copilot = CopilotCLICapabilities(helpText: """
         --allow-all
         --allow-all-tools
@@ -158,7 +222,7 @@ struct AgentPolicyRuntimeMatrixTests {
             workspacePath: "/tmp/astra-policy-matrix",
             additionalPaths: [],
             requestedAllowedTools: ["Read", "Grep"],
-            localToolCommands: [],
+            localToolCommands: localToolCommands,
             environmentKeyNames: [],
             credentialLabels: [],
             providerFeatures: adapter.supportedFeatures

@@ -391,7 +391,9 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = AntigravityCLIRuntime.antigravityPermissionArguments(policy: permissionPolicy)
-        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
+            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+        )
         var diagnostics = diagnostics(for: policy, context: context)
         diagnostics = diagnostics.map { diagnostic in
             guard diagnostic.id == "\(providerID.rawValue).secret-redaction-unsupported" else {
@@ -491,7 +493,9 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
             policy: permissionPolicy,
             requirements: CodexRequirementsService.current()
         )
-        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
+            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+        )
         var diagnostics = diagnostics(for: policy, context: context)
 
         let hasFineGrainedRules = !policy.allowedTools.isEmpty
@@ -574,7 +578,9 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CursorCLIRuntime.cursorPermissionArguments(policy: permissionPolicy)
-        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
+            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+        )
         var diagnostics = diagnostics(for: policy, context: context)
 
         let hasFineGrainedRules = !policy.allowedTools.isEmpty
@@ -656,7 +662,9 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = OpenCodeCLIRuntime.permissionArguments(policy: permissionPolicy)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
-        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(for: context.localToolCommands)
+        let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
+            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+        )
         var diagnostics = diagnostics(for: policy, context: context)
 
         let hasFineGrainedRules = !policy.allowedTools.isEmpty
