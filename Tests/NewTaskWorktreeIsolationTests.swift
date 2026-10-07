@@ -26,7 +26,7 @@ struct NewTaskWorktreeIsolationTests {
             request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
             branchTitle: branchTitle,
             modelContext: context,
-            worktreesRoot: fixture.worktrees.path
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         return try #require(task.executionRootPath)
     }
@@ -567,7 +567,7 @@ struct NewTaskWorktreeIsolationTests {
         try await TaskWorktreeService.prepare(
             task: replacement,
             request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
-            inheritingFrom: source, modelContext: context, worktreesRoot: fixture.worktrees.path
+            inheritingFrom: source, modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         #expect(replacement.executionRootPath != missing)
         #expect(TaskWorktreeService.activeWorktreeBinding(for: replacement)?.worktreePath == replacement.executionRootPath)
@@ -651,9 +651,20 @@ struct NewTaskWorktreeIsolationTests {
         let request = try #require(try TaskTurnRequestRepository.activeRequests(for: task, in: context).first)
         #expect(request.resourceClaims.contains { $0.kind == .workspace && $0.key == path && $0.access == .exclusive })
         #expect(!request.resourceClaims.contains { $0.kind == .workspace && $0.key == repository.path })
-        #expect(TaskExecutionResourceAdmissionPolicy.lockClaims(
+        let metadata = repository.appendingPathComponent(".git").path
+        let lockClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(
             for: nil, task: task, runMode: "test", fallbackAccess: .readOnly
-        ).allSatisfy { $0.accessMode == .write })
+        )
+        // Everything the run touches is written; only the marker on the
+        // source's Git metadata stays shared so main-checkout readers keep running.
+        let isMetadataMarker = { (claim: TaskResourceLockClaim) in
+            claim.resourceKind == .workspace && claim.resourceKey == metadata
+        }
+        #expect(lockClaims.filter(isMetadataMarker).map(\.accessMode) == [.readOnly])
+        #expect(lockClaims.filter { !isMetadataMarker($0) }.allSatisfy { $0.accessMode == .write })
+        #expect(lockClaims.contains {
+            $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .write
+        })
 
         let fake = FakeAgentProcessRunner()
         var observedHooks = false
@@ -704,11 +715,12 @@ struct NewTaskWorktreeIsolationTests {
         let metadata = repository.appendingPathComponent(".git").path
         let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
-        #expect(Set(firstClaims.filter { $0.kind == .workspace }.map(\.key))
-            .isDisjoint(with: secondClaims.filter { $0.kind == .workspace }.map(\.key)))
+        #expect(Set(firstClaims.filter { $0.kind == .workspace && $0.access == .exclusive }.map(\.key))
+            .isDisjoint(with: secondClaims.filter { $0.kind == .workspace && $0.access == .exclusive }.map(\.key)))
         for (task, claims) in [(first, firstClaims), (second, secondClaims)] {
             #expect(launchPlan(task).hostPathGrants.contains { $0.path == metadata && $0.access == .readWrite })
             #expect(claims.contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .exclusive })
+            #expect(claims.contains { $0.kind == .workspace && $0.key == metadata && $0.access == .shared })
         }
         let firstLease = TaskExecutionResourceBroker.lockClaims(for: firstClaims, taskID: first.id, requestID: nil, runMode: "test")
         let secondLease = TaskExecutionResourceBroker.lockClaims(for: secondClaims, taskID: second.id, requestID: nil, runMode: "test")
@@ -744,6 +756,91 @@ struct NewTaskWorktreeIsolationTests {
         }
         #expect(TaskExecutionResourceBroker.canAcquire(readers[1], active: readers[0]))
         #expect(!TaskExecutionResourceBroker.canAcquire(firstLease, active: readers[1]))
+    }
+
+    @Test("Writers whose root holds the repository's Git directory wait for its worktree tasks, without Git wording")
+    func mainCheckoutWritersSerializeWithWorktrees() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let projects = fixture.root.appendingPathComponent("Projects", isDirectory: true)
+        let repository = try fixture.repository("Projects/App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let worktreeTask = AgentTask(title: "Update parser", goal: "Improve formatting", workspace: workspace)
+        _ = try await prepare(worktreeTask, repository, context: context, fixture: fixture)
+        let worktreeLease = TaskExecutionResourceBroker.lockClaims(
+            for: TaskExecutionResourceClaimResolver.claims(for: worktreeTask),
+            taskID: worktreeTask.id, requestID: nil, runMode: "test"
+        )
+        let metadata = repository.appendingPathComponent(".git").path
+
+        // The main checkout itself and a folder above it both reach `.git`.
+        for root in [repository, projects] {
+            let other = Workspace(name: root.lastPathComponent, primaryPath: root.path)
+            let writer = AgentTask(title: "Update renderer", goal: "Improve formatting", workspace: other)
+            let writerClaims = TaskExecutionResourceClaimResolver.claims(for: writer)
+            #expect(writerClaims.contains { $0.kind == .gitCommonDirectory && $0.key == metadata } == (root == repository))
+            let writerLease = TaskExecutionResourceBroker.lockClaims(
+                for: writerClaims, taskID: writer.id, requestID: nil, runMode: "test"
+            )
+            #expect(!TaskExecutionResourceBroker.canAcquire(writerLease, active: worktreeLease))
+            #expect(!TaskExecutionResourceBroker.canAcquire(worktreeLease, active: writerLease))
+
+            let reader = AgentTask(title: "Explain renderer", goal: "Explain formatting", workspace: other)
+            reader.constraints = ["ASTRA_RESOURCE_ACCESS=read_only"]
+            let readerClaims = TaskExecutionResourceClaimResolver.claims(for: reader)
+            #expect(!readerClaims.contains { $0.kind == .gitCommonDirectory })
+            let readerLease = TaskExecutionResourceBroker.lockClaims(
+                for: readerClaims, taskID: reader.id, requestID: nil, runMode: "test"
+            )
+            #expect(TaskExecutionResourceBroker.canAcquire(readerLease, active: worktreeLease))
+            #expect(TaskExecutionResourceBroker.canAcquire(worktreeLease, active: readerLease))
+        }
+
+        // Requests persisted before the worktree held its Git directory as a
+        // workspace key still receive it at admission without reporting drift.
+        let legacy = TaskTurnRequest(
+            task: worktreeTask, messageEventID: UUID(), sequence: 1,
+            resourceClaims: TaskExecutionResourceClaimResolver.claims(for: worktreeTask)
+                .filter { !($0.kind == .workspace && $0.key == metadata) }
+        )
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: legacy, task: worktreeTask))
+        #expect(TaskExecutionResourceClaimResolver.admissionClaims(for: legacy, task: worktreeTask)
+            .contains { $0.kind == .workspace && $0.key == metadata && $0.access == .shared })
+    }
+
+    @Test("Only the configured repository itself vouches for its worktree binding", arguments: ["subfolder", "parent"])
+    func bindingRequiresTheRepositoryItselfConfigured(configured: String) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("Projects/App")
+        let subfolder = repository.appendingPathComponent("Sources", isDirectory: true)
+        try FileManager.default.createDirectory(at: subfolder, withIntermediateDirectories: true)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        context.insert(task)
+        let path = try await prepare(task, repository, context: context, fixture: fixture)
+        guard case .bound = TaskWorktreeBinding.state(of: task) else {
+            Issue.record("The configured repository should bind its worktree")
+            return
+        }
+
+        workspace.primaryPath = configured == "subfolder" ? subfolder.path : repository.deletingLastPathComponent().path
+        guard case .invalid = TaskWorktreeBinding.state(of: task) else {
+            Issue.record("A configured \(configured) vouched for the repository's worktree")
+            return
+        }
+        let access = TaskWorkspaceAccess(task: task)
+        #expect(access.runtimeWorkspacePaths.isEmpty)
+        #expect(access.runtimeWorktreeGitMetadataPaths.isEmpty)
+        let plan = launchPlan(task)
+        #expect(!plan.hostWritablePaths.contains(path))
+        #expect(!plan.hostWritablePaths.contains(repository.appendingPathComponent(".git").path))
     }
 
     @Test("Template tasks started from a worktree draft run in that worktree, named after the template")
@@ -812,7 +909,7 @@ struct NewTaskWorktreeIsolationTests {
         let task = AgentTask(title: "Other", goal: "Explore", workspace: second)
         context.insert(task)
         try await TaskWorktreeService.prepare(
-            task: task, request: nil, inheritingFrom: draft, modelContext: context, worktreesRoot: fixture.worktrees.path
+            task: task, request: nil, inheritingFrom: draft, modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         #expect(task.executionRootPath == nil)
         #expect(TaskWorktreeService.activeWorktreeBinding(for: task) == nil)

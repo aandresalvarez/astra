@@ -18,12 +18,24 @@ public struct TaskWorktreeRequestPayload: Codable, Equatable, Sendable {
     /// "follow the workspace default", so this path is what keeps an explicit
     /// primary-repository choice from drifting when that default changes.
     public let repositoryPath: String?
+    /// The checkout of `repositoryPath` the composer showed: its root or one of
+    /// its linked worktrees. Current branch starts from this checkout's HEAD,
+    /// so reopening a draft must not fall back to the root. Nil in requests
+    /// recorded before this field existed.
+    public let checkoutPath: String?
 
-    public init(enabled: Bool, base: TaskWorktreeBaseChoice, repositoryPath: String? = nil) {
+    public init(
+        enabled: Bool,
+        base: TaskWorktreeBaseChoice,
+        repositoryPath: String? = nil,
+        checkoutPath: String? = nil
+    ) {
         self.enabled = enabled
         self.base = base
-        let trimmed = repositoryPath?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.repositoryPath = trimmed?.isEmpty == false ? trimmed : nil
+        let trimmedRepo = repositoryPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.repositoryPath = trimmedRepo?.isEmpty == false ? trimmedRepo : nil
+        let trimmedCheckout = checkoutPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.checkoutPath = trimmedCheckout?.isEmpty == false ? trimmedCheckout : nil
     }
 }
 
@@ -143,12 +155,12 @@ public enum TaskWorktreeBinding {
         registeredCommonDirectory(repositoryPath: payload.repositoryPath, worktreePath: payload.worktreePath)
     }
 
+    /// The source repository must itself be a configured folder, the same rule
+    /// worktree creation applies. A configured subfolder or parent never
+    /// vouches for a repository, so a binding cannot widen grants beyond it.
     private static func repositoryIsConfigured(_ path: String, for task: AgentTask) -> Bool {
         guard let workspace = task.workspace, let repository = resolvedPath(path) else { return false }
-        return ([workspace.primaryPath] + workspace.additionalPaths).contains { configured in
-            guard let root = resolvedPath(configured) else { return false }
-            return root == repository || repository.hasPrefix(root + "/") || root.hasPrefix(repository + "/")
-        }
+        return ([workspace.primaryPath] + workspace.additionalPaths).contains { resolvedPath($0) == repository }
     }
 
     private static func registeredCommonDirectory(repositoryPath: String, worktreePath: String) -> String? {

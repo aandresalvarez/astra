@@ -283,6 +283,45 @@ struct GitPushEnablementTests {
         #expect(task.events.isEmpty)
     }
 
+    @MainActor
+    @Test("Addressing PR comments pins the active worktree, but never one cleanup is removing")
+    func createPullRequestCommentTaskHonorsCheckoutReservation() throws {
+        let repo = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+        let checkout = try makeTempGitRepo()
+        defer { try? FileManager.default.removeItem(atPath: checkout) }
+
+        let container = try makeModelContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Repo", primaryPath: repo)
+        workspace.activeWorkingPath = checkout
+        context.insert(workspace)
+
+        let pr = GitHubPullRequestRef(number: 96, url: "https://github.com/coral/astra/pull/96", title: "Worktree")
+        let comment = GitHubPullRequestComment(
+            id: "c2", author: "copilot", body: "Check the worktree.", path: "README.md", line: 1,
+            url: "https://github.com/coral/astra/pull/96#discussion_r2", createdAt: "2026-05-30T11:00:00Z",
+            isReviewThread: true
+        )
+        let vm = WorkspaceGitViewModel()
+        vm.setWorkspaceForTesting(workspace)
+        vm.selectedRepository = GitRepositoryInfo(name: "Repo", path: repo)
+        vm.currentBranch = "feature/worktree"
+        vm.openPullRequest = pr
+        vm.pullRequestComments = GitHubPullRequestCommentSummary(
+            pullRequest: pr, comments: [comment], unresolvedThreadCount: 1, issueCommentCount: 0, fetchedAt: Date()
+        )
+        #expect(vm.workingPath == checkout)
+
+        let reservation = TaskWorktreeCheckoutReservation.acquire(checkout)
+        let refused = vm.createPullRequestCommentTask(modelContext: context)
+        TaskWorktreeCheckoutReservation.release(reservation)
+        #expect(refused == nil)
+
+        let task = try #require(vm.createPullRequestCommentTask(modelContext: context))
+        #expect(task.executionRootPath == checkout)
+    }
+
     // MARK: - GitService integration
 
     @Test("Unpushed count and remote detection track publish state")

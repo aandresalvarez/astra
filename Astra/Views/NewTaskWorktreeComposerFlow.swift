@@ -37,11 +37,15 @@ enum NewTaskWorktreeComposerFlow {
               case .none = TaskWorktreeBinding.state(of: draft),
               draft.executionRootPath?.isEmpty != false else { return }
         if let request = TaskWorktreeService.latestRequest(for: draft),
-           request.enabled,
-           let repository = request.repositoryPath,
-           !repository.isEmpty {
-            TaskCodeLocationPin.set(repository, workspace: workspace, task: draft)
-            return
+           request.enabled {
+            if let checkout = request.checkoutPath, !checkout.isEmpty {
+                TaskCodeLocationPin.set(checkout, workspace: workspace, task: draft)
+                return
+            }
+            if let repository = request.repositoryPath, !repository.isEmpty {
+                TaskCodeLocationPin.set(repository, workspace: workspace, task: draft)
+                return
+            }
         }
         TaskCodeLocationPin.set(workspace.activeWorkingPath, workspace: workspace, task: draft)
     }
@@ -105,6 +109,9 @@ enum NewTaskWorktreeComposerFlow {
         selection.base = request.base
         if let repository = request.repositoryPath, !repository.isEmpty {
             selection.repositoryPath = WorkspacePathPresentation.standardizedPath(repository)
+        }
+        if let checkout = request.checkoutPath, !checkout.isEmpty {
+            selection.checkoutPath = WorkspacePathPresentation.standardizedPath(checkout)
         }
     }
 

@@ -596,7 +596,7 @@ final class TaskLifecycleCoordinator {
         // A draft that never ran gives back its untouched worktree; any other
         // task's worktree holds the user's work and is kept.
         let unusedWorktree = task.status == .draft && task.runs.isEmpty
-            ? TaskWorktreeService.discardSnapshot(for: task)
+            ? TaskWorktreeService.discardSnapshot(for: task, ownership: worktreeCleanupStore.ownership)
             : nil
         TaskWorktreeService.saveDeletionThenDiscard(
             unusedWorktree, workspace: workspace, modelContext: modelContext, cleanupStore: worktreeCleanupStore,

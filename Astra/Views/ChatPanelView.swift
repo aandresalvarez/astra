@@ -2228,10 +2228,10 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
+            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
             if draftToLoad == nil {
                 NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
             }
-            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
             if TaskPolicyStore.latestSelectedLevel(for: draft) != currentAgentPolicyLevel {
                 recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_updated")
             }
@@ -2280,6 +2280,7 @@ struct ChatPanelView: View {
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_created")
             NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
+            NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
             draftTask = draft
             try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: draft.workspace, modelContext: modelContext)
             return draft

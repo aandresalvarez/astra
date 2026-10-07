@@ -340,7 +340,8 @@ enum TaskWorktreeService {
         branchTitle: String? = nil,
         modelContext: ModelContext,
         git: any GitRepositoryOperating = GitService.shared,
-        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot
+        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot,
+        ownership: TaskWorktreeOwnershipStore = TaskWorktreeCleanupStore().ownership
     ) async throws {
         try Task.checkCancellation()
         let source = draft === task || draft?.workspace?.id != task.workspace?.id ? nil : draft
@@ -354,7 +355,7 @@ enum TaskWorktreeService {
         if let request {
             try await createWorktree(
                 for: task, request: request, branchTitle: branchTitle,
-                modelContext: modelContext, git: git, worktreesRoot: worktreesRoot
+                modelContext: modelContext, git: git, worktreesRoot: worktreesRoot, ownership: ownership
             )
         } else if let source {
             guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: task) else {
@@ -369,7 +370,8 @@ enum TaskWorktreeService {
         branchTitle: String?,
         modelContext: ModelContext,
         git: any GitRepositoryOperating,
-        worktreesRoot: String
+        worktreesRoot: String,
+        ownership: TaskWorktreeOwnershipStore
     ) async throws {
         guard let workspace = task.workspace else {
             throw TaskWorktreeCreationError.repositoryUnavailable
@@ -410,6 +412,18 @@ enum TaskWorktreeService {
         )
         guard TaskWorktreeCheckoutReservation.commit(createdPath, to: task) else {
             throw TaskWorktreeCreationError.checkoutUnavailable(createdPath)
+        }
+        // Without this record the worktree is still usable; it is just never
+        // removed automatically, which is the safe outcome.
+        do {
+            try ownership.record(TaskWorktreeOwnershipStore.Record(
+                repositoryPath: path, worktreePath: destination, branch: branch, baseCommit: base.commit
+            ))
+        } catch {
+            AppLogger.breadcrumb(action: "task_worktree_ownership_unrecorded", category: "Git", taskID: task.id, fields: [
+                "worktree": createdPath,
+                "error": error.localizedDescription
+            ])
         }
         modelContext.insert(task)
         modelContext.insert(TaskEvent(
@@ -492,18 +506,32 @@ enum TaskWorktreeService {
 
     // MARK: - Cleanup
 
-    /// Snapshot of a draft's worktree for `discardUnusedWorktree`. Worktrees
-    /// prepared before the base commit was recorded are never discarded.
-    static func discardSnapshot(for task: AgentTask) -> TaskWorktreeDiscard? {
+    /// Snapshot of a draft's worktree for `discardUnusedWorktree`. Only a
+    /// worktree this install created, per its local ownership record, is ever
+    /// discarded: an imported or crafted binding, or one prepared before the
+    /// base commit was recorded, keeps its checkout.
+    static func discardSnapshot(
+        for task: AgentTask,
+        ownership: TaskWorktreeOwnershipStore = TaskWorktreeCleanupStore().ownership
+    ) -> TaskWorktreeDiscard? {
         guard let binding = activeWorktreeBinding(for: task),
               let baseCommit = binding.baseCommit, !baseCommit.isEmpty else { return nil }
-        return TaskWorktreeDiscard(
+        let discard = TaskWorktreeDiscard(
             taskID: task.id,
             repositoryPath: binding.repositoryPath,
             worktreePath: binding.worktreePath,
             branch: binding.branch,
             baseCommit: baseCommit
         )
+        guard ownership.owns(discard) else {
+            AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
+                "worktree": binding.worktreePath,
+                "branch": binding.branch,
+                "reason": "not_created_locally"
+            ])
+            return nil
+        }
+        return discard
     }
 
     /// Removes a discarded draft's worktree and branch only while nothing
@@ -539,7 +567,9 @@ enum TaskWorktreeService {
         }
         func referenceProblem() -> String? {
             do {
-                return try checkoutPins(modelContext).contains(path) ? "referenced" : nil
+                // A pin at or inside the checkout depends on it.
+                return try checkoutPins(modelContext).contains { $0 == path || $0.hasPrefix(path + "/") }
+                    ? "referenced" : nil
             } catch {
                 return "reference_check_failed"
             }
@@ -607,7 +637,9 @@ enum TaskWorktreeService {
         return .removed
     }
 
-    /// Every checkout that a surviving task or workspace default points at.
+    /// Every checkout that a surviving task or workspace points at: task pins,
+    /// explicit workspace defaults, and each workspace's configured primary and
+    /// additional paths, which it uses implicitly while no default is set.
     /// Cleanup follows saved deletion; never exclude task UUIDs, which
     /// Duplicate imports preserve. Unreadable stores keep the worktree.
     static func durableCheckoutPins(modelContext: ModelContext) throws -> Set<String> {
@@ -616,7 +648,10 @@ enum TaskWorktreeService {
         ))
         let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
         return Set(tasks.compactMap { standardized($0.executionRootPath) }
-            + workspaces.compactMap { standardized($0.activeWorkingPath) })
+            + workspaces.flatMap { workspace -> [String] in
+                ([workspace.activeWorkingPath, workspace.primaryPath] + workspace.additionalPaths.map(Optional.some))
+                    .compactMap { standardized($0) }
+            })
     }
 
     /// Records cleanup before deleting the draft, then saves the deletion.

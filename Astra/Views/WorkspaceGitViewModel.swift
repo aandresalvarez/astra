@@ -763,6 +763,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     func createPullRequestCommentTask(modelContext: ModelContext) -> AgentTask? {
         guard let workspace,
               let path = workingPath,
+              !TaskWorktreeCheckoutReservation.isReserved(path),
               let pr = openPullRequest,
               let summary = pullRequestComments,
               summary.hasComments else {
@@ -792,7 +793,8 @@ final class WorkspaceGitViewModel: ObservableObject {
             model: model,
             runtime: runtime
         )
-        task.executionRootPath = path
+        // Cleanup may be removing this checkout; never pin a new draft to it.
+        guard TaskWorktreeCheckoutReservation.commit(path, to: task) else { return nil }
         task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: goal)
         modelContext.insert(task)
         TaskCapabilitySnapshotter.capture(for: task)

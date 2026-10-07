@@ -22,15 +22,19 @@ enum TaskExecutionResourceClaimResolver {
             TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .shared)
         }
         // Prepared worktrees always receive their verified shared Git directory,
-        // regardless of prompt intent. Other checkouts retain the credential
-        // grant's Git-intent predicate, including its context-only known gap
-        // documented in TaskExecutionResourceClaimCoverageTests.
+        // regardless of prompt intent. Writable main checkouts also claim their
+        // Git metadata because they have direct write access to .git. Other checkouts
+        // retain the credential grant's Git-intent predicate, including its context-only
+        // known gap documented in TaskExecutionResourceClaimCoverageTests.
         let mutatesGitMetadata = task.isolationStrategy == .gitBranch
             || GitOperationIntentDetector.detectsRuntimeGitOperation(
                 prompt: acceptedTurn ?? "",
                 task: task
             )
-        let credentialKeys = mutatesGitMetadata ? gitCommonDirectoryKeys(for: keys) : []
+        let writableMainKeys = access == .exclusive ? keys.filter { hasInternalGitDirectory(for: $0) } : []
+        let credentialKeys = mutatesGitMetadata
+            ? gitCommonDirectoryKeys(for: keys)
+            : gitCommonDirectoryKeys(for: writableMainKeys)
         let worktreeKeys = TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths
         var seen = Set<String>()
         return workspaceClaims + readOnlyClaims + (worktreeKeys + credentialKeys).compactMap { rawKey in
@@ -83,7 +87,10 @@ enum TaskExecutionResourceClaimResolver {
             claims = []
         }
         return applyingIntrinsicWorkflowClaims(
-            applyingWorktreeGitClaims(applyingReadOnlyWorkspaceClaims(claims, task: task), task: task),
+            applyingWritableMainCheckoutGitClaims(
+                applyingWorktreeGitClaims(applyingReadOnlyWorkspaceClaims(claims, task: task), task: task),
+                task: task
+            ),
             request: request, task: task
         )
     }
@@ -176,10 +183,16 @@ enum TaskExecutionResourceClaimResolver {
         }
     }
 
+    /// Keys the task holds shared and never writes through: configured folders
+    /// that contain a prepared worktree's source checkout, and that worktree's
+    /// Git directory. Holding the Git directory as a workspace key makes every
+    /// writer whose root contains it — the main checkout or any folder above
+    /// it — wait for the worktree task, while readers stay parallel.
     static func readOnlyWorkspaceKeys(for task: AgentTask) -> [String] {
         let writable = Set(workspaceKeys(for: task))
+        let access = TaskWorkspaceAccess(task: task)
         var seen = Set<String>()
-        return TaskWorkspaceAccess(task: task).runtimeReadOnlyWorkspacePaths.compactMap { path in
+        return (access.runtimeReadOnlyWorkspacePaths + access.runtimeWorktreeGitMetadataPaths).compactMap { path in
             guard let key = standardizedPath(path), !writable.contains(key), seen.insert(key).inserted else { return nil }
             return key
         }
@@ -220,6 +233,22 @@ enum TaskExecutionResourceClaimResolver {
         for path in TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths {
             guard let key = standardizedPath(path), seen.insert(key).inserted else { continue }
             result.append(TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access))
+        }
+        return result
+    }
+
+    private static func applyingWritableMainCheckoutGitClaims(
+        _ claims: [TaskExecutionResourceClaim],
+        task: AgentTask
+    ) -> [TaskExecutionResourceClaim] {
+        var result = claims
+        var seen = Set(claims.filter { $0.kind == .gitCommonDirectory }.map(\.key))
+        let exclusiveWorkspaceKeys = claims.filter { $0.kind == .workspace && $0.access == .exclusive }.map(\.key)
+        for root in exclusiveWorkspaceKeys where hasInternalGitDirectory(for: root) {
+            guard let commonDir = gitCommonDirectory(for: root),
+                  let key = standardizedPath(commonDir),
+                  seen.insert(key).inserted else { continue }
+            result.append(TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: .exclusive))
         }
         return result
     }
@@ -308,6 +337,13 @@ enum TaskExecutionResourceClaimResolver {
             return gitDirectory
         }
         return resolvedGitPath(raw, relativeTo: gitDirectory) ?? gitDirectory
+    }
+
+    private static func hasInternalGitDirectory(for root: String) -> Bool {
+        guard let standardized = standardizedPath(root) else { return false }
+        let dotGit = (standardized as NSString).appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
     private static func gitWorktreeRoot(for path: String) -> String? {

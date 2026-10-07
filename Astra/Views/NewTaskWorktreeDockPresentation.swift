@@ -37,7 +37,12 @@ struct NewTaskWorktreeSelection {
     }
 
     var requestPayload: TaskWorktreeRequestPayload {
-        TaskWorktreeRequestPayload(enabled: isEnabled, base: base, repositoryPath: repositoryPath)
+        TaskWorktreeRequestPayload(
+            enabled: isEnabled,
+            base: base,
+            repositoryPath: repositoryPath,
+            checkoutPath: checkoutPath
+        )
     }
 
     /// The repository follows the shared code location, so only the

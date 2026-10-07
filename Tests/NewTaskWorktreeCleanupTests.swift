@@ -19,9 +19,9 @@ struct NewTaskWorktreeCleanupTests {
         let draft = AgentTask(title: "Explore", goal: "Explore the implementation", workspace: workspace)
         try await TaskWorktreeService.prepare(
             task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
-            modelContext: context, worktreesRoot: fixture.worktrees.path
+            modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
-        return (draft, try #require(TaskWorktreeService.discardSnapshot(for: draft)))
+        return (draft, try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership)))
     }
 
     private func persistentContainer(at url: URL) throws -> ModelContainer {
@@ -99,7 +99,7 @@ struct NewTaskWorktreeCleanupTests {
         #expect(duplicate.id == original.id)
         #expect(duplicate.persistentModelID != originalIdentity)
         #expect(duplicate.executionRootPath == original.executionRootPath)
-        let discard = try #require(TaskWorktreeService.discardSnapshot(for: duplicate))
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: duplicate, ownership: fixture.ownership))
         if resumeAfterRestart { try fixture.cleanupStore.record(discard) }
         context.delete(duplicate)
         try context.save()
@@ -347,9 +347,9 @@ struct NewTaskWorktreeCleanupTests {
             task: draft,
             request: TaskWorktreeRequest(repositoryPath: repository.path, base: .defaultBranch),
             modelContext: context,
-            worktreesRoot: fixture.worktrees.path
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
-        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership))
         context.delete(draft)
         try context.save()
 
@@ -386,6 +386,167 @@ struct NewTaskWorktreeCleanupTests {
         #expect(successor.executionRootPath != discard.worktreePath)
         #expect(!TaskWorktreeCheckoutReservation.isReserved(discard.worktreePath))
         #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("An imported or crafted binding never schedules cleanup of a checkout ASTRA didn't create")
+    func unownedWorktreeIsNeverDiscarded() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let manual = fixture.root.appendingPathComponent("Manual", isDirectory: true)
+        try fixture.git(["worktree", "add", "-b", "manual", manual.path], at: repository)
+        let head = try fixture.git(["rev-parse", "HEAD"], at: manual)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Imported", goal: "Imported", workspace: workspace)
+        context.insert(draft)
+        draft.executionRootPath = manual.path
+        let payload = try TaskEvent.encodePayload(TaskWorktreePayload(
+            repositoryPath: repository.path, worktreePath: manual.path, branch: "manual", baseCommit: head
+        )).get()
+        context.insert(TaskEvent(task: draft, eventType: TaskEventTypes.Task.worktreePrepared, payload: payload))
+        try context.save()
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: draft) != nil)
+        #expect(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership) == nil)
+
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
+        )
+        _ = coordinator.deleteTask(draft)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
+        #expect(FileManager.default.fileExists(atPath: manual.path))
+        #expect(try !fixture.git(["branch", "--list", "manual"], at: repository).isEmpty)
+    }
+
+    @Test("Ownership matches only the exact local creation and is dropped once the worktree is removed")
+    func ownershipRecordMatchesExactCreation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let (draft, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        #expect(fixture.ownership.owns(discard))
+        #expect(!fixture.ownership.owns(TaskWorktreeDiscard(
+            taskID: discard.taskID, repositoryPath: discard.repositoryPath, worktreePath: discard.worktreePath,
+            branch: discard.branch, baseCommit: String(repeating: "0", count: 40)
+        )))
+        #expect(!TaskWorktreeOwnershipStore(directory: fixture.root.appendingPathComponent("Elsewhere")).owns(discard))
+
+        let record = fixture.ownership.recordURL(forWorktree: discard.worktreePath)
+        let outside = fixture.root.appendingPathComponent("outside.json")
+        try FileManager.default.moveItem(at: record, to: outside)
+        try FileManager.default.createSymbolicLink(at: record, withDestinationURL: outside)
+        #expect(!fixture.ownership.owns(discard))
+        try FileManager.default.removeItem(at: record)
+        try FileManager.default.moveItem(at: outside, to: record)
+        #expect(fixture.ownership.owns(discard))
+
+        try fixture.cleanupStore.record(discard)
+        store.mainContext.delete(draft)
+        try store.mainContext.save()
+        #expect(await TaskWorktreeCleanupService.resumePending(modelContext: ModelContext(store), store: fixture.cleanupStore) == 1)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(!FileManager.default.fileExists(atPath: record.path))
+    }
+
+    @Test("A workspace configured at or inside the worktree keeps it", arguments: [false, true])
+    func configuredWorkspacePathKeepsCheckout(additional: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let other = additional
+            ? Workspace(name: "Other", primaryPath: fixture.storage.path, additionalPaths: [discard.worktreePath + "/Sources"])
+            : Workspace(name: "Other", primaryPath: discard.worktreePath)
+        context.insert(other)
+        context.delete(draft)
+        try context.save()
+        #expect(other.activeWorkingPath == nil)
+
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context) == .kept("referenced"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+
+        context.delete(other)
+        try context.save()
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("New tasks and imports never adopt a checkout cleanup is removing")
+    func reservedCheckoutIsNeverAdopted() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let checkout = fixture.storage.appendingPathComponent("Checkout", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkout, withIntermediateDirectories: true)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        workspace.activeWorkingPath = checkout.path
+        context.insert(workspace)
+        let task = AgentTask(title: "Free", goal: "Free", workspace: workspace)
+        #expect(task.executionRootPath == checkout.path)
+        context.insert(task)
+        try context.save()
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: fixture.storage.path))
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: configURL)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
+        )
+        func importCopy() -> Workspace? {
+            coordinator.importFromConfig(
+                at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .duplicate }
+            )
+        }
+
+        let reservation = TaskWorktreeCheckoutReservation.acquire(checkout.path)
+        let reservedTaskPin = AgentTask(title: "Reserved", goal: "Reserved", workspace: workspace).executionRootPath
+        let reservedImport = importCopy()
+        TaskWorktreeCheckoutReservation.release(reservation)
+        #expect(reservedTaskPin == nil)
+        let reserved = try #require(reservedImport)
+        #expect(reserved.activeWorkingPath == nil)
+        #expect(reserved.tasks.map(\.executionRootPath) == [nil])
+
+        let released = try #require(importCopy())
+        #expect(released.activeWorkingPath == checkout.path)
+        #expect(released.tasks.map(\.executionRootPath) == [checkout.path])
+    }
+
+    @Test("Every persistent checkout pin writer is reviewed against the cleanup reservation")
+    func checkoutPinWritersAreReviewed() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        // Reservation-aware writers, clears, detached launch copies, value
+        // snapshots, and the Git panel's own mirror property.
+        let reviewed: Set<String> = [
+            "Astra/Models/AgentTask.swift",
+            "Astra/Models/AgentTaskForkService.swift",
+            "Astra/Models/TaskWorktreePayload.swift",
+            "Astra/Models/Workspace.swift",
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift",
+            "Astra/Services/Runtime/AgentRuntimeExecutionContext.swift",
+            "Astra/Services/Runtime/AgentTaskLaunchSnapshot.swift",
+            "Astra/Services/Tasks/TaskCodeLocationPin.swift",
+            "Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift",
+            "Astra/Views/WorkspaceGitViewModel.swift"
+        ]
+        let writer = try NSRegularExpression(pattern: #"\.(executionRootPath|activeWorkingPath)\s*=(?!=)"#)
+        var writers = Set<String>()
+        let enumerator = FileManager.default.enumerator(
+            at: root.appendingPathComponent("Astra"), includingPropertiesForKeys: nil
+        )
+        for case let url as URL in enumerator ?? FileManager.DirectoryEnumerator() where url.pathExtension == "swift" {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard writer.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil else { continue }
+            writers.insert(String(url.path.dropFirst(root.path.count + 1)))
+        }
+        #expect(writers == reviewed)
     }
 
     @Test("Startup awaits pending cleanup before replaying recovered runtime work")

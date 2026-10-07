@@ -19,10 +19,16 @@ enum TaskWorktreeCleanupOutcome: Equatable {
 /// a deliberate decision to preserve the checkout.
 struct TaskWorktreeCleanupStore: Sendable {
     let directory: URL
+    /// Provenance that authorizes cleanup, kept beside the outbox.
+    let ownership: TaskWorktreeOwnershipStore
 
     init(directory: URL = AppChannelStoragePaths.applicationSupportDirectory()
         .appendingPathComponent("WorktreeCleanup", isDirectory: true)) {
         self.directory = directory.standardizedFileURL
+        self.ownership = TaskWorktreeOwnershipStore(
+            directory: self.directory.deletingLastPathComponent()
+                .appendingPathComponent("WorktreeOwnership", isDirectory: true)
+        )
     }
 
     enum StoreError: LocalizedError {
@@ -138,6 +144,7 @@ enum TaskWorktreeCleanupService {
                 }
             )
             guard outcome.isTerminal else { return false }
+            if outcome == .removed { store.ownership.forget(discard) }
             try store.remove(discard)
             AppLogger.breadcrumb(action: "task_worktree_cleanup_settled", category: "Git", taskID: discard.taskID, fields: [
                 "worktree": discard.worktreePath,

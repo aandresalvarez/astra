@@ -51,10 +51,13 @@ struct NewTaskWorktreeDockView: View {
         if let pinned = pinOwner?.executionRootPath, !pinned.isEmpty { return pinned }
         if let draft,
            let request = TaskWorktreeService.latestRequest(for: draft),
-           request.enabled,
-           let repository = request.repositoryPath,
-           !repository.isEmpty {
-            return repository
+           request.enabled {
+            if let checkout = request.checkoutPath, !checkout.isEmpty {
+                return checkout
+            }
+            if let repository = request.repositoryPath, !repository.isEmpty {
+                return repository
+            }
         }
         return workspace?.activeWorkingPath
     }

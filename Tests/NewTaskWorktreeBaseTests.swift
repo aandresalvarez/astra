@@ -30,7 +30,7 @@ struct NewTaskWorktreeBaseTests {
             request: TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: repository.path, base: base),
             inheritingFrom: draft,
             modelContext: context,
-            worktreesRoot: fixture.worktrees.path
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
     }
 
@@ -221,7 +221,7 @@ struct NewTaskWorktreeBaseTests {
             task: task,
             request: TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: linked.path, base: .currentBranch),
             modelContext: store.mainContext,
-            worktreesRoot: fixture.worktrees.path
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
 
         let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
@@ -484,7 +484,7 @@ struct NewTaskWorktreeBaseTests {
         let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace(repository, in: context))
         try await prepare(draft, repository, context: context, fixture: fixture)
         let path = try #require(draft.executionRootPath)
-        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership))
         context.delete(draft)
         try context.save()
 
@@ -508,7 +508,7 @@ struct NewTaskWorktreeBaseTests {
             let draft = AgentTask(title: title, goal: title, workspace: workspace)
             try await prepare(draft, repository, context: context, fixture: fixture)
             let worktree = URL(fileURLWithPath: try #require(draft.executionRootPath))
-            let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+            let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership))
             try use(worktree)
             context.delete(draft)
             try context.save()
@@ -541,7 +541,7 @@ struct NewTaskWorktreeBaseTests {
             repositoryPath: repository.path, worktreePath: "/tmp/legacy-worktree", branch: "astra/legacy"
         )).get()
         legacy.events = [TaskEvent(task: legacy, eventType: TaskEventTypes.Task.worktreePrepared, payload: payload)]
-        #expect(TaskWorktreeService.discardSnapshot(for: legacy) == nil)
+        #expect(TaskWorktreeService.discardSnapshot(for: legacy, ownership: fixture.ownership) == nil)
     }
 
     @Test("Ignored files are work too: a worktree holding only ignored files is kept")
@@ -559,7 +559,7 @@ struct NewTaskWorktreeBaseTests {
         let secret = worktree.appendingPathComponent("local.env")
         try "TOKEN=local".write(to: secret, atomically: true, encoding: .utf8)
         #expect(await GitService.shared.getStatusFiles(at: worktree.path).isEmpty)
-        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership))
         context.delete(draft)
         try context.save()
 
@@ -580,7 +580,7 @@ struct NewTaskWorktreeBaseTests {
         let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace(repository, in: context))
         try await prepare(draft, repository, context: context, fixture: fixture)
         let path = try #require(draft.executionRootPath)
-        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft))
+        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership))
         context.delete(draft)
         try context.save()
 
@@ -614,7 +614,7 @@ struct NewTaskWorktreeBaseTests {
         let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace)
         try await prepare(draft, repository, context: context, fixture: fixture)
         let path = try #require(draft.executionRootPath)
-        let discard = TaskWorktreeService.discardSnapshot(for: draft)
+        let discard = TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership)
 
         let unsaved = TaskWorktreeService.saveDeletionThenDiscard(
             discard, workspace: workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
@@ -734,11 +734,95 @@ struct NewTaskWorktreeBaseTests {
             task: task,
             request: restored.request,
             modelContext: context,
-            worktreesRoot: fixture.worktrees.path
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
         #expect(binding.repositoryPath == primary.path)
         #expect(binding.worktreePath != other.path)
+    }
+
+    @Test("A Current branch draft keeps its linked checkout across reopening and starts from that commit")
+    func currentBranchDraftKeepsLinkedCheckout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-side", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "side", linked.path], at: repository)
+        let sideTip = try fixture.commit("Side.txt", contents: "side", message: "Side", at: linked)
+        #expect(try fixture.git(["rev-parse", "HEAD"], at: repository) != sideTip)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        #expect(draft.executionRootPath == nil)
+
+        // The strip showed the linked checkout; the draft's first save keeps it.
+        var selection = NewTaskWorktreeSelection()
+        selection.isEnabled = true
+        selection.base = .currentBranch
+        selection.updateRepositories(
+            [GitRepositoryInfo(name: "App", path: repository.path)],
+            selectedPath: repository.path,
+            checkoutPath: linked.path
+        )
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
+        try context.save()
+
+        let reopened = try #require(ModelContext(store).fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(reopened.executionRootPath == linked.path)
+        #expect(TaskWorktreeService.latestRequest(for: reopened)?.checkoutPath == linked.path)
+        var restored = NewTaskWorktreeSelection()
+        NewTaskWorktreeComposerFlow.restoreChoice(&restored, from: reopened)
+        #expect(restored.checkoutPath == linked.path)
+        let repositories = await GitService.shared.scanForGitRepositories(
+            primaryPath: repository.path, additionalPaths: []
+        )
+        let match = await NewTaskWorktreeDockView.checkout(
+            reopened.executionRootPath, primaryPath: repository.path, in: repositories, git: GitService.shared
+        )
+        NewTaskWorktreeDockView.applyScan(
+            to: &restored, repositories: repositories, recordedRepository: repository.path, match: match
+        )
+        #expect(restored.checkoutPath == linked.path)
+
+        let task = AgentTask(title: "Run", goal: "Run", workspace: workspace)
+        context.insert(task)
+        try await TaskWorktreeService.prepare(
+            task: task,
+            request: restored.request,
+            modelContext: context,
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.baseCommit == sideTip)
+        #expect(binding.baseRef == "side")
+    }
+
+    @Test("Requests recorded before the checkout field still restore their choice")
+    func legacyRequestWithoutCheckoutRestores() throws {
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: "/repos/app")
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        context.insert(TaskEvent(
+            task: draft,
+            eventType: TaskEventTypes.Task.worktreeRequested,
+            payload: #"{"base":"current_branch","enabled":true,"repositoryPath":"/repos/app"}"#
+        ))
+
+        let request = try #require(TaskWorktreeService.latestRequest(for: draft))
+        #expect(request == TaskWorktreeRequestPayload(enabled: true, base: .currentBranch, repositoryPath: "/repos/app"))
+        #expect(request.checkoutPath == nil)
+        var restored = NewTaskWorktreeSelection()
+        NewTaskWorktreeComposerFlow.restoreChoice(&restored, from: draft)
+        #expect(restored.isEnabled)
+        #expect(restored.repositoryPath == "/repos/app")
+        #expect(restored.checkoutPath == nil)
     }
 
     @Test("An unborn repository checkout still starts from the chosen base")

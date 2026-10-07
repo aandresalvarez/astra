@@ -2437,7 +2437,10 @@ public enum WorkspaceConfigManager {
         task.forkedFromID = config.forkedFromID.flatMap(UUID.init(uuidString:))
         task.forkedAtRunIndex = config.forkedAtRunIndex ?? 0
         task.originScheduleID = config.originScheduleID.flatMap(UUID.init(uuidString:))
-        task.executionRootPath = config.executionRootPath
+        // An imported pin must not land on a checkout cleanup is removing.
+        if !TaskWorktreeCheckoutReservation.commit(config.executionRootPath, to: task) {
+            task.executionRootPath = nil
+        }
         task.useAgentTeam = config.useAgentTeam ?? false
         task.teamSize = config.teamSize ?? 3
         task.teamInstructions = config.teamInstructions ?? ""
@@ -2937,6 +2940,7 @@ public enum WorkspaceConfigManager {
 
         let activePath = WorkspacePathPresentation.standardizedPath(active)
         guard !activePath.isEmpty,
+              !TaskWorktreeCheckoutReservation.isReserved(activePath),
               isExistingDirectory(activePath, fileManager: fileManager),
               let canonicalActive = canonicalPath(activePath) else {
             return nil
