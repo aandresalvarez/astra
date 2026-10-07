@@ -18,7 +18,10 @@ enum AskGitPullRequestWorkflowPolicy {
         permissionPolicy: PermissionPolicy,
         contextText: String
     ) -> Bool {
-        permissionPolicy != .autonomous
+        ExternalActionPolicy.asksUser(
+            for: .gitPullRequestPublication,
+            level: permissionPolicy.agentPolicyLevel
+        )
             && GitOperationIntentDetector.detectsPullRequestPublicationIntent(
                 prompt: publicationIntentText(task: task, contextText: contextText),
                 task: task,
