@@ -864,6 +864,34 @@ struct GitHubReviewPublicationTests {
         #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
     }
 
+    // A write tool reports its path relative to the provider's working
+    // directory, and the task-folder snapshot then drops its own absolute record
+    // of that file. Resolving against the task folder used to miss it.
+    @Test("Auto posts a review the run reported with a path relative to its working directory")
+    func autoPostsARelativelyReportedReview() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let executionPath = fixture.root.resolvingSymlinksInPath().path
+        let filePath = fixture.file.resolvingSymlinksInPath().path
+        #expect(filePath.hasPrefix(executionPath + "/"))
+        let relative = String(filePath.dropFirst(executionPath.count + 1))
+        let run = try postingRun(fixture, request: "Post the PR review comments", reportedPath: relative)
+        let cli = FakeCLI()
+
+        let completed = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .autonomous,
+            executionPath: executionPath,
+            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        )
+
+        #expect(completed)
+        #expect(await cli.postCount() == 1)
+    }
+
     @Test("Auto posts nothing nobody asked to post")
     func autoPostsNothingUnrequested() async throws {
         let fixture = try makeFixture()
@@ -909,11 +937,16 @@ struct GitHubReviewPublicationTests {
     private func postingRun(
         _ fixture: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, file: URL, data: Data),
         request: String,
-        wroteReviewFile: Bool = true
+        wroteReviewFile: Bool = true,
+        reportedPath: String? = nil
     ) throws -> TaskRun {
         let run = TaskRun(task: fixture.task)
         if wroteReviewFile {
-            run.appendHostFileChanges([StoredFileChange(path: fixture.file.path, changeType: "discovered", timestamp: Date())])
+            run.appendHostFileChanges([StoredFileChange(
+                path: reportedPath ?? fixture.file.path,
+                changeType: reportedPath == nil ? "discovered" : "Write",
+                timestamp: Date()
+            )])
         }
         fixture.context.insert(run)
         fixture.context.insert(TaskEvent(

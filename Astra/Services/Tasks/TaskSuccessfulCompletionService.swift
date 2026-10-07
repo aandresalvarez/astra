@@ -12,6 +12,7 @@ enum TaskSuccessfulCompletionService {
         modelContext: ModelContext,
         successPayload: String,
         permissionPolicy: PermissionPolicy,
+        executionPath: String? = nil,
         reviewOriginURL: @escaping (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
         },
@@ -32,6 +33,7 @@ enum TaskSuccessfulCompletionService {
             task: task,
             run: run,
             policyLevel: permissionPolicy.agentPolicyLevel,
+            executionPath: executionPath,
             modelContext: modelContext,
             service: reviewPublicationService
                 ?? GitHubReviewPublicationService(modelContext: modelContext, originURL: reviewOriginURL)

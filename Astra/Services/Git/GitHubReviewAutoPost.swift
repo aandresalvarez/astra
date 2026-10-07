@@ -25,6 +25,7 @@ enum GitHubReviewAutoPost {
         task: AgentTask,
         run: TaskRun,
         policyLevel: AgentPolicyLevel,
+        executionPath: String? = nil,
         modelContext: ModelContext,
         service: GitHubReviewPublicationService
     ) async {
@@ -37,8 +38,9 @@ enum GitHubReviewAutoPost {
         // that run's question, and switching the task to Auto must not answer
         // it. `allFileChanges` carries what the run touched in the task folder,
         // shell writes included.
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
-        let produced = producedPaths(of: run, taskFolder: taskFolder)
+        let access = TaskWorkspaceAccess(task: task)
+        let taskFolder = access.taskFolder
+        let produced = producedPaths(of: run, executionPath: executionPath ?? access.codeWorkingDirectory)
         let candidates = candidateReviewFiles(taskFolder: taskFolder)
             .filter { produced.contains(resolved($0)) }
         // No review file from this run means the agent has not written one, or
@@ -74,12 +76,17 @@ enum GitHubReviewAutoPost {
         }
     }
 
-    static func producedPaths(of run: TaskRun, taskFolder: String) -> Set<String> {
+    /// What the run touched, as absolute paths. A tool reports a path relative
+    /// to the provider's working directory, the same reading
+    /// `TaskFolderRunSnapshot` gives it, and that snapshot drops its own
+    /// absolute record of a file the tool already reported, so resolving
+    /// against anything else would miss a review this run wrote.
+    static func producedPaths(of run: TaskRun, executionPath: String) -> Set<String> {
         Set(run.allFileChanges.compactMap { change -> String? in
             guard change.kind != .removed else { return nil }
-            let path = change.path.hasPrefix("/")
+            let path = change.path.hasPrefix("/") || executionPath.isEmpty
                 ? change.path
-                : (taskFolder as NSString).appendingPathComponent(change.path)
+                : (executionPath as NSString).appendingPathComponent(change.path)
             return resolved(path)
         })
     }
