@@ -30,7 +30,15 @@ enum RunBoundaryDiscovery {
         run: TaskRun,
         modelContext: ModelContext,
         policyLevel: AgentPolicyLevel = .review,
-        connectorMutationCoordinator: ConnectorMutationCoordinator? = nil
+        connectorMutationCoordinator: ConnectorMutationCoordinator? = nil,
+        persistDiscovery: @MainActor (AgentTask, ModelContext, [String: String]) -> Bool = { task, modelContext, fields in
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: fields
+            )
+        }
     ) async {
         let discovered = ConnectorMutationDiscovery.recordStagedMutations(
             task: task,
@@ -46,16 +54,13 @@ enum RunBoundaryDiscovery {
         // directory at startup: the proposal stays invisible until some later
         // run happens to finish. The write is on disk; this is what makes the
         // record of it match.
+        var discoveryPersisted = true
         if !discovered.isEmpty {
-            let persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: [
-                    "operation": "connector_mutation_discovery",
-                    "count": String(discovered.count)
-                ]
-            )
+            let persisted = persistDiscovery(task, modelContext, [
+                "operation": "connector_mutation_discovery",
+                "count": String(discovered.count)
+            ])
+            discoveryPersisted = persisted
             if !persisted {
                 AppLogger.audit(.dataStoreRecovered, category: "Worker", taskID: task.id, fields: [
                     "operation": "connector_mutation_discovery_unpersisted",
@@ -65,7 +70,10 @@ enum RunBoundaryDiscovery {
         }
         // Auto asks nothing, so what an Auto run staged is sent now, through the
         // same checks an approved send goes through. Each receipt saves itself.
-        if !discovered.isEmpty {
+        // Never before the staged events are durable: a store that cannot save
+        // the proposal will not save its receipt either, and a real write with
+        // no durable record is worse than a proposal left for the next run.
+        if !discovered.isEmpty, discoveryPersisted {
             await ConnectorMutationAutoSend.sendStagedMutations(
                 discovered,
                 task: task,

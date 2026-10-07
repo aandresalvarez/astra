@@ -30,10 +30,10 @@ enum ConnectorMutationAutoSend {
     ) async -> [ConnectorMutationReceipt] {
         guard !ExternalActionPolicy.asksUser(for: .connectorMutation, level: policyLevel) else { return [] }
         let ownMarker = "-\(run.id.uuidString)-"
-        let own = staged.filter {
+        let own = inStagingOrder(staged.filter {
             $0.runID == run.id
                 && URL(fileURLWithPath: $0.stagedPayloadPath).lastPathComponent.contains(ownMarker)
-        }
+        })
         var receipts: [ConnectorMutationReceipt] = []
         for pending in own {
             do {
@@ -63,6 +63,25 @@ enum ConnectorMutationAutoSend {
             }
         }
         return receipts
+    }
+
+    /// The order the agent proposed them in. Discovery orders by file name, and
+    /// the broker numbers each service-and-operation pair separately, so an
+    /// update staged before a transition would sort after it (`transition_issue`
+    /// < `update_issue`) and be sent second. Each envelope is created
+    /// exclusively at staging time, so its creation date is the call order; the
+    /// discovery order breaks ties and covers a date that cannot be read.
+    static func inStagingOrder(_ staged: [TaskStagedConnectorMutation]) -> [TaskStagedConnectorMutation] {
+        let created = staged.map { pending in
+            try? URL(fileURLWithPath: pending.stagedPayloadPath)
+                .resourceValues(forKeys: [.creationDateKey]).creationDate
+        }
+        return staged.indices.sorted { lhs, rhs in
+            if let left = created[lhs], let right = created[rhs], left != right {
+                return left < right
+            }
+            return lhs < rhs
+        }.map { staged[$0] }
     }
 
     static func stoppedNotice(pending: TaskStagedConnectorMutation, remaining: Int, error: Error) -> String {

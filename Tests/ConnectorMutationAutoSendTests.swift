@@ -81,6 +81,56 @@ struct ConnectorMutationAutoSendTests {
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).count == 1)
     }
 
+    // The broker numbers each service-and-operation pair on its own, so file
+    // names sort a transition (`transition_issue`) ahead of an update staged
+    // before it. Auto sends in the order the agent proposed.
+    @Test("Auto sends a run's writes in the order they were staged, across operation types")
+    func autoKeepsStagingOrderAcrossOperations() async throws {
+        let fixture = try AutoSendFixture()
+        let sender = AutoSendRecordingSender(statusCode: 204)
+        try fixture.stage(
+            summary: "Set the priority first",
+            operation: "update_issue", method: "PUT", path: "/rest/api/2/issue/STAR-1",
+            target: "STAR-1", body: ["fields": ["priority": ["name": "High"]]]
+        )
+        try fixture.stage(
+            summary: "Then move it to In Progress",
+            operation: "transition_issue", method: "POST", path: "/rest/api/2/issue/STAR-1/transitions",
+            target: "STAR-1", body: ["transition": ["id": "21"]]
+        )
+
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context,
+            policyLevel: .autonomous,
+            connectorMutationCoordinator: fixture.coordinator(sender: sender)
+        )
+
+        #expect(sender.paths == ["/rest/api/2/issue/STAR-1", "/rest/api/2/issue/STAR-1/transitions"])
+    }
+
+    // A store that cannot save the staged events will not save the receipt
+    // either; a real write with no durable record is worse than waiting.
+    @Test("Auto sends nothing when the staged proposals could not be saved")
+    func autoSendsNothingWithoutDurableDiscovery() async throws {
+        let fixture = try AutoSendFixture()
+        let sender = AutoSendRecordingSender()
+        try fixture.stage(summary: "Age filter missing")
+
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: fixture.task,
+            run: fixture.run,
+            modelContext: fixture.context,
+            policyLevel: .autonomous,
+            connectorMutationCoordinator: fixture.coordinator(sender: sender),
+            persistDiscovery: { _, _, _ in false }
+        )
+
+        #expect(sender.count == 0)
+        #expect(!fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.receipt })
+    }
+
     @Test("Auto stops at the first write that does not go out and says so")
     func autoStopsAtTheFirstRefusal() async throws {
         let fixture = try AutoSendFixture()
@@ -149,7 +199,15 @@ private final class AutoSendFixture {
 
     /// Stages through the broker's own writer, named after `stagingRunID` the
     /// way the broker names a file after the run that wrote it.
-    func stage(summary: String, stagingRunID: String? = nil) throws {
+    func stage(
+        summary: String,
+        stagingRunID: String? = nil,
+        operation: String = "create_issue",
+        method: String = "POST",
+        path: String = "/rest/api/2/issue",
+        target: String = "STAR / Bug",
+        body: [String: Any]? = nil
+    ) throws {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         try FileManager.default.createDirectory(
             at: URL(fileURLWithPath: taskFolder, isDirectory: true),
@@ -157,7 +215,7 @@ private final class AutoSendFixture {
         )
         _ = try ConnectorMutationStaging.stage(
             serviceType: "jira",
-            operation: "create_issue",
+            operation: operation,
             connector: HostControlConnector(
                 id: connector.id.uuidString,
                 alias: "jira",
@@ -170,11 +228,11 @@ private final class AutoSendFixture {
                 credentials: [:],
                 config: [:]
             ),
-            target: "STAR / Bug",
+            target: target,
             summary: summary,
-            requestMethod: "POST",
-            requestPath: "/rest/api/2/issue",
-            body: ["fields": ["project": ["key": "STAR"], "issuetype": ["name": "Bug"], "summary": summary]],
+            requestMethod: method,
+            requestPath: path,
+            body: body ?? ["fields": ["project": ["key": "STAR"], "issuetype": ["name": "Bug"], "summary": summary]],
             configuration: HostControlToolConfiguration(
                 taskFolder: taskFolder,
                 runID: stagingRunID ?? run.id.uuidString,
@@ -188,6 +246,7 @@ private final class AutoSendFixture {
 private final class AutoSendRecordingSender: ConnectorMutationSending, @unchecked Sendable {
     private let lock = NSLock()
     private var sent = 0
+    private var sentPaths: [String] = []
     let statusCode: Int
     let body: String
 
@@ -197,9 +256,13 @@ private final class AutoSendRecordingSender: ConnectorMutationSending, @unchecke
     }
 
     var count: Int { lock.withLock { sent } }
+    var paths: [String] { lock.withLock { sentPaths } }
 
     func send(_ request: ConnectorMutationHTTPRequest) async throws -> ConnectorMutationHTTPResponse {
-        lock.withLock { sent += 1 }
+        lock.withLock {
+            sent += 1
+            sentPaths.append(request.url.path)
+        }
         return ConnectorMutationHTTPResponse(statusCode: statusCode, body: body)
     }
 }

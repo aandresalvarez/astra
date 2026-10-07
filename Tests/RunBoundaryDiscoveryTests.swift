@@ -41,10 +41,16 @@ struct RunBoundaryDiscoveryOrderingTests {
             boundarySource.range(of: "ConnectorMutationDiscovery.recordStagedMutations(")
         )
         let afterDiscovery = boundarySource[discovery.upperBound...]
+        // The save goes through an injectable seam so a test can refuse it; the
+        // default still lands in the persistence coordinator.
         let save = try #require(
-            afterDiscovery.range(of: "WorkspacePersistenceCoordinator.saveAndAutoExport("),
+            afterDiscovery.range(of: "persistDiscovery(task, modelContext"),
             "Discovery no longer persists its events; they are lost on any later exit."
         )
+        #expect(sourceContains(
+            boundarySource,
+            "persistDiscovery: @MainActor (AgentTask, ModelContext, [String: String]) -> Bool = { task, modelContext, fields in WorkspacePersistenceCoordinator.saveAndAutoExport("
+        ))
         if let nextAwait = afterDiscovery.range(of: "await ") {
             #expect(
                 save.lowerBound < nextAwait.lowerBound,
