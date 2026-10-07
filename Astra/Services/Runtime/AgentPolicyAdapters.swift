@@ -1117,7 +1117,7 @@ enum AgentPolicyManifestService {
             ?? AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
-        let runtimePaths = runtimeWritablePaths(for: task)
+        let runtimePaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
         let additionalReadOnlyPaths = brokeredReadOnlyPaths(from: launchResourcePlan)
         let context = PolicyRenderContext(
             runtimeID: runtime,
@@ -1370,23 +1370,6 @@ enum AgentPolicyManifestService {
             "uses_broad_provider_permissions": String(manifest.providerRender.usesBroadProviderPermissions)
         ], level: manifest.providerRender.diagnostics.contains(where: { $0.severity == .blocked }) ? .warning : .debug)
         return manifest
-    }
-
-    private static func runtimeWritablePaths(for task: AgentTask) -> [String] {
-        let access = TaskWorkspaceAccess(task: task)
-        var paths = access.runtimeWritablePaths
-        if !access.effectiveWorkspacePath.isEmpty {
-            paths.append(access.effectiveWorkspacePath)
-        }
-        if !access.taskFolder.isEmpty {
-            paths.append(access.taskFolder)
-        }
-        var seen: Set<String> = []
-        return paths.compactMap { rawPath in
-            let path = (rawPath as NSString).expandingTildeInPath
-            guard !path.isEmpty, seen.insert(path).inserted else { return nil }
-            return path
-        }
     }
 
     private static func brokeredReadOnlyPaths(from plan: TaskLaunchResourcePlan?) -> [String] {

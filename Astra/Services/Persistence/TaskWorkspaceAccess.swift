@@ -37,8 +37,30 @@ public struct TaskWorkspaceAccess {
         return effectiveWorkspacePath
     }
 
+    /// Additional folders a write-capable run may modify. Admission claims,
+    /// sandbox grants, Docker mounts, and provider directory arguments all
+    /// derive from this list, so narrowing it narrows every projection at once.
     public var runtimeWritablePaths: [String] {
-        normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+        let replaced = Set(replacedSourceCheckoutPaths)
+        return normalizedUniquePaths(task.workspace?.additionalPaths ?? []).filter { !replaced.contains($0) }
+    }
+
+    /// Additional folders that are the root of another checkout of the same
+    /// repository as the code working directory. Running in a linked worktree
+    /// replaces that source checkout: sibling worktrees must not each hold it
+    /// writable, or they serialize on a folder neither one edits. Subfolders,
+    /// unrelated repositories, and non-Git folders keep their access.
+    public var replacedSourceCheckoutPaths: [String] {
+        let codeRoot = codeWorkingDirectory
+        guard !codeRoot.isEmpty,
+              let commonDirectory = GitCheckoutLayout.commonDirectory(for: codeRoot) else { return [] }
+        let codeCheckout = GitCheckoutLayout.worktreeRoot(containing: codeRoot)
+        return normalizedUniquePaths(task.workspace?.additionalPaths ?? []).filter { path in
+            let checkout = GitCheckoutLayout.worktreeRoot(containing: path)
+            return checkout == URL(fileURLWithPath: path).standardizedFileURL.path
+                && checkout != codeCheckout
+                && GitCheckoutLayout.commonDirectory(for: path) == commonDirectory
+        }
     }
 
     public var runtimeReadOnlyInputPaths: [String] {

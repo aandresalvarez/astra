@@ -379,8 +379,10 @@ enum AgentPromptBuilder {
             primaryPath: ws.primaryPath,
             additionalPaths: ws.additionalPaths
         )
+        let replaced = Set(TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths.map(WorkspacePathPresentation.standardizedPath))
         let folderList = folders.map { descriptor in
-            let active = descriptor.path == WorkspacePathPresentation.standardizedPath(codeDir) ? " (active code root)" : ""
+            let active = descriptor.path == WorkspacePathPresentation.standardizedPath(codeDir) ? " (active code root)"
+                : replaced.contains(descriptor.path) ? " (source checkout of the active worktree; read-only, edit the worktree)" : ""
             return "- \(descriptor.roleLabel) \(descriptor.title)\(active): \(descriptor.path)"
         }.joined(separator: "\n")
         appendSection(

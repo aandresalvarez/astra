@@ -1347,9 +1347,11 @@ final class AgentRuntimeProcessRunner {
     /// and `runtimeReadOnlyInputPaths` carries files — every paste is one.
     static func copilotNativeDirectoryProjection(for task: AgentTask) -> ProviderNativeDirectoryProjection.Result {
         let writable = runtimeWritablePaths(for: task)
+        let access = TaskWorkspaceAccess(task: task)
+        // Copilot launches in the code root, so inputs beneath it are reachable.
         let inputs = ProviderNativeDirectoryProjection.project(
-            resourcePaths: TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths,
-            alreadyReachableDirectories: writable
+            resourcePaths: access.runtimeReadOnlyInputPaths,
+            alreadyReachableDirectories: [access.codeWorkingDirectory] + writable
         )
         return .init(
             additionalDirectories: writable + inputs.additionalDirectories,
@@ -1357,15 +1359,18 @@ final class AgentRuntimeProcessRunner {
         )
     }
 
+    /// Writable roots beyond the launch directory. Every entry is either
+    /// claimed at admission (`TaskExecutionResourceClaimResolver.workspaceKeys`
+    /// reads the same `TaskWorkspaceAccess.runtimeWritablePaths`) or the task's
+    /// own folder. The workspace root is deliberately absent: it is the launch
+    /// directory when it is the code root, and otherwise sibling tasks would
+    /// share an unclaimed writable folder.
     static func runtimeWritablePaths(
         for task: AgentTask,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive
     ) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
         var paths = workspaceAccess == .exclusive ? access.runtimeWritablePaths : []
-        if workspaceAccess == .exclusive, !access.effectiveWorkspacePath.isEmpty {
-            paths.append(access.effectiveWorkspacePath)
-        }
         if !access.taskFolder.isEmpty {
             paths.append(access.taskFolder)
         }
