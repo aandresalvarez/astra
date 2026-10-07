@@ -17,7 +17,7 @@ final class GitHubReviewThreadPublicationService {
         self.modelContext = modelContext; self.cli = cli; self.originURL = originURL; self.saveReceipt = saveReceipt
     }
 
-    static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
+    nonisolated static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
         task.events.contains {
             guard $0.type == GitHubReviewThreadEvents.dispatched,
                   let data = $0.payload.data(using: .utf8),
@@ -26,7 +26,7 @@ final class GitHubReviewThreadPublicationService {
         }
     }
 
-    static func hasDismissed(task: AgentTask, filePath: String) -> Bool {
+    nonisolated static func hasDismissed(task: AgentTask, filePath: String) -> Bool {
         task.events.contains {
             guard $0.type == GitHubReviewThreadEvents.dismissed,
                   let data = $0.payload.data(using: .utf8),
@@ -40,6 +40,55 @@ final class GitHubReviewThreadPublicationService {
             GitHubReviewThreadArtifactPolicy.isProposalFile($0)
                 && !hasDispatched(task: task, filePath: $0) && !hasDismissed(task: task, filePath: $0)
         }
+    }
+
+    /// Whether the task still owes GitHub thread work, from recorded state alone: a proposal
+    /// file nobody has sent or dismissed, or a batch that was sent and neither receipted nor
+    /// fully confirmed. What the user wrote has no part in it; they send or dismiss the proposal.
+    nonisolated static func hasPendingWork(task: AgentTask) -> Bool {
+        hasUnsettledDispatch(task: task) || task.artifacts.contains { artifact in
+            GitHubReviewThreadArtifactPolicy.isProposalFile(artifact.path)
+                && !hasDispatched(task: task, filePath: artifact.path) && !hasDismissed(task: task, filePath: artifact.path)
+                && FileManager.default.fileExists(atPath: artifact.path)
+        }
+    }
+
+    /// ASTRA can stop after the last confirmed operation but before it writes the final batch
+    /// receipt. When every operation of the approved payload is durably confirmed there is
+    /// nothing left to send; any other dispatch without a final receipt is unsettled.
+    private nonisolated static func hasUnsettledDispatch(task: AgentTask) -> Bool {
+        func records(_ types: [String]) -> [GitHubReviewThreadReceipt] {
+            task.events.compactMap { event in
+                guard types.contains(event.type), let data = event.payload.data(using: .utf8) else { return nil }
+                return try? JSONDecoder().decode(GitHubReviewThreadReceipt.self, from: data)
+            }
+        }
+        let settled = Set(records([GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery]).map(\.proposalID))
+        let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
+        return records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
+            guard !settled.contains(dispatch.proposalID) else { return false }
+            // Across batches of the pull request: a reply confirmed by a batch that failed before
+            // resolving, and a resolution-only proposal sent to finish it, settle both.
+            let done = Set(confirmed.filter { $0.pullRequestURL == dispatch.pullRequestURL }
+                .flatMap(\.actions).map { "\($0.threadID):\($0.operation)" })
+            // The approved payload, or the summary a compacted dispatch keeps in its place.
+            let required: [String]
+            if let payload = dispatch.approvedPayload {
+                required = payload.threads.flatMap { thread in
+                    (thread.reply != nil ? ["\(thread.threadId):reply"] : []) + (thread.resolve ? ["\(thread.threadId):resolve"] : [])
+                }
+            } else if let summary = dispatch.requiredActions {
+                required = summary
+            } else { return true }
+            return required.isEmpty || !required.allSatisfy(done.contains)
+        }
+    }
+
+    /// The user chose not to send this proposal. Durable, so it is neither offered again nor
+    /// held against completing the task; changed wording is a new versioned proposal.
+    func dismiss(task: AgentTask, filePath: String) throws {
+        guard !Self.hasDispatched(task: task, filePath: filePath), !Self.hasDismissed(task: task, filePath: filePath) else { return }
+        try persistDismissals([.init(filePath: filePath, reason: "The user chose not to send this proposal.")], task: task)
     }
 
     /// The first proposal that validates. One that cannot be used (stale head, a
@@ -107,7 +156,6 @@ final class GitHubReviewThreadPublicationService {
             throw GitHubReviewPublicationError.unusableArtifact("This thread proposal was dismissed after validation failed. Save a corrected proposal under a new versioned filename.")
         }
         let (data, payload) = try Self.unusable { try readPayload(task: task, filePath: filePath) }
-        try requireNoRefusedOperations(task: task, payload: payload)
         try await validateTarget(task: task, payload: payload, filePath: filePath)
         var snapshots: [GitHubReviewThreadSnapshot] = []
         for action in payload.threads {
@@ -116,30 +164,12 @@ final class GitHubReviewThreadPublicationService {
             try requirePermissions(snapshot, action: action)
             snapshots.append(snapshot)
         }
-        let request = GitHubReviewThreadRequirement.request(task: task)
-        let requestID = request?.id
         // Bind approval to the entire live discussion, including comment edits.
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let snapshotData = try encoder.encode(snapshots)
         let digest = GitHubReviewThreadArtifactPolicy.digest(data)
-        let id = GitHubReviewThreadArtifactPolicy.digest(Data("\(filePath):\(digest):\(requestID ?? "")".utf8) + snapshotData)
-        return GitHubReviewThreadProposal(id: id, filePath: filePath, digest: digest, requestID: requestID,
-                                         requestEventIDs: (request?.sourceEventIDs ?? []).map(\.uuidString),
-                                         chainID: request?.chain,
-                                         payload: payload, snapshots: snapshots)
-    }
-
-    /// A proposal may not do what the user refused: after "Don't resolve them", a file that still
-    /// resolves is not sent, whatever it was prepared against. Retryable, since the user can ask
-    /// for the operation again. What the request merely does not mention is for the user to
-    /// approve on the proposal.
-    private func requireNoRefusedOperations(task: AgentTask, payload: GitHubReviewThreadPayload) throws {
-        guard let refused = GitHubReviewThreadRequirement.request(task: task)?.refused, !refused.isEmpty else { return }
-        let proposed = Set(payload.threads.flatMap { ($0.reply != nil ? ["reply"] : []) + ($0.resolve ? ["resolve"] : []) })
-        let offending = proposed.intersection(refused)
-        guard offending.isEmpty else {
-            throw GitHubReviewPublicationError.invalid("This proposal would \(offending.sorted().joined(separator: " and ")) review threads, which you asked not to do. Prepare a proposal without it, or ask for it again.")
-        }
+        let id = GitHubReviewThreadArtifactPolicy.digest(Data("\(filePath):\(digest)".utf8) + snapshotData)
+        return GitHubReviewThreadProposal(id: id, filePath: filePath, digest: digest, payload: payload, snapshots: snapshots)
     }
 
     func publish(task: AgentTask, proposal: GitHubReviewThreadProposal) async throws -> GitHubReviewThreadReceipt {
@@ -223,10 +253,8 @@ final class GitHubReviewThreadPublicationService {
     }
 
     private func record(_ proposal: GitHubReviewThreadProposal, actions: [GitHubReviewThreadReceipt.Action]) -> GitHubReviewThreadReceipt {
-        .init(proposalID: proposal.id, filePath: proposal.filePath, requestID: proposal.requestID,
-              pullRequestURL: proposal.payload.pullRequestUrl, actions: actions,
-              requestEventIDs: proposal.requestEventIDs,
-              chainID: proposal.chainID)
+        .init(proposalID: proposal.id, filePath: proposal.filePath,
+              pullRequestURL: proposal.payload.pullRequestUrl, actions: actions)
     }
 
     private func save(task: AgentTask, operation: String) throws {
@@ -294,16 +322,6 @@ final class GitHubReviewThreadPublicationService {
         return (data, payload)
     }
 
-    private static func pullRequestNumbers(in text: String) -> [String] {
-        let patterns = [#"(?i)\b(?:PR|pull request)\s*#?([1-9][0-9]*)\b"#, #"(?i)github\.com/[^/\s]+/[^/\s]+/pull/([1-9][0-9]*)"#]
-        return patterns.flatMap { pattern -> [String] in
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-            return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
-                Range($0.range(at: 1), in: text).map { String(text[$0]) }
-            }
-        }
-    }
-
     /// A defect of the proposal (its name, or a PR other than the request names) is
     /// `unusableArtifact` and dismisses it. Missing repository context, such as a
     /// workspace with no readable GitHub origin, is `invalid`: the user can supply
@@ -313,16 +331,9 @@ final class GitHubReviewThreadPublicationService {
               URL(fileURLWithPath: filePath).lastPathComponent.hasPrefix("pr\(target.number)_threads") else {
             throw GitHubReviewPublicationError.unusableArtifact("The thread proposal filename does not match its pull request.")
         }
-        let request = GitHubReviewThreadRequirement.request(task: task)?.targetText ?? task.goal
-        // One proposal targets one pull request and one receipt settles the request, so
-        // a request naming several would be marked done after the first.
-        if Set(Self.pullRequestNumbers(in: request)).count > 1 {
-            throw GitHubReviewPublicationError.invalid("The request names more than one pull request. Ask for one pull request at a time.")
-        }
-        if request.range(of: "github.com/", options: .caseInsensitive) != nil,
-           GitHubReviewTargetResolver.durableTarget(task: task, request: request) == nil {
-            throw GitHubReviewPublicationError.invalid("The request must identify one GitHub pull request.")
-        }
+        // The task goal may name the pull request. A proposal stands alone, so only a goal that
+        // names exactly one decides; otherwise the workspace's GitHub origin has to match.
+        let request = task.goal
         if let expected = GitHubReviewTargetResolver.durableTarget(task: task, request: request) {
             guard expected.url.caseInsensitiveCompare(payload.pullRequestUrl) == .orderedSame else {
                 throw GitHubReviewPublicationError.unusableArtifact("The thread proposal targets a different PR from the user's request.")
@@ -434,9 +445,8 @@ final class GitHubReviewThreadPublicationService {
     private func mutate(task: AgentTask, proposal: GitHubReviewThreadProposal, action: GitHubReviewThreadPayload.Action,
                         body: String?, willSend: () -> Void) async throws -> GitHubReviewThreadReceipt.Action {
         let (data, _) = try readPayload(task: task, filePath: proposal.filePath)
-        guard GitHubReviewThreadArtifactPolicy.digest(data) == proposal.digest,
-              GitHubReviewThreadRequirement.request(task: task)?.id == proposal.requestID else {
-            throw GitHubReviewPublicationError.invalid("The approved proposal or user request changed before sending.")
+        guard GitHubReviewThreadArtifactPolicy.digest(data) == proposal.digest else {
+            throw GitHubReviewPublicationError.invalid("The approved proposal changed before sending.")
         }
         let mutationID = proposal.id + ":" + action.threadId + (body == nil ? ":resolve" : ":reply")
         var variables: [String: Any] = ["threadId": action.threadId, "mutationId": mutationID]

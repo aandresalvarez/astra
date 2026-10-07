@@ -26,8 +26,6 @@ public enum WorkspaceConfigManager {
         public static let maxEventsPerTask = 10
         /// User messages kept for their thread-request vocabulary, newest first, and the
         /// longest one worth keeping: a request or a cancellation is a short sentence.
-        public static let maxThreadLanguageEvents = 30
-        public static let maxThreadLanguagePayloadCharacters = 400
         /// GitHub thread batches in the mirror: every unsettled one stays (the newest
         /// `maxActiveThreadBatches` whole, older ones without the embedded payload), and only
         /// the newest settled ones. Each dispatch embeds its approved payload.
@@ -1888,11 +1886,9 @@ public enum WorkspaceConfigManager {
             $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
         }
             .suffix(MirrorLimits.maxEventsPerTask).map(\.id))
-        // The messages thread records point at are kept whole. The vocabulary-based ones
-        // are bounded in number and size and keep the usual payload truncation.
         let threadRetention = threadWorkflowRetention(task)
-        let fullPayloadIDs = recovery.sourceEventIDs.union(threadRequestEventIDs(task, retained: threadRetention.kept.subtracting(threadRetention.identityOnly)))
-        let retainedSourceIDs = fullPayloadIDs.union(threadRequestLanguageEventIDs(task))
+        let fullPayloadIDs = recovery.sourceEventIDs
+        let retainedSourceIDs = fullPayloadIDs
         let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
             || retainedSourceIDs.contains($0.id)
             || (isTaskRecoveryEvent($0.type) && !isThreadWorkflowEvent($0.type))

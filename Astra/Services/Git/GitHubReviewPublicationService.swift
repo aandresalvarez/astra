@@ -172,7 +172,7 @@ enum GitHubReviewPublicationRequirement {
     }
 
     static func isPending(task: AgentTask) -> Bool {
-        if GitHubReviewThreadRequirement.isPending(task: task) { return true }
+        if GitHubReviewThreadPublicationService.hasPendingWork(task: task) { return true }
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {

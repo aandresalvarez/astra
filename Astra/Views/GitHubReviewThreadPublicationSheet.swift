@@ -4,6 +4,7 @@ struct GitHubReviewThreadPublicationSheet: View {
     let proposal: GitHubReviewThreadProposal
     let onPublish: () async throws -> GitHubReviewThreadReceipt
     let onCancel: () -> Void
+    let onDismiss: () throws -> Void
     @State private var isPublishing = false
     @State private var errorMessage: String?
 
@@ -44,13 +45,19 @@ struct GitHubReviewThreadPublicationSheet: View {
                 Text("\(proposal.payload.threads.count) threads · ASTRA sends these changes after approval")
                     .font(Stanford.caption(12)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Cancel", action: onCancel).disabled(isPublishing)
+                Button("Not now", action: onCancel).disabled(isPublishing)
+                Button("Don't send") { dismiss() }.disabled(isPublishing)
+                    .accessibilityIdentifier("DismissGitHubThreadChangesButton")
                 Button("Send thread changes") { publish() }
                     .buttonStyle(.borderedProminent).tint(Stanford.paloAltoGreen).disabled(isPublishing)
                     .accessibilityIdentifier("SendGitHubThreadChangesButton")
                 if isPublishing { ProgressView().controlSize(.small) }
             }
         }.padding(22).frame(minWidth: 700, minHeight: 640)
+    }
+
+    private func dismiss() {
+        do { try onDismiss() } catch { errorMessage = error.localizedDescription }
     }
 
     private func publish() {

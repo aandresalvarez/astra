@@ -92,7 +92,11 @@ private struct TaskGitHubReviewPublicationModifier: ViewModifier {
                     state.threadProposal = nil
                     onResolved()
                     return receipt
-                }, onCancel: { state.threadProposal = nil })
+                }, onCancel: { state.threadProposal = nil }, onDismiss: {
+                    try GitHubReviewThreadPublicationService(modelContext: modelContext).dismiss(task: task, filePath: proposal.filePath)
+                    state.threadProposal = nil
+                    onResolved()
+                })
             }
             .alert("Couldn’t Prepare GitHub Review", isPresented: Binding(
                 get: { state.preparationError != nil },

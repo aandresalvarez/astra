@@ -16,42 +16,22 @@ extension WorkspaceConfigManager {
         ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "github.review-threads."].contains { type.hasPrefix($0) }
     }
 
-    /// The user message a GitHub thread record says it answers. The records are kept
-    /// whole, so the message that made the request has to be kept with them, or a
-    /// recovered task no longer owes the rest of a partly sent batch.
-    static func threadRequestEventIDs(_ task: AgentTask, retained: Set<UUID>) -> Set<UUID> {
-        Set(task.events.flatMap { event -> [UUID] in
-            // Only for records the mirror keeps: a batch it dropped must not keep its request
-            // message, whole and past every bound, forever.
-            guard retained.contains(event.id), event.type.hasPrefix("github.review-threads."),
-                  let data = event.payload.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-            // The whole chain: a continuation like "resolve them" only means something
-            // with the message that named the pull request kept beside it.
-            let ids = ((object["requestEventIDs"] as? [String]) ?? []) + [object["requestID"] as? String].compactMap { $0 }
-            return ids.compactMap { UUID(uuidString: $0) }
-        })
-    }
-
     static func isThreadWorkflowEvent(_ type: String) -> Bool { type.hasPrefix("github.review-threads.") }
 
-    /// The thread workflow events the mirror keeps, and which of them to compact. Keeping
-    /// the whole namespace whole forever made every export grow with each batch, and each
-    /// dispatch embeds its approved payload, up to 256 KiB. A batch that was sent and never
-    /// receipted is recovery evidence, so every one of them stays: the newest few whole,
-    /// older ones without the embedded payload (their file and recorded actions are what
-    /// stop a duplicate send). Settled batches are compacted to the newest few, and
-    /// dismissals to a bounded number.
-    static func threadWorkflowRetention(_ task: AgentTask) -> (kept: Set<UUID>, compact: Set<UUID>, identityOnly: Set<UUID>) {
-        struct Entry { let id: UUID; let type: String; let proposalID: String?; let chain: String?; let operations: Set<String>; let timestamp: Date }
+    /// The thread workflow events the mirror keeps, and which of them to compact. Keeping the
+    /// whole namespace whole forever made every export grow with each batch, and each dispatch
+    /// embeds its approved payload, up to 256 KiB. A batch that was sent and never receipted is
+    /// recovery evidence, so every one of them stays: the newest few whole, older ones without
+    /// the embedded payload. Settled batches keep the newest few whole; older ones keep what
+    /// stops a replay and what settles them, the dispatch (without its payload) and the final
+    /// receipt (one entry per operation). Dismissals are bounded.
+    static func threadWorkflowRetention(_ task: AgentTask) -> (kept: Set<UUID>, compact: Set<UUID>) {
+        struct Entry { let id: UUID; let type: String; let proposalID: String?; let timestamp: Date }
         let entries = task.events.compactMap { event -> Entry? in
             guard !event.isDeleted, isThreadWorkflowEvent(event.type) else { return nil }
             let object = event.payload.data(using: .utf8)
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-            return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String,
-                         chain: (object?["chainID"] as? String) ?? (object?["requestID"] as? String),
-                         operations: Set(((object?["actions"] as? [[String: Any]]) ?? []).compactMap { $0["operation"] as? String }),
-                         timestamp: event.timestamp)
+            return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String, timestamp: event.timestamp)
         }
         let settledTypes: Set<String> = ["github.review-threads.receipt", "github.review-threads.receipt-recovery"]
         typealias Batch = (events: [Entry], last: Date, settled: Bool)
@@ -61,28 +41,25 @@ extension WorkspaceConfigManager {
                  settled: events.contains { settledTypes.contains($0.type) })
             }
         let newestFirst = { (lhs: Batch, rhs: Batch) in lhs.last > rhs.last }
-        var kept = Set<UUID>(), compact = Set<UUID>(), identityOnly = Set<UUID>()
+        var kept = Set<UUID>(), compact = Set<UUID>()
         for (index, batch) in batches.filter({ !$0.settled }).sorted(by: newestFirst).enumerated() {
             kept.formUnion(batch.events.map(\.id))
             if index >= MirrorLimits.maxActiveThreadBatches {
                 compact.formUnion(batch.events.filter { $0.type == "github.review-threads.dispatched" }.map(\.id))
             }
         }
-        for batch in batches.filter({ $0.settled }).sorted(by: newestFirst).prefix(MirrorLimits.maxSettledThreadBatches) {
-            kept.formUnion(batch.events.map(\.id))
-        }
-        // Older settled batches keep what stops a replay and what settles an additive
-        // request: the dispatch, which names the sent proposal file, without its approved
-        // payload, and the final receipt. Their per-action records are not needed.
-        for batch in batches.filter({ $0.settled }).sorted(by: newestFirst).dropFirst(MirrorLimits.maxSettledThreadBatches) {
-            let identity = batch.events.filter { $0.type == "github.review-threads.dispatched" || settledTypes.contains($0.type) }
-            kept.formUnion(identity.map(\.id))
-            identityOnly.formUnion(identity.map(\.id))   // they do not keep their request messages alive
-            compact.formUnion(identity.map(\.id))
+        for (index, batch) in batches.filter({ $0.settled }).sorted(by: newestFirst).enumerated() {
+            if index < MirrorLimits.maxSettledThreadBatches {
+                kept.formUnion(batch.events.map(\.id))
+            } else {
+                let identity = batch.events.filter { $0.type == "github.review-threads.dispatched" || settledTypes.contains($0.type) }
+                kept.formUnion(identity.map(\.id))
+                compact.formUnion(identity.map(\.id))
+            }
         }
         kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
             .prefix(MirrorLimits.maxThreadDismissals).map(\.id))
-        return (kept, compact, identityOnly)
+        return (kept, compact)
     }
 
     /// A record with a summary in place of what recovery no longer needs: the approved payload
@@ -107,24 +84,6 @@ extension WorkspaceConfigManager {
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let compacted = String(data: data, encoding: .utf8) else { return payload }
         return compacted
-    }
-
-    /// User messages that may start, renew or cancel a GitHub thread request. The
-    /// request is derived from the conversation, so a cancellation dropped by the
-    /// bounded history would bring a cancelled request back after recovery. This
-    /// cannot call the request logic from here, so it keeps the newest short messages
-    /// that use its vocabulary, within a fixed bound.
-    static func threadRequestLanguageEventIDs(_ task: AgentTask) -> Set<UUID> {
-        let types: Set<String> = [TaskEventTypes.Conversation.userMessage.rawValue, TaskEventTypes.Plan.userMessage.rawValue]
-        let words = ["thread", "resolv", "reslolv", "conversation", "comment", "coment", "repl",
-                     "never mind", "nevermind", "cancel", "skip", "forget", "drop", "stop", "do not send", "don't send"]
-        let matching = task.events.filter { event in
-            types.contains(event.type)
-                && event.payload.count <= MirrorLimits.maxThreadLanguagePayloadCharacters
-                && words.contains(where: { event.payload.localizedCaseInsensitiveContains($0) })
-        }
-        return Set(matching.sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString > $1.id.uuidString : $0.timestamp > $1.timestamp }
-            .prefix(MirrorLimits.maxThreadLanguageEvents).map(\.id))
     }
 
     /// Recovery authority is explicit and independent of schedule enablement.

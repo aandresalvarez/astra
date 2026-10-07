@@ -142,7 +142,7 @@ enum TaskCompletionPolicy {
                 gate: .requiredExternalOutcome,
                 stopReason: .externalOutcomePending,
                 userVisibleMessage: GitHubReviewPublicationRequirement.unresolvedTargetMessage(task: task)
-                    ?? (GitHubReviewThreadRequirement.isPending(task: task)
+                    ?? (GitHubReviewThreadPublicationService.hasPendingWork(task: task)
                         ? "GitHub thread changes are pending. Review and send the replies and resolutions to finish this task."
                         : "The review text is ready. Review and post the GitHub comments to finish this task."),
                 auditFields: ["outcome_kind": "github_pull_request_review", "run_id": run.id.uuidString]
