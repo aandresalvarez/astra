@@ -310,6 +310,8 @@ struct GitHubReviewThreadWorkflowTests {
         "In PR 12 reply to the threads",
         "Reply to the Slack thread and resolve the threads on GitHub PR 12",
         "Reply to the review threads on PR 12 but do not resolve them",
+        "On PR #12, reply to the review threads",
+        "In pull request 12: reply to the threads",
         "Reply to the PR #12 review comments",
         "Reply to the GitHub PR comments",
         "Resolve the pull request's review comments",
@@ -342,6 +344,8 @@ struct GitHubReviewThreadWorkflowTests {
         "Reply to the Slack thread, then inspect GitHub PR #12",
         "Reply to the Slack thread then inspect GitHub PR #12",
         "Reply to the Slack thread. Afterwards look at the GitHub PR",
+        "Resolve the race in the worker threads on GitHub PR 12",
+        "Resolve the deadlock between the main threads on GitHub PR 12",
         "Reply to the Slack thread and inspect GitHub PR #12",
         "Inspect GitHub PR #12 and reply to the Slack thread",
         "Reply to the Slack thread but first look at the GitHub PR"
@@ -1216,5 +1220,79 @@ struct GitHubReviewThreadWorkflowTests {
         let kept = try mirroredEventIDs(f)
         #expect(kept.contains(messages[11].id.uuidString))    // its batch is among the newest
         #expect(!kept.contains(messages[0].id.uuidString))    // its batch was compacted away
+    }
+
+    // MARK: - Selective negation in either order
+
+    @Test("refusing an operation for one thread keeps it for another, whichever comes first")
+    func selectiveNegationInEitherOrder() {
+        #expect(request(for: "Resolve the first GitHub review thread, but do not resolve the second GitHub review thread")?.operations == ["resolve"])
+        #expect(request(for: "Do not resolve the first GitHub review thread, but resolve the second GitHub review thread")?.operations == ["resolve"])
+        // The same thing refused is a change of mind.
+        #expect(request(for: "Resolve the review threads on PR 12. Do not resolve the review threads on PR 12.") == nil)
+    }
+
+    // MARK: - A continuation that changes pull request is not additive
+
+    @Test("an additive follow-up about another pull request starts its own request")
+    func additiveFollowUpOnAnotherPullRequestIsNotMerged() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on https://github.com/example/repo/pull/12"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "also resolve the review threads on https://github.com/example/repo/pull/13"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+
+        #expect(request.operations == ["resolve"])
+        #expect(request.priorRequestIDs.isEmpty)
+    }
+
+    // MARK: - The request chain stays bounded
+
+    @Test("a restatement does not drag the whole earlier chain along")
+    func restatementsDoNotGrowTheChain() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Look at the open review feedback"
+        for _ in 0..<30 {
+            f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                       payload: "Reply to the review threads on https://github.com/example/repo/pull/12"))
+        }
+        #expect(try #require(GitHubReviewThreadRequirement.request(task: f.task)).sourceEventIDs.count == 1)
+
+        for _ in 0..<40 {
+            f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                       payload: "also reply to the review threads"))
+        }
+        #expect(try #require(GitHubReviewThreadRequirement.request(task: f.task)).sourceEventIDs.count <= 20)
+    }
+
+    // MARK: - Receipts an additive request still needs survive compaction
+
+    @Test("a settled batch the current request still depends on is kept however old it is")
+    func referencedSettledBatchesAreKept() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let url = "https://github.com/example/repo/pull/12"
+        func insert(_ type: String, _ proposal: String, request: String, prior: [String] = []) {
+            var record = GitHubReviewThreadReceipt(proposalID: proposal, filePath: "/x/\(proposal).json", requestID: request,
+                pullRequestURL: url, actions: [.init(threadID: "T1", operation: "reply", commentID: "C", url: url)])
+            record.priorRequestIDs = prior
+            f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
+        }
+        insert(GitHubReviewThreadEvents.dispatched, "original", request: "r0")
+        insert(GitHubReviewThreadEvents.receipt, "original", request: "r0")
+        for index in 1...7 {   // more settled batches than the mirror keeps by age
+            insert(GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", prior: ["r0"])
+            insert(GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", prior: ["r0"])
+        }
+
+        let workspace = try #require(f.task.workspace)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: f.context))
+        let mirrored = try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString })
+        let proposals = Set(mirrored.events.compactMap { event -> String? in
+            (try? JSONSerialization.jsonObject(with: Data(event.payload.utf8)) as? [String: Any])?["proposalID"] as? String
+        })
+
+        #expect(proposals.contains("original"))      // still named by the newer batches' chain
+        #expect(proposals.contains("later-7"))
+        #expect(!proposals.contains("later-1"))      // an old batch nothing depends on is compacted away
     }
 }

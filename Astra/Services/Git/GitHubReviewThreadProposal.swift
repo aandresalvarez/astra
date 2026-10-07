@@ -41,6 +41,8 @@ struct GitHubReviewThreadProposal: Identifiable {
     let requestID: String?
     /// The user messages that built the request, oldest first, recorded with the dispatch.
     let requestEventIDs: [String]
+    /// The requests the request being served extends, so their receipts still count.
+    var priorRequestIDs: [String] = []
     let payload: GitHubReviewThreadPayload
     let snapshots: [GitHubReviewThreadSnapshot]
 }
@@ -59,6 +61,9 @@ struct GitHubReviewThreadReceipt: Codable {
     let actions: [Action]
     var approvedPayload: GitHubReviewThreadPayload? = nil
     var requestEventIDs: [String]? = nil
+    /// The earlier requests the dispatched request extended. A later batch can only be
+    /// judged settled with the receipts of these, so the recovery mirror keeps them.
+    var priorRequestIDs: [String]? = nil
     /// The operations the approved payload required ("thread:reply", "thread:resolve"). The
     /// recovery mirror compacts old dispatches to this summary in place of the payload.
     var requiredActions: [String]? = nil
@@ -148,12 +153,20 @@ enum GitHubReviewThreadRequirement {
         for message in messages {
             if let detail = intentDetail(message.payload, allowPronoun: current != nil) {
                 // "also resolve them" adds to what was asked; any other message restates it.
-                let additive = current != nil && message.payload.range(
+                let wording = current != nil && message.payload.range(
                     of: #"(?i)\b(?:also|too|as well|in addition|additionally|plus|and then)\b"#, options: .regularExpression) != nil
+                let carried = carriedTarget(message.payload, prior: current)
+                // An addition about another pull request is a request of its own.
+                let additive = wording && !namesAnotherPullRequest(task: task, text: carried ?? message.payload, prior: current)
+                // A message that names its own pull request restarts the chain. One that
+                // leans on an earlier message for the target keeps that message, the first
+                // of the chain, and the newest few, within a fixed bound.
+                let leans = additive || (carried != nil && current != nil)
+                let chain = leans ? boundedChain((current?.sourceEventIDs ?? []) + [message.id]) : [message.id]
                 current = detail.publish
                     ? Request(id: message.id.uuidString, text: message.payload,
-                              targetSource: carriedTarget(message.payload, prior: current),
-                              sourceEventIDs: (current?.sourceEventIDs ?? []) + [message.id],
+                              targetSource: carried,
+                              sourceEventIDs: chain,
                               operations: detail.operations.union(additive ? current?.operations ?? [] : []),
                               priorRequestIDs: additive ? (current.map { $0.priorRequestIDs + [$0.id] } ?? []) : [])
                     : nil
@@ -177,6 +190,22 @@ enum GitHubReviewThreadRequirement {
         guard GitHubReviewTargetResolver.shorthandNumber(in: payload) != nil else { return prior.targetText }
         guard let repository = GitHubReviewTargetResolver.repository(in: prior.targetText) else { return nil }
         return "https://github.com/\(repository) " + payload
+    }
+
+    private static let maxChainMessages = 20
+
+    /// The root message of a chain, which names the pull request, and its newest messages.
+    private static func boundedChain(_ ids: [UUID]) -> [UUID] {
+        guard ids.count > maxChainMessages, let root = ids.first else { return ids }
+        return [root] + ids.suffix(maxChainMessages - 1)
+    }
+
+    /// Whether a message targets a different pull request than the request it would extend.
+    private static func namesAnotherPullRequest(task: AgentTask, text: String, prior: Request?) -> Bool {
+        guard let prior,
+              let earlier = GitHubReviewTargetResolver.durableTarget(task: task, request: prior.targetText),
+              let later = GitHubReviewTargetResolver.durableTarget(task: task, request: text) else { return false }
+        return earlier.repository.lowercased() != later.repository.lowercased() || earlier.number != later.number
     }
 
     static func isPending(task: AgentTask) -> Bool {
@@ -271,6 +300,11 @@ enum GitHubReviewThreadRequirement {
         let otherService = #"(?i)\b(?:"# + services + #")\b"#
         // "with the answer from Slack" names where the content comes from, not where it goes.
         let serviceAsSource = #"(?i)\b(?:from|using|based on|according to)\b(?:\s+(?:the|a|an|our|my))?\s+(?:"# + services + #")\b"#
+        // "On PR #12, reply to the threads": a leading qualifier names the pull request
+        // for the sentence that follows its comma or colon.
+        let leadingQualifier = #"(?i)^\s*(?:on|in|for|regarding|about|re)\s+(?:the\s+)?(?:(?:(?:GitHub\s+)?(?:PR|pull request)\b[^,:;!?\n]*)|https?://github\.com/\S+)\s*[,:]\s*(?:please\s+)?$"#
+        // Threads of a program, not of a review.
+        let softwareThread = #"(?i)\b(?:worker|main|background|ui|gcd|cpu|jvm|java|python|pool|concurrent|dispatch)\s+threads?\b|\b(?:race condition|race|deadlock|mutex|semaphore)\b"#
         let operations = matches.compactMap { candidate -> (named: Bool, negated: Bool, elsewhere: Bool, continuation: Bool, text: String)? in
             guard let span = Range(candidate.range, in: text) else { return nil }
             let head = String(text[..<span.lowerBound])
@@ -293,10 +327,13 @@ enum GitHubReviewThreadRequirement {
             let continuation = operation.range(of: #"(?i)^\s*(?:resolve|reslolve)\s+(?:them|those|these)\b"#, options: .regularExpression) != nil
                 || operation.range(of: #"(?i)\b(?:threads?|conversations?)\b"#, options: .regularExpression) != nil
                 || operation.range(of: #"(?i)^\s*(?:resolve|reslolve|resolving|mark)\b"#, options: .regularExpression) != nil
-            return (named: clause.range(of: context, options: .regularExpression) != nil,
+            let sentenceStart = head.range(of: #"[!?;\n]|\.(?=\s)"#, options: [.regularExpression, .backwards])?.upperBound ?? head.startIndex
+            let qualified = head[sentenceStart...].range(of: leadingQualifier, options: .regularExpression) != nil
+            return (named: qualified || clause.range(of: context, options: .regularExpression) != nil,
                     negated: phrase.range(of: negation, options: .regularExpression) != nil,
-                    elsewhere: clause.replacingOccurrences(of: serviceAsSource, with: "", options: .regularExpression)
-                        .range(of: otherService, options: .regularExpression) != nil,
+                    elsewhere: operation.range(of: softwareThread, options: .regularExpression) != nil
+                        || clause.replacingOccurrences(of: serviceAsSource, with: "", options: .regularExpression)
+                            .range(of: otherService, options: .regularExpression) != nil,
                     continuation: continuation, text: operationText)
         }
         // Every operation of the message counts, not only the last: "reply ..., and resolve ..."
@@ -304,14 +341,18 @@ enum GitHubReviewThreadRequirement {
         // is left after the refused operations is the request; nothing left is a cancellation.
         let qualifying = operations.filter { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }
         guard !qualifying.isEmpty else { return nil }
-        // The last mention of each verb decides it, so refusing it for one thread ("do not
-        // resolve the first thread, but resolve the second") does not cancel it for the other,
-        // while a plain change of mind ("resolve them. Do not resolve them.") does.
-        var refusedAtLastMention: [String: Bool] = [:]
+        // The last mention of a verb on the same object decides it, so a plain change of mind
+        // ("resolve them. Do not resolve them.") cancels it, while refusing it for one thread
+        // ("resolve the first thread, but do not resolve the second") leaves it for the other,
+        // whichever comes first.
+        var refusedAtLastMention: [String: [String: Bool]] = [:]
         for operation in qualifying {
-            for verb in requestedOperations(operation.text) { refusedAtLastMention[verb] = operation.negated }
+            let object = operation.text.lowercased()
+                .replacingOccurrences(of: #"\b(?:resolve|reslolve|resolving|resolved|reply|replying|replies)\b"#, with: "", options: .regularExpression)
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            for verb in requestedOperations(operation.text) { refusedAtLastMention[verb, default: [:]][object] = operation.negated }
         }
-        let remaining = Set(refusedAtLastMention.filter { !$0.value }.keys)
+        let remaining = Set(refusedAtLastMention.filter { $0.value.values.contains(false) }.keys)
         return (!remaining.isEmpty, remaining)
     }
 }

@@ -43,12 +43,14 @@ extension WorkspaceConfigManager {
     /// stop a duplicate send). Settled batches are compacted to the newest few, and
     /// dismissals to a bounded number.
     static func threadWorkflowRetention(_ task: AgentTask) -> (kept: Set<UUID>, compact: Set<UUID>) {
-        struct Entry { let id: UUID; let type: String; let proposalID: String?; let timestamp: Date }
+        struct Entry { let id: UUID; let type: String; let proposalID: String?; let requestID: String?; let priors: [String]; let timestamp: Date }
         let entries = task.events.compactMap { event -> Entry? in
             guard !event.isDeleted, isThreadWorkflowEvent(event.type) else { return nil }
             let object = event.payload.data(using: .utf8)
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-            return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String, timestamp: event.timestamp)
+            return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String,
+                         requestID: object?["requestID"] as? String, priors: (object?["priorRequestIDs"] as? [String]) ?? [],
+                         timestamp: event.timestamp)
         }
         let settledTypes: Set<String> = ["github.review-threads.receipt", "github.review-threads.receipt-recovery"]
         typealias Batch = (events: [Entry], last: Date, settled: Bool)
@@ -66,6 +68,12 @@ extension WorkspaceConfigManager {
             }
         }
         for batch in batches.filter({ $0.settled }).sorted(by: newestFirst).prefix(MirrorLimits.maxSettledThreadBatches) {
+            kept.formUnion(batch.events.map(\.id))
+        }
+        // An additive request is settled by the receipts of the requests it extends, so a
+        // batch a kept one names stays however old it is.
+        let needed = Set(batches.filter { $0.events.contains { kept.contains($0.id) } }.flatMap { $0.events.flatMap(\.priors) })
+        for batch in batches where batch.events.contains(where: { $0.requestID.map(needed.contains) ?? false }) {
             kept.formUnion(batch.events.map(\.id))
         }
         kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
