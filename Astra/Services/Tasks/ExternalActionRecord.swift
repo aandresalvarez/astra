@@ -158,16 +158,23 @@ enum GitPullRequestRecordSource: ExternalActionRecordSource {
         let pullRequestNumber: Int
         let pullRequestURL: String
         let isDraft: Bool
+        let source: GitPullRequestPublishReceiptSource?
         let authorization: ExternalActionAuthorization?
     }
 
     static func record(payload: Data, eventID: UUID, timestamp: Date) -> ExternalActionRecord? {
         guard let fields = ExternalActionRecordProjection.decode(Fields.self, from: payload) else { return nil }
         let noun = fields.isDraft ? "draft pull request" : "pull request"
+        // The publisher reuses an already-open pull request instead of opening
+        // a second one; that path pushes and creates nothing, and the row must
+        // not say it did.
+        let title = fields.source == .existing
+            ? "Found existing \(noun) #\(fields.pullRequestNumber)"
+            : "Opened \(noun) #\(fields.pullRequestNumber)"
         return ExternalActionRecord(
             id: eventID,
             kind: .gitPullRequestPublication,
-            title: "Opened \(noun) #\(fields.pullRequestNumber)",
+            title: title,
             destination: ExternalActionRecordProjection.repository(fromGitHubURL: fields.pullRequestURL) ?? "GitHub",
             url: URL(string: fields.pullRequestURL),
             authorization: fields.authorization ?? .userReviewed,

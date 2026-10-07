@@ -104,6 +104,20 @@ struct ExternalActionRecordTests {
         #expect(record.legacyNotices == ["Published draft pull request #34: https://github.com/acme/widgets/pull/34"])
     }
 
+    // The publisher reuses an already-open pull request instead of opening a
+    // second; that path pushes and creates nothing, so the row must not claim it.
+    @Test("A receipt for an existing pull request does not say ASTRA opened it")
+    func existingPullRequestIsNotCalledOpened() throws {
+        let task = AgentTask(title: "PR", goal: "Create a pull request for the fix")
+        let payload = """
+        {"pullRequestNumber":34,"pullRequestURL":"https://github.com/acme/widgets/pull/34","isDraft":true,"source":"existing"}
+        """
+        let event = textEvent(task: task, type: TaskExternalOutcomeEventTypes.publicationReceipt, payload: payload, at: 10)
+
+        let record = try #require(records(task: task, events: [event]).first)
+        #expect(record.title == "Found existing draft pull request #34")
+    }
+
     @Test("Failed, indeterminate and dispatched sends leave no record")
     func unfinishedActionsLeaveNoRecord() {
         let task = AgentTask(title: "Unfinished", goal: "Post")

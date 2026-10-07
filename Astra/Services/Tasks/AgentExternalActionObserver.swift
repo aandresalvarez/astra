@@ -62,7 +62,7 @@ enum AgentExternalActionObserver {
             let observation = Observation(
                 sourceEventID: event.id,
                 title: title(for: action, url: url),
-                destination: url.flatMap(ExternalActionRecordProjection.repository(fromGitHubURL:)) ?? "GitHub",
+                destination: destination(for: action, url: url, result: result.payload),
                 url: url
             )
             modelContext.insert(TaskEvent.structuredPayloadEvent(
@@ -170,6 +170,40 @@ enum AgentExternalActionObserver {
     private static func numberedItem(in url: String) -> String? {
         guard let match = url.range(of: #"/(?:pull|issues)/[0-9]+"#, options: .regularExpression) else { return nil }
         return url[match].split(separator: "/").last.map(String.init)
+    }
+
+    /// Where the action landed. `gh` only talks to GitHub, but `git push` goes
+    /// to whatever remote it names, so a push without a GitHub link reads its
+    /// destination from Git's own `To <remote>` line, and says only "Git
+    /// remote" when that is missing rather than guess GitHub.
+    static func destination(for action: Action, url: String?, result: String) -> String {
+        if let repository = url.flatMap(ExternalActionRecordProjection.repository(fromGitHubURL:)) {
+            return repository
+        }
+        guard action == .push else { return "GitHub" }
+        return pushRemote(in: result) ?? "Git remote"
+    }
+
+    /// `owner/repo` for GitHub, otherwise `host/path`, read from the first
+    /// `To <remote>` line `git push` prints.
+    static func pushRemote(in result: String) -> String? {
+        guard let match = result.range(of: #"(?m)^To\s+(\S+)"#, options: .regularExpression) else { return nil }
+        var remote = String(result[match].dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        if remote.lowercased().hasSuffix(".git") { remote.removeLast(4) }
+        let hostAndPath: (host: String, path: String)
+        if let components = URLComponents(string: remote), let host = components.host, components.scheme != nil {
+            hostAndPath = (host, components.path)
+        } else if let colon = remote.firstIndex(of: ":") {
+            // scp-like `git@host:owner/repo`.
+            let host = remote[..<colon].split(separator: "@").last.map(String.init) ?? ""
+            hostAndPath = (host, String(remote[remote.index(after: colon)...]))
+        } else {
+            return nil
+        }
+        let path = hostAndPath.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !hostAndPath.host.isEmpty else { return nil }
+        if hostAndPath.host.lowercased() == "github.com", !path.isEmpty { return path }
+        return path.isEmpty ? hostAndPath.host : "\(hostAndPath.host)/\(path)"
     }
 
     static func firstGitHubURL(in text: String) -> String? {

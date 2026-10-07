@@ -81,6 +81,26 @@ struct AgentExternalActionObserverTests {
         #expect(again.isEmpty, "a second pass over the same run records nothing new")
     }
 
+    // `git push` goes to whatever remote it names; only `gh` is GitHub by
+    // definition. The row reads Git's own `To <remote>` line.
+    @Test(
+        "A push names the remote it went to",
+        arguments: [
+            ("To github.com:acme/widgets.git\n   1a2b..3c4d  main -> main", "acme/widgets"),
+            ("To https://gitlab.com/group/project.git\n * [new branch] fix -> fix", "gitlab.com/group/project"),
+            ("To ssh://git@git.internal:2222/team/repo.git\n", "git.internal/team/repo"),
+            ("Everything up-to-date", "Git remote")
+        ]
+    )
+    func pushNamesItsRemote(result: String, expected: String) {
+        #expect(AgentExternalActionObserver.destination(for: .push, url: nil, result: result) == expected)
+    }
+
+    @Test("A gh command without a link still names GitHub")
+    func ghCommandFallsBackToGitHub() {
+        #expect(AgentExternalActionObserver.destination(for: .release, url: nil, result: "v1.2.0") == "GitHub")
+    }
+
     @Test("A failed or unanswered command is not recorded")
     func failedCommandsAreNotRecorded() throws {
         let fixture = try ObserverFixture()
