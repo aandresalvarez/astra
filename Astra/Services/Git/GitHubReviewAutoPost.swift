@@ -32,9 +32,18 @@ enum GitHubReviewAutoPost {
               GitHubReviewPublicationRequirement.isPending(task: task) else {
             return
         }
-        let candidates = candidateReviewFiles(taskFolder: TaskWorkspaceAccess(task: task).taskFolder)
-        // No review file yet means the agent has not written one; the pending
-        // requirement already tells the user what is missing.
+        // Only a review this run wrote is this run's to post. A file an earlier
+        // run left — one composed under Ask and still waiting in the dock — is
+        // that run's question, and switching the task to Auto must not answer
+        // it. `allFileChanges` carries what the run touched in the task folder,
+        // shell writes included.
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        let produced = producedPaths(of: run, taskFolder: taskFolder)
+        let candidates = candidateReviewFiles(taskFolder: taskFolder)
+            .filter { produced.contains(resolved($0)) }
+        // No review file from this run means the agent has not written one, or
+        // an earlier run did; the pending requirement already tells the user
+        // what is missing and the dock still offers the earlier file.
         guard !candidates.isEmpty else { return }
         do {
             let proposal = try await service.prepareFirstAvailable(task: task, filePaths: candidates)
@@ -63,6 +72,20 @@ enum GitHubReviewAutoPost {
                 run: run
             ))
         }
+    }
+
+    static func producedPaths(of run: TaskRun, taskFolder: String) -> Set<String> {
+        Set(run.allFileChanges.compactMap { change -> String? in
+            guard change.kind != .removed else { return nil }
+            let path = change.path.hasPrefix("/")
+                ? change.path
+                : (taskFolder as NSString).appendingPathComponent(change.path)
+            return resolved(path)
+        })
+    }
+
+    private static func resolved(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardized.path
     }
 
     /// Review files in the task folder, newest first, so the review the latest

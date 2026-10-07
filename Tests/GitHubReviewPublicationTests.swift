@@ -841,6 +841,29 @@ struct GitHubReviewPublicationTests {
         }
     }
 
+    // A review file an earlier run left — composed under Ask and waiting in the
+    // dock — is that run's question. Switching the task to Auto must not post it.
+    @Test("Auto leaves a review file an earlier run wrote for the user")
+    func autoLeavesAnEarlierRunsReview() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = try postingRun(fixture, request: "Post the PR review comments", wroteReviewFile: false)
+        let cli = FakeCLI()
+
+        let completed = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: .autonomous,
+            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        )
+
+        #expect(!completed)
+        #expect(await cli.postCount() == 0)
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+    }
+
     @Test("Auto posts nothing nobody asked to post")
     func autoPostsNothingUnrequested() async throws {
         let fixture = try makeFixture()
@@ -885,9 +908,13 @@ struct GitHubReviewPublicationTests {
 
     private func postingRun(
         _ fixture: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, file: URL, data: Data),
-        request: String
+        request: String,
+        wroteReviewFile: Bool = true
     ) throws -> TaskRun {
         let run = TaskRun(task: fixture.task)
+        if wroteReviewFile {
+            run.appendHostFileChanges([StoredFileChange(path: fixture.file.path, changeType: "discovered", timestamp: Date())])
+        }
         fixture.context.insert(run)
         fixture.context.insert(TaskEvent(
             task: fixture.task,
