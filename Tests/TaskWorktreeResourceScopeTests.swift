@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -230,6 +231,67 @@ struct TaskWorktreeResourceScopeTests {
                     .admittedWritableGitMetadataRoots(for: request, task: task)
             )
             #expect(plan.hostWritablePaths.contains(canonicalCommon), "\(goal)")
+        }
+    }
+
+    @Test("A source checkout named through a symlink is still replaced")
+    func symlinkedSourceCheckoutIsReplaced() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        let alias = fixture.path("alias")
+        try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: fixture.checkout.path)
+        let task = fixture.task("Ship feature A", pinnedTo: "wt-a", in: fixture.workspace(additionalPaths: [alias]))
+
+        #expect(TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths == [alias])
+        #expect(TaskWorkspaceAccess(task: task).runtimeWritablePaths.isEmpty)
+        #expect(TaskExecutionResourceClaimResolver.claims(for: task).map(\.key) == [fixture.path("wt-a")])
+    }
+
+    @Test("A primary source checkout replaced by the active worktree is read-only in the prompt")
+    func replacedPrimaryCheckoutIsLabeledReadOnly() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        let shared = try fixture.makeDirectory("shared-notes")
+        let workspace = Workspace(name: "Repo", primaryPath: fixture.checkout.path, additionalPaths: [shared])
+        workspace.activeWorkingPath = fixture.path("wt-a")
+        let task = AgentTask(title: "A", goal: "Update the parser.", workspace: workspace)
+
+        #expect(TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths == [fixture.checkout.path])
+        #expect(AgentPromptBuilder.buildPrompt(for: task)
+            .contains("read-only, edit the worktree): \(fixture.checkout.path)"))
+    }
+
+    @Test("Docker keeps folders the run cannot write mounted read-only")
+    func readOnlyWorkspaceFoldersStayMounted() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        let task = fixture.task(
+            "Ship feature A",
+            pinnedTo: "wt-a",
+            in: fixture.workspace(additionalPaths: [fixture.checkout.path])
+        )
+        let mounts = DockerExecutionPlanner.mountPlan(
+            currentDirectory: fixture.path("wt-a"),
+            environment: WorkspaceExecutionEnvironment(
+                id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest"
+            ),
+            task: task
+        )
+        func access(_ path: String) -> ExecutionEnvironmentMountAccess? {
+            mounts.first { $0.hostPath == path }?.access
+        }
+
+        #expect(access(fixture.path("wt-a")) == .readWrite)
+        #expect(access(fixture.checkout.path) == .readOnly)
+        #expect(access(fixture.workspaceFolder.path) == .readOnly)
+    }
+
+    @Test("Local Git metadata writers count as Git intent")
+    func gitMetadataWritersAreDetected() {
+        let task = AgentTask(title: "Maintain the repository", goal: "Keep it tidy.")
+        for command in ["git config --local core.hooksPath .githooks", "git update-ref refs/heads/x HEAD",
+                        "git notes add -m reviewed", "git replace abc def", "git worktree add ../x"] {
+            #expect(GitOperationIntentDetector.detectsRuntimeGitOperation(prompt: command, task: task), "\(command)")
         }
     }
 

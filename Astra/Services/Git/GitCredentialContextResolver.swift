@@ -39,7 +39,10 @@ enum GitOperationIntentDetector {
         let commands = [
             "git add", "git commit", "git checkout", "git switch", "git restore",
             "git merge", "git rebase", "git reset", "git revert", "git cherry-pick",
-            "git stash", "git tag", "git am", "git apply", "git rm", "git mv"
+            "git stash", "git tag", "git am", "git apply", "git rm", "git mv",
+            "git config", "git update-ref", "git symbolic-ref", "git notes", "git replace",
+            "git worktree", "git gc", "git prune", "git pack-refs", "git repack",
+            "git reflog", "git update-index"
         ]
         if commands.contains(where: { containsTokenPhrase($0, in: haystack) }) {
             return true
