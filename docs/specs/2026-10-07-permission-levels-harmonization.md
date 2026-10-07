@@ -1,7 +1,7 @@
 # Permission levels mean one thing everywhere
 
-Status: **draft for review — no code changes yet.** Decisions marked *open*
-are listed in [Open questions](#open-questions) with a recommended default.
+Status: **agreed 2026-10-07.** Every open question was settled with its
+recommended default; see [Decisions](#decisions).
 
 ## The rule (decided 2026-10-07)
 
@@ -55,23 +55,23 @@ relaunching — the first effect may already have happened.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | A1 | Read / Glob / Grep inside the run boundary | Free | Free | Free | Provider allow-list (`AgentPolicy.preset`) | Free | Free |
 | A2 | Read outside the run boundary | Approval card (`.sandboxPath` read grant) | Free (broad render; Seatbelt privacy floor still applies) | As Ask | `AgentRuntimePolicyGuard.outOfBoundaryReadViolation`, `RunBoundary` | Unchanged (boundary, not an action) | Unchanged |
-| A3 | File write / edit / patch in the workspace | Asks. Claude: live ask **before** (stdio control channel, `AgentInteractivePermissionChannel`). Copilot: the CLI refuses tools it was not granted, so nothing runs; ASTRA asks at the run boundary and relaunches with the grant. Codex (`workspace-write`, `approval_policy="never"`), Antigravity, Cursor, OpenCode: **run boundary** (`AskCoverageBadge.providerManaged`) | Free | Saved rules | Provider flags + `AgentRuntimePolicyGuard.validateObservedAction` + `AgentProcessSupport.recordPolicyViolation` | Asks (unchanged; see *open* Q9 for the run-boundary runtimes) | Free |
-| A4 | Shell command | Asks (as A3), **except** (a) `rm`, `sudo`, `chmod`, `chown`, `git push`, `deploy`, `publish` are **hard-denied**, never asked (`AgentPolicy.preset(.review).deniedShellPatterns`); (b) on Codex/Cursor/Antigravity/OpenCode every reachable local tool (`bq`, `gcloud`, `astra-browser`, mail readers…) is pre-granted as `<tool> *` and runs **without asking**, while Claude and Copilot ask for the same command | Free (Seatbelt applies) | Saved rules | `AgentPolicyAdapters.swift` (`PolicyLocalToolGrants.shellAllowPatterns` vs `.levelScoped`), guard | Asks for every command with an effect; same answer on every runtime (*open* Q5, Q6) | Free |
-| A5 | WebFetch / WebSearch | Asks (preset `askFirstTools`) | Free | Saved rules | Preset + guard | *Open* Q1 (recommended: unchanged, still asks) | Free |
-| A6 | Catalog MCP server tools (`mcp__<server>__*`) | **Free at every level**, including tools with external effects | Free | Free | `MCPRuntimeProjection.allowedToolPermissions` (pre-allowed) | Should ask for tools with effects (*open* Q7) | Free |
-| A7 | Browser control (`astra-browser` CLI / browser MCP: click, type, submit on authenticated pages) | Claude/Copilot: asks (it is a shell command). Codex/Cursor/Antigravity/OpenCode: pre-granted, no ask (A4b). MCP transport: pre-allowed | Free | Saved rules | A4 / A6 | Asks before page-changing actions on every runtime (follows Q6/Q7) | Free (*open* Q12 on records) |
+| A3 | File write / edit / patch in the workspace | Asks. Claude: live ask **before** (stdio control channel, `AgentInteractivePermissionChannel`). Copilot: the CLI refuses tools it was not granted, so nothing runs; ASTRA asks at the run boundary and relaunches with the grant. Codex (`workspace-write`, `approval_policy="never"`), Antigravity, Cursor, OpenCode: **run boundary** (`AskCoverageBadge.providerManaged`) | Free | Saved rules | Provider flags + `AgentRuntimePolicyGuard.validateObservedAction` + `AgentProcessSupport.recordPolicyViolation` | Asks (unchanged; see Decision 9 for the run-boundary runtimes) | Free |
+| A4 | Shell command | Asks (as A3), **except** (a) `rm`, `sudo`, `chmod`, `chown`, `git push`, `deploy`, `publish` are **hard-denied**, never asked (`AgentPolicy.preset(.review).deniedShellPatterns`); (b) on Codex/Cursor/Antigravity/OpenCode every reachable local tool (`bq`, `gcloud`, `astra-browser`, mail readers…) is pre-granted as `<tool> *` and runs **without asking**, while Claude and Copilot ask for the same command | Free (Seatbelt applies) | Saved rules | `AgentPolicyAdapters.swift` (`PolicyLocalToolGrants.shellAllowPatterns` vs `.levelScoped`), guard | Asks for every command with an effect; same answer on every runtime (Decisions 5, 6) | Free |
+| A5 | WebFetch / WebSearch | Asks (preset `askFirstTools`) | Free | Saved rules | Preset + guard | Unchanged: still asks (Decision 1) | Free |
+| A6 | Catalog MCP server tools (`mcp__<server>__*`) | **Free at every level**, including tools with external effects | Free | Free | `MCPRuntimeProjection.allowedToolPermissions` (pre-allowed) | Should ask for tools with effects (Decision 7) | Free |
+| A7 | Browser control (`astra-browser` CLI / browser MCP: click, type, submit on authenticated pages) | Claude/Copilot: asks (it is a shell command). Codex/Cursor/Antigravity/OpenCode: pre-granted, no ask (A4b). MCP transport: pre-allowed | Free | Saved rules | A4 / A6 | Asks before page-changing actions on every runtime (Decisions 6, 7) | Free (Decision 12 on records) |
 | A8 | Subagents (`Agent`) | Not allowed | Allowed | Saved rules | Preset | Unchanged | Unchanged |
-| A9 | Native Git/GitHub/cloud CLIs with real credentials (`git push`, `gh pr create`, `gh api -X POST`, `gcloud … deploy`) | Native shell denied when host-control tools are required; Git credentials withheld while ASTRA owns PR publication; `git push` hard-denied | **Allowed with native credentials; no ASTRA ask and no structured record** — only the agent's own tool rows | As Ask | `HostControlPlaneMCPProjection.requiresNativeShellDenial`, `TaskLaunchResourceResolver.brokersNetworkGitThroughAstra`, `AskGitPullRequestWorkflowPolicy` | Unchanged (asks through ASTRA's typed workflows) | Free, plus a best-effort observed record (*open* Q3) |
+| A9 | Native Git/GitHub/cloud CLIs with real credentials (`git push`, `gh pr create`, `gh api -X POST`, `gcloud … deploy`) | Native shell denied when host-control tools are required; Git credentials withheld while ASTRA owns PR publication; `git push` hard-denied | **Allowed with native credentials; no ASTRA ask and no structured record** — only the agent's own tool rows | As Ask | `HostControlPlaneMCPProjection.requiresNativeShellDenial`, `TaskLaunchResourceResolver.brokersNetworkGitThroughAstra`, `AskGitPullRequestWorkflowPolicy` | Unchanged (asks through ASTRA's typed workflows) | Free, plus a best-effort observed record (Decision 3) |
 
 ### B. Actions ASTRA itself executes outside the machine
 
 | # | Action | Ask today | Auto today | Custom today | Enforced by | Chat record today | Target Ask | Target Auto |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B1 | Connector credential first use in a task (launch gate) | Card "Permission needed" (Allow once / Allow for task) | **Card** — "Allow for this task" leads (PR #441); a test pins that Auto never bypasses it | Card | `AgentRuntimeLaunchPreflight.finishPreLaunchCredentialApprovalRequest`; `TaskDecisionDockPresentation.prefersTaskScopedRuntimePermission`; `ConnectorPreflightServiceTests` | `permission.approval.requested` card | Asks (unchanged) | **No card.** Granted for the task, one chat line: "Auto allowed Jira for this task" (*open* Q4) |
+| B1 | Connector credential first use in a task (launch gate) | Card "Permission needed" (Allow once / Allow for task) | **Card** — "Allow for this task" leads (PR #441); a test pins that Auto never bypasses it | Card | `AgentRuntimeLaunchPreflight.finishPreLaunchCredentialApprovalRequest`; `TaskDecisionDockPresentation.prefersTaskScopedRuntimePermission`; `ConnectorPreflightServiceTests` | `permission.approval.requested` card | Asks (unchanged) | **No card.** Granted for the task, one chat line: "Auto allowed Jira for this task" (Decision 4) |
 | B2 | Connector credential offer after a sealed call ("this turn's wording did not mention it") | Offer card (`futureUse`) | **Offer card** | Offer card | `BrokeredCredentialWithholding.recordOpenRequest` | Card | Asks (unchanged) | Granted for the task + chat line; the run continues next turn |
-| B3 | Jira write: `create_issue`, `add_comment`, `update_issue`, `transition_issue` | Agent proposes → staged file → dock "Review & send" → sheet → send | **Same sheet** | Same | `ConnectorMutationDiscovery`, `ConnectorMutationCoordinator`, `ConnectorMutationSender`, `Astra/Views/TaskConnectorMutationReview.swift` | **None in the chat** — `connector.mutation.receipt` is a structured event the thread never shows | Asks (sheet, unchanged; *open* Q10 on "for this task") | **Sent without a sheet** when the run that proposed it was Auto; chat record with key and link |
-| B4 | Git draft pull request publication | Agent told not to push; ASTRA builds the exact proposal → "Publication approval needed" → "Review & publish" sheet → `gitPublish` grant | **Agent publishes itself** with native credentials (A9); ASTRA queues no proposal (`TaskSuccessfulCompletionService` skips it for `.autonomous`; `TaskCompletionPolicy` only blocks on an already-pending one) | As Ask | `AskGitPullRequestWorkflowPolicy`, `TaskGitPullRequestPublishCoordinator`, `TaskCompletionPolicy.decideSuccessfulCompletion`, `gitPublishProposal` sheet in `TaskMainView.swift` | `task.approved` text "Published draft pull request #N: url" | Asks (unchanged) | *Open* Q3 (recommended: agent keeps publishing; ASTRA records it) |
-| B5 | GitHub pull-request review posting | "GitHub review ready to post" → "Review comments" sheet → POST | **Same sheet** | Same | `GitHubReviewPublicationService`, `GitHubReviewPublicationRequirement`, `TaskCompletionPolicy` | `system.info` "Posted GitHub review: url" | Asks (unchanged) | **Posted without a sheet**; chat record with link (*open* Q2) |
+| B3 | Jira write: `create_issue`, `add_comment`, `update_issue`, `transition_issue` | Agent proposes → staged file → dock "Review & send" → sheet → send | **Same sheet** | Same | `ConnectorMutationDiscovery`, `ConnectorMutationCoordinator`, `ConnectorMutationSender`, `Astra/Views/TaskConnectorMutationReview.swift` | **None in the chat** — `connector.mutation.receipt` is a structured event the thread never shows | Asks (sheet, unchanged; Decision 10 on "for this task") | **Sent without a sheet** when the run that proposed it was Auto; chat record with key and link |
+| B4 | Git draft pull request publication | Agent told not to push; ASTRA builds the exact proposal → "Publication approval needed" → "Review & publish" sheet → `gitPublish` grant | **Agent publishes itself** with native credentials (A9); ASTRA queues no proposal (`TaskSuccessfulCompletionService` skips it for `.autonomous`; `TaskCompletionPolicy` only blocks on an already-pending one) | As Ask | `AskGitPullRequestWorkflowPolicy`, `TaskGitPullRequestPublishCoordinator`, `TaskCompletionPolicy.decideSuccessfulCompletion`, `gitPublishProposal` sheet in `TaskMainView.swift` | `task.approved` text "Published draft pull request #N: url" | Asks (unchanged) | Agent keeps publishing; ASTRA records it (Decision 3) |
+| B5 | GitHub pull-request review posting | "GitHub review ready to post" → "Review comments" sheet → POST | **Same sheet** | Same | `GitHubReviewPublicationService`, `GitHubReviewPublicationRequirement`, `TaskCompletionPolicy` | `system.info` "Posted GitHub review: url" | Asks (unchanged) | **Posted without a sheet**; chat record with link (Decision 2) |
 | B6 | GitHub thread reply / resolve (PR #482, paused) | — | — | — | future host `github` write operations | — | Asks in the chat: "Allow once & continue" / "Allow for this task" | Executes, result returned to the agent, chat record with link |
 | B7 | Messages (mail) | No send operation exists: `stanford-*-mail` tools are read-only | — | — | `Tools/Stanford*MailTool` | — | Must ask when one is added | Must record when one is added |
 | B8 | REDCap, gcloud, bq, ssh, GitHub reads via the host broker | Free (read-only by construction) | Free | Free | `Tools/HostControlToolSupport/*Policy.swift` | — | Free | Free |
@@ -80,7 +80,7 @@ relaunching — the first effect may already have happened.
 
 | # | Gate | Today (all levels unless noted) | Owner | Target |
 | --- | --- | --- | --- | --- |
-| C1 | Seatbelt denial → widen sandbox path | Card in every level; Auto launch explicitly keeps it ("Sandbox path approvals remain explicit") | `TaskRuntimePermissionOpenRequestStore.closeRequestsAuthorizedByAutonomousPolicy` | Unchanged — widening a sandbox is not "asking before an action" (*open* Q8) |
+| C1 | Seatbelt denial → widen sandbox path | Card in every level; Auto launch explicitly keeps it ("Sandbox path approvals remain explicit") | `TaskRuntimePermissionOpenRequestStore.closeRequestsAuthorizedByAutonomousPolicy` | Unchanged — widening a sandbox is not "asking before an action" (Decision 8) |
 | C2 | Sensitive-data (PHI) runtime switch acknowledgement | Asks in every level | `RuntimeSensitiveDataLaunchGate`, `RuntimeSensitiveDataSwitchPolicy` | Unchanged (data governance) |
 | C3 | Antigravity unwrappable below Auto | Run blocked | `ExecutionSandboxSettings.failClosedRuntimes` | Unchanged |
 | C4 | Codex needs native Git/SSH credentials below Auto | Run blocked | `unsupportedProviderNativeCredentialReadBlock` | Unchanged |
@@ -219,11 +219,11 @@ task.") next to the existing grant event.
 | B1 connector credential gate | Auto: grant the launch's labels for the task through the same path "Allow for this task" uses (`TaskRuntimePermissionGrants`), write the line, continue the launch. Ask/Custom unchanged. |
 | B2 credential offer | Auto: same grant instead of an offer card. |
 | B3 Jira writes | Auto: at the run boundary `ConnectorMutationDiscovery` hands each staged proposal of an Auto run straight to `ConnectorMutationCoordinator.send` (same digest checks, same receipt, `authorization: .autoPolicy`); failures fall back to today's "Review & send" row. Ask unchanged. |
-| B4 Git PR | Per *open* Q3. Recommended: Auto unchanged (agent publishes); add the observed-action record below. |
+| B4 Git PR | Decision 3: Auto unchanged (the agent publishes); add the observed-action record below. |
 | B5 GitHub review | Auto: post without the sheet when the request came from an Auto run; receipt with `.autoPolicy`. |
 | B6 PR #482 | Uses `ExternalActionPolicy` + `ExternalActionReceipt`; specified there. |
-| A4/A7 Ask local tools | Apply `PolicyLocalToolGrants.levelScoped` in every adapter so Ask asks the same on every runtime (per Q6). |
-| A4 Ask hard denies | Per Q5. |
+| A4/A7 Ask local tools | Apply `PolicyLocalToolGrants.levelScoped` in every adapter so Ask asks the same on every runtime (Decision 6). |
+| A4 Ask hard denies | Decision 5: `rm`, `chmod`, `chown`, `git push`, `deploy`, `publish` become ask-first in Ask; `sudo` stays denied. |
 | A9 agent-observed external actions (Auto) | Best effort, record only: classify observed shell commands (`git push`, `gh pr create\|merge\|comment\|review\|edit\|close`, `gh issue create\|comment\|edit\|close`, `gh release create`, `gh api` with a write method or fields) and write an `external.action.observed` event with the sanitized command and the first github.com URL from the tool result. Rendered with the same row and an "agent" provenance. Never a gate. |
 
 ### 4. Picker copy
@@ -283,13 +283,14 @@ view test.
 4. Auto: connector credentials (B1, B2).
 5. Auto: Jira writes (B3).
 6. Auto: GitHub review (B5).
-7. Auto: Git PR and observed external actions (B4, A9) — per Q3.
-8. Ask consistency (G3, G4) — per Q5, Q6.
+7. Auto: observed external actions (A9), which cover the agent-published PR (B4).
+8. Ask consistency (G3, G4).
 9. Docs.
 
-## Open questions
+## Decisions
 
-Recommended defaults in **bold**.
+Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
+5–12 took the recommended default. The chosen answer is in **bold**.
 
 1. **Network reads in Ask.** WebFetch/WebSearch ask today. A fetch to an
    arbitrary URL can carry data out in the query string. **Keep asking**, or
