@@ -36,20 +36,32 @@ enum GitOperationIntentDetector {
     /// read-only, so the list leans toward matching.
     static func detectsLocalGitMutationOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
-        let commands = [
-            "git add", "git commit", "git checkout", "git switch", "git restore",
-            "git merge", "git rebase", "git reset", "git revert", "git cherry-pick",
-            "git stash", "git tag", "git am", "git apply", "git rm", "git mv",
-            "git config", "git update-ref", "git symbolic-ref", "git notes", "git replace",
-            "git worktree", "git gc", "git prune", "git pack-refs", "git repack",
-            "git reflog", "git update-index"
-        ]
-        if commands.contains(where: { containsTokenPhrase($0, in: haystack) }) {
+        if haystack.range(of: localGitMutationCommandPattern, options: .regularExpression) != nil {
             return true
         }
         let naturalLanguageSignals = ["commit", "amend", "rebase", "cherry-pick", "squash"]
         return naturalLanguageSignals.contains(where: { containsTokenPhrase($0, in: haystack) })
     }
+
+    /// `git [global options] <subcommand>` for subcommands that write Git
+    /// metadata. Global options such as `-C <path>`, `-c key=value`, or
+    /// `--git-dir=<dir>` may sit between `git` and the subcommand; the text
+    /// is lowercased, so `-C` and `-c` share one alternative.
+    private static let localGitMutationCommandPattern: String = {
+        let subcommands = [
+            "add", "commit", "checkout", "switch", "restore", "merge", "rebase", "reset",
+            "revert", "cherry-pick", "stash", "tag", "am", "apply", "rm", "mv", "config",
+            "update-ref", "symbolic-ref", "notes", "replace", "worktree", "gc", "prune",
+            "pack-refs", "repack", "reflog", "update-index"
+        ]
+        let value = #"(?:'[^']*'|"[^"]*"|\S+)"#
+        let option = #"(?:-c\s+"# + value
+            + #"|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+"# + value
+            + #"|--[a-z-]+(?:="# + value + #")?|-p)"#
+        return #"(?<![a-z0-9_-])git(?:\s+"# + option + #")*\s+(?:"#
+            + subcommands.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+            + #")(?![a-z0-9_-])"#
+    }()
 
     static func detectsNetworkGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         detectsNativeGitCredentialOperation(

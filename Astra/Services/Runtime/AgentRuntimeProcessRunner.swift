@@ -1348,13 +1348,16 @@ final class AgentRuntimeProcessRunner {
     static func copilotNativeDirectoryProjection(for task: AgentTask) -> ProviderNativeDirectoryProjection.Result {
         let writable = runtimeWritablePaths(for: task)
         let access = TaskWorkspaceAccess(task: task)
+        // Copilot's path gate also governs reads, so folders the run may only
+        // read need their own `--add-dir`; the outer sandbox keeps them read-only.
+        let readable = access.runtimeReadOnlyWorkspacePaths
         // Copilot launches in the code root, so inputs beneath it are reachable.
         let inputs = ProviderNativeDirectoryProjection.project(
             resourcePaths: access.runtimeReadOnlyInputPaths,
-            alreadyReachableDirectories: [access.codeWorkingDirectory] + writable
+            alreadyReachableDirectories: [access.codeWorkingDirectory] + writable + readable
         )
         return .init(
-            additionalDirectories: writable + inputs.additionalDirectories,
+            additionalDirectories: writable + readable + inputs.additionalDirectories,
             unreachableFiles: inputs.unreachableFiles
         )
     }

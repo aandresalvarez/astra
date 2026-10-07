@@ -290,9 +290,30 @@ struct TaskWorktreeResourceScopeTests {
     func gitMetadataWritersAreDetected() {
         let task = AgentTask(title: "Maintain the repository", goal: "Keep it tidy.")
         for command in ["git config --local core.hooksPath .githooks", "git update-ref refs/heads/x HEAD",
-                        "git notes add -m reviewed", "git replace abc def", "git worktree add ../x"] {
-            #expect(GitOperationIntentDetector.detectsRuntimeGitOperation(prompt: command, task: task), "\(command)")
+                        "git notes add -m reviewed", "git replace abc def", "git worktree add ../x",
+                        "git -C repo add .", "git --git-dir=/x/.git checkout main",
+                        "git -C '/tmp/a b' commit -m wip", "git --no-pager -c core.editor=true rebase main",
+                        "git --work-tree /x reset --hard"] {
+            #expect(GitOperationIntentDetector.detectsLocalGitMutationOperation(prompt: command, task: task), "\(command)")
         }
+        for command in ["git -C repo status", "git --no-pager log --oneline", "digit add"] {
+            #expect(!GitOperationIntentDetector.detectsLocalGitMutationOperation(prompt: command, task: task), "\(command)")
+        }
+    }
+
+    @Test("Copilot can read a replaced source checkout through its native directories")
+    func copilotReachesReadOnlyWorkspaceFolders() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        let task = fixture.task(
+            "Ship feature A",
+            pinnedTo: "wt-a",
+            in: fixture.workspace(additionalPaths: [fixture.checkout.path])
+        )
+
+        let directories = AgentRuntimeProcessRunner.copilotNativeDirectoryProjection(for: task).additionalDirectories
+        #expect(directories.contains(fixture.checkout.path))
+        #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: task).contains(fixture.checkout.path))
     }
 
     // MARK: - Fixtures
