@@ -458,11 +458,12 @@ enum JiraProposalPolicy {
         ]
         lines.append(contentsOf: proposal.replyDetails)
         let note = """
-            note: nothing was sent. ASTRA will ask the user to review this exact payload and, if \
-            they approve, will post it using the connector credential — the user decides whether \
-            and when. Read the staged file if you need to check what you composed. Do not retry \
-            this call and do not attempt the write another way — a second proposal is a second \
-            thing for the user to approve, not a faster one.
+            note: nothing was sent yet. ASTRA posts this exact payload using the connector \
+            credential only as the task's permission level allows: in Ask the user reviews it \
+            first and decides whether and when; in Auto ASTRA sends it when this turn ends and \
+            records it in the chat. Read the staged file if you need to check what you composed. \
+            Do not retry this call and do not attempt the write another way — a second proposal \
+            is a second write, not a faster one.
             """
         lines.append("staged_path: \(staged.path)")
         lines.append("request_digest: \(staged.digest)")

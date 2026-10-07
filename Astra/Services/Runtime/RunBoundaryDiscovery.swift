@@ -29,8 +29,9 @@ enum RunBoundaryDiscovery {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        policyLevel: AgentPolicyLevel = .review
-    ) {
+        policyLevel: AgentPolicyLevel = .review,
+        connectorMutationCoordinator: ConnectorMutationCoordinator? = nil
+    ) async {
         let discovered = ConnectorMutationDiscovery.recordStagedMutations(
             task: task,
             run: run,
@@ -61,6 +62,24 @@ enum RunBoundaryDiscovery {
                     "count": String(discovered.count)
                 ], level: .error)
             }
+        }
+        // Auto asks nothing, so what an Auto run staged is sent now, through the
+        // same checks an approved send goes through. Each receipt saves itself.
+        if !discovered.isEmpty {
+            await ConnectorMutationAutoSend.sendStagedMutations(
+                discovered,
+                task: task,
+                run: run,
+                policyLevel: policyLevel,
+                modelContext: modelContext,
+                coordinator: connectorMutationCoordinator ?? ConnectorMutationCoordinator(modelContext: modelContext)
+            )
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "connector_mutation_auto_send"]
+            )
         }
         // Persists itself, for the same reason: an approval offer the user never
         // sees is a connector that stays sealed with no way to unseal it.

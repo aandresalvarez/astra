@@ -638,7 +638,10 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText
         )
         let readinessPrompt = GitHubCapabilityLaunchContext.appendingProviderGuidance(
-            to: policyPrompt,
+            to: HostControlPlanePromptGuidance.appendingAutoSendGuidance(
+                to: policyPrompt,
+                permissionPolicy: launchPermissionPolicy
+            ),
             repositoryStatus: githubRepositoryStatus
         )
         var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
@@ -1079,11 +1082,12 @@ final class AgentRuntimeWorker {
         // Before the outcome branches, not inside one. What the run left behind
         // for the user is waiting whether the run succeeded, was cancelled, or
         // failed right after leaving it.
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: task,
             run: run,
             modelContext: modelContext,
-            policyLevel: manifest.policyLevel
+            policyLevel: manifest.policyLevel,
+            connectorMutationCoordinator: connectorMutationCoordinatorFactory?(modelContext)
         )
 
 
@@ -1646,5 +1650,10 @@ final class AgentRuntimeWorker {
     /// protocol) for providers that support it, instead of failing the run and
     /// relaunching after approval.
     var liveApprovalsEnabled: Bool = true
+
+    /// Builds the coordinator an Auto run's staged connector writes are sent
+    /// through at the run boundary. Nil uses the real sender; tests inject one
+    /// so they can prove what would have gone out without reaching a network.
+    var connectorMutationCoordinatorFactory: (@MainActor (ModelContext) -> ConnectorMutationCoordinator)?
 
 }

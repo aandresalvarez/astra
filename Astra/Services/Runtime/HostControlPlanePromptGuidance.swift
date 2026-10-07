@@ -27,7 +27,26 @@ enum HostControlPlanePromptGuidance {
             On Jira the proposals are `propose_issue` (a new ticket), `propose_comment` (a comment on an existing ticket; say whether it is `public` or `internal`), `propose_update` (edit an existing ticket's fields), and `propose_transition` (move a ticket to another status; read `get_transitions` first for the ids). Call them on `mcp__astra_host__jira` and pass the fields as arguments.
             """
         return """
-        Writes through host control-plane connectors are staged, not sent. Where a typed operation exists to propose a change, call it, report that the proposal is staged for the user's review, and stop. When the user asks you to file, send, reply, comment, update, or move something, that is a request to propose it: stage it and say it is waiting for their review. \(transport) A reply saying nothing was sent is the operation succeeding. ASTRA performs the write itself, after the user reads the exact payload and decides to send it, using a credential you are never given. Do not retry a staged proposal, do not stage the same change twice hoping the second one sends, and never substitute a script, curl command, or written instructions that would have someone run the write with an API token — moving a credential out of ASTRA and into a shell is worse than the change not happening. If no propose operation exists for what you were asked to change, say the change cannot be made through ASTRA and stop.
+        \(stagedWritesMarker) Where a typed operation exists to propose a change, call it, report that the proposal is staged for the user's review, and stop. When the user asks you to file, send, reply, comment, update, or move something, that is a request to propose it: stage it and say it is waiting for their review. \(transport) A reply saying nothing was sent is the operation succeeding. ASTRA performs the write itself, after the user reads the exact payload and decides to send it, using a credential you are never given. Do not retry a staged proposal, do not stage the same change twice hoping the second one sends, and never substitute a script, curl command, or written instructions that would have someone run the write with an API token — moving a credential out of ASTRA and into a shell is worse than the change not happening. If no propose operation exists for what you were asked to change, say the change cannot be made through ASTRA and stop.
+        """
+    }
+
+    static let stagedWritesMarker = "Writes through host control-plane connectors are staged, not sent."
+
+    /// The contract above describes Ask, where the user reviews each staged
+    /// write. In Auto ASTRA sends it at the end of the turn without asking, so
+    /// an agent that tells the user "it is waiting for your review" would be
+    /// describing something that will not happen. Appended only where the
+    /// contract was, and only in Auto.
+    static func appendingAutoSendGuidance(to prompt: String, permissionPolicy: PermissionPolicy) -> String {
+        guard !ExternalActionPolicy.asksUser(for: .connectorMutation, level: permissionPolicy.agentPolicyLevel),
+              prompt.contains(stagedWritesMarker) else {
+            return prompt
+        }
+        return prompt + """
+
+
+        ASTRA Auto mode: this task does not ask the user before acting outside ASTRA. A connector proposal you stage is sent by ASTRA with the connector credential when this turn ends, without a review, and the chat records it with a link. When you stage one, tell the user it will be sent when you finish, not that it is waiting for their review. Everything else above still holds: stage it through the propose operation, once, and never write it another way.
         """
     }
 

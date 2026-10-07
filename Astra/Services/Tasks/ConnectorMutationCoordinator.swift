@@ -450,7 +450,14 @@ final class ConnectorMutationCoordinator {
     /// agent-writable, so the bytes that go out have to be proven to be the
     /// bytes that were read — anything else makes the review advisory.
     @discardableResult
-    func send(task: AgentTask, proposal: ConnectorMutationProposal) async throws -> ConnectorMutationReceipt {
+    /// `authorization` says who let ASTRA send it: the user in the review sheet,
+    /// or Auto without asking. It is recorded on the receipt and changes nothing
+    /// about the checks below, which hold the same for both.
+    func send(
+        task: AgentTask,
+        proposal: ConnectorMutationProposal,
+        authorization: ExternalActionAuthorization = .userReviewed
+    ) async throws -> ConnectorMutationReceipt {
         guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
             throw ConnectorMutationCoordinatorError.alreadySent(proposal.target)
         }
@@ -567,7 +574,7 @@ final class ConnectorMutationCoordinator {
 
         // The write has happened. From here the only question is how well ASTRA
         // can describe it — never whether to try again.
-        let receipt = Self.receipt(for: current, response: response, baseURL: request.url)
+        let receipt = Self.receipt(for: current, response: response, baseURL: request.url, authorization: authorization)
         do {
             try record(
                 receipt,
@@ -731,7 +738,8 @@ final class ConnectorMutationCoordinator {
     private static func receipt(
         for proposal: ConnectorMutationProposal,
         response: ConnectorMutationHTTPResponse,
-        baseURL: URL
+        baseURL: URL,
+        authorization: ExternalActionAuthorization
     ) -> ConnectorMutationReceipt {
         let object = (try? JSONSerialization.jsonObject(with: Data(response.body.utf8))) as? [String: Any]
         // A created issue names itself in the response. A comment, an update and
@@ -764,7 +772,8 @@ final class ConnectorMutationCoordinator {
             destinationURL: proposal.destinationURL,
             statusCode: response.statusCode,
             createdKey: createdKey,
-            createdURL: browseURL ?? (object?["self"] as? String)
+            createdURL: browseURL ?? (object?["self"] as? String),
+            authorization: authorization
         )
     }
 

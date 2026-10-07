@@ -244,7 +244,7 @@ struct BrokeredCredentialApprovalLoopTests {
     }
 
     @Test("Calling a sealed connector records a future-use offer until the worker pauses")
-    func callingASealedConnectorRecordsABlockingContinuation() throws {
+    func callingASealedConnectorRecordsABlockingContinuation() async throws {
         let fixture = try Fixture()
         let run = fixture.finishedRun()
         let server = fixture.brokerServer(taskID: fixture.task.id, runID: run.id)
@@ -259,7 +259,7 @@ struct BrokeredCredentialApprovalLoopTests {
         ))
         #expect(text.contains("credentials_withheld: true"))
 
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: fixture.task,
             run: run,
             modelContext: fixture.context
@@ -291,7 +291,7 @@ struct BrokeredCredentialApprovalLoopTests {
     /// sealed for the next one. Offering it again asks for something already
     /// given, and the dock fills up with a card that grants nothing.
     @Test("A connector granted after the launch is not offered again at the boundary")
-    func connectorGrantedAfterTheLaunchIsNotOfferedAgain() throws {
+    func connectorGrantedAfterTheLaunchIsNotOfferedAgain() async throws {
         let fixture = try Fixture()
         let run = fixture.finishedRun()
         _ = try brokerCall(
@@ -311,7 +311,7 @@ struct BrokeredCredentialApprovalLoopTests {
             modelContext: fixture.context,
             source: "test_precondition"
         )
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: fixture.task,
             run: run,
             modelContext: fixture.context
@@ -343,7 +343,7 @@ struct BrokeredCredentialApprovalLoopTests {
             tool: "redcap",
             arguments: ["operation": "status"]
         )
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: fixture.task,
             run: run,
             modelContext: fixture.context
@@ -381,7 +381,7 @@ struct BrokeredCredentialApprovalLoopTests {
             let text = try brokerResultText(try brokerCall(server, id: id, tool: tool, arguments: ["operation": "status"]))
             #expect(text.contains("credentials_withheld: true"))
         }
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: fixture.task,
             run: run,
             modelContext: fixture.context
@@ -434,7 +434,7 @@ struct BrokeredCredentialApprovalLoopTests {
             tool: "redcap",
             arguments: ["operation": "status"]
         )
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: fixture.task,
             run: first,
             modelContext: fixture.context
@@ -447,7 +447,7 @@ struct BrokeredCredentialApprovalLoopTests {
             tool: "jira",
             arguments: ["operation": "status"]
         )
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: fixture.task,
             run: second,
             modelContext: fixture.context
@@ -474,7 +474,7 @@ struct BrokeredCredentialApprovalLoopTests {
     /// Rebind an existing offer to the newest blocked run without stacking
     /// another actionable card, so approval resumes the run that needs it.
     @Test("A later run calling an already-offered connector rebinds the offer")
-    func aLaterRunCallingAlreadyOfferedConnectorRebindsTheOffer() throws {
+    func aLaterRunCallingAlreadyOfferedConnectorRebindsTheOffer() async throws {
         let fixture = try Fixture()
         var latestRun: TaskRun?
         for _ in 0..<2 {
@@ -484,7 +484,7 @@ struct BrokeredCredentialApprovalLoopTests {
             for (id, tool) in [(1, "jira"), (2, "redcap")] {
                 _ = try brokerCall(server, id: id, tool: tool, arguments: ["operation": "status"])
             }
-            RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
                 task: fixture.task,
                 run: run,
                 modelContext: fixture.context
@@ -504,7 +504,7 @@ struct BrokeredCredentialApprovalLoopTests {
     }
 
     @Test("Failed broker runs retain future-use authority without restarting work", arguments: [TaskRunStopReason.timeout, .agentReportedError])
-    func failedBrokerOfferDoesNotRestart(reason: TaskRunStopReason) throws {
+    func failedBrokerOfferDoesNotRestart(reason: TaskRunStopReason) async throws {
         let fixture = try Fixture()
         let run = fixture.finishedRun()
         run.status = .failed
@@ -512,7 +512,7 @@ struct BrokeredCredentialApprovalLoopTests {
         fixture.task.status = .failed
         _ = try brokerCall(fixture.brokerServer(taskID: fixture.task.id, runID: run.id),
             id: 1, tool: "redcap", arguments: ["operation": "status"])
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(task: fixture.task, run: run, modelContext: fixture.context)
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(task: fixture.task, run: run, modelContext: fixture.context)
         let payload = try #require(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: fixture.task))
         #expect(PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .futureUse)
         #expect(TaskRuntimePermissionState.build(task: fixture.task).decision?.isConnectorCredentialOffer == true)
@@ -523,13 +523,13 @@ struct BrokeredCredentialApprovalLoopTests {
     }
 
     @Test("Only an explicit permission pause promotes a broker offer into continuation intent")
-    func workerPermissionPausePromotesOffer() throws {
+    func workerPermissionPausePromotesOffer() async throws {
         let fixture = try Fixture()
         let run = fixture.finishedRun()
         fixture.task.status = .running
         _ = try brokerCall(fixture.brokerServer(taskID: fixture.task.id, runID: run.id),
             id: 1, tool: "redcap", arguments: ["operation": "status"])
-        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(task: fixture.task, run: run, modelContext: fixture.context)
+        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(task: fixture.task, run: run, modelContext: fixture.context)
         #expect(try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: fixture.task, run: run, modelContext: fixture.context))
         let payload = try #require(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: fixture.task))
         #expect(PermissionApprovalEventPayload.decoded(from: payload)?.behavior == .continueBlockedTurn)
