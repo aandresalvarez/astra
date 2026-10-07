@@ -201,6 +201,38 @@ struct TaskWorktreeResourceScopeTests {
         }
     }
 
+    @Test("A local Git mutation in a worktree claims and writes the shared Git metadata")
+    func localGitMutationClaimsSharedMetadata() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        // The replaced source checkout no longer covers `.git`, so the
+        // mutation itself must claim the common directory.
+        let workspace = fixture.workspace(additionalPaths: [fixture.checkout.path])
+        let commonDirectory = fixture.checkout.appendingPathComponent(".git").path
+        let canonicalCommon = URL(fileURLWithPath: commonDirectory).resolvingSymlinksInPath().path
+        for goal in ["Fix the parser and commit the change.", "Then run git rebase main."] {
+            let task = fixture.task("Ship feature A", pinnedTo: "wt-a", in: workspace)
+            task.goal = goal
+            let claims = TaskExecutionResourceClaimResolver.claims(for: task)
+            #expect(claims.contains {
+                $0.kind == .gitCommonDirectory && $0.key == commonDirectory && $0.access == .exclusive
+            }, "\(goal)")
+            let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceClaims: claims)
+            let plan = TaskLaunchResourceResolver.resolve(
+                task: task,
+                runID: UUID(),
+                runtime: .claudeCode,
+                phase: "run",
+                prompt: goal,
+                contextText: "",
+                workspacePath: fixture.path("wt-a"),
+                admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
+                    .admittedWritableGitMetadataRoots(for: request, task: task)
+            )
+            #expect(plan.hostWritablePaths.contains(canonicalCommon), "\(goal)")
+        }
+    }
+
     // MARK: - Fixtures
 
     enum Scenario: String, CaseIterable, CustomStringConvertible {

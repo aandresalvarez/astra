@@ -27,6 +27,25 @@ enum GitOperationIntentDetector {
     static func detectsRuntimeGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         detectsNetworkGitOperation(prompt: prompt, task: task, contextText: contextText)
             || detectsLocalGitInspectionOperation(prompt: prompt, task: task, contextText: contextText)
+            || detectsLocalGitMutationOperation(prompt: prompt, task: task, contextText: contextText)
+    }
+
+    /// Local commands that write a linked worktree's shared Git metadata
+    /// (objects, refs, the worktree's admin directory). A false positive only
+    /// adds a Git-common-directory claim; a miss leaves that metadata
+    /// read-only, so the list leans toward matching.
+    static func detectsLocalGitMutationOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        let commands = [
+            "git add", "git commit", "git checkout", "git switch", "git restore",
+            "git merge", "git rebase", "git reset", "git revert", "git cherry-pick",
+            "git stash", "git tag", "git am", "git apply", "git rm", "git mv"
+        ]
+        if commands.contains(where: { containsTokenPhrase($0, in: haystack) }) {
+            return true
+        }
+        let naturalLanguageSignals = ["commit", "amend", "rebase", "cherry-pick", "squash"]
+        return naturalLanguageSignals.contains(where: { containsTokenPhrase($0, in: haystack) })
     }
 
     static func detectsNetworkGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
@@ -525,6 +544,10 @@ enum GitCredentialContextResolver {
             )
         }
         if GitOperationIntentDetector.detectsLocalGitInspectionOperation(
+            prompt: prompt,
+            task: task,
+            contextText: contextText
+        ) || GitOperationIntentDetector.detectsLocalGitMutationOperation(
             prompt: prompt,
             task: task,
             contextText: contextText
