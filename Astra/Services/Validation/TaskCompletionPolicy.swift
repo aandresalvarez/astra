@@ -179,8 +179,7 @@ enum TaskCompletionPolicy {
         task: AgentTask,
         run: TaskRun
     ) -> TaskCompletionPolicyDecision {
-        let scope = TaskDeliverableExpectation.scope(for: task, run: run)
-        let requiresArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task, scope: scope)
+        let requiresArtifact = TaskDeliverableExpectation.owesDeliverable(task, run: run)
         let hasArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
         let fields = [
             "gate": TaskCompletionPolicyGate.manualArtifactRequirement.rawValue,
@@ -192,7 +191,7 @@ enum TaskCompletionPolicy {
             return .block(
                 gate: .manualArtifactRequirement,
                 stopReason: .noUsableResult,
-                userVisibleMessage: TaskDeliverableExpectation.missingDeliverableMessage(for: task, scope: scope),
+                userVisibleMessage: TaskDeliverableExpectation.missingDeliverableMessage(for: task),
                 auditFields: fields
             )
         }

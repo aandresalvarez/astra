@@ -68,17 +68,14 @@ enum PendingTaskReviewPolicy {
         return stopReason == .noUsableResult || latestRun.status == .completed
     }
 
-    @MainActor
     static func dismissalReason(for task: AgentTask, latestRun: TaskRun?) -> PendingTaskDismissalReason? {
         reviewState(for: task, latestRun: latestRun).dismissalReason
     }
 
-    @MainActor
     static func isDismissed(task: AgentTask, latestRun: TaskRun?) -> Bool {
         reviewState(for: task, latestRun: latestRun).isDismissed
     }
 
-    @MainActor
     static func completedTaskNeedsArtifactAttention(task: AgentTask, latestRun: TaskRun?) -> Bool {
         guard task.status == .completed,
               !task.isDone,
@@ -87,7 +84,7 @@ enum PendingTaskReviewPolicy {
             return false
         }
 
-        return requiresDeliverableArtifact(task, run: latestRun) &&
+        return TaskDeliverableExpectation.owesDeliverable(task, run: latestRun) &&
             !TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun)
     }
 
@@ -101,7 +98,6 @@ enum PendingTaskReviewPolicy {
         return input.requiresDeliverableArtifact && !input.latestRunHasScopedArtifact
     }
 
-    @MainActor
     static func reviewState(for task: AgentTask, latestRun: TaskRun?) -> PendingTaskReviewState {
         guard task.status == .pendingUser, let latestRun else { return .none }
 
@@ -140,10 +136,9 @@ enum PendingTaskReviewPolicy {
         )
     }
 
-    @MainActor
     private static func unresolvedDismissalReason(for task: AgentTask, latestRun: TaskRun) -> PendingTaskDismissalReason? {
         if latestRun.typedStopReason == .noUsableResult {
-            if requiresDeliverableArtifact(task, run: latestRun),
+            if TaskDeliverableExpectation.owesDeliverable(task, run: latestRun),
                !TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun) {
                 return .noUsableResult
             }
@@ -158,22 +153,12 @@ enum PendingTaskReviewPolicy {
             return nil
         }
 
-        if requiresDeliverableArtifact(task, run: latestRun),
+        if TaskDeliverableExpectation.owesDeliverable(task, run: latestRun),
            !TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: latestRun) {
             return .missingRequiredArtifact
         }
 
         return nil
-    }
-
-    /// What `run` owed comes from its own turn: a follow-up can ask for a file
-    /// the task never named, or ask for none on a task that did.
-    @MainActor
-    private static func requiresDeliverableArtifact(_ task: AgentTask, run: TaskRun) -> Bool {
-        TaskDeliverableExpectation.requiresDeliverableArtifact(
-            task,
-            scope: TaskDeliverableExpectation.scope(for: task, run: run)
-        )
     }
 
     private static func unresolvedDismissalReason(

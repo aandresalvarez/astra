@@ -512,7 +512,7 @@ struct ArchitectureFitnessTests {
         let evaluateEnd = try #require(evaluateTail.range(of: "\n    private static func "))
         let evaluate = String(evaluateTail[..<evaluateEnd.lowerBound])
 
-        #expect(evaluate.contains("let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task, scope: scope)"))
+        #expect(evaluate.contains("let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)"))
         #expect(
             !evaluate.contains("TaskDeliverableExpectation.requiresDeliverableArtifact(task)"),
             "Derive the verification requirement from requiredFilenames instead of parsing required output filenames twice."

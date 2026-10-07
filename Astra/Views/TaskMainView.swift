@@ -3830,7 +3830,7 @@ struct TaskMainView: View {
     }
 
     private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
-        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot, latestRunScope: decisionOutcomeCache.latestRunDeliverableScope)
+        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot)
     }
 
     private var composerPlaceholder: String {

@@ -106,12 +106,6 @@ enum TaskTurnIntentResolver {
         )
     }
 
-    /// `text` in the form a captured snapshot stores its turns, so a caller
-    /// can tell whether a stored turn is a given request.
-    static func storedTurnText(_ text: String) -> String {
-        bounded(text, limit: maxTurnCharacters)
-    }
-
     private static func latestPriorUserTurn(
         for task: AgentTask,
         excluding sourceEventID: UUID?

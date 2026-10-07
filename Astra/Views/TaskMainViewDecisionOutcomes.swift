@@ -15,8 +15,6 @@ struct TaskDecisionOutcomeCache: Equatable {
     var hasGitPublishRequest = false
     var pendingConnectorMutationTargets: [String] = []
     var githubReviewPath: String?
-    /// What the latest run owed, read from its turn request.
-    var latestRunDeliverableScope: TaskDeliverableExpectation.RunScope?
 }
 
 extension TaskMainView {
@@ -51,17 +49,11 @@ extension TaskMainView {
     /// purpose: the publication rule reads the snapshot the view already holds
     /// (the window always carries the latest run, and the capped successful
     /// tool results are the one kind it never reads), and the mutation rule is
-    /// a single typed fetch that faults only mutation rows. The latest run's
-    /// deliverable scope is a fetch of its turn request, so the review dock
-    /// grades a follow-up on what it asked for without a fetch per keystroke.
+    /// a single typed fetch that faults only mutation rows.
     func recomputeDecisionOutcomes() {
         let snapshot = threadViewModel.snapshot
         var outcomes = TaskDecisionOutcomeCache()
         if let latestRunID = snapshot?.latestRun?.id {
-            outcomes.latestRunDeliverableScope = TaskDeliverableExpectation.RunScope(
-                runID: latestRunID,
-                scope: TaskDeliverableExpectation.scope(for: task, runID: latestRunID)
-            )
             let events = (snapshot?.sortedEvents ?? []).map {
                 TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
             }

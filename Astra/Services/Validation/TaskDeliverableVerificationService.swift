@@ -34,12 +34,13 @@ enum TaskDeliverableVerificationService {
         workspacePath: String? = nil,
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
-        // A follow-up turn owes what it asked for, not the original goal's file.
-        let scope = TaskDeliverableExpectation.scope(for: task, run: run)
-        let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task, scope: scope)
-        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(
+        let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
+        // A turn after the task was accepted as complete does not owe the
+        // original deliverable again; it is still checked if it touched files.
+        let deliveredEarlier = run.map { TaskDeliverableExpectation.originalRequestCompleted(before: $0, in: task) } ?? false
+        let owedFilenames: Set<String> = deliveredEarlier ? [] : requiredFilenames
+        let requiresDeliverableArtifact = !deliveredEarlier && TaskDeliverableExpectation.requiresDeliverableArtifact(
             task,
-            scope: scope,
             requiredOutputFilenames: requiredFilenames
         )
         let taskAccess = TaskWorkspaceAccess(task: task)
@@ -80,7 +81,7 @@ enum TaskDeliverableVerificationService {
                 requiresHumanReview: false,
                 summary: TaskDeliverableExpectation.missingDeliverableMessage(
                     for: task,
-                    requiredFilenames: requiredFilenames,
+                    requiredFilenames: owedFilenames,
                     workspacePath: searchedWorkspacePath
                 ),
                 checks: [
@@ -91,7 +92,7 @@ enum TaskDeliverableVerificationService {
                         summary: "No displayable task output artifact was found.",
                         path: nil
                     )
-                ] + requiredFileChecks(requiredFilenames: requiredFilenames, discoveredFilenames: []),
+                ] + requiredFileChecks(requiredFilenames: owedFilenames, discoveredFilenames: []),
                 evidencePaths: [],
                 run: run
             )
@@ -106,10 +107,10 @@ enum TaskDeliverableVerificationService {
                 path: nil
             )
         ]
-        if !requiredFilenames.isEmpty {
+        if !owedFilenames.isEmpty {
             let discoveredFilenames = Set(files.map { URL(fileURLWithPath: $0.path).lastPathComponent.lowercased() })
             checks.append(contentsOf: requiredFileChecks(
-                requiredFilenames: requiredFilenames,
+                requiredFilenames: owedFilenames,
                 discoveredFilenames: discoveredFilenames
             ))
         }

@@ -20,16 +20,22 @@ extension PendingTaskReviewEventSnapshot {
 }
 
 extension PendingTaskReviewSnapshotInput {
-    /// `latestRunScope` is read from the latest run's turn request off the body
-    /// pass (`recomputeDecisionOutcomes`). Until it is, or once a newer run
-    /// replaces it, the run is graded against the task's own request.
-    init(task: AgentTask, snapshot: TaskThreadSnapshot, latestRunScope: TaskDeliverableExpectation.RunScope?) {
+    init(task: AgentTask, snapshot: TaskThreadSnapshot) {
         let latestRun = snapshot.latestRun
         let latestRunSnapshot = latestRun.map(PendingTaskReviewRunSnapshot.init)
         let runSnapshots = snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init)
         let eventSnapshots = snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init)
-        let scope = latestRunScope.flatMap { $0.runID == latestRun?.id ? $0.scope : nil } ?? .task
-        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task, scope: scope)
+        let completed = TaskEventTypes.Task.completed.rawValue
+        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+            && !(latestRun.map { latestRun in
+                TaskDeliverableExpectation.originalRequestCompleted(
+                    beforeRunID: latestRun.id,
+                    startedAt: latestRun.startedAt,
+                    completions: eventSnapshots.lazy
+                        .filter { $0.type == completed }
+                        .map { (runID: $0.runID, timestamp: $0.timestamp) }
+                )
+            } ?? false)
         let requiresScopedArtifactEvidence = PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
             taskStatus: task.status,
             isTaskDone: task.isDone,
