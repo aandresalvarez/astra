@@ -43,7 +43,8 @@ enum TaskExecutionResourceScopeResolver {
            let worktree = TaskExecutionResourceClaimResolver.gitWorktreeRoot(for: root) {
             append(worktree, .exclusive, .additionalFolder)
         }
-        if !access.effectiveWorkspacePath.isEmpty {
+        let hasBoundStorage = (try? TaskStorageBinding.load(for: task)) != nil
+        if !access.effectiveWorkspacePath.isEmpty || hasBoundStorage {
             append(access.canonicalTaskFolder, .exclusive, .taskStorage)
         }
         var environment = DockerExecutionPlanner.environmentForAcceptance(for: task)

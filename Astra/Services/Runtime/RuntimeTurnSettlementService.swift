@@ -272,7 +272,7 @@ enum RuntimeTurnSettlementService {
                     autoExport: autoExport)
             }
             RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
-            do { try save(task: task, modelContext: modelContext, operation: "runtime_checkpoint_pruned", persist: nil, autoExport: autoExport) }
+            do { try save(task: task, modelContext: modelContext, operation: "runtime_checkpoint_pruned", persist: nil, autoExport: autoExport, exportsWorkspace: true) }
             catch { AppLogger.error("Settled runtime checkpoint cleanup will be retried.", category: "Persistence") }
             return true
         } catch {
@@ -343,9 +343,14 @@ enum RuntimeTurnSettlementService {
     }
 
     private static func save(task: AgentTask, modelContext: ModelContext, operation: String,
-                             persist: (() throws -> Void)?, autoExport: Bool = true) throws {
+                             persist: (() throws -> Void)?, autoExport: Bool = true,
+                             exportsWorkspace: Bool = false) throws {
         if let persist { try persist() }
-        else {
+        else if exportsWorkspace && autoExport {
+            // One final mirror export once the verdict is durable; intermediate saves stay export-free.
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: task.workspace,
+                modelContext: modelContext, taskID: task.id, auditFields: ["operation": operation])
+        } else {
             try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
                 modelContext: modelContext, taskID: task.id, auditFields: ["operation": operation])
         }

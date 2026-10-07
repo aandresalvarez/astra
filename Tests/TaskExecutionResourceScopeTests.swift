@@ -51,6 +51,20 @@ struct TaskExecutionResourceScopeTests {
         #expect(!scope.isValid)
     }
 
+    @Test("Bound task storage stays in scope when the workspace is unset")
+    func boundStorageSurvivesUnsetWorkspace() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-bound-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let task = AgentTask(title: "B", goal: "Edit", workspace: nil, runtime: .claudeCode)
+        let binding = TaskStorageBinding(taskID: task.id, path: folder.path, workspacePath: "")
+        let payload = String(decoding: try JSONEncoder().encode(binding), as: UTF8.self)
+        task.events.append(TaskEvent(task: task, type: TaskStorageBinding.eventType, payload: payload))
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        #expect(scope.resources.contains { $0.role == .taskStorage && $0.canonicalPath == binding.path })
+    }
+
     @Test("A removed pinned execution root falls back to the workspace path")
     func removedPinnedRootFallsBackToWorkspace() throws {
         let root = FileManager.default.temporaryDirectory
