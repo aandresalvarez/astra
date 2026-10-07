@@ -68,6 +68,7 @@ enum ExternalActionRecordPresentation {
         case .gitPullRequestPublication: "arrow.triangle.pull"
         case .githubReviewPublication, .githubThreadReply: "text.bubble"
         case .githubThreadResolution: "checkmark.bubble"
+        case .agentCommand: "terminal"
         }
     }
 

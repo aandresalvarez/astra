@@ -81,6 +81,21 @@ enum RunBoundaryDiscovery {
                 auditFields: ["operation": "connector_mutation_auto_send"]
             )
         }
+        // What the agent did outside the machine with its own tools, read from
+        // its tool calls. Auto only: in Ask the run guard asked before each one.
+        if !AgentExternalActionObserver.recordObservedActions(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            policyLevel: policyLevel
+        ).isEmpty {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "agent_external_action_observed"]
+            )
+        }
         // Persists itself, for the same reason: an approval offer the user never
         // sees is a connector that stays sealed with no way to unseal it.
         BrokeredCredentialApprovalDiscovery.recordWithheldCredentialRequests(

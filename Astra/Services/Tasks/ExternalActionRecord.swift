@@ -43,7 +43,8 @@ enum ExternalActionRecordProjection {
     static let sources: [any ExternalActionRecordSource.Type] = [
         ConnectorMutationRecordSource.self,
         GitHubReviewRecordSource.self,
-        GitPullRequestRecordSource.self
+        GitPullRequestRecordSource.self,
+        ObservedExternalActionRecordSource.self
     ]
 
     static let eventTypes: Set<String> = sources.reduce(into: []) { $0.formUnion($1.eventTypes) }

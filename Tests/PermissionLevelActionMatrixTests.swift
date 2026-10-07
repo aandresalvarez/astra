@@ -19,7 +19,8 @@ struct PermissionLevelActionMatrixTests {
         .gitPullRequestPublication,
         .githubReviewPublication,
         .githubThreadReply,
-        .githubThreadResolution
+        .githubThreadResolution,
+        .agentCommand
     ]
 
     @Test("The matrix covers every external action kind")

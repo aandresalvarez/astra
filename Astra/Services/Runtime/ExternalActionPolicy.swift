@@ -20,6 +20,10 @@ enum ExternalActionKind: String, Codable, CaseIterable, Sendable {
     case githubThreadReply
     /// Resolving a pull-request review thread.
     case githubThreadResolution
+    /// A command with an external effect the agent ran with its own tools,
+    /// such as `git push` or `gh pr create`. In Ask the run guard asks before
+    /// it like any other command; in Auto ASTRA only observes and records it.
+    case agentCommand
 }
 
 /// What ASTRA does about an external action at a given level.
@@ -61,7 +65,8 @@ enum ExternalActionPolicy {
              .gitPullRequestPublication,
              .githubReviewPublication,
              .githubThreadReply,
-             .githubThreadResolution:
+             .githubThreadResolution,
+             .agentCommand:
             return level.userFacingLevel == .autonomous ? .performAndRecord : .askUser
         }
     }
