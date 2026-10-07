@@ -839,4 +839,20 @@ struct GitHubReviewThreadWorkflowTests {
         try service.dismiss(task: f.task, filePath: f.file.path)
         #expect(dismissals(f.task).count == 1)
     }
+
+    // MARK: - Validation work is bounded across the whole proposal
+
+    @Test("a proposal whose discussions need more pages than the budget is unusable, not read whole")
+    func aggregatePageBudget() async throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let cli = FakeCLI(); await cli.addPage()   // the discussion takes two pages
+        try payload(reply: nil, last: "C3").write(to: f.file)
+
+        let tight = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli, pageBudget: 1)
+        await #expect(throws: GitHubReviewPublicationError.self) { _ = try await tight.prepare(task: f.task, filePath: f.file.path) }
+        #expect(await cli.counts().2 == 1)   // it stopped at the budget instead of reading on
+
+        let enough = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli, pageBudget: 2)
+        _ = try await enough.prepare(task: f.task, filePath: f.file.path)
+    }
 }

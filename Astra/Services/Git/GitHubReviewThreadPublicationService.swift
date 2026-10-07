@@ -10,11 +10,24 @@ final class GitHubReviewThreadPublicationService {
     private let cli: any GitHubReviewCLI
     private let originURL: (String) async -> String?
     private let saveReceipt: ((AgentTask, ModelContext) throws -> Void)?
+    private let pageBudget: Int
+
+    /// Discussion pages one proposal may read while it is validated. Each page is a `gh`
+    /// process and its comments stay in memory, so a proposal of many large discussions is
+    /// split rather than read whole.
+    static let defaultPageBudget = 400
 
     init(modelContext: ModelContext, cli: any GitHubReviewCLI = NativeGitHubReviewCLI(),
          originURL: @escaping (String) async -> String? = { await GitService.shared.getRemoteOriginURL(at: $0) },
-         saveReceipt: ((AgentTask, ModelContext) throws -> Void)? = nil) {
+         saveReceipt: ((AgentTask, ModelContext) throws -> Void)? = nil,
+         pageBudget: Int = GitHubReviewThreadPublicationService.defaultPageBudget) {
         self.modelContext = modelContext; self.cli = cli; self.originURL = originURL; self.saveReceipt = saveReceipt
+        self.pageBudget = pageBudget
+    }
+
+    private final class PageBudget {
+        var remaining: Int
+        init(_ pages: Int) { remaining = pages }
     }
 
     nonisolated static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
@@ -158,8 +171,9 @@ final class GitHubReviewThreadPublicationService {
         let (data, payload) = try Self.unusable { try readPayload(task: task, filePath: filePath) }
         try await validateTarget(task: task, payload: payload, filePath: filePath)
         var snapshots: [GitHubReviewThreadSnapshot] = []
+        let budget = PageBudget(pageBudget)
         for action in payload.threads {
-            let snapshot = try await loadThread(task: task, id: action.threadId)
+            let snapshot = try await loadThread(task: task, id: action.threadId, budget: budget)
             try Self.unusable { try validate(snapshot, action: action, payload: payload) }
             try requirePermissions(snapshot, action: action)
             snapshots.append(snapshot)
@@ -391,9 +405,15 @@ final class GitHubReviewThreadPublicationService {
     /// rate-limit or sign-in failure does not, so those stay retryable.
     private static func isMissingNode(_ text: String) -> Bool { text.contains("Could not resolve to a node") }
 
-    private func loadThread(task: AgentTask, id: String) async throws -> GitHubReviewThreadSnapshot {
+    private func loadThread(task: AgentTask, id: String, budget: PageBudget? = nil) async throws -> GitHubReviewThreadSnapshot {
         var cursor: String?; var seen: Set<String> = []; var snapshot: GitHubReviewThreadSnapshot?
         for _ in 0..<1000 {
+            if let budget {
+                guard budget.remaining > 0 else {
+                    throw GitHubReviewPublicationError.unusableArtifact("This proposal covers more discussion than can be validated safely. Split it into smaller proposals.")
+                }
+                budget.remaining -= 1
+            }
             var input = ["review-thread", "--id", id]
             if let cursor { input += ["--after", cursor] }
             let output: String
