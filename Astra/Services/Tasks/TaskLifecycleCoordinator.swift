@@ -593,13 +593,14 @@ final class TaskLifecycleCoordinator {
     func deleteTask(_ task: AgentTask) -> Workspace? {
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
-        // A draft that never ran gives back its untouched worktree; any other
-        // task's worktree holds the user's work and is kept.
-        let unusedWorktree = task.status == .draft && task.runs.isEmpty
-            ? TaskWorktreeService.discardSnapshot(for: task, ownership: worktreeCleanupStore.ownership)
-            : nil
+        // A draft that never ran gives back its untouched worktrees, including
+        // one it was retargeted away from; any other task's worktree holds the
+        // user's work and is kept.
+        let unusedWorktrees = task.status == .draft && task.runs.isEmpty
+            ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
+            : []
         TaskWorktreeService.saveDeletionThenDiscard(
-            unusedWorktree, workspace: workspace, modelContext: modelContext, cleanupStore: worktreeCleanupStore,
+            unusedWorktrees, workspace: workspace, modelContext: modelContext, cleanupStore: worktreeCleanupStore,
             delete: {
                 cancelAndRemoveTurnRequests(for: task)
                 modelContext.delete(task)
@@ -706,11 +707,18 @@ final class TaskLifecycleCoordinator {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
             config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: url).path
+            if refusesRoot(WorkspaceConfigManager.reservedRoot(of: config), operation: "import_config") { return nil }
             let configID = config.id
             if let existing = existingWorkspaces.first(where: { workspace in
                 (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath
             }) {
                 let action = askDuplicateAction(config.name, existing.tasks.count)
+                // Cleanup can start while the prompt is open; check again
+                // before replacing anything.
+                if action != .skip,
+                   refusesRoot(WorkspaceConfigManager.reservedRoot(of: config), operation: "import_config") {
+                    return nil
+                }
                 switch action {
                 case .skip:
                     return nil
@@ -761,6 +769,19 @@ final class TaskLifecycleCoordinator {
         }
     }
 
+    /// A checkout that worktree cleanup is removing can't become a workspace
+    /// root. The import is refused before anything is replaced and can be
+    /// retried once cleanup finishes.
+    private func refusesRoot(_ reserved: String?, operation: String) -> Bool {
+        guard let reserved else { return false }
+        AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+            "operation": operation,
+            "reason": "workspace_root_being_removed",
+            "path": reserved
+        ], level: .warning)
+        return true
+    }
+
     private func scheduleTrustPolicyForConfigReplace(
         existing: Workspace,
         configURL: URL
@@ -776,8 +797,13 @@ final class TaskLifecycleCoordinator {
             .replacingOccurrences(of: "-", with: " ")
             .replacingOccurrences(of: "_", with: " ")
             .capitalized
+        if refusesRoot(WorkspaceConfigManager.reservedRoot(among: [url.path]), operation: "import_folder") { return nil }
         if let existing = existingWorkspaces.first(where: { $0.name == name || $0.primaryPath == url.path }) {
             let action = askDuplicateAction(name, existing.tasks.count)
+            if action != .skip,
+               refusesRoot(WorkspaceConfigManager.reservedRoot(among: [url.path]), operation: "import_folder") {
+                return nil
+            }
             switch action {
             case .skip:
                 return nil

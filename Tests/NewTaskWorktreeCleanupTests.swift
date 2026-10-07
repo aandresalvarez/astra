@@ -21,7 +21,7 @@ struct NewTaskWorktreeCleanupTests {
             task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
             modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
-        return (draft, try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership)))
+        return (draft, try #require(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).first))
     }
 
     private func persistentContainer(at url: URL) throws -> ModelContainer {
@@ -63,7 +63,7 @@ struct NewTaskWorktreeCleanupTests {
         let repository = try fixture.repository("App")
         let storeURL = fixture.root.appendingPathComponent("cleanup.sqlite")
         let discard = try await leaveInterruptedCleanup(repository: repository, fixture: fixture, storeURL: storeURL)
-        #expect(try fixture.cleanupStore.read(fixture.cleanupStore.recordURL(for: discard.taskID)) == discard)
+        #expect(try fixture.cleanupStore.read(fixture.cleanupStore.recordURL(for: discard)) == discard)
 
         let reopened = try persistentContainer(at: storeURL)
         #expect(try reopened.mainContext.fetchCount(FetchDescriptor<AgentTask>()) == 0)
@@ -99,7 +99,7 @@ struct NewTaskWorktreeCleanupTests {
         #expect(duplicate.id == original.id)
         #expect(duplicate.persistentModelID != originalIdentity)
         #expect(duplicate.executionRootPath == original.executionRootPath)
-        let discard = try #require(TaskWorktreeService.discardSnapshot(for: duplicate, ownership: fixture.ownership))
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: duplicate, ownership: fixture.ownership).first)
         if resumeAfterRestart { try fixture.cleanupStore.record(discard) }
         context.delete(duplicate)
         try context.save()
@@ -154,9 +154,9 @@ struct NewTaskWorktreeCleanupTests {
         let context = store.mainContext
         let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
         let saved = TaskWorktreeService.saveDeletionThenDiscard(
-            discard, workspace: draft.workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            [discard], workspace: draft.workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
             delete: {
-                #expect(FileManager.default.fileExists(atPath: fixture.cleanupStore.recordURL(for: discard.taskID).path))
+                #expect(FileManager.default.fileExists(atPath: fixture.cleanupStore.recordURL(for: discard).path))
                 context.delete(draft)
             },
             persist: { _, context in
@@ -186,7 +186,7 @@ struct NewTaskWorktreeCleanupTests {
         var persistenceRan = false
 
         let failed = TaskWorktreeService.saveDeletionThenDiscard(
-            discard, workspace: draft.workspace, modelContext: context, cleanupStore: unavailable,
+            [discard], workspace: draft.workspace, modelContext: context, cleanupStore: unavailable,
             delete: { deletionRan = true; context.delete(draft) },
             persist: { _, _ in persistenceRan = true; return true }
         )
@@ -208,7 +208,7 @@ struct NewTaskWorktreeCleanupTests {
         let context = store.mainContext
         let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
         let failed = TaskWorktreeService.saveDeletionThenDiscard(
-            discard, workspace: draft.workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            [discard], workspace: draft.workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
             delete: { context.delete(draft) }, persist: { _, _ in false }
         )
         #expect(failed.cleanup == nil)
@@ -321,7 +321,7 @@ struct NewTaskWorktreeCleanupTests {
         try fixture.cleanupStore.record(discard)
         store.mainContext.delete(draft)
         try store.mainContext.save()
-        try Data("{invalid".utf8).write(to: fixture.cleanupStore.recordURL(for: discard.taskID), options: .atomic)
+        try Data("{invalid".utf8).write(to: fixture.cleanupStore.recordURL(for: discard), options: .atomic)
 
         #expect(await TaskWorktreeCleanupService.resumePending(modelContext: ModelContext(store), store: fixture.cleanupStore) == 0)
         #expect(try fixture.cleanupStore.pendingURLs().count == 1)
@@ -349,7 +349,7 @@ struct NewTaskWorktreeCleanupTests {
             modelContext: context,
             worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
-        let discard = try #require(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership))
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).first)
         context.delete(draft)
         try context.save()
 
@@ -409,7 +409,7 @@ struct NewTaskWorktreeCleanupTests {
         context.insert(TaskEvent(task: draft, eventType: TaskEventTypes.Task.worktreePrepared, payload: payload))
         try context.save()
         #expect(TaskWorktreeService.activeWorktreeBinding(for: draft) != nil)
-        #expect(TaskWorktreeService.discardSnapshot(for: draft, ownership: fixture.ownership) == nil)
+        #expect(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).isEmpty)
 
         let coordinator = TaskLifecycleCoordinator(
             modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
@@ -517,6 +517,223 @@ struct NewTaskWorktreeCleanupTests {
         let released = try #require(importCopy())
         #expect(released.activeWorkingPath == checkout.path)
         #expect(released.tasks.map(\.executionRootPath) == [checkout.path])
+    }
+
+    @Test("Workspace imports and recovery never add a root inside a checkout cleanup is removing")
+    func reservedCheckoutIsNeverImportedAsWorkspaceRoot() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let app = try #require(draft.workspace)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        let kept = Workspace(name: "Kept", primaryPath: fixture.storage.path)
+        context.insert(kept)
+        context.delete(draft)
+        try context.save()
+        let scratchStore = try Fixture.container()
+        let scratch = scratchStore.mainContext
+        func writeConfig(root: URL, additionalPaths: [String] = []) throws -> URL {
+            let source = Workspace(name: "Source", primaryPath: root.path, additionalPaths: additionalPaths)
+            scratch.insert(source)
+            let url = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
+            try WorkspaceConfigManager.exportToFile(workspace: source, modelContext: scratch, url: url)
+            return url
+        }
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
+        )
+        let nestedConfig = try writeConfig(root: fixture.storage, additionalPaths: [checkout.path + "/Sources"])
+
+        var refused: [Bool] = []
+        var recovered = -1
+        var directImportRoots = ["unset"]
+        var prompted = false
+        let outcome = await TaskWorktreeService.discardOutcome(discard, modelContext: context) {
+            #expect(TaskWorktreeCheckoutReservation.isReserved(checkout.path + "/Sources"))
+            #expect(!TaskWorktreeCheckoutReservation.isReserved(checkout.path + "-sibling"))
+            refused.append(coordinator.importFromConfig(at: nestedConfig, existingWorkspaces: [kept]) { _, _ in
+                prompted = true
+                return .replace
+            } == nil)
+            refused.append(coordinator.createWorkspaceFromFolder(
+                checkout, existingWorkspaces: [kept], askDuplicateAction: { _, _ in .duplicate }
+            ) == nil)
+            if let config = try? WorkspaceConfigManager.loadConfig(from: nestedConfig) {
+                directImportRoots = WorkspaceConfigManager.importWorkspace(from: config, modelContext: scratch).additionalPaths
+            }
+            // A config inside the checkout must not block its removal afterwards.
+            guard let rootConfig = try? writeConfig(root: checkout) else { return }
+            defer { try? FileManager.default.removeItem(atPath: WorkspaceFileLayout.supportDirectory(for: checkout.path)) }
+            refused.append(coordinator.importFromConfig(
+                at: rootConfig, existingWorkspaces: [kept], askDuplicateAction: { _, _ in .duplicate }
+            ) == nil)
+            recovered = WorkspaceRecoveryService.recoverMissingWorkspaces(
+                modelContext: context, extraRoots: [checkout.path], includeDefaultRoots: false
+            )
+        }
+
+        #expect(outcome == .removed)
+        #expect(refused == [true, true, true])
+        #expect(!prompted)
+        #expect(recovered == 0)
+        #expect(directImportRoots.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: checkout.path))
+        #expect(Set(try context.fetch(FetchDescriptor<Workspace>()).map(\.id)) == [app.id, kept.id])
+        #expect(kept.additionalPaths.isEmpty)
+
+        // Cleanup that starts while the duplicate prompt is open still wins
+        // before Replace deletes the existing workspace.
+        var lateReservation: TaskWorktreeCheckoutReservation.Token?
+        let replaced = coordinator.importFromConfig(at: nestedConfig, existingWorkspaces: [kept]) { _, _ in
+            lateReservation = TaskWorktreeCheckoutReservation.acquire(checkout.path)
+            return .replace
+        }
+        try TaskWorktreeCheckoutReservation.release(#require(lateReservation))
+        #expect(replaced == nil)
+        #expect(Set(try context.fetch(FetchDescriptor<Workspace>()).map(\.id)) == [app.id, kept.id])
+
+        let afterCleanup = coordinator.importFromConfig(
+            at: nestedConfig, existingWorkspaces: [kept], askDuplicateAction: { _, _ in .duplicate }
+        )
+        #expect(try #require(afterCleanup).additionalPaths == [checkout.path + "/Sources"])
+    }
+
+    private func waitForOutbox(_ fixture: Fixture) async throws {
+        var attempts = 0
+        while try !fixture.cleanupStore.pendingURLs().isEmpty, attempts < 100 {
+            attempts += 1
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
+    }
+
+    /// Prepares a draft's worktree, then retargets the draft to the repository
+    /// itself, as the Repository panel does.
+    private func retargetedDraft(
+        repository: URL, context: ModelContext, fixture: Fixture
+    ) async throws -> (draft: AgentTask, original: TaskWorktreeDiscard) {
+        let (draft, original) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(draft.workspace)
+        #expect(TaskCodeLocationPin.set(repository.path, workspace: workspace, task: draft))
+        try context.save()
+        guard case .retargeted = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("Expected the draft to be retargeted")
+            return (draft, original)
+        }
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: draft) == nil)
+        return (draft, original)
+    }
+
+    @Test(
+        "A draft retargeted off its worktree still gives back that worktree when discarded",
+        arguments: ["startOver", "delete", "modified"]
+    )
+    func retargetedDraftGivesBackItsWorktree(path: String) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, original) = try await retargetedDraft(repository: repository, context: context, fixture: fixture)
+        #expect(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership) == [original])
+        if path == "modified" {
+            try "work".write(
+                to: URL(fileURLWithPath: original.worktreePath).appendingPathComponent("notes.txt"),
+                atomically: true, encoding: .utf8
+            )
+        }
+
+        if path == "delete" {
+            let coordinator = TaskLifecycleCoordinator(
+                modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
+            )
+            _ = coordinator.deleteTask(draft)
+        } else {
+            #expect(NewTaskWorktreeComposerFlow.discardDraft(
+                draft, modelContext: context, cleanupStore: fixture.cleanupStore, delete: { context.delete($0) }
+            ))
+        }
+        try await waitForOutbox(fixture)
+
+        #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == 0)
+        let kept = path == "modified"
+        #expect(FileManager.default.fileExists(atPath: original.worktreePath) == kept)
+        #expect(try fixture.git(["branch", "--list", original.branch], at: repository).isEmpty == !kept)
+    }
+
+    @Test("A draft that prepared another worktree after retargeting gives back both")
+    func retargetedDraftGivesBackEveryWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, original) = try await retargetedDraft(repository: repository, context: context, fixture: fixture)
+        try await TaskWorktreeService.prepare(
+            task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+            modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        let current = try #require(TaskWorktreeService.activeWorktreeBinding(for: draft))
+        #expect(current.worktreePath != original.worktreePath)
+        let discards = TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership)
+        #expect(Set(discards.map(\.worktreePath)) == [current.worktreePath, original.worktreePath])
+
+        #expect(NewTaskWorktreeComposerFlow.discardDraft(
+            draft, modelContext: context, cleanupStore: fixture.cleanupStore, delete: { context.delete($0) }
+        ))
+        try await waitForOutbox(fixture)
+
+        for discard in discards {
+            #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+            #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+        }
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+    }
+
+    @Test(
+        "Promoting a draft keeps the task's checkout and gives back the worktree the draft was retargeted from",
+        arguments: [false, true]
+    )
+    func promotedDraftGivesBackUnusedWorktrees(preparedAgain: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, original) = try await retargetedDraft(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(draft.workspace)
+        if preparedAgain {
+            try await TaskWorktreeService.prepare(
+                task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+                modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            )
+        }
+        let task = AgentTask(title: "Explore", goal: "Explore the implementation", workspace: workspace)
+        context.insert(task)
+        try await TaskWorktreeService.prepare(
+            task: task, request: nil, inheritingFrom: draft, modelContext: context,
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        let checkout = try #require(task.executionRootPath)
+        #expect(checkout == draft.executionRootPath)
+
+        #expect(NewTaskWorktreeComposerFlow.discardPromotedDraft(
+            draft, keeping: task, modelContext: context, cleanupStore: fixture.cleanupStore
+        ))
+        try await waitForOutbox(fixture)
+
+        #expect(!FileManager.default.fileExists(atPath: original.worktreePath))
+        #expect(try fixture.git(["branch", "--list", original.branch], at: repository).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: checkout))
+        #expect(task.executionRootPath == checkout)
+        if preparedAgain {
+            let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+            #expect(binding.worktreePath == checkout)
+            #expect(try !fixture.git(["branch", "--list", binding.branch], at: repository).isEmpty)
+        }
     }
 
     @Test("Every persistent checkout pin writer is reviewed against the cleanup reservation")

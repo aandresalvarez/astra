@@ -12,6 +12,11 @@ struct NewTaskWorktreeSelection {
     /// The checkout of the repository the task would otherwise run in: its
     /// root or one of its worktrees. "Current branch" starts from its HEAD.
     var checkoutPath: String?
+    /// True when `checkoutPath` is a recorded checkout that is gone. It stays
+    /// selected rather than being swapped for another checkout: Current branch
+    /// cannot start until the user chooses a repository again, and Default
+    /// branch does not read it.
+    var isCheckoutUnavailable = false
     var base: TaskWorktreeBaseChoice = .defaultBranch
     var repositories: [GitRepositoryInfo] = []
     var isLoading = false
@@ -23,8 +28,19 @@ struct NewTaskWorktreeSelection {
         repositories.first { $0.path == repositoryPath }
     }
 
+    /// Current branch would start from a checkout that is gone.
+    var isBlockedByCheckout: Bool {
+        isEnabled && base == .currentBranch && isCheckoutUnavailable
+    }
+
     var canSubmit: Bool {
-        !isEnabled || (!isLoading && selectedRepository != nil)
+        !isEnabled || (!isLoading && selectedRepository != nil && !isBlockedByCheckout)
+    }
+
+    /// Why an enabled choice cannot start, for a submission `canSubmit` refused.
+    var submitError: TaskWorktreeCreationError {
+        if isBlockedByCheckout, let checkoutPath { return .checkoutUnavailable(checkoutPath) }
+        return .repositoryUnavailable
     }
 
     var baseLabel: String? {
@@ -52,22 +68,45 @@ struct NewTaskWorktreeSelection {
         base = .defaultBranch
     }
 
+    /// Selects `selectedPath` with `checkoutPath`, or else the first
+    /// repository at its own folder. `checkoutAvailable` is false for a
+    /// recorded checkout that is gone.
     mutating func updateRepositories(
         _ repositories: [GitRepositoryInfo],
         selectedPath: String?,
-        checkoutPath: String? = nil
+        checkoutPath: String? = nil,
+        checkoutAvailable: Bool = true
     ) {
         self.repositories = repositories
         isLoading = false
-        let selected = repositories.first {
-            $0.path == selectedPath.map(WorkspacePathPresentation.standardizedPath)
-        } ?? repositories.first
+        let requested = selectedPath.map(WorkspacePathPresentation.standardizedPath)
+        let selected = repositories.first { $0.path == requested } ?? repositories.first
         if selected?.path != repositoryPath {
             defaultBaseLabel = nil
             currentBaseLabel = nil
         }
         repositoryPath = selected?.path
-        self.checkoutPath = selected == nil ? nil : (checkoutPath ?? selected?.path)
+        // A checkout belongs to the requested repository, never the first one.
+        let keepsCheckout = selected != nil && selected?.path == requested
+        self.checkoutPath = keepsCheckout ? (checkoutPath ?? selected?.path) : selected?.path
+        isCheckoutUnavailable = keepsCheckout && !checkoutAvailable
+    }
+
+    /// The user's explicit pick: `repository` at its own folder.
+    mutating func choose(_ repository: GitRepositoryInfo) {
+        repositoryPath = repository.path
+        checkoutPath = repository.path
+        isCheckoutUnavailable = false
+        defaultBaseLabel = nil
+        currentBaseLabel = nil
+    }
+
+    /// Whether picking `repository` changes the choice: another repository,
+    /// or the selected one replacing a checkout that is gone.
+    func isNewChoice(_ repository: GitRepositoryInfo) -> Bool {
+        guard repository.path == repositoryPath else { return true }
+        guard let checkoutPath, checkoutPath != repository.path else { return false }
+        return isCheckoutUnavailable || !FileManager.default.fileExists(atPath: checkoutPath)
     }
 
     /// Keeps a recorded repository that the latest scan could not find.
@@ -86,6 +125,7 @@ struct NewTaskWorktreeSelection {
         }
         repositoryPath = recorded
         checkoutPath = nil
+        isCheckoutUnavailable = false
     }
 }
 
@@ -259,6 +299,17 @@ struct NewTaskWorktreeDockPresentation: Equatable {
                 help: hasRepositories
                     ? "Choose the repository to branch from before starting the task."
                     : "This workspace has no available Git repository. Uncheck \"\(toggleTitle)\" to use the current checkout."
+            )
+        }
+
+        if selection.isBlockedByCheckout {
+            let checkout = WorkspacePathPresentation.abbreviatePath(selection.checkoutPath ?? repository.path)
+            return make(
+                tone: .attention,
+                glyph: .symbol("exclamationmark.circle.fill"),
+                title: "New worktree",
+                meta: "checkout unavailable",
+                help: "\(checkout) is no longer available, so Current branch has nothing to start from. Choose \(repository.name) again, or start from the default branch. The task will not start from a different checkout."
             )
         }
 

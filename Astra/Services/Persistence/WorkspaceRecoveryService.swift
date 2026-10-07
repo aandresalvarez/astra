@@ -614,6 +614,7 @@ public enum WorkspaceRecoveryService {
                 if !configPath.isEmpty, existingPaths.contains(configPath) {
                     continue
                 }
+                if refusesReservedRoot(of: config) { continue }
                 let workspace = WorkspaceConfigManager.importWorkspace(
                     from: config,
                     modelContext: modelContext,
@@ -658,6 +659,7 @@ public enum WorkspaceRecoveryService {
             if !configPath.isEmpty, existingPaths.contains(configPath) {
                 continue
             }
+            if refusesReservedRoot(of: config) { continue }
             let workspace = WorkspaceConfigManager.importWorkspace(
                 from: config,
                 modelContext: modelContext,
@@ -671,6 +673,18 @@ public enum WorkspaceRecoveryService {
 
         saveRecoveryImportCount(imported, modelContext: modelContext)
         return imported
+    }
+
+    /// A checkout that worktree cleanup is removing is skipped, not imported
+    /// as a root that is about to vanish; a later scan can recover it.
+    private static func refusesReservedRoot(of config: WorkspaceConfigManager.WorkspaceConfig) -> Bool {
+        guard let reserved = WorkspaceConfigManager.reservedRoot(of: config) else { return false }
+        AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+            "operation": "recover_workspace",
+            "reason": "workspace_root_being_removed",
+            "path": reserved
+        ], level: .warning)
+        return true
     }
 
     private static func saveRecoveryImportCount(_ imported: Int, modelContext: ModelContext) {

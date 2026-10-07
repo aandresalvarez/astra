@@ -1179,6 +1179,17 @@ public enum WorkspaceConfigManager {
         return decoder
     }
 
+    /// The first configured root at or inside a checkout that worktree cleanup
+    /// is removing. Importing it would persist a root that is about to vanish,
+    /// so callers refuse the import and the user can retry once cleanup ends.
+    public static func reservedRoot(of config: WorkspaceConfig) -> String? {
+        reservedRoot(among: [config.primaryPath] + config.additionalPaths)
+    }
+
+    public static func reservedRoot(among roots: [String]) -> String? {
+        roots.first { TaskWorktreeCheckoutReservation.isReserved($0) }
+    }
+
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
     @MainActor
     public static func importWorkspace(
@@ -1196,6 +1207,8 @@ public enum WorkspaceConfigManager {
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
+    /// Callers refuse a config whose `reservedRoot(of:)` is set before any
+    /// destructive step; an additional root cleanup is removing is dropped here.
     @MainActor
     public static func importWorkspaceResult(
         from config: WorkspaceConfig,
@@ -1203,10 +1216,18 @@ public enum WorkspaceConfigManager {
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
     ) -> WorkspaceConfigImportResult {
+        let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
+        if additionalPaths.count < config.additionalPaths.count {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "import_additional_root",
+                "reason": "workspace_root_being_removed",
+                "dropped_root_count": String(config.additionalPaths.count - additionalPaths.count)
+            ], level: .warning)
+        }
         let workspace = Workspace(
             name: config.name,
             primaryPath: config.primaryPath,
-            additionalPaths: config.additionalPaths,
+            additionalPaths: additionalPaths,
             icon: config.icon,
             instructions: config.instructions
         )

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 import ASTRACore
@@ -15,8 +16,8 @@ enum TaskWorktreeCleanupOutcome: Equatable {
 }
 
 /// An app-owned outbox, outside provider-writable workspaces. Each atomic
-/// record survives deletion of its task and is cleared only after removal or
-/// a deliberate decision to preserve the checkout.
+/// record, one per task worktree, survives deletion of its task and is cleared
+/// only after removal or a deliberate decision to preserve the checkout.
 struct TaskWorktreeCleanupStore: Sendable {
     let directory: URL
     /// Provenance that authorizes cleanup, kept beside the outbox.
@@ -38,7 +39,7 @@ struct TaskWorktreeCleanupStore: Sendable {
     }
 
     func record(_ discard: TaskWorktreeDiscard) throws {
-        let url = recordURL(for: discard.taskID)
+        let url = recordURL(for: discard)
         if FileManager.default.fileExists(atPath: url.path) {
             guard try read(url) == discard else { throw StoreError.invalidRecord }
             return
@@ -67,20 +68,24 @@ struct TaskWorktreeCleanupStore: Sendable {
             throw StoreError.invalidRecord
         }
         let discard = try JSONDecoder().decode(TaskWorktreeDiscard.self, from: Data(contentsOf: url))
-        guard recordURL(for: discard.taskID).lastPathComponent == url.lastPathComponent else {
+        guard recordURL(for: discard).lastPathComponent == url.lastPathComponent else {
             throw StoreError.invalidRecord
         }
         return discard
     }
 
     func remove(_ discard: TaskWorktreeDiscard) throws {
-        let url = recordURL(for: discard.taskID)
+        let url = recordURL(for: discard)
         guard try read(url) == discard else { throw StoreError.invalidRecord }
         try FileManager.default.removeItem(at: url)
     }
 
-    func recordURL(for taskID: UUID) -> URL {
-        directory.appendingPathComponent(taskID.uuidString.lowercased() + ".json")
+    /// A draft can own several worktrees, so a record is keyed by task and
+    /// worktree path.
+    func recordURL(for discard: TaskWorktreeDiscard) -> URL {
+        let worktree = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
+        let digest = SHA256.hash(data: Data(worktree.utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(discard.taskID.uuidString.lowercased() + "-" + digest + ".json")
     }
 }
 
@@ -121,7 +126,7 @@ enum TaskWorktreeCleanupService {
         modelContext: ModelContext,
         git: any GitRepositoryOperating = GitService.shared
     ) async -> Bool {
-        let url = store.recordURL(for: discard.taskID)
+        let url = store.recordURL(for: discard)
         let key = url.resolvingSymlinksInPath().standardizedFileURL.path
         guard activeRecords.insert(key).inserted else { return false }
         defer { activeRecords.remove(key) }

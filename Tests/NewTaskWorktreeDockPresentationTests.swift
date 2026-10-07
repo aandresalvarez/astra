@@ -251,4 +251,52 @@ struct NewTaskWorktreeDockPresentationTests {
         #expect(pinnedDraft.tone == .failed)
         #expect(!pinnedDraft.showsToggle)
     }
+
+    @Test("A gone checkout stays selected and blocks only Current branch until the repository is chosen again")
+    func unavailableCheckoutBlocksCurrentBranch() throws {
+        let gone = "/tmp/astra-dock/Worktrees/astra/astra-side"
+        var blocked = selection(enabled: true)
+        blocked.updateRepositories([astra, docs], selectedPath: astra.path, checkoutPath: gone, checkoutAvailable: false)
+        blocked.base = .currentBranch
+        #expect(blocked.repositoryPath == astra.path)
+        #expect(blocked.checkoutPath == gone)
+        #expect(blocked.isBlockedByCheckout)
+        #expect(!blocked.canSubmit)
+        #expect(blocked.submitError == .checkoutUnavailable(gone))
+        #expect(blocked.request?.checkoutPath == gone)
+        let strip = try #require(dock(blocked))
+        #expect(strip.tone == .attention)
+        #expect(strip.meta == "checkout unavailable")
+        #expect(strip.help.contains("astra/astra-side"))
+        #expect(strip.help.contains("Choose astra again"))
+        #expect(strip.showsToggle && strip.showsRepositoryMenu)
+
+        // Default branch never reads the checkout.
+        var fromDefault = blocked
+        fromDefault.base = .defaultBranch
+        #expect(fromDefault.canSubmit)
+        #expect(try #require(dock(fromDefault)).tone == .success)
+        var unchecked = blocked
+        unchecked.isEnabled = false
+        #expect(unchecked.canSubmit)
+
+        #expect(blocked.isNewChoice(astra))
+        #expect(blocked.isNewChoice(docs))
+        blocked.choose(astra)
+        #expect(blocked.checkoutPath == astra.path)
+        #expect(!blocked.isCheckoutUnavailable)
+        #expect(blocked.canSubmit)
+        #expect(blocked.submitError == .repositoryUnavailable)
+        #expect(try #require(dock(blocked)).tone == .success)
+        #expect(!blocked.isNewChoice(astra))
+
+        // A checkout stays only with the repository it was recorded for.
+        var fallback = NewTaskWorktreeSelection()
+        fallback.updateRepositories(
+            [astra, docs], selectedPath: "/tmp/astra-dock/removed", checkoutPath: gone, checkoutAvailable: false
+        )
+        #expect(fallback.repositoryPath == astra.path)
+        #expect(fallback.checkoutPath == astra.path)
+        #expect(!fallback.isCheckoutUnavailable)
+    }
 }

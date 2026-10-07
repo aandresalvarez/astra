@@ -131,19 +131,21 @@ struct NewTaskWorktreeDockView: View {
             primaryPath: request.primaryPath,
             additionalPaths: request.additionalPaths
         )
-        let match = await Self.checkout(
-            request.codePath,
-            primaryPath: request.primaryPath,
-            in: repositories,
-            git: git
+        var recorded = Self.recordedChoice(for: draft)
+        var scan = await Self.scanSelection(
+            codePath: request.codePath, primaryPath: request.primaryPath,
+            repositories: repositories, recorded: recorded, git: git
         )
+        // A choice recorded during the lookup wins over the one it started from.
+        while !Task.isCancelled, request == scanRequest, recorded != Self.recordedChoice(for: draft) {
+            recorded = Self.recordedChoice(for: draft)
+            scan = await Self.scanSelection(
+                codePath: request.codePath, primaryPath: request.primaryPath,
+                repositories: repositories, recorded: recorded, git: git
+            )
+        }
         guard !Task.isCancelled, request == scanRequest else { return }
-        Self.applyScan(
-            to: &selection,
-            repositories: repositories,
-            recordedRepository: recordedRepositoryPath(),
-            match: match
-        )
+        Self.applyScan(scan, repositories: repositories, to: &selection)
         guard let repository = selection.selectedRepository else { return }
         let base = TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: selection.checkoutPath)
         var current = base
@@ -155,58 +157,110 @@ struct NewTaskWorktreeDockView: View {
         selection.currentBaseLabel = currentLabel
     }
 
-    /// A draft's recorded repository that is absent from `repositories` stays
-    /// selected and invalid. Anything else follows `match`, including the
-    /// primary-repository fallback `checkout` already computed.
-    static func applyScan(
-        to selection: inout NewTaskWorktreeSelection,
-        repositories: [GitRepositoryInfo],
-        recordedRepository: String?,
-        match: (repository: GitRepositoryInfo, checkoutPath: String)?
-    ) {
-        if let recorded = recordedRepository.map(WorkspacePathPresentation.standardizedPath),
-           !repositories.contains(where: { $0.path == recorded }) {
-            selection.updateRepositories(repositories, missingSelection: recorded)
-            return
-        }
-        selection.updateRepositories(
-            repositories,
-            selectedPath: match?.repository.path,
-            checkoutPath: match?.checkoutPath
-        )
+    /// The repository and checkout a draft's enabled worktree choice recorded.
+    struct RecordedChoice: Equatable {
+        let repository: String
+        let checkout: String?
     }
 
-    private func recordedRepositoryPath() -> String? {
+    /// What a repository scan selects.
+    enum ScanSelection: Equatable {
+        /// `path` is the repository's root or one of its worktrees; it is not
+        /// `available` when that checkout is gone.
+        case checkout(repository: String, path: String, available: Bool)
+        /// A recorded repository the scan did not find.
+        case missingRepository(String)
+        case none
+    }
+
+    static func recordedChoice(for draft: AgentTask?) -> RecordedChoice? {
         guard let draft,
               let request = TaskWorktreeService.latestRequest(for: draft),
               request.enabled,
               let repository = request.repositoryPath,
               !repository.isEmpty else { return nil }
-        return WorkspacePathPresentation.standardizedPath(repository)
+        let checkout = request.checkoutPath.flatMap { $0.isEmpty ? nil : WorkspacePathPresentation.standardizedPath($0) }
+        return RecordedChoice(repository: WorkspacePathPresentation.standardizedPath(repository), checkout: checkout)
     }
 
-    /// The repository whose root or worktree is `codePath`, with that
-    /// checkout; else the repository at the workspace's primary path, else the
-    /// first, each with its root as the checkout.
-    static func checkout(
-        _ codePath: String?,
+    /// In order: the repository holding `codePath`, so the shared setting the
+    /// Repository card edits wins; else the draft's `recorded` repository and
+    /// checkout, which stay selected, and unavailable, when either is gone;
+    /// else the repository at the workspace's primary path, else the first.
+    static func scanSelection(
+        codePath: String?,
         primaryPath: String,
-        in repositories: [GitRepositoryInfo],
+        repositories: [GitRepositoryInfo],
+        recorded: RecordedChoice?,
         git: any GitRepositoryOperating
-    ) async -> (repository: GitRepositoryInfo, checkoutPath: String)? {
-        if let codePath {
-            if let exact = repositories.first(where: { $0.path == codePath }) { return (exact, exact.path) }
-            let resolved = URL(fileURLWithPath: codePath).resolvingSymlinksInPath().path
-            for repository in repositories {
-                let worktrees = await git.listWorktrees(at: repository.path)
-                if worktrees.contains(where: { URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == resolved }) {
-                    return (repository, codePath)
-                }
+    ) async -> ScanSelection {
+        if let codePath, let owner = await repository(holding: codePath, in: repositories, git: git) {
+            let available = owner.path == codePath || FileManager.default.fileExists(atPath: codePath)
+            return .checkout(repository: owner.path, path: codePath, available: available)
+        }
+        if let recorded {
+            guard let repository = repositories.first(where: { $0.path == recorded.repository }) else {
+                return .missingRepository(recorded.repository)
             }
+            guard let checkout = recorded.checkout, checkout != repository.path else {
+                return .checkout(repository: repository.path, path: repository.path, available: true)
+            }
+            // `codePath` was just looked up in every repository.
+            let owned = checkout != codePath ? await Self.repository(holding: checkout, in: [repository], git: git) != nil : false
+            return .checkout(
+                repository: repository.path, path: checkout,
+                available: owned && FileManager.default.fileExists(atPath: checkout)
+            )
         }
         let primary = WorkspacePathPresentation.standardizedPath(primaryPath)
-        guard let fallback = repositories.first(where: { $0.path == primary }) ?? repositories.first else { return nil }
-        return (fallback, fallback.path)
+        guard let fallback = repositories.first(where: { $0.path == primary }) ?? repositories.first else { return .none }
+        return .checkout(repository: fallback.path, path: fallback.path, available: true)
+    }
+
+    static func applyScan(
+        _ scan: ScanSelection,
+        repositories: [GitRepositoryInfo],
+        to selection: inout NewTaskWorktreeSelection
+    ) {
+        switch scan {
+        case .checkout(let repository, let path, let available):
+            selection.updateRepositories(
+                repositories, selectedPath: repository, checkoutPath: path, checkoutAvailable: available
+            )
+        case .missingRepository(let recorded):
+            selection.updateRepositories(repositories, missingSelection: recorded)
+        case .none:
+            selection.updateRepositories(repositories, selectedPath: nil)
+        }
+    }
+
+    /// The repository whose root or registered worktree, including one whose
+    /// folder is gone, is `path`.
+    static func repository(
+        holding path: String,
+        in repositories: [GitRepositoryInfo],
+        git: any GitRepositoryOperating
+    ) async -> GitRepositoryInfo? {
+        if let exact = repositories.first(where: { $0.path == path }) { return exact }
+        let resolved = comparablePath(path)
+        for repository in repositories {
+            let worktrees = await git.listWorktrees(at: repository.path)
+            if worktrees.contains(where: { comparablePath($0.path) == resolved }) { return repository }
+        }
+        return nil
+    }
+
+    /// Resolves symlinks through the deepest existing ancestor, so a checkout
+    /// that is gone still compares equal to Git's spelling of it
+    /// (`/var/…` and `/private/var/…`).
+    private static func comparablePath(_ path: String) -> String {
+        var existing = URL(fileURLWithPath: path).standardizedFileURL
+        var missing: [String] = []
+        while existing.path != "/", !FileManager.default.fileExists(atPath: existing.path) {
+            missing.insert(existing.lastPathComponent, at: 0)
+            existing.deleteLastPathComponent()
+        }
+        return missing.reduce(existing.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.path
     }
 
     private func claimIntent() {
@@ -258,9 +312,10 @@ struct NewTaskWorktreeDockView: View {
     }
 
     /// Picking a repository here moves the shared setting, exactly as the
-    /// Repository card's picker does.
+    /// Repository card's picker does. Picking the selected repository again
+    /// replaces a checkout that is gone with its own folder.
     private func selectRepository(_ repository: GitRepositoryInfo) {
-        guard let workspace, repository.path != selection.repositoryPath else { return }
+        guard let workspace, selection.isNewChoice(repository) else { return }
         let previous = selection
         if TaskWorktreeCheckoutReservation.isReserved(repository.path) {
             selection = previous
@@ -268,10 +323,7 @@ struct NewTaskWorktreeDockView: View {
             return
         }
         TaskCodeLocationPin.set(repository.path, workspace: workspace, task: pinOwner)
-        selection.repositoryPath = repository.path
-        selection.checkoutPath = repository.path
-        selection.defaultBaseLabel = nil
-        selection.currentBaseLabel = nil
+        selection.choose(repository)
         guard allowsChoice,
               let draft = NewTaskWorktreeComposerFlow.liveDraft(draft, in: workspace) else { return }
         do {
@@ -437,12 +489,16 @@ struct NewTaskWorktreeDockView: View {
 
     private var repositoryMenuHelp: String {
         guard let repository = selection.selectedRepository else { return "Choose the repository to branch from" }
+        if selection.isBlockedByCheckout {
+            let checkout = WorkspacePathPresentation.abbreviatePath(selection.checkoutPath ?? repository.path)
+            return "\(checkout) is no longer available. Choose \(repository.name) again, or start from the default branch"
+        }
         let origin = NewTaskWorktreeDockPresentation.startsFrom(selection.base, label: selection.baseLabel)
         return "New branch of \(repository.path), \(origin)"
     }
 
     private var repositoryMenuLabel: some View {
-        let repository = selection.selectedRepository
+        let needsChoice = selection.selectedRepository == nil || selection.isBlockedByCheckout
         return HStack(spacing: 5) {
             Image(systemName: "folder")
                 .font(Stanford.ui(10, weight: .semibold))
@@ -454,7 +510,7 @@ struct NewTaskWorktreeDockView: View {
                 .foregroundStyle(.secondary)
         }
         .font(Stanford.caption(12).weight(.semibold))
-        .foregroundStyle(repository == nil ? Stanford.poppy : Stanford.black.opacity(0.84))
+        .foregroundStyle(needsChoice ? Stanford.poppy : Stanford.black.opacity(0.84))
         .frame(maxWidth: 220)
     }
 }

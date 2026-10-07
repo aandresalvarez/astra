@@ -35,6 +35,9 @@ struct ComposerPresentationTests {
         #expect(composer.contains("problem: taskCreationError"))
         #expect(composer.contains("selection: $worktreeSelection"))
         #expect(composer.contains("hasInput: hasInput && canSubmitWorktreeSelection"))
+        // A refused submission names why: a gone checkout, not a missing repository.
+        #expect(composer.contains("worktreeSelection.submitError"))
+        #expect(!composer.contains("TaskWorktreeCreationError.repositoryUnavailable"))
         #expect(!composer.contains("NewTaskWorktreeOptionsView"))
         #expect(!composer.contains("ProgressView(\"Preparing task checkout...\")"))
 
@@ -66,6 +69,9 @@ struct ComposerPresentationTests {
         #expect(repositorySection.lowerBound < baseSection.lowerBound)
         #expect(strip.contains("selectRepository(repository)"))
         #expect(strip.contains("TaskCodeLocationPin.set(repository.path"))
+        // Picking the selected repository again replaces a gone checkout.
+        #expect(strip.contains("selection.isNewChoice(repository)"))
+        #expect(strip.contains("selection.choose(repository)"))
         #expect(strip.contains("selection: baseBinding"))
         #expect(strip.contains("updateChoice { $0.isEnabled = value }"))
         #expect(strip.contains("updateChoice { $0.base = value }"))

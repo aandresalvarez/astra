@@ -240,7 +240,8 @@ public enum TaskWorktreeBinding {
 }
 
 /// Exclusive claim on a checkout path while unused-worktree cleanup removes
-/// it. Adoption refuses the pin until the claim is released, so a task cannot
+/// it. Task pins and workspace imports refuse the checkout, or anything inside
+/// it, until the claim is released, so neither a task nor a workspace root can
 /// be saved onto a checkout that cleanup is deleting.
 public enum TaskWorktreeCheckoutReservation {
     private static let lock = NSLock()
@@ -268,10 +269,11 @@ public enum TaskWorktreeCheckoutReservation {
         lock.unlock()
     }
 
+    /// True when `path` is a checkout cleanup is removing, or lies inside one.
     public static func isReserved(_ path: String?) -> Bool {
         guard let path = key(path) else { return false }
         lock.lock()
-        let reserved = leases[path] != nil
+        let reserved = leases.keys.contains { path == $0 || path.hasPrefix($0 + "/") }
         lock.unlock()
         return reserved
     }

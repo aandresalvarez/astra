@@ -56,16 +56,16 @@ struct TaskWorktreeBase: Equatable, Sendable {
     let fetched: Bool
 }
 
-/// Value snapshot of a draft's worktree, taken before the draft is deleted so
-/// cleanup can run once the model object is gone.
 /// Whether draft deletion reached the store, and the cleanup that starts
 /// only after that save. `cleanup` is nil when there is no worktree or the
-/// deletion was not persisted.
+/// deletion was not persisted; it yields true when every worktree was removed.
 struct TaskWorktreeDeletionResult: Sendable {
     var persisted: Bool
     var cleanup: Task<Bool, Never>?
 }
 
+/// Value snapshot of a draft's worktree, taken before the draft is deleted so
+/// cleanup can run once the model object is gone.
 struct TaskWorktreeDiscard: Codable, Equatable, Sendable {
     let taskID: UUID
     let repositoryPath: String
@@ -506,32 +506,45 @@ enum TaskWorktreeService {
 
     // MARK: - Cleanup
 
-    /// Snapshot of a draft's worktree for `discardUnusedWorktree`. Only a
-    /// worktree this install created, per its local ownership record, is ever
-    /// discarded: an imported or crafted binding, or one prepared before the
-    /// base commit was recorded, keeps its checkout.
-    static func discardSnapshot(
+    /// Snapshots of every worktree prepared for `task`, newest first, for
+    /// `discardUnusedWorktree`. They don't follow the task's current pin: a
+    /// draft retargeted to another checkout, or one that then prepared a new
+    /// worktree, still gives back the worktrees it no longer uses. Status and
+    /// reference checks keep any that changed or were adopted elsewhere. Only
+    /// a worktree this install created, per its local ownership record, is
+    /// ever discarded: an imported or crafted binding, or one prepared before
+    /// the base commit was recorded, keeps its checkout.
+    static func discardSnapshots(
         for task: AgentTask,
         ownership: TaskWorktreeOwnershipStore = TaskWorktreeCleanupStore().ownership
-    ) -> TaskWorktreeDiscard? {
-        guard let binding = activeWorktreeBinding(for: task),
-              let baseCommit = binding.baseCommit, !baseCommit.isEmpty else { return nil }
-        let discard = TaskWorktreeDiscard(
-            taskID: task.id,
-            repositoryPath: binding.repositoryPath,
-            worktreePath: binding.worktreePath,
-            branch: binding.branch,
-            baseCommit: baseCommit
-        )
-        guard ownership.owns(discard) else {
-            AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
-                "worktree": binding.worktreePath,
-                "branch": binding.branch,
-                "reason": "not_created_locally"
-            ])
-            return nil
-        }
-        return discard
+    ) -> [TaskWorktreeDiscard] {
+        var seen = Set<String>()
+        return task.events
+            .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
+            .sorted { $0.timestamp > $1.timestamp }
+            .compactMap { event -> TaskWorktreeDiscard? in
+                guard case .success(let binding) = event.decodePayload(as: TaskWorktreePayload.self),
+                      let baseCommit = binding.baseCommit, !baseCommit.isEmpty,
+                      seen.insert(WorkspacePathPresentation.standardizedPath(binding.worktreePath)).inserted else {
+                    return nil
+                }
+                let discard = TaskWorktreeDiscard(
+                    taskID: task.id,
+                    repositoryPath: binding.repositoryPath,
+                    worktreePath: binding.worktreePath,
+                    branch: binding.branch,
+                    baseCommit: baseCommit
+                )
+                guard ownership.owns(discard) else {
+                    AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
+                        "worktree": binding.worktreePath,
+                        "branch": binding.branch,
+                        "reason": "not_created_locally"
+                    ])
+                    return nil
+                }
+                return discard
+            }
     }
 
     /// Removes a discarded draft's worktree and branch only while nothing
@@ -604,8 +617,9 @@ enum TaskWorktreeService {
                 == URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         }
         // Hold the checkout through removal and branch deletion. Repository
-        // selection and task creation refuse the path while this is held, and
-        // a reference that lands before either Git call aborts cleanup.
+        // selection, task creation, and workspace imports refuse the path, or
+        // a root inside it, while this is held, and a reference that lands
+        // before either Git call aborts cleanup.
         let reservation = TaskWorktreeCheckoutReservation.acquire(path)
         defer { TaskWorktreeCheckoutReservation.release(reservation) }
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
@@ -654,13 +668,13 @@ enum TaskWorktreeService {
             })
     }
 
-    /// Records cleanup before deleting the draft, then saves the deletion.
-    /// Removal starts only after both are durable and resumes on next launch
-    /// if interrupted. A failed intent write never runs `delete`. A failed
-    /// save rolls the deletion back so the draft stays in the context.
+    /// Records cleanup of each worktree before deleting the draft, then saves
+    /// the deletion. Removal starts only after both are durable and resumes on
+    /// next launch if interrupted. A failed intent write never runs `delete`.
+    /// A failed save rolls the deletion back so the draft stays in the context.
     @discardableResult
     static func saveDeletionThenDiscard(
-        _ discard: TaskWorktreeDiscard?,
+        _ discards: [TaskWorktreeDiscard],
         workspace: Workspace?,
         modelContext: ModelContext,
         cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
@@ -669,7 +683,7 @@ enum TaskWorktreeService {
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         }
     ) -> TaskWorktreeDeletionResult {
-        if let discard {
+        for discard in discards {
             do {
                 try cleanupStore.record(discard)
                 AppLogger.breadcrumb(action: "task_worktree_cleanup_requested", category: "Git", taskID: discard.taskID, fields: [
@@ -688,7 +702,7 @@ enum TaskWorktreeService {
         let saved = persist(workspace, modelContext)
         guard saved else {
             modelContext.rollback()
-            if let discard {
+            for discard in discards {
                 AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
                     "worktree": discard.worktreePath,
                     "branch": discard.branch,
@@ -697,9 +711,16 @@ enum TaskWorktreeService {
             }
             return TaskWorktreeDeletionResult(persisted: false, cleanup: nil)
         }
-        guard let discard else { return TaskWorktreeDeletionResult(persisted: true, cleanup: nil) }
+        guard !discards.isEmpty else { return TaskWorktreeDeletionResult(persisted: true, cleanup: nil) }
         let cleanup = Task { @MainActor in
-            await TaskWorktreeCleanupService.process(discard, store: cleanupStore, modelContext: modelContext)
+            var removedAll = true
+            for discard in discards {
+                let removed = await TaskWorktreeCleanupService.process(
+                    discard, store: cleanupStore, modelContext: modelContext
+                )
+                removedAll = removedAll && removed
+            }
+            return removedAll
         }
         return TaskWorktreeDeletionResult(persisted: true, cleanup: cleanup)
     }

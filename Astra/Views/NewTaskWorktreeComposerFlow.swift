@@ -109,41 +109,73 @@ enum NewTaskWorktreeComposerFlow {
         selection.base = request.base
         if let repository = request.repositoryPath, !repository.isEmpty {
             selection.repositoryPath = WorkspacePathPresentation.standardizedPath(repository)
-        }
-        if let checkout = request.checkoutPath, !checkout.isEmpty {
-            selection.checkoutPath = WorkspacePathPresentation.standardizedPath(checkout)
+            // The draft's own checkout, never one left over from another draft.
+            let checkout = request.checkoutPath.flatMap { $0.isEmpty ? nil : WorkspacePathPresentation.standardizedPath($0) }
+            selection.checkoutPath = checkout
+            selection.isCheckoutUnavailable = checkout.map { !FileManager.default.fileExists(atPath: $0) } ?? false
         }
     }
 
     /// After a discarded draft is deleted, saves the deletion and, once it is
-    /// durable, removes its worktree if nothing happened in it. False when
-    /// the intent or the deletion save failed; the draft is still present.
+    /// durable, removes each worktree nothing happened in. False when an
+    /// intent or the deletion save failed; the draft is still present.
     @discardableResult
-    static func discardWorktree(
-        _ worktree: TaskWorktreeDiscard?,
+    static func discardWorktrees(
+        _ worktrees: [TaskWorktreeDiscard],
         workspace: Workspace?,
         modelContext: ModelContext,
+        cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
         delete: @MainActor () -> Void = {}
     ) -> Bool {
         TaskWorktreeService.saveDeletionThenDiscard(
-            worktree, workspace: workspace, modelContext: modelContext, delete: delete
+            worktrees, workspace: workspace, modelContext: modelContext, cleanupStore: cleanupStore, delete: delete
         ).persisted
     }
 
     /// Deletes `draft` only when that deletion is saved. No draft is already
     /// a successful reset. Callers clear composer state only when this is true.
+    /// Every worktree the draft prepared is given back, including one it was
+    /// retargeted away from.
     @discardableResult
     static func discardDraft(
         _ draft: AgentTask?,
         modelContext: ModelContext,
+        cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
         delete: @MainActor (AgentTask) -> Void
     ) -> Bool {
         guard let draft else { return true }
-        return discardWorktree(
-            TaskWorktreeService.discardSnapshot(for: draft),
+        return discardWorktrees(
+            TaskWorktreeService.discardSnapshots(for: draft, ownership: cleanupStore.ownership),
             workspace: draft.workspace,
             modelContext: modelContext,
+            cleanupStore: cleanupStore,
             delete: { delete(draft) }
+        )
+    }
+
+    /// Deletes the draft `task` was created from. The worktree the task took
+    /// over stays; any other the draft prepared, such as one it was retargeted
+    /// away from or one from another workspace, is given back like a discarded
+    /// draft's. False when the deletion wasn't saved; the draft is still present.
+    @discardableResult
+    static func discardPromotedDraft(
+        _ draft: AgentTask,
+        keeping task: AgentTask,
+        modelContext: ModelContext,
+        cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore()
+    ) -> Bool {
+        let taskCheckout = task.executionRootPath.flatMap { $0.isEmpty ? nil : WorkspacePathPresentation.standardizedPath($0) }
+        let unused = TaskWorktreeService.discardSnapshots(for: draft, ownership: cleanupStore.ownership).filter { discard in
+            let worktree = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
+            guard let taskCheckout else { return true }
+            return taskCheckout != worktree && !taskCheckout.hasPrefix(worktree + "/")
+        }
+        return discardWorktrees(
+            unused,
+            workspace: draft.workspace,
+            modelContext: modelContext,
+            cleanupStore: cleanupStore,
+            delete: { modelContext.delete(draft) }
         )
     }
 }

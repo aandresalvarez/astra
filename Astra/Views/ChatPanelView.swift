@@ -1118,7 +1118,7 @@ struct ChatPanelView: View {
     private func performTaskCreation(_ action: @escaping @MainActor () async throws -> Void) {
         guard !isPreparingWorktree, !isThinking else { return }
         guard canSubmitWorktreeSelection else {
-            return taskCreationError = TaskWorktreeCreationError.repositoryUnavailable.localizedDescription
+            return taskCreationError = worktreeSelection.submitError.localizedDescription
         }
         taskCreationError = nil
         taskCreation.start(action, onError: reportTaskCreationError)
@@ -1126,7 +1126,7 @@ struct ChatPanelView: View {
 
     private func prepareTaskCheckout(_ task: AgentTask) async throws {
         guard canSubmitWorktreeSelection else {
-            throw TaskWorktreeCreationError.repositoryUnavailable
+            throw worktreeSelection.submitError
         }
         let draft = composerDraft
         let request = requestedWorktree
@@ -2401,19 +2401,10 @@ struct ChatPanelView: View {
     }
 
     private func promoteDraft(to finalTask: AgentTask) {
-        if let draft = draftTask, draft !== finalTask {
-            // Delete the draft since we're creating the real task. A worktree
-            // the task didn't take over (a draft from another workspace) is
-            // given back like a discarded draft's.
-            let draftWorkspace = draft.workspace
-            let unusedWorktree = draft.executionRootPath == finalTask.executionRootPath
-                ? nil
-                : TaskWorktreeService.discardSnapshot(for: draft)
-            let deleted = TaskWorktreeService.saveDeletionThenDiscard(
-                unusedWorktree, workspace: draftWorkspace, modelContext: modelContext,
-                delete: { modelContext.delete(draft) }
-            ).persisted
-            if deleted { draftTask = nil }
+        // The real task replaces the draft; worktrees it didn't take over are given back.
+        if let draft = draftTask, draft !== finalTask,
+           NewTaskWorktreeComposerFlow.discardPromotedDraft(draft, keeping: finalTask, modelContext: modelContext) {
+            draftTask = nil
         }
         // finalTask already captured the flag; reset it so a later, unrelated
         // task in this same view instance isn't mismarked as explicit.
