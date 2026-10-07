@@ -438,7 +438,7 @@ final class AgentRuntimeWorker {
             selectedRuntime: selectedRuntime,
             executionPolicy: executionPolicy
         )
-        let capabilityResolutionSnapshot = appliedRuntime.capabilityResolutionSnapshot
+        let admittedCapabilitySnapshot = appliedRuntime.capabilityResolutionSnapshot
         if let sensitiveDataBlock {
             RuntimeSensitiveDataLaunchGate.record(sensitiveDataBlock, task: task, run: run, modelContext: modelContext, phase: auditPhase)
             isRunning = false
@@ -487,7 +487,7 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             permissionPolicy: launchPermissionPolicy,
             executionPolicy: executionPolicy,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            capabilityResolutionSnapshot: admittedCapabilitySnapshot,
             precomputedRuntimeRequirements: appliedRuntime.requirements,
             runtimeConfiguration: runtimeConfiguration,
             preflightCache: capabilityPreflightCache,
@@ -498,6 +498,18 @@ final class AgentRuntimeWorker {
         ) else {
             return
         }
+        // The connector gate may have just recorded a task grant: Auto allows a
+        // connector without asking. The admitted snapshot predates it, so the
+        // exposure is refreshed from the durable grants before anything is built
+        // from it, or this launch would start without what the chat says was
+        // allowed.
+        let capabilityResolutionSnapshot = admittedCapabilitySnapshot.addingApprovedCredentialLabels(
+            TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                runtime: selectedRuntime,
+                additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+            )
+        )
         let githubRepositoryStatus = await capabilityPreflightCache.cachedStatus(
             for: CommonCLIPrerequisites.githubAuth,
             workingDirectory: capabilityWorkingDirectory

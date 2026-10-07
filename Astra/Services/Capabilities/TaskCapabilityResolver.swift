@@ -65,6 +65,26 @@ struct TaskCapabilityResolutionSnapshot {
         )
     }
 
+    /// The same snapshot, also exposing `labels`.
+    ///
+    /// A grant can land between capture and launch: in Auto the launch gate
+    /// allows a connector for the task without asking. A launch built from the
+    /// captured exposure would then start without the credential the chat says
+    /// was allowed. Scope stays what admission resolved; only the exposure is
+    /// refreshed, from the durable task grants the caller reads.
+    func addingApprovedCredentialLabels(_ labels: [String]) -> TaskCapabilityResolutionSnapshot {
+        let added = Set(labels).subtracting(connectorCredentialExposurePolicy.approvedCredentialLabels)
+        guard !added.isEmpty else { return self }
+        var policy = connectorCredentialExposurePolicy
+        policy.approvedCredentialLabels.formUnion(added)
+        return TaskCapabilityResolutionSnapshot(
+            fullInventory: fullInventory,
+            providerLaunch: providerLaunch,
+            providerLaunchContextText: providerLaunchContextText,
+            connectorCredentialExposurePolicy: policy
+        )
+    }
+
     func scope(_ requestedScope: TaskCapabilityResolutionScope) -> TaskCapabilityPromptScope {
         switch requestedScope {
         case .fullInventory:
