@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
@@ -7,18 +8,117 @@ enum TaskDeliverableExpectation {
     static let artifactScanEntryLimit = 500
     static let artifactScanDepthLimit = 4
 
-    static func requiresStandaloneArtifact(_ task: AgentTask) -> Bool {
-        let combinedIntent = deliverableIntentText(for: task)
+    /// Which request a run's deliverables are read from.
+    ///
+    /// The task's title, goal, inputs and acceptance criteria describe the
+    /// request the task was created for. A later follow-up asks for something
+    /// else: grading "git commit notes-a.txt" against an original goal of
+    /// "write notes-a.txt" failed a successful commit as `no_usable_result`
+    /// because the commit did not write notes-a.txt again.
+    enum Scope: Equatable, Sendable {
+        /// The run carries out the task's own request: its first launch, a
+        /// retry or resume of it, a plan step, or a scheduled or chained run.
+        case task
+        /// The run carries out a later user request that stands on its own.
+        case turn(String)
+    }
+
+    /// The scope `run` is graded against, read from the durable turn request
+    /// that launched it. Runs without a readable request — legacy launches,
+    /// unsaved tasks — keep the task's own request.
+    @MainActor
+    static func scope(for task: AgentTask, run: TaskRun?) -> Scope {
+        scope(for: task, runID: run?.id)
+    }
+
+    @MainActor
+    static func scope(for task: AgentTask, runID: UUID?) -> Scope {
+        guard let runID,
+              let modelContext = task.modelContext,
+              let request = try? TaskTurnRequestRepository.request(runID: runID, in: modelContext) else {
+            return .task
+        }
+        switch request.kind {
+        case .initial, .scheduled, .planStep:
+            return .task
+        case .followUp, .retry:
+            break
+        }
+        // A referential turn ("try again", "keep going") carries out the turn
+        // it points back to, and owes whatever that turn owed.
+        guard let intent = request.executionPolicySnapshot?.turnIntentSnapshot,
+              let executedTurn = intent.isReferential ? intent.inheritedTurn : intent.acceptedTurn,
+              isFollowUpMessage(executedTurn, of: task, in: modelContext) else {
+            return .task
+        }
+        return .turn(executedTurn.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Whether a run whose task's own request names a deliverable still owes
+    /// it. Review surfaces ask this only after the task-level check passes, so
+    /// a follow-up can clear the original requirement there but never add one;
+    /// the completion gate grades the run's own scope in full.
+    @MainActor
+    static func runOwesTaskDeliverable(_ task: AgentTask, runID: UUID?) -> Bool {
+        let scope = scope(for: task, runID: runID)
+        return scope == .task || requiresDeliverableArtifact(task, scope: scope)
+    }
+
+    /// Whether `turn` is a message the user sent to the running task. Retries,
+    /// resumes and permission continuations carry a turn's text rather than
+    /// its event, and a turn that resolves to the goal or to the conversation
+    /// that shaped the task before launch is still the task's own request.
+    @MainActor
+    private static func isFollowUpMessage(
+        _ turn: String,
+        of task: AgentTask,
+        in modelContext: ModelContext
+    ) -> Bool {
+        let storedTurn = TaskTurnIntentResolver.storedTurnText(turn)
+        guard !storedTurn.isEmpty,
+              let followUps = try? TaskTurnRequestRepository.sourceUserMessages(for: task, in: modelContext) else {
+            return false
+        }
+        return followUps.contains { TaskTurnIntentResolver.storedTurnText($0.payload) == storedTurn }
+    }
+
+    /// The request text a scope reads. A follow-up turn is only its own words:
+    /// the task's title and acceptance criteria describe the original request.
+    private struct RequestText {
+        let title: String
+        let goal: String
+        let inputs: [String]
+        let acceptanceCriteria: [String]
+
+        init(task: AgentTask, scope: Scope) {
+            switch scope {
+            case .task:
+                title = task.title
+                goal = task.goal
+                inputs = task.inputs
+                acceptanceCriteria = task.acceptanceCriteria
+            case .turn(let turn):
+                title = ""
+                goal = turn
+                inputs = []
+                acceptanceCriteria = []
+            }
+        }
+    }
+
+    static func requiresStandaloneArtifact(_ task: AgentTask, scope: Scope = .task) -> Bool {
+        let request = RequestText(task: task, scope: scope)
+        let combinedIntent = deliverableIntentText(for: request)
         if outputFilenames(in: combinedIntent) == transientOutputFilenames(in: combinedIntent),
            !transientOutputFilenames(in: combinedIntent).isEmpty {
             return false
         }
 
         let text = [
-            persistentDeliverableText(from: task.title),
-            persistentDeliverableText(from: task.goal),
-            persistentDeliverableText(from: task.inputs.joined(separator: " ")),
-            persistentDeliverableText(from: task.acceptanceCriteria.joined(separator: " "))
+            persistentDeliverableText(from: request.title),
+            persistentDeliverableText(from: request.goal),
+            persistentDeliverableText(from: request.inputs.joined(separator: " ")),
+            persistentDeliverableText(from: request.acceptanceCriteria.joined(separator: " "))
         ]
             .joined(separator: " ")
             .lowercased()
@@ -63,23 +163,29 @@ enum TaskDeliverableExpectation {
         return containsAny(text, artifactPhrases) || containsAnyWholeWord(text, artifactWords)
     }
 
-    static func requiresDeliverableArtifact(_ task: AgentTask) -> Bool {
-        requiresDeliverableArtifact(task, requiredOutputFilenames: requiredOutputFilenames(task))
+    static func requiresDeliverableArtifact(_ task: AgentTask, scope: Scope = .task) -> Bool {
+        requiresDeliverableArtifact(
+            task,
+            scope: scope,
+            requiredOutputFilenames: requiredOutputFilenames(task, scope: scope)
+        )
     }
 
     static func requiresDeliverableArtifact(
         _ task: AgentTask,
+        scope: Scope = .task,
         requiredOutputFilenames: Set<String>
     ) -> Bool {
-        requiresStandaloneArtifact(task) || !requiredOutputFilenames.isEmpty
+        requiresStandaloneArtifact(task, scope: scope) || !requiredOutputFilenames.isEmpty
     }
 
-    static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {
+    static func requiredOutputFilenames(_ task: AgentTask, scope: Scope = .task) -> Set<String> {
+        let request = RequestText(task: task, scope: scope)
         let text = [
-            deliverableRelevantText(from: task.title),
-            deliverableRelevantText(from: task.goal),
-            deliverableRelevantText(from: task.inputs.joined(separator: " ")),
-            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: " "))
+            deliverableRelevantText(from: request.title),
+            deliverableRelevantText(from: request.goal),
+            deliverableRelevantText(from: request.inputs.joined(separator: " ")),
+            deliverableRelevantText(from: request.acceptanceCriteria.joined(separator: " "))
         ]
             .joined(separator: "\n")
 
@@ -190,17 +296,28 @@ enum TaskDeliverableExpectation {
         """
     }
 
-    static func missingDeliverableMessage(for task: AgentTask) -> String {
-        missingDeliverableMessage(for: task, requiredFilenames: requiredOutputFilenames(task))
+    static func missingDeliverableMessage(for task: AgentTask, scope: Scope = .task) -> String {
+        missingDeliverableMessage(for: task, requiredFilenames: requiredOutputFilenames(task, scope: scope))
     }
 
-    static func missingDeliverableMessage(for task: AgentTask, requiredFilenames: Set<String>) -> String {
+    /// `workspacePath` is the code root the run's deliverables were searched
+    /// in. Without one this names where the task's code runs — a pinned
+    /// worktree, not the workspace it belongs to.
+    static func missingDeliverableMessage(
+        for task: AgentTask,
+        requiredFilenames: Set<String>,
+        workspacePath: String? = nil
+    ) -> String {
         guard !requiredFilenames.isEmpty else {
             return missingArtifactMessage(for: task)
         }
 
         let access = TaskWorkspaceAccess(task: task)
-        let workspaceLocation = access.effectiveWorkspacePath.isEmpty ? "the workspace root" : access.effectiveWorkspacePath
+        let searchedRoot = workspacePath ?? access.codeWorkingDirectory
+        let rootLabel = searchedRoot.isEmpty || searchedRoot == access.effectiveWorkspacePath
+            ? "Workspace root"
+            : "Working directory"
+        let workspaceLocation = searchedRoot.isEmpty ? "the workspace root" : searchedRoot
         let taskFolderLocation = access.taskFolder.isEmpty ? "the task output folder" : access.taskFolder
         let filenames = requiredFilenames.sorted().joined(separator: ", ")
         let fileNoun = requiredFilenames.count == 1 ? "file" : "files"
@@ -208,7 +325,7 @@ enum TaskDeliverableExpectation {
         Missing explicitly requested deliverable \(fileNoun): \(filenames).
         ASTRA did not mark this task complete because this run did not create the requested \(fileNoun).
         Expected deliverable search roots:
-        - Workspace root: \(workspaceLocation)
+        - \(rootLabel): \(workspaceLocation)
         - Task output folder: \(taskFolderLocation)
         Ask the agent to write the missing \(fileNoun) to the requested workspace path, retry with the needed file-write approval, or explicitly choose a workspace path.
         """
@@ -353,12 +470,12 @@ enum TaskDeliverableExpectation {
             .joined(separator: "\n")
     }
 
-    private static func deliverableIntentText(for task: AgentTask) -> String {
+    private static func deliverableIntentText(for request: RequestText) -> String {
         [
-            deliverableRelevantText(from: task.title),
-            deliverableRelevantText(from: task.goal),
-            deliverableRelevantText(from: task.inputs.joined(separator: "\n")),
-            deliverableRelevantText(from: task.acceptanceCriteria.joined(separator: "\n"))
+            deliverableRelevantText(from: request.title),
+            deliverableRelevantText(from: request.goal),
+            deliverableRelevantText(from: request.inputs.joined(separator: "\n")),
+            deliverableRelevantText(from: request.acceptanceCriteria.joined(separator: "\n"))
         ].joined(separator: "\n")
     }
 

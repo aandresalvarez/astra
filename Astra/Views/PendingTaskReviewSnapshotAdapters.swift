@@ -20,21 +20,27 @@ extension PendingTaskReviewEventSnapshot {
 }
 
 extension PendingTaskReviewSnapshotInput {
+    @MainActor
     init(task: AgentTask, snapshot: TaskThreadSnapshot) {
         let latestRun = snapshot.latestRun
         let latestRunSnapshot = latestRun.map(PendingTaskReviewRunSnapshot.init)
         let runSnapshots = snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init)
         let eventSnapshots = snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init)
-        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+        let taskRequiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
         let requiresScopedArtifactEvidence = PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
             taskStatus: task.status,
             isTaskDone: task.isDone,
-            requiresDeliverableArtifact: requiresDeliverableArtifact,
+            requiresDeliverableArtifact: taskRequiresDeliverableArtifact,
             latestRun: latestRunSnapshot,
             runs: runSnapshots,
             events: eventSnapshots
         )
-        let latestRunHasScopedArtifact = requiresScopedArtifactEvidence && latestRun.map { latestRun in
+        // This runs on every body pass, so only a run already held to the
+        // task's file reads its turn request.
+        let requiresDeliverableArtifact = requiresScopedArtifactEvidence
+            ? TaskDeliverableExpectation.runOwesTaskDeliverable(task, runID: latestRun?.id)
+            : taskRequiresDeliverableArtifact
+        let latestRunHasScopedArtifact = requiresScopedArtifactEvidence && requiresDeliverableArtifact && latestRun.map { latestRun in
             TaskDeliverableExpectation.hasRunScopedArtifact(
                 for: task,
                 fileChanges: latestRun.fileChanges,

@@ -34,15 +34,20 @@ enum TaskDeliverableVerificationService {
         workspacePath: String? = nil,
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
-        let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
+        // A follow-up turn owes what it asked for, not the original goal's file.
+        let scope = TaskDeliverableExpectation.scope(for: task, run: run)
+        let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task, scope: scope)
         let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(
             task,
+            scope: scope,
             requiredOutputFilenames: requiredFilenames
         )
+        let taskAccess = TaskWorkspaceAccess(task: task)
+        let searchedWorkspacePath = workspacePath ?? taskAccess.effectiveWorkspacePath
         let discoveredFiles = TaskOutputDiscovery.files(
             for: task,
             run: run,
-            workspacePath: workspacePath
+            workspacePath: searchedWorkspacePath
         )
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             discoveredFiles,
@@ -75,7 +80,8 @@ enum TaskDeliverableVerificationService {
                 requiresHumanReview: false,
                 summary: TaskDeliverableExpectation.missingDeliverableMessage(
                     for: task,
-                    requiredFilenames: requiredFilenames
+                    requiredFilenames: requiredFilenames,
+                    workspacePath: searchedWorkspacePath
                 ),
                 checks: [
                     TaskDeliverableCheck(
@@ -109,8 +115,7 @@ enum TaskDeliverableVerificationService {
         }
 
         let hostFileAccess = HostFileAccessBroker()
-        let taskAccess = TaskWorkspaceAccess(task: task)
-        let artifactRoots = [taskAccess.taskFolder, workspacePath ?? taskAccess.effectiveWorkspacePath]
+        let artifactRoots = [taskAccess.taskFolder, searchedWorkspacePath]
             .filter { !$0.isEmpty }
         for file in files.prefix(12) {
             let artifactRoot = artifactRoot(for: file, allowedRoots: artifactRoots)

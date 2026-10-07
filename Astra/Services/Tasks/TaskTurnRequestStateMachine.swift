@@ -194,6 +194,31 @@ enum TaskTurnRequestRepository {
         return try modelContext.fetch(descriptor).first
     }
 
+    /// The request whose admission launched `runID`. Each attempt gets its own
+    /// run, so at most one request should own it; the latest wins if not.
+    static func request(runID: UUID, in modelContext: ModelContext) throws -> TaskTurnRequest? {
+        let target: UUID? = runID
+        var descriptor = FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate { $0.runID == target },
+            sortBy: [SortDescriptor(\.sequence, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try modelContext.fetch(descriptor).first
+    }
+
+    /// The `user.message` events that started this task's turn requests: what
+    /// the user sent once the task was running, as opposed to the conversation
+    /// that shaped it before launch, which no request owns.
+    static func sourceUserMessages(for task: AgentTask, in modelContext: ModelContext) throws -> [TaskEvent] {
+        let sourceEventIDs = try requests(for: task, in: modelContext).map(\.messageEventID)
+        guard !sourceEventIDs.isEmpty else { return [] }
+        let userMessage = TaskEventTypes.Conversation.userMessage.rawValue
+        let descriptor = FetchDescriptor<TaskEvent>(
+            predicate: #Predicate { sourceEventIDs.contains($0.id) && $0.type == userMessage }
+        )
+        return try modelContext.fetch(descriptor)
+    }
+
     /// The table is append-only, so computing the next sequence must not
     /// fetch a task's entire submission history — only the single highest
     /// `sequence` row is needed.
