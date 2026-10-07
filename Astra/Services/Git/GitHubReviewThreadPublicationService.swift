@@ -124,7 +124,7 @@ final class GitHubReviewThreadPublicationService {
         let id = GitHubReviewThreadArtifactPolicy.digest(Data("\(filePath):\(digest):\(requestID ?? "")".utf8) + snapshotData)
         return GitHubReviewThreadProposal(id: id, filePath: filePath, digest: digest, requestID: requestID,
                                          requestEventIDs: (request?.sourceEventIDs ?? []).map(\.uuidString),
-                                         priorRequestIDs: request?.priorRequestIDs ?? [],
+                                         chainID: request?.chain,
                                          payload: payload, snapshots: snapshots)
     }
 
@@ -212,7 +212,7 @@ final class GitHubReviewThreadPublicationService {
         .init(proposalID: proposal.id, filePath: proposal.filePath, requestID: proposal.requestID,
               pullRequestURL: proposal.payload.pullRequestUrl, actions: actions,
               requestEventIDs: proposal.requestEventIDs,
-              priorRequestIDs: proposal.priorRequestIDs.isEmpty ? nil : proposal.priorRequestIDs)
+              chainID: proposal.chainID)
     }
 
     private func save(task: AgentTask, operation: String) throws {

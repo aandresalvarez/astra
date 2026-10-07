@@ -1243,7 +1243,7 @@ struct GitHubReviewThreadWorkflowTests {
         let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
 
         #expect(request.operations == ["resolve"])
-        #expect(request.priorRequestIDs.isEmpty)
+        #expect(request.chain == request.id)   // its own request, not an extension of the earlier one
     }
 
     // MARK: - The request chain stays bounded
@@ -1263,116 +1263,110 @@ struct GitHubReviewThreadWorkflowTests {
                                        payload: "also resolve them"))
         }
         let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
-        #expect(request.operations.contains("resolve") && request.priorRequestIDs.count > 1)   // the follow-ups really chained
+        #expect(request.operations.contains("resolve") && request.chain != request.id)   // the follow-ups really chained
         #expect(request.sourceEventIDs.count <= 20)
     }
 
     // MARK: - Receipts an additive request still needs survive compaction
 
-    @Test("a settled batch the current request still depends on is kept however old it is")
-    func referencedSettledBatchesAreKept() throws {
-        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    private func insertBatch(_ f: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, run: TaskRun, file: URL),
+                             _ type: String, _ proposal: String, request: String, chain: String? = nil,
+                             operation: String, payload: GitHubReviewThreadPayload? = nil) {
         let url = "https://github.com/example/repo/pull/12"
-        func insert(_ type: String, _ proposal: String, request: String, prior: [String] = []) {
-            var record = GitHubReviewThreadReceipt(proposalID: proposal, filePath: "/x/\(proposal).json", requestID: request,
-                pullRequestURL: url, actions: [.init(threadID: "T1", operation: "reply", commentID: "C", url: url)])
-            record.priorRequestIDs = prior
-            f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
-        }
-        insert(GitHubReviewThreadEvents.dispatched, "original", request: "r0")
-        insert(GitHubReviewThreadEvents.receipt, "original", request: "r0")
-        for index in 1...7 {   // more settled batches than the mirror keeps by age
-            insert(GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", prior: ["r0"])
-            insert(GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", prior: ["r0"])
-        }
+        var record = GitHubReviewThreadReceipt(proposalID: proposal, filePath: "/x/\(proposal).json", requestID: request,
+            pullRequestURL: url, actions: [.init(threadID: "T1", operation: operation, commentID: "C", url: url)])
+        record.chainID = chain
+        record.approvedPayload = payload
+        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
+    }
 
+    private func mirroredProposals(_ f: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, run: TaskRun, file: URL)) throws -> [WorkspaceConfigManager.EventConfig] {
         let workspace = try #require(f.task.workspace)
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: f.context))
-        let mirrored = try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString })
-        let proposals = Set(mirrored.events.compactMap { event -> String? in
+        return try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString }).events
+    }
+
+    private func proposalIDs(_ events: [WorkspaceConfigManager.EventConfig]) -> Set<String> {
+        Set(events.compactMap { event in
             (try? JSONSerialization.jsonObject(with: Data(event.payload.utf8)) as? [String: Any])?["proposalID"] as? String
         })
-
-        #expect(proposals.contains("original"))      // still named by the newer batches' chain
-        #expect(proposals.contains("later-7"))
-        #expect(!proposals.contains("later-1"))      // an old batch nothing depends on is compacted away
     }
 
-    // MARK: - Shorthand pull request numbers
-
-    @Test("an additive follow-up about another shorthand pull request starts its own request")
-    func additiveFollowUpOnAnotherShorthandPullRequest() throws {
+    @Test("a settled batch is kept only for an operation no newer batch of its request covers")
+    func settledBatchesAreKeptPerOperation() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
-        f.task.goal = "Reply to the review threads on PR 12"
-        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
-                                   payload: "also resolve the review threads on PR 13"))
-        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
-
-        #expect(request.operations == ["resolve"])
-        #expect(request.priorRequestIDs.isEmpty)
-    }
-
-    // MARK: - Bounding the chain keeps what changed the request
-
-    @Test("bounding the message chain keeps the message that added an operation")
-    func boundedChainKeepsOperationChangingMessages() throws {
-        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
-        let url = "https://github.com/example/repo/pull/12"
-        f.task.goal = "Resolve the review threads on \(url)"
-        let start = Date()
-        func message(_ text: String, _ offset: Int) -> TaskEvent {
-            let event = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: text)
-            event.timestamp = start.addingTimeInterval(TimeInterval(offset)); f.context.insert(event); return event
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "original", request: "r0", operation: "reply")
+        insertBatch(f, GitHubReviewThreadEvents.receipt, "original", request: "r0", operation: "reply")
+        for index in 1...7 {   // more settled batches than the mirror keeps by age, all resolutions
+            insertBatch(f, GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve")
+            insertBatch(f, GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve")
         }
-        _ = message("also resolve them", 0)
-        let reply = message("also reply to the review threads on \(url)", 1)   // the message that adds the reply
-        for index in 2..<42 { _ = message("also resolve them", index) }
-        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        let proposals = proposalIDs(try mirroredProposals(f))
 
-        #expect(request.operations == ["reply", "resolve"])
-        #expect(request.sourceEventIDs.count <= 20)
-        #expect(request.sourceEventIDs.contains(reply.id))
+        #expect(proposals.contains("original"))      // the only receipt of the reply
+        #expect(proposals.contains("later-7"))
+        #expect(!proposals.contains("later-1"))      // an old resolution the newest ones repeat is compacted away
     }
 
-    @Test("the ancestry an additive request keeps is bounded")
-    func additiveAncestryIsBounded() throws {
+    @Test("a settled batch whose operation a newer batch of its request repeats is not kept")
+    func repeatedOperationsAreNotKept() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "original", request: "r0", operation: "reply")
+        insertBatch(f, GitHubReviewThreadEvents.receipt, "original", request: "r0", operation: "reply")
+        for index in 1...7 {
+            insertBatch(f, GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", chain: "r0", operation: "reply")
+            insertBatch(f, GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", chain: "r0", operation: "reply")
+        }
+        #expect(!proposalIDs(try mirroredProposals(f)).contains("original"))
+    }
+
+    @Test("a long chain of follow-ups still counts the receipt of the original request")
+    func longChainKeepsReceiptCoverage() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
         f.task.goal = "Reply to the review threads on https://github.com/example/repo/pull/12"
         let start = Date()
-        for index in 0..<60 {
+        for index in 0..<25 {
             let event = TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue, payload: "also resolve them")
-            event.timestamp = start.addingTimeInterval(TimeInterval(index))
-            f.context.insert(event)
+            event.timestamp = start.addingTimeInterval(TimeInterval(index)); f.context.insert(event)
         }
         let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
-        #expect(request.priorRequestIDs.count > 1)
-        #expect(request.priorRequestIDs.count <= 20)
+        #expect(request.operations == ["reply", "resolve"])
+        #expect(GitHubReviewThreadRequirement.isPending(task: f.task))
+
+        // The reply went out under the original request; only the resolution under the latest one.
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "reply-batch", request: request.chain, chain: request.chain, operation: "reply")
+        insertBatch(f, GitHubReviewThreadEvents.receipt, "reply-batch", request: request.chain, chain: request.chain, operation: "reply")
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "resolve-batch", request: request.id, chain: request.chain, operation: "resolve")
+        insertBatch(f, GitHubReviewThreadEvents.receipt, "resolve-batch", request: request.id, chain: request.chain, operation: "resolve")
+
+        #expect(!GitHubReviewThreadRequirement.isPending(task: f.task))
+    }
+
+    @Test("refusing work on another pull request leaves the active request alone")
+    func refusalForAnotherPullRequestKeepsTheRequest() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on https://github.com/example/repo/pull/12"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "Do not resolve the review threads on https://github.com/example/repo/pull/13"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+        #expect(request.operations == ["reply"])
+        #expect(request.id.hasPrefix("goal:"))
     }
 
     @Test("a settled ancestor kept for a newer batch is compacted, not kept whole")
     func referencedAncestorsAreCompacted() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
-        let url = "https://github.com/example/repo/pull/12"
-        let payload = GitHubReviewThreadPayload(pullRequestUrl: url, commitId: Self.head, threads: [
+        let payload = GitHubReviewThreadPayload(pullRequestUrl: "https://github.com/example/repo/pull/12", commitId: Self.head, threads: [
             .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: false)])
-        func insert(_ type: String, _ proposal: String, request: String, prior: [String] = []) {
-            var record = GitHubReviewThreadReceipt(proposalID: proposal, filePath: "/x/\(proposal).json", requestID: request,
-                pullRequestURL: url, actions: [.init(threadID: "T1", operation: "reply", commentID: "C", url: url)])
-            record.priorRequestIDs = prior
-            record.approvedPayload = payload
-            f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
-        }
-        insert(GitHubReviewThreadEvents.dispatched, "original", request: "r0")
-        insert(GitHubReviewThreadEvents.receipt, "original", request: "r0")
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "original", request: "r0", operation: "reply", payload: payload)
+        insertBatch(f, GitHubReviewThreadEvents.receipt, "original", request: "r0", operation: "reply", payload: payload)
         for index in 1...7 {
-            insert(GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", prior: ["r0"])
-            insert(GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", prior: ["r0"])
+            insertBatch(f, GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve", payload: payload)
+            insertBatch(f, GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve", payload: payload)
         }
-        let workspace = try #require(f.task.workspace)
-        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: f.context))
-        let mirrored = try #require((config.tasks ?? []).first { $0.id == f.task.id.uuidString })
+        let events = try mirroredProposals(f)
         func dispatched(_ proposal: String) -> [String: Any]? {
-            mirrored.events.first { $0.type == GitHubReviewThreadEvents.dispatched && $0.payload.contains("\"\(proposal)\"") }
+            events.first { $0.type == GitHubReviewThreadEvents.dispatched && $0.payload.contains("\"\(proposal)\"") }
                 .flatMap { (try? JSONSerialization.jsonObject(with: Data($0.payload.utf8))) as? [String: Any] }
         }
 

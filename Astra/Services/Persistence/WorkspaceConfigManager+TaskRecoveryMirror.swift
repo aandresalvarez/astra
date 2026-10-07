@@ -43,13 +43,14 @@ extension WorkspaceConfigManager {
     /// stop a duplicate send). Settled batches are compacted to the newest few, and
     /// dismissals to a bounded number.
     static func threadWorkflowRetention(_ task: AgentTask) -> (kept: Set<UUID>, compact: Set<UUID>) {
-        struct Entry { let id: UUID; let type: String; let proposalID: String?; let requestID: String?; let priors: [String]; let timestamp: Date }
+        struct Entry { let id: UUID; let type: String; let proposalID: String?; let chain: String?; let operations: Set<String>; let timestamp: Date }
         let entries = task.events.compactMap { event -> Entry? in
             guard !event.isDeleted, isThreadWorkflowEvent(event.type) else { return nil }
             let object = event.payload.data(using: .utf8)
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String,
-                         requestID: object?["requestID"] as? String, priors: (object?["priorRequestIDs"] as? [String]) ?? [],
+                         chain: (object?["chainID"] as? String) ?? (object?["requestID"] as? String),
+                         operations: Set(((object?["actions"] as? [[String: Any]]) ?? []).compactMap { $0["operation"] as? String }),
                          timestamp: event.timestamp)
         }
         let settledTypes: Set<String> = ["github.review-threads.receipt", "github.review-threads.receipt-recovery"]
@@ -70,14 +71,22 @@ extension WorkspaceConfigManager {
         for batch in batches.filter({ $0.settled }).sorted(by: newestFirst).prefix(MirrorLimits.maxSettledThreadBatches) {
             kept.formUnion(batch.events.map(\.id))
         }
-        // An additive request is settled by the receipts of the requests it extends, so a
-        // batch a kept one names stays however old it is.
-        // Only their recorded actions are needed, so they lose the embedded payload.
+        // A request's receipts count across its whole chain of additive follow-ups, so each
+        // operation a kept batch's chain once settled stays covered: the newest settled
+        // batch per operation, however old. Only its recorded actions are needed, so it
+        // loses the embedded payload.
         let windowKept = kept
-        let needed = Set(batches.filter { $0.events.contains { windowKept.contains($0.id) } }.flatMap { $0.events.flatMap(\.priors) })
-        for batch in batches where batch.events.contains(where: { $0.requestID.map(needed.contains) ?? false }) {
-            kept.formUnion(batch.events.map(\.id))
-            compact.formUnion(batch.events.filter { $0.type == "github.review-threads.dispatched" && !windowKept.contains($0.id) }.map(\.id))
+        let chains = Set(batches.filter { $0.events.contains { windowKept.contains($0.id) } }.compactMap { $0.events.compactMap(\.chain).first })
+        for chain in chains {
+            let settled = batches.filter { $0.settled && $0.events.contains { $0.chain == chain } }.sorted(by: newestFirst)
+            var covered = Set<String>()
+            for batch in settled {
+                let operations = batch.events.filter { settledTypes.contains($0.type) }.reduce(into: Set<String>()) { $0.formUnion($1.operations) }
+                guard !operations.isSubset(of: covered) else { continue }
+                covered.formUnion(operations)
+                kept.formUnion(batch.events.map(\.id))
+                compact.formUnion(batch.events.filter { $0.type == "github.review-threads.dispatched" && !windowKept.contains($0.id) }.map(\.id))
+            }
         }
         kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
             .prefix(MirrorLimits.maxThreadDismissals).map(\.id))

@@ -41,8 +41,8 @@ struct GitHubReviewThreadProposal: Identifiable {
     let requestID: String?
     /// The user messages that built the request, oldest first, recorded with the dispatch.
     let requestEventIDs: [String]
-    /// The requests the request being served extends, so their receipts still count.
-    var priorRequestIDs: [String] = []
+    /// The request this one extends, so earlier receipts of the same chain still count.
+    var chainID: String? = nil
     let payload: GitHubReviewThreadPayload
     let snapshots: [GitHubReviewThreadSnapshot]
 }
@@ -61,9 +61,9 @@ struct GitHubReviewThreadReceipt: Codable {
     let actions: [Action]
     var approvedPayload: GitHubReviewThreadPayload? = nil
     var requestEventIDs: [String]? = nil
-    /// The earlier requests the dispatched request extended. A later batch can only be
-    /// judged settled with the receipts of these, so the recovery mirror keeps them.
-    var priorRequestIDs: [String]? = nil
+    /// The first request of the chain of additive follow-ups the dispatched request belongs
+    /// to. A later batch can only be judged settled with the receipts of the whole chain.
+    var chainID: String? = nil
     /// The operations the approved payload required ("thread:reply", "thread:resolve"). The
     /// recovery mirror compacts old dispatches to this summary in place of the payload.
     var requiredActions: [String]? = nil
@@ -134,8 +134,10 @@ enum GitHubReviewThreadRequirement {
         /// What the request asked ASTRA to do: "reply", "resolve", or both. A receipt only
         /// settles the request if it covers these.
         var operations: Set<String> = []
-        /// The requests an additive follow-up extends. Their receipts still count.
-        var priorRequestIDs: [String] = []
+        /// The first request of the additive chain this belongs to. Receipts of any request
+        /// of the chain count toward it.
+        var chainID: String? = nil
+        var chain: String { chainID ?? id }
         /// Messages that added an operation the request did not have. Bounding the chain
         /// never drops them: without one, a recovered request would ask for less.
         var operationEventIDs: [UUID] = []
@@ -160,7 +162,9 @@ enum GitHubReviewThreadRequirement {
                     of: #"(?i)\b(?:also|too|as well|in addition|additionally|plus|and then)\b"#, options: .regularExpression) != nil
                 let carried = carriedTarget(message.payload, prior: current)
                 // An addition about another pull request is a request of its own.
-                let additive = wording && !namesAnotherPullRequest(task: task, text: carried ?? message.payload, prior: current)
+                let namesOtherPullRequest = current != nil
+                    && namesAnotherPullRequest(task: task, text: carried ?? message.payload, prior: current)
+                let additive = wording && !namesOtherPullRequest
                 // A message that names its own pull request restarts the chain. One that
                 // leans on an earlier message for the target keeps that message, the first
                 // of the chain, and the newest few, within a fixed bound.
@@ -175,9 +179,9 @@ enum GitHubReviewThreadRequirement {
                               targetSource: carried,
                               sourceEventIDs: chain,
                               operations: operations,
-                              priorRequestIDs: additive ? (current.map { Array(($0.priorRequestIDs + [$0.id]).suffix(maxPriorRequests)) } ?? []) : [],
+                              chainID: additive ? current?.chain : nil,
                               operationEventIDs: pinned)
-                    : nil
+                    : (namesOtherPullRequest ? current : nil)
             } else if current != nil,
                       message.payload.range(
                         of: #"(?i)\b(?:cancel|stop|skip|drop|forget|do not send|don't send)\s+(?:it|that|them|this)\b|\bnever\s?mind\b|\b(?:do not|don't|dont|never|stop|cancel|skip)\s+(?:replying|reply|resolving|resolve|posting|post|sending|send)\b(?:\s+to)?\s+(?:it|that|them|this|those|these)\b"#,
@@ -210,8 +214,6 @@ enum GitHubReviewThreadRequirement {
         return ids.filter(keep.contains)
     }
 
-    /// How many earlier requests an additive one remembers receipts for.
-    private static let maxPriorRequests = 20
 
     /// Whether a message targets a different pull request than the request it would extend.
     private static func namesAnotherPullRequest(task: AgentTask, text: String, prior: Request?) -> Bool {
@@ -237,16 +239,17 @@ enum GitHubReviewThreadRequirement {
         func covers(_ actions: [GitHubReviewThreadReceipt.Action]) -> Bool {
             !actions.isEmpty && request.operations.isSubset(of: Set(actions.map(\.operation)))
         }
-        let requestIDs = Set([request.id] + request.priorRequestIDs)
+        // Every receipt of the chain counts, however many follow-ups it has grown by.
+        func inChain(_ record: GitHubReviewThreadReceipt) -> Bool { (record.chainID ?? record.requestID) == request.chain }
         let finalActions = records([GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery])
-            .filter { requestIDs.contains($0.requestID ?? "") }.flatMap(\.actions)
+            .filter(inChain).flatMap(\.actions)
         if covers(finalActions) { return false }
         // ASTRA can stop after the last confirmed operation but before it writes the
         // final batch receipt. Every operation of the approved payload is then already
         // durably confirmed, and there is nothing left to propose or send.
         let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
         return !records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
-            guard requestIDs.contains(dispatch.requestID ?? "") else { return false }
+            guard inChain(dispatch) else { return false }
             let confirmedActions = confirmed.filter { $0.proposalID == dispatch.proposalID }.flatMap(\.actions)
             guard covers(finalActions + confirmedActions) else { return false }
             let done = Set(confirmedActions.map { "\($0.threadID):\($0.operation)" })
