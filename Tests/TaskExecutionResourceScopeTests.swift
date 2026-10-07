@@ -65,6 +65,20 @@ struct TaskExecutionResourceScopeTests {
         #expect(scope.resources.contains { $0.role == .taskStorage && $0.canonicalPath == binding.path })
     }
 
+    @Test("A missing accepted input cannot later become an exposed directory")
+    func missingInputBecomingDirectoryIsInvalid() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-scope-missing-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = root.appendingPathComponent("gone.txt")
+        let scope = TaskExecutionResourceScope(
+            workingDirectory: "", workspacePath: "",
+            resources: [.init(path: input.path, access: .shared, role: .input)])
+        #expect(scope.isValid)
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        #expect(!scope.isValid)
+    }
+
     @Test("A removed pinned execution root falls back to the workspace path")
     func removedPinnedRootFallsBackToWorkspace() throws {
         let root = FileManager.default.temporaryDirectory

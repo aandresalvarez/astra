@@ -41,6 +41,12 @@ enum TaskExecutionResourcePreparation {
             workspace: task.workspace, modelContext: modelContext, taskID: task.id, auditFields: auditFields)
     }
 
+    /// Scope rejections export only while the live workspace is still the accepted one.
+    static func sameWorkspace(task: AgentTask?, scope: TaskExecutionResourceScope?) -> Bool {
+        guard let task else { return false }
+        return scope?.workspacePath == TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+    }
+
     static func prepare(task: AgentTask, materializeInputs: Bool) throws {
         _ = try TaskStorageBinding.load(for: task)
         guard materializeInputs, task.inputs.contains(where: { EphemeralComposerAttachment.isEphemeralPath($0) }) else { return }

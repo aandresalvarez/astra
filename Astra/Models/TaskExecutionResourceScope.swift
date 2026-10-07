@@ -42,7 +42,8 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
             canonicalPath = TaskExecutionResourceScope.canonicalPath(path)
             self.access = access
             self.role = role
-            isDirectory = role == .input || role == .gitMetadata || role == .environmentMount ? Self.currentKind(of: self.path) : nil
+            isDirectory = role == .input ? (Self.currentKind(of: self.path) ?? false)
+                : role == .gitMetadata || role == .environmentMount ? Self.currentKind(of: self.path) : nil
         }
 
         static func currentKind(of path: String) -> Bool? {
@@ -150,7 +151,8 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
                 !$0.path.isEmpty && $0.path.hasPrefix("/")
                     && $0.path.rangeOfCharacter(from: .newlines) == nil
                     && $0.canonicalPath == Self.canonicalPath($0.path)
-                    && ($0.isDirectory == nil || $0.isDirectory == Resource.currentKind(of: $0.path))
+                    && ($0.isDirectory == nil || Resource.currentKind(of: $0.path) == nil
+                        || $0.isDirectory == Resource.currentKind(of: $0.path))
             }
             && replacedCheckoutPaths.allSatisfy {
                 $0.hasPrefix("/") && $0.rangeOfCharacter(from: .newlines) == nil

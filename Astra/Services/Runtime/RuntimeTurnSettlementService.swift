@@ -272,7 +272,10 @@ enum RuntimeTurnSettlementService {
                     autoExport: autoExport)
             }
             RuntimeSettlementProgress.pruneSettledCaptures(task: task, modelContext: modelContext)
-            do { try save(task: task, modelContext: modelContext, operation: "runtime_checkpoint_pruned", persist: nil, autoExport: autoExport, exportsWorkspace: true) }
+            // Validation awaited above, so drift is re-evaluated immediately before exporting.
+            let exportNow = autoExport
+                && TaskExecutionResourcePreparation.isCurrent(task: task, scope: checkpoint.launchSnapshot.resourceScope)
+            do { try save(task: task, modelContext: modelContext, operation: "runtime_checkpoint_pruned", persist: nil, autoExport: exportNow, exportsWorkspace: true) }
             catch { AppLogger.error("Settled runtime checkpoint cleanup will be retried.", category: "Persistence") }
             return true
         } catch {

@@ -994,12 +994,12 @@ final class TaskQueue {
         wakeTurnAdmissionWaiters(taskID: request.taskID)
         let taskID = request.taskID
         let persisted: Bool
-        if state.isTerminal, terminalReason != "execution_resource_scope_requires_resubmission" {
-            let workspace = (try? modelContext.fetch(
-                FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-            ))?.first?.workspace
+        let liveTask = (try? modelContext.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })))?.first
+        let moved = terminalReason == "execution_resource_scope_requires_resubmission"
+            && !TaskExecutionResourcePreparation.sameWorkspace(task: liveTask, scope: request.executionPolicySnapshot?.resourceScope)
+        if state.isTerminal, !moved {
             persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: workspace,
+                workspace: liveTask?.workspace,
                 modelContext: modelContext,
                 taskID: taskID,
                 auditFields: ["operation": "turn_request_\(state.rawValue)"]
