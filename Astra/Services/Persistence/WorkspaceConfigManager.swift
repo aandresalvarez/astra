@@ -1891,7 +1891,7 @@ public enum WorkspaceConfigManager {
         // The messages thread records point at are kept whole. The vocabulary-based ones
         // are bounded in number and size and keep the usual payload truncation.
         let threadRetention = threadWorkflowRetention(task)
-        let fullPayloadIDs = recovery.sourceEventIDs.union(threadRequestEventIDs(task, retained: threadRetention.kept))
+        let fullPayloadIDs = recovery.sourceEventIDs.union(threadRequestEventIDs(task, retained: threadRetention.kept.subtracting(threadRetention.identityOnly)))
         let retainedSourceIDs = fullPayloadIDs.union(threadRequestLanguageEventIDs(task))
         let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
             || retainedSourceIDs.contains($0.id)

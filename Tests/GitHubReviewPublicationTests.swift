@@ -576,6 +576,10 @@ struct GitHubReviewPublicationTests {
         #expect(GitHubReviewPublicationRequirement.requestsPublication(in: "Publish this review"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review this GitHub PR and add tests"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Do not post this PR review"))
+        // Replies to comments are thread work, not a new review.
+        #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Post replies to all comments on PR 12"))
+        #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Reply to all the review comments on this PR"))
+        #expect(GitHubReviewPublicationRequirement.requestsPublication(in: "Reply to Bob, then post comments on PR 12"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Please post no comments on this PR"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review the PR without posting comments"))
     }

@@ -222,9 +222,12 @@ enum GitHubReviewThreadRequirement {
            let later = GitHubReviewTargetResolver.durableTarget(task: task, request: text) {
             return earlier.repository.lowercased() != later.repository.lowercased() || earlier.number != later.number
         }
-        // Neither names a repository ("PR 12", "PR 13"): the numbers alone tell them apart.
-        guard let earlier = GitHubReviewTargetResolver.shorthandNumber(in: prior.targetText),
-              let later = GitHubReviewTargetResolver.shorthandNumber(in: text) else { return false }
+        // One side lacks a repository ("PR 12" against a full URL, or two shorthands): the
+        // numbers alone tell them apart, whichever form carries them.
+        func number(_ text: String) -> Int? {
+            GitHubReviewTargetResolver.pullRequest(in: text)?.number ?? GitHubReviewTargetResolver.shorthandNumber(in: text)
+        }
+        guard let earlier = number(prior.targetText), let later = number(text) else { return false }
         return earlier != later
     }
 
@@ -301,7 +304,7 @@ enum GitHubReviewThreadRequirement {
             + #"|\bmark\b(?:\s+\S+){0,4}?\s+\b(?:"# + threadNoun + "|" + bareNoun + #")(?:\s+\S+){0,7}?\s+\bresolved\b"#
         let qualifyingObject = #"(?i)\b(?:"# + threadNoun + "|" + bareNoun + pullRequestTail + "|" + pullRequestHead + bareNoun + ")"
         if allowPronoun || text.range(of: qualifyingObject, options: .regularExpression) != nil {
-            pattern += #"|\b(?:resolve|reslolve)\s+(?:them|those|these)\b"#
+            pattern += #"|\b(?:resolve|reslolve|reply|replying)\s+(?:to\s+)?(?:them|those|these)\b"#
         }
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         let matches = regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
@@ -345,13 +348,17 @@ enum GitHubReviewThreadRequirement {
             // explicit thread or conversation, or the resolve verb itself, which is
             // GitHub thread work. A bare "reply with your comments here" is not.
             let operation = String(text[span])
+            let negated = phrase.range(of: negation, options: .regularExpression) != nil
+            // A refusal of "them" counts once a request is active or the message makes one,
+            // whatever the verb; an unrefused "reply to them" is too ambiguous to be one.
             let continuation = operation.range(of: #"(?i)^\s*(?:resolve|reslolve)\s+(?:them|those|these)\b"#, options: .regularExpression) != nil
+                || (negated && operation.range(of: #"(?i)^\s*(?:reply|replying)\s+(?:to\s+)?(?:them|those|these)\b"#, options: .regularExpression) != nil)
                 || operation.range(of: #"(?i)\b(?:threads?|conversations?)\b"#, options: .regularExpression) != nil
                 || operation.range(of: #"(?i)^\s*(?:resolve|reslolve|resolving|mark)\b"#, options: .regularExpression) != nil
             let sentenceStart = head.range(of: #"[!?;\n]|\.(?=\s)"#, options: [.regularExpression, .backwards])?.upperBound ?? head.startIndex
             let qualified = head[sentenceStart...].range(of: leadingQualifier, options: .regularExpression) != nil
             return (named: qualified || clause.range(of: context, options: .regularExpression) != nil,
-                    negated: phrase.range(of: negation, options: .regularExpression) != nil,
+                    negated: negated,
                     elsewhere: operation.range(of: softwareThread, options: .regularExpression) != nil
                         || clause.replacingOccurrences(of: serviceAsSource, with: "", options: .regularExpression)
                             .range(of: otherService, options: .regularExpression) != nil,
@@ -360,7 +367,10 @@ enum GitHubReviewThreadRequirement {
         // Every operation of the message counts, not only the last: "reply ..., and resolve ..."
         // asks for both, and "reply ..., but do not resolve ..." asks for the reply alone. What
         // is left after the refused operations is the request; nothing left is a cancellation.
-        let qualifying = operations.filter { !$0.elsewhere && ($0.named || (allowPronoun && $0.continuation)) }
+        // A pronoun in a message that also names GitHub thread work ("... on PR 12, but don't
+        // reply to them") refers to that work, as it does after an active request.
+        let anchored = operations.contains { !$0.elsewhere && $0.named }
+        let qualifying = operations.filter { !$0.elsewhere && ($0.named || ((allowPronoun || anchored) && $0.continuation)) }
         guard !qualifying.isEmpty else { return nil }
         // The last mention of a verb on the same object decides it, so a plain change of mind
         // ("resolve them. Do not resolve them.") cancels it, while refusing it for one thread
@@ -371,7 +381,14 @@ enum GitHubReviewThreadRequirement {
             let object = operation.text.lowercased()
                 .replacingOccurrences(of: #"\b(?:resolve|reslolve|resolving|resolved|reply|replying|replies)\b"#, with: "", options: .regularExpression)
                 .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            for verb in requestedOperations(operation.text) { refusedAtLastMention[verb, default: [:]][object] = operation.negated }
+            let isPronoun = object.range(of: #"^(?:to\s+)?(?:them|those|these)$"#, options: .regularExpression) != nil
+            for verb in requestedOperations(operation.text) {
+                // "... but don't reply to them" refers to everything asked for so far.
+                if operation.negated && isPronoun {
+                    for known in refusedAtLastMention[verb]?.keys ?? [:].keys { refusedAtLastMention[verb]?[known] = true }
+                }
+                refusedAtLastMention[verb, default: [:]][object] = operation.negated
+            }
         }
         let remaining = Set(refusedAtLastMention.filter { $0.value.values.contains(false) }.keys)
         return (!remaining.isEmpty, remaining)

@@ -335,7 +335,8 @@ enum GitHubReviewPublicationRequirement {
         request
             .replacingOccurrences(of: #"(?i)\breview\s+(?:threads?|conversations?)\b"#, with: "threads", options: .regularExpression)
             // A reply to a review comment is a thread reply, whichever verb posts it.
-            .replacingOccurrences(of: #"(?i)(\brepl(?:y|ies|ying)\b(?:\s+\S+){0,3}?\s+)(?:review|reviewer|inline)\s+comm?ents?\b"#,
+            // Comments governed by "reply", not ones a later verb posts ("reply to Bob, post comments").
+            .replacingOccurrences(of: #"(?i)(\brepl(?:y|ies|ying)\b(?:\s+(?!(?:post|publish|submit|add|leave|send|and|or|but)\b)[^\s.,;!?]+){0,3}?\s+)(?:(?:review|reviewer|inline)\s+)?comm?ents?\b"#,
                                   with: "$1threads", options: .regularExpression)
     }
 

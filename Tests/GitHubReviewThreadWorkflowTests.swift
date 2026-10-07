@@ -1110,8 +1110,11 @@ struct GitHubReviewThreadWorkflowTests {
 
         #expect(proposals.contains("active"))
         #expect(proposals.contains("settled-11"))
-        #expect(!proposals.contains("settled-0"))
-        #expect(proposals.count <= 1 + WorkspaceConfigManager.MirrorLimits.maxSettledThreadBatches)
+        // Older settled batches keep their identity, which stops a replay of the sent file, but
+        // not their per-action records.
+        #expect(proposals.contains("settled-0"))
+        let actionReceipts = thread.filter { $0.type == GitHubReviewThreadEvents.actionReceipt }
+        #expect(actionReceipts.count == WorkspaceConfigManager.MirrorLimits.maxSettledThreadBatches)
     }
 
     // MARK: - Every clause of one message counts
@@ -1219,7 +1222,7 @@ struct GitHubReviewThreadWorkflowTests {
 
         let kept = try mirroredEventIDs(f)
         #expect(kept.contains(messages[11].id.uuidString))    // its batch is among the newest
-        #expect(!kept.contains(messages[0].id.uuidString))    // its batch was compacted away
+        #expect(!kept.contains(messages[0].id.uuidString))    // its batch keeps its identity, not its message
     }
 
     // MARK: - Selective negation in either order
@@ -1292,32 +1295,31 @@ struct GitHubReviewThreadWorkflowTests {
         })
     }
 
-    @Test("a settled batch is kept only for an operation no newer batch of its request covers")
-    func settledBatchesAreKeptPerOperation() throws {
+    @Test("settled batches beyond the newest few keep their sent-file identity and receipt, not their payload")
+    func oldSettledBatchesKeepTheirIdentity() throws {
         let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
-        insertBatch(f, GitHubReviewThreadEvents.dispatched, "original", request: "r0", operation: "reply")
-        insertBatch(f, GitHubReviewThreadEvents.receipt, "original", request: "r0", operation: "reply")
-        for index in 1...7 {   // more settled batches than the mirror keeps by age, all resolutions
-            insertBatch(f, GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve")
-            insertBatch(f, GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve")
+        let payload = GitHubReviewThreadPayload(pullRequestUrl: "https://github.com/example/repo/pull/12", commitId: Self.head, threads: [
+            .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: false)])
+        for index in 0...7 {   // more settled batches than the mirror keeps whole
+            let id = "batch-\(index)"
+            insertBatch(f, GitHubReviewThreadEvents.dispatched, id, request: "r\(index)", operation: "reply", payload: payload)
+            insertBatch(f, GitHubReviewThreadEvents.actionReceipt, id, request: "r\(index)", operation: "reply")
+            insertBatch(f, GitHubReviewThreadEvents.receipt, id, request: "r\(index)", operation: "reply", payload: payload)
         }
-        let proposals = proposalIDs(try mirroredProposals(f))
-
-        #expect(proposals.contains("original"))      // the only receipt of the reply
-        #expect(proposals.contains("later-7"))
-        #expect(!proposals.contains("later-1"))      // an old resolution the newest ones repeat is compacted away
-    }
-
-    @Test("a settled batch whose operation a newer batch of its request repeats is not kept")
-    func repeatedOperationsAreNotKept() throws {
-        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
-        insertBatch(f, GitHubReviewThreadEvents.dispatched, "original", request: "r0", operation: "reply")
-        insertBatch(f, GitHubReviewThreadEvents.receipt, "original", request: "r0", operation: "reply")
-        for index in 1...7 {
-            insertBatch(f, GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", chain: "r0", operation: "reply")
-            insertBatch(f, GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", chain: "r0", operation: "reply")
+        let events = try mirroredProposals(f)
+        func record(_ type: String, _ proposal: String) -> [String: Any]? {
+            events.first { $0.type == type && $0.payload.contains("\"\(proposal)\"") }
+                .flatMap { (try? JSONSerialization.jsonObject(with: Data($0.payload.utf8))) as? [String: Any] }
         }
-        #expect(!proposalIDs(try mirroredProposals(f)).contains("original"))
+
+        // Without the dispatch, an old proposal file whose thread returned to its original
+        // state would validate and be offered again.
+        #expect(record(GitHubReviewThreadEvents.dispatched, "batch-0") != nil)
+        #expect(record(GitHubReviewThreadEvents.dispatched, "batch-0")?["approvedPayload"] == nil)
+        #expect(record(GitHubReviewThreadEvents.receipt, "batch-0") != nil)
+        #expect(record(GitHubReviewThreadEvents.actionReceipt, "batch-0") == nil)
+        #expect(record(GitHubReviewThreadEvents.dispatched, "batch-7")?["approvedPayload"] != nil)
+        #expect(record(GitHubReviewThreadEvents.actionReceipt, "batch-7") != nil)
     }
 
     @Test("a long chain of follow-ups still counts the receipt of the original request")
@@ -1353,25 +1355,24 @@ struct GitHubReviewThreadWorkflowTests {
         #expect(request.id.hasPrefix("goal:"))
     }
 
-    @Test("a settled ancestor kept for a newer batch is compacted, not kept whole")
-    func referencedAncestorsAreCompacted() throws {
-        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
-        let payload = GitHubReviewThreadPayload(pullRequestUrl: "https://github.com/example/repo/pull/12", commitId: Self.head, threads: [
-            .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: false)])
-        insertBatch(f, GitHubReviewThreadEvents.dispatched, "original", request: "r0", operation: "reply", payload: payload)
-        insertBatch(f, GitHubReviewThreadEvents.receipt, "original", request: "r0", operation: "reply", payload: payload)
-        for index in 1...7 {
-            insertBatch(f, GitHubReviewThreadEvents.dispatched, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve", payload: payload)
-            insertBatch(f, GitHubReviewThreadEvents.receipt, "later-\(index)", request: "r\(index)", chain: "r0", operation: "resolve", payload: payload)
-        }
-        let events = try mirroredProposals(f)
-        func dispatched(_ proposal: String) -> [String: Any]? {
-            events.first { $0.type == GitHubReviewThreadEvents.dispatched && $0.payload.contains("\"\(proposal)\"") }
-                .flatMap { (try? JSONSerialization.jsonObject(with: Data($0.payload.utf8))) as? [String: Any] }
-        }
+    // MARK: - Mixed pull request forms, pronoun refusals
 
-        #expect(dispatched("original") != nil)
-        #expect(dispatched("original")?["approvedPayload"] == nil)
-        #expect(dispatched("later-7")?["approvedPayload"] != nil)
+    @Test("a follow-up naming another pull request by URL is not merged with a shorthand one")
+    func mixedShorthandAndURLTargetsAreSeparate() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        f.task.goal = "Reply to the review threads on PR 12"
+        f.context.insert(TaskEvent(task: f.task, type: TaskEventTypes.Conversation.userMessage.rawValue,
+                                   payload: "also resolve the review threads on https://github.com/example/repo/pull/13"))
+        let request = try #require(GitHubReviewThreadRequirement.request(task: f.task))
+
+        #expect(request.operations == ["resolve"])
+        #expect(request.chain == request.id)
+    }
+
+    @Test("a reply refused with a pronoun in the same message is not requested")
+    func pronounReplyRefusal() {
+        #expect(request(for: "Reply to the GitHub review threads on PR 12, but don't reply to them") == nil)
+        #expect(request(for: "Reply to the GitHub review threads on PR 12 and resolve them, but don't reply to them")?.operations == ["resolve"])
+        #expect(request(for: "Reply to the GitHub review threads on PR 12 and resolve them")?.operations == ["reply", "resolve"])
     }
 }
