@@ -306,17 +306,34 @@ enum TaskLaunchResourceResolver {
         // Other workspace folders, such as a source checkout replaced by the
         // task's worktree, stay readable.
         let access = TaskWorkspaceAccess(task: task)
+        let codeRoot = existingPath(access.codeWorkingDirectory, fileManager: fileManager)
         let writable = Set(([access.codeWorkingDirectory] + access.runtimeWritablePaths).compactMap {
             existingPath($0, fileManager: fileManager)
         })
+        var granted = Set<String>()
         for path in [workspace.primaryPath] + workspace.additionalPaths {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
+            granted.insert(normalized)
             let mayWrite = workspaceAccess != .shared && writable.contains(normalized)
             grants.append(RuntimePathGrant(
                 path: normalized,
                 access: mayWrite ? .readWrite : .read,
                 source: .workspace,
                 reason: "Workspace path selected by the user.",
+                sensitivity: .normal,
+                lifetime: .workspace,
+                exists: true
+            ))
+        }
+        // A pinned worktree or isolation copy outside the configured folders
+        // is still the run's claimed root. Without its own grant, a workspace
+        // whose other folders are all read-only would read as a shared launch.
+        if let codeRoot, !granted.contains(codeRoot) {
+            grants.append(RuntimePathGrant(
+                path: codeRoot,
+                access: workspaceAccess == .shared ? .read : .readWrite,
+                source: .workspace,
+                reason: "Active code root for this task.",
                 sensitivity: .normal,
                 lifetime: .workspace,
                 exists: true

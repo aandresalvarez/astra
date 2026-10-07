@@ -109,6 +109,24 @@ struct TaskWorktreeResourceScopeTests {
         #expect(!plan.hostWritablePaths.contains(fixture.checkout.path))
         #expect(!plan.hostWritablePaths.contains(fixture.workspaceFolder.path))
         #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: task).contains(fixture.checkout.path))
+        // Every configured folder is read-only here, so the worktree's own
+        // grant is what keeps this an exclusive, writable launch.
+        #expect(plan.hostWritablePaths.contains(fixture.path("wt-a")))
+        #expect(plan.workspaceAccess == .exclusive)
+
+        let shared = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .codexCLI,
+            phase: "run",
+            prompt: task.goal,
+            contextText: "",
+            workspacePath: fixture.path("wt-a"),
+            workspaceAccess: .shared,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+        #expect(shared.workspaceAccess == .shared)
+        #expect(!shared.hostWritablePaths.contains(fixture.path("wt-a")))
     }
 
     @Test("Launch drift is a newly writable root, not a narrower one")
@@ -153,6 +171,13 @@ struct TaskWorktreeResourceScopeTests {
         // End to end: the claim decision sees the goal, so a Git operation
         // named only in runtime context gets read-only metadata.
         let workspace = fixture.workspace(additionalPaths: [])
+        // A request without durable claims is admitted under its fallback
+        // workspace claim, so it projects no Git writes rather than a direct launch.
+        let preClaim = fixture.task("Legacy", pinnedTo: "wt-a", in: workspace)
+        preClaim.goal = "Update the parser, then git push the result."
+        #expect(TaskExecutionResourceClaimResolver.admittedWritableGitMetadataRoots(
+            for: TaskTurnRequest(task: preClaim, messageEventID: UUID(), sequence: 1), task: preClaim) == [])
+        #expect(TaskExecutionResourceClaimResolver.admittedWritableGitMetadataRoots(for: nil, task: preClaim) == nil)
         for (goal, admitted) in [("Update the parser, then git push the result.", true), ("Update the parser.", false)] {
             let task = fixture.task("Ship feature A", pinnedTo: "wt-a", in: workspace)
             task.goal = goal

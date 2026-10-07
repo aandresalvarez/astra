@@ -134,14 +134,15 @@ enum TaskExecutionResourceClaimResolver {
         return !liveKeys.isSubset(of: persistedKeys)
     }
 
-    /// Git common directories the request may write: those it claimed
-    /// exclusively, including intrinsic workflow claims. `nil` when there is
-    /// no durable claim set to project (direct launches, pre-claim rows).
+    /// Git common directories the request may write: those it admitted
+    /// exclusively, including intrinsic workflow claims. A pre-claim row is
+    /// admitted under its fallback workspace claim, so it projects that set
+    /// rather than falling through. `nil` only for a direct launch.
     static func admittedWritableGitMetadataRoots(
         for request: TaskTurnRequest?,
         task: AgentTask
     ) -> [String]? {
-        guard let request, !request.resourceClaims.isEmpty else { return nil }
+        guard let request else { return nil }
         return admissionClaims(for: request, task: task)
             .filter { $0.kind == .gitCommonDirectory && $0.access == .exclusive }
             .map(\.key)
