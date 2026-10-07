@@ -18,6 +18,8 @@ enum TaskExecutionResourcePreparation {
         guard let scope else { return true }
         let access = TaskWorkspaceAccess(task: task)
         return scope.isValid && scope.workspacePath == access.effectiveWorkspacePath
+            && (scope.workspaceCanonicalPath == nil
+                || scope.workspaceCanonicalPath == TaskExecutionResourceScope.canonicalPath(access.effectiveWorkspacePath))
             && (scope.workspacePath.isEmpty || scope.coversWrite(to: access.canonicalTaskFolder))
             && scope.resources.filter({ $0.role == .taskStorage }).allSatisfy {
                 $0.path == access.canonicalTaskFolder && scope.coversWrite(to: $0.path)
@@ -59,11 +61,13 @@ enum TaskExecutionResourcePreparation {
     static func ensureTaskFolder(task: AgentTask, scope: TaskExecutionResourceScope? = nil) throws -> String {
         guard isCurrent(task: task, scope: scope ?? task.acceptedResourceScope) else { throw ScopeError.changed }
         let access = TaskWorkspaceAccess(task: task)
-        let legacy = WorkspaceFileLayout.legacyTaskFolder(workspacePath: access.effectiveWorkspacePath, taskID: task.id)
+        let boundWorkspace = (try TaskStorageBinding.load(for: task)?.workspacePath).flatMap { $0.isEmpty ? nil : $0 }
+            ?? access.effectiveWorkspacePath
+        let legacy = WorkspaceFileLayout.legacyTaskFolder(workspacePath: boundWorkspace, taskID: task.id)
         let migrationRequired = !FileManager.default.fileExists(atPath: access.canonicalTaskFolder)
             && FileManager.default.fileExists(atPath: legacy)
         if migrationRequired {
-            _ = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(workspacePath: access.effectiveWorkspacePath, taskID: task.id)
+            _ = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(workspacePath: boundWorkspace, taskID: task.id)
             guard !FileManager.default.fileExists(atPath: legacy) else { throw CocoaError(.fileWriteUnknown) }
         }
         return try access.ensureTaskFolder()

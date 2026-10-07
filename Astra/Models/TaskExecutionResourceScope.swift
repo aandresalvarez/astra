@@ -37,13 +37,13 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         /// replacement of the other kind is rejected instead of widening access.
         public let isDirectory: Bool?
 
-        public init(path: String, access: TaskExecutionResourceAccess, role: Role) {
+        public init(path: String, access: TaskExecutionResourceAccess, role: Role, expectedIsDirectory: Bool? = nil) {
             self.path = (path as NSString).expandingTildeInPath
             canonicalPath = TaskExecutionResourceScope.canonicalPath(path)
             self.access = access
             self.role = role
-            isDirectory = role == .input ? (Self.currentKind(of: self.path) ?? false)
-                : role == .gitMetadata || role == .environmentMount ? Self.currentKind(of: self.path) : nil
+            isDirectory = expectedIsDirectory ?? (role == .input ? (Self.currentKind(of: self.path) ?? false)
+                : role == .gitMetadata || role == .environmentMount ? Self.currentKind(of: self.path) : nil)
         }
 
         static func currentKind(of path: String) -> Bool? {
@@ -61,6 +61,8 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
     public let promptInputs: [PromptInput]
     public let executionEnvironment: WorkspaceExecutionEnvironment
     public let gitAccess: GitAccess
+    /// Workspace identity at acceptance, so a retargeted symlink is detected.
+    public let workspaceCanonicalPath: String?
 
     public init(
         workingDirectory: String,
@@ -69,7 +71,8 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         replacedCheckoutPaths: [String] = [],
         promptInputs: [PromptInput] = [],
         executionEnvironment: WorkspaceExecutionEnvironment = .host,
-        gitAccess: GitAccess = .readOnly
+        gitAccess: GitAccess = .readOnly,
+        workspaceCanonicalPath: String? = nil
     ) {
         version = Self.currentVersion
         self.workingDirectory = workingDirectory
@@ -79,6 +82,8 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         self.promptInputs = promptInputs
         self.executionEnvironment = executionEnvironment
         self.gitAccess = gitAccess
+        self.workspaceCanonicalPath = workspaceCanonicalPath
+            ?? (workspacePath.isEmpty ? nil : Self.canonicalPath(workspacePath))
     }
 
     public var claims: [TaskExecutionResourceClaim] {
@@ -140,7 +145,8 @@ public struct TaskExecutionResourceScope: Codable, Equatable, Sendable {
         Self(workingDirectory: workingDirectory, workspacePath: workspacePath,
              resources: resources + paths.map { .init(path: $0, access: .shared, role: .input) },
              replacedCheckoutPaths: replacedCheckoutPaths, promptInputs: promptInputs,
-             executionEnvironment: executionEnvironment, gitAccess: gitAccess)
+             executionEnvironment: executionEnvironment, gitAccess: gitAccess,
+             workspaceCanonicalPath: workspaceCanonicalPath)
     }
 
     public var isValid: Bool {

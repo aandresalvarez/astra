@@ -79,6 +79,27 @@ struct TaskExecutionResourceScopeTests {
         #expect(!scope.isValid)
     }
 
+    @Test("Scope currency detects a retargeted workspace symlink")
+    func retargetedWorkspaceSymlinkIsNotCurrent() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-scope-link-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("a", isDirectory: true)
+        let second = root.appendingPathComponent("b", isDirectory: true)
+        let link = root.appendingPathComponent("link")
+        for directory in [first, second] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: first)
+        let task = AgentTask(title: "L", goal: "Edit", workspace: Workspace(name: "L", primaryPath: link.path),
+                             runtime: .claudeCode)
+        let scope = TaskExecutionResourceScopeResolver.resolve(task: task)
+        #expect(scope.workspaceCanonicalPath == TaskExecutionResourceScope.canonicalPath(first.path))
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: second)
+        #expect(!TaskExecutionResourcePreparation.isCurrent(task: task, scope: scope))
+    }
+
     @Test("A removed pinned execution root falls back to the workspace path")
     func removedPinnedRootFallsBackToWorkspace() throws {
         let root = FileManager.default.temporaryDirectory

@@ -574,7 +574,8 @@ final class AgentRuntimeWorker {
             task: task,
             run: run,
             modelContext: modelContext,
-            phase: auditPhase
+            phase: auditPhase,
+            environmentTask: launchTask
         ) else {
             return
         }
@@ -584,7 +585,8 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            codeDirectory: codeDir
+            codeDirectory: codeDir,
+            environmentTask: launchTask
         ) else {
             return
         }

@@ -14,9 +14,11 @@ enum TaskExecutionResourceScopeResolver {
         let root = access.codeWorkingDirectory
         let mode = TaskExecutionResourceClaimResolver.workspaceAccess(for: task)
         var resources: [TaskExecutionResourceScope.Resource] = []
-        func append(_ path: String, _ access: TaskExecutionResourceAccess, _ role: TaskExecutionResourceScope.Role) {
+        func append(_ path: String, _ access: TaskExecutionResourceAccess, _ role: TaskExecutionResourceScope.Role,
+                    isDirectory: Bool? = nil) {
             guard !path.isEmpty else { return }
-            let resource = TaskExecutionResourceScope.Resource(path: path, access: access, role: role)
+            let resource = TaskExecutionResourceScope.Resource(path: path, access: access, role: role,
+                                                               expectedIsDirectory: isDirectory)
             if !resources.contains(resource) { resources.append(resource) }
         }
         let executionRoot = task.isolationStrategy == .copy
@@ -99,11 +101,11 @@ enum TaskExecutionResourceScopeResolver {
             var isDirectory: ObjCBool = false
             let gitPath = (root as NSString).appendingPathComponent(".git")
             if FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDirectory), isDirectory.boolValue {
-                append((executionRoot as NSString).appendingPathComponent(".git"), gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata)
+                append((executionRoot as NSString).appendingPathComponent(".git"), gitAccess == .readWrite ? .exclusive : .shared, .gitMetadata, isDirectory: true)
             } else if let common {
                 if gitAccess == .readWrite { gitAccess = .invalid }
                 append(common, .shared, .gitMetadata)
-                append((executionRoot as NSString).appendingPathComponent(".git"), .shared, .gitMetadata)
+                append((executionRoot as NSString).appendingPathComponent(".git"), .shared, .gitMetadata, isDirectory: false)
             }
         }
         return TaskExecutionResourceScope(

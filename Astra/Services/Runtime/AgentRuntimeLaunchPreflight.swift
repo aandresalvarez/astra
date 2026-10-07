@@ -643,12 +643,13 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: RunPhase,
         codeDirectory: String,
+        environmentTask: AgentTask? = nil,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
     ) -> AgentRuntimeLaunchPreflightResult {
         let runtime = registeredLaunchRuntime(task: task, run: run)
         var report = ExecutionEnvironmentCredentialReadinessService.evaluate(
-            task: task,
+            task: environmentTask ?? task,
             codeDirectory: codeDirectory,
             homeDirectoryPath: homeDirectoryPath,
             fileManager: fileManager
@@ -661,7 +662,8 @@ enum AgentRuntimeLaunchPreflight {
             : AgentRuntimeLaunchPreflightResult.Status.credentialProjectionPassed.rawValue
         fields["result"] = report.shouldBlockLaunch ? "blocked" : "passed"
 
-        if report.shouldBlockLaunch,
+        // An accepted environment is immutable; only live-task launches may auto-project.
+        if report.shouldBlockLaunch, environmentTask == nil,
            autoProjectRequiredDockerCredentialsIfPossible(
                task: task,
                run: run,
@@ -779,9 +781,10 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
+        environmentTask: AgentTask? = nil,
         imageReadinessChecker: any DockerImageReadinessChecking = DockerImageReadinessService()
     ) async -> AgentRuntimeLaunchPreflightResult {
-        let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        let environment = DockerExecutionPlanner.resolveEnvironment(for: environmentTask ?? task)
         let runtime = registeredLaunchRuntime(task: task, run: run)
         var fields: [String: String] = [
             "source": "docker_image_availability_preflight",
@@ -905,13 +908,15 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: RunPhase
+        phase: RunPhase,
+        environmentTask: AgentTask? = nil
     ) async -> Bool {
         await preflightDockerImageBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: modelContext,
-            phase: phase
+            phase: phase,
+            environmentTask: environmentTask
         ).didPass
     }
 
@@ -920,14 +925,16 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        codeDirectory: String
+        codeDirectory: String,
+        environmentTask: AgentTask? = nil
     ) -> Bool {
         preflightCredentialProjectionBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: phase,
-            codeDirectory: codeDirectory
+            codeDirectory: codeDirectory,
+            environmentTask: environmentTask
         ).didPass
     }
 
