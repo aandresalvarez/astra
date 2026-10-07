@@ -52,7 +52,8 @@ enum GitOperationIntentDetector {
             "add", "commit", "checkout", "switch", "restore", "merge", "rebase", "reset",
             "revert", "cherry-pick", "stash", "tag", "am", "apply", "rm", "mv", "config",
             "update-ref", "symbolic-ref", "notes", "replace", "worktree", "gc", "prune",
-            "pack-refs", "repack", "reflog", "update-index"
+            "pack-refs", "repack", "reflog", "update-index", "remote", "submodule",
+            "sparse-checkout", "bisect", "maintenance"
         ]
         let value = #"(?:'[^']*'|"[^"]*"|\S+)"#
         let option = #"(?:-c\s+"# + value

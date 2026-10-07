@@ -293,7 +293,8 @@ struct TaskWorktreeResourceScopeTests {
                         "git notes add -m reviewed", "git replace abc def", "git worktree add ../x",
                         "git -C repo add .", "git --git-dir=/x/.git checkout main",
                         "git -C '/tmp/a b' commit -m wip", "git --no-pager -c core.editor=true rebase main",
-                        "git --work-tree /x reset --hard"] {
+                        "git --work-tree /x reset --hard", "git remote add upstream git@example.com:x.git",
+                        "git -C repo remote remove origin", "git submodule update --init"] {
             #expect(GitOperationIntentDetector.detectsLocalGitMutationOperation(prompt: command, task: task), "\(command)")
         }
         for command in ["git -C repo status", "git --no-pager log --oneline", "digit add"] {
@@ -314,6 +315,42 @@ struct TaskWorktreeResourceScopeTests {
         let directories = AgentRuntimeProcessRunner.copilotNativeDirectoryProjection(for: task).additionalDirectories
         #expect(directories.contains(fixture.checkout.path))
         #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: task).contains(fixture.checkout.path))
+    }
+
+    @Test("Without sandboxing, sibling worktrees still serialize on their source checkout")
+    func unenforcedSourceCheckoutIsClaimedWhenSandboxIsOff() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a", "wt-b"])
+        defer { fixture.remove() }
+        let workspace = fixture.workspace(additionalPaths: [fixture.checkout.path])
+        let first = fixture.task("Ship feature A", pinnedTo: "wt-a", in: workspace)
+        let second = fixture.task("Ship feature B", pinnedTo: "wt-b", in: workspace)
+        func lease(_ task: AgentTask, _ enforcement: ExecutionSandboxEnforcement) -> [TaskResourceLockClaim] {
+            let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1,
+                                          resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
+            return TaskExecutionResourceAdmissionPolicy.lockClaims(
+                for: request, task: task, runMode: "test", sandboxEnforcement: enforcement)
+        }
+
+        // The sandbox keeps the replaced checkout read-only, so siblings run together.
+        #expect(TaskExecutionResourceBroker.canAcquire(lease(second, .bestEffort), active: lease(first, .bestEffort)))
+        // With sandboxing Off nothing enforces that, so the checkout is claimed as a writer.
+        let unenforced = lease(first, .off)
+        #expect(unenforced.contains { $0.resourceKey == fixture.checkout.path && $0.accessMode == .write })
+        #expect(!TaskExecutionResourceBroker.canAcquire(lease(second, .off), active: unenforced))
+    }
+
+    @Test("Every read-only workspace folder is labeled in the prompt")
+    func readOnlyWorkspaceFolderIsLabeled() throws {
+        let fixture = try WorktreeFixture(worktrees: [])
+        defer { fixture.remove() }
+        // The sole repository in Folder access becomes the code root, so the
+        // primary workspace folder is read-only apart from the task folder.
+        let task = AgentTask(title: "A", goal: "Update the parser.",
+                             workspace: fixture.workspace(additionalPaths: [fixture.checkout.path]))
+
+        #expect(TaskWorkspaceAccess(task: task).codeWorkingDirectory == fixture.checkout.path)
+        #expect(AgentPromptBuilder.buildPrompt(for: task)
+            .contains("(read-only for this task; write task files to the task output folder): \(fixture.workspaceFolder.path)"))
     }
 
     // MARK: - Fixtures
