@@ -6,7 +6,6 @@ import ASTRAModels
 @Observable
 final class TaskGitHubReviewPublicationState {
     var proposal: GitHubReviewProposal?
-    var threadProposal: GitHubReviewThreadProposal?
     var preparationError: String?
     private(set) var isPreparing = false
 
@@ -16,33 +15,11 @@ final class TaskGitHubReviewPublicationState {
         preparationError = nil
         Task { @MainActor in
             defer { isPreparing = false }
-            // A thread proposal that cannot be used is dismissed by the service, so
-            // it must not stop a review proposal from being offered.
-            var threadError: Error?
-            if GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) != nil {
-                do {
-                    threadProposal = try await GitHubReviewThreadPublicationService(modelContext: modelContext)
-                        .prepareFirstAvailable(task: task, filePaths: filePaths)
-                    return
-                } catch {
-                    // A file that is still a candidate failed for a transient reason (an
-                    // outage, a rate limit). Offering an unrelated review in its place
-                    // would swap one GitHub change for another, so show the failure.
-                    if GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) != nil {
-                        preparationError = error.localizedDescription
-                        return
-                    }
-                    threadError = error
-                }
-            }
             do {
                 proposal = try await GitHubReviewPublicationService(modelContext: modelContext)
                     .prepareFirstAvailable(task: task, filePaths: filePaths)
             } catch {
-                // With no review proposal to fall back on, the thread failure is the
-                // useful one to show.
-                let hasReview = filePaths.contains(where: GitHubReviewArtifactPolicy.isReviewFile)
-                preparationError = (hasReview ? error : (threadError ?? error)).localizedDescription
+                preparationError = error.localizedDescription
             }
         }
     }
@@ -84,19 +61,6 @@ private struct TaskGitHubReviewPublicationModifier: ViewModifier {
                     },
                     onCancel: { state.proposal = nil }
                 )
-            }
-            .sheet(item: $state.threadProposal) { proposal in
-                GitHubReviewThreadPublicationSheet(proposal: proposal, onPublish: {
-                    let receipt = try await GitHubReviewThreadPublicationService(modelContext: modelContext)
-                        .publish(task: task, proposal: proposal)
-                    state.threadProposal = nil
-                    onResolved()
-                    return receipt
-                }, onCancel: { state.threadProposal = nil }, onDismiss: {
-                    try GitHubReviewThreadPublicationService(modelContext: modelContext).dismiss(task: task, filePath: proposal.filePath)
-                    state.threadProposal = nil
-                    onResolved()
-                })
             }
             .alert("Couldn’t Prepare GitHub Review", isPresented: Binding(
                 get: { state.preparationError != nil },

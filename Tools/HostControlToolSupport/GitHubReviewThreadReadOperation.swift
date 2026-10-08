@@ -1,12 +1,12 @@
 import Foundation
 
-/// Fixed GraphQL reads shared by the broker and ASTRA's publication validation.
+/// Fixed GraphQL reads of a pull request's review threads for the host broker.
 /// Caller input is confined to variables, never query text or CLI options.
 public enum GitHubReviewThreadReadOperation {
     public static let names: Set<String> = ["review-threads", "review-thread"]
 
-    public static let publicationGuidance = """
-    To reply to or resolve existing PR review threads, read them with review-threads --repo OWNER/REPO --pr NUMBER and review-thread --id THREAD_ID. review-threads lists threads with only each thread's first comment (identity, no body) and review-thread returns the bodies; both accept --after CURSOR, so follow pageInfo.hasNextPage for threads and, for a thread, for its comments. Prepare pr<NUMBER>_threads.json (or a versioned pr<NUMBER>_threads_2.json) in the task folder: {"pull_request_url":"https://github.com/OWNER/REPO/pull/NUMBER","commit_id":"40-character headRefOid","threads":[{"thread_id":"thread node id","expected_last_comment_id":"last comment node id after reading all pages","reply":"exact reply text, or omit for resolution only","resolve":true}]}. Include only addressed threads. In Ask obtain normal Write approval for this proposal. The file is a proposal: ASTRA shows the exact changes and sends them after the user presses Send thread changes. Report publication as pending until ASTRA records receipts. Raw api and direct credential workarounds remain unavailable through this capability.
+    public static let guidance = """
+    Read PR review threads with review-threads --repo OWNER/REPO --pr NUMBER and review-thread --id THREAD_ID. review-threads lists threads with only each thread's first comment (identity, no body) and review-thread returns the bodies; both accept --after CURSOR, so follow pageInfo.hasNextPage for threads and, for a thread, for its comments. ASTRA cannot reply to or resolve review threads yet: when asked, summarize each thread, make the requested fixes, and give the user the reply you would post for each thread. Raw api and other write paths remain unavailable through this capability.
     """
 
     public static func arguments(for input: [String]) throws -> [String] {

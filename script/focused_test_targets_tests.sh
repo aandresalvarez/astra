@@ -34,18 +34,9 @@ assert_targets "HostControlToolSupportTests" \
   "Tools/AstraHostControlTool/main.swift" \
   "Tests/HostControlToolSupportTests.swift"
 
-assert_targets $'GitHubReviewThreadWorkflowTests\nGitHubReviewPublicationTests\nHostControlToolSupportTests' \
-  "Astra/Services/Git/GitHubReviewThreadPublicationService.swift" \
-  "Astra/Views/GitHubReviewThreadPublicationSheet.swift" \
+assert_targets $'GitHubReviewThreadReadOperationTests\nHostControlToolSupportTests' \
   "Tools/HostControlToolSupport/GitHubReviewThreadReadOperation.swift" \
-  "Tests/GitHubReviewThreadWorkflowTests.swift"
-
-assert_targets $'GitHubReviewThreadWorkflowTests\nTaskCompletionPolicyTests' \
-  "Astra/Services/Validation/TaskCompletionPolicy.swift"
-
-assert_targets $'GitHubReviewThreadWorkflowTests\nWorkspacePersistenceTests' \
-  "Astra/Services/Persistence/WorkspaceConfigManager.swift" \
-  "Astra/Services/Persistence/WorkspaceConfigManager+TaskRecoveryMirror.swift"
+  "Tests/GitHubReviewThreadReadOperationTests.swift"
 
 assert_targets $'MCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
   "Package.swift"

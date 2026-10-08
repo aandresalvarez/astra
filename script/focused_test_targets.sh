@@ -114,18 +114,9 @@ target_for_path() {
     Tests/MailToolSupportTests/*|Tools/MailToolSupport/*|Tools/StanfordAppleMailTool/*|Tools/StanfordGraphMailTool/*|Tools/StanfordMailTool/*)
       add_target "MailToolSupportTests"
       ;;
-    Tests/GitHubReviewPublicationTests.swift|Tests/GitHubReviewThreadWorkflowTests.swift|Astra/Services/Git/GitHubReview*|Astra/Views/GitHubReview*|Astra/Views/TaskGitHubReviewPublication.swift|Tools/HostControlToolSupport/GitHubReviewThreadReadOperation.swift)
-      add_target "GitHubReviewThreadWorkflowTests"
-      add_target "GitHubReviewPublicationTests"
+    Tests/GitHubReviewThreadReadOperationTests.swift|Tools/HostControlToolSupport/GitHubReviewThreadReadOperation.swift)
+      add_target "GitHubReviewThreadReadOperationTests"
       add_target "HostControlToolSupportTests"
-      ;;
-    Astra/Services/Validation/TaskCompletionPolicy.swift)
-      add_target "GitHubReviewThreadWorkflowTests"
-      add_target "TaskCompletionPolicyTests"
-      ;;
-    Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspaceConfigManager+TaskRecoveryMirror.swift)
-      add_target "GitHubReviewThreadWorkflowTests"
-      add_target "WorkspacePersistenceTests"
       ;;
     Tests/HostControlToolSupportTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
       add_target "HostControlToolSupportTests"

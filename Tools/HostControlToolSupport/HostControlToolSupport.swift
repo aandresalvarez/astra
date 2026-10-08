@@ -1287,7 +1287,7 @@ public final class HostControlMCPServer {
         [
             processSchema(
                 name: "github",
-                description: "Run read-only GitHub CLI control-plane commands on the host through ASTRA without provider Bash. " + GitHubReviewThreadReadOperation.publicationGuidance,
+                description: "Run read-only GitHub CLI control-plane commands on the host through ASTRA without provider Bash. " + GitHubReviewThreadReadOperation.guidance,
                 argumentDescription: "Read-only gh arguments, e.g. [\"pr\", \"view\", \"123\", \"--comments\"]. Review threads: [\"review-threads\", \"--repo\", \"OWNER/REPO\", \"--pr\", \"123\"] or [\"review-thread\", \"--id\", \"THREAD_ID\"]. Both support --after CURSOR; follow every pageInfo.hasNextPage. Raw api and writes are denied."
             ),
             processSchema(

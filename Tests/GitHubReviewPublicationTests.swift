@@ -143,29 +143,6 @@ struct GitHubReviewPublicationTests {
         #expect(run.typedStopReason == .completed)
     }
 
-    @Test("posting a review nobody asked for does not complete a task held by thread work")
-    func unrequestedReviewDoesNotCompleteThreadWork() async throws {
-        let fixture = try makeFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let run = TaskRun(task: fixture.task)
-        run.recordExternalOutcomePending()
-        fixture.task.status = .pendingUser
-        fixture.context.insert(run)
-        // A thread proposal still waits for the user; no message asked to post a review.
-        let threads = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_threads.json")
-        try Data("{}".utf8).write(to: threads)
-        fixture.context.insert(Artifact(task: fixture.task, type: "JSON", path: threads.path))
-        try fixture.context.save()
-        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
-        #expect(!GitHubReviewPublicationRequirement.reviewIsPending(task: fixture.task))
-
-        let service = GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI())
-        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
-        _ = try await service.publish(task: fixture.task, proposal: proposal)
-        #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.Task.approved.rawValue })
-        #expect(fixture.task.status != .completed)
-    }
-
     @Test("publication sends the bytes verified before the final network metadata check")
     func postsRevalidatedBytesWhenFileChangesDuringCheck() async throws {
         let fixture = try makeFixture()
@@ -599,10 +576,6 @@ struct GitHubReviewPublicationTests {
         #expect(GitHubReviewPublicationRequirement.requestsPublication(in: "Publish this review"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review this GitHub PR and add tests"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Do not post this PR review"))
-        // Replies to comments are thread work, not a new review.
-        #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Post replies to all comments on PR 12"))
-        #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Reply to all the review comments on this PR"))
-        #expect(GitHubReviewPublicationRequirement.requestsPublication(in: "Reply to Bob, then post comments on PR 12"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Please post no comments on this PR"))
         #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Review the PR without posting comments"))
     }

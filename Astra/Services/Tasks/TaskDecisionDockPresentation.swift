@@ -364,16 +364,15 @@ struct TaskDecisionDockPresentation: Equatable {
     }
 
     private static func gitHubReviewPresentation(_ context: Context) -> TaskDecisionDockPresentation {
-        let threads = context.githubReviewPath.map(GitHubReviewThreadArtifactPolicy.isProposalFile) == true
-        return TaskDecisionDockPresentation(
+        TaskDecisionDockPresentation(
             id: "github-review-approval",
             icon: "text.bubble.fill",
             tone: .attention,
-            title: threads ? "GitHub thread changes ready" : "GitHub review ready to post",
-            summary: threads ? "Review the replies and thread resolutions before ASTRA sends them to GitHub." : "Review the summary and inline comments before ASTRA posts them to the pull request.",
+            title: "GitHub review ready to post",
+            summary: "Review the summary and inline comments before ASTRA posts them to the pull request.",
             metrics: metrics(context),
             details: details(context),
-            primaryAction: action(.reviewGitHubReview, title: threads ? "Review thread changes" : "Review comments", systemImage: "text.bubble"),
+            primaryAction: action(.reviewGitHubReview, title: "Review comments", systemImage: "text.bubble"),
             secondaryActions: [
                 context.canRetry ? action(.retry, title: "Retry agent", systemImage: "arrow.clockwise") : nil,
                 firstArtifactAction(context)

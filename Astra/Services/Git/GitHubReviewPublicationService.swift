@@ -83,7 +83,7 @@ enum GitHubReviewPublicationEventTypes {
     static let receiptRecovery = "github.review.receipt-recovery"
 }
 
-enum GitHubReviewTargetResolver {
+private enum GitHubReviewTargetResolver {
     struct Target {
         let repository: String
         let number: Int
@@ -171,14 +171,7 @@ enum GitHubReviewPublicationRequirement {
         let eventID: UUID?
     }
 
-    /// The combined completion gate: GitHub thread work, or a requested review not yet posted.
     static func isPending(task: AgentTask) -> Bool {
-        GitHubReviewThreadPublicationService.hasPendingWork(task: task) || reviewIsPending(task: task)
-    }
-
-    /// Whether the user asked for a review to be posted and it has not been. Thread work is not a
-    /// requested review: posting a review never completes a task because of it.
-    static func reviewIsPending(task: AgentTask) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {
@@ -333,21 +326,8 @@ enum GitHubReviewPublicationRequirement {
         return regex.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) != nil
     }
 
-    /// "Post a reply to every review thread" reads as "post ... review" to the
-    /// matcher below. Thread work has its own requirement and receipt, so that
-    /// wording is not a request to post a review; a sentence that also asks for a
-    /// review ("Post a review and reply to every review thread") still is.
-    private static func neutralizingThreadWording(_ request: String) -> String {
-        request
-            .replacingOccurrences(of: #"(?i)\breview\s+(?:threads?|conversations?)\b"#, with: "threads", options: .regularExpression)
-            // A reply to a review comment is a thread reply, whichever verb posts it.
-            // Comments governed by "reply", not ones a later verb posts ("reply to Bob, post comments").
-            .replacingOccurrences(of: #"(?i)(\brepl(?:y|ies|ying)\b(?:\s+(?!(?:post|publish|submit|add|leave|send|and|or|but)\b)[^\s.,;!?]+){0,3}?\s+)(?:(?:review|reviewer|inline)\s+)?comm?ents?\b"#,
-                                  with: "$1threads", options: .regularExpression)
-    }
-
     private static func publicationIntent(in request: String) -> Intent? {
-        let lower = neutralizingThreadWording(request).lowercased()
+        let lower = request.lowercased()
         // Bind the publishing verb to the review object. A request to add
         // tests while reviewing a PR must not become permission to post.
         guard let regex = publicationRegex else { return nil }
@@ -469,8 +449,7 @@ final class GitHubReviewPublicationService {
     }
 
     static func pendingCandidatePath(task: AgentTask, filePaths: [String]) -> String? {
-        if let path = GitHubReviewThreadPublicationService.pendingCandidatePath(task: task, filePaths: filePaths) { return path }
-        return filePaths.first { path in
+        filePaths.first { path in
             GitHubReviewArtifactPolicy.isReviewFile(path)
                 && !hasDispatched(task: task, filePath: path)
                 && !hasDismissed(task: task, filePath: path)
@@ -684,7 +663,7 @@ final class GitHubReviewPublicationService {
         let persistedEventIDs = Set(task.events.map(\.id))
         let priorState = TaskStateMachine.ExternalOutcomeReceiptSnapshot(task: task, run: run)
         do {
-            let completesRequestedReview = GitHubReviewPublicationRequirement.reviewIsPending(task: task)
+            let completesRequestedReview = GitHubReviewPublicationRequirement.isPending(task: task)
             modelContext.insert(TaskEvent.structuredPayloadEvent(
                 task: task,
                 type: GitHubReviewPublicationEventTypes.receipt,
