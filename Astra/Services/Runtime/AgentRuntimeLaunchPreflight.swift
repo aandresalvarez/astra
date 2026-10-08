@@ -186,10 +186,15 @@ enum AgentRuntimeLaunchPreflight {
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         if effectivePermissionPolicy == .autonomous {
             let pendingConnectorOffers = TaskRuntimePermissionOpenRequestStore.openConnectorCredentialOffers(for: task)
-            let closedRequestCount = TaskRuntimePermissionOpenRequestStore
+            let grantsBefore = task.runtimePermissionGrantsJSON
+            let openRequestsBefore = task.runtimePermissionOpenRequestsJSON
+            let eventsBefore = Set(task.events.map(\.id))
+            var closedRequestCount = TaskRuntimePermissionOpenRequestStore
                 .closeRequestsAuthorizedByAutonomousPolicy(for: task)
             // A connector offer an Ask run left is answered, not dropped: Auto
-            // allows it for the task, as "Allow for this task" would have.
+            // allows it for the task, as "Allow for this task" would have. The
+            // grant is durable before the launch can expose it, or it is rolled
+            // back with the offer left open, as for a newly reached connector.
             let offeredGrants = pendingConnectorOffers.flatMap(\.grants)
             if !offeredGrants.isEmpty,
                !TaskRuntimePermissionGrants.record(
@@ -211,6 +216,18 @@ enum AgentRuntimeLaunchPreflight {
                         + "\(names.count > 1 ? "their" : "its") saved credentials for this task.",
                     run: run
                 ))
+                if !persistAutoCredentialGrant(task, modelContext) {
+                    task.runtimePermissionGrantsJSON = grantsBefore
+                    task.runtimePermissionOpenRequestsJSON = openRequestsBefore
+                    closedRequestCount = 0
+                    for event in task.events where !eventsBefore.contains(event.id) {
+                        modelContext.delete(event)
+                    }
+                    AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+                        "source": "auto_permission_reconciliation",
+                        "result": "carried_over_grant_unpersisted"
+                    ], level: .error)
+                }
             }
             if closedRequestCount > 0 {
                 let requestNoun = closedRequestCount == 1 ? "request" : "requests"

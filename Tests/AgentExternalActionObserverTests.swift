@@ -30,6 +30,8 @@ struct AgentExternalActionObserverTests {
             (#"echo "pushed: $(git push origin main)""#, .push),
             (#"{"command":"gh pr create --draft --title 'A very long title that the recorder cut"#, .pullRequest(verb: "create")),
             ("gh pr ready 12 --undo", .pullRequest(verb: "draft")),
+            ("gh api repos/o/r/issues/1/comments -fbody=hello", .api(method: "POST")),
+            ("git send-pack git@github.com:owner/repo.git refs/heads/main", .push),
             ("env -u CI git push origin main", .push),
             ("timeout 30 gh pr create --fill", .pullRequest(verb: "create")),
             ("bash -c 'git push origin main'", .push),

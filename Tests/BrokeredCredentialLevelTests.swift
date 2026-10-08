@@ -91,14 +91,33 @@ struct BrokeredCredentialLevelTests {
         )
         #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
+        // A grant that cannot be saved is not used: rolled back, offer kept.
+        let unsavedRun = TaskRun(task: task)
+        unsavedRun.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        context.insert(unsavedRun)
+        _ = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+            task: task, run: unsavedRun, modelContext: context, phase: .run,
+            contextText: "Now the calendar", permissionPolicy: .autonomous, secretStore: MockSecretStore(),
+            persistAutoCredentialGrant: { _, _ in false }
+        )
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
+        #expect(!TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .claudeCode).contains(.credential(label: label)))
+        #expect(!task.events.contains { $0.payload.hasPrefix("Auto allowed Jira") })
+
         let autoRun = TaskRun(task: task)
         autoRun.runtimeID = AgentRuntimeID.claudeCode.rawValue
         context.insert(autoRun)
+        var saves = 0
         _ = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
             task: task, run: autoRun, modelContext: context, phase: .run,
-            contextText: "Now the calendar", permissionPolicy: .autonomous, secretStore: MockSecretStore()
+            contextText: "Now the calendar", permissionPolicy: .autonomous, secretStore: MockSecretStore(),
+            persistAutoCredentialGrant: { _, _ in
+                saves += 1
+                return true
+            }
         )
 
+        #expect(saves == 1, "the carried-over grant is saved before the launch goes on")
         #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
         #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .claudeCode).contains(.credential(label: label)))
         #expect(task.events.contains { $0.payload == "Auto allowed Jira to use its saved credentials for this task." })

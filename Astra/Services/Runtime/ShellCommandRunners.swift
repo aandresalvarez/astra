@@ -5,7 +5,7 @@ import Foundation
 /// both judge what the runner runs, not the runner.
 enum ShellCommandRunners {
     /// The command a runner such as `env -u NAME`, `nice -n 5`, `timeout 30`,
-    /// `time -p` or `xargs -n 1` runs, or nil when the segment does not start
+    /// `time -p`, `xargs -n 1` or `eval '…'` runs, or nil when the segment does not start
     /// with one. A segment that starts with an option is read as `env`'s
     /// leftovers, because callers drop the `env` word and bare assignments
     /// first — which is how `env -u CI git push` read as a command named `-u`.
@@ -22,7 +22,8 @@ enum ShellCommandRunners {
         }
         let optionsWithValues = runnerOptionsWithValues[runner] ?? []
         var positionalsToSkip = ["timeout", "gtimeout"].contains(runner) ? 1 : 0
-        var splitsString = false
+        // `eval` joins its arguments and runs them: a quoted payload is the command.
+        var splitsString = runner == "eval"
         while let token = tokens.first {
             if token == "--" {
                 tokens.removeFirst()
@@ -67,6 +68,7 @@ enum ShellCommandRunners {
                   "--delimiter", "--arg-file"],
         "nohup": [],
         "command": [],
-        "builtin": []
+        "builtin": [],
+        "eval": []
     ]
 }

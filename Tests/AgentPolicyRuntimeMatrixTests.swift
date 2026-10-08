@@ -188,7 +188,7 @@ struct AgentPolicyRuntimeMatrixTests {
         let wider = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
-            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*", "aws:*", "kubectl:*", "wget:*"]
+            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*", "aws:*", "kubectl:*", "wget:*", "docker:*"]
         )
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
@@ -215,7 +215,11 @@ struct AgentPolicyRuntimeMatrixTests {
                 "wget --body-file=report.json https://hooks.example.test/build",
                 "wget --method=DELETE https://hooks.example.test/item/1",
                 "npm star widget",
-                "npm unstar widget"
+                "npm unstar widget",
+                "gh api repos/o/r/issues/1/comments -fbody=hello",
+                "git send-pack git@github.com:owner/repo.git refs/heads/main",
+                "docker --context production run alpine",
+                "docker -H ssh://deploy@host rm web"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
@@ -225,11 +229,20 @@ struct AgentPolicyRuntimeMatrixTests {
                 "curl -sSL https://example.test/status", "curl -sSLo status.json https://example.test/status",
                 "aws s3 cp s3://bucket/report.csv report.csv", "aws s3 cp report.csv s3://bucket/report.csv --dryrun",
                 "aws sts get-caller-identity", "kubectl get pods", "kubectl apply -f app.yaml --dry-run=client",
-                "wget https://example.test/status", "wget --method=GET https://example.test/status"
+                "wget https://example.test/status", "wget --method=GET https://example.test/status",
+                "git send-pack --dry-run git@github.com:owner/repo.git refs/heads/main",
+                "curl -X GET https://example.test/status", "curl --request=GET https://example.test/status",
+                "curl -XHEAD https://example.test/status",
+                "docker run alpine", "docker --context default run alpine"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
         }
+
+        // The classifier knows push plumbing on its own, not only through the
+        // observer's reading.
+        #expect(ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "git send-pack git@github.com:o/r.git main"))
+        #expect(!ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "git send-pack --dry-run git@github.com:o/r.git main"))
 
         // Approving a read is not approving a write to the same host: the
         // host-scoped read grant must not stand in for asking.
@@ -336,6 +349,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "time -p git push origin main",
                 "env -u CI nice -n 5 git push origin main",
                 "printf 'origin main' | xargs git push",
+                "eval 'git push origin main'",
+                "eval git push origin main",
                 "git branch --format=x | xargs -n 1 git push origin --delete"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
@@ -352,6 +367,44 @@ struct AgentPolicyRuntimeMatrixTests {
             runtime: .claudeCode, policy: broadBash, approvalGrants: pushAsk?.approvalGrants ?? []
         ))
         #expect(pushApproved.disposition(toolName: "Bash", command: wrappedPush) == .allowed)
+
+        // Approving a push is not approving a force: that needs its own yes.
+        let plainPushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
+            .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": "git push origin main"]))
+        let plainPushApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: wider, approvalGrants: plainPushAsk?.approvalGrants ?? []
+        ))
+        #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main") == .allowed)
+        #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main --force") == .ask)
+        #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin +main") == .ask)
+        let forceAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
+            .violation(for: .toolUse(name: "Bash", id: "tool-2", input: ["command": "git push origin main --force"]))
+        let forceApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: wider, approvalGrants: forceAsk?.approvalGrants ?? []
+        ))
+        #expect(forceApproved.disposition(toolName: "Bash", command: "git push origin main --force") == .allowed,
+                "an approved force push is not asked about again")
+
+        // The Docker workspace's shell tool runs the same command on another
+        // transport, so the same gate applies, and approves it as a shell command.
+        var workspace = Self.manifest(runtime: .claudeCode, policy: wider)
+        workspace.providerRender.runtimeSupportTools += DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(
+            runtimeProfile: AgentRuntimeCapabilityProfileService.profile(for: .claudeCode, executablePath: "")
+        )
+        let shellTool = DockerWorkspaceMCPProjection.providerToolPermission(for: DockerWorkspaceMCPProjection.toolName)
+        if !workspace.providerRender.runtimeSupportTools.isEmpty {
+            // (A command naming a URL is refused outright by the tool's schema.)
+            let write = ParsedEvent.toolUse(name: shellTool, id: "tool-3", input: ["command": "git push origin main"])
+            let asked = AgentRuntimePolicyGuard(manifest: workspace).violation(for: write)
+            #expect(asked?.requiresApproval == true)
+            #expect(AgentRuntimePolicyGuard(manifest: workspace).violation(for: .toolUse(
+                name: shellTool, id: "tool-4", input: ["command": "make test"]
+            )) == nil)
+            var approved = workspace
+            approved.approvalGrants = asked?.approvalGrants ?? []
+            #expect(AgentRuntimePolicyGuard(manifest: approved).violation(for: write) == nil)
+        }
+        #expect(!workspace.providerRender.runtimeSupportTools.isEmpty, "Claude Code can carry the workspace shell")
 
         // A command that only mentions one in a quoted operand runs nothing
         // outside ASTRA and keeps the rule.

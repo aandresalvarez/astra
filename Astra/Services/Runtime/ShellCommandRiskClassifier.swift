@@ -68,14 +68,19 @@ enum ShellCommandRiskClassifier {
         let executable = assessment.executable.lowercased()
         switch executable {
         case "git":
-            return dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first == "push"
+            // `send-pack` is the plumbing under `push`; a dry run changes nothing.
+            let verb = dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first
+            return ["push", "send-pack"].contains(verb ?? "") && !args.contains("--dry-run") && !args.contains("-n")
+        case "docker" where selectsRemoteDockerDaemon(args):
+            // `--context`/`-H` point every verb at another machine's daemon.
+            return true
         case "gh", "gcloud", "aws", "az", "bq", "kubectl", "helm", "terraform", "tofu", "psql", "mysql",
              BrowserBridgeMCPProjection.toolCommand:
             return true
         case "docker":
             return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"]).first == "push"
         case "curl", "wget":
-            return args.contains(where: isRemoteWriteFlag)
+            return withoutReadMethodRequests(args).contains(where: isRemoteWriteFlag)
         default:
             if networkTransferRoots.contains(executable) { return true }
             if packageManagerRoots.contains(executable) {
@@ -236,7 +241,7 @@ enum ShellCommandRiskClassifier {
         if ["status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "remote"].contains(verb) {
             return .read
         }
-        if ["push", "reset", "clean", "checkout", "switch", "rebase", "merge", "commit", "tag", "restore", "stash", "pull", "fetch"].contains(verb) {
+        if ["push", "send-pack", "reset", "clean", "checkout", "switch", "rebase", "merge", "commit", "tag", "restore", "stash", "pull", "fetch"].contains(verb) {
             return .mutation
         }
         return .unknown
@@ -283,6 +288,20 @@ enum ShellCommandRiskClassifier {
     private static let gitHubReadVerbs: Set<String> = [
         "list", "ls", "view", "status", "diff", "checks", "download", "watch", "get", "check", "verify"
     ]
+
+    /// Whether a `docker` command names a daemon other than the local one:
+    /// `--context`/`-c` other than `default`, or `-H`/`--host`.
+    private static func selectsRemoteDockerDaemon(_ args: [String]) -> Bool {
+        for (index, arg) in args.enumerated() {
+            let name = arg.split(separator: "=", maxSplits: 1).first.map(String.init) ?? arg
+            let attached = arg.contains("=") ? String(arg.split(separator: "=", maxSplits: 1).last ?? "") : nil
+            let value = attached ?? (args.indices.contains(index + 1) ? args[index + 1] : nil)
+            if ["--context", "-c"].contains(name) { return value.map { $0.lowercased() != "default" } ?? false }
+            if ["-H", "--host"].contains(name) || (arg.hasPrefix("-H") && arg.count > 2) { return true }
+            if !arg.hasPrefix("-") { return false }
+        }
+        return false
+    }
 
     /// A package-manager command that changes a registry rather than this
     /// machine: publishing, removing, or deprecating a release; changing its
@@ -430,7 +449,7 @@ enum ShellCommandRiskClassifier {
 
     private static func riskForNetworkTransfer(executable: String, args: [String]) -> Risk {
         guard ["curl", "wget"].contains(executable) else { return .mutation }
-        if args.contains(where: isNetworkMutationFlag) {
+        if withoutReadMethodRequests(args).contains(where: isNetworkMutationFlag) {
             return .mutation
         }
         return .networkRead
@@ -442,7 +461,7 @@ enum ShellCommandRiskClassifier {
             // A write keeps the flag that makes it one, so approving it never
             // reads as approving every request to the host, and a host-scoped
             // read approval never covers a later write (`actsOutsideMachine`).
-            guard let writeFlag = args.first(where: isRemoteWriteFlag) else { return hostPattern }
+            guard let writeFlag = withoutReadMethodRequests(args).first(where: isRemoteWriteFlag) else { return hostPattern }
             let name = writeFlag.split(separator: "=", maxSplits: 1).first.map(String.init) ?? writeFlag
             let flagPattern = writeFlag.contains("=") ? "\(name)=*" : name
             return "\(flagPattern) \(hostPattern)"
@@ -452,7 +471,64 @@ enum ShellCommandRiskClassifier {
             .filter(isSafeShellPatternToken)
         guard !actionTokens.isEmpty else { return "*" }
         let tokenLimit = patternTokenLimit(for: risk)
-        return (Array(actionTokens.prefix(tokenLimit)) + ["*"]).joined(separator: " ")
+        let kept = Array(actionTokens.prefix(tokenLimit))
+        // A force or delete past the kept tokens stays in the pattern, so the
+        // approval names it (`pushEscalations`).
+        let escalations = executable == "git"
+            ? actionTokens.dropFirst(tokenLimit).filter { isPushEscalation($0) }
+            : []
+        return (kept + escalations + ["*"]).joined(separator: " ")
+    }
+
+    /// The options that turn a push into a different, destructive action:
+    /// forcing, deleting, mirroring, pruning, or a `+refspec`. Approving a
+    /// plain push is not approving these (`AgentRuntimePolicyGuard`).
+    static func pushEscalations(inShellSegment segment: String) -> Set<String> {
+        let tokens = shellTokens(strippingBenignRedirections(segment))
+        guard let executable = tokens.first.flatMap(shellApprovalRoot)?.lowercased(), executable == "git" else { return [] }
+        let args = Array(tokens.dropFirst()).map(comparableCommandArgument)
+        let verb = dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first
+        guard ["push", "send-pack"].contains(verb ?? "") else { return [] }
+        return Set(args.filter(isPushEscalation).map { token in
+            token.hasPrefix("+") ? "+refspec" : (token.split(separator: "=").first.map(String.init) ?? token)
+        })
+    }
+
+    private static func isPushEscalation(_ token: String) -> Bool {
+        let name = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        return ["--force", "-f", "--force-with-lease", "--force-if-includes", "--delete", "-d", "--mirror",
+                "--prune", "--all"].contains(name)
+            || (token.hasPrefix("+") && token.count > 1)
+    }
+
+    /// `curl -X GET`, `--request=GET`, `-XHEAD` and `wget --method GET` name a
+    /// read, so they are not the write flags they would otherwise look like.
+    private static func withoutReadMethodRequests(_ args: [String]) -> [String] {
+        let readMethods: Set<String> = ["GET", "HEAD", "OPTIONS"]
+        let methodOptions: Set<String> = ["-X", "--request", "--method"]
+        var kept: [String] = []
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
+            if methodOptions.contains(arg), args.indices.contains(index + 1),
+               readMethods.contains(args[index + 1].uppercased()) {
+                index += 2
+                continue
+            }
+            if parts.count == 2, methodOptions.contains(parts[0].lowercased() == "--request" ? "--request" : parts[0]),
+               readMethods.contains(parts[1].uppercased()) {
+                index += 1
+                continue
+            }
+            if arg.hasPrefix("-X"), !arg.hasPrefix("--"), readMethods.contains(String(arg.dropFirst(2)).uppercased()) {
+                index += 1
+                continue
+            }
+            kept.append(arg)
+            index += 1
+        }
+        return kept
     }
 
     private static func patternTokenLimit(for risk: Risk) -> Int {

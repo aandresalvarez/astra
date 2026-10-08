@@ -172,7 +172,9 @@ enum AgentExternalActionObserver {
         let args = Array(tokens.dropFirst()).map { $0.lowercased() }
         switch executable {
         case "git":
-            guard firstOperand(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree", "--namespace"]) == "push",
+            guard ["push", "send-pack"].contains(
+                      firstOperand(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree", "--namespace"])
+                  ),
                   !args.contains("--dry-run"), !args.contains("-n") else {
                 return []
             }
@@ -247,7 +249,11 @@ enum AgentExternalActionObserver {
             }
         }
         let bodyFlags: Set<String> = ["-f", "--field", "--raw-field", "--input"]
-        if args.contains(where: { arg in bodyFlags.contains(arg) || bodyFlags.contains { arg.hasPrefix($0 + "=") } }) {
+        // `-fkey=value` (and `-Fkey=value`, lowercased here) attaches the field.
+        let attachedField: (String) -> Bool = { $0.hasPrefix("-f") && !$0.hasPrefix("--") && $0.count > 2 }
+        if args.contains(where: { arg in
+            bodyFlags.contains(arg) || bodyFlags.contains { arg.hasPrefix($0 + "=") } || attachedField(arg)
+        }) {
             return .api(method: "POST")
         }
         return nil

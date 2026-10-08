@@ -245,7 +245,17 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
 
         if let supportTool = runtimeSupportToolDescriptor(for: toolName) {
-            return validateRuntimeSupportTool(supportTool, observed: observed, toolName: toolName)
+            if let violation = validateRuntimeSupportTool(supportTool, observed: observed, toolName: toolName) {
+                return violation
+            }
+            // The Docker workspace's shell and job tools run a shell command:
+            // the same external-action gate, on another transport, approved as
+            // the shell command it is.
+            if let command = observed.command,
+               DockerWorkspaceMCPProjection.canonicalToolName(fromObservedToolName: toolName, runtime: manifest.providerID) != nil {
+                return externalCommandApprovalViolation(command: command, toolName: toolName, request: nil, grantToolName: "Bash")
+            }
+            return nil
         }
 
         if isShellTool(toolName),
@@ -387,10 +397,11 @@ struct AgentRuntimePolicyGuard: Sendable {
     private func externalCommandApprovalViolation(
         command: String,
         toolName: String,
-        request: PermissionRequest?
+        request: PermissionRequest?,
+        grantToolName: String? = nil
     ) -> AgentRuntimePolicyViolation? {
         guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
-              let pending = unapprovedExternalCommand(command, toolName: toolName) else {
+              let pending = unapprovedExternalCommand(command, toolName: grantToolName ?? toolName) else {
             return nil
         }
         // A payload is asked about, and so approved, on its own.
@@ -606,6 +617,19 @@ struct AgentRuntimePolicyGuard: Sendable {
             runtime: manifest.providerID
         )
         guard !approved.isEmpty else { return false }
+        // `push origin main *` matches `push origin main --force`. Approving a
+        // push is not approving a force, delete or mirror: one of those needs
+        // an approval that names it.
+        let approvedEscalations = externalGrants.map { grant -> Set<String> in
+            guard case .shellCommand(let executable, let pattern) = grant else { return [] }
+            return ShellCommandRiskClassifier.pushEscalations(inShellSegment: "\(executable) \(pattern)")
+        }
+        for segment in Self.rawActionableShellSegments(command) {
+            let escalations = ShellCommandRiskClassifier.pushEscalations(inShellSegment: segment)
+            guard escalations.isEmpty || approvedEscalations.contains(where: { escalations.isSubset(of: $0) }) else {
+                return false
+            }
+        }
         return toolMatches(toolName, command: command, candidates: approved, shellMatchMode: .allActionableSegments)
     }
 
