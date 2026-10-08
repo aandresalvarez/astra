@@ -43,6 +43,7 @@ struct BrokeredCredentialLevelTests {
                 run: run,
                 modelContext: context,
                 policyLevel: level,
+                runFinishedCleanly: true,
                 ledger: ledger
             )
 
@@ -58,6 +59,56 @@ struct BrokeredCredentialLevelTests {
                 #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task), "\(level.rawValue) offers")
                 #expect(notice == nil)
             }
+        }
+    }
+
+    /// A cancelled or failed run's reach is not consent for a retry to hold the
+    /// credentials, and a grant that could not be saved is not a grant: both
+    /// become the offer Ask would make, with nothing left behind.
+    @Test("Auto offers instead of granting after an unfinished run or an unsaved grant")
+    func autoOffersWhenItCannotGrant() throws {
+        for (finished, saves) in [(false, true), (true, false)] {
+            let container = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            let context = container.mainContext
+            let task = AgentTask(title: "Tickets", goal: "Summarize my week")
+            let run = TaskRun(task: task)
+            run.runtimeID = AgentRuntimeID.claudeCode.rawValue
+            context.insert(task)
+            context.insert(run)
+            try context.save()
+            let connectorID = UUID()
+            let label = "connector:\(connectorID.uuidString):JIRA_API_TOKEN"
+            let ledger = BrokeredCredentialApprovalLedger.shared
+            ledger.record(
+                .init(connectorID: connectorID, connectorName: "Jira", alias: "jira",
+                      serviceType: "jira", credentialLabels: [label]),
+                taskID: task.id,
+                runID: run.id
+            )
+            var saveAttempts = 0
+
+            BrokeredCredentialApprovalDiscovery.recordWithheldCredentialRequests(
+                task: task,
+                run: run,
+                modelContext: context,
+                policyLevel: .autonomous,
+                runFinishedCleanly: finished,
+                ledger: ledger,
+                persistAutoGrant: { _, _ in
+                    saveAttempts += 1
+                    return saves
+                }
+            )
+
+            let scenario = finished ? "unsaved grant" : "unfinished run"
+            #expect(saveAttempts == (finished ? 1 : 0), "\(scenario)")
+            #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .claudeCode).isEmpty, "\(scenario)")
+            #expect(!task.events.contains { $0.payload.hasPrefix("Auto allowed Jira") }, "\(scenario)")
+            #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task), "\(scenario) offers")
         }
     }
 }

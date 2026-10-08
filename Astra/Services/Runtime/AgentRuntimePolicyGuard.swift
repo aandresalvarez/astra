@@ -589,13 +589,15 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// The recorded `git`/`gh` actions, plus any segment the shared risk
     /// classifier marks as a write outside this machine: a `curl` that sends
     /// data, a cloud deploy, a remote database client, a package publish.
+    /// Case matters to the classifier (`curl -X` sends, `-x` names a proxy),
+    /// so it reads the segments as written.
     private static func actsOutsideMachine(_ command: String) -> Bool {
         AgentExternalActionObserver.classify(command) != nil
-            || actionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
+            || rawActionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
     }
 
-    /// `actionableShellSegments` without the lowercasing, so a payload is
-    /// asked about as the agent wrote it.
+    /// `actionableShellSegments` without the lowercasing, so a command is
+    /// classified, and a payload asked about, as the agent wrote it.
     private static func rawActionableShellSegments(_ command: String) -> [String] {
         shellSegmentSeparatorsNormalized(ProviderToolSemantics.semanticShellCommand(command))
             .split(whereSeparator: { $0.isNewline || $0 == ";" })

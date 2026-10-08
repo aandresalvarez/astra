@@ -87,9 +87,10 @@ struct ConnectorMutationAutoSendTests {
     }
 
     // Auto's writes leave the machine only during settlement: after the run's
-    // provider result is captured and the settlement marker is saved. An exit
-    // before that lets recovery send what is still pending; an exit during it
-    // is reconciled instead of replayed. Source-shape pin: the worker and the
+    // provider result is captured, the settlement marker is saved, and the
+    // outcome, validation included, has completed the run. An exit before
+    // that lets recovery send what is still pending; an exit during it is
+    // reconciled instead of replayed. Source-shape pin: the worker and the
     // settlement pipeline are too entangled to drive here.
     @Test("Auto sends connector writes only during settlement, after the result is captured")
     func autoSendsOnlyDuringSettlement() throws {
@@ -105,7 +106,9 @@ struct ConnectorMutationAutoSendTests {
         let send = try #require(settlement.range(of: "ConnectorMutationAutoSend.sendPendingMutations("))
         let outcome = try #require(settlement.range(of: "RuntimeTurnOutcomeService.apply("))
         #expect(started.upperBound < send.lowerBound, "send only after the settlement marker is saved")
-        #expect(send.upperBound < outcome.lowerBound, "send before the outcome reads receipts")
+        #expect(outcome.upperBound < send.lowerBound, "send only after the outcome and its validation")
+        let plan = try #require(settlement.range(of: "await validatePlan(checkpoint: checkpoint"))
+        #expect(plan.upperBound < send.lowerBound, "send only after the approved plan is reviewed")
 
         let worker = try source("Astra/Services/Runtime/AgentRuntimeWorker.swift")
         let capture = try #require(worker.range(of: "RuntimeTurnSettlementService.capture("))
@@ -140,9 +143,15 @@ struct ConnectorMutationAutoSendTests {
                 .appendingPathComponent("Astra/Services/Runtime/RuntimeTurnSettlementService.swift"),
             encoding: .utf8
         )) ?? ""
-        let gate = settlement.range(of: "if finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {")
+        let gate = settlement.range(of: "if outcomeCompleted, run.status == .completed,")
+        let clean = settlement.range(of: "finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {")
+        #expect(gate != nil && clean != nil && gate!.upperBound < clean!.lowerBound)
         let send = settlement.range(of: "ConnectorMutationAutoSend.sendPendingMutations(")
         #expect(gate != nil && send != nil && gate!.upperBound < send!.lowerBound, "settlement gates the send")
+        let completed = settlement.range(of: "let outcomeCompleted = task.status == .completed")
+        let outcome = settlement.range(of: "RuntimeTurnOutcomeService.apply(")
+        #expect(outcome != nil && completed != nil && outcome!.upperBound < completed!.lowerBound,
+                "the gate reads the outcome's own verdict, tests and AI check included")
     }
 
     // The outcome fails a run whose provider reported an error but exited 0

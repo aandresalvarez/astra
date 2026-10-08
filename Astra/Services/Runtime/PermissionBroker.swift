@@ -820,9 +820,21 @@ enum PermissionBroker {
             .map(String.init)
         var segments: [String] = []
         for rawSegment in rawSegments {
-            appendUnique(normalizedShellText(actionableShellSegment(rawSegment)), to: &segments)
+            appendUnique(optionCasePreservingShellText(actionableShellSegment(rawSegment)), to: &segments)
         }
         return segments
+    }
+
+    /// `normalizedShellText`, except that option tokens keep their case: the
+    /// classifier reads it (`curl -X` and `-F` send, `-x` names a proxy and
+    /// `-f` only fails quietly), and a lowercased write flag synthesized the
+    /// grant a read of the same host gets.
+    private static func optionCasePreservingShellText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .map { token in token.hasPrefix("-") ? String(token) : token.lowercased() }
+            .joined(separator: " ")
     }
 
     private static func shellSegmentSeparatorsNormalized(_ command: String) -> String {

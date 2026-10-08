@@ -136,18 +136,22 @@ enum RuntimeTurnSettlementService {
                     payload: "Outcome settlement started. Validation must not be replayed without a prepared result.", run: run))
                 try save(task: task, modelContext: modelContext, operation: "runtime_settlement_started", persist: nil,
                     autoExport: autoExport)
+                try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
+                    modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
+                let outcomeCompleted = task.status == .completed
+                await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
                 // Auto's connector writes leave the machine only here: after the
-                // provider result and the staged proposals are durable, and under
-                // the settlement marker, so an exit mid-send is reconciled rather
-                // than replayed. Before the outcome, so completion reads receipts.
-                if finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {
+                // provider result and the staged proposals are durable, under the
+                // settlement marker (an exit mid-send is reconciled rather than
+                // replayed), and only once the outcome, its tests, AI check and
+                // plan review included, completed the run. A run that fails
+                // validation sends nothing; its proposals wait for review.
+                if outcomeCompleted, run.status == .completed,
+                   finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {
                     await ConnectorMutationAutoSend.sendPendingMutations(
                         task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
                         modelContext: modelContext, coordinator: connectorMutationCoordinator)
                 }
-                try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
-                    modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
-                await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
                 // Validation effects are durable before writing derived files.
                 // Projection I/O failures can retry without re-executing work.
                 RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext,

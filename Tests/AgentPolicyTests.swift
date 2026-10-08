@@ -84,8 +84,7 @@ struct AgentPolicyTests {
         #expect(policy.allowedTools.contains("Grep"))
         #expect(policy.askFirstTools.contains("Write"))
         #expect(policy.askFirstTools.contains("Bash"))
-        // Ask asks before effects instead of refusing them; only `sudo`,
-        // which cannot prompt in a non-interactive run, stays denied.
+        // Ask asks rather than refuses; `sudo` cannot prompt, so it stays denied.
         #expect(Set(policy.askFirstShellPatterns).isSuperset(of: ["rm:*", "git push:*", "chmod:*"]))
         #expect(policy.deniedShellPatterns == ["sudo:*"])
     }
@@ -880,8 +879,6 @@ struct AgentPolicyTests {
             ("docker run alpine", .mutation, false, .shellCommand(executable: "docker", pattern: "run alpine *")),
             ("curl https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
             ("curl -f https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
-            // A write keeps its write flag, so approving it is not approving
-            // every request to the host, and a read grant never covers it.
             ("curl -F file=@report.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "-F *example.com*")),
             ("curl -X POST https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "-X *example.com*")),
             ("curl --data=x https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "--data=* *example.com*")),

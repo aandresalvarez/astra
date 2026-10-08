@@ -220,7 +220,16 @@ enum BrokeredCredentialApprovalDiscovery {
         run: TaskRun,
         modelContext: ModelContext,
         policyLevel: AgentPolicyLevel = .review,
-        ledger: BrokeredCredentialApprovalLedger = .shared
+        runFinishedCleanly: Bool,
+        ledger: BrokeredCredentialApprovalLedger = .shared,
+        persistAutoGrant: @MainActor (AgentTask, ModelContext) -> Bool = { task, modelContext in
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "brokered_credential_auto_grant"]
+            )
+        }
     ) -> [BrokeredCredentialApprovalRecord] {
         let drained = ledger.drain(taskID: task.id, runID: run.id)
         guard !drained.isEmpty else { return [] }
@@ -249,10 +258,15 @@ enum BrokeredCredentialApprovalDiscovery {
         }
         guard !recorded.isEmpty else { return [] }
         // Auto asks nothing: the run's own request is the consent, so the
-        // connectors are allowed for the task and the chat says so. Offers an
-        // earlier Ask run left open are that run's question and stay open.
+        // connectors are allowed for the task and the chat says so — but only
+        // for a run that finished cleanly. A cancelled or failed run's reach is
+        // not consent for a retry to hold the credentials; it becomes an offer,
+        // as does a grant that could not be saved. Offers an earlier Ask run
+        // left open are that run's question and stay open.
         if !ExternalActionPolicy.asksUser(for: .connectorCredentialUse, level: policyLevel),
-           grantForAuto(recorded, task: task, run: run, runtime: runtime, modelContext: modelContext) {
+           runFinishedCleanly,
+           grantForAuto(recorded, task: task, run: run, runtime: runtime, modelContext: modelContext,
+                        persist: persistAutoGrant) {
             return recorded
         }
         // One offer, never one per connector. The dock shows only the latest
@@ -284,13 +298,18 @@ enum BrokeredCredentialApprovalDiscovery {
         return recorded
     }
 
+    /// The grant must be durable before it counts, as at launch: one only the
+    /// `ModelContext` holds is rolled back, and the caller offers instead.
     private static func grantForAuto(
         _ approvals: [BrokeredCredentialApprovalRecord],
         task: AgentTask,
         run: TaskRun,
         runtime: AgentRuntimeID,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        persist: @MainActor (AgentTask, ModelContext) -> Bool
     ) -> Bool {
+        let grantsBefore = task.runtimePermissionGrantsJSON
+        let eventsBefore = Set(task.events.map(\.id))
         let labels = approvals.flatMap(\.credentialLabels)
         let granted = TaskRuntimePermissionGrants.record(
             grants: labels.map { PermissionGrant.credential(label: $0) },
@@ -315,12 +334,17 @@ enum BrokeredCredentialApprovalDiscovery {
                 + "for this task. The agent can use \(approvals.count > 1 ? "them" : "it") from the next message.",
             run: run
         ))
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
-            modelContext: modelContext,
-            taskID: task.id,
-            auditFields: ["operation": "brokered_credential_auto_grant", "count": String(approvals.count)]
-        )
+        guard persist(task, modelContext) else {
+            task.runtimePermissionGrantsJSON = grantsBefore
+            for event in task.events where !eventsBefore.contains(event.id) {
+                modelContext.delete(event)
+            }
+            AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+                "source": "brokered_credential_withheld",
+                "result": "auto_policy_grant_unpersisted"
+            ], level: .error)
+            return false
+        }
         return true
     }
 

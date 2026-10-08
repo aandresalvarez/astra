@@ -188,7 +188,7 @@ struct AgentPolicyRuntimeMatrixTests {
         let wider = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
-            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*"]
+            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*", "aws:*", "kubectl:*"]
         )
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
@@ -203,13 +203,23 @@ struct AgentPolicyRuntimeMatrixTests {
                 "npm deprecate widget@1.0.0 obsolete",
                 "npm dist-tag add widget@1.0.0 beta",
                 "npm token revoke abc123",
-                "npm token create"
+                "npm token create",
+                "curl -XPOST https://hooks.example.test/build",
+                "curl -sSd ok https://hooks.example.test/build",
+                "curl -dsecret https://hooks.example.test/build",
+                "aws s3 cp report.csv s3://bucket/report.csv",
+                "aws ec2 terminate-instances --instance-ids i-1",
+                "kubectl set image deployment/app app=image:v2",
+                "kubectl label pod api-1 tier=web"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
             for command in [
                 "curl https://example.test/status", "gcloud compute instances list", "git commit -m wip",
-                "gh workflow list", "gh run view 12345", "npm dist-tag ls widget", "npm token list", "npm install"
+                "gh workflow list", "gh run view 12345", "npm dist-tag ls widget", "npm token list", "npm install",
+                "curl -sSL https://example.test/status", "curl -sSLo status.json https://example.test/status",
+                "aws s3 cp s3://bucket/report.csv report.csv", "aws s3 cp report.csv s3://bucket/report.csv --dryrun",
+                "aws sts get-caller-identity", "kubectl get pods", "kubectl apply -f app.yaml --dry-run=client"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
@@ -232,6 +242,15 @@ struct AgentPolicyRuntimeMatrixTests {
         ))
         #expect(afterWrite.disposition(toolName: "Bash", command: "curl -d x https://example.test/delete") == .allowed,
                 "an approved write is not asked about again")
+        for write in ["curl -XPOST https://example.test/delete", "curl -F file=@a.txt https://example.test/upload"] {
+            let asked = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
+                .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": write]))
+            #expect(asked?.requiresApproval == true, "\(write)")
+            let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+                runtime: .claudeCode, policy: wider, approvalGrants: asked?.approvalGrants ?? []
+            ))
+            #expect(approved.disposition(toolName: "Bash", command: write) == .allowed, "\(write) approved once")
+        }
 
         // A shell run with -c runs its payload: a rule allowing the shell
         // does not cover what the payload does outside this machine.

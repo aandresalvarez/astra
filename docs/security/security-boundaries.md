@@ -125,11 +125,14 @@ boundary. The full inventory is in
   `publish`) are asked about, not refused; `sudo` stays denied because it
   cannot prompt in a non-interactive run. Local tools are never pre-granted,
   on any runtime.
-- **Auto** asks nothing. Connector credentials are allowed for the task (and
-  the launch stops if that grant cannot be saved), staged Jira writes are sent
+- **Auto** asks nothing. Connector credentials are allowed for the task (the
+  launch stops if that grant cannot be saved; a connector the agent reached for
+  mid-run is allowed only after a clean finish and a durable save, and offered
+  otherwise), staged Jira writes are sent
   during settlement — after the provider result is captured, so an exit
-  mid-send is reconciled rather than replayed, and only for a run that finished
-  cleanly (never after a cancel, failure, timeout, or policy stop) — and a requested GitHub review
+  mid-send is reconciled rather than replayed, and only for a run whose outcome,
+  tests and AI check included, completed it (never after a cancel, failure,
+  failed validation, timeout, or policy stop) — and a requested GitHub review
   this run wrote is posted when the run finishes; each through the same checks an approved
   action goes through (digest re-read, derived route, re-resolved destination,
   dispatch recorded before the network call, no resend of an ambiguous

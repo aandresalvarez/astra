@@ -319,8 +319,15 @@ enum ShellCommandRiskClassifier {
         return .mutation
     }
 
+    /// `gcloud`, `aws` and `az` only act on a remote account, so a command
+    /// that names no read verb is a write: `aws ec2 terminate-instances` and
+    /// `az storage blob upload` name none of the generic write verbs either.
     private static func riskForCloudCLI(args: [String], readVerbs: Set<String>, writeVerbs: Set<String>) -> Risk {
         let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--project", "--project-id", "--profile", "--region", "--zone", "-o"])
+        guard !actionTokens.isEmpty else { return .unknown }
+        if let transfer = riskForObjectStorageTransfer(actionTokens, args: args) {
+            return transfer
+        }
         if actionTokens.contains(where: { writeVerbs.contains($0) }) {
             return .mutation
         }
@@ -330,19 +337,50 @@ enum ShellCommandRiskClassifier {
         if actionTokens.contains("iam") || actionTokens.contains("secretsmanager") || actionTokens.contains("secret") {
             return .credential
         }
-        return .unknown
+        if actionTokens.contains(where: { token in cloudReadOperationPrefixes.contains { token.hasPrefix($0) } }) {
+            return .read
+        }
+        return .mutation
     }
 
+    /// `aws s3 cp|sync|mv` and `gcloud storage cp|rsync|mv` write the bucket
+    /// only when it is the destination (or, for `mv`, either end); a
+    /// download writes this machine. `--dryrun`/`--dry-run` changes nothing.
+    private static func riskForObjectStorageTransfer(_ actionTokens: [String], args: [String]) -> Risk? {
+        guard actionTokens.count >= 2,
+              ["s3", "storage"].contains(actionTokens[0]),
+              ["cp", "sync", "rsync", "mv"].contains(actionTokens[1]) else {
+            return nil
+        }
+        if args.contains(where: { ["--dryrun", "--dry-run", "-n"].contains($0) }) { return .read }
+        let locations = actionTokens.dropFirst(2).filter { !$0.hasPrefix("-") }
+        let isBucket: (String) -> Bool = { $0.hasPrefix("s3://") || $0.hasPrefix("gs://") }
+        if actionTokens[1] == "mv" { return locations.contains(where: isBucket) ? .mutation : .read }
+        guard let destination = locations.last else { return .unknown }
+        return isBucket(destination) ? .mutation : .read
+    }
+
+    private static let cloudReadOperationPrefixes = ["describe-", "list-", "get-", "head-", "show-", "lookup-"]
+
+    /// `kubectl` changes the cluster unless the verb reads; `set image`,
+    /// `label` and `drain` name no generic write verb. A dry run changes
+    /// nothing.
     private static func riskForKubernetes(_ args: [String]) -> Risk {
         let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--namespace", "-n", "--context"])
         guard let verb = actionTokens.first else { return .unknown }
-        if ["get", "describe", "logs", "top", "api-resources", "version", "config"].contains(verb) {
+        if [
+            "get", "describe", "logs", "top", "api-resources", "api-versions", "version", "config", "explain",
+            "cluster-info", "diff", "wait", "events", "completion"
+        ].contains(verb) {
             return .read
         }
-        if ["apply", "delete", "exec", "port-forward", "cp", "edit", "scale", "rollout", "create", "patch", "replace"].contains(verb) {
-            return .mutation
+        if verb == "auth", ["can-i", "whoami"].contains(actionTokens.dropFirst().first ?? "") {
+            return .read
         }
-        return .unknown
+        if args.contains(where: { $0 == "--dry-run" || $0.hasPrefix("--dry-run=") }) {
+            return .read
+        }
+        return .mutation
     }
 
     private static func riskForDocker(_ args: [String]) -> Risk {
@@ -600,29 +638,48 @@ enum ShellCommandRiskClassifier {
     }
 
     private static func isNetworkMutationFlag(_ token: String) -> Bool {
+        if isRemoteWriteFlag(token) { return true }
         let normalized = normalizedArgument(token)
         let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
-        if ["-d", "-F", "-X", "-T", "-o", "-O"].contains(optionName) {
-            return true
-        }
-        if optionName.hasPrefix("--") {
-            return [
-                "--data", "--data-raw", "--data-binary", "--data-urlencode",
-                "--form", "--form-string", "--request", "--upload-file",
-                "--post-file", "--post-data", "--output", "--json"
-            ].contains(optionName.lowercased())
-        }
-        return false
+        if ["-o", "-O"].contains(optionName) || optionName.lowercased() == "--output" { return true }
+        return combinedShortOptions(normalized).contains { $0 == "-o" || $0 == "-O" }
     }
 
     /// The mutation flags that send something to the remote end, as opposed
     /// to `-o`/`--output`, which only write the response to a local file.
+    /// Short flags count combined or with their value attached (`-sSd`,
+    /// `-XPOST`, `-dbody`), as curl accepts them.
     private static func isRemoteWriteFlag(_ token: String) -> Bool {
         let normalized = normalizedArgument(token)
         let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
-        guard !["-o", "-O", "--output"].contains(optionName) else { return false }
-        return isNetworkMutationFlag(token)
+        if optionName.hasPrefix("--") {
+            return [
+                "--data", "--data-raw", "--data-binary", "--data-urlencode",
+                "--form", "--form-string", "--request", "--upload-file",
+                "--post-file", "--post-data", "--json"
+            ].contains(optionName.lowercased())
+        }
+        let remoteWriteShortFlags: Set<String> = ["-d", "-F", "-X", "-T"]
+        return remoteWriteShortFlags.contains(optionName)
+            || combinedShortOptions(normalized).contains(where: remoteWriteShortFlags.contains)
     }
+
+    /// The short options one `-abc` token sets, up to the first that takes a
+    /// value: the rest of the token is that value.
+    private static func combinedShortOptions(_ token: String) -> [String] {
+        guard token.hasPrefix("-"), !token.hasPrefix("--"), token.count > 2 else { return [] }
+        var options: [String] = []
+        for character in token.dropFirst() {
+            options.append("-\(character)")
+            if curlShortOptionsWithValues.contains(character) { break }
+        }
+        return options
+    }
+
+    private static let curlShortOptionsWithValues: Set<Character> = [
+        "A", "b", "c", "C", "d", "D", "e", "E", "F", "H", "K", "m", "o", "P", "Q", "r", "t", "T", "u", "U",
+        "w", "x", "X", "y", "Y", "z"
+    ]
 
     private static func looksLikeReadOnlySQL(_ token: String) -> Bool {
         let normalized = token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")).lowercased()
@@ -743,7 +800,8 @@ enum ShellCommandRiskClassifier {
     ]
 
     private static let cloudReadVerbs: Set<String> = [
-        "list", "ls", "describe", "show", "get", "view", "read", "status", "version"
+        "list", "ls", "describe", "show", "get", "view", "read", "status", "version", "info", "help", "wait",
+        "presign"
     ]
 
     private static let cloudWriteVerbs: Set<String> = [

@@ -1091,32 +1091,35 @@ final class AgentRuntimeWorker {
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
 
+        let resultCheckpoint = RuntimeTurnSettlementService.Checkpoint(
+            requestID: turnBegin.request?.id, result: result, runtime: selectedRuntime,
+                phase: auditPhase, executionPath: executionPath, launchSnapshot: .init(task: executionTask),
+                permissionPolicy: launchPermissionPolicy, sandboxEnforcement: executionPolicy.sandboxEnforcementSnapshot,
+                verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
+                    fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext),
+                timeoutSeconds: timeoutSeconds, budgetEnforcementMode: budgetEnforcementMode.rawValue,
+                effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
+                tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
+                cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
+                approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
+                sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
+                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase))
+
         // Before the outcome branches, not inside one. What the run left behind
         // for the user is waiting whether the run succeeded, was cancelled, or
-        // failed right after leaving it.
+        // failed right after leaving it; only a clean finish lets Auto allow a
+        // connector the run reached for.
         RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: task,
             run: run,
             modelContext: modelContext,
-            policyLevel: manifest.policyLevel
+            policyLevel: manifest.policyLevel,
+            runFinishedCleanly: RuntimeTurnSettlementService.finishedCleanly(
+                checkpoint: resultCheckpoint, taskStatus: task.status)
         )
 
-
         do {
-            try RuntimeTurnSettlementService.capture(
-                .init(requestID: turnBegin.request?.id, result: result, runtime: selectedRuntime,
-                    phase: auditPhase, executionPath: executionPath, launchSnapshot: .init(task: executionTask),
-                    permissionPolicy: launchPermissionPolicy, sandboxEnforcement: executionPolicy.sandboxEnforcementSnapshot,
-                    verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
-                        fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext),
-                    timeoutSeconds: timeoutSeconds, budgetEnforcementMode: budgetEnforcementMode.rawValue,
-                    effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
-                    tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
-                    cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
-                    approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
-                    sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
-                        startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase)),
-                task: task, run: run, modelContext: modelContext)
+            try RuntimeTurnSettlementService.capture(resultCheckpoint, task: task, run: run, modelContext: modelContext)
         } catch {
             RuntimeTurnSettlementService.reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
             settlementHandled = true

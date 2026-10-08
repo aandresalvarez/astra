@@ -27,11 +27,14 @@ enum RunBoundaryDiscovery {
     /// changes nothing the run already produced. Nothing here leaves the
     /// machine: an Auto run's staged writes are sent during settlement, after
     /// the provider result is durable (`ConnectorMutationAutoSend`).
+    /// `runFinishedCleanly` decides whether Auto may allow a connector the run
+    /// reached for; it defaults to false, so a caller that cannot say offers.
     static func recordWhatTheRunLeftForTheUser(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        policyLevel: AgentPolicyLevel = .review
+        policyLevel: AgentPolicyLevel = .review,
+        runFinishedCleanly: Bool = false
     ) {
         let discovered = ConnectorMutationDiscovery.recordStagedMutations(
             task: task,
@@ -85,7 +88,8 @@ enum RunBoundaryDiscovery {
             task: task,
             run: run,
             modelContext: modelContext,
-            policyLevel: policyLevel
+            policyLevel: policyLevel,
+            runFinishedCleanly: runFinishedCleanly
         )
     }
 }
