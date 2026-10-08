@@ -880,8 +880,12 @@ struct AgentPolicyTests {
             ("docker run alpine", .mutation, false, .shellCommand(executable: "docker", pattern: "run alpine *")),
             ("curl https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
             ("curl -f https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
-            ("curl -F file=@report.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "*example.com*")),
-            ("curl -X POST https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "*example.com*")),
+            // A write keeps its write flag, so approving it is not approving
+            // every request to the host, and a read grant never covers it.
+            ("curl -F file=@report.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "-F *example.com*")),
+            ("curl -X POST https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "-X *example.com*")),
+            ("curl --data=x https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "--data=* *example.com*")),
+            ("curl --json @body.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "--json *example.com*")),
             ("ls -la", .fileRead, false, .shellCommand(executable: "ls", pattern: "*")),
             ("cat ~/.zsh_history", .credential, false, .shellCommand(executable: "cat", pattern: "~/.zsh_history *")),
             ("python3 script.py", .scriptExecution, false, .shellCommand(executable: "python3", pattern: "script.py *"))

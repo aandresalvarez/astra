@@ -73,6 +73,8 @@ enum ShellCommandRiskClassifier {
             return true
         case "docker":
             return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"]).first == "push"
+        case "curl", "wget":
+            return args.contains(where: isRemoteWriteFlag)
         default:
             if networkTransferRoots.contains(executable) { return true }
             if packageManagerRoots.contains(executable) {
@@ -354,7 +356,13 @@ enum ShellCommandRiskClassifier {
     private static func shellApprovalPattern(executable: String, args: [String], risk: Risk) -> String {
         if ["curl", "wget"].contains(executable),
            let hostPattern = hostScopedShellPattern(from: args) {
-            return hostPattern
+            // A write keeps the flag that makes it one, so approving it never
+            // reads as approving every request to the host, and a host-scoped
+            // read approval never covers a later write (`actsOutsideMachine`).
+            guard let writeFlag = args.first(where: isRemoteWriteFlag) else { return hostPattern }
+            let name = writeFlag.split(separator: "=", maxSplits: 1).first.map(String.init) ?? writeFlag
+            let flagPattern = writeFlag.contains("=") ? "\(name)=*" : name
+            return "\(flagPattern) \(hostPattern)"
         }
         let actionTokens = commandActionTokens(executable: executable, args: args, risk: risk)
             .map(normalizedPatternToken)
@@ -556,10 +564,19 @@ enum ShellCommandRiskClassifier {
             return [
                 "--data", "--data-raw", "--data-binary", "--data-urlencode",
                 "--form", "--form-string", "--request", "--upload-file",
-                "--post-file", "--post-data", "--output"
+                "--post-file", "--post-data", "--output", "--json"
             ].contains(optionName.lowercased())
         }
         return false
+    }
+
+    /// The mutation flags that send something to the remote end, as opposed
+    /// to `-o`/`--output`, which only write the response to a local file.
+    private static func isRemoteWriteFlag(_ token: String) -> Bool {
+        let normalized = normalizedArgument(token)
+        let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
+        guard !["-o", "-O", "--output"].contains(optionName) else { return false }
+        return isNetworkMutationFlag(token)
     }
 
     private static func looksLikeReadOnlySQL(_ token: String) -> Bool {

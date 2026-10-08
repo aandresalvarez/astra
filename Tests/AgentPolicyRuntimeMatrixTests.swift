@@ -192,13 +192,35 @@ struct AgentPolicyRuntimeMatrixTests {
         )
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
-            for command in ["curl -X POST https://hooks.example.test/build -d ok", "gcloud run deploy api --source ."] {
+            for command in [
+                "curl -X POST https://hooks.example.test/build -d ok",
+                "curl --json '{\"build\":1}' https://hooks.example.test/api",
+                "gcloud run deploy api --source ."
+            ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
             for command in ["curl https://example.test/status", "gcloud compute instances list", "git commit -m wip"] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
         }
+
+        // Approving a read is not approving a write to the same host: the
+        // host-scoped read grant must not stand in for asking.
+        let readApproval = PermissionBroker.approvalGrants(
+            for: .shell(command: "curl https://example.test/status", toolName: "Bash")
+        )
+        let afterRead = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: wider, approvalGrants: readApproval
+        ))
+        #expect(afterRead.disposition(toolName: "Bash", command: "curl -d x https://example.test/delete") == .ask)
+        let writeApproval = PermissionBroker.approvalGrants(
+            for: .shell(command: "curl -d x https://example.test/delete", toolName: "Bash")
+        )
+        let afterWrite = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: wider, approvalGrants: writeApproval
+        ))
+        #expect(afterWrite.disposition(toolName: "Bash", command: "curl -d x https://example.test/delete") == .allowed,
+                "an approved write is not asked about again")
 
         // A command that only mentions one in a quoted operand runs nothing
         // outside ASTRA and keeps the rule.

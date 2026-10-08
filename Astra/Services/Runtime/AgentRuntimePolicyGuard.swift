@@ -410,9 +410,17 @@ struct AgentRuntimePolicyGuard: Sendable {
             || actionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
     }
 
+    /// Only an approval that was itself for a write outside this machine can
+    /// stand in for asking again. A reusable read grant — `curl` scoped to a
+    /// host, `git status` — matches later commands too, and approving a read
+    /// is not approving a write to the same place.
     private func commandApprovedByGrant(_ command: String, toolName: String) -> Bool {
+        let externalGrants = manifest.approvalGrants.filter { grant in
+            guard case .shellCommand(let executable, let pattern) = grant else { return false }
+            return ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "\(executable) \(pattern)")
+        }
         let approved = PermissionBroker.providerRuntimeGrantStrings(
-            for: manifest.approvalGrants,
+            for: externalGrants,
             runtime: manifest.providerID
         )
         guard !approved.isEmpty else { return false }
