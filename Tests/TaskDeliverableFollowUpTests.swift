@@ -322,6 +322,58 @@ struct TaskDeliverableFollowUpTests {
         #expect(result.checks.contains { $0.id == "json.syntax" && $0.status == .failed })
     }
 
+    @Test("a relative recorded write is the file under the run's working root, not a same-named one elsewhere")
+    func relativeRecordedWriteResolvesAgainstWorkingRoot() async throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        _ = fixture.makeRun(startedAt: Date().addingTimeInterval(-3_600))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Write config.json.")
+        let old = Date().addingTimeInterval(-7_200)
+        let stale = (TaskWorkspaceAccess(task: fixture.task).taskFolder as NSString).appendingPathComponent("config.json")
+        try "{ not json".write(toFile: stale, atomically: true, encoding: .utf8)
+        let written = (fixture.worktree as NSString).appendingPathComponent("config.json")
+        try #"{"ready":true}"#.write(toFile: written, atomically: true, encoding: .utf8)
+        for path in [stale, written] {
+            try FileManager.default.setAttributes([.creationDate: old, .modificationDate: old], ofItemAtPath: path)
+        }
+        followUpRun.appendFileChange(StoredFileChange(
+            path: "config.json", changeType: StoredFileChangeKind.write.rawValue, content: nil,
+            oldString: nil, newString: nil, timestamp: Date()
+        ))
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task, run: followUpRun, modelContext: fixture.context, workspacePath: fixture.worktree
+        )
+        #expect(result.canComplete)
+        #expect(result.evidencePaths.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+            == [URL(fileURLWithPath: written).resolvingSymlinksInPath().path])
+    }
+
+    @Test("an observed task-folder change counts even with a preserved timestamp")
+    func observedChangeCountsAsRunEvidence() async throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        _ = fixture.makeRun(startedAt: Date().addingTimeInterval(-3_600))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "cp -p the config in.")
+        let copied = (TaskWorkspaceAccess(task: fixture.task).taskFolder as NSString).appendingPathComponent("config.json")
+        try "{ not json".write(toFile: copied, atomically: true, encoding: .utf8)
+        let old = Date().addingTimeInterval(-7_200)
+        try FileManager.default.setAttributes([.creationDate: old, .modificationDate: old], ofItemAtPath: copied)
+        followUpRun.appendFileChange(StoredFileChange(
+            path: "config.json", changeType: StoredFileChangeKind.discovered.rawValue, content: nil,
+            oldString: nil, newString: nil, timestamp: Date()
+        ))
+        #expect(followUpRun.fileChanges.isEmpty)
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task, run: followUpRun, modelContext: fixture.context, workspacePath: fixture.worktree
+        )
+        #expect(!result.canComplete)
+        #expect(result.checks.contains { $0.id == "json.syntax" && $0.status == .failed })
+    }
+
     @Test("a pinned task's missing-deliverable message names the worktree, not the workspace")
     func pinnedTaskMessageNamesWorktree() async throws {
         let fixture = try DeliverableFollowUpFixture()
