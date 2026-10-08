@@ -183,6 +183,23 @@ struct AgentPolicyRuntimeMatrixTests {
                 "\(runtime.rawValue) push"
             )
         }
+        // Not only Git: anything the shared risk classifier calls a write
+        // outside this machine asks, while local writes and reads keep the rule.
+        let wider = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Glob", "Grep", "Bash"],
+            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*"]
+        )
+        for runtime in Self.autonomousFlags.keys {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
+            for command in ["curl -X POST https://hooks.example.test/build -d ok", "gcloud run deploy api --source ."] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
+            }
+            for command in ["curl https://example.test/status", "gcloud compute instances list", "git commit -m wip"] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
+            }
+        }
+
         let request = PermissionRequest.shell(command: "git push origin main", toolName: "Bash")
         let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
             runtime: .claudeCode,

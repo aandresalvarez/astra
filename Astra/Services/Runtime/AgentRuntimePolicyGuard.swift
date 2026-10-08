@@ -386,7 +386,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         request: PermissionRequest?
     ) -> AgentRuntimePolicyViolation? {
         guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
-              AgentExternalActionObserver.classify(command) != nil,
+              Self.actsOutsideMachine(command),
               !commandApprovedByGrant(command, toolName: toolName) else {
             return nil
         }
@@ -400,6 +400,14 @@ struct AgentRuntimePolicyGuard: Sendable {
             permissionRequest: request,
             approvalGrants: PermissionBroker.approvalGrants(for: request)
         )
+    }
+
+    /// The recorded `git`/`gh` actions, plus any segment the shared risk
+    /// classifier marks as a write outside this machine: a `curl` that sends
+    /// data, a cloud deploy, a remote database client, a package publish.
+    private static func actsOutsideMachine(_ command: String) -> Bool {
+        AgentExternalActionObserver.classify(command) != nil
+            || actionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
     }
 
     private func commandApprovedByGrant(_ command: String, toolName: String) -> Bool {

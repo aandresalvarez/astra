@@ -53,6 +53,35 @@ enum ShellCommandRiskClassifier {
         )
     }
 
+    /// Whether a mutating segment changes something outside this machine — a
+    /// remote repository, a hosted service, cloud infrastructure, a remote
+    /// database — rather than the workspace. Ask and Custom ask before these
+    /// even when a Custom rule allows the command family (`ExternalActionPolicy`,
+    /// `AgentRuntimePolicyGuard`). Local writes such as `git commit` or `mv`
+    /// stay with the user's per-item rules.
+    static func actsOutsideMachine(forShellSegment segment: String) -> Bool {
+        guard let assessment = assessment(forShellSegment: segment),
+              [.mutation, .destructive, .packageMutation].contains(assessment.risk) else {
+            return false
+        }
+        let args = Array(shellTokens(strippingBenignRedirections(segment)).dropFirst()).map(comparableCommandArgument)
+        let executable = assessment.executable.lowercased()
+        switch executable {
+        case "git":
+            return dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first == "push"
+        case "gh", "gcloud", "aws", "az", "bq", "kubectl", "helm", "terraform", "tofu", "psql", "mysql":
+            return true
+        case "docker":
+            return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"]).first == "push"
+        default:
+            if networkTransferRoots.contains(executable) { return true }
+            if packageManagerRoots.contains(executable) {
+                return args.contains { ["publish", "upload", "push"].contains($0) }
+            }
+            return false
+        }
+    }
+
     static func approvalGrant(forShellSegment segment: String) -> PermissionGrant? {
         guard let assessment = assessment(forShellSegment: segment) else { return nil }
         return .shellCommand(executable: assessment.executable, pattern: assessment.pattern)
