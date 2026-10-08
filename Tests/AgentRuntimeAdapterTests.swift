@@ -1736,31 +1736,31 @@ struct AgentRuntimeAdapterTests {
         )
 
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
-            task: artifactTask,
+            task: artifactTask, followsUpDeliveredRequest: false,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Glob", "Grep"],
             askFirstTools: ["Write", "Edit", "Bash"]
         ) == ["Write"])
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
-            task: namedDeliverableTask,
+            task: namedDeliverableTask, followsUpDeliveredRequest: false,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Glob", "Grep"],
             askFirstTools: ["Write", "Edit", "Bash"]
         ) == ["Write"])
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
-            task: artifactTask,
+            task: artifactTask, followsUpDeliveredRequest: false,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Write"],
             askFirstTools: ["Write", "Edit", "Bash"]
         ).isEmpty)
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
-            task: artifactTask,
+            task: artifactTask, followsUpDeliveredRequest: false,
             permissionPolicy: .autonomous,
             providerAllowedTools: ["Read"],
             askFirstTools: ["Write", "Edit", "Bash"]
         ).isEmpty)
         #expect(ProviderArtifactBootstrapPolicy.launchTools(
-            task: informationalTask,
+            task: informationalTask, followsUpDeliveredRequest: false,
             permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Glob", "Grep"],
             askFirstTools: ["Write", "Edit", "Bash"]
@@ -3295,7 +3295,7 @@ struct AgentRuntimeAdapterTests {
     ) -> RunPermissionManifest {
         let manifestAllowedTools = Array(Set(
             allowedTools + ProviderArtifactBootstrapPolicy.launchTools(
-                task: task,
+                task: task, followsUpDeliveredRequest: false,
                 permissionPolicy: .restricted,
                 providerAllowedTools: allowedTools,
                 askFirstTools: askFirstTools

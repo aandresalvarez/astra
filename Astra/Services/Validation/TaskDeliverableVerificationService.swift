@@ -35,21 +35,38 @@ enum TaskDeliverableVerificationService {
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
         let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
-        let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(
+        // A follow-up after the task's request was met does not owe the
+        // original deliverable again; it is still checked if it touched files.
+        let deliveredEarlier = run.map { TaskDeliverableExpectation.followsUpDeliveredRequest($0, in: task) } ?? false
+        let owedFilenames: Set<String> = deliveredEarlier ? [] : requiredFilenames
+        let requiresDeliverableArtifact = !deliveredEarlier && TaskDeliverableExpectation.requiresDeliverableArtifact(
             task,
             requiredOutputFilenames: requiredFilenames
         )
+        let taskAccess = TaskWorkspaceAccess(task: task)
+        let searchedWorkspacePath = workspacePath ?? taskAccess.effectiveWorkspacePath
         let discoveredFiles = TaskOutputDiscovery.files(
             for: task,
             run: run,
-            workspacePath: workspacePath
+            workspacePath: searchedWorkspacePath
         )
         let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
             discoveredFiles,
             for: task,
             modelContext: modelContext
         )
-        let files = artifactReconciliation.discoveredFiles
+        // An exempt follow-up answers for what it touched, not for an older
+        // task-folder artifact it never opened.
+        let files = deliveredEarlier
+            ? run.map {
+                filesTouched(
+                    by: $0,
+                    from: artifactReconciliation.discoveredFiles,
+                    workspacePath: searchedWorkspacePath,
+                    taskFolder: taskAccess.taskFolder
+                )
+            } ?? []
+            : artifactReconciliation.discoveredFiles
         let profile = profile(for: task, files: files, requiresArtifact: requiresDeliverableArtifact)
 
         guard requiresDeliverableArtifact || !files.isEmpty else {
@@ -75,7 +92,8 @@ enum TaskDeliverableVerificationService {
                 requiresHumanReview: false,
                 summary: TaskDeliverableExpectation.missingDeliverableMessage(
                     for: task,
-                    requiredFilenames: requiredFilenames
+                    requiredFilenames: owedFilenames,
+                    workspacePath: searchedWorkspacePath
                 ),
                 checks: [
                     TaskDeliverableCheck(
@@ -85,7 +103,7 @@ enum TaskDeliverableVerificationService {
                         summary: "No displayable task output artifact was found.",
                         path: nil
                     )
-                ] + requiredFileChecks(requiredFilenames: requiredFilenames, discoveredFilenames: []),
+                ] + requiredFileChecks(requiredFilenames: owedFilenames, discoveredFilenames: []),
                 evidencePaths: [],
                 run: run
             )
@@ -100,17 +118,16 @@ enum TaskDeliverableVerificationService {
                 path: nil
             )
         ]
-        if !requiredFilenames.isEmpty {
+        if !owedFilenames.isEmpty {
             let discoveredFilenames = Set(files.map { URL(fileURLWithPath: $0.path).lastPathComponent.lowercased() })
             checks.append(contentsOf: requiredFileChecks(
-                requiredFilenames: requiredFilenames,
+                requiredFilenames: owedFilenames,
                 discoveredFilenames: discoveredFilenames
             ))
         }
 
         let hostFileAccess = HostFileAccessBroker()
-        let taskAccess = TaskWorkspaceAccess(task: task)
-        let artifactRoots = [taskAccess.taskFolder, workspacePath ?? taskAccess.effectiveWorkspacePath]
+        let artifactRoots = [taskAccess.taskFolder, searchedWorkspacePath]
             .filter { !$0.isEmpty }
         for file in files.prefix(12) {
             let artifactRoot = artifactRoot(for: file, allowedRoots: artifactRoots)
@@ -484,6 +501,25 @@ enum TaskDeliverableVerificationService {
                 )
             ]
         }
+    }
+
+    /// What `run` wrote: every recorded change, including the task-folder
+    /// differences it observed, resolved against the root it is relative to;
+    /// then files whose timestamps fall in the run. A copy or extraction that
+    /// preserves modification dates is still the run's own output, and a
+    /// same-named file under another root is not.
+    private static func filesTouched(
+        by run: TaskRun,
+        from files: [TaskOutputDiscoveredFile],
+        workspacePath: String,
+        taskFolder: String
+    ) -> [TaskOutputDiscoveredFile] {
+        let canonical: (String) -> String = { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path }
+        let touched = Set(run.allFileChanges.compactMap {
+            TaskOutputDiscovery.resolvedChangePath($0, workspacePath: workspacePath, taskFolder: taskFolder).map(canonical)
+        })
+        let inRunWindow = Set(TaskOutputDiscovery.filesChanged(during: run, from: files).map(\.path))
+        return files.filter { touched.contains(canonical($0.path)) || inRunWindow.contains($0.path) }
     }
 
     private static func artifactRoot(
