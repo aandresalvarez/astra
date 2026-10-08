@@ -359,6 +359,33 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(approved.disposition(toolName: "Bash", command: "git push origin main") == .allowed, "approved once, not asked twice")
     }
 
+    /// Custom's own rules decide whether enabled local tools become grants:
+    /// with Bash ask-first (the default Custom policy) no runtime turns them
+    /// into `<exe> *` patterns, and with Bash allowed every runtime does.
+    @Test("Custom grants local tools only when its rules allow Bash")
+    func customGrantsLocalToolsOnlyWithBash() {
+        let withoutBash = AgentPolicy(level: .custom, allowedTools: ["Read", "Glob", "Grep"], askFirstTools: ["Bash"])
+        let withBash = AgentPolicy(level: .custom, allowedTools: ["Read", "Glob", "Grep", "Bash"])
+        for runtime in [AgentRuntimeID.codexCLI, .cursorCLI, .antigravityCLI, .openCodeCLI] {
+            let adapter = ProviderPolicyAdapterRegistry.adapter(for: runtime)
+            func render(_ policy: AgentPolicy) -> ProviderPolicyRender {
+                adapter.render(policy: policy, context: PolicyRenderContext(
+                    runtimeID: runtime,
+                    model: AgentRuntimeAdapterRegistry.defaultModel(for: runtime),
+                    workspacePath: "/tmp/astra-policy-matrix",
+                    additionalPaths: [],
+                    requestedAllowedTools: ["Read", "Grep"],
+                    localToolCommands: ["gcloud"],
+                    environmentKeyNames: [],
+                    credentialLabels: [],
+                    providerFeatures: adapter.supportedFeatures
+                ))
+            }
+            #expect(!render(withoutBash).allowedShellPatterns.contains("gcloud *"), "\(runtime.rawValue) without Bash")
+            #expect(render(withBash).allowedShellPatterns.contains("gcloud *"), "\(runtime.rawValue) with Bash")
+        }
+    }
+
     /// A browser page change is a write to a site. It asks at Custom whether
     /// it arrives as `astra-browser click` or as the browser MCP tool, and one
     /// approval of the command covers both; reads and navigation keep the rule.

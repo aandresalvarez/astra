@@ -392,7 +392,7 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = AntigravityCLIRuntime.antigravityPermissionArguments(policy: permissionPolicy)
         let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
-            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+            for: PolicyLocalToolGrants.policyScoped(context.localToolCommands, for: policy)
         )
         var diagnostics = diagnostics(for: policy, context: context)
         diagnostics = diagnostics.map { diagnostic in
@@ -494,7 +494,7 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
             requirements: CodexRequirementsService.current()
         )
         let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
-            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+            for: PolicyLocalToolGrants.policyScoped(context.localToolCommands, for: policy)
         )
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -579,7 +579,7 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CursorCLIRuntime.cursorPermissionArguments(policy: permissionPolicy)
         let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
-            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+            for: PolicyLocalToolGrants.policyScoped(context.localToolCommands, for: policy)
         )
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -663,7 +663,7 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
         let args = OpenCodeCLIRuntime.permissionArguments(policy: permissionPolicy)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
         let localShellPatterns = PolicyLocalToolGrants.shellAllowPatterns(
-            for: PolicyLocalToolGrants.levelScoped(context.localToolCommands, for: policy.level)
+            for: PolicyLocalToolGrants.policyScoped(context.localToolCommands, for: policy)
         )
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -781,6 +781,16 @@ private enum PolicyLocalToolGrants {
         case .build, .network, .autonomous, .custom:
             return localToolCommands
         }
+    }
+
+    /// Custom grants local tools only when its own rules allow Bash, as the
+    /// Claude and Copilot renderers already require. The shell-pattern
+    /// renderers turned every enabled tool into an `<exe> *` pattern from the
+    /// level alone, so a Custom policy with Bash ask-first still ran them.
+    static func policyScoped(_ localToolCommands: [String], for policy: AgentPolicy) -> [String] {
+        let scoped = levelScoped(localToolCommands, for: policy.level)
+        guard policy.level == .custom else { return scoped }
+        return shouldGrantLocalToolCommands(policy.allowedTools) ? scoped : []
     }
 
     static func addClaudeShellGrants(

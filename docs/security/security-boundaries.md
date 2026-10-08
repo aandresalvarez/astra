@@ -139,8 +139,9 @@ boundary. The full inventory is in
   outcome). Every action outside ASTRA leaves a record in the chat, derived
   from its receipt, with an **Auto** pill; recognised `git`/`gh` commands the
   agent ran itself are recorded with an **Agent** pill.
-- **Custom** applies the saved per-item tool, shell, and network rules and
-  follows Ask for actions outside ASTRA: a rule that allows Bash, `git:*`,
+- **Custom** applies the saved per-item tool, shell, and network rules (an
+  enabled local tool becomes a grant only when those rules allow Bash, on
+  every runtime) and follows Ask for actions outside ASTRA: a rule that allows Bash, `git:*`,
   `curl:*`, or `gcloud:*` still asks before `git push`, a `gh` write, a `curl`
   that sends data, a cloud deploy, a remote database client, a package
   registry change, or a browser page change

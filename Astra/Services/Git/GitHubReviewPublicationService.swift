@@ -361,6 +361,7 @@ enum GitHubReviewPublicationError: LocalizedError {
     case staleHead
     case uncertain
     case receiptPersistenceFailed(String)
+    case requestWithdrawn
 
     var errorDescription: String? {
         switch self {
@@ -374,6 +375,8 @@ enum GitHubReviewPublicationError: LocalizedError {
             "ASTRA sent the review request but could not confirm the result. Check the pull request on GitHub before trying again."
         case .receiptPersistenceFailed(let reviewURL):
             "GitHub confirmed the review at \(reviewURL), but ASTRA could not save its receipt. Check GitHub before continuing; ASTRA will not resend this file."
+        case .requestWithdrawn:
+            "The request to post this review was withdrawn before it was sent."
         }
     }
 }
@@ -591,6 +594,12 @@ final class GitHubReviewPublicationService {
         }
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
+        }
+        // Auto posts because the user asked; a "don't post it" recorded while
+        // the checks above awaited withdraws that, so it is read again here,
+        // with no suspension before dispatch is recorded.
+        if authorization == .autoPolicy, !GitHubReviewPublicationRequirement.isPending(task: task) {
+            throw GitHubReviewPublicationError.requestWithdrawn
         }
         let inputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-github-review-\(UUID().uuidString).json")

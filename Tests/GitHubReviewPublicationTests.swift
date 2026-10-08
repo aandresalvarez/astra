@@ -818,6 +818,29 @@ struct GitHubReviewPublicationTests {
         #expect(record.authorization == .autoPolicy)
     }
 
+    // Preparation awaits GitHub; a "don't post it" recorded meanwhile
+    // withdraws the request Auto was acting on.
+    @Test("Auto does not post a review whose request was withdrawn after it was prepared")
+    func autoRespectsAWithdrawalDuringPreparation() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        _ = try postingRun(fixture, request: "Post the PR review comments")
+        let cli = FakeCLI()
+        let service = GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
+        fixture.context.insert(TaskEvent(
+            task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Do not post the PR review comments", run: nil
+        ))
+        try fixture.context.save()
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.publish(task: fixture.task, proposal: proposal, authorization: .autoPolicy)
+        }
+        #expect(await cli.postCount() == 0)
+        #expect(!fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.dispatched })
+    }
+
     @Test("Ask and Custom leave the requested review for the user")
     func askLeavesTheReviewForTheUser() async throws {
         for policy in [PermissionPolicy.restricted, .interactive] {

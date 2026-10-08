@@ -60,7 +60,7 @@ enum GitHubReviewAutoPost {
             // repeating it would read as a second attempt.
             if let error = error as? GitHubReviewPublicationError {
                 switch error {
-                case .uncertain, .alreadyDispatched, .receiptPersistenceFailed:
+                case .uncertain, .alreadyDispatched, .receiptPersistenceFailed, .requestWithdrawn:
                     return
                 case .invalid, .unusableArtifact, .staleHead:
                     break
