@@ -66,7 +66,8 @@ struct AgentExternalActionObserverTests {
     @Test("An action whose failure the command masks is not recorded")
     func maskedActionsAreNotRecorded() {
         for masked in ["git push origin main || true", "git push origin main | cat", "git push origin main; echo done",
-                       "git push origin main &", #"echo "$(git push origin main)""#, "bash -c 'git push origin main || true'"] {
+                       "git push origin main &", #"echo "$(git push origin main)""#, "bash -c 'git push origin main || true'",
+                       "trap 'git push origin main' EXIT"] {
             #expect(AgentExternalActionObserver.recordableActions(in: masked).isEmpty, "\(masked)")
             #expect(!AgentExternalActionObserver.actions(in: masked).isEmpty, "the guard still asks: \(masked)")
         }

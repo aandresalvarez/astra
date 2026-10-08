@@ -128,7 +128,7 @@ boundary. The full inventory is in
 - **Auto** asks nothing. Connector credentials are allowed for the task (the
   launch stops if that grant cannot be saved; a connector the agent reached for
   mid-run is allowed only after a clean finish and a durable save, and offered
-  otherwise), staged Jira writes are sent
+  otherwise; an Auto launch answers an offer still open), staged Jira writes are sent
   during settlement — after the provider result is captured, so an exit
   mid-send is reconciled rather than replayed, and only for a run whose outcome,
   tests and AI check included, completed it (never after a cancel, failure,

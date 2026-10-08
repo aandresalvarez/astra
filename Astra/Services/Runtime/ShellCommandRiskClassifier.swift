@@ -93,6 +93,13 @@ enum ShellCommandRiskClassifier {
         case "curl", "wget":
             return usesOpaqueRequestConfig(executable: executable, args: args)
                 || withoutReadMethodRequests(args).contains(where: isRemoteWriteFlag)
+        case "rsync", "scp":
+            // `rsync -a src/ backup/` stays here; a `host:path` or
+            // `rsync://` operand is another machine.
+            return args.contains { arg in
+                !arg.hasPrefix("-") && (arg.hasPrefix("rsync://")
+                    || arg.range(of: #"^[^/:]+:"#, options: .regularExpression) != nil)
+            }
         default:
             if networkTransferRoots.contains(executable) { return true }
             if packageManagerRoots.contains(executable) {
@@ -413,13 +420,16 @@ enum ShellCommandRiskClassifier {
         if actionTokens.contains(where: { writeVerbs.contains($0) }) {
             return .mutation
         }
-        if actionTokens.contains(where: { readVerbs.contains($0) }) {
+        // Reads are named by the command's own words, before its options:
+        // `--key get-secret` is a value, not an operation.
+        let words = actionTokens.prefix { !$0.hasPrefix("-") }
+        if words.contains(where: { readVerbs.contains($0) }) {
             return .read
         }
-        if actionTokens.contains("iam") || actionTokens.contains("secretsmanager") || actionTokens.contains("secret") {
+        if words.contains("iam") || words.contains("secretsmanager") || words.contains("secret") {
             return .credential
         }
-        if actionTokens.contains(where: { token in cloudReadOperationPrefixes.contains { token.hasPrefix($0) } }) {
+        if words.contains(where: { token in cloudReadOperationPrefixes.contains { token.hasPrefix($0) } }) {
             return .read
         }
         return .mutation
@@ -447,8 +457,16 @@ enum ShellCommandRiskClassifier {
     /// `kubectl` changes the cluster unless the verb reads; `set image`,
     /// `label` and `drain` name no generic write verb. A dry run changes
     /// nothing.
+    /// kubectl's global options that take a value, so it is not read as the verb.
+    private static let kubectlOptionsWithValues: Set<String> = [
+        "--namespace", "-n", "--context", "--kubeconfig", "--cluster", "--user", "--server", "-s", "--token",
+        "--as", "--as-group", "--as-uid", "--certificate-authority", "--client-certificate", "--client-key",
+        "--request-timeout", "--cache-dir", "--tls-server-name", "-v", "--v", "--profile", "--profile-output",
+        "--log-file", "--vmodule"
+    ]
+
     private static func riskForKubernetes(_ args: [String]) -> Risk {
-        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--namespace", "-n", "--context"])
+        let actionTokens = dropLeadingOptions(args, optionsWithValues: kubectlOptionsWithValues)
         guard let verb = actionTokens.first else { return .unknown }
         if [
             "get", "describe", "logs", "top", "api-resources", "api-versions", "version", "config", "explain",
@@ -650,7 +668,7 @@ enum ShellCommandRiskClassifier {
         case "gcloud", "aws", "az":
             return dropLeadingOptions(args, optionsWithValues: ["--project", "--project-id", "--profile", "--region", "--zone", "-o"])
         case "kubectl":
-            return dropLeadingOptions(args, optionsWithValues: ["--namespace", "-n", "--context"])
+            return dropLeadingOptions(args, optionsWithValues: kubectlOptionsWithValues)
         case "docker":
             return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"])
         case "bq":

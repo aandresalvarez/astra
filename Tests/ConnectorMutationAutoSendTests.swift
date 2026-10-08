@@ -394,6 +394,7 @@ struct ConnectorProposalGuidanceTests {
         let prompt = HostControlPlanePromptGuidance.appendingAutoSendGuidance(to: Self.contract, permissionPolicy: .autonomous)
         #expect(prompt.hasPrefix(Self.contract))
         #expect(prompt.contains("sent by ASTRA with the connector credential when this turn ends"))
+        #expect(prompt.contains("if the run finishes and its checks pass"))
     }
 
     @Test("Auto tells the agent a requested GitHub review is posted, Ask keeps the sheet")

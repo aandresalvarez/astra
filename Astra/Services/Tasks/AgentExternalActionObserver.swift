@@ -252,6 +252,11 @@ enum AgentExternalActionObserver {
             if let payload = shellPayload(tokens) {
                 return recordable ? recordableActions(in: payload, depth: depth + 1) : actions(in: payload, depth: depth + 1)
             }
+            // A trap handler runs later and its status is not the call's: it
+            // is classified (the guard asks), never recorded as done.
+            if !recordable, let handler = ShellCommandRunners.trapHandler(tokens: tokens) {
+                return actions(in: handler, depth: depth + 1)
+            }
         }
         let executable = URL(fileURLWithPath: first).lastPathComponent.lowercased()
         let args = Array(tokens.dropFirst()).map { $0.lowercased() }

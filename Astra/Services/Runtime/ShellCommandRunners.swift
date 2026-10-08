@@ -122,6 +122,21 @@ enum ShellCommandRunners {
         return payloads.isEmpty ? nil : payloads.joined(separator: " ; ")
     }
 
+    /// `trap 'CMD' EXIT` runs CMD later, when the signal or exit comes. The
+    /// handler is a command of its own; whether it succeeded is not the
+    /// call's status, so it is asked about but not recorded as done.
+    static func trapHandler(_ segment: String) -> String? {
+        AgentExternalActionObserver.shellSegments(segment).first.flatMap(trapHandler(tokens:))
+    }
+
+    /// `trapHandler`, for tokens already split with their quotes grouped.
+    static func trapHandler(tokens: [String]) -> String? {
+        guard tokens.first?.lowercased() == "trap" else { return nil }
+        let operands = tokens.dropFirst().drop { $0.hasPrefix("-") }
+        guard let handler = operands.first, !handler.isEmpty, operands.count >= 2 else { return nil }
+        return handler
+    }
+
     private static let runnerOptionsWithValues: [String: Set<String>] = [
         "env": ["-u", "--unset", "-C", "--chdir", "-P"],
         "nice": ["-n", "--adjustment"],

@@ -47,7 +47,7 @@ enum HostControlPlanePromptGuidance {
             prompt += """
 
 
-            ASTRA Auto mode: this task does not ask the user before acting outside ASTRA. A connector proposal you stage is sent by ASTRA with the connector credential when this turn ends, without a review, and the chat records it with a link. When you stage one, tell the user it will be sent when you finish, not that it is waiting for their review. Everything else above still holds: stage it through the propose operation, once, and never write it another way.
+            ASTRA Auto mode: this task does not ask the user before acting outside ASTRA. A connector proposal you stage is sent by ASTRA with the connector credential when this turn ends, if the run finishes and its checks pass, without a review, and the chat records it with a link; if the run fails, it waits for the user's review instead. When you stage one, tell the user it will be sent when you finish, not that it is waiting for their review. Everything else above still holds: stage it through the propose operation, once, and never write it another way.
             """
         }
         if !ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: level), prompt.contains(reviewPostingMarker) {

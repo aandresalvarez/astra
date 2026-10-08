@@ -496,7 +496,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         let inner = Self.rawActionableShellSegments(command).flatMap { segment in
             [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment),
-             Self.functionBodyStart(segment)].compactMap { $0 }
+             Self.functionBodyStart(segment), ShellCommandRunners.trapHandler(segment)].compactMap { $0 }
                 + Self.commandSubstitutions(in: segment)
         }
         guard depth < 4 else {
