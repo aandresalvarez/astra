@@ -376,11 +376,22 @@ enum ShellCommandRiskClassifier {
     /// machine: publishing, removing, or deprecating a release; changing its
     /// tags, owners, or access; or the account's tokens, hooks, org, or
     /// profile. `npm dist-tag ls`, `npm owner ls`, `npm token list` read.
+    /// The manager's own subcommand decides, after its global options: in
+    /// `npm install publish` the package is named `publish`.
     private static func changesPackageRegistry(_ args: [String]) -> Bool {
-        if args.contains(where: packageRegistryWriteVerbs.contains) { return true }
-        guard args.contains(where: packageRegistryAdminCommands.contains) else { return false }
-        return args.contains(where: packageRegistryAdminWriteVerbs.contains)
+        var tokens = dropLeadingOptions(args, optionsWithValues: packageManagerOptionsWithValues)
+        if tokens.first == "npm" { tokens.removeFirst() }  // `yarn npm publish`
+        guard let command = tokens.first else { return false }
+        if packageRegistryWriteVerbs.contains(command) { return true }
+        guard packageRegistryAdminCommands.contains(command) else { return false }
+        return tokens.dropFirst().contains(where: packageRegistryAdminWriteVerbs.contains)
     }
+
+    private static let packageManagerOptionsWithValues: Set<String> = [
+        "--registry", "--userconfig", "--globalconfig", "--prefix", "--workspace", "-w", "--loglevel", "--cache",
+        "--otp", "-C", "--cwd", "--dir", "--filter", "-F", "--manifest-path", "--config", "-Z", "--color",
+        "--index-url", "--extra-index-url", "--source"
+    ]
 
     private static let packageRegistryWriteVerbs: Set<String> = [
         "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank", "star", "unstar",
@@ -477,10 +488,22 @@ enum ShellCommandRiskClassifier {
         if verb == "auth", ["can-i", "whoami"].contains(actionTokens.dropFirst().first ?? "") {
             return .read
         }
-        if args.contains(where: { $0 == "--dry-run" || $0.hasPrefix("--dry-run=") }) {
+        if isKubectlDryRun(args) {
             return .read
         }
         return .mutation
+    }
+
+    /// `--dry-run`, `=client` or `=server` persist nothing; `=none` (the
+    /// default) is a real write.
+    private static func isKubectlDryRun(_ args: [String]) -> Bool {
+        for (index, arg) in args.enumerated() {
+            if arg.hasPrefix("--dry-run=") { return String(arg.dropFirst("--dry-run=".count)).lowercased() != "none" }
+            if arg == "--dry-run" {
+                return !(args.indices.contains(index + 1) && args[index + 1].lowercased() == "none")
+            }
+        }
+        return false
     }
 
     /// A daemon's state changes unless the verb reads, so every other verb is

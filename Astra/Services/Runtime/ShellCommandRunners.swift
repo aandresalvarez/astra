@@ -12,6 +12,7 @@ enum ShellCommandRunners {
     static func wrappedCommand(_ segment: String) -> String? {
         if let expanded = gitInlineAliasExpansion(segment) { return expanded }
         if let actions = findExecPayloads(segment) { return actions }
+        if let commands = gitRunCommands(segment) { return commands }
         var tokens = segment.split(whereSeparator: \.isWhitespace).map(String.init)
         guard let first = tokens.first else { return nil }
         let runner: String
@@ -120,6 +121,43 @@ enum ShellCommandRunners {
             index += 1
         }
         return payloads.isEmpty ? nil : payloads.joined(separator: " ; ")
+    }
+
+    /// Commands git itself runs: `submodule foreach CMD` in every submodule,
+    /// `rebase -x|--exec CMD` after each commit, `bisect run CMD` per step.
+    /// Several are joined with `;` so each is judged.
+    static func gitRunCommands(_ segment: String) -> String? {
+        guard let tokens = AgentExternalActionObserver.shellSegments(segment).first,
+              let first = tokens.first, URL(fileURLWithPath: first).lastPathComponent.lowercased() == "git" else {
+            return nil
+        }
+        var index = 1
+        while index < tokens.count, tokens[index].hasPrefix("-") {
+            index += ["-c", "-C", "--git-dir", "--work-tree"].contains(tokens[index]) ? 2 : 1
+        }
+        guard index < tokens.count else { return nil }
+        let verb = tokens[index].lowercased()
+        let rest = Array(tokens[(index + 1)...])
+        var commands: [String] = []
+        switch verb {
+        case "submodule":
+            guard let foreach = rest.firstIndex(of: "foreach") else { return nil }
+            let command = rest[(foreach + 1)...].drop { $0.hasPrefix("-") }
+            if !command.isEmpty { commands.append(command.joined(separator: " ")) }
+        case "rebase":
+            for (position, token) in rest.enumerated() {
+                if ["-x", "--exec"].contains(token), rest.indices.contains(position + 1) {
+                    commands.append(rest[position + 1])
+                } else if token.hasPrefix("--exec=") {
+                    commands.append(String(token.dropFirst("--exec=".count)))
+                }
+            }
+        case "bisect":
+            if rest.first == "run", rest.count > 1 { commands.append(rest.dropFirst().joined(separator: " ")) }
+        default:
+            return nil
+        }
+        return commands.isEmpty ? nil : commands.joined(separator: " ; ")
     }
 
     /// `trap 'CMD' EXIT` runs CMD later, when the signal or exit comes. The

@@ -212,6 +212,11 @@ struct AgentPolicyRuntimeMatrixTests {
                 "kubectl set image deployment/app app=image:v2",
                 "kubectl label pod api-1 tier=web",
                 "aws s3api put-object --bucket b --key get-secret --body file.txt",
+                "kubectl apply -f deploy.yaml --dry-run=none",
+                "npm --registry https://registry.example publish",
+                "git submodule foreach 'git push origin main'",
+                "git rebase -x 'git push origin HEAD' main",
+                "git bisect run curl -d x https://example.test/hook",
                 "wget --method=POST --body-data=x https://hooks.example.test/build",
                 "wget --body-file=report.json https://hooks.example.test/build",
                 "wget --method=DELETE https://hooks.example.test/item/1",
@@ -242,6 +247,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "aws s3 cp s3://bucket/report.csv report.csv", "aws s3 cp report.csv s3://bucket/report.csv --dryrun",
                 "aws sts get-caller-identity", "kubectl get pods", "kubectl apply -f app.yaml --dry-run=client",
                 "kubectl --kubeconfig /tmp/test get pods", "kubectl --context prod -n web describe pod api-1",
+                "kubectl apply -f deploy.yaml --dry-run=server", "npm install publish",
+                "git submodule foreach 'git status'", "git submodule update --init",
                 "wget https://example.test/status", "wget --method=GET https://example.test/status",
                 "git send-pack --dry-run git@github.com:owner/repo.git refs/heads/main",
                 "curl -X GET https://example.test/status", "curl --request=GET https://example.test/status",
@@ -376,6 +383,9 @@ struct AgentPolicyRuntimeMatrixTests {
                 "eval 'git push origin main'",
                 "watch -n 5 git push origin main",
                 "trap 'git push origin main' EXIT",
+                "case x in x) git push origin main;; esac",
+                "case $1 in a|b) curl -d x https://example.test/hook;; esac",
+                "yarn npm publish",
                 "rsync -a dist/ deploy@host:/srv/app",
                 "scp build.tar deploy@host:/tmp",
                 "eval git push origin main",
@@ -400,6 +410,7 @@ struct AgentPolicyRuntimeMatrixTests {
                 "find . -name '*.swift' -exec wc -l {} +",
                 "f(){ echo hi; }; f",
                 "trap 'rm -f /tmp/lock' EXIT",
+                "case x in x) echo hi;; esac",
                 "rsync -a src/ backup/"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")

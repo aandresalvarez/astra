@@ -496,7 +496,8 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         let inner = Self.rawActionableShellSegments(command).flatMap { segment in
             [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment),
-             Self.functionBodyStart(segment), ShellCommandRunners.trapHandler(segment)].compactMap { $0 }
+             Self.functionBodyStart(segment), ShellCommandRunners.trapHandler(segment),
+             Self.caseClauseBody(segment)].compactMap { $0 }
                 + Self.commandSubstitutions(in: segment)
         }
         guard depth < 4 else {
@@ -521,6 +522,25 @@ struct AgentRuntimePolicyGuard: Sendable {
         let definition = #"^(function\s+[A-Za-z_][A-Za-z0-9_-]*(\s*\(\s*\))?|[A-Za-z_][A-Za-z0-9_-]*\s*\(\s*\))\s*[{(]"#
         guard let range = trimmed.range(of: definition, options: .regularExpression) else { return nil }
         let body = trimmed[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        return body.isEmpty ? nil : body
+    }
+
+    /// `case x in x) git push;; esac` runs the clause after the matching
+    /// pattern. A segment that opens the `case` carries the first clause's
+    /// command after `in PATTERN)`; one that starts with a pattern (`y)`, or
+    /// `b)` after a `a|b` the splitter cut at the pipe) carries its own.
+    private static func caseClauseBody(_ segment: String) -> String? {
+        let trimmed = segment.trimmingCharacters(in: .whitespaces)
+        let clause: Substring
+        if trimmed.hasPrefix("case "), let inRange = trimmed.range(of: #"\sin\s"#, options: .regularExpression),
+           let close = trimmed[inRange.upperBound...].firstIndex(of: ")") {
+            clause = trimmed[trimmed.index(after: close)...]
+        } else if let range = trimmed.range(of: #"^\(?[^()\s]*\)\s"#, options: .regularExpression) {
+            clause = trimmed[range.upperBound...]
+        } else {
+            return nil
+        }
+        let body = clause.trimmingCharacters(in: .whitespaces)
         return body.isEmpty ? nil : body
     }
 
