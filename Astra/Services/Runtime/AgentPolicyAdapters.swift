@@ -1117,8 +1117,11 @@ enum AgentPolicyManifestService {
             ?? AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
-        let runtimePaths = runtimeWritablePaths(for: task)
+        let runtimePaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+        // Workspace folders the run may only read stay inside the boundary, so
+        // reading a replaced source checkout does not ask for approval again.
         let additionalReadOnlyPaths = brokeredReadOnlyPaths(from: launchResourcePlan)
+            + TaskWorkspaceAccess(task: task).runtimeReadOnlyWorkspacePaths
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
@@ -1370,20 +1373,6 @@ enum AgentPolicyManifestService {
             "uses_broad_provider_permissions": String(manifest.providerRender.usesBroadProviderPermissions)
         ], level: manifest.providerRender.diagnostics.contains(where: { $0.severity == .blocked }) ? .warning : .debug)
         return manifest
-    }
-
-    private static func runtimeWritablePaths(for task: AgentTask) -> [String] {
-        let access = TaskWorkspaceAccess(task: task)
-        var paths = access.runtimeWritablePaths + access.runtimeWorkspacePaths
-        if !access.taskFolder.isEmpty {
-            paths.append(access.taskFolder)
-        }
-        var seen: Set<String> = []
-        return paths.compactMap { rawPath in
-            let path = (rawPath as NSString).expandingTildeInPath
-            guard !path.isEmpty, seen.insert(path).inserted else { return nil }
-            return path
-        }
     }
 
     private static func brokeredReadOnlyPaths(from plan: TaskLaunchResourcePlan?) -> [String] {

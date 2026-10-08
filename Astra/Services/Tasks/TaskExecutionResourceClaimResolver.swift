@@ -114,9 +114,10 @@ enum TaskExecutionResourceClaimResolver {
 
     /// Compares the *full* persisted writable-resource claim set against the
     /// task's current writable set (working directory + every
-    /// additionalPaths entry), not just the primary path, so an
-    /// additionalPaths change since submission is detected as drift even
-    /// when the primary working directory is unchanged.
+    /// additionalPaths entry), not just the primary path. Drift means the
+    /// launch would write a root the request never claimed; a live root equal
+    /// to or beneath a claimed one is still covered by the held lease, as the
+    /// broker's own path-overlap rule treats it.
     static func hasWorkspacePathDrift(request: TaskTurnRequest?, task: AgentTask) -> Bool {
         guard let request else { return false }
         let readOnlyKeys = Set(readOnlyWorkspaceKeys(for: task))
@@ -125,10 +126,27 @@ enum TaskExecutionResourceClaimResolver {
             .map(\.key))
         let liveKeys = Set(workspaceKeys(for: task))
         guard !persistedKeys.isEmpty, !liveKeys.isEmpty else { return false }
-        if persistedKeys != liveKeys { return true }
+        let covered = liveKeys.allSatisfy { live in
+            persistedKeys.contains { live == $0 || live.hasPrefix($0 + "/") }
+        }
+        if !covered { return true }
         let persistedGitKeys = Set(request.resourceClaims.filter { $0.kind == .gitCommonDirectory }.map(\.key))
         let worktreeGitKeys = Set(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths.compactMap(standardizedPath))
         return !persistedGitKeys.isEmpty && !worktreeGitKeys.isSubset(of: persistedGitKeys)
+    }
+
+    /// Git common directories the request may write: those it admitted
+    /// exclusively, including intrinsic workflow claims. A pre-claim row is
+    /// admitted under its fallback workspace claim, so it projects that set
+    /// rather than falling through. `nil` only for a direct launch.
+    static func admittedWritableGitMetadataRoots(
+        for request: TaskTurnRequest?,
+        task: AgentTask
+    ) -> [String]? {
+        guard let request else { return nil }
+        return admissionClaims(for: request, task: task)
+            .filter { $0.kind == .gitCommonDirectory && $0.access == .exclusive }
+            .map(\.key)
     }
 
     static func workspaceAccess(
@@ -174,10 +192,10 @@ enum TaskExecutionResourceClaimResolver {
         // entire containing worktree. Claim that root as well so sibling
         // subdirectory workspaces cannot switch one checkout concurrently.
         let branchRoots = task.isolationStrategy == .gitBranch
-            ? [gitWorktreeRoot(for: primary)].compactMap { $0 }
+            ? [GitCheckoutLayout.worktreeRoot(containing: primary)].compactMap { $0 }
             : []
         var seen = Set<String>()
-        return ([primary] + branchRoots + access.runtimeWorkspacePaths).compactMap { rawPath in
+        return ([primary] + branchRoots + access.runtimeWritablePaths).compactMap { rawPath in
             guard let key = standardizedPath(rawPath), seen.insert(key).inserted else { return nil }
             return key
         }
@@ -192,7 +210,7 @@ enum TaskExecutionResourceClaimResolver {
         let writable = Set(workspaceKeys(for: task))
         let access = TaskWorkspaceAccess(task: task)
         var seen = Set<String>()
-        return (access.runtimeReadOnlyWorkspacePaths + access.runtimeWorktreeGitMetadataPaths).compactMap { path in
+        return (access.runtimeWorktreeSourceAncestorPaths + access.runtimeWorktreeGitMetadataPaths).compactMap { path in
             guard let key = standardizedPath(path), !writable.contains(key), seen.insert(key).inserted else { return nil }
             return key
         }
@@ -245,7 +263,7 @@ enum TaskExecutionResourceClaimResolver {
         var seen = Set(claims.filter { $0.kind == .gitCommonDirectory }.map(\.key))
         let exclusiveWorkspaceKeys = claims.filter { $0.kind == .workspace && $0.access == .exclusive }.map(\.key)
         for root in exclusiveWorkspaceKeys where hasInternalGitDirectory(for: root) {
-            guard let commonDir = gitCommonDirectory(for: root),
+            guard let commonDir = GitCheckoutLayout.commonDirectory(for: root),
                   let key = standardizedPath(commonDir),
                   seen.insert(key).inserted else { continue }
             result.append(TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: .exclusive))
@@ -277,7 +295,7 @@ enum TaskExecutionResourceClaimResolver {
         var seen = Set(effective.map { "\($0.kind.rawValue):\($0.key)" })
         let workspaceRoots = effective.filter { $0.kind == .workspace && !readOnlyKeys.contains($0.key) }.map(\.key)
         for root in workspaceRoots {
-            if let worktree = gitWorktreeRoot(for: root) {
+            if let worktree = GitCheckoutLayout.worktreeRoot(containing: root) {
                 let identity = "\(TaskExecutionResourceKind.workspace.rawValue):\(worktree)"
                 if seen.insert(identity).inserted {
                     effective.append(TaskExecutionResourceClaim(
@@ -287,7 +305,7 @@ enum TaskExecutionResourceClaimResolver {
                     ))
                 }
             }
-            if let commonDirectory = gitCommonDirectory(for: root) {
+            if let commonDirectory = GitCheckoutLayout.commonDirectory(for: root) {
                 let identity = "\(TaskExecutionResourceKind.gitCommonDirectory.rawValue):\(commonDirectory)"
                 if seen.insert(identity).inserted {
                     effective.append(TaskExecutionResourceClaim(
@@ -315,28 +333,9 @@ enum TaskExecutionResourceClaimResolver {
     private static func gitCommonDirectoryKeys(for roots: [String]) -> [String] {
         var seen = Set<String>()
         return roots.compactMap { root in
-            guard let key = gitCommonDirectory(for: root), seen.insert(key).inserted else { return nil }
+            guard let key = GitCheckoutLayout.commonDirectory(for: root), seen.insert(key).inserted else { return nil }
             return key
         }
-    }
-
-    private static func gitCommonDirectory(for root: String) -> String? {
-        guard let worktreeRoot = gitWorktreeRoot(for: root) else { return nil }
-        let dotGit = (worktreeRoot as NSString).appendingPathComponent(".git")
-        var isDirectory: ObjCBool = false
-        _ = FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory)
-        let resolvedGitDirectory = isDirectory.boolValue
-            ? standardizedPath(dotGit)
-            : linkedWorktreeGitDirectory(at: dotGit, root: worktreeRoot)
-        guard let gitDirectory = resolvedGitDirectory else { return nil }
-        // `commondir` exists only inside a linked worktree's admin directory
-        // and normally holds a path relative to it (`../..`). A main checkout
-        // has no such file, so its own Git directory is the common one.
-        let commonDirFile = (gitDirectory as NSString).appendingPathComponent("commondir")
-        guard let raw = try? String(contentsOfFile: commonDirFile, encoding: .utf8) else {
-            return gitDirectory
-        }
-        return resolvedGitPath(raw, relativeTo: gitDirectory) ?? gitDirectory
     }
 
     private static func hasInternalGitDirectory(for root: String) -> Bool {
@@ -344,34 +343,6 @@ enum TaskExecutionResourceClaimResolver {
         let dotGit = (standardized as NSString).appendingPathComponent(".git")
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory) && isDirectory.boolValue
-    }
-
-    private static func gitWorktreeRoot(for path: String) -> String? {
-        guard let standardized = standardizedPath(path) else { return nil }
-        var candidate = URL(fileURLWithPath: standardized, isDirectory: true)
-        while true {
-            let dotGit = candidate.appendingPathComponent(".git").path
-            if FileManager.default.fileExists(atPath: dotGit) {
-                return candidate.path
-            }
-            let parent = candidate.deletingLastPathComponent()
-            guard parent.path != candidate.path else { return nil }
-            candidate = parent
-        }
-    }
-
-    private static func linkedWorktreeGitDirectory(at dotGitFile: String, root: String) -> String? {
-        guard let raw = try? String(contentsOfFile: dotGitFile, encoding: .utf8),
-              raw.lowercased().hasPrefix("gitdir:") else {
-            return nil
-        }
-        return resolvedGitPath(String(raw.dropFirst("gitdir:".count)), relativeTo: root)
-    }
-
-    private static func resolvedGitPath(_ rawValue: String, relativeTo base: String) -> String? {
-        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
-        return standardizedPath(value.hasPrefix("/") ? value : (base as NSString).appendingPathComponent(value))
     }
 
     private static func workspaceKey(for task: AgentTask) -> String? {

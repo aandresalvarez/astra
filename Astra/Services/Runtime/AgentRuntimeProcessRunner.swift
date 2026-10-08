@@ -1347,37 +1347,37 @@ final class AgentRuntimeProcessRunner {
     /// and `runtimeReadOnlyInputPaths` carries files — every paste is one.
     static func copilotNativeDirectoryProjection(for task: AgentTask) -> ProviderNativeDirectoryProjection.Result {
         let writable = runtimeWritablePaths(for: task)
+        let access = TaskWorkspaceAccess(task: task)
+        // Copilot's path gate also governs reads, so folders the run may only
+        // read need their own `--add-dir`; the outer sandbox keeps them read-only.
+        let readable = access.runtimeReadOnlyWorkspacePaths
+        // Copilot launches in the code root, so inputs beneath it are reachable.
         let inputs = ProviderNativeDirectoryProjection.project(
-            resourcePaths: TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths,
-            alreadyReachableDirectories: writable
+            resourcePaths: access.runtimeReadOnlyInputPaths,
+            alreadyReachableDirectories: [access.codeWorkingDirectory] + writable + readable
         )
         return .init(
-            additionalDirectories: writable + inputs.additionalDirectories,
+            additionalDirectories: writable + readable + inputs.additionalDirectories,
             unreachableFiles: inputs.unreachableFiles
         )
     }
 
+    /// Writable roots beyond the launch directory. Every entry is either
+    /// claimed at admission (`TaskExecutionResourceClaimResolver.workspaceKeys`
+    /// reads the same `TaskWorkspaceAccess.runtimeWritablePaths`) or the task's
+    /// own folder. The workspace root is deliberately absent: it is the launch
+    /// directory when it is the code root, and otherwise sibling tasks would
+    /// share an unclaimed writable folder.
     static func runtimeWritablePaths(
         for task: AgentTask,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive
     ) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
-        var paths = workspaceAccess == .exclusive ? access.runtimeWorkspacePaths : []
+        var paths = workspaceAccess == .exclusive ? access.runtimeWritablePaths : []
         if !access.taskFolder.isEmpty {
             paths.append(access.taskFolder)
         }
         return Array(Set(paths.filter { !$0.isEmpty })).sorted()
-    }
-
-    /// Writable roots for a command ASTRA confines with its own Seatbelt
-    /// outside a provider launch, such as validation. A task worktree's shared
-    /// Git directory is added, as the launch plan adds it for the agent, so Git
-    /// works there as in a normal checkout. Provider-native sandboxes keep
-    /// `runtimeWritablePaths`: Codex keeps `.git` read-only by design, and a
-    /// writable root over the shared Git directory would undo that.
-    static func confinedCommandWritablePaths(for task: AgentTask) -> [String] {
-        let paths = runtimeWritablePaths(for: task) + TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths
-        return Array(Set(paths)).sorted()
     }
 
     @MainActor

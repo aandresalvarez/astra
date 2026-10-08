@@ -557,7 +557,7 @@ enum DockerExecutionPlanner {
         if let binding = taskAccess.worktreeBinding {
             let source = ExecutionSandbox.canonicalize(binding.repositoryPath)
                 ?? WorkspacePathPresentation.standardizedPath(binding.repositoryPath)
-            let writableNestedRepositories = Set(taskAccess.runtimeWorkspacePaths.map {
+            let writableNestedRepositories = Set(taskAccess.runtimeWritablePaths.map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
             })
             mounts = mounts.compactMap { mount in
@@ -705,8 +705,13 @@ enum DockerExecutionPlanner {
             append(standardized, "/mnt/astra/path-\(index)", .additionalPath)
             index += 1
         }
-        for (index, path) in taskAccess.runtimeReadOnlyWorkspacePaths.enumerated() {
-            appendReadOnlyPath(path, fallbackContainerPath: "/mnt/astra/read-only-workspace-\(index + 1)")
+        // Folders the run may read but not write, such as a source checkout
+        // replaced by the task's worktree, stay visible read-only. A saved
+        // writable mount of one of them is downgraded rather than kept.
+        for (offset, path) in taskAccess.runtimeReadOnlyWorkspacePaths.enumerated() {
+            let standardized = WorkspacePathPresentation.standardizedPath(path)
+            guard standardized != WorkspacePathPresentation.standardizedPath(currentDirectory) else { continue }
+            appendReadOnlyPath(standardized, fallbackContainerPath: "/mnt/astra/read-only-workspace-\(offset + 1)")
         }
         for metadata in taskAccess.runtimeWorktreeGitMetadataPaths {
             let path = WorkspacePathPresentation.standardizedPath(metadata)

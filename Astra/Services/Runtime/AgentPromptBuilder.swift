@@ -378,11 +378,9 @@ enum AgentPromptBuilder {
         guard let ws = task.workspace,
               !ws.additionalPaths.isEmpty || codeDir != access.effectiveWorkspacePath else { return }
         let folders = access.runtimeWorkspaceFolders
-        let readOnlyPaths = Set(access.runtimeReadOnlyWorkspaceFolders.map(\.path))
+        let labels = AgentPromptWorkspaceFolderLabels(task: task, codeDir: codeDir)
         let folderList = folders.map { descriptor in
-            let active = descriptor.path == WorkspacePathPresentation.standardizedPath(codeDir) ? " (active code root)" : ""
-            let readOnly = readOnlyPaths.contains(descriptor.path) ? " (read-only)" : ""
-            return "- \(descriptor.roleLabel) \(descriptor.title)\(active)\(readOnly): \(descriptor.path)"
+            "- \(descriptor.roleLabel) \(descriptor.title)\(labels.label(for: descriptor.path)): \(descriptor.path)"
         }.joined(separator: "\n")
         appendSection(
             "Workspace Folders:\n\(folderList)",
@@ -1462,12 +1460,9 @@ enum AgentPromptBuilder {
 
             let access = TaskWorkspaceAccess(task: task)
             if !ws.additionalPaths.isEmpty || access.codeWorkingDirectory != access.effectiveWorkspacePath {
-                let readOnlyPaths = Set(access.runtimeReadOnlyWorkspaceFolders.map(\.path))
+                let labels = AgentPromptWorkspaceFolderLabels(task: task, codeDir: access.codeWorkingDirectory)
                 let paths = access.runtimeWorkspaceFolders
-                .map {
-                    let readOnly = readOnlyPaths.contains($0.path) ? " (read-only)" : ""
-                    return "\($0.roleLabel) \($0.title)\(readOnly): \($0.path)"
-                }
+                .map { "\($0.roleLabel) \($0.title)\(labels.label(for: $0.path)): \($0.path)" }
                 .joined(separator: ", ")
                 contextParts.append("Workspace folders: \(paths)")
             }

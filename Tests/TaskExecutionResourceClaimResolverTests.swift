@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Task execution resource claim resolver")
@@ -265,7 +266,7 @@ struct TaskExecutionResourceClaimResolverTests {
         #expect(claims.contains { $0.kind == .workspace && $0.key == "/tmp/astra-claim-hooks" })
     }
 
-    @Test("A pinned execution root claims its hooks and all configured writable roots")
+    @Test("Pinned execution roots claim their own hook targets while the configured parent stays read-only")
     func templateHookInjectionClaimsWorkspaceRootFromPinnedRoot() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-claim-hook-roots-\(UUID().uuidString)", isDirectory: true)
@@ -288,18 +289,18 @@ struct TaskExecutionResourceClaimResolverTests {
         let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
 
-        // Hooks target the distinct pinned roots. The configured parent is
-        // independently writable for these legacy pins, so it is also claimed.
+        // Hooks target the distinct pinned roots, which each task claims. The
+        // configured parent is read-only for a pinned run, so neither task
+        // claims it and the siblings stay parallel.
         #expect(firstClaims.first?.key == firstRoot.standardizedFileURL.path)
         #expect(secondClaims.first?.key == secondRoot.standardizedFileURL.path)
         for claims in [firstClaims, secondClaims] {
-            #expect(claims.contains {
-                $0.kind == .workspace
-                    && $0.key == workspaceRoot.standardizedFileURL.path
-                    && $0.access == .exclusive
-            })
+            #expect(claims.allSatisfy { $0.access == .exclusive })
+            #expect(!claims.contains { $0.key == workspaceRoot.standardizedFileURL.path })
         }
-        #expect(!TaskExecutionResourceBroker.canAcquire(
+        #expect(!TaskWorkspaceAccess(task: first).runtimeWritablePaths.contains(workspaceRoot.path))
+        #expect(TaskWorkspaceAccess(task: first).runtimeReadOnlyWorkspacePaths == [workspaceRoot.path])
+        #expect(TaskExecutionResourceBroker.canAcquire(
             lease(for: secondClaims, taskID: second.id),
             active: lease(for: firstClaims, taskID: first.id)
         ))

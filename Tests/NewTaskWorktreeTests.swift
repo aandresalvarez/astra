@@ -292,7 +292,8 @@ struct NewTaskWorktreeTests {
         let access = TaskWorkspaceAccess(task: task)
         #expect(access.codeWorkingDirectory == path)
         #expect(access.runtimeWorkspacePaths == [path])
-        #expect(access.runtimeWorkspaceFolders.map(\.path) == [path])
+        // The replaced source checkout stays listed, read-only, after the worktree.
+        #expect(access.runtimeWorkspaceFolders.map(\.path) == [path, repository.path])
         #expect(access.taskFolder.hasPrefix(repository.path + "/.astra/tasks/"))
         let nativePaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
         #expect(nativePaths.contains(path))
@@ -305,10 +306,12 @@ struct NewTaskWorktreeTests {
         )
         #expect(resourcePlan.hostWritablePaths.contains(path))
         #expect(!resourcePlan.hostWritablePaths.contains(repository.path))
+        #expect(resourcePlan.hostReadablePaths.contains(repository.path))
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
         #expect(prompt.contains("WORKING DIRECTORY: Your process is running in \(path)."))
         #expect(prompt.contains("(active code root): \(path)"))
         #expect(!prompt.contains("(active code root): \(repository.path)"))
+        #expect(prompt.contains("(source checkout of the active worktree; read-only, edit the worktree): \(repository.path)"))
         let followUp = AgentPromptBuilder.buildFollowUpMessage(message: "Continue", task: task)
         #expect(followUp.contains("Workspace folders:"))
         #expect(followUp.contains(path))
@@ -334,7 +337,14 @@ struct NewTaskWorktreeTests {
         let path = try #require(task.executionRootPath)
         #expect(TaskWorkspaceAccess(task: task).runtimeWritablePaths == [path, path + "/Sources"])
         #expect(TaskWorkspaceAccess(task: task).runtimeWorkspacePaths == [fixture.storage.path, path, path + "/Sources"])
-        #expect(TaskWorkspaceAccess(task: task).runtimeWorkspaceFolders.map(\.path) == [fixture.storage.path, path, path + "/Sources"])
+        // Every configured folder the worktree replaces stays listed read-only.
+        #expect(TaskWorkspaceAccess(task: task).runtimeWorkspaceFolders.map(\.path) == [
+            fixture.storage.path, path, path + "/Sources",
+            repository.path, repository.appendingPathComponent("Sources").path, alias.path
+        ])
+        #expect(TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths == [
+            repository.path, repository.appendingPathComponent("Sources").path, alias.path
+        ])
         #expect(workspace.additionalPaths == [repository.path, repository.appendingPathComponent("Sources").path, alias.path])
     }
 

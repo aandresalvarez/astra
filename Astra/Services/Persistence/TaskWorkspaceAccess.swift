@@ -38,19 +38,95 @@ public struct TaskWorkspaceAccess {
         return effectiveWorkspacePath
     }
 
+    /// Additional folders a write-capable run may modify. Admission claims,
+    /// sandbox grants, Docker mounts, and provider directory arguments all
+    /// derive from this list, so narrowing it narrows every projection at once.
     public var runtimeWritablePaths: [String] {
-        runtimePathProjection(task.workspace?.additionalPaths ?? []).writable
+        let replaced = Set(replacedSourceCheckoutPaths)
+        return runtimePathProjection(task.workspace?.additionalPaths ?? []).writable.filter { !replaced.contains($0) }
     }
 
+    /// The code root a write-capable run may modify. Nil while the task's
+    /// worktree binding cannot be verified, so an unverified checkout is never
+    /// granted.
+    public var runtimeWritableCodeRoot: String? {
+        let codeRoot = codeWorkingDirectory
+        guard !codeRoot.isEmpty else { return nil }
+        if case .invalid = TaskWorktreeBinding.state(of: task) { return nil }
+        return codeRoot
+    }
+
+    /// Every configured folder as this task sees it: a prepared worktree takes
+    /// the place of its source checkout and of the folders inside it. This is
+    /// presentation only; writable roots come from `runtimeWritablePaths` and
+    /// `runtimeWritableCodeRoot`.
     public var runtimeWorkspacePaths: [String] {
         guard let workspace = task.workspace else { return [] }
         return runtimePathProjection([workspace.primaryPath] + workspace.additionalPaths).writable
     }
 
-    /// Configured folders that contain the source checkout of the task's
-    /// worktree. Writing to them would reach that checkout, so they stay
-    /// readable only and the worktree is the one writable copy.
+    /// Workspace folders (primary or additional) whose writable place the
+    /// task's worktree takes: the root of another checkout of the code root's
+    /// repository and, for a worktree ASTRA prepared, the source folders it
+    /// projects into that worktree. Sibling worktrees must not each hold them
+    /// writable, or they serialize on folders neither one edits. Unrelated
+    /// repositories, non-Git folders, and an unbound task's subfolders keep
+    /// their access. Identities are compared after resolving symlinks, so an
+    /// aliased checkout path still matches Git's real admin path.
+    public var replacedSourceCheckoutPaths: [String] {
+        let state = TaskWorktreeBinding.state(of: task)
+        let additionalPaths = task.workspace?.additionalPaths ?? []
+        let folders = normalizedUniquePaths([task.workspace?.primaryPath ?? ""] + additionalPaths)
+        let projected = Set(runtimePathProjection(folders, state: state).projected)
+        let codeRoot = codeWorkingDirectory
+        let commonDirectory: String?
+        if case .bound(let binding, _, _) = state {
+            // Read the verified binding, never the worktree's own `.git` file.
+            commonDirectory = TaskWorktreeBinding.gitCommonDirectory(for: binding)
+        } else {
+            commonDirectory = codeRoot.isEmpty
+                ? nil
+                : GitCheckoutLayout.commonDirectory(for: codeRoot).map(Self.resolvedIdentity)
+        }
+        let codeCheckout = GitCheckoutLayout.worktreeRoot(containing: codeRoot).map(Self.resolvedIdentity)
+        let candidates = folders.filter { path in
+            if projected.contains(path) { return true }
+            guard let commonDirectory,
+                  let checkout = GitCheckoutLayout.worktreeRoot(containing: path) else { return false }
+            return checkout == URL(fileURLWithPath: path).standardizedFileURL.path
+                && Self.resolvedIdentity(checkout) != codeCheckout
+                && GitCheckoutLayout.commonDirectory(for: path).map(Self.resolvedIdentity) == commonDirectory
+        }
+        // A checkout beneath an additional folder that stays writable is still
+        // writable through that parent, so it is not treated as replaced. A
+        // folder containing a prepared worktree's source is read-only, so it
+        // never counts as such a parent.
+        let writableParents = runtimePathProjection(additionalPaths, state: state).writable
+            .filter { !candidates.contains($0) }
+            .map(Self.resolvedIdentity)
+        return candidates.filter { candidate in
+            let path = Self.resolvedIdentity(candidate)
+            return !writableParents.contains { $0 != path && path.hasPrefix($0 + "/") }
+        }
+    }
+
+    /// Workspace folders the run can read but not write: a replaced source
+    /// checkout, a folder containing a prepared worktree's source, or a
+    /// workspace folder that is not the code root. Docker mounts them
+    /// read-only so they stay visible inside the container.
     public var runtimeReadOnlyWorkspacePaths: [String] {
+        let writable = Set(runtimeWritablePaths + normalizedUniquePaths([codeWorkingDirectory]))
+        let folders = [task.workspace?.primaryPath ?? ""] + (task.workspace?.additionalPaths ?? [])
+        return normalizedUniquePaths(folders).filter {
+            !writable.contains($0) && fileSystem.directoryExists(atPath: $0)
+        }
+    }
+
+    /// Configured folders that contain the source checkout of the task's
+    /// prepared worktree. Writing to them would reach that checkout, so they
+    /// stay read-only, and admission holds them shared so a writer to the
+    /// folder waits for the task.
+    public var runtimeWorktreeSourceAncestorPaths: [String] {
         guard let workspace = task.workspace else { return [] }
         return runtimePathProjection([workspace.primaryPath] + workspace.additionalPaths).readOnly
     }
@@ -79,14 +155,16 @@ public struct TaskWorkspaceAccess {
         TaskWorktreeBinding.payload(for: task)
     }
 
+    /// The task's folders for prompts and context: `runtimeWorkspacePaths`,
+    /// then each configured folder the task can only read.
     public var runtimeWorkspaceFolders: [WorkspacePathDescriptor] {
         let paths = runtimeWorkspacePaths
-        let writable = WorkspacePathPresentation.descriptors(
+        let folders = WorkspacePathPresentation.descriptors(
             primaryPath: paths.first ?? codeWorkingDirectory,
             additionalPaths: Array(paths.dropFirst())
         )
-        let writablePaths = Set(writable.map(\.path))
-        return writable + runtimeReadOnlyWorkspaceFolders.filter { !writablePaths.contains($0.path) }
+        let listed = Set(folders.map(\.path))
+        return folders + runtimeReadOnlyWorkspaceFolders.filter { !listed.contains($0.path) }
     }
 
     public var runtimeReadOnlyWorkspaceFolders: [WorkspacePathDescriptor] {
@@ -95,6 +173,10 @@ public struct TaskWorkspaceAccess {
         return WorkspacePathPresentation.descriptors(
             primaryPath: workspace.primaryPath, additionalPaths: workspace.additionalPaths
         ).filter { paths.contains($0.path) }
+    }
+
+    private static func resolvedIdentity(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     public var runtimeReadOnlyInputPaths: [String] {
@@ -108,17 +190,26 @@ public struct TaskWorkspaceAccess {
     private struct RuntimePathProjection {
         var writable: [String]
         var readOnly: [String] = []
+        /// Input folders a prepared worktree replaced with its own copy.
+        var projected: [String] = []
     }
 
     private func runtimePathProjection(_ paths: [String]) -> RuntimePathProjection {
-        switch TaskWorktreeBinding.state(of: task) {
-        case .none:
-            return RuntimePathProjection(writable: normalizedUniquePaths(paths))
-        case .invalid(let error):
+        let state = TaskWorktreeBinding.state(of: task)
+        if case .invalid(let error) = state {
             AuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: task.id, fields: [
                 "reason": "worktree_binding_invalid",
                 "error": error
             ], level: .error)
+        }
+        return runtimePathProjection(paths, state: state)
+    }
+
+    private func runtimePathProjection(_ paths: [String], state: TaskWorktreeBinding.State) -> RuntimePathProjection {
+        switch state {
+        case .none:
+            return RuntimePathProjection(writable: normalizedUniquePaths(paths))
+        case .invalid:
             return RuntimePathProjection(writable: [])
         case .retargeted(let pinned):
             // The pin is still the checkout this task runs in.
@@ -127,16 +218,21 @@ public struct TaskWorkspaceAccess {
             let repository = Self.resolvedPath(binding.repositoryPath)
             var writable: [String] = []
             var readOnly: [String] = []
+            var projected: [String] = []
             for path in paths {
                 let resolved = Self.resolvedPath(path)
                 if resolved == repository {
                     writable.append(pinned)
+                    projected.append(path)
                 } else if resolved.hasPrefix(repository + "/") {
                     // A nested repository or submodule is its own checkout,
                     // not a source folder of the worktree.
-                    writable.append(crossesGitRoot(resolved, below: repository)
-                        ? path
-                        : pinned + resolved.dropFirst(repository.count))
+                    if crossesGitRoot(resolved, below: repository) {
+                        writable.append(path)
+                    } else {
+                        writable.append(pinned + resolved.dropFirst(repository.count))
+                        projected.append(path)
+                    }
                 } else if repository.hasPrefix(resolved + "/") {
                     // A folder containing the source checkout stays readable;
                     // the worktree takes its writable place.
@@ -151,7 +247,8 @@ public struct TaskWorkspaceAccess {
             }
             return RuntimePathProjection(
                 writable: normalizedUniquePaths(writable),
-                readOnly: normalizedUniquePaths(readOnly)
+                readOnly: normalizedUniquePaths(readOnly),
+                projected: normalizedUniquePaths(projected)
             )
         }
     }

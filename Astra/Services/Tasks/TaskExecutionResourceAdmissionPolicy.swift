@@ -1,5 +1,6 @@
 import Foundation
 import ASTRAModels
+import ASTRAPersistence
 
 /// Projects durable claims into deterministic process-local leases and applies
 /// per-resource FIFO fairness before the queue dispatches a worker.
@@ -27,6 +28,7 @@ enum TaskExecutionResourceAdmissionPolicy {
             }
         }
         claims = effectiveClaims(claims, sandboxEnforcement: sandboxEnforcement)
+            + unenforcedReadOnlyClaims(for: task, existing: claims, sandboxEnforcement: sandboxEnforcement)
         return TaskExecutionResourceBroker.lockClaims(
             for: claims,
             taskID: task.id,
@@ -108,6 +110,23 @@ enum TaskExecutionResourceAdmissionPolicy {
         return workspaceClaims.allSatisfy { $0.accessMode == .readOnly }
             ? .shared
             : .exclusive
+    }
+
+    /// A source checkout replaced by the task's worktree is left out of its
+    /// claims because the sandbox keeps it read-only. With sandboxing Off
+    /// nothing does, so it is claimed as a writer again, serializing sibling
+    /// worktrees exactly as before the worktree replaced it.
+    private static func unenforcedReadOnlyClaims(
+        for task: AgentTask,
+        existing: [TaskExecutionResourceClaim],
+        sandboxEnforcement: ExecutionSandboxEnforcement
+    ) -> [TaskExecutionResourceClaim] {
+        guard sandboxEnforcement == .off else { return [] }
+        let claimed = Set(existing.filter { $0.kind == .workspace }.map(\.key))
+        return TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+            .filter { !claimed.contains($0) }
+            .map { TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .exclusive) }
     }
 
     private static func effectiveClaims(

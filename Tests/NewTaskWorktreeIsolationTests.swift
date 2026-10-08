@@ -132,17 +132,22 @@ struct NewTaskWorktreeIsolationTests {
 
         let access = TaskWorkspaceAccess(task: task)
         #expect(access.runtimeWorkspacePaths == [path])
-        #expect(access.runtimeReadOnlyWorkspacePaths == [projects.path])
+        #expect(access.runtimeReadOnlyWorkspacePaths == [projects.path, repository.path])
+        #expect(access.runtimeWorktreeSourceAncestorPaths == [projects.path])
         let configured = WorkspacePathPresentation.descriptors(
             primaryPath: workspace.primaryPath, additionalPaths: workspace.additionalPaths
         )
-        #expect(access.runtimeReadOnlyWorkspaceFolders == configured.filter { $0.path == projects.path })
-        #expect(access.runtimeWorkspaceFolders.map(\.path) == [path, projects.path])
+        #expect(access.runtimeReadOnlyWorkspaceFolders == configured)
+        #expect(access.runtimeWorkspaceFolders.map(\.path) == [path, projects.path, repository.path])
         let prompt = AgentPromptBuilder.buildPrompt(for: task)
-        #expect(prompt.contains("- Primary Projects (read-only): \(projects.path)"))
+        let readOnlyLabel = "(read-only for this task; write task files to the task output folder)"
+        let replacedLabel = "(source checkout of the active worktree; read-only, edit the worktree)"
+        #expect(prompt.contains("- Primary Projects \(readOnlyLabel): \(projects.path)"))
+        #expect(prompt.contains("\(replacedLabel): \(repository.path)"))
         #expect(prompt.contains("(active code root): \(path)"))
         let followUp = AgentPromptBuilder.buildFollowUpMessage(message: "Continue", task: task)
-        #expect(followUp.contains("Primary Projects (read-only): \(projects.path)"))
+        #expect(followUp.contains("Primary Projects \(readOnlyLabel): \(projects.path)"))
+        #expect(followUp.contains("\(replacedLabel): \(repository.path)"))
         let nativePaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
         #expect(nativePaths.contains(path))
         #expect(!nativePaths.contains(projects.path))
@@ -176,11 +181,13 @@ struct NewTaskWorktreeIsolationTests {
         let configured = try #require(WorkspacePathPresentation.descriptor(
             for: projects.path, primaryPath: workspace.primaryPath, additionalPaths: workspace.additionalPaths
         ))
-        #expect(access.runtimeReadOnlyWorkspaceFolders == [configured])
+        #expect(access.runtimeReadOnlyWorkspaceFolders.map(\.path) == [fixture.storage.path, projects.path, repository.path])
+        #expect(access.runtimeReadOnlyWorkspaceFolders.contains(configured))
         #expect(access.runtimeWorkspaceFolders.contains(configured))
-        #expect(AgentPromptBuilder.buildPrompt(for: task).contains("- Additional Projects (read-only): \(projects.path)"))
+        let readOnlyLabel = "(read-only for this task; write task files to the task output folder)"
+        #expect(AgentPromptBuilder.buildPrompt(for: task).contains("- Additional Projects \(readOnlyLabel): \(projects.path)"))
         #expect(AgentPromptBuilder.buildFollowUpMessage(message: "Continue", task: task)
-            .contains("Additional Projects (read-only): \(projects.path)"))
+            .contains("Additional Projects \(readOnlyLabel): \(projects.path)"))
 
         let claims = TaskExecutionResourceClaimResolver.claims(for: task)
         #expect(claims.first?.key == path)
