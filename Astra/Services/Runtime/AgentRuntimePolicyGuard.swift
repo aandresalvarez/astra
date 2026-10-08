@@ -386,11 +386,13 @@ struct AgentRuntimePolicyGuard: Sendable {
         request: PermissionRequest?
     ) -> AgentRuntimePolicyViolation? {
         guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
-              Self.actsOutsideMachine(command),
-              !commandApprovedByGrant(command, toolName: toolName) else {
+              let pending = unapprovedExternalCommand(command, toolName: toolName) else {
             return nil
         }
-        let request = request ?? PermissionRequest.shell(command: command, toolName: toolName)
+        // A payload is asked about, and so approved, on its own.
+        let request = pending == command
+            ? request ?? PermissionRequest.shell(command: command, toolName: toolName)
+            : PermissionRequest.shell(command: pending, toolName: toolName)
         return AgentRuntimePolicyViolation(
             reason: "The command acts outside ASTRA, which asks first at this permission level",
             toolName: toolName,
@@ -402,6 +404,24 @@ struct AgentRuntimePolicyGuard: Sendable {
         )
     }
 
+    /// The command text that acts outside ASTRA without an approval for it,
+    /// or nil. A shell run with `-c` runs its payload, so the payload is judged
+    /// as a command of its own: a Custom rule allowing `bash` must not hide
+    /// `bash -c 'curl -d …'`, and approving that write must not ask again.
+    private func unapprovedExternalCommand(_ command: String, toolName: String, depth: Int = 0) -> String? {
+        if Self.actsOutsideMachine(command), !commandApprovedByGrant(command, toolName: toolName) {
+            return command
+        }
+        guard depth < 4 else { return nil }
+        for segment in Self.rawActionableShellSegments(command) {
+            if let payload = Self.shellInterpreterPayload(segment),
+               let pending = unapprovedExternalCommand(payload, toolName: toolName, depth: depth + 1) {
+                return pending
+            }
+        }
+        return nil
+    }
+
     /// The recorded `git`/`gh` actions, plus any segment the shared risk
     /// classifier marks as a write outside this machine: a `curl` that sends
     /// data, a cloud deploy, a remote database client, a package publish.
@@ -409,6 +429,60 @@ struct AgentRuntimePolicyGuard: Sendable {
         AgentExternalActionObserver.classify(command) != nil
             || actionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
     }
+
+    /// `actionableShellSegments` without the lowercasing, so a payload is
+    /// asked about as the agent wrote it.
+    private static func rawActionableShellSegments(_ command: String) -> [String] {
+        shellSegmentSeparatorsNormalized(ProviderToolSemantics.semanticShellCommand(command))
+            .split(whereSeparator: { $0.isNewline || $0 == ";" })
+            .map { actionableShellSegment(String($0)).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// The command string of `sh|bash|zsh|dash|ksh -c <payload>` (any short
+    /// option cluster with `c`, such as `-lc` or `-ec`), unquoted, or nil when
+    /// the segment is not a shell running a command string.
+    private static func shellInterpreterPayload(_ segment: String) -> String? {
+        var rest = Substring(segment)
+        func nextToken() -> Substring? {
+            rest = rest.drop(while: \.isWhitespace)
+            guard !rest.isEmpty else { return nil }
+            let token = rest.prefix { !$0.isWhitespace }
+            rest = rest.dropFirst(token.count)
+            return token
+        }
+        guard let executable = nextToken(),
+              shellInterpreters.contains(URL(fileURLWithPath: String(executable)).lastPathComponent.lowercased()) else {
+            return nil
+        }
+        while true {
+            guard let option = nextToken(), option.hasPrefix("-") else { return nil }
+            if !option.hasPrefix("--"), option.contains("c") { break }
+            if option == "-o" { _ = nextToken() }
+        }
+        rest = rest.drop(while: \.isWhitespace)
+        guard let quote = rest.first else { return nil }
+        guard quote == "'" || quote == "\"" else {
+            return String(rest.prefix { !$0.isWhitespace })
+        }
+        var payload = ""
+        var escaped = false
+        for character in rest.dropFirst() {
+            if escaped {
+                payload.append(character)
+                escaped = false
+            } else if quote == "\"", character == "\\" {
+                escaped = true
+            } else if character == quote {
+                return payload
+            } else {
+                payload.append(character)
+            }
+        }
+        return nil
+    }
+
+    private static let shellInterpreters: Set<String> = ["sh", "bash", "zsh", "dash", "ksh"]
 
     /// Only an approval that was itself for a write outside this machine can
     /// stand in for asking again. A reusable read grant — `curl` scoped to a

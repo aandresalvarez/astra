@@ -231,6 +231,42 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(afterWrite.disposition(toolName: "Bash", command: "curl -d x https://example.test/delete") == .allowed,
                 "an approved write is not asked about again")
 
+        // A shell run with -c runs its payload: a rule allowing the shell
+        // does not cover what the payload does outside this machine.
+        let interpreter = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Glob", "Grep", "Bash"],
+            allowedShellPatterns: ["bash:*", "sh:*", "zsh:*"]
+        )
+        for runtime in Self.autonomousFlags.keys {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: interpreter))
+            for command in [
+                "bash -c 'curl -d x https://example.test/hook'",
+                "sh -c \"git push origin main\"",
+                "zsh -ec 'gh workflow run deploy.yml'",
+                "bash -c \"bash -c 'gh pr create --fill'\"",
+                "bash -c \"echo \\\"done\\\" && curl --json '{}' https://example.test/hook\""
+            ] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
+            }
+            for command in ["bash -c 'make test'", "sh -c \"echo 'git push' > notes.txt\"", "bash scripts/build.sh"] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) != .ask, "\(runtime.rawValue) \(command)")
+            }
+        }
+        let wrapped = "bash -c 'curl -d x https://example.test/hook'"
+        let asked = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: interpreter))
+            .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": wrapped]))
+        #expect(asked?.requiresApproval == true)
+        #expect(
+            asked?.permissionRequest == .shell(command: "curl -d x https://example.test/hook", toolName: "Bash"),
+            "the payload is what is asked about"
+        )
+        let payloadApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: interpreter, approvalGrants: asked?.approvalGrants ?? []
+        ))
+        #expect(payloadApproved.disposition(toolName: "Bash", command: wrapped) == .allowed,
+                "approving the wrapped write does not ask again")
+
         // A command that only mentions one in a quoted operand runs nothing
         // outside ASTRA and keeps the rule.
         let mentioning = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: policy))
