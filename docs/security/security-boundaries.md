@@ -139,9 +139,13 @@ boundary. The full inventory is in
 - **Custom** applies the saved per-item tool, shell, and network rules and
   follows Ask for actions outside ASTRA: a rule that allows Bash, `git:*`,
   `curl:*`, or `gcloud:*` still asks before `git push`, a `gh` write, a `curl`
-  that sends data, a cloud deploy, a remote database client, or a package
-  publish (`ShellCommandRiskClassifier.actsOutsideMachine`), unless that exact
-  command was approved. Local writes such as `git commit` keep the rule.
+  that sends data, a cloud deploy, a remote database client, a package
+  registry change, or a browser page change
+  (`ShellCommandRiskClassifier.actsOutsideMachine`), unless that exact
+  command was approved. A `sh -c` payload and a backtick substitution are
+  judged as commands of their own, and the browser MCP tool is judged as the
+  `astra-browser` command it runs. Local writes such as `git commit`, reads,
+  and browser navigation keep the rule.
 - `ExternalActionPolicy` is the only owner of "does this level ask before an
   external action". It reads the user-facing level of the run that produced
   the action, so a proposal composed under Ask is still reviewed after the task

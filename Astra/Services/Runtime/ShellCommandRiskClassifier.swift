@@ -69,7 +69,8 @@ enum ShellCommandRiskClassifier {
         switch executable {
         case "git":
             return dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first == "push"
-        case "gh", "gcloud", "aws", "az", "bq", "kubectl", "helm", "terraform", "tofu", "psql", "mysql":
+        case "gh", "gcloud", "aws", "az", "bq", "kubectl", "helm", "terraform", "tofu", "psql", "mysql",
+             BrowserBridgeMCPProjection.toolCommand:
             return true
         case "docker":
             return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"]).first == "push"
@@ -218,6 +219,12 @@ enum ShellCommandRiskClassifier {
             return riskForTerraform(args)
         case "defaults":
             return args.first == "read" ? .read : .system
+        case BrowserBridgeMCPProjection.toolCommand:
+            // A page change is a write to a site; reads stay unclassified.
+            guard let command = args.first, ShelfBrowserBridgeCommandRouter.commandChangesPage(command) else {
+                return .unknown
+            }
+            return .mutation
         default:
             return .unknown
         }
@@ -278,8 +285,9 @@ enum ShellCommandRiskClassifier {
     ]
 
     /// A package-manager command that changes a registry rather than this
-    /// machine: publishing, removing, or deprecating a release, or changing
-    /// its tags, owners, or access. `npm dist-tag ls` and `npm owner ls` read.
+    /// machine: publishing, removing, or deprecating a release; changing its
+    /// tags, owners, or access; or the account's tokens, hooks, org, or
+    /// profile. `npm dist-tag ls`, `npm owner ls`, `npm token list` read.
     private static func changesPackageRegistry(_ args: [String]) -> Bool {
         if args.contains(where: packageRegistryWriteVerbs.contains) { return true }
         guard args.contains(where: packageRegistryAdminCommands.contains) else { return false }
@@ -291,12 +299,12 @@ enum ShellCommandRiskClassifier {
     ]
 
     private static let packageRegistryAdminCommands: Set<String> = [
-        "dist-tag", "dist-tags", "owner", "access", "team"
+        "dist-tag", "dist-tags", "owner", "access", "team", "token", "hook", "org", "profile"
     ]
 
     private static let packageRegistryAdminWriteVerbs: Set<String> = [
-        "add", "rm", "remove", "set", "grant", "revoke", "create", "destroy", "public", "restricted",
-        "--add", "--remove", "-a", "-r"
+        "add", "rm", "remove", "set", "grant", "revoke", "create", "destroy", "public", "restricted", "update",
+        "enable-2fa", "disable-2fa", "--add", "--remove", "-a", "-r"
     ]
 
     private static func riskForBigQuery(_ args: [String]) -> Risk {

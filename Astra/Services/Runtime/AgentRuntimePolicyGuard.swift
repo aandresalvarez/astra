@@ -370,6 +370,10 @@ struct AgentRuntimePolicyGuard: Sendable {
            let violation = externalCommandApprovalViolation(command: command, toolName: toolName, request: request) {
             return violation
         }
+        if Self.isBrowserBridgeTool(toolName),
+           let violation = externalBrowserActionApprovalViolation(command: observed.command, toolName: toolName) {
+            return violation
+        }
 
         return nil
     }
@@ -404,22 +408,119 @@ struct AgentRuntimePolicyGuard: Sendable {
         )
     }
 
+    /// The browser MCP tool runs the same bridge commands as `astra-browser`,
+    /// so a page change asks at Ask and Custom even when a rule allows the
+    /// tool. It is judged, asked about, and approved as that CLI command: MCP
+    /// tools carry no grant of their own, and one approval then covers both
+    /// transports.
+    private func externalBrowserActionApprovalViolation(command: String?, toolName: String) -> AgentRuntimePolicyViolation? {
+        let equivalent = [BrowserBridgeMCPProjection.toolCommand, command?.trimmingCharacters(in: .whitespacesAndNewlines)]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
+              Self.actsOutsideMachine(equivalent),
+              !commandApprovedByGrant(equivalent, toolName: "Bash") else {
+            return nil
+        }
+        let request = PermissionRequest.shell(command: equivalent, toolName: toolName)
+        return AgentRuntimePolicyViolation(
+            reason: "The browser action changes a page, which asks first at this permission level",
+            toolName: toolName,
+            detail: equivalent,
+            violationCategory: "external_command_requires_approval",
+            requiresApproval: true,
+            permissionRequest: request,
+            approvalGrants: PermissionBroker.approvalGrants(for: request)
+        )
+    }
+
+    private static func isBrowserBridgeTool(_ tool: String) -> Bool {
+        let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let name = BrowserBridgeMCPProjection.toolName
+        return lower.contains(BrowserBridgeMCPProjection.serverID) && (lower.hasSuffix(name) || lower.hasSuffix("\(name))"))
+    }
+
     /// The command text that acts outside ASTRA without an approval for it,
-    /// or nil. A shell run with `-c` runs its payload, so the payload is judged
-    /// as a command of its own: a Custom rule allowing `bash` must not hide
-    /// `bash -c 'curl -d …'`, and approving that write must not ask again.
+    /// or nil. A shell run with `-c` runs its payload, and a command
+    /// substitution runs even inside double quotes, so each is judged as a
+    /// command of its own: a Custom rule allowing `bash` or `echo` must not
+    /// hide `bash -c 'curl -d …'` or `echo "$(curl -d …)"`, and approving that
+    /// write must not ask again.
     private func unapprovedExternalCommand(_ command: String, toolName: String, depth: Int = 0) -> String? {
         if Self.actsOutsideMachine(command), !commandApprovedByGrant(command, toolName: toolName) {
             return command
         }
         guard depth < 4 else { return nil }
         for segment in Self.rawActionableShellSegments(command) {
-            if let payload = Self.shellInterpreterPayload(segment),
-               let pending = unapprovedExternalCommand(payload, toolName: toolName, depth: depth + 1) {
-                return pending
+            let inner = [Self.shellInterpreterPayload(segment)].compactMap { $0 } + Self.commandSubstitutions(in: segment)
+            for payload in inner {
+                if let pending = unapprovedExternalCommand(payload, toolName: toolName, depth: depth + 1) {
+                    return pending
+                }
             }
         }
         return nil
+    }
+
+    /// The bodies of `` `…` `` and `$(…)` anywhere but inside single quotes.
+    private static func commandSubstitutions(in segment: String) -> [String] {
+        let characters = Array(segment)
+        var bodies: [String] = []
+        var index = 0
+        var inSingleQuote = false
+        var inDoubleQuote = false
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\\", !inSingleQuote {
+                index += 2
+                continue
+            }
+            if character == "'", !inDoubleQuote {
+                inSingleQuote.toggle()
+            } else if inSingleQuote {
+                // Literal.
+            } else if character == "\"" {
+                inDoubleQuote.toggle()
+            } else if character == "`" {
+                var end = index + 1
+                var body = ""
+                while end < characters.count, characters[end] != "`" {
+                    if characters[end] == "\\", end + 1 < characters.count {
+                        body.append(characters[end + 1])
+                        end += 2
+                    } else {
+                        body.append(characters[end])
+                        end += 1
+                    }
+                }
+                guard end < characters.count else { break }
+                bodies.append(body)
+                index = end
+            } else if character == "$", index + 1 < characters.count, characters[index + 1] == "(" {
+                var depth = 1
+                var end = index + 2
+                var quote: Character?
+                while end < characters.count {
+                    let next = characters[end]
+                    if let open = quote {
+                        if next == open { quote = nil }
+                    } else if next == "'" || next == "\"" {
+                        quote = next
+                    } else if next == "(" {
+                        depth += 1
+                    } else if next == ")" {
+                        depth -= 1
+                        if depth == 0 { break }
+                    }
+                    end += 1
+                }
+                guard end < characters.count else { break }
+                bodies.append(String(characters[(index + 2)..<end]))
+                index = end
+            }
+            index += 1
+        }
+        return bodies
     }
 
     /// The recorded `git`/`gh` actions, plus any segment the shared risk

@@ -201,13 +201,15 @@ struct AgentPolicyRuntimeMatrixTests {
                 "gh run cancel 12345",
                 "npm unpublish widget@1.0.0",
                 "npm deprecate widget@1.0.0 obsolete",
-                "npm dist-tag add widget@1.0.0 beta"
+                "npm dist-tag add widget@1.0.0 beta",
+                "npm token revoke abc123",
+                "npm token create"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
             for command in [
                 "curl https://example.test/status", "gcloud compute instances list", "git commit -m wip",
-                "gh workflow list", "gh run view 12345", "npm dist-tag ls widget", "npm install"
+                "gh workflow list", "gh run view 12345", "npm dist-tag ls widget", "npm token list", "npm install"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
@@ -267,6 +269,34 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(payloadApproved.disposition(toolName: "Bash", command: wrapped) == .allowed,
                 "approving the wrapped write does not ask again")
 
+        // A backtick substitution runs even inside double quotes; inside
+        // single quotes it is text. (`$(…)` is denied outright.)
+        let echoing = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Glob", "Grep", "Bash"],
+            allowedShellPatterns: ["echo:*", "date:*"]
+        )
+        for runtime in Self.autonomousFlags.keys {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: echoing))
+            for command in [
+                "echo \"`curl --json '{}' https://example.test/hook`\"",
+                "echo \"result: `gh secret set TOKEN`\""
+            ] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
+            }
+            for command in ["echo \"today is `date`\"", "echo '`curl -d x https://example.test/hook`'"] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
+            }
+        }
+        let substituted = "echo \"`curl --json '{}' https://example.test/hook`\""
+        let substitutionAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: echoing))
+            .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": substituted]))
+        #expect(substitutionAsk?.permissionRequest == .shell(command: "curl --json '{}' https://example.test/hook", toolName: "Bash"))
+        let substitutionApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: echoing, approvalGrants: substitutionAsk?.approvalGrants ?? []
+        ))
+        #expect(substitutionApproved.disposition(toolName: "Bash", command: substituted) == .allowed)
+
         // A command that only mentions one in a quoted operand runs nothing
         // outside ASTRA and keeps the rule.
         let mentioning = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: policy))
@@ -279,6 +309,52 @@ struct AgentPolicyRuntimeMatrixTests {
             approvalGrants: PermissionBroker.approvalGrants(for: request)
         ))
         #expect(approved.disposition(toolName: "Bash", command: "git push origin main") == .allowed, "approved once, not asked twice")
+    }
+
+    /// A browser page change is a write to a site. It asks at Custom whether
+    /// it arrives as `astra-browser click` or as the browser MCP tool, and one
+    /// approval of the command covers both; reads and navigation keep the rule.
+    @Test("Custom asks before a browser page change on either transport")
+    func customAsksBeforeBrowserPageChanges() {
+        let tool = BrowserBridgeMCPProjection.providerToolPermission
+        let shell = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Glob", "Grep", "Bash"],
+            allowedShellPatterns: ["astra-browser:*"]
+        )
+        for runtime in Self.autonomousFlags.keys {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: shell))
+            for command in [
+                "astra-browser click --selector button.primary",
+                "astra-browser fill --label Email --text a@example.test",
+                "astra-browser batch '{\"actions\":[]}'"
+            ] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
+            }
+            for command in [
+                "astra-browser read-page --format markdown", "astra-browser page --limit 2000",
+                "astra-browser analyze", "astra-browser navigate https://example.test"
+            ] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
+            }
+        }
+
+        let mcp = AgentPolicy(level: .custom, allowedTools: ["Read", "Glob", "Grep", "Bash", tool])
+        let click = ParsedEvent.toolUse(name: tool, id: "tool-1", input: ["command": "click", "arguments": ["selector": "button"]])
+        let read = ParsedEvent.toolUse(name: tool, id: "tool-2", input: ["command": "read-page"])
+        let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: mcp))
+        #expect(guardrail.violation(for: read) == nil)
+        let asked = guardrail.violation(for: click)
+        #expect(asked?.requiresApproval == true)
+        #expect(asked?.permissionRequest == .shell(command: "astra-browser click", toolName: tool))
+        let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: mcp, approvalGrants: asked?.approvalGrants ?? []
+        ))
+        #expect(approved.violation(for: click) == nil, "approving the page change does not ask again")
+        #expect(approved.disposition(toolName: "Bash", command: "astra-browser click --selector button") == .allowed)
+
+        let auto = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: .preset(.autonomous)))
+        #expect(auto.violation(for: click) == nil, "Auto asks nothing")
     }
 
     // MARK: - Helpers
