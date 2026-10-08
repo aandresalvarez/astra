@@ -297,6 +297,35 @@ struct AgentPolicyRuntimeMatrixTests {
         ))
         #expect(substitutionApproved.disposition(toolName: "Bash", command: substituted) == .allowed)
 
+        // A runner with options still runs its command: `env -u CI` and
+        // `nice -n 5` must not hide a push or a write.
+        let broadBash = AgentPolicy(level: .custom, allowedTools: ["Read", "Glob", "Grep", "Bash"], allowedShellPatterns: ["*"])
+        for runtime in Self.autonomousFlags.keys {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: broadBash))
+            for command in [
+                "env -u CI git push origin main",
+                "env -i PATH=/usr/bin git push origin main",
+                "env -S 'git push origin main'",
+                "nice -n 5 curl -d x https://example.test/hook",
+                "timeout 30 gh workflow run deploy.yml",
+                "time -p git push origin main",
+                "env -u CI nice -n 5 git push origin main"
+            ] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
+            }
+            for command in ["env -u CI git status", "timeout 30 make test", "nice -n 5 swift build"] {
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
+            }
+        }
+        let wrappedPush = "env -u CI git push origin main"
+        let pushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: broadBash))
+            .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": wrappedPush]))
+        #expect(pushAsk?.permissionRequest == .shell(command: "git push origin main", toolName: "Bash"))
+        let pushApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: broadBash, approvalGrants: pushAsk?.approvalGrants ?? []
+        ))
+        #expect(pushApproved.disposition(toolName: "Bash", command: wrappedPush) == .allowed)
+
         // A command that only mentions one in a quoted operand runs nothing
         // outside ASTRA and keeps the rule.
         let mentioning = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: policy))

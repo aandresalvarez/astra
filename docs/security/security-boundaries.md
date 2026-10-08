@@ -142,8 +142,9 @@ boundary. The full inventory is in
   that sends data, a cloud deploy, a remote database client, a package
   registry change, or a browser page change
   (`ShellCommandRiskClassifier.actsOutsideMachine`), unless that exact
-  command was approved. A `sh -c` payload and a backtick substitution are
-  judged as commands of their own, and the browser MCP tool is judged as the
+  command was approved. A `sh -c` payload, a backtick substitution, and the
+  command behind a runner such as `env -u NAME`, `nice -n 5`, or `timeout 30`
+  are judged as commands of their own, and the browser MCP tool is judged as the
   `astra-browser` command it runs. Local writes such as `git commit`, reads,
   and browser navigation keep the rule.
 - `ExternalActionPolicy` is the only owner of "does this level ask before an
