@@ -178,6 +178,30 @@ enum NewTaskWorktreeComposerFlow {
             delete: { modelContext.delete(draft) }
         )
     }
+
+    /// Replaces `draft` with the task created from it. Throws while the
+    /// draft's deletion isn't saved, so the caller keeps the composer, and the
+    /// draft it shows, instead of reporting the task as created.
+    static func promote(
+        _ draft: AgentTask?,
+        to task: AgentTask,
+        modelContext: ModelContext,
+        cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore()
+    ) throws {
+        guard let draft, draft !== task else { return }
+        guard discardPromotedDraft(draft, keeping: task, modelContext: modelContext, cleanupStore: cleanupStore) else {
+            throw NewTaskDraftPromotionError.draftNotRemoved
+        }
+    }
+}
+
+/// The task was saved, but the draft it was created from was not deleted.
+enum NewTaskDraftPromotionError: LocalizedError, Equatable {
+    case draftNotRemoved
+
+    var errorDescription: String? {
+        "ASTRA saved the task but could not remove the draft it came from, so the draft is still open here. Open the task from the task list to follow or run it, and delete the draft once you no longer need it."
+    }
 }
 
 /// The composer's task creation, plus the worktrees planning prepares. One

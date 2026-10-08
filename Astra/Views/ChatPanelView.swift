@@ -1490,7 +1490,12 @@ struct ChatPanelView: View {
                 taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
                 return
             }
-            promoteDraft(to: task)
+            var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
+            auditFields["trace_id"] = traceID
+            auditFields["use_agent_team"] = String(useAgentTeam)
+            auditFields["team_size"] = String(teamSize)
+            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+            try promoteDraft(to: task)
             messageText = ""
             messages = []
             attachedFiles = []
@@ -1498,11 +1503,6 @@ struct ChatPanelView: View {
             isApprovedPlanHistoryExpanded = false
             isPlanMode = false
             worktreeSelection.resetTaskChoice()
-            var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
-            auditFields["trace_id"] = traceID
-            auditFields["use_agent_team"] = String(useAgentTeam)
-            auditFields["team_size"] = String(teamSize)
-            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
 
             onQuickRun?(task)
         }
@@ -1717,7 +1717,12 @@ struct ChatPanelView: View {
                 taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
                 return
             }
-            promoteDraft(to: task)
+            var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
+            auditFields["trace_id"] = traceID
+            auditFields["inputs_count"] = String(task.inputs.count)
+            auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
+            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+            try promoteDraft(to: task)
 
             // Reset state
             messageText = ""
@@ -1730,11 +1735,6 @@ struct ChatPanelView: View {
             chainedGoal = ""
             isPlanMode = false
             worktreeSelection.resetTaskChoice()
-            var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
-            auditFields["trace_id"] = traceID
-            auditFields["inputs_count"] = String(task.inputs.count)
-            auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
-            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
 
             onTaskCreated?(task)
         }
@@ -2400,10 +2400,12 @@ struct ChatPanelView: View {
         }
     }
 
-    private func promoteDraft(to finalTask: AgentTask) {
-        // The real task replaces the draft; worktrees it didn't take over are given back.
-        if let draft = draftTask, draft !== finalTask,
-           NewTaskWorktreeComposerFlow.discardPromotedDraft(draft, keeping: finalTask, modelContext: modelContext) {
+    /// The real task replaces the draft; worktrees it didn't take over are
+    /// given back. Throws, leaving the composer as it is, while the draft's
+    /// deletion isn't saved.
+    private func promoteDraft(to finalTask: AgentTask) throws {
+        if let draft = draftTask, draft !== finalTask {
+            try NewTaskWorktreeComposerFlow.promote(draft, to: finalTask, modelContext: modelContext)
             draftTask = nil
         }
         // finalTask already captured the flag; reset it so a later, unrelated

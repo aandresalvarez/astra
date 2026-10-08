@@ -459,6 +459,9 @@ struct NewTaskWorktreeTests {
         #expect(task.events.isEmpty)
         #expect(try fixture.git(["branch", "--show-current"], at: repository) == "main")
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+        // The abandoned creation settled its journal entry and ownership record.
+        #expect(try fixture.ownership.creationJournal.pendingURLs().isEmpty)
+        #expect(((try? FileManager.default.contentsOfDirectory(atPath: fixture.ownership.directory.path)) ?? []).isEmpty)
     }
 
     @Test("Failed submission retains a prepared draft so retry can reuse the same checkout")

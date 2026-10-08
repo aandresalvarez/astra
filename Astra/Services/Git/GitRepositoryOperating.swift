@@ -97,6 +97,10 @@ protocol GitRepositoryOperating: AnyObject {
     /// True when the checkout holds ignored files, which a non-forced
     /// `git worktree remove` deletes without asking; also true on error.
     func hasIgnoredFiles(at repoPath: String) async -> Bool
+    /// Populates a new worktree's submodules the way the repository has them.
+    func initializeSubmodules(at worktreePath: String) async throws
+    /// What a forced removal of the worktree would destroy in its submodules.
+    func submoduleCheckoutState(at worktreePath: String) async -> GitSubmoduleCheckoutState
     func getRemoteURL(at repoPath: String, remote: String?) async -> String?
     func createPullRequest(
         repoPath: String,
@@ -177,6 +181,12 @@ extension GitRepositoryOperating {
     /// Alternate operators fail closed: a checkout that may hold ignored files
     /// is kept.
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
+
+    /// Alternate operators fail closed: a new worktree whose submodules they
+    /// can't populate is discarded before any agent runs in it, and one whose
+    /// submodules they can't read is kept.
+    func initializeSubmodules(at worktreePath: String) async throws { throw GitSubmoduleSetupUnsupported() }
+    func submoduleCheckoutState(at worktreePath: String) async -> GitSubmoduleCheckoutState { .unknown }
 
     func normalizeBaseBranch(_ raw: String, remote: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

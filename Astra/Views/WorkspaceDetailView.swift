@@ -14,6 +14,7 @@ struct WorkspaceDetailView: View {
     @State private var editingSSH: SSHConnection?
     @State private var showSSHEditor = false
     @State private var exportMessage = ""
+    @State private var folderRefusal: String?
     @State private var pendingRemoval: PendingRemoval?
     let onDelete: () -> Void
 
@@ -265,6 +266,7 @@ struct WorkspaceDetailView: View {
             }
         }
         .frame(width: 520, height: 700)
+        .workspaceFolderRefusalAlert($folderRefusal)
         .alert("Delete Workspace?", isPresented: $showDeleteConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
@@ -421,7 +423,9 @@ struct WorkspaceDetailView: View {
         panel.canCreateDirectories = true
         panel.message = "Select or create the main working directory"
         if panel.runModal() == .OK, let url = panel.url {
-            workspace.primaryPath = url.path
+            let outcome = WorkspaceConfiguredRoots.setPrimaryPath(url.path, on: workspace)
+            folderRefusal = outcome.refusalMessage
+            guard folderRefusal == nil else { return }
             sshConnections = SSHConnectionManager.load(workspacePath: url.path)
             workspace.updatedAt = Date()
             WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
@@ -436,11 +440,9 @@ struct WorkspaceDetailView: View {
         panel.canCreateDirectories = true
         panel.message = "Select or create additional source folders"
         if panel.runModal() == .OK {
-            for url in panel.urls {
-                if !workspace.additionalPaths.contains(url.path) {
-                    workspace.additionalPaths.append(url.path)
-                }
-            }
+            let outcome = WorkspaceConfiguredRoots.addAdditionalPaths(panel.urls.map(\.path), to: workspace)
+            folderRefusal = outcome.refusalMessage
+            guard folderRefusal == nil else { return }
             workspace.updatedAt = Date()
             WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
         }

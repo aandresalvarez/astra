@@ -32,6 +32,11 @@ struct TaskWorktreeCleanupStore: Sendable {
         )
     }
 
+    init(directory: URL, ownership: TaskWorktreeOwnershipStore) {
+        self.directory = directory.standardizedFileURL
+        self.ownership = ownership
+    }
+
     enum StoreError: LocalizedError {
         case invalidRecord
 
@@ -83,9 +88,26 @@ struct TaskWorktreeCleanupStore: Sendable {
     /// A draft can own several worktrees, so a record is keyed by task and
     /// worktree path.
     func recordURL(for discard: TaskWorktreeDiscard) -> URL {
-        let worktree = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
+        recordURL(taskID: discard.taskID, worktreePath: discard.worktreePath)
+    }
+
+    func recordURL(taskID: UUID, worktreePath: String) -> URL {
+        let worktree = WorkspacePathPresentation.standardizedPath(worktreePath)
         let digest = SHA256.hash(data: Data(worktree.utf8)).map { String(format: "%02x", $0) }.joined()
-        return directory.appendingPathComponent(discard.taskID.uuidString.lowercased() + "-" + digest + ".json")
+        return directory.appendingPathComponent(taskID.uuidString.lowercased() + "-" + digest + ".json")
+    }
+}
+
+extension TaskWorktreeOwnershipStore {
+    /// Creation intents, written before `git worktree add` runs and cleared
+    /// once the task's binding is saved. One left behind means creation was
+    /// interrupted; startup recovery settles it like a cleanup record.
+    var creationJournal: TaskWorktreeCleanupStore {
+        TaskWorktreeCleanupStore(
+            directory: directory.deletingLastPathComponent()
+                .appendingPathComponent("WorktreeCreation", isDirectory: true),
+            ownership: self
+        )
     }
 }
 
@@ -124,10 +146,11 @@ enum TaskWorktreeCleanupService {
         _ discard: TaskWorktreeDiscard,
         store: TaskWorktreeCleanupStore,
         modelContext: ModelContext,
-        git: any GitRepositoryOperating = GitService.shared
+        git: any GitRepositoryOperating = GitService.shared,
+        pinsOwnTask: Bool = true
     ) async -> Bool {
         let url = store.recordURL(for: discard)
-        let key = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let key = activeKey(url)
         guard activeRecords.insert(key).inserted else { return false }
         defer { activeRecords.remove(key) }
         do {
@@ -142,7 +165,10 @@ enum TaskWorktreeCleanupService {
                     let descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
                     var pins = try TaskWorktreeService.durableCheckoutPins(modelContext: durable)
                     pins.formUnion(try TaskWorktreeService.durableCheckoutPins(modelContext: context))
-                    if try durable.fetchCount(descriptor) > 0 {
+                    // A saved task keeps a worktree it was deleted from or
+                    // retargeted away from. An interrupted creation never
+                    // bound its worktree, so only real pins keep that one.
+                    if pinsOwnTask, try durable.fetchCount(descriptor) > 0 {
                         pins.insert(WorkspacePathPresentation.standardizedPath(discard.worktreePath))
                     }
                     return pins
@@ -160,6 +186,108 @@ enum TaskWorktreeCleanupService {
             logFailure("worktree_cleanup_failed", taskID: discard.taskID, error: error)
             return false
         }
+    }
+
+    // MARK: - Creation journal
+
+    /// Journals a worktree creation before Git runs, with the ownership
+    /// record that lets recovery remove what Git leaves behind. Cleanup and
+    /// recovery leave the record alone until the creation settles.
+    static func beginCreation(_ discard: TaskWorktreeDiscard, journal: TaskWorktreeCleanupStore) throws {
+        let key = activeKey(journal.recordURL(for: discard))
+        guard activeRecords.insert(key).inserted else { throw TaskWorktreeCleanupStore.StoreError.invalidRecord }
+        do {
+            try journal.record(discard)
+            try journal.ownership.record(.init(discard))
+        } catch {
+            try? journal.remove(discard)
+            activeRecords.remove(key)
+            throw error
+        }
+    }
+
+    /// Clears the intent once the task's binding is saved. A record that
+    /// can't be removed is settled at next launch, which finds the binding.
+    static func finishCreation(_ discard: TaskWorktreeDiscard, journal: TaskWorktreeCleanupStore) {
+        do {
+            try journal.remove(discard)
+        } catch {
+            logFailure("worktree_creation_intent_clear_failed", taskID: discard.taskID, error: error)
+        }
+        activeRecords.remove(activeKey(journal.recordURL(for: discard)))
+    }
+
+    /// Removes what a creation that failed before its binding was saved left
+    /// behind, with the checks any discarded worktree gets. Runs to the end
+    /// even when the creation was cancelled.
+    static func abandonCreation(
+        _ discard: TaskWorktreeDiscard,
+        journal: TaskWorktreeCleanupStore,
+        modelContext: ModelContext,
+        git: any GitRepositoryOperating
+    ) async {
+        activeRecords.remove(activeKey(journal.recordURL(for: discard)))
+        await Task { @MainActor in
+            await process(discard, store: journal, modelContext: modelContext, git: git, pinsOwnTask: false)
+        }.value
+    }
+
+    /// Settles creations a crash or quit interrupted. A worktree whose task
+    /// binding was saved stays; anything else Git created is removed under
+    /// the usual checks. Ownership is recorded before Git runs, so an entry
+    /// without it never touches Git. Returns how many worktrees were removed.
+    @discardableResult
+    static func resumeInterruptedCreations(
+        modelContext: ModelContext,
+        journal: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore().ownership.creationJournal,
+        git: any GitRepositoryOperating = GitService.shared
+    ) async -> Int {
+        let urls: [URL]
+        do {
+            urls = try journal.pendingURLs()
+        } catch {
+            logFailure("worktree_creation_journal_read_failed", error: error)
+            return 0
+        }
+        var removed = 0
+        for url in urls {
+            guard !Task.isCancelled else { break }
+            do {
+                let discard = try journal.read(url)
+                guard !activeRecords.contains(activeKey(journal.recordURL(for: discard))) else { continue }
+                if try bindingIsSaved(discard, modelContext: modelContext) || !journal.ownership.owns(discard) {
+                    try journal.remove(discard)
+                    continue
+                }
+                if await process(discard, store: journal, modelContext: modelContext, git: git, pinsOwnTask: false) {
+                    removed += 1
+                }
+            } catch {
+                logFailure("worktree_creation_intent_read_failed", error: error)
+            }
+        }
+        return removed
+    }
+
+    /// True when a saved task, of any that share the ID, records preparing
+    /// this worktree.
+    private static func bindingIsSaved(_ discard: TaskWorktreeDiscard, modelContext: ModelContext) throws -> Bool {
+        let taskID = discard.taskID
+        let worktree = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
+        let tasks = try ModelContext(modelContext.container).fetch(
+            FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
+        )
+        return tasks.contains { task in
+            task.events.contains { event in
+                guard !event.isDeleted, event.hasType(TaskEventTypes.Task.worktreePrepared),
+                      case .success(let binding) = event.decodePayload(as: TaskWorktreePayload.self) else { return false }
+                return WorkspacePathPresentation.standardizedPath(binding.worktreePath) == worktree
+            }
+        }
+    }
+
+    private static func activeKey(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     private static func logFailure(_ reason: String, taskID: UUID? = nil, error: Error) {

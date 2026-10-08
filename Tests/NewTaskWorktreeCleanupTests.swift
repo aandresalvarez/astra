@@ -736,6 +736,116 @@ struct NewTaskWorktreeCleanupTests {
         }
     }
 
+    @Test("Promotion stops, keeping the draft and its worktrees, when the draft's deletion can't be saved")
+    func failedPromotionKeepsDraft() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, original) = try await retargetedDraft(repository: repository, context: context, fixture: fixture)
+        let task = AgentTask(title: "Explore", goal: "Explore the implementation", workspace: try #require(draft.workspace))
+        context.insert(task)
+        try await TaskWorktreeService.prepare(
+            task: task, request: nil, inheritingFrom: draft, modelContext: context,
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        try context.save()
+        let blocker = fixture.root.appendingPathComponent("blocked")
+        try Data("not a directory".utf8).write(to: blocker)
+        let unavailable = TaskWorktreeCleanupStore(
+            directory: blocker.appendingPathComponent("Cleanup"), ownership: fixture.ownership
+        )
+
+        #expect(throws: NewTaskDraftPromotionError.draftNotRemoved) {
+            try NewTaskWorktreeComposerFlow.promote(draft, to: task, modelContext: context, cleanupStore: unavailable)
+        }
+
+        #expect(!draft.isDeleted)
+        #expect(try ModelContext(store).fetchCount(FetchDescriptor<AgentTask>()) == 2)
+        #expect(FileManager.default.fileExists(atPath: original.worktreePath))
+        try NewTaskWorktreeComposerFlow.promote(nil, to: task, modelContext: context, cleanupStore: unavailable)
+        try NewTaskWorktreeComposerFlow.promote(draft, to: draft, modelContext: context, cleanupStore: unavailable)
+        #expect(try ModelContext(store).fetchCount(FetchDescriptor<AgentTask>()) == 2)
+    }
+
+    @Test("The composer hands a new task off only after its draft's deletion is saved")
+    func composerPromotesDraftBeforeHandoff() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Astra/Views/ChatPanelView.swift"), encoding: .utf8)
+        for (function, handoff) in [
+            ("private func quickRun()", "onQuickRun?(task)"),
+            ("private func createTaskFromSpec()", "onTaskCreated?(task)")
+        ] {
+            let start = try #require(source.range(of: function))
+            let promote = try #require(source.range(of: "try promoteDraft(to: task)", range: start.upperBound..<source.endIndex))
+            let reset = try #require(source.range(of: "messageText = \"\"", range: start.upperBound..<source.endIndex))
+            let handedOff = try #require(source.range(of: handoff, range: start.upperBound..<source.endIndex))
+            #expect(promote.lowerBound < reset.lowerBound, "\(function) clears the composer before promotion")
+            #expect(reset.lowerBound < handedOff.lowerBound, "\(function) hands off before clearing the composer")
+        }
+    }
+
+    @Test("Workspace folder edits refuse a checkout cleanup is removing")
+    func configuredRootsRefuseReservedCheckout() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let checkout = fixture.worktrees.appendingPathComponent("App/astra-explore", isDirectory: true).path
+        let other = fixture.root.path
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        store.mainContext.insert(workspace)
+
+        let reservation = TaskWorktreeCheckoutReservation.acquire(checkout)
+        let primary = WorkspaceConfiguredRoots.setPrimaryPath(checkout + "/Sources", on: workspace)
+        let additional = WorkspaceConfiguredRoots.addAdditionalPaths([other, checkout], to: workspace)
+        TaskWorktreeCheckoutReservation.release(reservation)
+
+        #expect(primary == .refused(path: checkout + "/Sources"))
+        #expect(additional == .refused(path: checkout))
+        #expect(additional.refusalMessage == WorkspaceConfiguredRoots.reservedRootMessage)
+        #expect(workspace.primaryPath == fixture.storage.path)
+        #expect(workspace.additionalPaths.isEmpty)
+
+        #expect(WorkspaceConfiguredRoots.setPrimaryPath(checkout, on: workspace) == .updated)
+        #expect(WorkspaceConfiguredRoots.setPrimaryPath(checkout, on: workspace) == .unchanged)
+        #expect(WorkspaceConfiguredRoots.addAdditionalPaths([other, other], to: workspace) == .updated)
+        #expect(WorkspaceConfiguredRoots.addAdditionalPaths([other], to: workspace) == .unchanged)
+        #expect(WorkspaceConfiguredRoots.Outcome.updated.refusalMessage == nil)
+        #expect(workspace.primaryPath == checkout)
+        #expect(workspace.additionalPaths == [other])
+    }
+
+    @Test("Every workspace folder writer is reviewed against the cleanup reservation")
+    func workspaceRootWritersAreReviewed() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        // The interactive writer, initializers, config values whose imports
+        // check the reservation, and removals of folders a workspace lists.
+        let reviewed: Set<String> = [
+            "Astra/AppIntents/AstraAppEntities.swift",
+            "Astra/Models/Workspace.swift",
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift",
+            "Astra/Services/Persistence/WorkspaceRecoveryService.swift",
+            "Astra/Services/Tasks/TaskLifecycleCoordinator.swift",
+            "Astra/Services/Tasks/WorkspaceConfiguredRoots.swift",
+            "Astra/Views/WorkspaceHomeView.swift",
+            "Astra/Views/WorkspaceRightRailView.swift"
+        ]
+        let writer = try NSRegularExpression(pattern: #"""
+        \.(primaryPath|additionalPaths)(\[[^\]]*\])?\s*(\+=|=(?!=))|\.additionalPaths\.(append|insert)\b|\$[A-Za-z_][\w.]*\.(primaryPath|additionalPaths)\b
+        """#)
+        var writers = Set<String>()
+        let enumerator = FileManager.default.enumerator(
+            at: root.appendingPathComponent("Astra"), includingPropertiesForKeys: nil
+        )
+        for case let url as URL in enumerator ?? FileManager.DirectoryEnumerator() where url.pathExtension == "swift" {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard writer.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil else { continue }
+            writers.insert(String(url.path.dropFirst(root.path.count + 1)))
+        }
+        #expect(writers == reviewed)
+    }
+
     @Test("Every persistent checkout pin writer is reviewed against the cleanup reservation")
     func checkoutPinWritersAreReviewed() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -778,6 +888,10 @@ struct NewTaskWorktreeCleanupTests {
             of: "await recoverRuntimeSettlements(", range: start.upperBound..<source.endIndex
         ))
         #expect(cleanup.lowerBound < runtime.lowerBound)
-        #expect(source.contains("TaskWorktreeCleanupService.resumePending(modelContext: modelContext)"))
+        let creations = try #require(source.range(
+            of: "TaskWorktreeCleanupService.resumeInterruptedCreations(modelContext: modelContext)"
+        ))
+        let pending = try #require(source.range(of: "TaskWorktreeCleanupService.resumePending(modelContext: modelContext)"))
+        #expect(creations.lowerBound < pending.lowerBound)
     }
 }

@@ -9,6 +9,9 @@ enum TaskWorktreeCreationError: LocalizedError, Equatable {
     case noCommit(String)
     case checkoutUnavailable(String)
     case baseUnavailable(String)
+    case nameUnavailable(String)
+    case journalFailed(String)
+    case submodulesUnavailable(path: String, reason: String)
     case persistenceFailed(path: String, reason: String)
     case recoveryPersistenceFailed(String)
     case choicePersistenceFailed(String)
@@ -24,8 +27,14 @@ enum TaskWorktreeCreationError: LocalizedError, Equatable {
             "The selected checkout \(path) is no longer available. Choose the repository again before starting the task."
         case .baseUnavailable(let path):
             "Could not find the default branch of \(path): its remote didn't name one, and there is no main or master. Choose Start from › Current branch instead."
+        case .nameUnavailable(let path):
+            "Every branch and folder name ASTRA tried for a new worktree of \(path) is taken. Remove this task's unused astra/ worktrees or branches, then try again."
+        case .journalFailed(let reason):
+            "ASTRA could not record the new worktree before creating it, so nothing was created and no agent was launched. \(reason)"
+        case .submodulesUnavailable(let path, let reason):
+            "ASTRA could not set up the Git submodules of \(path) in a new worktree, so no agent was launched. Check that you can fetch the submodules, or start the task without a worktree. \(reason)"
         case .persistenceFailed(let path, let reason):
-            "The worktree was created at \(path), but ASTRA could not save the task. The worktree has been kept; no agent was launched. \(reason)"
+            "The worktree was created at \(path), but ASTRA could not save the task, so no agent was launched. If the task is still unsaved when ASTRA next starts, the unused worktree is removed. \(reason)"
         case .recoveryPersistenceFailed(let reason):
             "ASTRA could not save the recovered draft. Its checkout has been kept; no agent was launched. \(reason)"
         case .choicePersistenceFailed(let reason):
@@ -73,6 +82,9 @@ struct TaskWorktreeDiscard: Codable, Equatable, Sendable {
     let branch: String
     let baseCommit: String
 }
+
+/// Populates a new worktree's submodules once Git has checked it out.
+typealias TaskWorktreeSubmoduleSetup = @MainActor (any GitRepositoryOperating, String) async throws -> Void
 
 /// Prepares the checkout before submission freezes the task's launch path and
 /// resource claims. The task's existing executionRootPath owns the durable pin;
@@ -131,21 +143,23 @@ enum TaskWorktreeService {
         title: String?,
         repositoryPath: String,
         worktreesRoot: String,
+        journal: TaskWorktreeCleanupStore,
         git: any GitRepositoryOperating
-    ) async -> (branch: String, destination: String) {
-        var attempt = 1
-        while true {
+    ) async -> (branch: String, destination: String)? {
+        for attempt in 1...maxNameAttempts {
             let branch = branchName(for: task, title: title, attempt: attempt)
             let destination = GitService.worktreeLocation(
                 repoPath: repositoryPath, branch: branch, worktreesRoot: worktreesRoot
             )
-            var taken = FileManager.default.fileExists(atPath: destination)
-            if !taken { taken = await git.localBranchExists(branch, at: repositoryPath) }
-            if !taken || attempt >= maxNameAttempts {
-                return (branch, destination)
-            }
-            attempt += 1
+            // A journaled name may belong to an interrupted creation that
+            // hasn't been settled yet.
+            let journaled = journal.recordURL(taskID: task.id, worktreePath: destination)
+            guard !FileManager.default.fileExists(atPath: destination),
+                  !FileManager.default.fileExists(atPath: journaled.path),
+                  !(await git.localBranchExists(branch, at: repositoryPath)) else { continue }
+            return (branch, destination)
         }
+        return nil
     }
 
     // MARK: - Base
@@ -341,7 +355,8 @@ enum TaskWorktreeService {
         modelContext: ModelContext,
         git: any GitRepositoryOperating = GitService.shared,
         worktreesRoot: String = AppChannel.current.defaultWorktreesRoot,
-        ownership: TaskWorktreeOwnershipStore = TaskWorktreeCleanupStore().ownership
+        ownership: TaskWorktreeOwnershipStore = TaskWorktreeCleanupStore().ownership,
+        setUpSubmodules: TaskWorktreeSubmoduleSetup = { git, path in try await git.initializeSubmodules(at: path) }
     ) async throws {
         try Task.checkCancellation()
         let source = draft === task || draft?.workspace?.id != task.workspace?.id ? nil : draft
@@ -354,8 +369,8 @@ enum TaskWorktreeService {
         if activeWorktreeEvent(for: task) != nil { return }
         if let request {
             try await createWorktree(
-                for: task, request: request, branchTitle: branchTitle,
-                modelContext: modelContext, git: git, worktreesRoot: worktreesRoot, ownership: ownership
+                for: task, request: request, branchTitle: branchTitle, modelContext: modelContext, git: git,
+                worktreesRoot: worktreesRoot, journal: ownership.creationJournal, setUpSubmodules: setUpSubmodules
             )
         } else if let source {
             guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: task) else {
@@ -364,6 +379,8 @@ enum TaskWorktreeService {
         }
     }
 
+    /// Creation is journaled before Git runs and settled only once the task's
+    /// binding is saved; recovery removes what an interrupted creation left.
     private static func createWorktree(
         for task: AgentTask,
         request: TaskWorktreeRequest,
@@ -371,7 +388,8 @@ enum TaskWorktreeService {
         modelContext: ModelContext,
         git: any GitRepositoryOperating,
         worktreesRoot: String,
-        ownership: TaskWorktreeOwnershipStore
+        journal: TaskWorktreeCleanupStore,
+        setUpSubmodules: TaskWorktreeSubmoduleSetup
     ) async throws {
         guard let workspace = task.workspace else {
             throw TaskWorktreeCreationError.repositoryUnavailable
@@ -389,9 +407,11 @@ enum TaskWorktreeService {
         resolvedRequest.repositoryPath = path
         let base = try await resolveBase(for: resolvedRequest, git: git)
         try Task.checkCancellation()
-        let (branch, destination) = await availableName(
-            for: task, title: branchTitle, repositoryPath: path, worktreesRoot: worktreesRoot, git: git
-        )
+        guard let (branch, destination) = await availableName(
+            for: task, title: branchTitle, repositoryPath: path, worktreesRoot: worktreesRoot, journal: journal, git: git
+        ) else {
+            throw TaskWorktreeCreationError.nameUnavailable(path)
+        }
         let payload = try TaskEvent.encodePayload(TaskWorktreePayload(
             repositoryPath: path,
             worktreePath: destination,
@@ -401,29 +421,38 @@ enum TaskWorktreeService {
             baseSource: base.source,
             baseFetched: base.fetched
         )).get()
-        try Task.checkCancellation()
-
-        let createdPath = try await git.addWorktree(
-            repoPath: path,
-            branch: branch,
-            createBranch: true,
-            base: base.commit,
-            worktreesRoot: worktreesRoot
+        let intent = TaskWorktreeDiscard(
+            taskID: task.id, repositoryPath: path, worktreePath: destination, branch: branch, baseCommit: base.commit
         )
-        guard TaskWorktreeCheckoutReservation.commit(createdPath, to: task) else {
-            throw TaskWorktreeCreationError.checkoutUnavailable(createdPath)
-        }
-        // Without this record the worktree is still usable; it is just never
-        // removed automatically, which is the safe outcome.
+        try Task.checkCancellation()
         do {
-            try ownership.record(TaskWorktreeOwnershipStore.Record(
-                repositoryPath: path, worktreePath: destination, branch: branch, baseCommit: base.commit
-            ))
+            try TaskWorktreeCleanupService.beginCreation(intent, journal: journal)
         } catch {
-            AppLogger.breadcrumb(action: "task_worktree_ownership_unrecorded", category: "Git", taskID: task.id, fields: [
-                "worktree": createdPath,
-                "error": error.localizedDescription
-            ])
+            throw TaskWorktreeCreationError.journalFailed(error.localizedDescription)
+        }
+
+        let createdPath: String
+        do {
+            createdPath = try await git.addWorktree(
+                repoPath: path,
+                branch: branch,
+                createBranch: true,
+                base: base.commit,
+                worktreesRoot: worktreesRoot
+            )
+            if FileManager.default.fileExists(atPath: (createdPath as NSString).appendingPathComponent(".gitmodules")) {
+                do {
+                    try await setUpSubmodules(git, createdPath)
+                } catch {
+                    throw TaskWorktreeCreationError.submodulesUnavailable(path: path, reason: error.localizedDescription)
+                }
+            }
+            guard TaskWorktreeCheckoutReservation.commit(createdPath, to: task) else {
+                throw TaskWorktreeCreationError.checkoutUnavailable(createdPath)
+            }
+        } catch {
+            await TaskWorktreeCleanupService.abandonCreation(intent, journal: journal, modelContext: modelContext, git: git)
+            throw error
         }
         modelContext.insert(task)
         modelContext.insert(TaskEvent(
@@ -441,10 +470,13 @@ enum TaskWorktreeService {
                 auditFields: ["operation": "task_worktree_prepared"]
             )
         } catch {
+            // The intent stays journaled: next launch keeps the worktree if a
+            // later save bound it, and otherwise removes it while unchanged.
             throw TaskWorktreeCreationError.persistenceFailed(
                 path: createdPath, reason: error.localizedDescription
             )
         }
+        TaskWorktreeCleanupService.finishCreation(intent, journal: journal)
         AppLogger.breadcrumb(action: "task_worktree_prepared", category: "Git", taskID: task.id, fields: [
             "repository": path,
             "worktree": createdPath,
@@ -548,10 +580,11 @@ enum TaskWorktreeService {
     }
 
     /// Removes a discarded draft's worktree and branch only while nothing
-    /// happened in them: the checkout is clean with no ignored files, still on
-    /// its branch, the branch is still at its base commit, and no other task
-    /// or workspace default points at it. Anything else, including a store
-    /// that can't be read, keeps the worktree for the user.
+    /// happened in them: the checkout is clean with no ignored files, its
+    /// populated submodules hold no local work, it is still on its branch,
+    /// the branch is still at its base commit, and no other task or
+    /// workspace default points at it. Anything else, including a store that
+    /// can't be read, keeps the worktree for the user.
     @discardableResult
     static func discardUnusedWorktree(
         _ discard: TaskWorktreeDiscard,
@@ -629,7 +662,23 @@ enum TaskWorktreeService {
             do {
                 try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: false)
             } catch {
-                return kept("remove_failed", retry: true)
+                // Git removes a worktree that stores submodule repositories
+                // only when forced, which deletes them too.
+                switch exists ? await git.submoduleCheckoutState(at: path) : .notPopulated {
+                case .changed:
+                    return kept("submodule_changes")
+                case .notPopulated, .unknown:
+                    return kept("remove_failed", retry: true)
+                case .unchanged:
+                    guard await git.getStatusFiles(at: path).isEmpty else { return kept("uncommitted_changes") }
+                    guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
+                    if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
+                    do {
+                        try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: true)
+                    } catch {
+                        return kept("remove_failed", retry: true)
+                    }
+                }
             }
             if let problem = referenceProblem() { return kept(problem, retry: true) }
         }

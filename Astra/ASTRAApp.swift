@@ -945,6 +945,9 @@ public struct ASTRAApp: App {
         guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
         if let recovery = worktreeCleanupRecovery { await recovery.value; return }
         let recovery = Task { @MainActor in
+            // Interrupted creations settle first, so a worktree whose binding
+            // was never saved is removed rather than left unowned.
+            _ = await TaskWorktreeCleanupService.resumeInterruptedCreations(modelContext: modelContext)
             _ = await TaskWorktreeCleanupService.resumePending(modelContext: modelContext)
         }
         worktreeCleanupRecovery = recovery
