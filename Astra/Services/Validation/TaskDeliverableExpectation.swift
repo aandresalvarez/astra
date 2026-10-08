@@ -109,11 +109,16 @@ enum TaskDeliverableExpectation {
         )
     }
 
-    /// The same answer from two bounded store reads instead of `task.events`
-    /// and `task.runs`: the event types the rule reads are rare, and only runs
-    /// that started earlier can be evidence. The review dock asks once per
-    /// snapshot revision, so its answer does not depend on how much of the
-    /// thread the transcript window happens to hold.
+    /// The same answer from bounded store reads instead of `task.events` and
+    /// `task.runs`, for the review dock, which asks once per snapshot revision
+    /// so its answer does not depend on the transcript window:
+    /// - the run's own source event (a run has one),
+    /// - whether any whole-task approval or finished plan precedes it (one row),
+    /// - the most recent earlier completed runs, newest first, stopping at the
+    ///   first that an approved-plan request did not start.
+    /// The last read looks at most `recentCompletedRunLimit` runs back; a task
+    /// whose last that-many completions were all intermediate plan steps reads
+    /// as still owing, which is the conservative answer.
     @MainActor
     static func followsUpDeliveredRequest(
         taskID: UUID,
@@ -121,24 +126,66 @@ enum TaskDeliverableExpectation {
         startedAt: Date,
         in modelContext: ModelContext
     ) throws -> Bool {
-        let types = Array(deliveryHistoryEventTypes)
-        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID && types.contains($0.type) }
-        ))
-        let earlierRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.id == taskID && $0.startedAt < startedAt }
-        ))
-        return followsUpDeliveredRequest(
-            runID: runID,
-            startedAt: startedAt,
-            events: events.lazy.map {
-                HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload)
+        guard try runStartsByConversation(runID, in: modelContext) else { return false }
+
+        let approved = TaskEventTypes.Task.approved.rawValue
+        let planFinished = TaskEventTypes.Plan.executionCompleted.rawValue
+        let approvalPrefix = userApprovalPayloadPrefix
+        var metDescriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.timestamp < startedAt
+                && ($0.type == planFinished || ($0.type == approved && $0.payload.starts(with: approvalPrefix)))
+        })
+        metDescriptor.fetchLimit = 1
+        if try !modelContext.fetch(metDescriptor).isEmpty { return true }
+
+        let completed = TaskRunStopReason.completed.rawValue
+        var runDescriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> {
+                $0.task?.id == taskID && $0.startedAt < startedAt && $0.stopReason == completed
             },
-            runs: earlierRuns.lazy.map {
-                HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason)
-            }
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
         )
+        runDescriptor.fetchLimit = recentCompletedRunLimit
+        for earlierRun in try modelContext.fetch(runDescriptor) where earlierRun.status == .completed {
+            if try !runStartsAsApprovedPlan(earlierRun.id, in: modelContext) { return true }
+        }
+        return false
     }
+
+    static let recentCompletedRunLimit = 50
+
+    @MainActor
+    private static func runSourceEvents(_ runID: UUID, in modelContext: ModelContext) throws -> [TaskEvent] {
+        let target: UUID? = runID
+        let sourceTypes = runSourceEventTypes
+        var descriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
+            $0.run?.id == target && sourceTypes.contains($0.type)
+        })
+        descriptor.fetchLimit = 4
+        return try modelContext.fetch(descriptor)
+    }
+
+    @MainActor
+    private static func runStartsByConversation(_ runID: UUID, in modelContext: ModelContext) throws -> Bool {
+        try runSourceEvents(runID, in: modelContext).contains {
+            requestSource(type: $0.type, payload: $0.payload) == .conversation
+        }
+    }
+
+    @MainActor
+    private static func runStartsAsApprovedPlan(_ runID: UUID, in modelContext: ModelContext) throws -> Bool {
+        try runSourceEvents(runID, in: modelContext).contains {
+            requestSource(type: $0.type, payload: $0.payload) == .approvedPlan
+        }
+    }
+
+    private static let runSourceEventTypes = [
+        TaskEventTypes.Conversation.userMessage.rawValue,
+        TaskEventTypes.ExecutionRequest.retry.rawValue,
+        TaskEventTypes.ExecutionRequest.resume.rawValue,
+        TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
+        TaskEventTypes.ExecutionRequest.planStep.rawValue
+    ]
 
     /// Whether `runID` continues the conversation after the task's own request
     /// was already met, and so does not owe that deliverable again — "commit

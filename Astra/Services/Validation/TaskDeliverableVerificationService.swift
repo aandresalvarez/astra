@@ -58,7 +58,7 @@ enum TaskDeliverableVerificationService {
         // An exempt follow-up answers for what it touched, not for an older
         // task-folder artifact it never opened.
         let files = deliveredEarlier
-            ? run.map { TaskOutputDiscovery.filesChanged(during: $0, from: artifactReconciliation.discoveredFiles) } ?? []
+            ? run.map { filesTouched(by: $0, from: artifactReconciliation.discoveredFiles) } ?? []
             : artifactReconciliation.discoveredFiles
         let profile = profile(for: task, files: files, requiresArtifact: requiresDeliverableArtifact)
 
@@ -493,6 +493,25 @@ enum TaskDeliverableVerificationService {
                     path: file.path
                 )
             ]
+        }
+    }
+
+    /// What `run` wrote: its recorded file changes first, then files whose
+    /// timestamps fall in the run. A copy or extraction that preserves
+    /// modification dates is still the run's own output.
+    private static func filesTouched(
+        by run: TaskRun,
+        from files: [TaskOutputDiscoveredFile]
+    ) -> [TaskOutputDiscoveredFile] {
+        let recorded = run.fileChanges.map { $0.path.replacingOccurrences(of: "\\", with: "/") }
+        let absolute = Set(recorded.filter { $0.hasPrefix("/") }.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        let relative = recorded.filter { !$0.hasPrefix("/") }.map { "/" + $0 }
+        let inRunWindow = Set(TaskOutputDiscovery.filesChanged(during: run, from: files).map(\.path))
+        return files.filter { file in
+            let path = URL(fileURLWithPath: file.path).standardizedFileURL.path
+            return absolute.contains(path)
+                || relative.contains { path.hasSuffix($0) }
+                || inRunWindow.contains(file.path)
         }
     }
 

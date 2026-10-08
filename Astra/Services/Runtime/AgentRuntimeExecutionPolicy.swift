@@ -78,7 +78,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     }
 
     func applyingProviderRender(_ render: ProviderPolicyRender) -> AgentRuntimeExecutionPolicy {
-        AgentRuntimeExecutionPolicy(
+        var rendered = AgentRuntimeExecutionPolicy(
             permissionPolicyOverride: PermissionPolicy(providerMode: render.permissionMode),
             allowedToolsOverride: render.allowedTools,
             permissionGrantsOverride: permissionGrantsOverride,
@@ -89,6 +89,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
             sandboxEnforcementSnapshot: sandboxEnforcementSnapshot,
             runtimeCapabilityProfile: runtimeCapabilityProfile
         )
+        // The adapters read it again at the real launch to withhold the
+        // Write bootstrap; dropping it here re-granted Write.
+        rendered.followsUpDeliveredRequest = followsUpDeliveredRequest
+        return rendered
     }
 
     func withLaunchSnapshot(_ snapshot: AgentTaskLaunchSnapshot?) -> AgentRuntimeExecutionPolicy {

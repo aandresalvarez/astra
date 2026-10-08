@@ -4,6 +4,7 @@ import Testing
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
+import ASTRACore
 
 /// A follow-up after the task's request was met does not owe the original
 /// deliverable again, and a task pinned to a worktree is reported where its
@@ -262,6 +263,63 @@ struct TaskDeliverableFollowUpTests {
             task: fixture.task, followsUpDeliveredRequest: true, permissionPolicy: .restricted,
             providerAllowedTools: ["Read", "Write"], askFirstTools: tools.askFirst
         ).isEmpty)
+    }
+
+    @Test("the delivery verdict survives the provider render the adapters launch with")
+    func verdictSurvivesProviderRender() {
+        var policy = AgentRuntimeExecutionPolicy()
+        policy.followsUpDeliveredRequest = true
+        let render = ProviderPolicyRender(
+            providerID: .claudeCode, adapterVersion: 1, policyLevel: .review, configOwnership: .generated,
+            permissionMode: .restricted, allowedTools: ["Read"], runtimeSupportTools: [], askFirstTools: ["Write"],
+            deniedTools: [], allowedShellPatterns: [], askFirstShellPatterns: [], deniedShellPatterns: [],
+            allowedURLPatterns: [], deniedURLPatterns: [], cliArgumentsSummary: [], settingsSummary: "test",
+            generatedConfigPreview: "", enforcementTiers: [.providerNative], diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+
+        #expect(policy.applyingProviderRender(render).followsUpDeliveredRequest)
+        #expect(!AgentRuntimeExecutionPolicy().applyingProviderRender(render).followsUpDeliveredRequest)
+    }
+
+    @Test("a follow-up after delivery gets the informational progress window")
+    func deliveredFollowUpGetsInformationalTimeout() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: fixture.task, phase: .resume, idleTimeoutSeconds: 180
+        ) == 360)
+        #expect(AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
+            task: fixture.task, phase: .resume, idleTimeoutSeconds: 180, followsUpDeliveredRequest: true
+        ) == 180)
+    }
+
+    @Test("an exempt follow-up is still checked on a file it recorded writing, whatever its timestamp")
+    func exemptFollowUpChecksRecordedFiles() async throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        _ = fixture.makeRun(startedAt: Date().addingTimeInterval(-3_600))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Copy the config in.")
+        // `cp -p` keeps the source's old modification date.
+        let copied = (TaskWorkspaceAccess(task: fixture.task).taskFolder as NSString).appendingPathComponent("config.json")
+        try "{ not json".write(toFile: copied, atomically: true, encoding: .utf8)
+        let old = Date().addingTimeInterval(-7_200)
+        try FileManager.default.setAttributes([.creationDate: old, .modificationDate: old], ofItemAtPath: copied)
+        followUpRun.appendFileChange(StoredFileChange(
+            path: copied, changeType: StoredFileChangeKind.write.rawValue, content: nil,
+            oldString: nil, newString: nil, timestamp: Date()
+        ))
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: followUpRun,
+            modelContext: fixture.context,
+            workspacePath: fixture.worktree
+        )
+        #expect(!result.canComplete)
+        #expect(result.checks.contains { $0.id == "json.syntax" && $0.status == .failed })
     }
 
     @Test("a pinned task's missing-deliverable message names the worktree, not the workspace")
