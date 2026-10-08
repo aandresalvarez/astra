@@ -1888,7 +1888,9 @@ struct RunPermissionManifestTests {
 
         #expect(manifest.workspacePath == codeRoot)
         #expect(manifest.additionalPaths.contains(TaskWorkspaceAccess(task: task).taskFolder))
-        #expect(manifest.additionalPaths.contains(durableWorkspace))
+        // The durable workspace holds the task folder, but the run writes only
+        // roots it claimed (#479), so the workspace itself is not projected.
+        #expect(!manifest.additionalPaths.contains(durableWorkspace))
     }
 
     @Test("Old manifest JSON without runtime support tools decodes")
