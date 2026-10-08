@@ -90,6 +90,7 @@ enum TaskDeliverableExpectation {
     }
 
     struct HistoryRun {
+        let id: UUID
         let startedAt: Date
         let status: RunStatus
         let stopReason: String
@@ -103,7 +104,7 @@ enum TaskDeliverableExpectation {
             events: task.events.lazy
                 .filter { relevantTypes.contains($0.type) }
                 .map { HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload) },
-            runs: task.runs.lazy.map { HistoryRun(startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
+            runs: task.runs.lazy.map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
         )
     }
 
@@ -111,12 +112,16 @@ enum TaskDeliverableExpectation {
     /// was already met, and so does not owe that deliverable again — "commit
     /// notes-a.txt" after the run that wrote it.
     ///
-    /// Met: an earlier run finished `completed` (runtime success or a published
-    /// required outcome; a blocked run is recorded as failed), or the user
-    /// approved the task. Continues the conversation: the run was started by a
-    /// user message or by a resume, retry or permission continuation of one.
-    /// An approved plan step carries out the task's own request, so it owes the
-    /// deliverable however many steps completed before it.
+    /// Met: an earlier run finished `completed` (runtime success, or every
+    /// required outcome published; a blocked run is recorded as failed), the
+    /// approved plan finished, or the user approved the whole task. A finished
+    /// plan step is not evidence on its own while later steps remain, and a
+    /// publication receipt is not a whole-task approval.
+    ///
+    /// Continues the conversation: the run was started by a user message or by
+    /// a resume, retry or permission continuation of one. An approved plan step
+    /// carries out the task's own request, so it owes the deliverable however
+    /// many steps completed before it.
     static func followsUpDeliveredRequest<Events: Sequence, Runs: Sequence>(
         runID: UUID,
         startedAt: Date,
@@ -124,42 +129,63 @@ enum TaskDeliverableExpectation {
         runs: Runs
     ) -> Bool where Events.Element == HistoryEvent, Runs.Element == HistoryRun {
         var startedByConversation = false
-        var approvedEarlier = false
+        var metEarlier = false
+        var planStepRunIDs: Set<UUID> = []
         for event in events {
-            if event.runID == runID, continuesConversation(type: event.type, payload: event.payload) {
-                startedByConversation = true
+            if let source = event.runID {
+                switch requestSource(type: event.type, payload: event.payload) {
+                case .conversation where source == runID: startedByConversation = true
+                case .approvedPlan: planStepRunIDs.insert(source)
+                default: break
+                }
             }
             if event.timestamp < startedAt,
-               event.type == TaskEventTypes.Task.approved.rawValue,
-               !event.payload.localizedCaseInsensitiveContains("runtime permission approved") {
-                approvedEarlier = true
+               event.type == TaskEventTypes.Plan.executionCompleted.rawValue
+                || (event.type == TaskEventTypes.Task.approved.rawValue && event.payload.hasPrefix(userApprovalPayloadPrefix)) {
+                metEarlier = true
             }
         }
         guard startedByConversation else { return false }
-        return approvedEarlier || runs.contains {
-            $0.startedAt < startedAt && $0.status == .completed && $0.stopReason == TaskRunStopReason.completed.rawValue
+        return metEarlier || runs.contains {
+            $0.startedAt < startedAt && !planStepRunIDs.contains($0.id)
+                && $0.status == .completed && $0.stopReason == TaskRunStopReason.completed.rawValue
         }
     }
+
+    /// `TaskLifecycleCoordinator.approveTask`'s whole-task approval, as opposed
+    /// to the runtime-permission approvals and publication receipts that share
+    /// the `task.approved` event type.
+    static let userApprovalPayloadPrefix = "Task approved by user"
 
     static let deliveryHistoryEventTypes: Set<String> = [
         TaskEventTypes.Conversation.userMessage.rawValue,
         TaskEventTypes.Task.approved.rawValue,
+        TaskEventTypes.Plan.executionCompleted.rawValue,
+        TaskEventTypes.ExecutionRequest.planStep.rawValue,
         TaskEventTypes.ExecutionRequest.retry.rawValue,
         TaskEventTypes.ExecutionRequest.resume.rawValue,
         TaskEventTypes.ExecutionRequest.permissionResume.rawValue
     ]
 
-    private static func continuesConversation(type: String, payload: String) -> Bool {
-        if type == TaskEventTypes.Conversation.userMessage.rawValue { return true }
+    private enum RequestSource { case conversation, approvedPlan, other }
+
+    /// What started a run, read from its linked source event.
+    private static func requestSource(type: String, payload: String) -> RequestSource {
+        if type == TaskEventTypes.Conversation.userMessage.rawValue { return .conversation }
         guard [
             TaskEventTypes.ExecutionRequest.retry.rawValue,
             TaskEventTypes.ExecutionRequest.resume.rawValue,
-            TaskEventTypes.ExecutionRequest.permissionResume.rawValue
+            TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
+            TaskEventTypes.ExecutionRequest.planStep.rawValue
         ].contains(type),
             let source = try? JSONDecoder().decode(TaskExecutionSourcePayloadV1.self, from: Data(payload.utf8)) else {
-            return false
+            return .other
         }
-        return source.launchMode == .continuation
+        switch source.launchMode {
+        case .continuation: return .conversation
+        case .approvedPlan: return .approvedPlan
+        case .initial: return .other
+        }
     }
 
     static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {

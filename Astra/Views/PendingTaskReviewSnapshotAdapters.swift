@@ -35,7 +35,7 @@ extension PendingTaskReviewSnapshotInput {
                         .filter { historyTypes.contains($0.type) }
                         .map { .init(type: $0.type, runID: $0.runID, timestamp: $0.timestamp, payload: $0.payload) },
                     runs: runSnapshots.lazy
-                        .map { .init(startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
+                        .map { .init(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
                 )
             } ?? false)
         let requiresScopedArtifactEvidence = PendingTaskReviewPolicy.requiresScopedArtifactEvidence(

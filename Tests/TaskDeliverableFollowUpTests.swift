@@ -122,6 +122,62 @@ struct TaskDeliverableFollowUpTests {
         #expect(!TaskDeliverableExpectation.owesDeliverable(fixture.task, run: followUpRun))
     }
 
+    @Test("a publication receipt is not a whole-task approval")
+    func publicationReceiptDoesNotCountAsDelivery() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        let pendingRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-600))
+        pendingRun.status = .completed
+        pendingRun.stopReason = TaskRunStopReason.externalOutcomePending.rawValue
+        fixture.recordEvent(TaskEventTypes.Task.approved.rawValue,
+                            payload: "Published draft pull request #12: https://example.invalid/pull/12",
+                            at: Date().addingTimeInterval(-300))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Thanks, what's left?")
+
+        #expect(TaskDeliverableExpectation.owesDeliverable(fixture.task, run: followUpRun))
+    }
+
+    @Test("a finished plan step is not delivery until the plan finishes")
+    func intermediatePlanStepIsNotDelivery() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        let stepRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-600))
+        fixture.startRun(stepRun, with: TaskEventTypes.ExecutionRequest.planStep.rawValue,
+                         payload: try fixture.envelope(TaskExecutionSourcePayloadV1(launchMode: .approvedPlan)))
+        let clarifyRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-300))
+        fixture.startRun(clarifyRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Use tabs in step 2.")
+        #expect(TaskDeliverableExpectation.owesDeliverable(fixture.task, run: clarifyRun))
+
+        fixture.recordEvent(TaskEventTypes.Plan.executionCompleted.rawValue, payload: "{}", at: Date().addingTimeInterval(-200))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Commit it.")
+        #expect(!TaskDeliverableExpectation.owesDeliverable(fixture.task, run: followUpRun))
+    }
+
+    @Test("an exempt follow-up is not graded on an older task-folder artifact")
+    func exemptFollowUpIgnoresStaleArtifacts() async throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        let firstRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-3_600))
+        let stale = (TaskWorkspaceAccess(task: fixture.task).taskFolder as NSString).appendingPathComponent("config.json")
+        try "{ not json".write(toFile: stale, atomically: true, encoding: .utf8)
+        let earlier = firstRun.startedAt.addingTimeInterval(5)
+        try FileManager.default.setAttributes([.creationDate: earlier, .modificationDate: earlier], ofItemAtPath: stale)
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "What did you change?")
+
+        let result = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: followUpRun,
+            modelContext: fixture.context,
+            workspacePath: fixture.worktree
+        )
+        #expect(result.canComplete)
+        #expect(result.status == "not_applicable")
+        #expect(!result.checks.contains { $0.id == "json.syntax" })
+    }
+
     @Test("a pinned task's missing-deliverable message names the worktree, not the workspace")
     func pinnedTaskMessageNamesWorktree() async throws {
         let fixture = try DeliverableFollowUpFixture()

@@ -55,7 +55,11 @@ enum TaskDeliverableVerificationService {
             for: task,
             modelContext: modelContext
         )
-        let files = artifactReconciliation.discoveredFiles
+        // An exempt follow-up answers for what it touched, not for an older
+        // task-folder artifact it never opened.
+        let files = deliveredEarlier
+            ? run.map { TaskOutputDiscovery.filesChanged(during: $0, from: artifactReconciliation.discoveredFiles) } ?? []
+            : artifactReconciliation.discoveredFiles
         let profile = profile(for: task, files: files, requiresArtifact: requiresDeliverableArtifact)
 
         guard requiresDeliverableArtifact || !files.isEmpty else {
