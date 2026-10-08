@@ -103,6 +103,29 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return task
     }
 
+    /// Unmanaged copies of `skills`, with their own connectors and local tools
+    /// wired to the copies. A composer projection must never relate an
+    /// unmanaged task to a managed skill: assigning one to `AgentTask.skills`
+    /// updates the skill's inverse `tasks`, which makes SwiftData adopt the
+    /// projection and persist it as a phantom draft on the next save.
+    static func detachedSkills(_ skills: [Skill]) -> [Skill] {
+        let skills = uniqueSkills(skills)
+        let connectors = uniqueConnectors(skills.flatMap(\.connectors))
+        let localTools = uniqueLocalTools(skills.flatMap(\.localTools))
+        let graph = detachedCapabilityGraph(
+            sources: CapabilityCloneSources(
+                skills: skills,
+                connectors: connectors,
+                localTools: localTools,
+                workspaceSkillIDs: [],
+                workspaceConnectorIDs: [],
+                workspaceLocalToolIDs: []
+            ),
+            workspace: nil
+        )
+        return skills.compactMap { graph.skillsByID[$0.id] }
+    }
+
     private struct CapabilityCloneSources {
         let skills: [Skill]
         let connectors: [Connector]

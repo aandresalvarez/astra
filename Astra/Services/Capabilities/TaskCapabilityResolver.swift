@@ -289,8 +289,15 @@ struct TaskCapabilityResolver {
         task.workspace?.localTools.filter { !$0.isGlobal } ?? []
     }
 
+    /// A composer projection is never inserted (see `ComposerTaskProjection`),
+    /// but its workspace is, and that store holds the same global catalog the
+    /// submitted task will resolve against.
+    private var globalCatalogContext: ModelContext? {
+        task.modelContext ?? task.workspace?.modelContext
+    }
+
     private func globalSkills() -> [Skill] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.skills.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
@@ -307,7 +314,7 @@ struct TaskCapabilityResolver {
     }
 
     private func globalConnectors() -> [Connector] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.connectors.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
@@ -324,7 +331,7 @@ struct TaskCapabilityResolver {
     }
 
     private func globalLocalTools() -> [LocalTool] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.localTools.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })
