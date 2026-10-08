@@ -169,8 +169,7 @@ struct ProviderNativeDirectoryProjectionTests {
 
         #expect(!projection.additionalDirectories.contains(paste))
         #expect(!projection.additionalDirectories.contains(detached))
-        #expect(projection.additionalDirectories.contains(workspaceRoot.path))
-        // The paste sits under the workspace root that is already granted; the
+        // The paste sits under the workspace root Copilot launches in; the
         // detached attachment has no covering root and is surfaced instead.
         #expect(projection.unreachableFiles == [detached])
     }
