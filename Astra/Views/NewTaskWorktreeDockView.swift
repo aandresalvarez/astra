@@ -242,25 +242,12 @@ struct NewTaskWorktreeDockView: View {
         git: any GitRepositoryOperating
     ) async -> GitRepositoryInfo? {
         if let exact = repositories.first(where: { $0.path == path }) { return exact }
-        let resolved = comparablePath(path)
+        let resolved = WorkspacePathPresentation.resolvedPath(path)
         for repository in repositories {
             let worktrees = await git.listWorktrees(at: repository.path)
-            if worktrees.contains(where: { comparablePath($0.path) == resolved }) { return repository }
+            if worktrees.contains(where: { WorkspacePathPresentation.resolvedPath($0.path) == resolved }) { return repository }
         }
         return nil
-    }
-
-    /// Resolves symlinks through the deepest existing ancestor, so a checkout
-    /// that is gone still compares equal to Git's spelling of it
-    /// (`/var/…` and `/private/var/…`).
-    private static func comparablePath(_ path: String) -> String {
-        var existing = URL(fileURLWithPath: path).standardizedFileURL
-        var missing: [String] = []
-        while existing.path != "/", !FileManager.default.fileExists(atPath: existing.path) {
-            missing.insert(existing.lastPathComponent, at: 0)
-            existing.deleteLastPathComponent()
-        }
-        return missing.reduce(existing.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }.path
     }
 
     private func claimIntent() {

@@ -936,19 +936,19 @@ public struct ASTRAApp: App {
     static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
         runDeferredStartupWork(modelContext: modelContext)
         await recoverTaskFolderSnapshots(modelContext: modelContext)
-        await recoverPendingWorktreeCleanup(modelContext: modelContext)
+        await recoverPendingWorktreeCleanup(modelContext: modelContext, taskQueue: taskQueue)
         await recoverRuntimeSettlements(modelContext: modelContext, taskQueue: taskQueue)
     }
 
     @MainActor
-    private static func recoverPendingWorktreeCleanup(modelContext: ModelContext) async {
+    private static func recoverPendingWorktreeCleanup(modelContext: ModelContext, taskQueue: TaskQueue) async {
         guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
         if let recovery = worktreeCleanupRecovery { await recovery.value; return }
         let recovery = Task { @MainActor in
             // Interrupted creations settle first, so a worktree whose binding
             // was never saved is removed rather than left unowned.
-            _ = await TaskWorktreeCleanupService.resumeInterruptedCreations(modelContext: modelContext)
-            _ = await TaskWorktreeCleanupService.resumePending(modelContext: modelContext)
+            _ = await TaskWorktreeCleanupService.resumeInterruptedCreations(modelContext: modelContext, resourceQueue: taskQueue)
+            _ = await TaskWorktreeCleanupService.resumePending(modelContext: modelContext, resourceQueue: taskQueue)
         }
         worktreeCleanupRecovery = recovery
         await recovery.value

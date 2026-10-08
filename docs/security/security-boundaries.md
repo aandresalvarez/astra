@@ -130,19 +130,35 @@ and `~/Documents/Astra Dev/Workspaces`.
   Codex keeps `.git` read-only by design, and a writable
   root over the shared Git directory would undo that. Derived tasks
   (chained, corrective, fork, and template) and recovery-mirror imports copy
-  the binding, so they never fall back to the source checkout. Failed initial
+  the binding, so they never fall back to the source checkout. A prepared
+  worktree supersedes legacy branch/copy isolation, and runtime cleanup never
+  treats the bound checkout as a disposable copy. Failed initial
   submissions save and export draft adoption and temporary-task deletion
   together; recovery save failures are surfaced rather than reported as success.
   Automatic cleanup records an atomic intent in the channel's App Support
   `WorktreeCleanup/` outbox before deleting the draft, outside provider-writable
-  workspace paths. Removal runs only after deletion is saved. Startup retries
+  workspace paths. Workspace deletion and replacement record the same intents
+  for unexecuted drafts. Removal runs only after deletion and any replacement
+  bindings are saved. Failed saves preserve the workspace and UI selection. Startup retries
   interrupted cleanup and reads committed task references through a fresh
   context, so a failed deletion save cannot authorize removal. An interrupted
   branch deletion can finish even after its worktree was removed. Intent write,
   reference-read, and Git failures are logged; retryable failures retain the
-  intent until removal or a terminal preservation decision. Cleanup keeps any
+  intent until removal or a terminal preservation decision. Every cleanup
+  attempt rechecks local ownership; a missing, unreadable, or changed creation
+  record keeps the checkout. Exclusive cleanup reservations compare resolved
+  paths, including symlink aliases and overlapping ancestors or descendants,
+  and a competing removal retries without replacing the first reservation.
+  Fetch, creation, submodule setup, removal, and branch deletion acquire
+  exclusive Git-common-directory and metadata workspace claims from the
+  runtime queue's existing lease owner; cleanup also claims the checkout.
+  Busy creation fails visibly before mutation, while busy cleanup retains its
+  intent. Leases release on success or failure and survive queue cancellation
+  until the lifecycle operation finishes.
+  Cleanup keeps any
   worktree that has changes, ignored files, or new
-  commits; that another task or workspace default references; or whose
+  commits, including commits retained only in its branch or HEAD reflog;
+  that another task or workspace default references; or whose
   references cannot be read.
 - `current_state.json`, `current_state.md`, `session_history.md`, diagnostics,
   turn outputs, and runtime-bin folders are ASTRA-owned task state. Agents may

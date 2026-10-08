@@ -6,6 +6,8 @@ import ASTRAPersistence
 
 enum TaskWorktreeCreationError: LocalizedError, Equatable {
     case repositoryUnavailable
+    case repositoryBusy(String)
+    case resourceQueueUnavailable
     case noCommit(String)
     case checkoutUnavailable(String)
     case baseUnavailable(String)
@@ -21,6 +23,10 @@ enum TaskWorktreeCreationError: LocalizedError, Equatable {
         switch self {
         case .repositoryUnavailable:
             "The selected Git repository is no longer available in this workspace. Choose another repository."
+        case .repositoryBusy(let path):
+            "Another task or worktree operation is using \(path). Wait for it to finish, then try again. No new worktree was created."
+        case .resourceQueueUnavailable:
+            "ASTRA could not access the task queue to reserve this repository. No worktree operation was started."
         case .noCommit(let path):
             "Could not read HEAD in \(path). Create an initial commit before starting a task in a worktree."
         case .checkoutUnavailable(let path):
@@ -353,6 +359,7 @@ enum TaskWorktreeService {
         inheritingFrom draft: AgentTask? = nil,
         branchTitle: String? = nil,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
         worktreesRoot: String = AppChannel.current.defaultWorktreesRoot,
         ownership: TaskWorktreeOwnershipStore = TaskWorktreeCleanupStore().ownership,
@@ -366,11 +373,15 @@ enum TaskWorktreeService {
             modelContext.insert(binding)
             return
         }
-        if activeWorktreeEvent(for: task) != nil { return }
+        if activeWorktreeEvent(for: task) != nil {
+            task.isolationStrategy = .sameDirectory
+            return
+        }
         if let request {
             try await createWorktree(
                 for: task, request: request, branchTitle: branchTitle, modelContext: modelContext, git: git,
-                worktreesRoot: worktreesRoot, journal: ownership.creationJournal, setUpSubmodules: setUpSubmodules
+                resourceQueue: resourceQueue, worktreesRoot: worktreesRoot,
+                journal: ownership.creationJournal, setUpSubmodules: setUpSubmodules
             )
         } else if let source {
             guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: task) else {
@@ -387,6 +398,7 @@ enum TaskWorktreeService {
         branchTitle: String?,
         modelContext: ModelContext,
         git: any GitRepositoryOperating,
+        resourceQueue: TaskQueue?,
         worktreesRoot: String,
         journal: TaskWorktreeCleanupStore,
         setUpSubmodules: TaskWorktreeSubmoduleSetup
@@ -402,6 +414,8 @@ enum TaskWorktreeService {
         guard repositories.contains(where: { $0.path == path }) else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
+        let resourceLease = try TaskWorktreeResourceLease.acquire(repositoryPath: path, taskID: task.id, queue: resourceQueue)
+        defer { resourceLease.release() }
         try Task.checkCancellation()
         var resolvedRequest = request
         resolvedRequest.repositoryPath = path
@@ -451,9 +465,13 @@ enum TaskWorktreeService {
                 throw TaskWorktreeCreationError.checkoutUnavailable(createdPath)
             }
         } catch {
-            await TaskWorktreeCleanupService.abandonCreation(intent, journal: journal, modelContext: modelContext, git: git)
+            resourceLease.release()
+            await TaskWorktreeCleanupService.abandonCreation(
+                intent, journal: journal, modelContext: modelContext, resourceQueue: resourceQueue, git: git
+            )
             throw error
         }
+        task.isolationStrategy = .sameDirectory
         modelContext.insert(task)
         modelContext.insert(TaskEvent(
             task: task,
@@ -589,15 +607,19 @@ enum TaskWorktreeService {
     static func discardUnusedWorktree(
         _ discard: TaskWorktreeDiscard,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
         checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:)
     ) async -> Bool {
-        await discardOutcome(discard, modelContext: modelContext, git: git, checkoutPins: checkoutPins) == .removed
+        await discardOutcome(
+            discard, modelContext: modelContext, resourceQueue: resourceQueue, git: git, checkoutPins: checkoutPins
+        ) == .removed
     }
 
     static func discardOutcome(
         _ discard: TaskWorktreeDiscard,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
         checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:),
         duringReservation: @MainActor () async -> Void = {}
@@ -622,6 +644,21 @@ enum TaskWorktreeService {
         }
         if Task.isCancelled { return kept("cancelled", retry: true) }
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
+        guard let reservation = TaskWorktreeCheckoutReservation.acquire(path) else {
+            return kept("cleanup_in_progress", retry: true)
+        }
+        defer { TaskWorktreeCheckoutReservation.release(reservation) }
+        let resourceLease: TaskWorktreeResourceLease
+        do {
+            resourceLease = try TaskWorktreeResourceLease.acquire(
+                repositoryPath: discard.repositoryPath, worktreePath: path, taskID: discard.taskID, queue: resourceQueue
+            )
+        } catch TaskWorktreeCreationError.repositoryBusy {
+            return kept("repository_busy", retry: true)
+        } catch {
+            return kept(error.localizedDescription, retry: true)
+        }
+        defer { resourceLease.release() }
         // An unborn primary checkout is still a repository. Availability is the
         // worktree registry, not whether that checkout's HEAD is a commit.
         guard !(await git.listWorktrees(at: discard.repositoryPath)).isEmpty else {
@@ -641,6 +678,12 @@ enum TaskWorktreeService {
         } else if exists {
             return kept("branch_unavailable", retry: true)
         }
+        if commit != nil, await git.hasWorktreeReflogChanges(
+            branch: discard.branch, baseCommit: discard.baseCommit,
+            worktreePath: exists ? path : nil, repoPath: discard.repositoryPath
+        ) {
+            return kept("reflog_changes")
+        }
         let registered = await git.listWorktrees(at: discard.repositoryPath)
         guard !registered.isEmpty else { return kept("registry_unavailable", retry: true) }
         if Task.isCancelled { return kept("cancelled", retry: true) }
@@ -649,13 +692,6 @@ enum TaskWorktreeService {
             URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path
                 == URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         }
-        // Hold the checkout through removal and branch deletion. Repository
-        // selection, task creation, and workspace imports refuse the path, or
-        // a root inside it, while this is held, and a reference that lands
-        // before either Git call aborts cleanup.
-        let reservation = TaskWorktreeCheckoutReservation.acquire(path)
-        defer { TaskWorktreeCheckoutReservation.release(reservation) }
-        if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
         await duringReservation()
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
         if exists || isRegistered {
@@ -726,6 +762,7 @@ enum TaskWorktreeService {
         _ discards: [TaskWorktreeDiscard],
         workspace: Workspace?,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
         delete: @MainActor () -> Void = {},
         persist: @MainActor (Workspace?, ModelContext) -> Bool = { workspace, modelContext in
@@ -765,7 +802,7 @@ enum TaskWorktreeService {
             var removedAll = true
             for discard in discards {
                 let removed = await TaskWorktreeCleanupService.process(
-                    discard, store: cleanupStore, modelContext: modelContext
+                    discard, store: cleanupStore, modelContext: modelContext, resourceQueue: resourceQueue
                 )
                 removedAll = removedAll && removed
             }

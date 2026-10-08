@@ -313,7 +313,7 @@ struct GitPushEnablementTests {
         )
         #expect(vm.workingPath == checkout)
 
-        let reservation = TaskWorktreeCheckoutReservation.acquire(checkout)
+        let reservation = try #require(TaskWorktreeCheckoutReservation.acquire(checkout))
         let refused = vm.createPullRequestCommentTask(modelContext: context)
         TaskWorktreeCheckoutReservation.release(reservation)
         #expect(refused == nil)

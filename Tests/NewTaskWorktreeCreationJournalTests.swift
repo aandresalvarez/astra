@@ -108,7 +108,7 @@ struct NewTaskWorktreeCreationJournalTests {
 
         try await TaskWorktreeService.prepare(
             task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
-            modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
             setUpSubmodules: localSubmoduleSetup(fixture)
         )
 
@@ -136,7 +136,7 @@ struct NewTaskWorktreeCreationJournalTests {
         do {
             try await TaskWorktreeService.prepare(
                 task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
-                modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+                modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
             )
             Issue.record("Expected submodule setup to fail")
         } catch TaskWorktreeCreationError.submodulesUnavailable(let path, _) {
@@ -159,7 +159,7 @@ struct NewTaskWorktreeCreationJournalTests {
         await #expect(throws: TaskWorktreeCreationError.self) {
             try await TaskWorktreeService.prepare(
                 task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
-                modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+                modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
                 setUpSubmodules: localSubmoduleSetup(
                     fixture, commands: Array(GitService.taskWorktreeSubmoduleCommands.prefix(1)), thenFail: true
                 )
@@ -190,7 +190,7 @@ struct NewTaskWorktreeCreationJournalTests {
         let task = draft(in: app, context: context)
         try await TaskWorktreeService.prepare(
             task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
-            modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
             setUpSubmodules: localSubmoduleSetup(fixture)
         )
         let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
@@ -213,7 +213,7 @@ struct NewTaskWorktreeCreationJournalTests {
         context.delete(task)
         try context.save()
 
-        let outcome = await TaskWorktreeService.discardOutcome(discard, modelContext: context)
+        let outcome = await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue)
 
         let removed = work == .none
         #expect(outcome == (removed ? .removed : .kept("submodule_changes")))
@@ -237,13 +237,13 @@ struct NewTaskWorktreeCreationJournalTests {
         let store = try Fixture.container()
 
         #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
-            modelContext: store.mainContext, journal: journal
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
         ) == 1)
 
         #expect(!FileManager.default.fileExists(atPath: intent.worktreePath))
         try await expectNothingLeft(in: repository, fixture: fixture)
         #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
-            modelContext: store.mainContext, journal: journal
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
         ) == 0)
     }
 
@@ -261,7 +261,7 @@ struct NewTaskWorktreeCreationJournalTests {
         let store = try Fixture.container()
 
         #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
-            modelContext: store.mainContext, journal: journal
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
         ) == 0)
 
         #expect(try journal.pendingURLs().isEmpty)
@@ -278,7 +278,7 @@ struct NewTaskWorktreeCreationJournalTests {
         let task = draft(in: repository, context: store.mainContext)
         try await TaskWorktreeService.prepare(
             task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
-            modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let journal = fixture.ownership.creationJournal
         #expect(try journal.pendingURLs().isEmpty)
@@ -287,7 +287,7 @@ struct NewTaskWorktreeCreationJournalTests {
         try journal.record(intent)
 
         #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
-            modelContext: ModelContext(store), journal: journal
+            modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, journal: journal
         ) == 0)
 
         #expect(try journal.pendingURLs().isEmpty)
@@ -308,13 +308,13 @@ struct NewTaskWorktreeCreationJournalTests {
         #expect(throws: (any Error).self) { try TaskWorktreeCleanupService.beginCreation(intent, journal: journal) }
 
         #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
-            modelContext: store.mainContext, journal: journal
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
         ) == 0)
         #expect(try journal.pendingURLs().count == 1)
         #expect(journal.ownership.owns(intent))
 
         await TaskWorktreeCleanupService.abandonCreation(
-            intent, journal: journal, modelContext: store.mainContext, git: GitService.shared
+            intent, journal: journal, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, git: GitService.shared
         )
         try await expectNothingLeft(in: repository, fixture: fixture)
     }
@@ -339,7 +339,7 @@ struct NewTaskWorktreeCreationJournalTests {
 
         try await TaskWorktreeService.prepare(
             task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
-            modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
 
         let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))

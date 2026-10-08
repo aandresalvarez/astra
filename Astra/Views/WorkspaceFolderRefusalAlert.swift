@@ -11,6 +11,10 @@ extension View {
         dismissibleMessageAlert("Task not deleted", message: message)
     }
 
+    func workspaceDeletionFailureAlert(_ message: Binding<String?>) -> some View {
+        dismissibleMessageAlert("Workspace not deleted", message: message)
+    }
+
     private func dismissibleMessageAlert(_ title: LocalizedStringKey, message: Binding<String?>) -> some View {
         alert(title, isPresented: Binding(
             get: { message.wrappedValue != nil },

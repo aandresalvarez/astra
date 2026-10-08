@@ -77,6 +77,7 @@ struct ContentView: View {
     @State private var renameText = ""
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
     @State private var taskDeletionFailure: String?
+    @State private var workspaceDeletionFailure: String?
     @State private var externalRouteNotice = ""
     @State private var runningTaskCount = 0
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
@@ -1134,6 +1135,7 @@ struct ContentView: View {
         }
         .workspaceCapabilityEnableFailureAlert(isPresented: $isShowingWorkspaceCapabilityEnableFailure)
         .taskDeletionFailureAlert($taskDeletionFailure)
+        .workspaceDeletionFailureAlert($workspaceDeletionFailure)
         .alert(item: $linkedScheduleWarning) { warning in
             Alert(
                 title: Text(warning.action.alertTitle),
@@ -2360,9 +2362,10 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
+        let result = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
+        guard result.persisted else { workspaceDeletionFailure = "ASTRA couldn't save the deletion, so the workspace was kept."; return }
         markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
-        let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
-        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: result.nextWorkspace))
     }
 
     private func importWorkspace() {

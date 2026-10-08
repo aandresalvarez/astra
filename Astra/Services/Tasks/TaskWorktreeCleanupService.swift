@@ -118,6 +118,7 @@ enum TaskWorktreeCleanupService {
     @discardableResult
     static func resumePending(
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         store: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
         git: any GitRepositoryOperating = GitService.shared
     ) async -> Int {
@@ -133,7 +134,9 @@ enum TaskWorktreeCleanupService {
             guard !Task.isCancelled else { break }
             do {
                 let discard = try store.read(url)
-                if await process(discard, store: store, modelContext: modelContext, git: git) { removed += 1 }
+                if await process(
+                    discard, store: store, modelContext: modelContext, resourceQueue: resourceQueue, git: git
+                ) { removed += 1 }
             } catch {
                 logFailure("worktree_cleanup_record_read_failed", error: error)
             }
@@ -146,6 +149,7 @@ enum TaskWorktreeCleanupService {
         _ discard: TaskWorktreeDiscard,
         store: TaskWorktreeCleanupStore,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
         pinsOwnTask: Bool = true
     ) async -> Bool {
@@ -155,8 +159,17 @@ enum TaskWorktreeCleanupService {
         defer { activeRecords.remove(key) }
         do {
             guard try store.read(url) == discard else { throw TaskWorktreeCleanupStore.StoreError.invalidRecord }
+            guard store.ownership.owns(discard) else {
+                AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
+                    "worktree": discard.worktreePath,
+                    "branch": discard.branch,
+                    "reason": "not_created_locally"
+                ])
+                try store.remove(discard)
+                return false
+            }
             let outcome = await TaskWorktreeService.discardOutcome(
-                discard, modelContext: modelContext, git: git,
+                discard, modelContext: modelContext, resourceQueue: resourceQueue, git: git,
                 checkoutPins: { context in
                     // A fresh context reads committed deletion/reference state,
                     // not a caller's unsaved deletion after a failed save.
@@ -224,11 +237,14 @@ enum TaskWorktreeCleanupService {
         _ discard: TaskWorktreeDiscard,
         journal: TaskWorktreeCleanupStore,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating
     ) async {
         activeRecords.remove(activeKey(journal.recordURL(for: discard)))
-        await Task { @MainActor in
-            await process(discard, store: journal, modelContext: modelContext, git: git, pinsOwnTask: false)
+        _ = await Task { @MainActor in
+            await process(
+                discard, store: journal, modelContext: modelContext, resourceQueue: resourceQueue, git: git, pinsOwnTask: false
+            )
         }.value
     }
 
@@ -239,6 +255,7 @@ enum TaskWorktreeCleanupService {
     @discardableResult
     static func resumeInterruptedCreations(
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         journal: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore().ownership.creationJournal,
         git: any GitRepositoryOperating = GitService.shared
     ) async -> Int {
@@ -259,7 +276,9 @@ enum TaskWorktreeCleanupService {
                     try journal.remove(discard)
                     continue
                 }
-                if await process(discard, store: journal, modelContext: modelContext, git: git, pinsOwnTask: false) {
+                if await process(
+                    discard, store: journal, modelContext: modelContext, resourceQueue: resourceQueue, git: git, pinsOwnTask: false
+                ) {
                     removed += 1
                 }
             } catch {

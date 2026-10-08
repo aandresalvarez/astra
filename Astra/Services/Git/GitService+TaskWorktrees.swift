@@ -114,6 +114,22 @@ extension GitService {
         }
     }
 
+    func hasWorktreeReflogChanges(
+        branch: String, baseCommit: String, worktreePath: String?, repoPath: String
+    ) async -> Bool {
+        var refs = [(repoPath, "refs/heads/\(branch)")]
+        if let worktreePath { refs.append((worktreePath, "HEAD")) }
+        do {
+            for (path, ref) in refs {
+                let output = try await runGit(at: path, arguments: ["reflog", "show", "--format=%H", ref])
+                if output.split(whereSeparator: \.isNewline).contains(where: { $0 != baseCommit }) { return true }
+            }
+            return false
+        } catch {
+            return true
+        }
+    }
+
     /// `git worktree add` leaves submodule folders empty. Run in the new
     /// worktree, `update` without `--init` populates exactly the submodules
     /// the repository has initialized, since their activation lives in the

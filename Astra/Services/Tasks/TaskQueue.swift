@@ -1817,7 +1817,7 @@ final class TaskQueue {
         for requestID in waitingRequestIDs where !completedRequestIDs.contains(requestID) {
             requestTaskRegistry.complete(requestID: requestID)
         }
-        activeResourceLocks.removeAll()
+        activeResourceLocks.removeAll { $0.runMode != TaskWorktreeResourceLease.runMode }
         waitingResourceLocks.removeAll()
         isProcessingScheduled = false
         processingScheduleGeneration += 1
@@ -1897,11 +1897,12 @@ final class TaskQueue {
     @discardableResult
     func acquireResourceLocksIfAvailable(
         _ claims: [TaskResourceLockClaim],
-        task: AgentTask,
+        task: AgentTask?,
         modelContext: ModelContext? = nil
     ) -> [TaskResourceLockClaim]? {
         guard canAcquireResourceLocks(claims) else { return nil }
         activeResourceLocks.append(contentsOf: claims)
+        guard let task else { return claims }
         waitingResourceLocks.removeValue(forKey: task.id)
         for claim in claims {
             recordResourceLockEvent(
@@ -1938,11 +1939,13 @@ final class TaskQueue {
     @MainActor
     func releaseResourceLocks(
         _ claims: [TaskResourceLockClaim],
-        task: AgentTask,
+        task: AgentTask?,
         modelContext: ModelContext? = nil
     ) {
         let released = Set(claims)
         activeResourceLocks.removeAll { released.contains($0) }
+        defer { wakeAllTurnAdmissionWaiters(); wakeDispatchWaiters() }
+        guard let task else { return }
         waitingResourceLocks.removeValue(forKey: task.id)
         for (index, claim) in claims.enumerated() {
             recordResourceLockEvent(
@@ -1955,8 +1958,6 @@ final class TaskQueue {
                 autoExport: index == claims.count - 1
             )
         }
-        wakeAllTurnAdmissionWaiters()
-        wakeDispatchWaiters()
     }
 
     @MainActor

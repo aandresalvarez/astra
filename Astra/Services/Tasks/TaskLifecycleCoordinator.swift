@@ -10,6 +10,7 @@ final class TaskLifecycleCoordinator {
     let taskQueue: TaskQueue
     private let reviewOriginURL: (String) async -> String?
     private let worktreeCleanupStore: TaskWorktreeCleanupStore
+    private let persistWorkspaceChange: @MainActor (Workspace?, ModelContext) -> Bool
 
     init(
         modelContext: ModelContext,
@@ -17,12 +18,16 @@ final class TaskLifecycleCoordinator {
         reviewOriginURL: @escaping (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
         },
-        worktreeCleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore()
+        worktreeCleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
+        persistWorkspaceChange: @escaping @MainActor (Workspace?, ModelContext) -> Bool = { workspace, context in
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context)
+        }
     ) {
         self.modelContext = modelContext
         self.taskQueue = taskQueue
         self.reviewOriginURL = reviewOriginURL
         self.worktreeCleanupStore = worktreeCleanupStore
+        self.persistWorkspaceChange = persistWorkspaceChange
     }
 
     /// Canonical follow-up message sent when the user resumes a previously
@@ -605,7 +610,8 @@ final class TaskLifecycleCoordinator {
             ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
             : []
         return TaskWorktreeService.saveDeletionThenDiscard(
-            unusedWorktrees, workspace: workspace, modelContext: modelContext, cleanupStore: worktreeCleanupStore,
+            unusedWorktrees, workspace: workspace, modelContext: modelContext, resourceQueue: taskQueue,
+            cleanupStore: worktreeCleanupStore,
             delete: {
                 willDelete()
                 cancelAndRemoveTurnRequests(for: task)
@@ -670,31 +676,54 @@ final class TaskLifecycleCoordinator {
         return ws
     }
 
-    func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
-        // The workspace→task cascade never reaches scalar turn-request rows,
-        // and cascaded task deletion would leave their admission coroutines
-        // parked; cancel and remove them per task before deleting. This runs
-        // BEFORE mirror removal: cancelling live requests saves-and-exports,
-        // which must not resurrect the mirrors removed below.
-        for task in ws.tasks {
-            cancelAndRemoveTurnRequests(for: task)
-        }
-        removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
-
-        for connector in ws.connectors {
-            connector.cleanupKeychain()
-        }
-        for skill in ws.skills {
-            skill.cleanupKeychain()
-            for connector in skill.connectors {
-                connector.cleanupKeychain()
-            }
-        }
-        modelContext.delete(ws)
-
+    func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> (
+        persisted: Bool, nextWorkspace: Workspace?, cleanup: Task<Bool, Never>?
+    ) {
+        let path = ws.primaryPath
         let next = existingWorkspaces.first(where: { $0.id != ws.id })
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: next, modelContext: modelContext)
-        return next
+        let result = TaskWorktreeService.saveDeletionThenDiscard(
+            unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
+            cleanupStore: worktreeCleanupStore,
+            delete: {
+                for task in ws.tasks { cancelAndRemoveTurnRequests(for: task) }
+                for connector in ws.connectors { connector.cleanupKeychain() }
+                for skill in ws.skills {
+                    skill.cleanupKeychain()
+                    for connector in skill.connectors { connector.cleanupKeychain() }
+                }
+                modelContext.delete(ws)
+            },
+            persist: persistWorkspaceChange
+        )
+        // Cancellation exports mirrors, so remove them only after it and the
+        // workspace deletion are saved.
+        if result.persisted { removeGeneratedWorkspaceMirrors(for: path) }
+        return (result.persisted, result.persisted ? next : nil, result.cleanup)
+    }
+
+    private func unusedDraftWorktrees(in workspace: Workspace) -> [TaskWorktreeDiscard] {
+        workspace.tasks.filter { $0.status == .draft && $0.runs.isEmpty }.flatMap {
+            TaskWorktreeService.discardSnapshots(for: $0, ownership: worktreeCleanupStore.ownership)
+        }
+    }
+
+    /// Replacements save the new reference graph before any checkout is
+    /// removed, so imported tasks keep worktrees they take over.
+    private func replaceWorkspace(_ existing: Workspace, create: () -> Workspace) -> Workspace? {
+        var replacement: Workspace?
+        let result = TaskWorktreeService.saveDeletionThenDiscard(
+            unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
+            cleanupStore: worktreeCleanupStore,
+            delete: {
+                for task in existing.tasks { cancelAndRemoveTurnRequests(for: task) }
+                modelContext.delete(existing)
+                replacement = create()
+            },
+            persist: { _, context in
+                persistWorkspaceChange(replacement, context)
+            }
+        )
+        return result.persisted ? replacement : nil
     }
 
     private func removeGeneratedWorkspaceMirrors(for workspacePath: String) {
@@ -734,12 +763,11 @@ final class TaskLifecycleCoordinator {
                         }
                     }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
-                    modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(
-                        from: config,
-                        modelContext: modelContext,
-                        scheduleTrustPolicy: scheduleTrustPolicy
-                    )
+                    return replaceWorkspace(existing) {
+                        WorkspaceConfigManager.importWorkspace(
+                            from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy
+                        )
+                    }
                 case .duplicate:
                     var dupConfig = config
                     dupConfig.name = config.name + " (Imported)"
@@ -816,16 +844,14 @@ final class TaskLifecycleCoordinator {
                 if var exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path
-                    modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(
-                        from: exportedConfig,
-                        modelContext: modelContext,
-                        scheduleTrustPolicy: .preserveEnabledState,
-                        taskRecoveryTrustPolicy: .trustedLocalRecovery
-                    )
+                    return replaceWorkspace(existing) {
+                        WorkspaceConfigManager.importWorkspace(
+                            from: exportedConfig, modelContext: modelContext,
+                            scheduleTrustPolicy: .preserveEnabledState, taskRecoveryTrustPolicy: .trustedLocalRecovery
+                        )
+                    }
                 }
-                modelContext.delete(existing)
-                return insertWorkspaceFromFolder(name: name, path: url.path)
+                return replaceWorkspace(existing) { insertWorkspaceFromFolder(name: name, path: url.path) }
             case .duplicate:
                 return insertWorkspaceFromFolder(name: name + " (Imported)", path: url.path)
             }

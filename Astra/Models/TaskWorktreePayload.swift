@@ -235,7 +235,12 @@ public enum TaskWorktreeBinding {
     }
 
     public static func copy(_ binding: TaskEvent, to target: AgentTask) -> TaskEvent {
-        TaskEvent(task: target, eventType: TaskEventTypes.Task.worktreePrepared, payload: binding.payload)
+        if case .success(let payload) = binding.decodePayload(as: TaskWorktreePayload.self),
+           target.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
+            == WorkspacePathPresentation.standardizedPath(payload.worktreePath) {
+            target.isolationStrategy = .sameDirectory
+        }
+        return TaskEvent(task: target, eventType: TaskEventTypes.Task.worktreePrepared, payload: binding.payload)
     }
 }
 
@@ -253,12 +258,14 @@ public enum TaskWorktreeCheckoutReservation {
         fileprivate let id: UUID
     }
 
-    public static func acquire(_ path: String) -> Token {
-        let key = WorkspacePathPresentation.standardizedPath(path)
-        let id = UUID()
+    /// A competing cleanup retries instead of replacing another owner's lease.
+    public static func acquire(_ path: String) -> Token? {
+        guard let key = key(path) else { return nil }
         lock.lock()
+        defer { lock.unlock() }
+        guard !leases.keys.contains(where: { keysOverlap(key, $0) }) else { return nil }
+        let id = UUID()
         leases[key] = id
-        lock.unlock()
         return Token(path: key, id: id)
     }
 
@@ -275,15 +282,19 @@ public enum TaskWorktreeCheckoutReservation {
     public static func isReserved(_ path: String?) -> Bool {
         guard let path = key(path) else { return false }
         lock.lock()
-        let reserved = leases.keys.contains { overlaps(path, $0) }
+        let reserved = leases.keys.contains { keysOverlap(path, $0) }
         lock.unlock()
         return reserved
     }
 
-    /// True when two standardized paths are the same folder or one contains
-    /// the other. An empty path names no folder.
+    /// True when two paths reach the same folder or one contains the other,
+    /// including through symlinks. An empty path names no folder.
     public static func overlaps(_ lhs: String, _ rhs: String) -> Bool {
-        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        guard let lhs = key(lhs), let rhs = key(rhs) else { return false }
+        return keysOverlap(lhs, rhs)
+    }
+
+    private static func keysOverlap(_ lhs: String, _ rhs: String) -> Bool {
         func contains(_ root: String, _ path: String) -> Bool {
             path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
         }
@@ -300,6 +311,6 @@ public enum TaskWorktreeCheckoutReservation {
 
     private static func key(_ path: String?) -> String? {
         guard let path, !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return WorkspacePathPresentation.standardizedPath(path)
+        return WorkspacePathPresentation.resolvedPath(path)
     }
 }

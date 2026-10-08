@@ -124,11 +124,13 @@ enum NewTaskWorktreeComposerFlow {
         _ worktrees: [TaskWorktreeDiscard],
         workspace: Workspace?,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
         delete: @MainActor () -> Void = {}
     ) -> Bool {
         TaskWorktreeService.saveDeletionThenDiscard(
-            worktrees, workspace: workspace, modelContext: modelContext, cleanupStore: cleanupStore, delete: delete
+            worktrees, workspace: workspace, modelContext: modelContext, resourceQueue: resourceQueue,
+            cleanupStore: cleanupStore, delete: delete
         ).persisted
     }
 
@@ -140,6 +142,7 @@ enum NewTaskWorktreeComposerFlow {
     static func discardDraft(
         _ draft: AgentTask?,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
         delete: @MainActor (AgentTask) -> Void
     ) -> Bool {
@@ -148,6 +151,7 @@ enum NewTaskWorktreeComposerFlow {
             TaskWorktreeService.discardSnapshots(for: draft, ownership: cleanupStore.ownership),
             workspace: draft.workspace,
             modelContext: modelContext,
+            resourceQueue: resourceQueue,
             cleanupStore: cleanupStore,
             delete: { delete(draft) }
         )
@@ -162,6 +166,7 @@ enum NewTaskWorktreeComposerFlow {
         _ draft: AgentTask,
         keeping task: AgentTask,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore()
     ) -> Bool {
         let taskCheckout = task.executionRootPath.flatMap { $0.isEmpty ? nil : WorkspacePathPresentation.standardizedPath($0) }
@@ -174,6 +179,7 @@ enum NewTaskWorktreeComposerFlow {
             unused,
             workspace: draft.workspace,
             modelContext: modelContext,
+            resourceQueue: resourceQueue,
             cleanupStore: cleanupStore,
             delete: { modelContext.delete(draft) }
         )
@@ -186,10 +192,13 @@ enum NewTaskWorktreeComposerFlow {
         _ draft: AgentTask?,
         to task: AgentTask,
         modelContext: ModelContext,
+        resourceQueue: TaskQueue?,
         cleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore()
     ) throws {
         guard let draft, draft !== task else { return }
-        guard discardPromotedDraft(draft, keeping: task, modelContext: modelContext, cleanupStore: cleanupStore) else {
+        guard discardPromotedDraft(
+            draft, keeping: task, modelContext: modelContext, resourceQueue: resourceQueue, cleanupStore: cleanupStore
+        ) else {
             throw NewTaskDraftPromotionError.draftNotRemoved
         }
     }

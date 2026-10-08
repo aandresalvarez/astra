@@ -29,7 +29,7 @@ struct NewTaskWorktreeBaseTests {
             task: task,
             request: TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: repository.path, base: base),
             inheritingFrom: draft,
-            modelContext: context,
+            modelContext: context, resourceQueue: fixture.resourceQueue,
             worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
     }
@@ -220,7 +220,7 @@ struct NewTaskWorktreeBaseTests {
         try await TaskWorktreeService.prepare(
             task: task,
             request: TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: linked.path, base: .currentBranch),
-            modelContext: store.mainContext,
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
             worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
 
@@ -488,7 +488,7 @@ struct NewTaskWorktreeBaseTests {
         context.delete(draft)
         try context.save()
 
-        #expect(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context))
+        #expect(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context, resourceQueue: fixture.resourceQueue))
 
         #expect(!FileManager.default.fileExists(atPath: path))
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
@@ -512,7 +512,7 @@ struct NewTaskWorktreeBaseTests {
             try use(worktree)
             context.delete(draft)
             try context.save()
-            return (await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context), worktree)
+            return (await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context, resourceQueue: fixture.resourceQueue), worktree)
         }
 
         let (dirtyRemoved, dirty) = try await discarded("Dirty") { worktree in
@@ -563,7 +563,7 @@ struct NewTaskWorktreeBaseTests {
         context.delete(draft)
         try context.save()
 
-        #expect(!(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context)))
+        #expect(!(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context, resourceQueue: fixture.resourceQueue)))
         #expect(FileManager.default.fileExists(atPath: secret.path))
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty == false)
     }
@@ -585,12 +585,12 @@ struct NewTaskWorktreeBaseTests {
         try context.save()
 
         #expect(!(await TaskWorktreeService.discardUnusedWorktree(
-            discard, modelContext: context, checkoutPins: { _ in throw StoreUnavailable() }
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, checkoutPins: { _ in throw StoreUnavailable() }
         )))
         #expect(FileManager.default.fileExists(atPath: path))
         let calls = Calls()
         #expect(!(await TaskWorktreeService.discardUnusedWorktree(
-            discard, modelContext: context, checkoutPins: { _ in
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, checkoutPins: { _ in
                 calls.count += 1
                 if calls.count > 1 { throw StoreUnavailable() }
                 return []
@@ -599,7 +599,7 @@ struct NewTaskWorktreeBaseTests {
         #expect(calls.count == 2)
         #expect(FileManager.default.fileExists(atPath: path))
 
-        #expect(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context))
+        #expect(await TaskWorktreeService.discardUnusedWorktree(discard, modelContext: context, resourceQueue: fixture.resourceQueue))
         #expect(!FileManager.default.fileExists(atPath: path))
     }
 
@@ -618,7 +618,7 @@ struct NewTaskWorktreeBaseTests {
         #expect(discards.count == 1)
 
         let unsaved = TaskWorktreeService.saveDeletionThenDiscard(
-            discards, workspace: workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            discards, workspace: workspace, modelContext: context, resourceQueue: fixture.resourceQueue, cleanupStore: fixture.cleanupStore,
             delete: { context.delete(draft) },
             persist: { _, _ in false }
         )
@@ -629,7 +629,7 @@ struct NewTaskWorktreeBaseTests {
         #expect(FileManager.default.fileExists(atPath: path))
 
         let saved = TaskWorktreeService.saveDeletionThenDiscard(
-            discards, workspace: workspace, modelContext: context, cleanupStore: fixture.cleanupStore,
+            discards, workspace: workspace, modelContext: context, resourceQueue: fixture.resourceQueue, cleanupStore: fixture.cleanupStore,
             delete: { context.delete(draft) },
             persist: { _, context in
                 (try? context.save()) != nil
@@ -654,7 +654,7 @@ struct NewTaskWorktreeBaseTests {
         try context.save()
 
         context.delete(draft)
-        NewTaskWorktreeComposerFlow.discardWorktrees([], workspace: workspace, modelContext: context)
+        NewTaskWorktreeComposerFlow.discardWorktrees([], workspace: workspace, modelContext: context, resourceQueue: fixture.resourceQueue)
 
         let reloaded = ModelContext(store)
         #expect(try reloaded.fetchCount(FetchDescriptor<AgentTask>()) == 0)
@@ -734,7 +734,7 @@ struct NewTaskWorktreeBaseTests {
         try await TaskWorktreeService.prepare(
             task: task,
             request: restored.request,
-            modelContext: context,
+            modelContext: context, resourceQueue: fixture.resourceQueue,
             worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
@@ -795,7 +795,7 @@ struct NewTaskWorktreeBaseTests {
         try await TaskWorktreeService.prepare(
             task: task,
             request: restored.request,
-            modelContext: context,
+            modelContext: context, resourceQueue: fixture.resourceQueue,
             worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
@@ -1093,7 +1093,7 @@ struct NewTaskWorktreeBaseTests {
         context.insert(blocked)
         await #expect(throws: TaskWorktreeCreationError.checkoutUnavailable(linked.path)) {
             try await TaskWorktreeService.prepare(
-                task: blocked, request: restored.request, modelContext: context,
+                task: blocked, request: restored.request, modelContext: context, resourceQueue: fixture.resourceQueue,
                 worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
             )
         }
@@ -1105,7 +1105,7 @@ struct NewTaskWorktreeBaseTests {
         let task = AgentTask(title: "Run", goal: "Run", workspace: workspace)
         context.insert(task)
         try await TaskWorktreeService.prepare(
-            task: task, request: restored.request, modelContext: context,
+            task: task, request: restored.request, modelContext: context, resourceQueue: fixture.resourceQueue,
             worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         #expect(try #require(TaskWorktreeService.activeWorktreeBinding(for: task)).repositoryPath == app.path)

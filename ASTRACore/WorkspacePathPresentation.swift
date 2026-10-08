@@ -112,6 +112,30 @@ public enum WorkspacePathPresentation {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
+    /// Resolves aliases through the deepest existing ancestor, including
+    /// dangling symlinks, so removing a checkout doesn't change its identity.
+    public static func resolvedPath(_ rawPath: String) -> String {
+        let path = standardizedPath(rawPath)
+        guard !path.isEmpty else { return "" }
+        var existing = URL(fileURLWithPath: path)
+        var missing: [String] = []
+        var visitedLinks = Set<String>()
+        let manager = FileManager.default
+        while existing.path != "/", !manager.fileExists(atPath: existing.path) {
+            if let destination = try? manager.destinationOfSymbolicLink(atPath: existing.path),
+               visitedLinks.insert(existing.path).inserted {
+                existing = (destination.hasPrefix("/")
+                    ? URL(fileURLWithPath: destination)
+                    : existing.deletingLastPathComponent().appendingPathComponent(destination)).standardizedFileURL
+            } else {
+                missing.insert(existing.lastPathComponent, at: 0)
+                existing.deleteLastPathComponent()
+            }
+        }
+        return missing.reduce(existing.resolvingSymlinksInPath()) { $0.appendingPathComponent($1) }
+            .standardizedFileURL.path
+    }
+
     public static func abbreviatePath(_ path: String) -> String {
         let standardized = standardizedPath(path)
         guard !standardized.isEmpty else { return "" }

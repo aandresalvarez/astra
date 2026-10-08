@@ -25,7 +25,7 @@ struct NewTaskWorktreeIsolationTests {
             task: task,
             request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
             branchTitle: branchTitle,
-            modelContext: context,
+            modelContext: context, resourceQueue: fixture.resourceQueue,
             worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         return try #require(task.executionRootPath)
@@ -51,6 +51,45 @@ struct NewTaskWorktreeIsolationTests {
     }
 
     // MARK: - Launch grants
+
+    @Test("Prepared worktrees supersede legacy branch and copy isolation", arguments: [IsolationStrategy.gitBranch, .copy])
+    func worktreeIsTheOnlyIsolation(strategy: IsolationStrategy) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "Explore", goal: "Explore", workspace: workspace, isolationStrategy: strategy)
+        let path = try await prepare(task, repository, context: context, fixture: fixture)
+        #expect(task.isolationStrategy == .sameDirectory)
+        let inherited = AgentTask(title: "Follow up", goal: "Continue", workspace: workspace, isolationStrategy: strategy)
+        try await TaskWorktreeService.prepare(task: inherited, request: nil, inheritingFrom: task, modelContext: context, resourceQueue: fixture.resourceQueue)
+        #expect(inherited.isolationStrategy == .sameDirectory)
+
+        // Old imports and immutable requests can still carry the legacy value.
+        task.isolationStrategy = strategy
+        let executionPath = try await IsolationService.prepare(task: task)
+        #expect(executionPath == path)
+        let execution = AgentRuntimeExecutionContext.make(
+            launchTask: task, executionPath: executionPath, shouldCleanupIsolation: true
+        )
+        #expect(!execution.shouldCleanupIsolation)
+        let file = URL(fileURLWithPath: path).appendingPathComponent("kept.txt")
+        try Data("agent changes".utf8).write(to: file)
+        execution.cleanup()
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(await GitService.shared.getCurrentBranch(at: path) == TaskWorktreeService.branchName(for: task))
+
+        task.executionRootPath = repository.path
+        inherited.isolationStrategy = strategy
+        try await TaskWorktreeService.prepare(
+            task: inherited, request: nil, inheritingFrom: task, modelContext: context, resourceQueue: fixture.resourceQueue
+        )
+        #expect(inherited.executionRootPath == repository.path)
+        #expect(inherited.isolationStrategy == strategy)
+    }
 
     @Test("Imported bindings cannot grant arbitrary or unrelated checkouts", arguments: [
         "unregistered", "retargeted", "foreignRepository"
@@ -623,7 +662,7 @@ struct NewTaskWorktreeIsolationTests {
         let prepared = AgentTask(title: "Next", goal: "Keep working", workspace: workspace)
         context.insert(prepared)
         try await TaskWorktreeService.prepare(
-            task: prepared, request: nil, inheritingFrom: source, modelContext: context
+            task: prepared, request: nil, inheritingFrom: source, modelContext: context, resourceQueue: fixture.resourceQueue
         )
         for child in [chained, prepared] {
             #expect(child.executionRootPath == missing)
@@ -641,7 +680,7 @@ struct NewTaskWorktreeIsolationTests {
         try await TaskWorktreeService.prepare(
             task: replacement,
             request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
-            inheritingFrom: source, modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            inheritingFrom: source, modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         #expect(replacement.executionRootPath != missing)
         #expect(TaskWorktreeService.activeWorktreeBinding(for: replacement)?.worktreePath == replacement.executionRootPath)
@@ -650,7 +689,7 @@ struct NewTaskWorktreeIsolationTests {
         let legacy = AgentTask(title: "Legacy", goal: "No worktree", workspace: workspace)
         legacy.executionRootPath = repository.path
         try await TaskWorktreeService.prepare(
-            task: replacement, request: nil, inheritingFrom: legacy, modelContext: context
+            task: replacement, request: nil, inheritingFrom: legacy, modelContext: context, resourceQueue: fixture.resourceQueue
         )
         #expect(replacement.executionRootPath == replacementPath)
         #expect(TaskWorktreeService.activeWorktreeBinding(for: replacement)?.worktreePath == replacementPath)
@@ -984,7 +1023,7 @@ struct NewTaskWorktreeIsolationTests {
         let task = AgentTask(title: "Other", goal: "Explore", workspace: second)
         context.insert(task)
         try await TaskWorktreeService.prepare(
-            task: task, request: nil, inheritingFrom: draft, modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: nil, inheritingFrom: draft, modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         #expect(task.executionRootPath == nil)
         #expect(TaskWorktreeService.activeWorktreeBinding(for: task) == nil)

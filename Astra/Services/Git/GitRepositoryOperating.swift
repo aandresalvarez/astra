@@ -97,6 +97,9 @@ protocol GitRepositoryOperating: AnyObject {
     /// True when the checkout holds ignored files, which a non-forced
     /// `git worktree remove` deletes without asking; also true on error.
     func hasIgnoredFiles(at repoPath: String) async -> Bool
+    /// True when either reflog remembers work beyond the creation commit, or
+    /// when the reflogs cannot be read safely.
+    func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool
     /// Populates a new worktree's submodules the way the repository has them.
     func initializeSubmodules(at worktreePath: String) async throws
     /// What a forced removal of the worktree would destroy in its submodules.
@@ -181,6 +184,7 @@ extension GitRepositoryOperating {
     /// Alternate operators fail closed: a checkout that may hold ignored files
     /// is kept.
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
+    func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
 
     /// Alternate operators fail closed: a new worktree whose submodules they
     /// can't populate is discarded before any agent runs in it, and one whose

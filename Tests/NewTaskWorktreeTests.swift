@@ -11,8 +11,11 @@ struct NewTaskWorktreeFixture {
     let root: URL
     let storage: URL
     let worktrees: URL
+    let resourceQueue: TaskQueue
 
+    @MainActor
     init(parent: URL = FileManager.default.temporaryDirectory) throws {
+        resourceQueue = TaskQueue(poolSize: 0)
         root = parent
             .appendingPathComponent("astra-new-task-worktree-\(UUID().uuidString)", isDirectory: true)
             .resolvingSymlinksInPath()
@@ -205,7 +208,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Task", goal: "Update a file", workspace: workspace)
 
         try await TaskWorktreeService.prepare(
-            task: task, request: nil, modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: nil, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
 
         #expect(task.executionRootPath == repository.path)
@@ -233,7 +236,7 @@ struct NewTaskWorktreeTests {
         store.mainContext.insert(workspace)
 
         try await TaskWorktreeService.prepare(
-            task: task, request: TaskWorktreeRequest(repositoryPath: second.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: TaskWorktreeRequest(repositoryPath: second.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
 
         let path = try #require(task.executionRootPath)
@@ -286,7 +289,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update file", goal: "Change Sources/file.txt", workspace: workspace)
         store.mainContext.insert(workspace)
         try await TaskWorktreeService.prepare(
-            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let path = try #require(task.executionRootPath)
         let access = TaskWorkspaceAccess(task: task)
@@ -332,7 +335,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
         store.mainContext.insert(workspace)
         try await TaskWorktreeService.prepare(
-            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let path = try #require(task.executionRootPath)
         #expect(TaskWorkspaceAccess(task: task).runtimeWritablePaths == [path, path + "/Sources"])
@@ -360,13 +363,13 @@ struct NewTaskWorktreeTests {
         context.insert(workspace)
         let draft = AgentTask(title: "Draft", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let path = try #require(draft.executionRootPath)
         workspace.activeWorkingPath = other.path
         let task = AgentTask(title: "Approved goal", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: task, request: nil, inheritingFrom: draft, modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: nil, inheritingFrom: draft, modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         context.insert(task)
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
@@ -399,7 +402,7 @@ struct NewTaskWorktreeTests {
         store.mainContext.insert(workspace)
         let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         let path = try #require(task.executionRootPath)
         try await GitService.shared.removeWorktree(repoPath: repository.path, worktreePath: path)
@@ -417,7 +420,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: fixture.storage.path))
         await #expect(throws: TaskWorktreeCreationError.self) {
             try await TaskWorktreeService.prepare(
-                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
             )
         }
         #expect(task.executionRootPath == nil)
@@ -435,7 +438,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: repository.path))
         await #expect(throws: TaskWorktreeCreationError.self) {
             try await TaskWorktreeService.prepare(
-                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
             )
         }
         #expect(task.executionRootPath == nil)
@@ -453,7 +456,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: repository.path))
         await #expect(throws: (any Error).self) {
             try await TaskWorktreeService.prepare(
-                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
             )
         }
         #expect(task.executionRootPath == nil)
@@ -476,7 +479,7 @@ struct NewTaskWorktreeTests {
         context.insert(workspace)
         let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
         try await TaskWorktreeService.prepare(
-            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: context, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
         )
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
         let recovered = try TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: nil, modelContext: context)
@@ -484,7 +487,7 @@ struct NewTaskWorktreeTests {
         #expect(task.status == .draft)
         #expect(task.executionRootPath != nil)
         let retry = AgentTask(title: "Retry", goal: task.goal, workspace: workspace)
-        try await TaskWorktreeService.prepare(task: retry, request: nil, inheritingFrom: task, modelContext: context)
+        try await TaskWorktreeService.prepare(task: retry, request: nil, inheritingFrom: task, modelContext: context, resourceQueue: fixture.resourceQueue)
         #expect(retry.executionRootPath == task.executionRootPath)
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
         TaskStateMachine.enqueueFromChatSubmission(retry, modelContext: context)
@@ -525,7 +528,7 @@ struct NewTaskWorktreeTests {
         let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: repository.path))
         let operation = Task { @MainActor in
             try await TaskWorktreeService.prepare(
-                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
             )
         }
         operation.cancel()

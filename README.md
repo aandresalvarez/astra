@@ -104,7 +104,8 @@ registry, including after an import; an invalid binding blocks launch. If an
 initial submission fails, adopting its worktree into the open draft and
 deleting the temporary task are saved together before recovery returns.
 Other tasks and the workspace's default checkout are unchanged. Task history
-and outputs remain in the workspace's task folder.
+and outputs remain in the workspace's task folder. A prepared worktree replaces
+legacy branch or disposable-copy isolation, including for recovered drafts.
 
 While the task runs, the worktree is the only writable copy of its
 repository. A workspace folder that contains the original checkout, such as a
@@ -120,20 +121,30 @@ outside the selected repository remain readable through mapped container paths.
 Those folders remain in execution and planning prompts under their original
 workspace labels, marked read-only, and hold shared admission claims so another
 task cannot write them while they are being read.
+Worktree creation and cleanup reserve the same Git resources as running tasks.
+If a repository is busy, creation asks you to retry after the other operation
+finishes; cleanup keeps its pending intent for a later retry.
 
 Worktrees are kept after execution and can be managed from the Repository
 panel. **Start Over** or deleting a draft that never ran removes its worktree
 and branch once the deletion is saved, but only if nothing happened in them.
+Deleting or replacing a workspace follows the same rule for its drafts;
+replacement tasks keep any worktrees their imported bindings still use.
 ASTRA keeps a worktree that has edits, commits, or ignored files such as build
-output or `.env`, that another task or the workspace default uses, or that it
-can't confirm is unused. Tasks copied by **Duplicate** import still protect their
+output or `.env`, including commits retained only in branch or checkout reflogs
+after a reset. It also keeps a worktree that another task or the workspace
+default uses, or that it can't confirm is unused. Configured folders and task pins protect checkouts they
+reach through symbolic links, including folders above or inside the checkout.
+Tasks copied by **Duplicate** import still protect their
 shared checkout, even when they retain the original task ID. Leave the checkbox
 off to use the existing checkout behavior. If a task's new worktree is removed,
 launch fails rather than falling back to the original repository.
 Pending draft cleanup is recorded in the channel's App Support
 `WorktreeCleanup/` outbox before the draft is deleted. If ASTRA quits during
 cleanup, startup retries it, including a branch left after its worktree was
-removed. Failed deletion saves or reference checks never authorize removal.
+removed. Cleanup rechecks the local creation record before touching Git and
+serializes overlapping removals. Failed deletion saves or reference checks
+never authorize removal.
 
 ## Requirements
 

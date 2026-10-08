@@ -822,7 +822,7 @@ struct ChatPanelView: View {
             }
 
             Button {
-                guard NewTaskWorktreeComposerFlow.discardDraft(draftTask, modelContext: modelContext, delete: { draft in
+                guard NewTaskWorktreeComposerFlow.discardDraft(draftTask, modelContext: modelContext, resourceQueue: taskQueue, delete: { draft in
                     modelContext.delete(draft)
                 }) else { return }
                 draftTask = nil
@@ -1136,7 +1136,7 @@ struct ChatPanelView: View {
                 task: task,
                 request: request,
                 inheritingFrom: NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: draftToLoad != nil),
-                modelContext: modelContext
+                modelContext: modelContext, resourceQueue: taskQueue
             )
             try Task.checkCancellation()
         } catch {
@@ -1159,7 +1159,7 @@ struct ChatPanelView: View {
         guard let request = requestedWorktree else { return }
         try await taskCreation.preparing {
             try await TaskWorktreeService.prepare(
-                task: draft, request: request, branchTitle: branchTitle, modelContext: modelContext
+                task: draft, request: request, branchTitle: branchTitle, modelContext: modelContext, resourceQueue: taskQueue
             )
         }
         try Task.checkCancellation()
@@ -2405,7 +2405,7 @@ struct ChatPanelView: View {
     /// deletion isn't saved.
     private func promoteDraft(to finalTask: AgentTask) throws {
         if let draft = draftTask, draft !== finalTask {
-            try NewTaskWorktreeComposerFlow.promote(draft, to: finalTask, modelContext: modelContext)
+            try NewTaskWorktreeComposerFlow.promote(draft, to: finalTask, modelContext: modelContext, resourceQueue: taskQueue)
             draftTask = nil
         }
         // finalTask already captured the flag; reset it so a later, unrelated
