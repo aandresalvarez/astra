@@ -797,6 +797,15 @@ final class WorkspaceGitViewModel: ObservableObject {
         guard TaskWorktreeCheckoutReservation.commit(path, to: task) else { return nil }
         task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: goal)
         modelContext.insert(task)
+        // On the selected task's own checkout the draft keeps that task's
+        // worktree binding; a bare pin would read as a legacy checkout and
+        // leave configured source folders writable.
+        if let owner = selectedTask, owner.workspace?.id == workspace.id,
+           owner.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
+            == WorkspacePathPresentation.standardizedPath(path),
+           let binding = TaskWorktreeBinding.eventForInheritance(from: owner) {
+            modelContext.insert(TaskWorktreeBinding.copy(binding, to: task))
+        }
         TaskCapabilitySnapshotter.capture(for: task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.gitPullRequestAddressTask, category: "Git", taskID: task.id, fields: [

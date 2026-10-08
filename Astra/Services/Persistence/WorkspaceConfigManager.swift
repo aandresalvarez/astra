@@ -1179,9 +1179,10 @@ public enum WorkspaceConfigManager {
         return decoder
     }
 
-    /// The first configured root at or inside a checkout that worktree cleanup
-    /// is removing. Importing it would persist a root that is about to vanish,
-    /// so callers refuse the import and the user can retry once cleanup ends.
+    /// The first configured root at, inside, or above a checkout that worktree
+    /// cleanup is removing. Importing it would persist a root that is about to
+    /// vanish or that still reaches the checkout, so callers refuse the import
+    /// and the user can retry once cleanup ends.
     public static func reservedRoot(of config: WorkspaceConfig) -> String? {
         reservedRoot(among: [config.primaryPath] + config.additionalPaths)
     }

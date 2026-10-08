@@ -220,6 +220,73 @@ struct NewTaskWorktreeIsolationTests {
         #expect(TaskExecutionResourceBroker.canAcquire(reader, active: lease))
     }
 
+    @Test("A prepared worktree holds every configured folder it only reads shared, including unrelated folders and sibling checkouts")
+    func everyReadOnlyFolderIsClaimed() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let sibling = fixture.root.appendingPathComponent("App-sibling", isDirectory: true)
+        try fixture.git(["worktree", "add", "-b", "sibling", sibling.path], at: repository)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(
+            name: "Notes", primaryPath: fixture.storage.path, additionalPaths: [repository.path, sibling.path]
+        )
+        context.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Improve formatting", workspace: workspace)
+        let path = try await prepare(task, repository, context: context, fixture: fixture)
+        let readOnly = [fixture.storage.path, repository.path, sibling.path]
+        #expect(TaskWorkspaceAccess(task: task).runtimeReadOnlyWorkspacePaths == readOnly)
+
+        let claims = TaskExecutionResourceClaimResolver.claims(for: task)
+        #expect(claims.first?.key == path)
+        for folder in readOnly {
+            #expect(claims.filter { $0.kind == .workspace && $0.key == folder }.map(\.access) == [.shared])
+        }
+        let lease = TaskExecutionResourceBroker.lockClaims(for: claims, taskID: task.id, requestID: nil, runMode: "test")
+        // A writer of the unrelated primary or of the sibling checkout waits;
+        // a reader runs alongside.
+        for folder in [fixture.storage, sibling] {
+            let other = AgentTask(
+                title: "Edit", goal: "Improve formatting",
+                workspace: Workspace(name: folder.lastPathComponent, primaryPath: folder.path)
+            )
+            let writer = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: other, runMode: "test")
+            #expect(!TaskExecutionResourceBroker.canAcquire(writer, active: lease))
+            #expect(!TaskExecutionResourceBroker.canAcquire(lease, active: writer))
+            let reader = TaskExecutionResourceAdmissionPolicy.lockClaims(
+                for: nil, task: other, runMode: "test", fallbackAccess: .readOnly
+            )
+            #expect(TaskExecutionResourceBroker.canAcquire(reader, active: lease))
+        }
+
+        // A request queued before these claims existed receives them at
+        // admission without reporting drift.
+        let legacy = TaskTurnRequest(
+            task: task, messageEventID: UUID(), sequence: 1,
+            resourceClaims: claims.filter { !($0.kind == .workspace && $0.access == .shared) }
+        )
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: legacy, task: task))
+        let admitted = TaskExecutionResourceClaimResolver.admissionClaims(for: legacy, task: task)
+        for folder in readOnly {
+            #expect(admitted.contains { $0.kind == .workspace && $0.key == folder && $0.access == .shared })
+        }
+        // An exclusive claim on a folder the task now only reads still counts
+        // for drift, and it never covered the worktree.
+        let queuedOnSource = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, resourceClaims: [
+            TaskExecutionResourceClaim(kind: .workspace, key: repository.path, access: .exclusive)
+        ])
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: queuedOnSource, task: task))
+        // A shared claim on a read-only folder never covers a writable folder
+        // added inside it later.
+        let notes = fixture.storage.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        workspace.additionalPaths.append(notes.path)
+        #expect(TaskWorkspaceAccess(task: task).runtimeWritablePaths.contains(notes.path))
+        let submitted = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 3, resourceClaims: claims)
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: submitted, task: task))
+    }
+
     @Test("The worktree's Git metadata reaches ASTRA-confined processes only, and only while Git registers the worktree")
     func gitMetadataGrantIsVerified() async throws {
         let fixture = try Fixture()
@@ -657,18 +724,19 @@ struct NewTaskWorktreeIsolationTests {
         #expect(creation.initialRequestSubmitted)
         let request = try #require(try TaskTurnRequestRepository.activeRequests(for: task, in: context).first)
         #expect(request.resourceClaims.contains { $0.kind == .workspace && $0.key == path && $0.access == .exclusive })
-        #expect(!request.resourceClaims.contains { $0.kind == .workspace && $0.key == repository.path })
+        #expect(request.resourceClaims.filter { $0.kind == .workspace && $0.key == repository.path }.map(\.access) == [.shared])
         let metadata = repository.appendingPathComponent(".git").path
         let lockClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(
             for: nil, task: task, runMode: "test", fallbackAccess: .readOnly
         )
-        // Everything the run touches is written; only the marker on the
-        // source's Git metadata stays shared so main-checkout readers keep running.
-        let isMetadataMarker = { (claim: TaskResourceLockClaim) in
-            claim.resourceKind == .workspace && claim.resourceKey == metadata
+        // Everything the run touches is written; only the source checkout it
+        // reads and the marker on its Git metadata stay shared, so
+        // main-checkout readers keep running.
+        let isReadOnlyMarker = { (claim: TaskResourceLockClaim) in
+            claim.resourceKind == .workspace && [metadata, repository.path].contains(claim.resourceKey)
         }
-        #expect(lockClaims.filter(isMetadataMarker).map(\.accessMode) == [.readOnly])
-        #expect(lockClaims.filter { !isMetadataMarker($0) }.allSatisfy { $0.accessMode == .write })
+        #expect(lockClaims.filter(isReadOnlyMarker).map(\.accessMode) == [.readOnly, .readOnly])
+        #expect(lockClaims.filter { !isReadOnlyMarker($0) }.allSatisfy { $0.accessMode == .write })
         #expect(lockClaims.contains {
             $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .write
         })

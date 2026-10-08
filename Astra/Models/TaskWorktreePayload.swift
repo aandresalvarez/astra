@@ -240,9 +240,10 @@ public enum TaskWorktreeBinding {
 }
 
 /// Exclusive claim on a checkout path while unused-worktree cleanup removes
-/// it. Task pins and workspace imports refuse the checkout, or anything inside
-/// it, until the claim is released, so neither a task nor a workspace root can
-/// be saved onto a checkout that cleanup is deleting.
+/// it. Task pins and workspace imports refuse the checkout, anything inside
+/// it, or any folder that contains it, until the claim is released, so
+/// neither a task nor a workspace root can be saved onto a checkout that
+/// cleanup is deleting.
 public enum TaskWorktreeCheckoutReservation {
     private static let lock = NSLock()
     private static var leases: [String: UUID] = [:]
@@ -269,13 +270,24 @@ public enum TaskWorktreeCheckoutReservation {
         lock.unlock()
     }
 
-    /// True when `path` is a checkout cleanup is removing, or lies inside one.
+    /// True when `path` is a checkout cleanup is removing, lies inside one, or
+    /// contains one: a root above the checkout still reaches it.
     public static func isReserved(_ path: String?) -> Bool {
         guard let path = key(path) else { return false }
         lock.lock()
-        let reserved = leases.keys.contains { path == $0 || path.hasPrefix($0 + "/") }
+        let reserved = leases.keys.contains { overlaps(path, $0) }
         lock.unlock()
         return reserved
+    }
+
+    /// True when two standardized paths are the same folder or one contains
+    /// the other. An empty path names no folder.
+    public static func overlaps(_ lhs: String, _ rhs: String) -> Bool {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        func contains(_ root: String, _ path: String) -> Bool {
+            path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+        }
+        return contains(lhs, rhs) || contains(rhs, lhs)
     }
 
     /// Copies `path` onto `task` unless cleanup currently owns it.

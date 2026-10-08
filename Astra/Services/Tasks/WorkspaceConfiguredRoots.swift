@@ -4,13 +4,14 @@ import ASTRAModels
 
 /// The single interactive writer for the folders a workspace is configured
 /// with: its primary folder and additional folders. A checkout that worktree
-/// cleanup is removing can't become one. Cleanup holds that reservation across
-/// its last reference check and the removal, so refusing here is what keeps a
-/// workspace from being saved on a folder that is being deleted.
+/// cleanup is removing can't become one, and neither can a folder inside it or
+/// a folder that contains it. Cleanup holds that reservation across its last
+/// reference check and the removal, so refusing here is what keeps a workspace
+/// from being saved on, or above, a folder that is being deleted.
 @MainActor
 enum WorkspaceConfiguredRoots {
     static let reservedRootMessage =
-        "That folder is a worktree ASTRA is removing, so it wasn't added to the workspace. Try again once the removal finishes."
+        "That folder is, contains, or is inside a worktree ASTRA is removing, so it wasn't added to the workspace. Try again once the removal finishes."
 
     enum Outcome: Equatable {
         case updated

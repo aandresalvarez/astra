@@ -113,7 +113,9 @@ public struct TaskWorkspaceAccess {
     /// Workspace folders the run can read but not write: a replaced source
     /// checkout, a folder containing a prepared worktree's source, or a
     /// workspace folder that is not the code root. Docker mounts them
-    /// read-only so they stay visible inside the container.
+    /// read-only so they stay visible inside the container. A prepared
+    /// worktree's admission holds each of them shared, so a writer of the
+    /// folder waits for the task.
     public var runtimeReadOnlyWorkspacePaths: [String] {
         let writable = Set(runtimeWritablePaths + normalizedUniquePaths([codeWorkingDirectory]))
         let folders = [task.workspace?.primaryPath ?? ""] + (task.workspace?.additionalPaths ?? [])

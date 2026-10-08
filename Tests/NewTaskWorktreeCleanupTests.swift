@@ -453,17 +453,20 @@ struct NewTaskWorktreeCleanupTests {
         #expect(!FileManager.default.fileExists(atPath: record.path))
     }
 
-    @Test("A workspace configured at or inside the worktree keeps it", arguments: [false, true])
-    func configuredWorkspacePathKeepsCheckout(additional: Bool) async throws {
+    @Test("A workspace configured at, inside, or above the worktree keeps it", arguments: ["at", "inside", "above"])
+    func configuredWorkspacePathKeepsCheckout(placement: String) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
         let store = try Fixture.container()
         let context = store.mainContext
         let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
-        let other = additional
-            ? Workspace(name: "Other", primaryPath: fixture.storage.path, additionalPaths: [discard.worktreePath + "/Sources"])
-            : Workspace(name: "Other", primaryPath: discard.worktreePath)
+        let other = switch placement {
+        case "at": Workspace(name: "Other", primaryPath: discard.worktreePath)
+        case "inside":
+            Workspace(name: "Other", primaryPath: fixture.storage.path, additionalPaths: [discard.worktreePath + "/Sources"])
+        default: Workspace(name: "Other", primaryPath: fixture.storage.path, additionalPaths: [fixture.worktrees.path])
+        }
         context.insert(other)
         context.delete(draft)
         try context.save()
@@ -477,6 +480,53 @@ struct NewTaskWorktreeCleanupTests {
         try context.save()
         #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context) == .removed)
         #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("A task pinned above the worktree keeps it, and removal refuses roots above it")
+    func ancestorTaskPinKeepsCheckout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(draft.workspace)
+        let above = AgentTask(title: "Above", goal: "Above", workspace: workspace)
+        context.insert(above)
+        above.executionRootPath = fixture.worktrees.path
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context) == .kept("referenced"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+
+        above.executionRootPath = nil
+        try context.save()
+        var ancestorPinned = true
+        let outcome = await TaskWorktreeService.discardOutcome(discard, modelContext: context) {
+            #expect(TaskWorktreeCheckoutReservation.isReserved(fixture.worktrees.path))
+            #expect(TaskWorktreeCheckoutReservation.isReserved("/"))
+            #expect(!TaskWorktreeCheckoutReservation.isReserved(fixture.worktrees.path + "-sibling"))
+            #expect(!TaskWorktreeCheckoutReservation.isReserved(discard.worktreePath + "-sibling"))
+            ancestorPinned = TaskCodeLocationPin.set(fixture.worktrees.path, workspace: workspace, task: above)
+        }
+        #expect(outcome == .removed)
+        #expect(!ancestorPinned)
+        #expect(above.executionRootPath == nil)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("Checkout overlap is two-way, component-wise, and never matches an empty path")
+    func checkoutOverlapIsTwoWay() {
+        #expect(TaskWorktreeCheckoutReservation.overlaps("/a/b", "/a/b"))
+        #expect(TaskWorktreeCheckoutReservation.overlaps("/a/b", "/a/b/c"))
+        #expect(TaskWorktreeCheckoutReservation.overlaps("/a/b/c", "/a/b"))
+        #expect(TaskWorktreeCheckoutReservation.overlaps("/", "/a/b"))
+        #expect(TaskWorktreeCheckoutReservation.overlaps("/a/b", "/"))
+        #expect(!TaskWorktreeCheckoutReservation.overlaps("/a/b", "/a/bc"))
+        #expect(!TaskWorktreeCheckoutReservation.overlaps("/a/bc", "/a/b"))
+        #expect(!TaskWorktreeCheckoutReservation.overlaps("", "/a/b"))
+        #expect(!TaskWorktreeCheckoutReservation.overlaps("/a/b", ""))
     }
 
     @Test("New tasks and imports never adopt a checkout cleanup is removing")
@@ -496,6 +546,8 @@ struct NewTaskWorktreeCleanupTests {
         try context.save()
         let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: fixture.storage.path))
         try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: configURL)
+        let config = try WorkspaceConfigManager.loadConfig(from: configURL)
+        let scratchStore = try Fixture.container()
         let coordinator = TaskLifecycleCoordinator(
             modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
         )
@@ -508,11 +560,16 @@ struct NewTaskWorktreeCleanupTests {
         let reservation = TaskWorktreeCheckoutReservation.acquire(checkout.path)
         let reservedTaskPin = AgentTask(title: "Reserved", goal: "Reserved", workspace: workspace).executionRootPath
         let reservedImport = importCopy()
+        let directImport = WorkspaceConfigManager.importWorkspace(from: config, modelContext: scratchStore.mainContext)
         TaskWorktreeCheckoutReservation.release(reservation)
         #expect(reservedTaskPin == nil)
-        let reserved = try #require(reservedImport)
-        #expect(reserved.activeWorkingPath == nil)
-        #expect(reserved.tasks.map(\.executionRootPath) == [nil])
+        // The workspace folder contains the checkout, so the import waits for
+        // cleanup instead of saving a root that still reaches it.
+        #expect(reservedImport == nil)
+        // Past that guard, the import still drops the checkout as the active
+        // path and as every task's pin.
+        #expect(directImport.activeWorkingPath == nil)
+        #expect(directImport.tasks.map(\.executionRootPath) == [nil])
 
         let released = try #require(importCopy())
         #expect(released.activeWorkingPath == checkout.path)
@@ -769,6 +826,56 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try ModelContext(store).fetchCount(FetchDescriptor<AgentTask>()) == 2)
     }
 
+    @Test("Deleting a task reports whether the deletion was saved and lets go of it only then")
+    func coordinatorReportsUnsavedDeletion() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        try context.save()
+        let blocker = fixture.root.appendingPathComponent("blocked")
+        try Data("not a directory".utf8).write(to: blocker)
+        let unavailable = TaskWorktreeCleanupStore(
+            directory: blocker.appendingPathComponent("Cleanup"), ownership: fixture.ownership
+        )
+        func coordinator(_ cleanupStore: TaskWorktreeCleanupStore) -> TaskLifecycleCoordinator {
+            TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: cleanupStore)
+        }
+
+        var releasedEarly = false
+        #expect(!coordinator(unavailable).deleteTask(draft) { releasedEarly = true })
+        #expect(!releasedEarly)
+        #expect(!draft.isDeleted)
+        #expect(try ModelContext(store).fetchCount(FetchDescriptor<AgentTask>()) == 1)
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+
+        var releasedBeforeDeletion = false
+        #expect(coordinator(fixture.cleanupStore).deleteTask(draft) { releasedBeforeDeletion = !draft.isDeleted })
+        #expect(releasedBeforeDeletion)
+        #expect(try ModelContext(store).fetchCount(FetchDescriptor<AgentTask>()) == 0)
+        try await waitForOutbox(fixture)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("The task list clears selection and sessions only for a saved deletion")
+    func contentViewHonorsDeletionOutcome() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"), encoding: .utf8)
+        let start = try #require(source.range(of: "private func deleteTask(_ task: AgentTask) {"))
+        let end = try #require(source.range(of: "private func requestDeleteTask(", range: start.upperBound..<source.endIndex))
+        let body = String(source[start.upperBound..<end.lowerBound])
+        let delete = try #require(body.range(of: "coordinator.deleteTask(task) { if wasSelected { setSelectedTask(nil) } }"))
+        let failed = try #require(body.range(of: "guard deleted else {"))
+        let release = try #require(body.range(of: "browserSessionStore.releaseSession(for: deletedTaskID)"))
+        #expect(body.components(separatedBy: "setSelectedTask(nil)").count == 2)
+        #expect(delete.upperBound <= failed.lowerBound)
+        #expect(failed.upperBound <= release.lowerBound)
+        #expect(body.contains("taskDeletionFailure = "))
+        #expect(source.contains(".taskDeletionFailureAlert($taskDeletionFailure)"))
+    }
+
     @Test("The composer hands a new task off only after its draft's deletion is saved")
     func composerPromotesDraftBeforeHandoff() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -791,18 +898,22 @@ struct NewTaskWorktreeCleanupTests {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let checkout = fixture.worktrees.appendingPathComponent("App/astra-explore", isDirectory: true).path
-        let other = fixture.root.path
+        let other = fixture.root.appendingPathComponent("Notes", isDirectory: true).path
         let store = try Fixture.container()
         let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
         store.mainContext.insert(workspace)
 
         let reservation = TaskWorktreeCheckoutReservation.acquire(checkout)
         let primary = WorkspaceConfiguredRoots.setPrimaryPath(checkout + "/Sources", on: workspace)
+        let ancestorPrimary = WorkspaceConfiguredRoots.setPrimaryPath(fixture.worktrees.path, on: workspace)
         let additional = WorkspaceConfiguredRoots.addAdditionalPaths([other, checkout], to: workspace)
+        let ancestorAdditional = WorkspaceConfiguredRoots.addAdditionalPaths([other, fixture.root.path], to: workspace)
         TaskWorktreeCheckoutReservation.release(reservation)
 
         #expect(primary == .refused(path: checkout + "/Sources"))
+        #expect(ancestorPrimary == .refused(path: fixture.worktrees.path))
         #expect(additional == .refused(path: checkout))
+        #expect(ancestorAdditional == .refused(path: fixture.root.path))
         #expect(additional.refusalMessage == WorkspaceConfiguredRoots.reservedRootMessage)
         #expect(workspace.primaryPath == fixture.storage.path)
         #expect(workspace.additionalPaths.isEmpty)

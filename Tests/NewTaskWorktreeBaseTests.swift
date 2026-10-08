@@ -947,6 +947,42 @@ struct NewTaskWorktreeBaseTests {
         #expect(panel.activeCodePathChangeBlockedMessage.contains("own worktree"))
     }
 
+    @Test("Addressing PR comments from a task's worktree keeps that task's binding")
+    func pullRequestCommentDraftKeepsWorktreeBinding() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let sources = repository.appendingPathComponent("Sources").path
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: repository.path, additionalPaths: [sources])
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Task", goal: "Update files", workspace: workspace)
+        try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+        let path = try #require(task.executionRootPath)
+        let pr = GitHubPullRequestRef(number: 7, url: "https://github.com/coral/astra/pull/7", title: "Worktree")
+        let comment = GitHubPullRequestComment(
+            id: "c7", author: "reviewer", body: "Fix the file.", path: "Sources/file.txt", line: 1,
+            url: "https://github.com/coral/astra/pull/7#discussion_r7", createdAt: "2026-10-08T00:00:00Z",
+            isReviewThread: true
+        )
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace, selectedTask: task)
+        panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
+        panel.openPullRequest = pr
+        panel.pullRequestComments = GitHubPullRequestCommentSummary(
+            pullRequest: pr, comments: [comment], unresolvedThreadCount: 1, issueCommentCount: 0, fetchedAt: Date()
+        )
+        #expect(panel.workingPath == path)
+
+        let draft = try #require(panel.createPullRequestCommentTask(modelContext: store.mainContext))
+        #expect(draft.executionRootPath == path)
+        #expect(TaskWorktreeBinding.payload(for: draft)?.worktreePath == path)
+        let writable = TaskWorkspaceAccess(task: draft).runtimeWritablePaths
+        #expect(writable.contains(path + "/Sources"))
+        #expect(!writable.contains(sources))
+        #expect(!writable.contains(repository.path))
+    }
+
     @Test("Current branch fails when the selected checkout disappears")
     func missingSelectedCheckoutDoesNotUseRepositoryHead() async throws {
         let fixture = try Fixture()

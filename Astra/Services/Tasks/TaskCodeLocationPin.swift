@@ -8,7 +8,8 @@ import ASTRAModels
 /// so they always describe the same checkout.
 @MainActor
 enum TaskCodeLocationPin {
-    static let reservedCheckoutMessage = "That checkout is being removed and cannot be selected."
+    static let reservedCheckoutMessage =
+        "That checkout is, contains, or is inside a worktree ASTRA is removing, so it can't be selected until the removal finishes."
 
     /// Stores `path`. For the workspace default, nil or the primary path clears
     /// the override so new tasks follow the primary checkout. A draft keeps an

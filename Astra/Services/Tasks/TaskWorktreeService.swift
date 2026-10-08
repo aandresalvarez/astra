@@ -613,8 +613,8 @@ enum TaskWorktreeService {
         }
         func referenceProblem() -> String? {
             do {
-                // A pin at or inside the checkout depends on it.
-                return try checkoutPins(modelContext).contains { $0 == path || $0.hasPrefix(path + "/") }
+                // A pin at, inside, or above the checkout still reaches it.
+                return try checkoutPins(modelContext).contains { TaskWorktreeCheckoutReservation.overlaps($0, path) }
                     ? "referenced" : nil
             } catch {
                 return "reference_check_failed"

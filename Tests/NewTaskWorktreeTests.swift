@@ -379,10 +379,11 @@ struct NewTaskWorktreeTests {
         #expect(snapshot.executionRootPath == path)
         #expect(TaskWorkspaceAccess(task: launchTask).runtimeWorkspacePaths == [path])
         #expect(request.resourceClaims.filter { $0.kind == .workspace && $0.access == .exclusive }.map(\.key) == [path])
-        // The source's Git metadata is held shared so writers of the main
-        // checkout, or of a folder containing it, wait for this task.
+        // The replaced source checkout and its Git metadata are held shared,
+        // so writers of the main checkout, or of a folder containing it, wait
+        // for this task.
         #expect(request.resourceClaims.filter { $0.kind == .workspace && $0.access == .shared }.map(\.key)
-            == [repository.appendingPathComponent(".git").path])
+            == [repository.path, repository.appendingPathComponent(".git").path])
         #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: request, task: launchTask))
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
         #expect(workspace.activeWorkingPath == other.path)

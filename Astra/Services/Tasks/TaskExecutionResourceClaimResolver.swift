@@ -121,8 +121,12 @@ enum TaskExecutionResourceClaimResolver {
     static func hasWorkspacePathDrift(request: TaskTurnRequest?, task: AgentTask) -> Bool {
         guard let request else { return false }
         let readOnlyKeys = Set(readOnlyWorkspaceKeys(for: task))
+        // A shared claim on a folder the task only reads never covers a root
+        // it writes. An exclusive claim covers its subtree whatever the
+        // folder's current role, so a request queued before that role changed
+        // is still checked against what it actually holds.
         let persistedKeys = Set(request.resourceClaims
-            .filter { $0.kind == .workspace && !readOnlyKeys.contains($0.key) }
+            .filter { $0.kind == .workspace && ($0.access == .exclusive || !readOnlyKeys.contains($0.key)) }
             .map(\.key))
         let liveKeys = Set(workspaceKeys(for: task))
         guard !persistedKeys.isEmpty, !liveKeys.isEmpty else { return false }
@@ -201,16 +205,26 @@ enum TaskExecutionResourceClaimResolver {
         }
     }
 
-    /// Keys the task holds shared and never writes through: configured folders
-    /// that contain a prepared worktree's source checkout, and that worktree's
-    /// Git directory. Holding the Git directory as a workspace key makes every
-    /// writer whose root contains it — the main checkout or any folder above
-    /// it — wait for the worktree task, while readers stay parallel.
+    /// Keys a prepared-worktree task holds shared and never writes through:
+    /// every configured folder the run can read but not write (the replaced
+    /// source checkout, folders containing it, sibling checkouts, and folders
+    /// that are not the code root) and the worktree's Git directory. A writer
+    /// of any of them waits for the task while readers stay parallel. Holding
+    /// the Git directory as a workspace key also makes every writer whose root
+    /// contains it — the main checkout or any folder above it — wait.
+    ///
+    /// Tasks without a prepared worktree keep their read-only folders
+    /// unclaimed, so sibling linked worktrees inside a configured folder
+    /// still run together.
     static func readOnlyWorkspaceKeys(for task: AgentTask) -> [String] {
-        let writable = Set(workspaceKeys(for: task))
         let access = TaskWorkspaceAccess(task: task)
+        guard access.worktreeBinding != nil else { return [] }
+        let writable = Set(workspaceKeys(for: task))
+        let paths = access.runtimeReadOnlyWorkspacePaths
+            + access.runtimeWorktreeSourceAncestorPaths
+            + access.runtimeWorktreeGitMetadataPaths
         var seen = Set<String>()
-        return (access.runtimeWorktreeSourceAncestorPaths + access.runtimeWorktreeGitMetadataPaths).compactMap { path in
+        return paths.compactMap { path in
             guard let key = standardizedPath(path), !writable.contains(key), seen.insert(key).inserted else { return nil }
             return key
         }

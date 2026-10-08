@@ -590,7 +590,12 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    func deleteTask(_ task: AgentTask) -> Workspace? {
+    /// Deletes `task` and returns whether the deletion was saved. `willDelete`
+    /// runs only once any worktree cleanup intent is durable, just before the
+    /// task is deleted. A false result means the task is still stored and back
+    /// in the context, so the UI must keep showing it.
+    @discardableResult
+    func deleteTask(_ task: AgentTask, willDelete: () -> Void = {}) -> Bool {
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
         // A draft that never ran gives back its untouched worktrees, including
@@ -599,14 +604,14 @@ final class TaskLifecycleCoordinator {
         let unusedWorktrees = task.status == .draft && task.runs.isEmpty
             ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
             : []
-        TaskWorktreeService.saveDeletionThenDiscard(
+        return TaskWorktreeService.saveDeletionThenDiscard(
             unusedWorktrees, workspace: workspace, modelContext: modelContext, cleanupStore: worktreeCleanupStore,
             delete: {
+                willDelete()
                 cancelAndRemoveTurnRequests(for: task)
                 modelContext.delete(task)
             }
-        )
-        return workspace
+        ).persisted
     }
 
     func setDoneState(_ task: AgentTask, to isDone: Bool) {
