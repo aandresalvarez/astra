@@ -236,7 +236,7 @@ for a review that will not happen.
 | B6 PR #482 | Uses `ExternalActionPolicy` + `ExternalActionReceipt`; specified there. |
 | A4/A7 Ask local tools | Apply `PolicyLocalToolGrants.levelScoped` in every adapter so Ask asks the same on every runtime (Decision 6). |
 | A4 Ask hard denies | Decision 5: `rm`, `chmod`, `chown`, `git push`, `deploy`, `publish` become ask-first in Ask; `sudo` stays denied. |
-| A9 agent-observed external actions (Auto) | Best effort, record only (`AgentExternalActionObserver`): classify the run's shell calls (`git push` except dry runs, `gh pr create\|merge\|comment\|review\|edit\|close\|ready` (`--undo` as a draft conversion), `gh issue create\|comment\|edit\|close`, `gh release create`, `gh api` with a write method or fields unless `--method GET`, the same behind a runner or `sh -c`, every action of a compound command, and any other command `ShellCommandRiskClassifier.actsOutsideMachine` calls a write, by executable and host) whose own result came back successful (a failure names its call), and write an `external.action.observed` event with a title, the destination, and the first github.com URL from the result. The command text itself is not stored. Rendered with the same row and an "Agent" pill. Never a gate. |
+| A9 agent-observed external actions (Auto) | Record only (`AgentExternalActionObserver`): each of the run's shell calls whose own result came back successful (a failure names its call) and that is not known local work (`LocalShellCommands`, the reading Ask asks by) writes an `external.action.observed` event titled with the command it ran, or — for a call that is exactly one `git push` (not a dry run), `gh pr create\|merge\|comment\|review\|edit\|close\|ready` (`--undo` as a draft conversion), `gh issue create\|comment\|edit\|close`, `gh release create`, or `gh api` with a write method or fields — that action's title, with the destination and the first GitHub URL from the result. Rendered with the same row and an "Agent" pill. Never a gate. |
 
 ### 4. Picker copy
 
@@ -336,6 +336,16 @@ Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
     add knobs now?
 12. **Browser in Auto.** **No per-click record** (tool rows already show it),
     or record page-changing actions?
+13. **How a shell command is judged (2026-10-08).** The first design read
+    each command for an action outside the machine and listed the ones it
+    found (`git push`, `curl -d`, a remote Docker daemon, a side-effecting
+    SQL `SELECT`). That list could not be finished: every review round found
+    another spelling (`eval "$x"`, `env -S`, `node --eval=`, `npm --scope x
+    publish`, `xargs -r`), and a program it did not know (an internal deploy
+    CLI behind a Custom `Bash` rule) ran unasked. **Judge the opposite question
+    from a fixed list of known local work (`LocalShellCommands`)**: anything
+    not on it, or not readable, asks in Ask and Custom and is recorded in
+    Auto. The list judges the command, not the project code it runs.
 
 ## PR #482 reuse
 

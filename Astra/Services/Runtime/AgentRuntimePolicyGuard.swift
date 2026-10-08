@@ -386,27 +386,22 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     /// Ask and Custom ask before acting outside ASTRA (`ExternalActionPolicy`).
-    /// A Custom rule that allows Bash or `git:*` governs local work; it must not
-    /// let `git push` or `gh pr create` through unasked, because actions outside
-    /// ASTRA follow Ask whatever the per-item rules say. An explicit approval
-    /// grant for the command still lets it run, so an approved command is not
-    /// asked about twice.
+    /// A Custom rule that allows Bash or `git:*` governs local work only: a
+    /// command that is not known local work (`LocalShellCommands`) asks
+    /// whatever the per-item rules say, and its approval lets it run, so an
+    /// approved command is not asked about twice.
     private func externalCommandApprovalViolation(
         command: String,
         toolName: String,
-        request: PermissionRequest?,
-        grantToolName: String? = nil
+        request: PermissionRequest?
     ) -> AgentRuntimePolicyViolation? {
         guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
-              let pending = unapprovedExternalCommand(command, toolName: grantToolName ?? toolName) else {
+              let pending = unapprovedExternalCommand(command) else {
             return nil
         }
-        // A payload is asked about, and so approved, on its own.
-        let request = pending == command
-            ? request ?? PermissionRequest.shell(command: command, toolName: toolName)
-            : PermissionRequest.shell(command: pending, toolName: toolName)
+        let request = request ?? PermissionRequest.shell(command: pending, toolName: toolName)
         return AgentRuntimePolicyViolation(
-            reason: "The command acts outside ASTRA, which asks first at this permission level",
+            reason: "The command is not on ASTRA's list of local work, so it asks first at this permission level",
             toolName: toolName,
             detail: command,
             violationCategory: "external_command_requires_approval",
@@ -443,7 +438,7 @@ struct AgentRuntimePolicyGuard: Sendable {
                 )
             }
         }
-        return externalCommandApprovalViolation(command: command, toolName: toolName, request: nil, grantToolName: "Bash")
+        return externalCommandApprovalViolation(command: command, toolName: toolName, request: nil)
     }
 
     /// The browser MCP tool runs the same bridge commands as `astra-browser`,
@@ -456,11 +451,10 @@ struct AgentRuntimePolicyGuard: Sendable {
             .compactMap { $0 }
             .joined(separator: " ")
         guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
-              Self.actsOutsideMachine(equivalent),
-              !commandApprovedByGrant(equivalent, toolName: "Bash") else {
+              let pending = unapprovedExternalCommand(equivalent) else {
             return nil
         }
-        let request = PermissionRequest.shell(command: equivalent, toolName: toolName)
+        let request = PermissionRequest.shell(command: pending, toolName: toolName)
         return AgentRuntimePolicyViolation(
             reason: "The browser action changes a page, which asks first at this permission level",
             toolName: toolName,
@@ -478,251 +472,27 @@ struct AgentRuntimePolicyGuard: Sendable {
         return lower.contains(BrowserBridgeMCPProjection.serverID) && (lower.hasSuffix(name) || lower.hasSuffix("\(name))"))
     }
 
-    /// The command text that acts outside ASTRA without an approval for it,
-    /// or nil. A shell run with `-c` runs its payload, and a command
-    /// substitution runs even inside double quotes, so each is judged as a
-    /// command of its own: a Custom rule allowing `bash` or `echo` must not
-    /// hide `bash -c 'curl -d …'` or `echo "$(curl -d …)"`, and approving that
-    /// write must not ask again.
-    private func unapprovedExternalCommand(_ command: String, toolName: String, depth: Int = 0) -> String? {
-        if Self.actsOutsideMachine(command), !commandApprovedByGrant(command, toolName: toolName) {
-            return command
-        }
-        // Inline interpreter code cannot be proven local: it is asked about as
-        // Ask asks about it, and an approval that covers it as written lets it run.
-        if Self.rawActionableShellSegments(command).contains(where: ShellCommandRiskClassifier.runsInlineCode(forShellSegment:)),
-           !commandApprovedByGrant(command, toolName: toolName, onlyExternalGrants: false) {
-            return command
-        }
-        let inner = Self.rawActionableShellSegments(command).flatMap { segment in
-            [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment),
-             Self.functionBodyStart(segment), ShellCommandRunners.trapHandler(segment),
-             Self.caseClauseBody(segment)].compactMap { $0 }
-                + Self.commandSubstitutions(in: segment)
-        }
-        guard depth < 4 else {
-            // Still wrapped at the limit: what finally runs is not read, so it
-            // is asked about rather than declared local, and approved as written.
-            return inner.isEmpty || commandApprovedByGrant(command, toolName: toolName, onlyExternalGrants: false)
-                ? nil : command
-        }
-        for payload in inner {
-            if let pending = unapprovedExternalCommand(payload, toolName: toolName, depth: depth + 1) {
-                return pending
-            }
-        }
-        return nil
-    }
-
-    /// `f(){ curl -d …; }; f` runs its body when called. The segment that
-    /// opens the definition carries the body's first command after `{` (or a
-    /// subshell's `(`); the body's later commands are segments of their own.
-    private static func functionBodyStart(_ segment: String) -> String? {
-        let trimmed = segment.trimmingCharacters(in: .whitespaces)
-        let definition = #"^(function\s+[A-Za-z_][A-Za-z0-9_-]*(\s*\(\s*\))?|[A-Za-z_][A-Za-z0-9_-]*\s*\(\s*\))\s*[{(]"#
-        guard let range = trimmed.range(of: definition, options: .regularExpression) else { return nil }
-        let body = trimmed[range.upperBound...].trimmingCharacters(in: .whitespaces)
-        return body.isEmpty ? nil : body
-    }
-
-    /// `case x in x) git push;; esac` runs the clause after the matching
-    /// pattern. A segment that opens the `case` carries the first clause's
-    /// command after `in PATTERN)`; one that starts with a pattern (`y)`, or
-    /// `b)` after a `a|b` the splitter cut at the pipe) carries its own.
-    private static func caseClauseBody(_ segment: String) -> String? {
-        let trimmed = segment.trimmingCharacters(in: .whitespaces)
-        let clause: Substring
-        if trimmed.hasPrefix("case "), let inRange = trimmed.range(of: #"\sin\s"#, options: .regularExpression),
-           let close = trimmed[inRange.upperBound...].firstIndex(of: ")") {
-            clause = trimmed[trimmed.index(after: close)...]
-        } else if let range = trimmed.range(of: #"^\(?[^()\s]*\)\s"#, options: .regularExpression) {
-            clause = trimmed[range.upperBound...]
-        } else {
+    /// The command when it is not known local work and no approval covers
+    /// it, or nil. Whether a shell string acts outside this machine cannot be
+    /// read in general, so this asks the opposite question
+    /// (`LocalShellCommands`): only a command made of listed local tools runs
+    /// on a Custom rule alone, and anything else is asked about as written.
+    private func unapprovedExternalCommand(_ command: String) -> String? {
+        if LocalShellCommands.isLocal(command) || commandApprovedByGrant(command) {
             return nil
         }
-        let body = clause.trimmingCharacters(in: .whitespaces)
-        return body.isEmpty ? nil : body
+        return command
     }
 
-    /// The bodies of `` `…` `` and `$(…)` anywhere but inside single quotes.
-    private static func commandSubstitutions(in segment: String) -> [String] {
-        let characters = Array(segment)
-        var bodies: [String] = []
-        var index = 0
-        var inSingleQuote = false
-        var inDoubleQuote = false
-        while index < characters.count {
-            let character = characters[index]
-            if character == "\\", !inSingleQuote {
-                index += 2
-                continue
-            }
-            if character == "'", !inDoubleQuote {
-                inSingleQuote.toggle()
-            } else if inSingleQuote {
-                // Literal.
-            } else if character == "\"" {
-                inDoubleQuote.toggle()
-            } else if character == "`" {
-                var end = index + 1
-                var body = ""
-                while end < characters.count, characters[end] != "`" {
-                    if characters[end] == "\\", end + 1 < characters.count {
-                        body.append(characters[end + 1])
-                        end += 2
-                    } else {
-                        body.append(characters[end])
-                        end += 1
-                    }
-                }
-                guard end < characters.count else { break }
-                bodies.append(body)
-                index = end
-            } else if character == "$", index + 1 < characters.count, characters[index + 1] == "(" {
-                var depth = 1
-                var end = index + 2
-                var quote: Character?
-                while end < characters.count {
-                    let next = characters[end]
-                    if let open = quote {
-                        if next == open { quote = nil }
-                    } else if next == "'" || next == "\"" {
-                        quote = next
-                    } else if next == "(" {
-                        depth += 1
-                    } else if next == ")" {
-                        depth -= 1
-                        if depth == 0 { break }
-                    }
-                    end += 1
-                }
-                guard end < characters.count else { break }
-                bodies.append(String(characters[(index + 2)..<end]))
-                index = end
-            }
-            index += 1
-        }
-        return bodies
-    }
-
-    /// The recorded `git`/`gh` actions, plus any segment the shared risk
-    /// classifier marks as a write outside this machine: a `curl` that sends
-    /// data, a cloud deploy, a remote database client, a package publish.
-    /// Case matters to the classifier (`curl -X` sends, `-x` names a proxy),
-    /// so it reads the segments as written. The observer's reading is taken
-    /// without unwrapping and without its classifier fallback: what a runner,
-    /// `sh -c` or a substitution runs is asked about as its own command
-    /// (`unapprovedExternalCommand`), so its approval matches it.
-    private static func actsOutsideMachine(_ command: String) -> Bool {
-        let recorded = AgentExternalActionObserver.classify(command, unwrapping: false)
-        if let recorded, !recorded.isExternalWrite { return true }
-        let dockerEnvironment = dockerEnvironmentAssignments(in: command)
-        return rawActionableShellSegments(command).contains {
-            ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: $0, dockerEnvironment: dockerEnvironment)
-        }
-    }
-
-    /// `DOCKER_HOST`, `DOCKER_CONTEXT` and `DOCKER_CONFIG` the command sets for
-    /// itself, as a prefix (`DOCKER_HOST=ssh://x docker …`) or with `export`:
-    /// the segment splitter drops them, but they pick the daemon.
-    private static func dockerEnvironmentAssignments(in command: String) -> [String: String] {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"(?:^|[\s;&|(])(?:export\s+)?(DOCKER_HOST|DOCKER_CONTEXT|DOCKER_CONFIG)=("[^"]*"|'[^']*'|[^\s;&|]+)"#
-        ) else { return [:] }
-        var values: [String: String] = [:]
-        let range = NSRange(command.startIndex..<command.endIndex, in: command)
-        for match in regex.matches(in: command, range: range) {
-            guard let name = Range(match.range(at: 1), in: command), let value = Range(match.range(at: 2), in: command) else {
-                continue
-            }
-            values[String(command[name])] = String(command[value]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        }
-        return values
-    }
-
-    /// `actionableShellSegments` without the lowercasing, so a command is
-    /// classified, and a payload asked about, as the agent wrote it.
-    private static func rawActionableShellSegments(_ command: String) -> [String] {
-        shellSegmentSeparatorsNormalized(ProviderToolSemantics.semanticShellCommand(command))
-            .split(whereSeparator: { $0.isNewline || $0 == ";" })
-            .map { actionableShellSegment(String($0)).trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
-
-    /// The command string of `sh|bash|zsh|dash|ksh -c <payload>` (any short
-    /// option cluster with `c`, such as `-lc` or `-ec`), unquoted, or nil when
-    /// the segment is not a shell running a command string.
-    private static func shellInterpreterPayload(_ segment: String) -> String? {
-        var rest = Substring(segment)
-        func nextToken() -> Substring? {
-            rest = rest.drop(while: \.isWhitespace)
-            guard !rest.isEmpty else { return nil }
-            let token = rest.prefix { !$0.isWhitespace }
-            rest = rest.dropFirst(token.count)
-            return token
-        }
-        guard let executable = nextToken(),
-              shellInterpreters.contains(URL(fileURLWithPath: String(executable)).lastPathComponent.lowercased()) else {
-            return nil
-        }
-        while true {
-            guard let option = nextToken(), option.hasPrefix("-") else { return nil }
-            if !option.hasPrefix("--"), option.contains("c") { break }
-            if option == "-o" { _ = nextToken() }
-        }
-        rest = rest.drop(while: \.isWhitespace)
-        guard let quote = rest.first else { return nil }
-        guard quote == "'" || quote == "\"" else {
-            return String(rest.prefix { !$0.isWhitespace })
-        }
-        var payload = ""
-        var escaped = false
-        for character in rest.dropFirst() {
-            if escaped {
-                payload.append(character)
-                escaped = false
-            } else if quote == "\"", character == "\\" {
-                escaped = true
-            } else if character == quote {
-                return payload
-            } else {
-                payload.append(character)
-            }
-        }
-        return nil
-    }
-
-    private static let shellInterpreters: Set<String> = ["sh", "bash", "zsh", "dash", "ksh"]
-
-    /// Only an approval that was itself for a write outside this machine can
-    /// stand in for asking again. A reusable read grant — `curl` scoped to a
-    /// host, `git status` — matches later commands too, and approving a read
-    /// is not approving a write to the same place.
-    private func commandApprovedByGrant(_ command: String, toolName: String, onlyExternalGrants: Bool = true) -> Bool {
-        let externalGrants = manifest.approvalGrants.filter { grant in
-            guard case .shellCommand(let executable, let pattern) = grant else { return false }
-            return !onlyExternalGrants
-                || ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "\(executable) \(pattern)")
-        }
-        let approved = PermissionBroker.providerRuntimeGrantStrings(
-            for: externalGrants,
-            runtime: manifest.providerID
-        )
-        guard !approved.isEmpty else { return false }
-        // `push origin main *` matches `push origin main --force`. Approving a
-        // push is not approving a force, delete or mirror: one of those needs
-        // an approval that names it.
-        let approvedEscalations = externalGrants.map { grant -> Set<String> in
-            guard case .shellCommand(let executable, let pattern) = grant else { return [] }
-            return ShellCommandRiskClassifier.pushEscalations(inShellSegment: "\(executable) \(pattern)")
-        }
-        for segment in Self.rawActionableShellSegments(command) {
-            let escalations = ShellCommandRiskClassifier.pushEscalations(inShellSegment: segment)
-            guard escalations.isEmpty || approvedEscalations.contains(where: { escalations.isSubset(of: $0) }) else {
-                return false
-            }
-        }
-        return toolMatches(toolName, command: command, candidates: approved, shellMatchMode: .allActionableSegments)
+    /// The approval a command is asked for is the set of grants its request
+    /// yields, one per command in it (`PermissionBroker`): it runs unasked once
+    /// all of them were granted. Comparing grants, not matching patterns,
+    /// keeps one approval from standing in for another — a host-scoped read
+    /// does not approve a write to that host, a push does not approve a force
+    /// — and the same command always finds the approval it was given.
+    private func commandApprovedByGrant(_ command: String) -> Bool {
+        guard let needed = PermissionBroker.completeShellApprovalGrants(command: command) else { return false }
+        return Set(needed).isSubset(of: Set(manifest.approvalGrants))
     }
 
     private func runtimeSupportToolDescriptor(for toolName: String) -> ProviderRuntimeSupportToolDescriptor? {

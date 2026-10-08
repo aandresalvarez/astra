@@ -69,9 +69,14 @@ struct AutoCredentialLaunchExposureTests {
         #expect(gate.didPass)
 
         let refreshed = admitted.addingApprovedCredentialLabels(
-            TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: .claudeCode)
+            TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: .claudeCode),
+            secretStore: store
         )
         #expect(refreshed.connectorCredentialExposurePolicy.approvedCredentialLabels.contains(label))
+        // The process environment is built from the resolver, so the secret
+        // itself has to be there, not only the label.
+        #expect(!admitted.providerLaunch.resolver.resolvedEnvironmentVariables.values.contains("secret-token"))
+        #expect(refreshed.providerLaunch.resolver.resolvedEnvironmentVariables.values.contains("secret-token"))
         #expect(refreshed.providerLaunch.connectors.map(\.id) == admitted.providerLaunch.connectors.map(\.id))
 
         func plan(_ snapshot: TaskCapabilityResolutionSnapshot) -> TaskLaunchResourcePlan {

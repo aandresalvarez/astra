@@ -137,28 +137,46 @@ boundary. The full inventory is in
   action goes through (digest re-read, derived route, re-resolved destination,
   dispatch recorded before the network call, no resend of an ambiguous
   outcome). Every action outside ASTRA leaves a record in the chat, derived
-  from its receipt, with an **Auto** pill; recognised `git`/`gh` commands the
-  agent ran itself (also behind a runner or `sh -c`), and any other command the
-  risk classifier calls a write outside the machine, are recorded with an
-  **Agent** pill. The next turn's prompt lists these records too.
+  from its receipt, with an **Auto** pill. A command the agent ran itself that
+  is not known local work — exactly what Ask would have asked about — is
+  recorded with an **Agent** pill as the command it ran; a call that is one
+  `git push` or `gh` write gets that action's title. The next turn's prompt
+  lists these records too.
 - **Custom** applies the saved per-item tool, shell, and network rules (an
   enabled local tool becomes a grant only when those rules allow Bash, on
-  every runtime) and follows Ask for actions outside ASTRA: a rule that allows Bash, `git:*`,
-  `curl:*`, or `gcloud:*` still asks before `git push`, a `gh` write, a `curl`
-  that sends data, a cloud deploy, a remote database client, a package
-  registry change, or a browser page change
-  (`ShellCommandRiskClassifier.actsOutsideMachine`), unless that exact
-  command was approved. A `sh -c` payload, a backtick substitution, and the
-  command behind a runner such as `env -u NAME`, `nice -n 5`, or `timeout 30`
-  are judged as commands of their own (so is `eval`, and the Docker
-  workspace's shell tools are gated like Bash; approving a push does not
-  approve a force, delete, or mirror of it). What cannot be proven local is
-  asked about too: inline interpreter code (`python3 -c`, `node -e`), an
-  unknown Git subcommand or alias, a Docker command whose daemon (its
-  `--context`, `-H`, `DOCKER_HOST`, or the CLI's current context) is not a
-  local socket, and a command still wrapped at the unwrapping limit, and the browser MCP tool is judged as the
-  `astra-browser` command it runs. Local writes such as `git commit`, reads,
-  and browser navigation keep the rule.
+  every runtime) to local work only. A shell command runs on a rule alone
+  only when every command in it is known local work
+  (`LocalShellCommands`); anything else asks as Ask does, unless the
+  approval its request yields was already given. ASTRA does not try to read
+  whether a command acts outside the machine — a variable, `eval`, an alias,
+  a runner or one more option changes what runs — so the list answers the
+  opposite question, and a command it cannot read is not local. Being wrong
+  costs a question, never an unasked action.
+- **Known local work** is a fixed list: file, text and process tools; Git's
+  local verbs (no push, no `-c`, no configuration writes, no `rebase -x`,
+  `submodule foreach` or `bisect run`); `gh` reads (`view`, `list`,
+  `status`, `checks`, `diff`, a `gh api` GET or a GraphQL query without
+  `mutation`); `curl`/`wget` with fetch-only options and a GET or HEAD;
+  `docker` against the local daemon with no global option, push, or login;
+  package managers' install/run/test (never publish, login, `npx`, `exec`);
+  build, test and format tools; and an interpreter running a script file.
+  A shell's `-c` string, a runner's command (`env`, `xargs`, `timeout`,
+  `find -exec`), and each `$(…)`, backtick or `<(…)` body are judged the
+  same way; an assignment to a variable that steers a tool (`PATH`, `HOME`,
+  `GIT_*`, `DOCKER_*`, `NODE_OPTIONS`, proxies) is not local. The list judges
+  the command, not the program it runs: `make`, `swift test`, `npm run build`,
+  `python3 scripts/report.py` and `docker run` execute project code or an
+  image, and what that code does is the project's. A user's own tool
+  configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context)
+  is the user's.
+- **An approval** of a shell command is the set of grants its request yields,
+  one per command in it (the program and its first words, as the prompt
+  shows). The command runs unasked once all of them were granted, so a
+  host-scoped read does not approve a write to that host and a push does not
+  approve a force. A command one of whose parts yields no grant (inline code,
+  `$CMD`) cannot be approved for replay, and the run stops with that reason.
+  The browser MCP tool is judged and approved as the `astra-browser` command
+  it runs, and the Docker workspace's shell tools are gated like Bash.
 - `ExternalActionPolicy` is the only owner of "does this level ask before an
   external action". It reads the user-facing level of the run that produced
   the action, so a proposal composed under Ask is still reviewed after the task

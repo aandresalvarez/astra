@@ -166,10 +166,12 @@ struct AgentPolicyRuntimeMatrixTests {
     }
 
     // Custom keeps the user's per-item rules for local work, but actions outside
-    // ASTRA follow Ask: a rule that allows Bash or `git:*` must not let
-    // `git push` through unasked on any runtime.
-    @Test("Custom rules that allow Bash or git still ask before a push")
-    func customAsksBeforeExternalCommandsItsRulesAllow() {
+    // ASTRA follow Ask: only a command made of listed local tools
+    // (`LocalShellCommands`) runs on a rule alone, on every runtime. Whether a
+    // command acts outside the machine is not read, so the cases below are
+    // forms that once slipped past such a reading.
+    @Test("Custom rules run only known local work unasked")
+    func customRunsOnlyKnownLocalWorkUnasked() {
         let policy = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
@@ -183,8 +185,6 @@ struct AgentPolicyRuntimeMatrixTests {
                 "\(runtime.rawValue) push"
             )
         }
-        // Not only Git: anything the shared risk classifier calls a write
-        // outside this machine asks, while local writes and reads keep the rule.
         let wider = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
@@ -195,104 +195,37 @@ struct AgentPolicyRuntimeMatrixTests {
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
             for command in [
-                "curl -X POST https://hooks.example.test/build -d ok",
-                "curl --json '{\"build\":1}' https://hooks.example.test/api",
-                "gcloud run deploy api --source .",
-                "gh workflow run deploy.yml",
-                "gh secret set TOKEN",
-                "gh run cancel 12345",
-                "npm unpublish widget@1.0.0",
-                "npm deprecate widget@1.0.0 obsolete",
-                "npm dist-tag add widget@1.0.0 beta",
-                "npm token revoke abc123",
-                "npm token create",
-                "curl -XPOST https://hooks.example.test/build",
-                "curl -sSd ok https://hooks.example.test/build",
-                "curl -dsecret https://hooks.example.test/build",
-                "aws s3 cp report.csv s3://bucket/report.csv",
-                "aws ec2 terminate-instances --instance-ids i-1",
-                "kubectl set image deployment/app app=image:v2",
-                "kubectl label pod api-1 tier=web",
-                "aws s3api put-object --bucket b --key get-secret --body file.txt",
-                "kubectl apply -f deploy.yaml --dry-run=none",
-                "docker --config /tmp/astra-docker-cfg --context production create alpine",
-                "docker -l debug -H ssh://deploy@host create alpine",
-                "gh deploy",
-                "DOCKER_HOST=ssh://deploy@prod docker create alpine",
-                "export DOCKER_HOST=tcp://prod.example:2376; docker volume create data",
-                "git difftool --no-prompt --extcmd='sh -c \"git push origin main\"' HEAD^ HEAD",
-                "git difftool -x 'git push origin main' HEAD~1 HEAD",
-                "curl --data-ascii payload https://example.test/hook",
-                "aws s3 cp report.csv s3://bucket/report.csv --storage-class STANDARD_IA",
-                "aws s3 cp --acl private report.csv s3://bucket/report.csv",
-                "npm logout",
-                "psql -c 'DELETE FROM widgets'",
-                "psql -c 'SELECT 1' -c 'DROP TABLE widgets'",
-                "psql -f migrate.sql",
-                "mysql -e 'UPDATE widgets SET a = 1'",
-                "npm --registry https://registry.example publish",
-                "git submodule foreach 'git push origin main'",
-                "git rebase -x 'git push origin HEAD' main",
-                "git bisect run curl -d x https://example.test/hook",
-                "wget --method=POST --body-data=x https://hooks.example.test/build",
-                "wget --body-file=report.json https://hooks.example.test/build",
-                "wget --method=DELETE https://hooks.example.test/item/1",
-                "npm star widget",
-                "npm adduser --auth-type=legacy",
-                "npm add-user",
-                "npm unstar widget",
-                "gh api repos/o/r/issues/1/comments -fbody=hello",
-                "git send-pack git@github.com:owner/repo.git refs/heads/main",
-                "docker --context production run alpine",
-                "docker -H ssh://deploy@host rm web",
-                "docker -H unix:///var/run/docker.sock buildx build --push -t registry.example/app .",
-                "docker -H unix:///var/run/docker.sock build --output type=registry -t registry.example/app .",
-                "docker -H unix:///var/run/docker.sock compose push",
-                "docker -H unix:///var/run/docker.sock image push registry.example/app",
-                "docker --context production create alpine",
-                "docker -H ssh://deploy@host volume create data",
-                "curl -K write.conf",
-                "curl --config=write.conf https://example.test/x",
-                "wget -e post_data=x https://example.test/x"
+                "curl -X POST https://hooks.example.test/build -d ok", "curl --json '{\"build\":1}' https://hooks.example.test/api",
+                "curl -sSd ok https://hooks.example.test/build", "curl -dsecret https://hooks.example.test/build",
+                "curl -K write.conf", "curl --data-ascii payload https://example.test/hook",
+                "gcloud run deploy api --source .", "gh workflow run deploy.yml", "gh secret set TOKEN", "gh deploy",
+                "gh api repos/o/r/issues/1/comments -fbody=hello", "npm unpublish widget@1.0.0", "npm token create",
+                "npm --scope @foo publish", "npm --registry https://registry.example publish", "npm logout",
+                "aws s3 cp report.csv s3://bucket/report.csv", "kubectl apply -f deploy.yaml --dry-run=none",
+                "psql -c \"SELECT nextval('orders_id_seq')\"", "wget --method=POST --body-data=x https://hooks.example.test/build",
+                "git send-pack git@github.com:owner/repo.git refs/heads/main", "git submodule foreach 'git push origin main'",
+                "git rebase -x 'git push origin HEAD' main", "git difftool -x 'git push origin main' HEAD~1 HEAD",
+                "docker --context production create alpine", "docker -H ssh://deploy@host rm web",
+                "DOCKER_HOST=ssh://deploy@prod docker create alpine", "docker buildx build --push -t registry.example/app .",
+                // Reads this list does not know are asked about too.
+                "gcloud compute instances list", "kubectl get pods", "aws sts get-caller-identity", "psql -c 'SELECT 1'"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
             for command in [
-                "curl https://example.test/status", "gcloud compute instances list", "git commit -m wip",
-                "gh workflow list", "gh run view 12345", "npm dist-tag ls widget", "npm token list", "npm install",
-                "curl -sSL https://example.test/status", "curl -sSLo status.json https://example.test/status",
-                "aws s3 cp s3://bucket/report.csv report.csv", "aws s3 cp report.csv s3://bucket/report.csv --dryrun",
-                "aws sts get-caller-identity", "kubectl get pods", "kubectl apply -f app.yaml --dry-run=client",
-                "kubectl --kubeconfig /tmp/test get pods", "kubectl --context prod -n web describe pod api-1",
-                "kubectl apply -f deploy.yaml --dry-run=server", "npm install publish",
-                "gh status", "psql -c 'SELECT * FROM widgets'", "mysql -e 'SHOW TABLES'",
-                "gh -R owner/repo pr list", "aws s3 cp s3://bucket/report.csv report.csv --storage-class STANDARD_IA",
-                "aws s3 cp --acl private s3://bucket/report.csv report.csv", "git difftool -x 'diff -u' HEAD~1 HEAD",
-                "DOCKER_HOST=unix:///var/run/docker.sock docker create alpine",
-                "psql --command='EXPLAIN SELECT 1'",
-                "git submodule foreach 'git status'", "git submodule update --init",
-                "wget https://example.test/status", "wget --method=GET https://example.test/status",
-                "git send-pack --dry-run git@github.com:owner/repo.git refs/heads/main",
-                "curl -X GET https://example.test/status", "curl --request=GET https://example.test/status",
-                "curl -XHEAD https://example.test/status",
-                "gh repo clone owner/repo", "gh pr checkout 42",
-                "docker -H unix:///var/run/docker.sock run alpine",
-                "docker -H unix:///var/run/docker.sock build -t app .",
-                "docker -H unix:///var/run/docker.sock create alpine",
-                "docker -H ssh://deploy@host ps",
-                "curl -e https://referrer.example https://example.test/status"
+                "curl https://example.test/status", "git commit -m wip", "gh workflow list", "gh run view 12345",
+                "npm install", "curl -sSL https://example.test/status", "curl -sSLo status.json https://example.test/status",
+                "npm install publish", "gh status", "gh -R owner/repo pr list", "git submodule update --init",
+                "wget https://example.test/status", "curl -X GET https://example.test/status",
+                "curl --request=GET https://example.test/status", "curl -XHEAD https://example.test/status",
+                "gh repo clone owner/repo", "gh pr checkout 42", "curl -e https://referrer.example https://example.test/status"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
         }
 
-        // The classifier knows push plumbing on its own, not only through the
-        // observer's reading.
-        #expect(ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "git send-pack git@github.com:o/r.git main"))
-        #expect(!ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "git send-pack --dry-run git@github.com:o/r.git main"))
-
         // Approving a read is not approving a write to the same host: the
-        // host-scoped read grant must not stand in for asking.
+        // approval a command needs is the grant its own request yields.
         let readApproval = PermissionBroker.approvalGrants(
             for: .shell(command: "curl https://example.test/status", toolName: "Bash")
         )
@@ -300,27 +233,23 @@ struct AgentPolicyRuntimeMatrixTests {
             runtime: .claudeCode, policy: wider, approvalGrants: readApproval
         ))
         #expect(afterRead.disposition(toolName: "Bash", command: "curl -d x https://example.test/delete") == .ask)
-        let writeApproval = PermissionBroker.approvalGrants(
-            for: .shell(command: "curl -d x https://example.test/delete", toolName: "Bash")
-        )
-        let afterWrite = AgentRuntimePolicyGuard(manifest: Self.manifest(
-            runtime: .claudeCode, policy: wider, approvalGrants: writeApproval
-        ))
-        #expect(afterWrite.disposition(toolName: "Bash", command: "curl -d x https://example.test/delete") == .allowed,
-                "an approved write is not asked about again")
-        for write in ["curl -XPOST https://example.test/delete", "curl -F file=@a.txt https://example.test/upload",
-                      "curl -K write.conf"] {
+        for write in [
+            "curl -d x https://example.test/delete", "curl -XPOST https://example.test/delete",
+            "curl -F file=@a.txt https://example.test/upload", "curl -K write.conf",
+            "docker --context production create alpine", "npm --scope @foo publish"
+        ] {
             let asked = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
                 .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": write]))
             #expect(asked?.requiresApproval == true, "\(write)")
+            #expect(asked?.permissionRequest == .shell(command: write, toolName: "Bash"), "asked about as written: \(write)")
             let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
                 runtime: .claudeCode, policy: wider, approvalGrants: asked?.approvalGrants ?? []
             ))
             #expect(approved.disposition(toolName: "Bash", command: write) == .allowed, "\(write) approved once")
         }
 
-        // A shell run with -c runs its payload: a rule allowing the shell
-        // does not cover what the payload does outside this machine.
+        // A shell's -c string is judged as a command: a rule allowing the
+        // shell does not cover what the string does outside this machine.
         let interpreter = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
@@ -329,34 +258,28 @@ struct AgentPolicyRuntimeMatrixTests {
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: interpreter))
             for command in [
-                "bash -c 'curl -d x https://example.test/hook'",
-                "sh -c \"git push origin main\"",
-                "zsh -ec 'gh workflow run deploy.yml'",
-                "bash -c \"bash -c 'gh pr create --fill'\"",
-                "bash -c \"echo \\\"done\\\" && curl --json '{}' https://example.test/hook\""
+                "bash -c 'curl -d x https://example.test/hook'", "sh -c \"git push origin main\"",
+                "zsh -ec 'gh workflow run deploy.yml'", "bash -c \"bash -c 'gh pr create --fill'\"",
+                "bash -c \"echo \\\"done\\\" && curl --json '{}' https://example.test/hook\"", "bash -c \"$PAYLOAD\""
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
             for command in ["bash -c 'make test'", "sh -c \"echo 'git push' > notes.txt\"", "bash scripts/build.sh"] {
-                #expect(guardrail.disposition(toolName: "Bash", command: command) != .ask, "\(runtime.rawValue) \(command)")
+                #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
         }
         let wrapped = "bash -c 'curl -d x https://example.test/hook'"
         let asked = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: interpreter))
             .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": wrapped]))
         #expect(asked?.requiresApproval == true)
-        #expect(
-            asked?.permissionRequest == .shell(command: "curl -d x https://example.test/hook", toolName: "Bash"),
-            "the payload is what is asked about"
-        )
-        let payloadApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+        let wrappedApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
             runtime: .claudeCode, policy: interpreter, approvalGrants: asked?.approvalGrants ?? []
         ))
-        #expect(payloadApproved.disposition(toolName: "Bash", command: wrapped) == .allowed,
+        #expect(wrappedApproved.disposition(toolName: "Bash", command: wrapped) == .allowed,
                 "approving the wrapped write does not ask again")
 
-        // A backtick substitution runs even inside double quotes; inside
-        // single quotes it is text. (`$(…)` is denied outright.)
+        // A substitution runs even inside double quotes; inside single quotes
+        // it is text.
         let echoing = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
@@ -364,86 +287,39 @@ struct AgentPolicyRuntimeMatrixTests {
         )
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: echoing))
-            for command in [
-                "echo \"`curl --json '{}' https://example.test/hook`\"",
-                "echo \"result: `gh secret set TOKEN`\""
-            ] {
-                #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
-            }
-            for command in ["echo \"today is `date`\"", "echo '`curl -d x https://example.test/hook`'"] {
-                #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
-            }
+            #expect(guardrail.disposition(toolName: "Bash", command: "echo \"`curl --json '{}' https://example.test/hook`\"") != .allowed,
+                    "\(runtime.rawValue)")
+            #expect(guardrail.disposition(toolName: "Bash", command: "echo '`curl -d x https://example.test/hook`'") == .allowed,
+                    "\(runtime.rawValue)")
         }
-        let substituted = "echo \"`curl --json '{}' https://example.test/hook`\""
-        let substitutionAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: echoing))
-            .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": substituted]))
-        #expect(substitutionAsk?.permissionRequest == .shell(command: "curl --json '{}' https://example.test/hook", toolName: "Bash"))
-        let substitutionApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
-            runtime: .claudeCode, policy: echoing, approvalGrants: substitutionAsk?.approvalGrants ?? []
-        ))
-        #expect(substitutionApproved.disposition(toolName: "Bash", command: substituted) == .allowed)
 
-        // A runner with options still runs its command: `env -u CI` and
-        // `nice -n 5` must not hide a push or a write.
+        // A runner, a function, `eval`, a trap or an alias runs what this does
+        // not read, so a broad Bash rule asks about it.
         let broadBash = AgentPolicy(level: .custom, allowedTools: ["Read", "Glob", "Grep", "Bash"], allowedShellPatterns: ["*"])
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: broadBash))
             for command in [
-                "env -u CI git push origin main",
-                "env -i PATH=/usr/bin git push origin main",
-                "env -S 'git push origin main'",
-                "nice -n 5 curl -d x https://example.test/hook",
-                "timeout 30 gh workflow run deploy.yml",
-                "time -p git push origin main",
-                "env -u CI nice -n 5 git push origin main",
-                "printf 'origin main' | xargs git push",
-                "find . -maxdepth 0 -exec git push origin main ';'",
-                "find . -name x -execdir curl -d x https://example.test/hook \\;",
-                "f(){ curl -d x https://example.test/hook; }; f",
-                "function g { git push origin main; }; g",
-                "h() ( gh workflow run deploy.yml ); h",
-                "eval 'git push origin main'",
-                "watch -n 5 git push origin main",
-                "trap 'git push origin main' EXIT",
-                "case x in x) git push origin main;; esac",
-                "case $1 in a|b) curl -d x https://example.test/hook;; esac",
-                "yarn npm publish",
-                "rsync -a dist/ deploy@host:/srv/app",
-                "scp build.tar deploy@host:/tmp",
-                "eval git push origin main",
-                "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook",
-                "git -c alias.ship=push ship origin main",
-                "git -c 'alias.ship=push --force' ship origin main",
-                "git ship origin main",
-                "git lfs push origin main",
-                "python3 -c 'import urllib.request;urllib.request.urlopen(\"https://example.test\", data=b\"x\")'",
-                "node -e \"fetch('https://example.test', {method: 'POST'})\"",
-                "osascript -e 'tell application \"Mail\" to send'",
-                "timeout 30 python3 -c 'print(1)'",
-                "git branch --format=x | xargs -n 1 git push origin --delete"
+                "env -u CI git push origin main", "env -S 'git push origin main'", "nice -n 5 curl -d x https://example.test/hook",
+                "timeout 30 gh workflow run deploy.yml", "printf 'origin main' | xargs git push",
+                "xargs -r git push origin main </dev/null", "find . -maxdepth 0 -exec git push origin main ';'",
+                "f(){ curl -d x https://example.test/hook; }; f", "eval 'git push origin main'",
+                "x='git push origin main'; eval \"$x\"", "$CMD push origin main", "trap 'git push origin main' EXIT",
+                "case x in x) git push origin main;; esac", "git -c alias.ship=push ship origin main", "git ship origin main",
+                "git lfs push origin main", "rsync -a dist/ deploy@host:/srv/app", "yarn npm publish",
+                "python3 -c 'print(1)'", "node --eval='require(\"child_process\").execSync(\"git push origin main\")'",
+                "osascript -e 'tell application \"Mail\" to send'", "PATH=/tmp/evil:$PATH ls"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
             for command in [
-                "env -u CI git status", "timeout 30 make test", "nice -n 5 swift build",
-                "timeout 30 timeout 30 timeout 30 timeout 30 make test", "git add -A", "git blame README.md",
-                "git -c alias.st=status st",
-                "python3 scripts/report.py", "python3 -m pytest", "node build.js",
-                "find . -name '*.swift' -exec wc -l {} +",
-                "f(){ echo hi; }; f",
-                "trap 'rm -f /tmp/lock' EXIT",
-                "case x in x) echo hi;; esac",
-                "rsync -a src/ backup/"
+                "env -u CI git status", "timeout 30 make test", "nice -n 5 swift build", "git add -A", "git blame README.md",
+                "python3 scripts/report.py", "python3 -m pytest", "node build.js", "find . -name '*.swift' -exec wc -l {} +",
+                "bash -c 'echo $HOME'"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
         }
-        for written in [
-            "f(){ curl -d x https://example.test/hook; }; f",
-            "git -c alias.ship=push ship origin main",
-            "git ship origin main",
-            "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook"
-        ] {
+        for written in ["git -c alias.ship=push ship origin main", "env -u CI git push origin main"] {
             let ask = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: broadBash))
                 .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": written]))
             #expect(ask?.requiresApproval == true, "\(written)")
@@ -452,14 +328,6 @@ struct AgentPolicyRuntimeMatrixTests {
             ))
             #expect(approved.disposition(toolName: "Bash", command: written) == .allowed, "\(written) approved once")
         }
-        let wrappedPush = "env -u CI git push origin main"
-        let pushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: broadBash))
-            .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": wrappedPush]))
-        #expect(pushAsk?.permissionRequest == .shell(command: "git push origin main", toolName: "Bash"))
-        let pushApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
-            runtime: .claudeCode, policy: broadBash, approvalGrants: pushAsk?.approvalGrants ?? []
-        ))
-        #expect(pushApproved.disposition(toolName: "Bash", command: wrappedPush) == .allowed)
 
         // Approving a push is not approving a force: that needs its own yes.
         let plainPushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
@@ -661,7 +529,9 @@ struct AgentPolicyRuntimeMatrixTests {
             runtime: .claudeCode, policy: mcp, approvalGrants: asked?.approvalGrants ?? []
         ))
         #expect(approved.violation(for: click) == nil, "approving the page change does not ask again")
-        #expect(approved.disposition(toolName: "Bash", command: "astra-browser click --selector button") == .allowed)
+        #expect(approved.disposition(toolName: "Bash", command: "astra-browser click") == .allowed)
+        #expect(approved.disposition(toolName: "Bash", command: "astra-browser fill --label Email --text a") == .ask,
+                "another page change needs its own approval")
 
         let auto = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: .preset(.autonomous)))
         #expect(auto.violation(for: click) == nil, "Auto asks nothing")

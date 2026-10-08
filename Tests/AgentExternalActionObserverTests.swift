@@ -14,67 +14,76 @@ import ASTRAPersistence
 @MainActor
 struct AgentExternalActionObserverTests {
     @Test(
-        "Recognised commands with an external effect",
+        "One recognised command gets its action's title",
         arguments: [
             ("git push -u origin feature", AgentExternalActionObserver.Action.push),
             (#"{"command":"gh pr create --draft --title Fix","description":"Open PR"}"#, .pullRequest(verb: "create")),
-            ("cd repo && gh pr merge 12 --squash", .pullRequest(verb: "merge")),
+            ("gh pr merge 12 --squash", .pullRequest(verb: "merge")),
             ("gh pr comment 12 --body 'Thanks'", .pullRequest(verb: "comment")),
             ("gh issue create --title Bug", .issue(verb: "create")),
             ("gh release create v1.2.0", .release),
             ("gh api repos/acme/widgets/pulls/12/comments -X POST -f body=hi", .api(method: "POST")),
             ("gh api --method=DELETE repos/acme/widgets/git/refs/heads/old", .api(method: "DELETE")),
             ("gh api repos/acme/widgets/issues/3/comments -f body=hi", .api(method: "POST")),
-            ("/bin/zsh -lc 'git push origin main'", .push),
-            ("env GIT_TRACE=1 git -C repo push", .push),
-            (#"echo "pushed: $(git push origin main)""#, .push),
-            (#"{"command":"gh pr create --draft --title 'A very long title that the recorder cut"#, .pullRequest(verb: "create")),
-            ("gh pr ready 12 --undo", .pullRequest(verb: "draft")),
             ("gh api repos/o/r/issues/1/comments -fbody=hello", .api(method: "POST")),
-            ("git send-pack git@github.com:owner/repo.git refs/heads/main", .push),
-            ("env -u CI git push origin main", .push),
-            ("timeout 30 gh pr create --fill", .pullRequest(verb: "create")),
-            ("bash -c 'git push origin main'", .push),
-            ("printf 'origin main' | xargs git push", .push),
-            ("curl -d x https://hooks.example.test/build", .externalWrite(executable: "curl", destination: "hooks.example.test")),
-            ("curl -XPOST https://hooks.example.test/build", .externalWrite(executable: "curl", destination: "hooks.example.test")),
-            ("gh gist create notes.md", .externalWrite(executable: "gh gist create", destination: "GitHub")),
-            ("find . -maxdepth 0 -exec git push origin main ';'", .push)
+            ("/bin/zsh -lc 'git push origin main'", .push),
+            ("git -C repo push", .push),
+            ("gh pr ready 12 --undo", .pullRequest(verb: "draft"))
         ]
     )
     func recognisedCommands(command: String, expected: AgentExternalActionObserver.Action) {
-        #expect(AgentExternalActionObserver.classify(command) == expected)
+        #expect(AgentExternalActionObserver.recordedAction(in: command) == expected)
+    }
+
+    // Auto records what Ask would have asked about (`LocalShellCommands`). A
+    // call that is more than one recognised command is recorded as the
+    // command it ran: a runner, a pipe, `|| true` or a dry run can mean the
+    // action never happened, so the record never claims it did.
+    @Test(
+        "Anything else that is not known local work is recorded as the command it ran",
+        arguments: [
+            "cd repo && gh pr merge 12 --squash", "env -u CI git push origin main", "printf 'origin main' | xargs git push",
+            "xargs -r git push origin main </dev/null", "git push origin main || true", "git push origin main &",
+            #"echo "pushed: $(git push origin main)""#, "git push --dry-run origin main", "bash -c 'git push origin main'",
+            "curl -d x https://hooks.example.test/build", "gh gist create notes.md",
+            "node --eval='require(\"child_process\").execSync(\"git push origin main\")'", "npm --scope @foo publish",
+            "DOCKER_HOST=ssh://deploy@prod docker create alpine", "python3 -c 'print(1)'"
+        ]
+    )
+    func otherCommandsAreRecordedAsRun(command: String) {
+        #expect(AgentExternalActionObserver.recordedAction(in: command) == .command(command))
     }
 
     @Test(
-        "Reads and local Git are not external actions",
+        "Known local work is not recorded",
         arguments: [
             "git status", "git commit -m 'push the fix'", "gh pr view 12", "gh pr list",
             "gh api repos/acme/widgets/pulls/12", "gh issue list", "echo gh-pr-create", "git log --grep push",
             "rg 'git push' .", "echo 'gh pr create'", #"grep -n "gh api -X POST" docs/notes.md"#,
             #"printf '%s\n' "git push origin main""#, #"{"command":"rg -n 'gh release create' scripts"}"#,
-            "git push --dry-run origin main", "git push -n", "gh api -X GET search/issues -f q=bug",
-            "gh api --method=GET search/issues -f q=bug", "curl https://example.test/status"
+            "gh api -X GET search/issues -f q=bug", "gh api --method=GET search/issues -f q=bug",
+            "curl https://example.test/status", "swift test --filter Observer", "python3 scripts/report.py"
         ]
     )
-    func readsAreNotActions(command: String) {
-        #expect(AgentExternalActionObserver.classify(command) == nil)
+    func localWorkIsNotRecorded(command: String) {
+        #expect(AgentExternalActionObserver.recordedAction(in: command) == nil)
     }
 
-    // A successful call proves an action only when its failure would have
-    // failed the call: nothing but `&&` may follow it.
-    @Test("An action whose failure the command masks is not recorded")
-    func maskedActionsAreNotRecorded() {
-        for masked in ["git push origin main || true", "git push origin main | cat", "git push origin main; echo done",
-                       "git push origin main &", #"echo "$(git push origin main)""#, "bash -c 'git push origin main || true'",
-                       "trap 'git push origin main' EXIT"] {
-            #expect(AgentExternalActionObserver.recordableActions(in: masked).isEmpty, "\(masked)")
-            #expect(!AgentExternalActionObserver.actions(in: masked).isEmpty, "the guard still asks: \(masked)")
-        }
-        for decisive in ["git push origin main", "cd repo && git push origin main", "git push origin main && echo ok",
-                         "false || git push origin main", "git push origin main;"] {
-            #expect(AgentExternalActionObserver.recordableActions(in: decisive) == [.push], "\(decisive)")
-        }
+    @Test("A command's record names it and where it went")
+    func commandRecordsNameTheCommand() {
+        let curl = AgentExternalActionObserver.Action.command("curl -d x https://hooks.example.test/build")
+        #expect(AgentExternalActionObserver.title(for: curl, url: nil) == "Ran `curl -d x https://hooks.example.test/build`")
+        #expect(AgentExternalActionObserver.destination(for: curl, url: nil, result: "") == "hooks.example.test")
+        let gist = AgentExternalActionObserver.Action.command("gh gist create notes.md")
+        #expect(AgentExternalActionObserver.destination(for: gist, url: nil, result: "") == "gh")
+        let long = AgentExternalActionObserver.Action.command(String(repeating: "a", count: 120) + "\nsecond line")
+        #expect(AgentExternalActionObserver.title(for: long, url: nil) == "Ran `\(String(repeating: "a", count: 79))…`")
+        #expect(AgentExternalActionObserver.title(for: .pullRequest(verb: "draft"), url: "https://github.com/a/b/pull/7")
+            == "Converted pull request #7 to draft")
+        // A summary the recorder cut mid-quote cannot be read as one command.
+        #expect(AgentExternalActionObserver.recordedAction(
+            in: #"{"command":"gh pr create --draft --title 'A very long title that the recorder cut"#
+        ) == .command("gh pr create --draft --title 'A very long title that the recorder cut"))
     }
 
     @Test("Each action of a compound call gets its own link, or none")
@@ -88,12 +97,16 @@ struct AgentExternalActionObserverTests {
         ) == [nil, nil], "no link of its own kind is no link, not another action's")
     }
 
-    @Test("A compound command records every action it ran, in order")
-    func compoundCommandsRecordEveryAction() {
-        #expect(AgentExternalActionObserver.actions(in: "git push -u origin fix && gh pr create --fill")
-            == [.push, .pullRequest(verb: "create")])
-        #expect(AgentExternalActionObserver.title(for: .pullRequest(verb: "draft"), url: "https://github.com/a/b/pull/7")
-            == "Converted pull request #7 to draft")
+    @Test("A compound call is one record with the link it printed")
+    func compoundCallsAreOneRecord() throws {
+        let fixture = try ObserverFixture()
+        fixture.toolCall("Using tool: Bash: git push -u origin fix && gh pr create --fill",
+                         result: "https://github.com/acme/widgets/pull/34\n", at: 1)
+        let observed = AgentExternalActionObserver.recordObservedActions(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        #expect(observed.map(\.title) == ["Ran `git push -u origin fix && gh pr create --fill`"])
+        #expect(observed.map(\.url) == ["https://github.com/acme/widgets/pull/34"])
     }
 
     @Test("A GitHub Enterprise action names its host, not GitHub")
@@ -164,6 +177,24 @@ struct AgentExternalActionObserverTests {
         #expect(observed.map(\.url) == [
             "https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/34", nil
         ])
+    }
+
+    // The event keeps 300 characters; the record reads the whole call.
+    @Test("An action past the event's first 300 characters is still recorded")
+    func longCommandsAreRecordedWhole() throws {
+        let fixture = try ObserverFixture()
+        let state = AgentEventRecordingState()
+        let long = "echo \(String(repeating: "x ", count: 200)) && git push origin main"
+        AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "long", inputSummary: long),
+                                             to: fixture.task, run: fixture.run, modelContext: fixture.context, recordingState: state)
+        AgentEventRecorder.recordClaudeEvent(.toolResult(id: "long", content: "To github.com:acme/widgets.git", isError: false),
+                                             to: fixture.task, run: fixture.run, modelContext: fixture.context, recordingState: state)
+
+        let observed = AgentExternalActionObserver.recordObservedActions(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        #expect(observed.count == 1)
+        #expect(observed.first?.title.hasPrefix("Ran `echo x x") == true)
     }
 
     @Test("Only shell tools count; a file that mentions a command did nothing")

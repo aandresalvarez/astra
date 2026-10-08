@@ -208,6 +208,38 @@ struct ConnectorMutationAutoSendTests {
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).map(\.summary) == ["Third"])
     }
 
+    // The review sheet can be open on a proposal while Auto sends it; once the
+    // send has claimed it, a decline would sit beside the write it refuses.
+    @Test("A proposal an in-flight Auto send claimed cannot be declined")
+    func claimedProposalCannotBeDeclined() async throws {
+        let fixture = try AutoSendFixture()
+        let sender = AutoSendRecordingSender(statusCode: 201, body: #"{"key":"STAR-1"}"#)
+        try fixture.stage(summary: "First")
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let pending = try #require(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).first)
+        let opened = try coordinator.prepare(task: fixture.task, pending: pending)
+        var declineError: ConnectorMutationCoordinatorError?
+        sender.duringFirstSend = {
+            do {
+                try coordinator.decline(task: fixture.task, proposal: opened)
+            } catch {
+                declineError = error as? ConnectorMutationCoordinatorError
+            }
+        }
+
+        await ConnectorMutationAutoSend.sendPendingMutations(
+            task: fixture.task, run: fixture.run, policyLevel: .autonomous,
+            modelContext: fixture.context, coordinator: coordinator
+        )
+
+        #expect(sender.count == 1)
+        #expect(declineError == .alreadySent(opened.target))
+        #expect(!fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.declined })
+    }
+
     // A dispatch with no trustworthy answer is quarantined, not left in the
     // dock, so the notice sends the user to the destination instead.
     @Test("A terminal outcome is not called reviewable; the proposals after it are")

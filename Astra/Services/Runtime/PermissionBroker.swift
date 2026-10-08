@@ -438,6 +438,20 @@ enum PermissionBroker {
         return .providerTool(name: canonical)
     }
 
+    /// The grants approving a shell command, one for each of its commands,
+    /// or nil when one of them yields none: an approval of the rest would not
+    /// cover it.
+    static func completeShellApprovalGrants(command: String) -> [PermissionGrant]? {
+        var grants: [PermissionGrant] = []
+        for segment in actionableShellSegments(command) where !isBenignShellSetupSegment(segment) {
+            guard let grant = ShellCommandRiskClassifier.approvalGrant(forShellSegment: segment), isSafeGrant(grant) else {
+                return nil
+            }
+            grants.append(grant)
+        }
+        return grants.isEmpty ? nil : sanitizeGrants(grants)
+    }
+
     private static func shellApprovalGrants(command: String?) -> [PermissionGrant] {
         guard let command else { return [] }
         let segments = actionableShellSegments(command).filter { !isBenignShellSetupSegment($0) }

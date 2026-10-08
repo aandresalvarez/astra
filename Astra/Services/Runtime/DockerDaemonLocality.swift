@@ -23,19 +23,15 @@ enum DockerDaemonLocality {
         return endpoint(ofContext: context, in: configDirectory).map(isLocalEndpoint) ?? false
     }
 
-    /// This process's own view: its environment, and the command's `--config`
-    /// directory, `DOCKER_CONFIG`, or `~/.docker`.
-    /// `overrides`: what the command sets for itself (`DOCKER_HOST=… docker …`).
-    static func isLocal(
-        context: String? = nil,
-        configDirectory override: String? = nil,
-        overrides: [String: String] = [:]
-    ) -> Bool {
-        let environment = ProcessInfo.processInfo.environment.merging(overrides) { _, command in command }
-        let directory = (nonEmpty(override) ?? nonEmpty(environment["DOCKER_CONFIG"]))
+    /// This process's own view: its environment, and `DOCKER_CONFIG` or
+    /// `~/.docker`. A command that names another daemon, context or config
+    /// itself is not local work (`LocalShellCommands`).
+    static func isLocal() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        let directory = nonEmpty(environment["DOCKER_CONFIG"])
             .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".docker", isDirectory: true)
-        return isLocal(context: context, environment: environment, configDirectory: directory)
+        return isLocal(environment: environment, configDirectory: directory)
     }
 
     static func isLocalEndpoint(_ host: String) -> Bool {

@@ -70,16 +70,20 @@ struct TaskCapabilityResolutionSnapshot {
     /// A grant can land between capture and launch: in Auto the launch gate
     /// allows a connector for the task without asking. A launch built from the
     /// captured exposure would then start without the credential the chat says
-    /// was allowed. Scope stays what admission resolved; only the exposure is
-    /// refreshed, from the durable task grants the caller reads.
-    func addingApprovedCredentialLabels(_ labels: [String]) -> TaskCapabilityResolutionSnapshot {
+    /// was allowed. Scope stays what admission resolved; the exposure, and the
+    /// connector environment the process is built from, are refreshed from
+    /// the durable task grants the caller reads.
+    func addingApprovedCredentialLabels(
+        _ labels: [String],
+        secretStore: SecretStore = KeychainSecretStore()
+    ) -> TaskCapabilityResolutionSnapshot {
         let added = Set(labels).subtracting(connectorCredentialExposurePolicy.approvedCredentialLabels)
         guard !added.isEmpty else { return self }
         var policy = connectorCredentialExposurePolicy
         policy.approvedCredentialLabels.formUnion(added)
         return TaskCapabilityResolutionSnapshot(
-            fullInventory: fullInventory,
-            providerLaunch: providerLaunch,
+            fullInventory: fullInventory.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),
+            providerLaunch: providerLaunch.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),
             providerLaunchContextText: providerLaunchContextText,
             connectorCredentialExposurePolicy: policy
         )
@@ -1319,7 +1323,7 @@ struct TaskCapabilityResolver {
 /// passes `ConnectorRuntimeProjection.canExposeCredential`, which is built from
 /// approved grants and knows nothing about any of these sets.
 struct TaskCapabilityPromptScope {
-    let resolver: SkillResolver
+    private(set) var resolver: SkillResolver
     let behaviorSkills: [Skill]
     let connectors: [Connector]
     let localTools: [LocalTool]
@@ -1359,5 +1363,30 @@ struct TaskCapabilityPromptScope {
     var reachableButNotNarratedConnectors: [Connector] {
         let narrated = Set(connectors.map(\.id))
         return reachableConnectors.filter { !narrated.contains($0.id) }
+    }
+}
+
+extension TaskCapabilityPromptScope {
+    /// The same scope with its reachable connectors' environment projected
+    /// again under `policy`, so a credential approved after capture is in the
+    /// process environment, not only in the launch metadata.
+    func reprojectingConnectorEnvironment(
+        policy: ConnectorRuntimeProjection.CredentialExposurePolicy,
+        secretStore: SecretStore
+    ) -> TaskCapabilityPromptScope {
+        var scope = self
+        scope.resolver = SkillResolver(
+            effectiveSnapshots: resolver.effectiveSnapshots,
+            detachedSnapshots: resolver.detachedSnapshots,
+            standaloneToolSnapshots: resolver.standaloneToolSnapshots,
+            liveLocalToolCommands: resolver.liveLocalToolCommands,
+            liveSkillEnvVars: resolver.liveSkillEnvVars,
+            connectorEnvVars: ConnectorRuntimeProjection(
+                connectors: reachableConnectors,
+                secretStore: secretStore,
+                credentialExposurePolicy: policy
+            ).environmentVariables()
+        )
+        return scope
     }
 }

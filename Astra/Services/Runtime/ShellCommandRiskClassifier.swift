@@ -53,69 +53,6 @@ enum ShellCommandRiskClassifier {
         )
     }
 
-    /// Whether a mutating segment changes something outside this machine — a
-    /// remote repository, a hosted service, cloud infrastructure, a remote
-    /// database — rather than the workspace. Ask and Custom ask before these
-    /// even when a Custom rule allows the command family (`ExternalActionPolicy`,
-    /// `AgentRuntimePolicyGuard`). Local writes such as `git commit` or `mv`
-    /// stay with the user's per-item rules.
-    /// `dockerEnvironment`: `DOCKER_HOST`/`DOCKER_CONTEXT`/`DOCKER_CONFIG` the
-    /// command sets for itself (`DOCKER_HOST=ssh://x docker …`, `export …`),
-    /// which pick the daemon a docker segment reaches.
-    static func actsOutsideMachine(forShellSegment segment: String) -> Bool {
-        actsOutsideMachine(forShellSegment: segment, dockerEnvironment: [:])
-    }
-
-    static func actsOutsideMachine(forShellSegment segment: String, dockerEnvironment: [String: String]) -> Bool {
-        guard let assessment = assessment(forShellSegment: segment),
-              [.mutation, .destructive, .packageMutation].contains(assessment.risk) else {
-            return false
-        }
-        let args = Array(shellTokens(strippingBenignRedirections(segment)).dropFirst()).map(comparableCommandArgument)
-        let executable = assessment.executable.lowercased()
-        switch executable {
-        case "git":
-            // `send-pack` is the plumbing under `push`; a dry run changes nothing.
-            // An alias or extension (`-c alias.ship=push ship`, `lfs push`) runs
-            // something this cannot read, so it is not declared local.
-            guard let verb = dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first else {
-                return false
-            }
-            if ["push", "send-pack"].contains(verb) { return !args.contains("--dry-run") && !args.contains("-n") }
-            // An alias defined on this command line is judged by its expansion
-            // (`ShellCommandRunners.gitInlineAliasExpansion`).
-            if args.contains(where: { $0.hasPrefix("alias.\(verb)=") }) { return false }
-            return ["send-email", "imap-send", "http-push", "svn", "p4"].contains(verb) || !knownLocalGitVerbs.contains(verb)
-        case "gh" where isLocalGitHubCLIOperation(args):
-            // `repo clone` and `pr checkout` change this checkout, not GitHub.
-            return false
-        case "docker" where reachesRemoteDockerDaemon(args, environment: dockerEnvironment):
-            // Every mutating verb on another machine's daemon acts there.
-            return true
-        case "gh", "gcloud", "aws", "az", "bq", "kubectl", "helm", "terraform", "tofu", "psql", "mysql",
-             BrowserBridgeMCPProjection.toolCommand:
-            return true
-        case "docker":
-            return publishesDockerImage(args)
-        case "curl", "wget":
-            return usesOpaqueRequestConfig(executable: executable, args: args)
-                || withoutReadMethodRequests(args).contains(where: isRemoteWriteFlag)
-        case "rsync", "scp":
-            // `rsync -a src/ backup/` stays here; a `host:path` or
-            // `rsync://` operand is another machine.
-            return args.contains { arg in
-                !arg.hasPrefix("-") && (arg.hasPrefix("rsync://")
-                    || arg.range(of: #"^[^/:]+:"#, options: .regularExpression) != nil)
-            }
-        default:
-            if networkTransferRoots.contains(executable) { return true }
-            if packageManagerRoots.contains(executable) {
-                return changesPackageRegistry(args)
-            }
-            return false
-        }
-    }
-
     static func approvalGrant(forShellSegment segment: String) -> PermissionGrant? {
         guard let assessment = assessment(forShellSegment: segment) else { return nil }
         return .shellCommand(executable: assessment.executable, pattern: assessment.pattern)
@@ -217,7 +154,7 @@ enum ShellCommandRiskClassifier {
             return riskForPackageManager(executable: executable, args: args)
         }
         if databaseRoots.contains(executable) {
-            return riskForDatabaseClient(executable: executable, args: args)
+            return .mutation
         }
         if networkTransferRoots.contains(executable) {
             return riskForNetworkTransfer(executable: executable, args: args)
@@ -250,12 +187,6 @@ enum ShellCommandRiskClassifier {
             return riskForTerraform(args)
         case "defaults":
             return args.first == "read" ? .read : .system
-        case BrowserBridgeMCPProjection.toolCommand:
-            // A page change is a write to a site; reads stay unclassified.
-            guard let command = args.first, ShelfBrowserBridgeCommandRouter.commandChangesPage(command) else {
-                return .unknown
-            }
-            return .mutation
         default:
             return .unknown
         }
@@ -267,40 +198,14 @@ enum ShellCommandRiskClassifier {
         if ["status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "remote"].contains(verb) {
             return .read
         }
-        if ["push", "send-pack", "reset", "clean", "checkout", "switch", "rebase", "merge", "commit", "tag", "restore", "stash", "pull", "fetch"].contains(verb) {
+        if ["push", "reset", "clean", "checkout", "switch", "rebase", "merge", "commit", "tag", "restore", "stash", "pull", "fetch"].contains(verb) {
             return .mutation
         }
-        // An alias or extension: what it runs is not known.
-        if !knownLocalGitVerbs.contains(verb) { return .mutation }
         return .unknown
     }
 
-    /// Git's own commands that change, at most, this machine or read a remote.
-    /// Anything else — an alias, an extension such as `lfs`, a mail or foreign
-    /// VCS bridge — is not proven local (`actsOutsideMachine`).
-    private static let knownLocalGitVerbs: Set<String> = [
-        "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file",
-        "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout", "checkout-index",
-        "cherry", "cherry-pick", "clean", "clone", "commit", "commit-graph", "commit-tree", "config",
-        "count-objects", "describe", "diff", "diff-files", "diff-index", "diff-tree", "difftool", "fetch",
-        "for-each-ref", "format-patch", "fsck", "gc", "grep", "hash-object", "help", "init",
-        "interpret-trailers", "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge", "merge-base",
-        "merge-file", "merge-tree", "mergetool", "mktag", "mktree", "mv", "name-rev", "notes", "pack-refs",
-        "prune", "pull", "range-diff", "read-tree", "rebase", "reflog", "remote", "repack", "replace",
-        "request-pull", "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "shortlog",
-        "show", "show-branch", "show-ref", "sparse-checkout", "stash", "status", "stripspace", "submodule",
-        "switch", "symbolic-ref", "tag", "update-index", "update-ref", "var", "verify-commit", "verify-pack",
-        "verify-tag", "version", "whatchanged", "worktree", "write-tree"
-    ]
-
-    private static func isLocalGitHubCLIOperation(_ args: [String]) -> Bool {
-        let tokens = dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "-R", "--hostname"])
-        guard tokens.count >= 2 else { return false }
-        return ["repo clone", "pr checkout", "repo set-default", "gist clone"].contains("\(tokens[0]) \(tokens[1])")
-    }
-
     private static func riskForGitHubCLI(_ args: [String]) -> Risk {
-        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "-R", "--hostname"])
+        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "--hostname"])
         guard let area = actionTokens.first else { return .unknown }
         let verb = actionTokens.dropFirst().first
         switch area {
@@ -321,134 +226,10 @@ enum ShellCommandRiskClassifier {
         case "release":
             if ["list", "view", "download"].contains(verb ?? "") { return .read }
             return .mutation
-        case "api":
-            // A write method or fields; `AgentExternalActionObserver` reads those.
-            return .unknown
-        case "alias", "config", "extension", "completion", "help", "browse", "version":
-            // Local to this machine: gh's own settings and extensions.
-            return .unknown
-        case "status":
-            return .read
-        case _ where !gitHubCLIAreas.contains(area):
-            // Not one of gh's own commands: an alias (`gh alias set --shell`)
-            // or an extension, which runs what this cannot read.
-            return .mutation
         default:
-            // Every other area is GitHub itself — `workflow run` starts Actions,
-            // `secret set` stores a value there — so anything but a read verb
-            // changes something outside this machine.
-            guard let verb else { return .unknown }
-            if gitHubReadVerbs.contains(verb) || verb.hasSuffix("-list") { return .read }
-            return .mutation
+            return .unknown
         }
     }
-
-    /// gh's own top-level commands; anything else is an alias or extension.
-    private static let gitHubCLIAreas: Set<String> = [
-        "agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "codespace", "completion", "config",
-        "copilot", "extension", "gist", "gpg-key", "help", "issue", "label", "org", "pr", "preview", "project",
-        "release", "repo", "ruleset", "run", "search", "secret", "ssh-key", "status", "variable", "version",
-        "workflow", "accessibility"
-    ]
-
-    private static let gitHubReadVerbs: Set<String> = [
-        "list", "ls", "view", "status", "diff", "checks", "download", "watch", "get", "check", "verify"
-    ]
-
-    /// Code an interpreter takes on the command line (`python3 -c`, `node -e`,
-    /// `osascript -e`): what it does cannot be read, so it is not declared
-    /// local. A script file or `-m module` is the user's own code and keeps
-    /// the rule.
-    static func runsInlineCode(forShellSegment segment: String) -> Bool {
-        let tokens = shellTokens(strippingBenignRedirections(segment))
-        guard let first = tokens.first, let executable = shellApprovalRoot(first)?.lowercased() else { return false }
-        let inlineFlags: Set<String>
-        switch executable {
-        case _ where executable.hasPrefix("python"): inlineFlags = ["-c"]
-        case "node", "nodejs": inlineFlags = ["-e", "--eval", "-p", "--print"]
-        case "ruby", "lua", "osascript", "rscript": inlineFlags = ["-e"]
-        case "perl": inlineFlags = ["-e", "-E"]
-        case "php": inlineFlags = ["-r"]
-        case "bun": inlineFlags = ["-e", "--eval", "-p", "--print"]
-        case "deno": inlineFlags = ["eval"]
-        case "pwsh", "powershell": inlineFlags = ["-c", "-command"]
-        default: return false
-        }
-        return tokens.dropFirst().contains { inlineFlags.contains($0.lowercased()) || inlineFlags.contains($0) }
-    }
-
-    /// Whether a `docker` command reaches a daemon other than this machine's:
-    /// the one its `--context`/`-c` or `-H`/`--host` names, or else the one the
-    /// CLI would pick (`DockerDaemonLocality`).
-    private static func reachesRemoteDockerDaemon(_ args: [String], environment: [String: String]) -> Bool {
-        var context: String?
-        var host: String?
-        var configDirectory: String?
-        var index = 0
-        while index < args.count, args[index].hasPrefix("-") {
-            let arg = args[index]
-            if arg.hasPrefix("-H"), !arg.hasPrefix("--"), arg.count > 2 {
-                host = String(arg.dropFirst(2))
-                index += 1
-                continue
-            }
-            let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
-            var value = parts.count == 2 ? parts[1] : nil
-            if value == nil, dockerGlobalOptionsWithValues.contains(parts[0]), index + 1 < args.count {
-                value = args[index + 1]
-                index += 1
-            }
-            switch parts[0] {
-            case "--context", "-c": context = value
-            case "-H", "--host": host = value
-            case "--config": configDirectory = value
-            default: break
-            }
-            index += 1
-        }
-        if let host { return !DockerDaemonLocality.isLocalEndpoint(host) }
-        return !DockerDaemonLocality.isLocal(context: context, configDirectory: configDirectory, overrides: environment)
-    }
-
-    /// docker's global options that take a value, so it is not read as the verb.
-    private static let dockerGlobalOptionsWithValues: Set<String> = [
-        "--context", "-c", "-H", "--host", "--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"
-    ]
-
-    /// A package-manager command that changes a registry rather than this
-    /// machine: publishing, removing, or deprecating a release; changing its
-    /// tags, owners, or access; or the account's tokens, hooks, org, or
-    /// profile. `npm dist-tag ls`, `npm owner ls`, `npm token list` read.
-    /// The manager's own subcommand decides, after its global options: in
-    /// `npm install publish` the package is named `publish`.
-    private static func changesPackageRegistry(_ args: [String]) -> Bool {
-        var tokens = dropLeadingOptions(args, optionsWithValues: packageManagerOptionsWithValues)
-        if tokens.first == "npm" { tokens.removeFirst() }  // `yarn npm publish`
-        guard let command = tokens.first else { return false }
-        if packageRegistryWriteVerbs.contains(command) { return true }
-        guard packageRegistryAdminCommands.contains(command) else { return false }
-        return tokens.dropFirst().contains(where: packageRegistryAdminWriteVerbs.contains)
-    }
-
-    private static let packageManagerOptionsWithValues: Set<String> = [
-        "--registry", "--userconfig", "--globalconfig", "--prefix", "--workspace", "-w", "--loglevel", "--cache",
-        "--otp", "-C", "--cwd", "--dir", "--filter", "-F", "--manifest-path", "--config", "-Z", "--color",
-        "--index-url", "--extra-index-url", "--source"
-    ]
-
-    private static let packageRegistryWriteVerbs: Set<String> = [
-        "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank", "star", "unstar",
-        "adduser", "add-user", "login", "logout"
-    ]
-
-    private static let packageRegistryAdminCommands: Set<String> = [
-        "dist-tag", "dist-tags", "owner", "access", "team", "token", "hook", "org", "profile"
-    ]
-
-    private static let packageRegistryAdminWriteVerbs: Set<String> = [
-        "add", "rm", "remove", "set", "grant", "revoke", "create", "destroy", "public", "restricted", "update",
-        "enable-2fa", "disable-2fa", "--add", "--remove", "-a", "-r"
-    ]
 
     private static func riskForBigQuery(_ args: [String]) -> Risk {
         let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--project_id", "--location", "--format"])
@@ -462,162 +243,42 @@ enum ShellCommandRiskClassifier {
         return .mutation
     }
 
-    /// `gcloud`, `aws` and `az` only act on a remote account, so a command
-    /// that names no read verb is a write: `aws ec2 terminate-instances` and
-    /// `az storage blob upload` name none of the generic write verbs either.
     private static func riskForCloudCLI(args: [String], readVerbs: Set<String>, writeVerbs: Set<String>) -> Risk {
         let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--project", "--project-id", "--profile", "--region", "--zone", "-o"])
-        guard !actionTokens.isEmpty else { return .unknown }
-        if let transfer = riskForObjectStorageTransfer(actionTokens, args: args) {
-            return transfer
-        }
         if actionTokens.contains(where: { writeVerbs.contains($0) }) {
             return .mutation
         }
-        // Reads are named by the command's own words, before its options:
-        // `--key get-secret` is a value, not an operation.
-        let words = actionTokens.prefix { !$0.hasPrefix("-") }
-        if words.contains(where: { readVerbs.contains($0) }) {
+        if actionTokens.contains(where: { readVerbs.contains($0) }) {
             return .read
         }
-        if words.contains("iam") || words.contains("secretsmanager") || words.contains("secret") {
+        if actionTokens.contains("iam") || actionTokens.contains("secretsmanager") || actionTokens.contains("secret") {
             return .credential
         }
-        if words.contains(where: { token in cloudReadOperationPrefixes.contains { token.hasPrefix($0) } }) {
-            return .read
-        }
-        return .mutation
+        return .unknown
     }
-
-    /// `aws s3 cp|sync|mv` and `gcloud storage cp|rsync|mv` write the bucket
-    /// only when it is the destination (or, for `mv`, either end); a
-    /// download writes this machine. `--dryrun`/`--dry-run` changes nothing.
-    private static func riskForObjectStorageTransfer(_ actionTokens: [String], args: [String]) -> Risk? {
-        guard actionTokens.count >= 2,
-              ["s3", "storage"].contains(actionTokens[0]),
-              ["cp", "sync", "rsync", "mv"].contains(actionTokens[1]) else {
-            return nil
-        }
-        // `-n` is gcloud storage's --no-clobber, which still writes.
-        if args.contains(where: { ["--dryrun", "--dry-run"].contains($0) }) { return .read }
-        // Locations are the positionals; an option's value (`--storage-class
-        // STANDARD_IA`) is not one. A bucket anywhere but the first location
-        // is written to (the last is the destination; several sources may
-        // precede it), and `mv` removes it from either end.
-        var locations: [String] = []
-        var index = 2
-        let tokens = Array(actionTokens)
-        while index < tokens.count {
-            let token = tokens[index]
-            if token.hasPrefix("--") {
-                index += token.contains("=") || storageTransferBooleanOptions.contains(token) ? 1 : 2
-            } else if token.hasPrefix("-"), token.count > 1 {
-                index += 1
-            } else {
-                locations.append(token)
-                index += 1
-            }
-        }
-        let isBucket: (String) -> Bool = { $0.hasPrefix("s3://") || $0.hasPrefix("gs://") }
-        if actionTokens[1] == "mv" { return locations.contains(where: isBucket) ? .mutation : .read }
-        guard locations.count >= 2 else { return locations.contains(where: isBucket) ? .mutation : .unknown }
-        return locations.dropFirst().contains(where: isBucket) ? .mutation : .read
-    }
-
-    /// aws s3 / gcloud storage transfer options that take no value.
-    private static let storageTransferBooleanOptions: Set<String> = [
-        "--recursive", "--dryrun", "--dry-run", "--quiet", "--only-show-errors", "--no-progress",
-        "--follow-symlinks", "--no-follow-symlinks", "--delete", "--delete-unmatched-destination-objects",
-        "--exact-timestamps", "--size-only", "--force-glacier-transfer", "--ignore-glacier-warnings",
-        "--no-guess-mime-type", "--no-paginate", "--debug", "--no-verify-ssl", "--no-sign-request",
-        "--no-clobber", "--continue-on-error", "--daisy-chain", "--preserve-posix", "--print-created-message",
-        "--skip-unsupported", "--do-not-decompress", "--checksums-only", "--skip-if-dest-has-newer-mtime"
-    ]
-
-    private static let cloudReadOperationPrefixes = ["describe-", "list-", "get-", "head-", "show-", "lookup-"]
-
-    /// `kubectl` changes the cluster unless the verb reads; `set image`,
-    /// `label` and `drain` name no generic write verb. A dry run changes
-    /// nothing.
-    /// kubectl's global options that take a value, so it is not read as the verb.
-    private static let kubectlOptionsWithValues: Set<String> = [
-        "--namespace", "-n", "--context", "--kubeconfig", "--cluster", "--user", "--server", "-s", "--token",
-        "--as", "--as-group", "--as-uid", "--certificate-authority", "--client-certificate", "--client-key",
-        "--request-timeout", "--cache-dir", "--tls-server-name", "-v", "--v", "--profile", "--profile-output",
-        "--log-file", "--vmodule"
-    ]
 
     private static func riskForKubernetes(_ args: [String]) -> Risk {
-        let actionTokens = dropLeadingOptions(args, optionsWithValues: kubectlOptionsWithValues)
+        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--namespace", "-n", "--context"])
         guard let verb = actionTokens.first else { return .unknown }
-        if [
-            "get", "describe", "logs", "top", "api-resources", "api-versions", "version", "config", "explain",
-            "cluster-info", "diff", "wait", "events", "completion"
-        ].contains(verb) {
+        if ["get", "describe", "logs", "top", "api-resources", "version", "config"].contains(verb) {
             return .read
         }
-        if verb == "auth", ["can-i", "whoami"].contains(actionTokens.dropFirst().first ?? "") {
-            return .read
+        if ["apply", "delete", "exec", "port-forward", "cp", "edit", "scale", "rollout", "create", "patch", "replace"].contains(verb) {
+            return .mutation
         }
-        if isKubectlDryRun(args) {
-            return .read
-        }
-        return .mutation
+        return .unknown
     }
 
-    /// `--dry-run`, `=client` or `=server` persist nothing; `=none` (the
-    /// default) is a real write.
-    private static func isKubectlDryRun(_ args: [String]) -> Bool {
-        for (index, arg) in args.enumerated() {
-            if arg.hasPrefix("--dry-run=") { return String(arg.dropFirst("--dry-run=".count)).lowercased() != "none" }
-            if arg == "--dry-run" {
-                return !(args.indices.contains(index + 1) && args[index + 1].lowercased() == "none")
-            }
-        }
-        return false
-    }
-
-    /// A daemon's state changes unless the verb reads, so every other verb is
-    /// a mutation — `create`, `start`, `volume create` — and a remote daemon's
-    /// is judged as one (`actsOutsideMachine`). The CLI's own settings
-    /// (`context`, `login`) stay with the rule.
     private static func riskForDocker(_ args: [String]) -> Risk {
-        let actionTokens = dropLeadingOptions(args, optionsWithValues: dockerGlobalOptionsWithValues)
+        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--context", "-H"])
         guard let verb = actionTokens.first else { return .unknown }
-        let next = actionTokens.dropFirst().first ?? ""
-        if ["ps", "images", "inspect", "logs", "version", "info", "stats", "top", "history", "search", "events",
-            "diff", "port", "help"].contains(verb) {
+        if ["ps", "images", "inspect", "logs", "version", "info"].contains(verb) {
             return .read
         }
-        if ["container", "image", "volume", "network", "system", "node", "service", "stack", "secret", "config",
-            "plugin", "builder", "buildx", "compose", "manifest", "trust", "swarm"].contains(verb),
-           ["ls", "list", "inspect", "ps", "logs", "history", "top", "stats", "df", "events", "version", "ls-remote",
-            "du"].contains(next) {
-            return .read
+        if ["run", "exec", "build", "pull", "push", "rm", "rmi", "stop", "kill", "compose"].contains(verb) {
+            return .mutation
         }
-        if ["context", "login", "logout", "completion"].contains(verb) { return .unknown }
-        return .mutation
-    }
-
-    /// A docker command that sends an image or manifest to a registry, even
-    /// from a local daemon: `push`, `image push`, `manifest push`, `compose
-    /// push`, `buildx imagetools create`, and any build with `--push` or an
-    /// `--output type=registry`.
-    private static func publishesDockerImage(_ args: [String]) -> Bool {
-        let tokens = dropLeadingOptions(args, optionsWithValues: dockerGlobalOptionsWithValues)
-        let verb = tokens.first ?? ""
-        let next = tokens.dropFirst().first ?? ""
-        if verb == "push" || (["image", "manifest", "compose", "trust"].contains(verb) && ["push", "sign"].contains(next)) {
-            return true
-        }
-        if verb == "buildx", next == "imagetools", tokens.dropFirst(2).first == "create" { return true }
-        for (index, arg) in args.enumerated() {
-            if arg == "--push" || arg.hasPrefix("--push=true") { return true }
-            let output = arg.hasPrefix("--output=") ? String(arg.dropFirst("--output=".count))
-                : (["--output", "-o"].contains(arg) && args.indices.contains(index + 1)) ? args[index + 1] : nil
-            if let output, output.contains("type=registry") || output.contains("push=true") { return true }
-        }
-        return false
+        return .unknown
     }
 
     private static func riskForHelm(_ args: [String]) -> Risk {
@@ -664,7 +325,7 @@ enum ShellCommandRiskClassifier {
 
     private static func shellApprovalPattern(executable: String, args: [String], risk: Risk) -> String {
         // A request read from a config file is approved with that file named,
-        // so the grant is still a write's (`actsOutsideMachine`).
+        // so the grant is still a write's.
         if ["curl", "wget"].contains(executable), usesOpaqueRequestConfig(executable: executable, args: args) {
             let tokens = args.map(normalizedPatternToken).filter(isSafeShellPatternToken)
             return (Array(tokens.prefix(4)) + ["*"]).joined(separator: " ")
@@ -673,7 +334,7 @@ enum ShellCommandRiskClassifier {
            let hostPattern = hostScopedShellPattern(from: args) {
             // A write keeps the flag that makes it one, so approving it never
             // reads as approving every request to the host, and a host-scoped
-            // read approval never covers a later write (`actsOutsideMachine`).
+            // read approval never covers a later write.
             guard let writeFlag = withoutReadMethodRequests(args).first(where: isRemoteWriteFlag) else { return hostPattern }
             let name = writeFlag.split(separator: "=", maxSplits: 1).first.map(String.init) ?? writeFlag
             let flagPattern = writeFlag.contains("=") ? "\(name)=*" : name
@@ -685,63 +346,12 @@ enum ShellCommandRiskClassifier {
         guard !actionTokens.isEmpty else { return "*" }
         let tokenLimit = patternTokenLimit(for: risk)
         let kept = Array(actionTokens.prefix(tokenLimit))
-        // A force or delete past the kept tokens stays in the pattern, so the
-        // approval names it (`pushEscalations`).
+        // A force or delete past the kept tokens stays in the pattern, so
+        // approving a push is not approving a force.
         let escalations = executable == "git"
             ? actionTokens.dropFirst(tokenLimit).filter { isPushEscalation($0) }
             : []
         return (kept + escalations + ["*"]).joined(separator: " ")
-    }
-
-    /// The options that turn a push into a different, destructive action:
-    /// forcing, deleting, mirroring, pruning, or a `+refspec`. Approving a
-    /// plain push is not approving these (`AgentRuntimePolicyGuard`).
-    static func pushEscalations(inShellSegment segment: String) -> Set<String> {
-        let tokens = shellTokens(strippingBenignRedirections(segment))
-        guard let executable = tokens.first.flatMap(shellApprovalRoot)?.lowercased(), executable == "git" else { return [] }
-        let args = Array(tokens.dropFirst()).map(comparableCommandArgument)
-        let verb = dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first
-        guard ["push", "send-pack"].contains(verb ?? "") else { return [] }
-        return Set(args.filter(isPushEscalation).map { token in
-            token.hasPrefix("+") ? "+refspec" : (token.split(separator: "=").first.map(String.init) ?? token)
-        })
-    }
-
-    private static func isPushEscalation(_ token: String) -> Bool {
-        let name = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
-        return ["--force", "-f", "--force-with-lease", "--force-if-includes", "--delete", "-d", "--mirror",
-                "--prune", "--all"].contains(name)
-            || (token.hasPrefix("+") && token.count > 1)
-    }
-
-    /// `curl -X GET`, `--request=GET`, `-XHEAD` and `wget --method GET` name a
-    /// read, so they are not the write flags they would otherwise look like.
-    private static func withoutReadMethodRequests(_ args: [String]) -> [String] {
-        let readMethods: Set<String> = ["GET", "HEAD", "OPTIONS"]
-        let methodOptions: Set<String> = ["-X", "--request", "--method"]
-        var kept: [String] = []
-        var index = 0
-        while index < args.count {
-            let arg = args[index]
-            let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
-            if methodOptions.contains(arg), args.indices.contains(index + 1),
-               readMethods.contains(args[index + 1].uppercased()) {
-                index += 2
-                continue
-            }
-            if parts.count == 2, methodOptions.contains(parts[0].lowercased() == "--request" ? "--request" : parts[0]),
-               readMethods.contains(parts[1].uppercased()) {
-                index += 1
-                continue
-            }
-            if arg.hasPrefix("-X"), !arg.hasPrefix("--"), readMethods.contains(String(arg.dropFirst(2)).uppercased()) {
-                index += 1
-                continue
-            }
-            kept.append(arg)
-            index += 1
-        }
-        return kept
     }
 
     private static func patternTokenLimit(for risk: Risk) -> Int {
@@ -756,15 +366,15 @@ enum ShellCommandRiskClassifier {
     private static func commandActionTokens(executable: String, args: [String], risk: Risk) -> [String] {
         switch executable {
         case "gh":
-            return dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "-R", "--hostname"])
+            return dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "--hostname"])
         case "git":
             return dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"])
         case "gcloud", "aws", "az":
             return dropLeadingOptions(args, optionsWithValues: ["--project", "--project-id", "--profile", "--region", "--zone", "-o"])
         case "kubectl":
-            return dropLeadingOptions(args, optionsWithValues: kubectlOptionsWithValues)
+            return dropLeadingOptions(args, optionsWithValues: ["--namespace", "-n", "--context"])
         case "docker":
-            return dropLeadingOptions(args, optionsWithValues: dockerGlobalOptionsWithValues)
+            return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"])
         case "bq":
             return dropLeadingOptions(args, optionsWithValues: ["--project_id", "--location", "--format"])
         case "curl", "wget":
@@ -926,12 +536,41 @@ enum ShellCommandRiskClassifier {
         return true
     }
 
-    private static func isNetworkMutationFlag(_ token: String) -> Bool {
-        if isRemoteWriteFlag(token) { return true }
-        let normalized = normalizedArgument(token)
-        let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
-        if ["-o", "-O"].contains(optionName) || optionName.lowercased() == "--output" { return true }
-        return combinedShortOptions(normalized).contains { $0 == "-o" || $0 == "-O" }
+    private static func isPushEscalation(_ token: String) -> Bool {
+        let name = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        return ["--force", "-f", "--force-with-lease", "--force-if-includes", "--delete", "-d", "--mirror",
+                "--prune", "--all"].contains(name)
+            || (token.hasPrefix("+") && token.count > 1)
+    }
+
+    /// `curl -X GET`, `--request=GET`, `-XHEAD` and `wget --method GET` name a
+    /// read, so they are not the write flags they would otherwise look like.
+    private static func withoutReadMethodRequests(_ args: [String]) -> [String] {
+        let readMethods: Set<String> = ["GET", "HEAD", "OPTIONS"]
+        let methodOptions: Set<String> = ["-X", "--request", "--method"]
+        var kept: [String] = []
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
+            if methodOptions.contains(arg), args.indices.contains(index + 1),
+               readMethods.contains(args[index + 1].uppercased()) {
+                index += 2
+                continue
+            }
+            if parts.count == 2, methodOptions.contains(parts[0].lowercased() == "--request" ? "--request" : parts[0]),
+               readMethods.contains(parts[1].uppercased()) {
+                index += 1
+                continue
+            }
+            if arg.hasPrefix("-X"), !arg.hasPrefix("--"), readMethods.contains(String(arg.dropFirst(2)).uppercased()) {
+                index += 1
+                continue
+            }
+            kept.append(arg)
+            index += 1
+        }
+        return kept
     }
 
     /// The mutation flags that send something to the remote end, as opposed
@@ -996,33 +635,12 @@ enum ShellCommandRiskClassifier {
         "w", "x", "X", "y", "Y", "z"
     ]
 
-    /// `psql -c 'SELECT …'` / `mysql -e 'SHOW …'` read when every statement is a
-    /// query: the first word reads and no word writes. A session, a script
-    /// file, or anything else may write.
-    private static func riskForDatabaseClient(executable: String, args: [String]) -> Risk {
-        let queryFlags: Set<String> = executable == "mysql" ? ["-e", "--execute"] : ["-c", "--command"]
-        guard ["psql", "mysql"].contains(executable),
-              !args.contains(where: { ["-f", "--file", "--source"].contains($0) || $0.hasPrefix("--file=") }),
-              let flag = args.firstIndex(where: { arg in
-                  queryFlags.contains(arg) || queryFlags.contains { arg.hasPrefix($0 + "=") }
-              }) else {
-            return .mutation
-        }
-        let attached = args[flag].split(separator: "=", maxSplits: 1).dropFirst().map(String.init)
-        let words = (attached + args[(flag + 1)...])
-            .flatMap { $0.split(whereSeparator: { " ;,()\n\t".contains($0) }).map(String.init) }
-            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`")).lowercased() }
-            .filter { !$0.isEmpty }
-        let reads: Set<String> = ["select", "show", "explain", "with", "table", "values", "describe", "desc"]
-        let writes: Set<String> = [
-            "insert", "update", "delete", "drop", "alter", "create", "truncate", "grant", "revoke", "copy", "call",
-            "merge", "replace", "rename", "lock", "vacuum", "reindex", "cluster", "comment", "refresh", "do", "set",
-            "into", "load", "import", "handler", "analyze", "optimize", "repair", "flush", "kill", "shutdown"
-        ]
-        guard let first = words.first, reads.contains(first), !words.contains(where: writes.contains) else {
-            return .mutation
-        }
-        return .read
+    private static func isNetworkMutationFlag(_ token: String) -> Bool {
+        if isRemoteWriteFlag(token) { return true }
+        let normalized = normalizedArgument(token)
+        let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
+        if ["-o", "-O"].contains(optionName) || optionName.lowercased() == "--output" { return true }
+        return combinedShortOptions(normalized).contains { $0 == "-o" || $0 == "-O" }
     }
 
     private static func looksLikeReadOnlySQL(_ token: String) -> Bool {
@@ -1144,8 +762,7 @@ enum ShellCommandRiskClassifier {
     ]
 
     private static let cloudReadVerbs: Set<String> = [
-        "list", "ls", "describe", "show", "get", "view", "read", "status", "version", "info", "help", "wait",
-        "presign"
+        "list", "ls", "describe", "show", "get", "view", "read", "status", "version"
     ]
 
     private static let cloudWriteVerbs: Set<String> = [
