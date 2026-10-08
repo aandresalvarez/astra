@@ -79,9 +79,26 @@ enum RuntimeTurnSettlementService {
     /// them only then: a cancelled run is the user saying stop, and a run that
     /// failed, timed out, or was stopped by policy, budget, or repetition did
     /// not finish. Either way the proposals stay in the dock for review.
-    static func finishedCleanly(result: AgentProcessResult, cancelled: Bool, taskStatus: TaskStatus) -> Bool {
+    /// The verdicts the outcome reads from the checkpoint rather than the
+    /// process count too: a provider that reported an error but exited 0, and
+    /// usage over a hard budget, both end the run as failed.
+    static func finishedCleanly(checkpoint: Checkpoint, taskStatus: TaskStatus) -> Bool {
+        let budget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: checkpoint.effectiveTokenBudget,
+                                                tokensUsed: checkpoint.tokensUsed)
+        let overBudget = AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: checkpoint.result,
+            budget: budget,
+            budgetEnforcementMode: BudgetEnforcementMode(rawValue: checkpoint.budgetEnforcementMode) ?? .hardStop
+        )
+        return finishedCleanly(result: checkpoint.result, cancelled: checkpoint.cancelled, taskStatus: taskStatus,
+            agentReportedError: checkpoint.agentReportedError, overBudget: overBudget)
+    }
+
+    static func finishedCleanly(result: AgentProcessResult, cancelled: Bool, taskStatus: TaskStatus,
+                                agentReportedError: Bool, overBudget: Bool) -> Bool {
         guard !cancelled, taskStatus != .cancelled else { return false }
         guard result.exitCode == 0 || result.terminatedAfterTerminalProgress else { return false }
+        guard !agentReportedError, !overBudget else { return false }
         return !result.timedOut
             && !result.policyViolation
             && !result.policyApprovalRequired
@@ -123,7 +140,7 @@ enum RuntimeTurnSettlementService {
                 // provider result and the staged proposals are durable, and under
                 // the settlement marker, so an exit mid-send is reconciled rather
                 // than replayed. Before the outcome, so completion reads receipts.
-                if finishedCleanly(result: checkpoint.result, cancelled: checkpoint.cancelled, taskStatus: task.status) {
+                if finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {
                     await ConnectorMutationAutoSend.sendPendingMutations(
                         task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
                         modelContext: modelContext, coordinator: connectorMutationCoordinator)

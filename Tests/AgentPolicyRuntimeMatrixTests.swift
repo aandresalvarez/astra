@@ -188,18 +188,27 @@ struct AgentPolicyRuntimeMatrixTests {
         let wider = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
-            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*"]
+            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*"]
         )
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
             for command in [
                 "curl -X POST https://hooks.example.test/build -d ok",
                 "curl --json '{\"build\":1}' https://hooks.example.test/api",
-                "gcloud run deploy api --source ."
+                "gcloud run deploy api --source .",
+                "gh workflow run deploy.yml",
+                "gh secret set TOKEN",
+                "gh run cancel 12345",
+                "npm unpublish widget@1.0.0",
+                "npm deprecate widget@1.0.0 obsolete",
+                "npm dist-tag add widget@1.0.0 beta"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
-            for command in ["curl https://example.test/status", "gcloud compute instances list", "git commit -m wip"] {
+            for command in [
+                "curl https://example.test/status", "gcloud compute instances list", "git commit -m wip",
+                "gh workflow list", "gh run view 12345", "npm dist-tag ls widget", "npm install"
+            ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
         }

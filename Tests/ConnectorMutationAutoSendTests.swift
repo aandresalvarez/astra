@@ -117,8 +117,10 @@ struct ConnectorMutationAutoSendTests {
     // finish the work its staged writes belong to: neither may still send.
     @Test("Auto sends only for a run that finished cleanly")
     func autoSendsOnlyForACleanFinish() {
-        func clean(_ result: AgentProcessResult, cancelled: Bool = false, status: TaskStatus = .running) -> Bool {
-            RuntimeTurnSettlementService.finishedCleanly(result: result, cancelled: cancelled, taskStatus: status)
+        func clean(_ result: AgentProcessResult, cancelled: Bool = false, status: TaskStatus = .running,
+                   agentReportedError: Bool = false, overBudget: Bool = false) -> Bool {
+            RuntimeTurnSettlementService.finishedCleanly(result: result, cancelled: cancelled, taskStatus: status,
+                agentReportedError: agentReportedError, overBudget: overBudget)
         }
         #expect(clean(AgentProcessResult(exitCode: 0)))
         #expect(clean(AgentProcessResult(exitCode: 143, terminatedAfterTerminalProgress: true)))
@@ -130,15 +132,41 @@ struct ConnectorMutationAutoSendTests {
         #expect(!clean(AgentProcessResult(exitCode: 0, policyApprovalRequired: true)), "approval pause")
         #expect(!clean(AgentProcessResult(exitCode: 0, runtimeStopReason: "no_semantic_progress")), "runtime stop")
         #expect(!clean(AgentProcessResult(exitCode: 0, maxTurnsExceeded: true)), "max turns")
+        #expect(!clean(AgentProcessResult(exitCode: 0), agentReportedError: true), "provider reported an error, exit 0")
+        #expect(!clean(AgentProcessResult(exitCode: 0), overBudget: true), "usage over a hard budget")
 
         let settlement = (try? String(
             contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
                 .appendingPathComponent("Astra/Services/Runtime/RuntimeTurnSettlementService.swift"),
             encoding: .utf8
         )) ?? ""
-        let gate = settlement.range(of: "if finishedCleanly(result: checkpoint.result, cancelled: checkpoint.cancelled, taskStatus: task.status) {")
+        let gate = settlement.range(of: "if finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {")
         let send = settlement.range(of: "ConnectorMutationAutoSend.sendPendingMutations(")
         #expect(gate != nil && send != nil && gate!.upperBound < send!.lowerBound, "settlement gates the send")
+    }
+
+    // The outcome fails a run whose provider reported an error but exited 0
+    // (Codex does), and one whose usage ran over a hard budget. The send gate
+    // reads the same captured verdicts, so Auto never writes for either.
+    @Test("The settlement gate reads the provider's own error and the hard budget from the checkpoint")
+    func checkpointGateReadsTheCapturedVerdicts() {
+        let task = AgentTask(title: "File a ticket", goal: "File a Jira ticket")
+        func checkpoint(agentReportedError: Bool = false, mode: BudgetEnforcementMode = .hardStop,
+                        budget: Int = 1_000, used: Int = 10) -> RuntimeTurnSettlementService.Checkpoint {
+            .init(requestID: nil, result: AgentProcessResult(exitCode: 0), runtime: .codexCLI, phase: .run,
+                executionPath: "/tmp", launchSnapshot: .init(task: task), permissionPolicy: .autonomous,
+                sandboxEnforcement: .off, verifierRuntime: .init(runtime: .codexCLI, claudePath: "/bin/sh"),
+                timeoutSeconds: 10, budgetEnforcementMode: mode.rawValue, effectiveTokenBudget: budget,
+                tokensUsed: used, agentReportedError: agentReportedError, cancelled: false, failureDiagnostic: nil,
+                approvedPlan: nil, chainedGoal: "", scheduleID: nil)
+        }
+        func clean(_ value: RuntimeTurnSettlementService.Checkpoint) -> Bool {
+            RuntimeTurnSettlementService.finishedCleanly(checkpoint: value, taskStatus: .running)
+        }
+        #expect(clean(checkpoint()))
+        #expect(!clean(checkpoint(agentReportedError: true)), "provider reported an error, exit 0")
+        #expect(!clean(checkpoint(used: 2_000)), "usage over a hard budget")
+        #expect(clean(checkpoint(mode: .warning, used: 2_000)), "a warning budget does not fail the run")
     }
 
     @Test("Auto stops at the first write that does not go out and says so")

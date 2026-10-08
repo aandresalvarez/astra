@@ -78,7 +78,7 @@ enum ShellCommandRiskClassifier {
         default:
             if networkTransferRoots.contains(executable) { return true }
             if packageManagerRoots.contains(executable) {
-                return args.contains { ["publish", "upload", "push"].contains($0) }
+                return changesPackageRegistry(args)
             }
             return false
         }
@@ -257,10 +257,47 @@ enum ShellCommandRiskClassifier {
         case "release":
             if ["list", "view", "download"].contains(verb ?? "") { return .read }
             return .mutation
-        default:
+        case "api":
+            // A write method or fields; `AgentExternalActionObserver` reads those.
             return .unknown
+        case "alias", "config", "extension", "completion", "help", "browse", "version":
+            // Local to this machine: gh's own settings and extensions.
+            return .unknown
+        default:
+            // Every other area is GitHub itself — `workflow run` starts Actions,
+            // `secret set` stores a value there — so anything but a read verb
+            // changes something outside this machine.
+            guard let verb else { return .unknown }
+            if gitHubReadVerbs.contains(verb) || verb.hasSuffix("-list") { return .read }
+            return .mutation
         }
     }
+
+    private static let gitHubReadVerbs: Set<String> = [
+        "list", "ls", "view", "status", "diff", "checks", "download", "watch", "get", "check", "verify"
+    ]
+
+    /// A package-manager command that changes a registry rather than this
+    /// machine: publishing, removing, or deprecating a release, or changing
+    /// its tags, owners, or access. `npm dist-tag ls` and `npm owner ls` read.
+    private static func changesPackageRegistry(_ args: [String]) -> Bool {
+        if args.contains(where: packageRegistryWriteVerbs.contains) { return true }
+        guard args.contains(where: packageRegistryAdminCommands.contains) else { return false }
+        return args.contains(where: packageRegistryAdminWriteVerbs.contains)
+    }
+
+    private static let packageRegistryWriteVerbs: Set<String> = [
+        "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank"
+    ]
+
+    private static let packageRegistryAdminCommands: Set<String> = [
+        "dist-tag", "dist-tags", "owner", "access", "team"
+    ]
+
+    private static let packageRegistryAdminWriteVerbs: Set<String> = [
+        "add", "rm", "remove", "set", "grant", "revoke", "create", "destroy", "public", "restricted",
+        "--add", "--remove", "-a", "-r"
+    ]
 
     private static func riskForBigQuery(_ args: [String]) -> Risk {
         let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--project_id", "--location", "--format"])
