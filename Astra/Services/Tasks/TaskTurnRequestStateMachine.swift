@@ -40,21 +40,31 @@ enum TaskTurnRequestStateMachine {
     ) -> TransitionResult {
         let current = request.state
         guard current != next else {
-            let previousRunID = request.runID
-            let previousBlockerID = request.blockingTaskID
-            let previousBlockerSummary = request.blockerSummary
-            if let runID { request.runID = runID }
-            // Always assign, never conditionally: callers re-asserting the
-            // same state (e.g. the admission loop's repeated
-            // `.waitingForResource` polls) must be able to CLEAR a resolved
-            // blocker by passing nil, not just set a new one. Skipping the
-            // assignment when both are nil left a stale blockingTaskID /
-            // blockerSummary on screen after the blocking lock was released.
-            request.blockingTaskID = blockingTaskID
-            request.blockerSummary = blockerSummary
-            let changed = previousRunID != request.runID
-                || previousBlockerID != request.blockingTaskID
-                || previousBlockerSummary != request.blockerSummary
+            // Compare the incoming values against the stored ones, never
+            // against nil: callers re-asserting the same state (e.g. the
+            // admission loop's repeated `.waitingForResource` polls) must be
+            // able to CLEAR a resolved blocker by passing nil, not just set a
+            // new one. Skipping the assignment whenever the argument was nil
+            // left a stale blockingTaskID / blockerSummary on screen after the
+            // blocking lock was released.
+            //
+            // But assign only on a real difference: a `@Model` setter
+            // notifies observers and dirties the context even for an equal
+            // value, so the admission loop's 500 ms re-assert re-rendered the
+            // sidebar twice a second for as long as a lock was held.
+            var changed = false
+            if let runID, request.runID != runID {
+                request.runID = runID
+                changed = true
+            }
+            if request.blockingTaskID != blockingTaskID {
+                request.blockingTaskID = blockingTaskID
+                changed = true
+            }
+            if request.blockerSummary != blockerSummary {
+                request.blockerSummary = blockerSummary
+                changed = true
+            }
             if changed {
                 TaskThreadChangeNotifier.post(taskID: request.taskID, source: "turn_request_\(next.rawValue)")
             }
