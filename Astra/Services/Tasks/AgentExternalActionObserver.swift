@@ -101,7 +101,7 @@ enum AgentExternalActionObserver {
         return summary.isEmpty ? nil : String(summary)
     }
 
-    static func classify(_ command: String) -> Action? {
+    nonisolated static func classify(_ command: String) -> Action? {
         let text = " " + command.lowercased().replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         if text.range(of: #"[\s;&|(`"']git( -c [^ ]+)* push\b"#, options: .regularExpression) != nil {
             return .push
@@ -125,7 +125,7 @@ enum AgentExternalActionObserver {
         return nil
     }
 
-    private static func verb(after command: String, in text: String, among verbs: [String]) -> String? {
+    nonisolated private static func verb(after command: String, in text: String, among verbs: [String]) -> String? {
         let pattern = #"[\s;&|(`"']"# + NSRegularExpression.escapedPattern(for: command)
             + #" ("# + verbs.joined(separator: "|") + #")\b"#
         guard let regex = try? NSRegularExpression(pattern: pattern),

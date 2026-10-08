@@ -125,16 +125,20 @@ boundary. The full inventory is in
   `publish`) are asked about, not refused; `sudo` stays denied because it
   cannot prompt in a non-interactive run. Local tools are never pre-granted,
   on any runtime.
-- **Auto** asks nothing. Connector credentials are allowed for the task, staged
-  Jira writes are sent at the run boundary, and a requested GitHub review is
-  posted when the run finishes — each through the same checks an approved
+- **Auto** asks nothing. Connector credentials are allowed for the task (and
+  the launch stops if that grant cannot be saved), staged Jira writes are sent
+  during settlement — after the provider result is captured, so an exit
+  mid-send is reconciled rather than replayed — and a requested GitHub review
+  this run wrote is posted when the run finishes; each through the same checks an approved
   action goes through (digest re-read, derived route, re-resolved destination,
   dispatch recorded before the network call, no resend of an ambiguous
   outcome). Every action outside ASTRA leaves a record in the chat, derived
   from its receipt, with an **Auto** pill; recognised `git`/`gh` commands the
   agent ran itself are recorded with an **Agent** pill.
 - **Custom** applies the saved per-item tool, shell, and network rules and
-  follows Ask for actions outside ASTRA.
+  follows Ask for actions outside ASTRA: a rule that allows Bash or `git:*`
+  still asks before `git push`, `gh pr create`, or a `gh api` write, unless
+  that exact command was approved.
 - `ExternalActionPolicy` is the only owner of "does this level ask before an
   external action". It reads the user-facing level of the run that produced
   the action, so a proposal composed under Ask is still reviewed after the task

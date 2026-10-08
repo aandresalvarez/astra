@@ -165,7 +165,86 @@ struct AgentPolicyRuntimeMatrixTests {
         }
     }
 
+    // Custom keeps the user's per-item rules for local work, but actions outside
+    // ASTRA follow Ask: a rule that allows Bash or `git:*` must not let
+    // `git push` through unasked on any runtime.
+    @Test("Custom rules that allow Bash or git still ask before a push")
+    func customAsksBeforeExternalCommandsItsRulesAllow() {
+        let policy = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Glob", "Grep", "Bash"],
+            allowedShellPatterns: ["git:*"]
+        )
+        for runtime in Self.autonomousFlags.keys {
+            let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: policy))
+            #expect(guardrail.disposition(toolName: "Bash", command: "git status") == .allowed, "\(runtime.rawValue) local git")
+            #expect(
+                guardrail.disposition(toolName: "Bash", command: "git push origin main") == .ask,
+                "\(runtime.rawValue) push"
+            )
+        }
+        let request = PermissionRequest.shell(command: "git push origin main", toolName: "Bash")
+        let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode,
+            policy: policy,
+            approvalGrants: PermissionBroker.approvalGrants(for: request)
+        ))
+        #expect(approved.disposition(toolName: "Bash", command: "git push origin main") == .allowed, "approved once, not asked twice")
+    }
+
     // MARK: - Helpers
+
+    private static func manifest(
+        runtime: AgentRuntimeID,
+        policy: AgentPolicy,
+        approvalGrants: [PermissionGrant] = []
+    ) -> RunPermissionManifest {
+        let adapter = ProviderPolicyAdapterRegistry.adapter(
+            for: runtime,
+            runtimeCapabilities: AgentRuntimePolicyCapabilities(copilotCLI: copilotCapabilities)
+        )
+        let context = PolicyRenderContext(
+            runtimeID: runtime,
+            model: AgentRuntimeAdapterRegistry.defaultModel(for: runtime),
+            workspacePath: "/tmp/astra-policy-matrix",
+            additionalPaths: [],
+            requestedAllowedTools: ["Read", "Grep"],
+            localToolCommands: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            providerFeatures: adapter.supportedFeatures
+        )
+        return RunPermissionManifest(
+            taskID: UUID(),
+            runID: UUID(),
+            phase: "run",
+            providerID: runtime,
+            providerVersion: nil,
+            model: AgentRuntimeAdapterRegistry.defaultModel(for: runtime),
+            policyLevel: policy.level,
+            policyScope: .builtInDefault,
+            providerRender: adapter.render(policy: policy, context: context),
+            workspacePath: "/tmp/astra-policy-matrix",
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: approvalGrants
+        )
+    }
+
+    private static let copilotCapabilities = CopilotCLICapabilities(helpText: """
+        --allow-all
+        --allow-all-tools
+        --allow-all-paths
+        --allow-all-urls
+        --available-tools
+        --excluded-tools
+        --output-format
+        --stream
+        --no-ask-user
+        --secret-env-vars
+        """)
 
     private static func manifest(
         runtime: AgentRuntimeID,

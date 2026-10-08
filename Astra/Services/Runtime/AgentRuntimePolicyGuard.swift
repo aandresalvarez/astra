@@ -363,7 +363,52 @@ struct AgentRuntimePolicyGuard: Sendable {
             return violation
         }
 
+        // Last, so every deny above still wins: this only turns an otherwise
+        // allowed command that acts outside ASTRA into a question.
+        if isShellTool(toolName),
+           let command = observed.command,
+           let violation = externalCommandApprovalViolation(command: command, toolName: toolName, request: request) {
+            return violation
+        }
+
         return nil
+    }
+
+    /// Ask and Custom ask before acting outside ASTRA (`ExternalActionPolicy`).
+    /// A Custom rule that allows Bash or `git:*` governs local work; it must not
+    /// let `git push` or `gh pr create` through unasked, because actions outside
+    /// ASTRA follow Ask whatever the per-item rules say. An explicit approval
+    /// grant for the command still lets it run, so an approved command is not
+    /// asked about twice.
+    private func externalCommandApprovalViolation(
+        command: String,
+        toolName: String,
+        request: PermissionRequest?
+    ) -> AgentRuntimePolicyViolation? {
+        guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
+              AgentExternalActionObserver.classify(command) != nil,
+              !commandApprovedByGrant(command, toolName: toolName) else {
+            return nil
+        }
+        let request = request ?? PermissionRequest.shell(command: command, toolName: toolName)
+        return AgentRuntimePolicyViolation(
+            reason: "The command acts outside ASTRA, which asks first at this permission level",
+            toolName: toolName,
+            detail: command,
+            violationCategory: "external_command_requires_approval",
+            requiresApproval: true,
+            permissionRequest: request,
+            approvalGrants: PermissionBroker.approvalGrants(for: request)
+        )
+    }
+
+    private func commandApprovedByGrant(_ command: String, toolName: String) -> Bool {
+        let approved = PermissionBroker.providerRuntimeGrantStrings(
+            for: manifest.approvalGrants,
+            runtime: manifest.providerID
+        )
+        guard !approved.isEmpty else { return false }
+        return toolMatches(toolName, command: command, candidates: approved, shellMatchMode: .allActionableSegments)
     }
 
     private func runtimeSupportToolDescriptor(for toolName: String) -> ProviderRuntimeSupportToolDescriptor? {
