@@ -20,6 +20,10 @@ enum TaskLaunchResourceResolver {
         runtimePermissionGrants: [PermissionGrant] = [],
         permissionPolicy: PermissionPolicy = .autonomous,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive,
+        // Git common directories the admitted request claimed exclusively.
+        // `nil` is a direct launch with no durable request; see
+        // `restrictingGitWrites`.
+        admittedWritableGitMetadataRoots: [String]? = nil,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         connectorSecretStore: SecretStore = KeychainSecretStore(),
@@ -127,7 +131,11 @@ enum TaskLaunchResourceResolver {
         ) && astraOwnsAskPublication
         let gitCredentialContext = routesGitHubMetadataThroughHostControl || brokersNetworkGitThroughAstra
             ? .empty
-            : gitCredentialContextProvider(prompt, task, contextText, workspacePath)
+            : restrictingGitWrites(
+                gitCredentialContextProvider(prompt, task, contextText, workspacePath),
+                workspaceAccess: workspaceAccess,
+                admittedWritableRoots: admittedWritableGitMetadataRoots
+            )
         let gitResource = gitCredentialContext.isEmpty ? nil : RuntimeGitCredentialResource(
             readablePaths: uniquePaths(gitCredentialContext.readablePaths),
             writablePaths: uniquePaths(gitCredentialContext.writablePaths),
@@ -295,13 +303,39 @@ enum TaskLaunchResourceResolver {
         to grants: inout [RuntimePathGrant]
     ) {
         guard let workspace = task.workspace else { return }
+        // Write access follows the same roots admission claims: the code root
+        // and the additional folders `TaskWorkspaceAccess` keeps writable.
+        // Other workspace folders, such as a source checkout replaced by the
+        // task's worktree, stay readable.
+        let access = TaskWorkspaceAccess(task: task)
+        let codeRoot = existingPath(access.codeWorkingDirectory, fileManager: fileManager)
+        let writable = Set(([access.codeWorkingDirectory] + access.runtimeWritablePaths).compactMap {
+            existingPath($0, fileManager: fileManager)
+        })
+        var granted = Set<String>()
         for path in [workspace.primaryPath] + workspace.additionalPaths {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
+            granted.insert(normalized)
+            let mayWrite = workspaceAccess != .shared && writable.contains(normalized)
             grants.append(RuntimePathGrant(
                 path: normalized,
-                access: workspaceAccess == .shared ? .read : .readWrite,
+                access: mayWrite ? .readWrite : .read,
                 source: .workspace,
                 reason: "Workspace path selected by the user.",
+                sensitivity: .normal,
+                lifetime: .workspace,
+                exists: true
+            ))
+        }
+        // A pinned worktree or isolation copy outside the configured folders
+        // is still the run's claimed root. Without its own grant, a workspace
+        // whose other folders are all read-only would read as a shared launch.
+        if let codeRoot, !granted.contains(codeRoot) {
+            grants.append(RuntimePathGrant(
+                path: codeRoot,
+                access: workspaceAccess == .shared ? .read : .readWrite,
+                source: .workspace,
+                reason: "Active code root for this task.",
                 sensitivity: .normal,
                 lifetime: .workspace,
                 exists: true
@@ -391,6 +425,39 @@ enum TaskLaunchResourceResolver {
             lifetime: .run,
             exists: true
         ))
+    }
+
+    /// External Git metadata (a linked worktree's common directory) is
+    /// writable only where admission claimed it exclusively. Claims are frozen
+    /// at submission from the accepted turn, title, and goal, while this
+    /// context also reads runtime context; without this projection a Git
+    /// operation mentioned only at launch, or a shared read-only request,
+    /// would write metadata that no claim serializes. Disallowed paths stay
+    /// readable so inspection still works. A direct launch (`nil`) has no
+    /// claim set to project and keeps the detected context.
+    static func restrictingGitWrites(
+        _ context: GitCredentialSandboxContext,
+        workspaceAccess: TaskExecutionResourceAccess,
+        admittedWritableRoots: [String]?
+    ) -> GitCredentialSandboxContext {
+        guard !context.writablePaths.isEmpty else { return context }
+        let roots = workspaceAccess == .shared ? [] : admittedWritableRoots?.map(canonicalGitPath)
+        guard let roots else { return context }
+        var restricted = context
+        restricted.writablePaths = context.writablePaths.filter { path in
+            let canonical = canonicalGitPath(path)
+            return roots.contains { canonical == $0 || canonical.hasPrefix($0 + "/") }
+        }
+        let readOnly = context.writablePaths.filter { !restricted.writablePaths.contains($0) }
+        guard !readOnly.isEmpty else { return context }
+        restricted.readablePaths = uniquePaths(context.readablePaths + readOnly)
+        restricted.diagnostics = context.diagnostics + ["git_metadata_write_not_admitted"]
+        return restricted
+    }
+
+    private static func canonicalGitPath(_ path: String) -> String {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            .resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     private static func appendGitCredentialGrants(

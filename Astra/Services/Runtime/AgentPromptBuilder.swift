@@ -379,9 +379,9 @@ enum AgentPromptBuilder {
             primaryPath: ws.primaryPath,
             additionalPaths: ws.additionalPaths
         )
+        let labels = AgentPromptWorkspaceFolderLabels(task: task, codeDir: codeDir)
         let folderList = folders.map { descriptor in
-            let active = descriptor.path == WorkspacePathPresentation.standardizedPath(codeDir) ? " (active code root)" : ""
-            return "- \(descriptor.roleLabel) \(descriptor.title)\(active): \(descriptor.path)"
+            "- \(descriptor.roleLabel) \(descriptor.title)\(labels.label(for: descriptor.path)): \(descriptor.path)"
         }.joined(separator: "\n")
         appendSection(
             "Workspace Folders:\n\(folderList)",
