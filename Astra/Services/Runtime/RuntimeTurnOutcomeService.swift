@@ -274,7 +274,7 @@ enum RuntimeTurnOutcomeService {
         TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
 
         let providerName = runtimeAdapter.descriptor.displayName
-        let requiredArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+        let requiredArtifact = TaskDeliverableExpectation.owesDeliverable(task, run: run)
         let antigravityDiagnostic = runtimeAdapter.id == .antigravityCLI
             ? AntigravityCLIRuntime.diagnosticSummary(
                 logPath: AntigravityCLIRuntime.diagnosticLogPath(task: task, runID: run.id)
