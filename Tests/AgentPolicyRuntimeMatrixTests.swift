@@ -188,7 +188,9 @@ struct AgentPolicyRuntimeMatrixTests {
         let wider = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
-            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*", "aws:*", "kubectl:*", "wget:*", "docker:*"]
+            allowedShellPatterns: [
+                "git:*", "curl:*", "gcloud:*", "gh:*", "npm:*", "aws:*", "kubectl:*", "wget:*", "docker:*", "psql:*", "mysql:*"
+            ]
         )
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
@@ -213,6 +215,13 @@ struct AgentPolicyRuntimeMatrixTests {
                 "kubectl label pod api-1 tier=web",
                 "aws s3api put-object --bucket b --key get-secret --body file.txt",
                 "kubectl apply -f deploy.yaml --dry-run=none",
+                "docker --config /tmp/astra-docker-cfg --context production create alpine",
+                "docker -l debug -H ssh://deploy@host create alpine",
+                "gh deploy",
+                "psql -c 'DELETE FROM widgets'",
+                "psql -c 'SELECT 1' -c 'DROP TABLE widgets'",
+                "psql -f migrate.sql",
+                "mysql -e 'UPDATE widgets SET a = 1'",
                 "npm --registry https://registry.example publish",
                 "git submodule foreach 'git push origin main'",
                 "git rebase -x 'git push origin HEAD' main",
@@ -248,6 +257,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "aws sts get-caller-identity", "kubectl get pods", "kubectl apply -f app.yaml --dry-run=client",
                 "kubectl --kubeconfig /tmp/test get pods", "kubectl --context prod -n web describe pod api-1",
                 "kubectl apply -f deploy.yaml --dry-run=server", "npm install publish",
+                "gh status", "psql -c 'SELECT * FROM widgets'", "mysql -e 'SHOW TABLES'",
+                "psql --command='EXPLAIN SELECT 1'",
                 "git submodule foreach 'git status'", "git submodule update --init",
                 "wget https://example.test/status", "wget --method=GET https://example.test/status",
                 "git send-pack --dry-run git@github.com:owner/repo.git refs/heads/main",

@@ -210,7 +210,7 @@ enum ShellCommandRiskClassifier {
             return riskForPackageManager(executable: executable, args: args)
         }
         if databaseRoots.contains(executable) {
-            return .mutation
+            return riskForDatabaseClient(executable: executable, args: args)
         }
         if networkTransferRoots.contains(executable) {
             return riskForNetworkTransfer(executable: executable, args: args)
@@ -320,6 +320,12 @@ enum ShellCommandRiskClassifier {
         case "alias", "config", "extension", "completion", "help", "browse", "version":
             // Local to this machine: gh's own settings and extensions.
             return .unknown
+        case "status":
+            return .read
+        case _ where !gitHubCLIAreas.contains(area):
+            // Not one of gh's own commands: an alias (`gh alias set --shell`)
+            // or an extension, which runs what this cannot read.
+            return .mutation
         default:
             // Every other area is GitHub itself — `workflow run` starts Actions,
             // `secret set` stores a value there — so anything but a read verb
@@ -329,6 +335,14 @@ enum ShellCommandRiskClassifier {
             return .mutation
         }
     }
+
+    /// gh's own top-level commands; anything else is an alias or extension.
+    private static let gitHubCLIAreas: Set<String> = [
+        "agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "codespace", "completion", "config",
+        "copilot", "extension", "gist", "gpg-key", "help", "issue", "label", "org", "pr", "preview", "project",
+        "release", "repo", "ruleset", "run", "search", "secret", "ssh-key", "status", "variable", "version",
+        "workflow", "accessibility"
+    ]
 
     private static let gitHubReadVerbs: Set<String> = [
         "list", "ls", "view", "status", "diff", "checks", "download", "watch", "get", "check", "verify"
@@ -360,17 +374,39 @@ enum ShellCommandRiskClassifier {
     /// the one its `--context`/`-c` or `-H`/`--host` names, or else the one the
     /// CLI would pick (`DockerDaemonLocality`).
     private static func reachesRemoteDockerDaemon(_ args: [String]) -> Bool {
-        for (index, arg) in args.enumerated() {
-            let name = arg.split(separator: "=", maxSplits: 1).first.map(String.init) ?? arg
-            let attached = arg.contains("=") ? String(arg.split(separator: "=", maxSplits: 1).last ?? "") : nil
-            let value = attached ?? (args.indices.contains(index + 1) ? args[index + 1] : nil)
-            if ["--context", "-c"].contains(name) { return !DockerDaemonLocality.isLocal(context: value) }
-            if ["-H", "--host"].contains(name) { return !(value.map(DockerDaemonLocality.isLocalEndpoint) ?? false) }
-            if arg.hasPrefix("-H"), arg.count > 2 { return !DockerDaemonLocality.isLocalEndpoint(String(arg.dropFirst(2))) }
-            if !arg.hasPrefix("-") { break }
+        var context: String?
+        var host: String?
+        var configDirectory: String?
+        var index = 0
+        while index < args.count, args[index].hasPrefix("-") {
+            let arg = args[index]
+            if arg.hasPrefix("-H"), !arg.hasPrefix("--"), arg.count > 2 {
+                host = String(arg.dropFirst(2))
+                index += 1
+                continue
+            }
+            let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
+            var value = parts.count == 2 ? parts[1] : nil
+            if value == nil, dockerGlobalOptionsWithValues.contains(parts[0]), index + 1 < args.count {
+                value = args[index + 1]
+                index += 1
+            }
+            switch parts[0] {
+            case "--context", "-c": context = value
+            case "-H", "--host": host = value
+            case "--config": configDirectory = value
+            default: break
+            }
+            index += 1
         }
-        return !DockerDaemonLocality.isLocal()
+        if let host { return !DockerDaemonLocality.isLocalEndpoint(host) }
+        return !DockerDaemonLocality.isLocal(context: context, configDirectory: configDirectory)
     }
+
+    /// docker's global options that take a value, so it is not read as the verb.
+    private static let dockerGlobalOptionsWithValues: Set<String> = [
+        "--context", "-c", "-H", "--host", "--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"
+    ]
 
     /// A package-manager command that changes a registry rather than this
     /// machine: publishing, removing, or deprecating a release; changing its
@@ -511,7 +547,7 @@ enum ShellCommandRiskClassifier {
     /// is judged as one (`actsOutsideMachine`). The CLI's own settings
     /// (`context`, `login`) stay with the rule.
     private static func riskForDocker(_ args: [String]) -> Risk {
-        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--context", "-c", "-H", "--host"])
+        let actionTokens = dropLeadingOptions(args, optionsWithValues: dockerGlobalOptionsWithValues)
         guard let verb = actionTokens.first else { return .unknown }
         let next = actionTokens.dropFirst().first ?? ""
         if ["ps", "images", "inspect", "logs", "version", "info", "stats", "top", "history", "search", "events",
@@ -533,7 +569,7 @@ enum ShellCommandRiskClassifier {
     /// push`, `buildx imagetools create`, and any build with `--push` or an
     /// `--output type=registry`.
     private static func publishesDockerImage(_ args: [String]) -> Bool {
-        let tokens = dropLeadingOptions(args, optionsWithValues: ["--context", "-c", "-H", "--host"])
+        let tokens = dropLeadingOptions(args, optionsWithValues: dockerGlobalOptionsWithValues)
         let verb = tokens.first ?? ""
         let next = tokens.dropFirst().first ?? ""
         if verb == "push" || (["image", "manifest", "compose", "trust"].contains(verb) && ["push", "sign"].contains(next)) {
@@ -693,7 +729,7 @@ enum ShellCommandRiskClassifier {
         case "kubectl":
             return dropLeadingOptions(args, optionsWithValues: kubectlOptionsWithValues)
         case "docker":
-            return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"])
+            return dropLeadingOptions(args, optionsWithValues: dockerGlobalOptionsWithValues)
         case "bq":
             return dropLeadingOptions(args, optionsWithValues: ["--project_id", "--location", "--format"])
         case "curl", "wget":
@@ -923,6 +959,35 @@ enum ShellCommandRiskClassifier {
         "A", "b", "c", "C", "d", "D", "e", "E", "F", "H", "K", "m", "o", "P", "Q", "r", "t", "T", "u", "U",
         "w", "x", "X", "y", "Y", "z"
     ]
+
+    /// `psql -c 'SELECT …'` / `mysql -e 'SHOW …'` read when every statement is a
+    /// query: the first word reads and no word writes. A session, a script
+    /// file, or anything else may write.
+    private static func riskForDatabaseClient(executable: String, args: [String]) -> Risk {
+        let queryFlags: Set<String> = executable == "mysql" ? ["-e", "--execute"] : ["-c", "--command"]
+        guard ["psql", "mysql"].contains(executable),
+              !args.contains(where: { ["-f", "--file", "--source"].contains($0) || $0.hasPrefix("--file=") }),
+              let flag = args.firstIndex(where: { arg in
+                  queryFlags.contains(arg) || queryFlags.contains { arg.hasPrefix($0 + "=") }
+              }) else {
+            return .mutation
+        }
+        let attached = args[flag].split(separator: "=", maxSplits: 1).dropFirst().map(String.init)
+        let words = (attached + args[(flag + 1)...])
+            .flatMap { $0.split(whereSeparator: { " ;,()\n\t".contains($0) }).map(String.init) }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`")).lowercased() }
+            .filter { !$0.isEmpty }
+        let reads: Set<String> = ["select", "show", "explain", "with", "table", "values", "describe", "desc"]
+        let writes: Set<String> = [
+            "insert", "update", "delete", "drop", "alter", "create", "truncate", "grant", "revoke", "copy", "call",
+            "merge", "replace", "rename", "lock", "vacuum", "reindex", "cluster", "comment", "refresh", "do", "set",
+            "into", "load", "import", "handler", "analyze", "optimize", "repair", "flush", "kill", "shutdown"
+        ]
+        guard let first = words.first, reads.contains(first), !words.contains(where: writes.contains) else {
+            return .mutation
+        }
+        return .read
+    }
 
     private static func looksLikeReadOnlySQL(_ token: String) -> Bool {
         let normalized = token.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")).lowercased()

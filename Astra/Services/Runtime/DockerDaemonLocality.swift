@@ -23,10 +23,12 @@ enum DockerDaemonLocality {
         return endpoint(ofContext: context, in: configDirectory).map(isLocalEndpoint) ?? false
     }
 
-    /// This process's own view: its environment and `DOCKER_CONFIG` or `~/.docker`.
-    static func isLocal(context: String? = nil) -> Bool {
+    /// This process's own view: its environment, and the command's `--config`
+    /// directory, `DOCKER_CONFIG`, or `~/.docker`.
+    static func isLocal(context: String? = nil, configDirectory override: String? = nil) -> Bool {
         let environment = ProcessInfo.processInfo.environment
-        let directory = nonEmpty(environment["DOCKER_CONFIG"]).map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let directory = (nonEmpty(override) ?? nonEmpty(environment["DOCKER_CONFIG"]))
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".docker", isDirectory: true)
         return isLocal(context: context, environment: environment, configDirectory: directory)
     }
