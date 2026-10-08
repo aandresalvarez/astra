@@ -468,7 +468,8 @@ struct AgentRuntimePolicyGuard: Sendable {
             return command
         }
         let inner = Self.rawActionableShellSegments(command).flatMap { segment in
-            [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment)].compactMap { $0 }
+            [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment),
+             Self.functionBodyStart(segment)].compactMap { $0 }
                 + Self.commandSubstitutions(in: segment)
         }
         guard depth < 4 else {
@@ -483,6 +484,17 @@ struct AgentRuntimePolicyGuard: Sendable {
             }
         }
         return nil
+    }
+
+    /// `f(){ curl -d …; }; f` runs its body when called. The segment that
+    /// opens the definition carries the body's first command after `{` (or a
+    /// subshell's `(`); the body's later commands are segments of their own.
+    private static func functionBodyStart(_ segment: String) -> String? {
+        let trimmed = segment.trimmingCharacters(in: .whitespaces)
+        let definition = #"^(function\s+[A-Za-z_][A-Za-z0-9_-]*(\s*\(\s*\))?|[A-Za-z_][A-Za-z0-9_-]*\s*\(\s*\))\s*[{(]"#
+        guard let range = trimmed.range(of: definition, options: .regularExpression) else { return nil }
+        let body = trimmed[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        return body.isEmpty ? nil : body
     }
 
     /// The bodies of `` `…` `` and `$(…)` anywhere but inside single quotes.

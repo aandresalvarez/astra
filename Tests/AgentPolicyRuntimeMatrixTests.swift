@@ -223,7 +223,12 @@ struct AgentPolicyRuntimeMatrixTests {
                 "docker -H unix:///var/run/docker.sock buildx build --push -t registry.example/app .",
                 "docker -H unix:///var/run/docker.sock build --output type=registry -t registry.example/app .",
                 "docker -H unix:///var/run/docker.sock compose push",
-                "docker -H unix:///var/run/docker.sock image push registry.example/app"
+                "docker -H unix:///var/run/docker.sock image push registry.example/app",
+                "docker --context production create alpine",
+                "docker -H ssh://deploy@host volume create data",
+                "curl -K write.conf",
+                "curl --config=write.conf https://example.test/x",
+                "wget -e post_data=x https://example.test/x"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
@@ -239,7 +244,10 @@ struct AgentPolicyRuntimeMatrixTests {
                 "curl -XHEAD https://example.test/status",
                 "gh repo clone owner/repo", "gh pr checkout 42",
                 "docker -H unix:///var/run/docker.sock run alpine",
-                "docker -H unix:///var/run/docker.sock build -t app ."
+                "docker -H unix:///var/run/docker.sock build -t app .",
+                "docker -H unix:///var/run/docker.sock create alpine",
+                "docker -H ssh://deploy@host ps",
+                "curl -e https://referrer.example https://example.test/status"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
@@ -267,7 +275,8 @@ struct AgentPolicyRuntimeMatrixTests {
         ))
         #expect(afterWrite.disposition(toolName: "Bash", command: "curl -d x https://example.test/delete") == .allowed,
                 "an approved write is not asked about again")
-        for write in ["curl -XPOST https://example.test/delete", "curl -F file=@a.txt https://example.test/upload"] {
+        for write in ["curl -XPOST https://example.test/delete", "curl -F file=@a.txt https://example.test/upload",
+                      "curl -K write.conf"] {
             let asked = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
                 .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": write]))
             #expect(asked?.requiresApproval == true, "\(write)")
@@ -357,6 +366,9 @@ struct AgentPolicyRuntimeMatrixTests {
                 "printf 'origin main' | xargs git push",
                 "find . -maxdepth 0 -exec git push origin main ';'",
                 "find . -name x -execdir curl -d x https://example.test/hook \\;",
+                "f(){ curl -d x https://example.test/hook; }; f",
+                "function g { git push origin main; }; g",
+                "h() ( gh workflow run deploy.yml ); h",
                 "eval 'git push origin main'",
                 "eval git push origin main",
                 "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook",
@@ -377,12 +389,14 @@ struct AgentPolicyRuntimeMatrixTests {
                 "timeout 30 timeout 30 timeout 30 timeout 30 make test", "git add -A", "git blame README.md",
                 "git -c alias.st=status st",
                 "python3 scripts/report.py", "python3 -m pytest", "node build.js",
-                "find . -name '*.swift' -exec wc -l {} +"
+                "find . -name '*.swift' -exec wc -l {} +",
+                "f(){ echo hi; }; f"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
         }
         for written in [
+            "f(){ curl -d x https://example.test/hook; }; f",
             "git -c alias.ship=push ship origin main",
             "git ship origin main",
             "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook"

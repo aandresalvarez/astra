@@ -91,7 +91,8 @@ enum ShellCommandRiskClassifier {
         case "docker":
             return publishesDockerImage(args)
         case "curl", "wget":
-            return withoutReadMethodRequests(args).contains(where: isRemoteWriteFlag)
+            return usesOpaqueRequestConfig(executable: executable, args: args)
+                || withoutReadMethodRequests(args).contains(where: isRemoteWriteFlag)
         default:
             if networkTransferRoots.contains(executable) { return true }
             if packageManagerRoots.contains(executable) {
@@ -463,17 +464,26 @@ enum ShellCommandRiskClassifier {
         return .mutation
     }
 
+    /// A daemon's state changes unless the verb reads, so every other verb is
+    /// a mutation — `create`, `start`, `volume create` — and a remote daemon's
+    /// is judged as one (`actsOutsideMachine`). The CLI's own settings
+    /// (`context`, `login`) stay with the rule.
     private static func riskForDocker(_ args: [String]) -> Risk {
-        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--context", "-H"])
+        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--context", "-c", "-H", "--host"])
         guard let verb = actionTokens.first else { return .unknown }
-        if ["ps", "images", "inspect", "logs", "version", "info"].contains(verb) {
+        let next = actionTokens.dropFirst().first ?? ""
+        if ["ps", "images", "inspect", "logs", "version", "info", "stats", "top", "history", "search", "events",
+            "diff", "port", "help"].contains(verb) {
             return .read
         }
-        if ["run", "exec", "build", "pull", "push", "rm", "rmi", "stop", "kill", "compose"].contains(verb) {
-            return .mutation
+        if ["container", "image", "volume", "network", "system", "node", "service", "stack", "secret", "config",
+            "plugin", "builder", "buildx", "compose", "manifest", "trust", "swarm"].contains(verb),
+           ["ls", "list", "inspect", "ps", "logs", "history", "top", "stats", "df", "events", "version", "ls-remote",
+            "du"].contains(next) {
+            return .read
         }
-        if publishesDockerImage(args) { return .mutation }
-        return .unknown
+        if ["context", "login", "logout", "completion"].contains(verb) { return .unknown }
+        return .mutation
     }
 
     /// A docker command that sends an image or manifest to a registry, even
@@ -532,6 +542,7 @@ enum ShellCommandRiskClassifier {
 
     private static func riskForNetworkTransfer(executable: String, args: [String]) -> Risk {
         guard ["curl", "wget"].contains(executable) else { return .mutation }
+        if usesOpaqueRequestConfig(executable: executable, args: args) { return .mutation }
         if withoutReadMethodRequests(args).contains(where: isNetworkMutationFlag) {
             return .mutation
         }
@@ -539,6 +550,12 @@ enum ShellCommandRiskClassifier {
     }
 
     private static func shellApprovalPattern(executable: String, args: [String], risk: Risk) -> String {
+        // A request read from a config file is approved with that file named,
+        // so the grant is still a write's (`actsOutsideMachine`).
+        if ["curl", "wget"].contains(executable), usesOpaqueRequestConfig(executable: executable, args: args) {
+            let tokens = args.map(normalizedPatternToken).filter(isSafeShellPatternToken)
+            return (Array(tokens.prefix(4)) + ["*"]).joined(separator: " ")
+        }
         if ["curl", "wget"].contains(executable),
            let hostPattern = hostScopedShellPattern(from: args) {
             // A write keeps the flag that makes it one, so approving it never
@@ -821,6 +838,22 @@ enum ShellCommandRiskClassifier {
         let remoteWriteShortFlags: Set<String> = ["-d", "-F", "-X", "-T"]
         return remoteWriteShortFlags.contains(optionName)
             || combinedShortOptions(normalized).contains(where: remoteWriteShortFlags.contains)
+    }
+
+    /// `curl -K file` / `--config` and `wget -e` / `--execute` / `--config`
+    /// take options from somewhere this does not read — `--data` among them —
+    /// so the request is not called a read.
+    private static func usesOpaqueRequestConfig(executable: String, args: [String]) -> Bool {
+        switch executable {
+        case "curl":
+            return args.contains { arg in
+                arg == "-K" || arg == "--config" || arg.hasPrefix("--config=") || combinedShortOptions(arg).contains("-K")
+            }
+        case "wget":
+            return args.contains { ["-e", "--execute", "--config"].contains($0) || $0.hasPrefix("--execute=") || $0.hasPrefix("--config=") }
+        default:
+            return false
+        }
     }
 
     /// `wget --method=POST`. A bare `--method` hides its value in the next
