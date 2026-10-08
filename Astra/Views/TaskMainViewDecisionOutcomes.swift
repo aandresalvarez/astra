@@ -15,6 +15,9 @@ struct TaskDecisionOutcomeCache: Equatable {
     var hasGitPublishRequest = false
     var pendingConnectorMutationTargets: [String] = []
     var githubReviewPath: String?
+    /// The latest run, when it follows up a request already met and so does
+    /// not owe the original deliverable.
+    var deliveredRequestFollowUpRunID: UUID?
 }
 
 extension TaskMainView {
@@ -53,6 +56,15 @@ extension TaskMainView {
     func recomputeDecisionOutcomes() {
         let snapshot = threadViewModel.snapshot
         var outcomes = TaskDecisionOutcomeCache()
+        if let latestRun = snapshot?.latestRun,
+           (try? TaskDeliverableExpectation.followsUpDeliveredRequest(
+            taskID: task.id,
+            runID: latestRun.id,
+            startedAt: latestRun.startedAt,
+            in: modelContext
+           )) == true {
+            outcomes.deliveredRequestFollowUpRunID = latestRun.id
+        }
         if let latestRunID = snapshot?.latestRun?.id {
             let events = (snapshot?.sortedEvents ?? []).map {
                 TaskOutcomeEventRecord(id: $0.id, runID: $0.runID, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)

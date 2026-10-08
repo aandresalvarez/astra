@@ -20,24 +20,16 @@ extension PendingTaskReviewEventSnapshot {
 }
 
 extension PendingTaskReviewSnapshotInput {
-    init(task: AgentTask, snapshot: TaskThreadSnapshot) {
+    /// `deliveredRequestFollowUpRunID` names the latest run when it follows up
+    /// a request already met. `recomputeDecisionOutcomes` reads it from the
+    /// store, so evidence older than the transcript window still counts.
+    init(task: AgentTask, snapshot: TaskThreadSnapshot, deliveredRequestFollowUpRunID: UUID?) {
         let latestRun = snapshot.latestRun
         let latestRunSnapshot = latestRun.map(PendingTaskReviewRunSnapshot.init)
         let runSnapshots = snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init)
         let eventSnapshots = snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init)
-        let historyTypes = TaskDeliverableExpectation.deliveryHistoryEventTypes
         let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
-            && !(latestRun.map { latestRun in
-                TaskDeliverableExpectation.followsUpDeliveredRequest(
-                    runID: latestRun.id,
-                    startedAt: latestRun.startedAt,
-                    events: snapshot.sortedEvents.lazy
-                        .filter { historyTypes.contains($0.type) }
-                        .map { .init(type: $0.type, runID: $0.runID, timestamp: $0.timestamp, payload: $0.payload) },
-                    runs: runSnapshots.lazy
-                        .map { .init(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
-                )
-            } ?? false)
+            && (latestRun == nil || latestRun?.id != deliveredRequestFollowUpRunID)
         let requiresScopedArtifactEvidence = PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
             taskStatus: task.status,
             isTaskDone: task.isDone,

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
@@ -105,6 +106,37 @@ enum TaskDeliverableExpectation {
                 .filter { relevantTypes.contains($0.type) }
                 .map { HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload) },
             runs: task.runs.lazy.map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
+        )
+    }
+
+    /// The same answer from two bounded store reads instead of `task.events`
+    /// and `task.runs`: the event types the rule reads are rare, and only runs
+    /// that started earlier can be evidence. The review dock asks once per
+    /// snapshot revision, so its answer does not depend on how much of the
+    /// thread the transcript window happens to hold.
+    @MainActor
+    static func followsUpDeliveredRequest(
+        taskID: UUID,
+        runID: UUID,
+        startedAt: Date,
+        in modelContext: ModelContext
+    ) throws -> Bool {
+        let types = Array(deliveryHistoryEventTypes)
+        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(
+            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID && types.contains($0.type) }
+        ))
+        let earlierRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> { $0.task?.id == taskID && $0.startedAt < startedAt }
+        ))
+        return followsUpDeliveredRequest(
+            runID: runID,
+            startedAt: startedAt,
+            events: events.lazy.map {
+                HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload)
+            },
+            runs: earlierRuns.lazy.map {
+                HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason)
+            }
         )
     }
 

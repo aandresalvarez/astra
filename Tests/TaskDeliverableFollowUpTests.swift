@@ -42,7 +42,7 @@ struct TaskDeliverableFollowUpTests {
         // The review dock agrees once the follow-up completes.
         fixture.task.status = .completed
         #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(task: fixture.task, latestRun: commitRun))
-        #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(fixture.reviewInput()))
+        #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(try fixture.reviewInput()))
     }
 
     @Test("the first turn still owes its named deliverable")
@@ -178,6 +178,48 @@ struct TaskDeliverableFollowUpTests {
         #expect(!result.checks.contains { $0.id == "json.syntax" })
     }
 
+    @Test("the review dock still sees delivery evidence older than the transcript window")
+    func reviewDockSeesEvidenceOutsideTheWindow() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        _ = fixture.makeRun(startedAt: Date().addingTimeInterval(-3_600))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Commit it.")
+        fixture.task.status = .completed
+
+        // A one-run window drops the completed first run from the snapshot.
+        let input = try fixture.reviewInput(maxRuns: 1)
+        #expect(input.runs.map(\.id) == [followUpRun.id])
+        #expect(!input.requiresDeliverableArtifact)
+        #expect(!PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(input))
+        #expect(!TaskDeliverableExpectation.owesDeliverable(fixture.task, run: followUpRun))
+    }
+
+    @Test("the store read and the live-model read agree")
+    func storeReadMatchesLiveModelRead() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        let stepRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-900))
+        fixture.startRun(stepRun, with: TaskEventTypes.ExecutionRequest.planStep.rawValue,
+                         payload: try fixture.envelope(TaskExecutionSourcePayloadV1(launchMode: .approvedPlan)))
+        let clarifyRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-600))
+        fixture.startRun(clarifyRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Use tabs.")
+        fixture.recordEvent(TaskEventTypes.Task.approved.rawValue, payload: "Task approved by user.",
+                            at: Date().addingTimeInterval(-300))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Commit it.")
+        try fixture.context.save()
+
+        for run in [stepRun, clarifyRun, followUpRun] {
+            let stored = try TaskDeliverableExpectation.followsUpDeliveredRequest(
+                taskID: fixture.task.id, runID: run.id, startedAt: run.startedAt, in: fixture.context
+            )
+            #expect(stored == TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: fixture.task))
+        }
+        #expect(!TaskDeliverableExpectation.followsUpDeliveredRequest(clarifyRun, in: fixture.task))
+        #expect(TaskDeliverableExpectation.followsUpDeliveredRequest(followUpRun, in: fixture.task))
+    }
+
     @Test("a pinned task's missing-deliverable message names the worktree, not the workspace")
     func pinnedTaskMessageNamesWorktree() async throws {
         let fixture = try DeliverableFollowUpFixture()
@@ -291,7 +333,22 @@ private final class DeliverableFollowUpFixture {
         try FileManager.default.setAttributes([.creationDate: date, .modificationDate: date], ofItemAtPath: notes)
     }
 
-    func reviewInput() -> PendingTaskReviewSnapshotInput {
-        PendingTaskReviewSnapshotInput(task: task, snapshot: TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task)))
+    /// The dock's input with the verdict `recomputeDecisionOutcomes` caches,
+    /// over a transcript window of `maxRuns`.
+    func reviewInput(maxRuns: Int = 50) throws -> PendingTaskReviewSnapshotInput {
+        try context.save()
+        let snapshot = TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task, maxRuns: maxRuns))
+        let latestRun = try #require(snapshot.latestRun)
+        let followsUp = try TaskDeliverableExpectation.followsUpDeliveredRequest(
+            taskID: task.id,
+            runID: latestRun.id,
+            startedAt: latestRun.startedAt,
+            in: context
+        )
+        return PendingTaskReviewSnapshotInput(
+            task: task,
+            snapshot: snapshot,
+            deliveredRequestFollowUpRunID: followsUp ? latestRun.id : nil
+        )
     }
 }
