@@ -75,6 +75,22 @@ enum RuntimeTurnSettlementService {
         } && verdict(for: run, task: task) == nil
     }
 
+    /// Whether a run finished the work its staged writes belong to. Auto sends
+    /// them only then: a cancelled run is the user saying stop, and a run that
+    /// failed, timed out, or was stopped by policy, budget, or repetition did
+    /// not finish. Either way the proposals stay in the dock for review.
+    static func finishedCleanly(result: AgentProcessResult, cancelled: Bool, taskStatus: TaskStatus) -> Bool {
+        guard !cancelled, taskStatus != .cancelled else { return false }
+        guard result.exitCode == 0 || result.terminatedAfterTerminalProgress else { return false }
+        return !result.timedOut
+            && !result.policyViolation
+            && !result.policyApprovalRequired
+            && !result.maxTurnsExceeded
+            && !result.budgetExceeded
+            && !result.repetitionKilled
+            && (result.runtimeStopReason?.isEmpty ?? true)
+    }
+
     /// The only normal/restart settlement pipeline. Streaming transport has
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
@@ -107,9 +123,11 @@ enum RuntimeTurnSettlementService {
                 // provider result and the staged proposals are durable, and under
                 // the settlement marker, so an exit mid-send is reconciled rather
                 // than replayed. Before the outcome, so completion reads receipts.
-                await ConnectorMutationAutoSend.sendPendingMutations(
-                    task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
-                    modelContext: modelContext, coordinator: connectorMutationCoordinator)
+                if finishedCleanly(result: checkpoint.result, cancelled: checkpoint.cancelled, taskStatus: task.status) {
+                    await ConnectorMutationAutoSend.sendPendingMutations(
+                        task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
+                        modelContext: modelContext, coordinator: connectorMutationCoordinator)
+                }
                 try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
                     modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
                 await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)

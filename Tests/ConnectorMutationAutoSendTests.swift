@@ -113,6 +113,34 @@ struct ConnectorMutationAutoSendTests {
         #expect(capture.upperBound < settle.lowerBound)
     }
 
+    // Cancelling is the user saying stop, and a run that did not finish did not
+    // finish the work its staged writes belong to: neither may still send.
+    @Test("Auto sends only for a run that finished cleanly")
+    func autoSendsOnlyForACleanFinish() {
+        func clean(_ result: AgentProcessResult, cancelled: Bool = false, status: TaskStatus = .running) -> Bool {
+            RuntimeTurnSettlementService.finishedCleanly(result: result, cancelled: cancelled, taskStatus: status)
+        }
+        #expect(clean(AgentProcessResult(exitCode: 0)))
+        #expect(clean(AgentProcessResult(exitCode: 143, terminatedAfterTerminalProgress: true)))
+        #expect(!clean(AgentProcessResult(exitCode: 0), cancelled: true), "cancelled run")
+        #expect(!clean(AgentProcessResult(exitCode: 0), status: .cancelled), "cancelled task")
+        #expect(!clean(AgentProcessResult(exitCode: 1)), "provider failed")
+        #expect(!clean(AgentProcessResult(exitCode: 0, timedOut: true)), "timed out")
+        #expect(!clean(AgentProcessResult(exitCode: 0, policyViolation: true)), "policy violation")
+        #expect(!clean(AgentProcessResult(exitCode: 0, policyApprovalRequired: true)), "approval pause")
+        #expect(!clean(AgentProcessResult(exitCode: 0, runtimeStopReason: "no_semantic_progress")), "runtime stop")
+        #expect(!clean(AgentProcessResult(exitCode: 0, maxTurnsExceeded: true)), "max turns")
+
+        let settlement = (try? String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/Services/Runtime/RuntimeTurnSettlementService.swift"),
+            encoding: .utf8
+        )) ?? ""
+        let gate = settlement.range(of: "if finishedCleanly(result: checkpoint.result, cancelled: checkpoint.cancelled, taskStatus: task.status) {")
+        let send = settlement.range(of: "ConnectorMutationAutoSend.sendPendingMutations(")
+        #expect(gate != nil && send != nil && gate!.upperBound < send!.lowerBound, "settlement gates the send")
+    }
+
     @Test("Auto stops at the first write that does not go out and says so")
     func autoStopsAtTheFirstRefusal() async throws {
         let fixture = try AutoSendFixture()
