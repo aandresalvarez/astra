@@ -14,6 +14,26 @@ so tasks in different ASTRA workspaces still conflict when they touch the same
 underlying resource. Admission, persisted waiting state, runtime sandboxing, and
 UI blocker projection must be derived from the same resolved claim set.
 
+## Writable roots
+
+Every root a run may write is one its request claimed, or the task's own
+folder. `TaskWorkspaceAccess.runtimeWritablePaths` is the single derivation:
+admission claims, the launch resource plan, sandbox grants, Docker mounts, and
+provider directory arguments all read it. The workspace root is writable only
+when it is the code root or an additional folder; otherwise sibling tasks would
+share an unclaimed folder.
+
+A task whose code root is a linked worktree does not keep the root of another
+checkout of the same repository writable: the worktree replaces it, so sibling
+worktrees no longer serialize on a folder neither edits. That checkout stays
+readable. Subfolders, unrelated repositories, and non-Git folders keep their
+access, and a shared writable folder remains a real conflict.
+
+External Git metadata is writable only where the request claimed its common
+directory exclusively, since claims are frozen at submission while launch also
+reads runtime context. Launch drift means the live writable set contains a root
+the request never claimed; a set that shrank since submission is still covered.
+
 ## Persistence lifetime
 
 `TaskQueueStoreSession` owns both the `ModelContainer` and its main
