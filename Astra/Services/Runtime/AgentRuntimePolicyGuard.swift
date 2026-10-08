@@ -452,7 +452,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         guard depth < 4 else { return nil }
         for segment in Self.rawActionableShellSegments(command) {
-            let inner = [Self.shellInterpreterPayload(segment), Self.runnerWrappedCommand(segment)].compactMap { $0 }
+            let inner = [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment)].compactMap { $0 }
                 + Self.commandSubstitutions(in: segment)
             for payload in inner {
                 if let pending = unapprovedExternalCommand(payload, toolName: toolName, depth: depth + 1) {
@@ -462,68 +462,6 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         return nil
     }
-
-    /// The command a runner such as `env -u NAME`, `nice -n 5`, `timeout 30`
-    /// or `time -p` runs. `actionableShellSegment` drops `env` and bare
-    /// assignments but not options, so `env -u CI git push` read as `-u …`.
-    private static func runnerWrappedCommand(_ segment: String) -> String? {
-        var tokens = segment.split(whereSeparator: \.isWhitespace).map(String.init)
-        guard let first = tokens.first else { return nil }
-        let runner: String
-        if first.hasPrefix("-") {
-            runner = "env"
-        } else {
-            runner = URL(fileURLWithPath: first).lastPathComponent.lowercased()
-            guard runnerOptionsWithValues[runner] != nil else { return nil }
-            tokens.removeFirst()
-        }
-        let optionsWithValues = runnerOptionsWithValues[runner] ?? []
-        var positionalsToSkip = ["timeout", "gtimeout"].contains(runner) ? 1 : 0
-        var splitsString = false
-        while let token = tokens.first {
-            if token == "--" {
-                tokens.removeFirst()
-                break
-            }
-            if runner == "env", token == "-S" || token == "--split-string" {
-                tokens.removeFirst()
-                splitsString = true
-                break
-            }
-            if token.hasPrefix("-") {
-                tokens.removeFirst()
-                if optionsWithValues.contains(token), !tokens.isEmpty { tokens.removeFirst() }
-            } else if runner == "env", token.contains("=") {
-                tokens.removeFirst()
-            } else if positionalsToSkip > 0 {
-                positionalsToSkip -= 1
-                tokens.removeFirst()
-            } else {
-                break
-            }
-        }
-        var command = tokens.joined(separator: " ")
-        if splitsString, let quote = command.first, quote == "'" || quote == "\"",
-           let close = command.dropFirst().firstIndex(of: quote) {
-            command = String(command[command.index(after: command.startIndex)..<close])
-                + command[command.index(after: close)...]
-        }
-        return command.isEmpty ? nil : command
-    }
-
-    private static let runnerOptionsWithValues: [String: Set<String>] = [
-        "env": ["-u", "--unset", "-C", "--chdir", "-P"],
-        "nice": ["-n", "--adjustment"],
-        "timeout": ["-s", "--signal", "-k", "--kill-after"],
-        "gtimeout": ["-s", "--signal", "-k", "--kill-after"],
-        "time": ["-f", "--format", "-o", "--output"],
-        "caffeinate": ["-t", "-w"],
-        "stdbuf": ["-i", "-o", "-e"],
-        "exec": ["-a"],
-        "nohup": [],
-        "command": [],
-        "builtin": []
-    ]
 
     /// The bodies of `` `…` `` and `$(…)` anywhere but inside single quotes.
     private static func commandSubstitutions(in segment: String) -> [String] {
@@ -590,10 +528,14 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// classifier marks as a write outside this machine: a `curl` that sends
     /// data, a cloud deploy, a remote database client, a package publish.
     /// Case matters to the classifier (`curl -X` sends, `-x` names a proxy),
-    /// so it reads the segments as written.
+    /// so it reads the segments as written. The observer's reading is taken
+    /// without unwrapping and without its classifier fallback: what a runner,
+    /// `sh -c` or a substitution runs is asked about as its own command
+    /// (`unapprovedExternalCommand`), so its approval matches it.
     private static func actsOutsideMachine(_ command: String) -> Bool {
-        AgentExternalActionObserver.classify(command) != nil
-            || rawActionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
+        let recorded = AgentExternalActionObserver.classify(command, unwrapping: false)
+        if let recorded, !recorded.isExternalWrite { return true }
+        return rawActionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
     }
 
     /// `actionableShellSegments` without the lowercasing, so a command is

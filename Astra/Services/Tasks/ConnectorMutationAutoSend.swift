@@ -69,7 +69,8 @@ enum ConnectorMutationAutoSend {
             } catch {
                 // Proposals inside one run are commonly dependent — the story
                 // names the epic before it — so the first one that does not go
-                // out stops the rest. They stay in the dock, reviewable, and the
+                // out stops the rest. They stay in the dock, reviewable (a
+                // terminal outcome quarantines the one that stopped), and the
                 // chat says why Auto stopped.
                 let remaining = own.count - receipts.count
                 AppLogger.audit(.connectorTested, category: "Tasks", taskID: task.id, fields: [
@@ -111,12 +112,23 @@ enum ConnectorMutationAutoSend {
         }.map { staged[$0] }
     }
 
+    /// A terminal outcome (the write may already have happened) leaves the
+    /// dock with the proposal quarantined, so only the ones after it are
+    /// called reviewable; the reason already tells the user to check the
+    /// destination.
     static func stoppedNotice(pending: TaskStagedConnectorMutation, remaining: Int, error: Error) -> String {
         let reason = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        let waiting = remaining == 1
-            ? "It is waiting for your review."
-            : "It and \(remaining - 1) more are waiting for your review."
-        return "Auto could not send \(pending.summary.isEmpty ? pending.target : pending.summary) "
-            + "to \(pending.target): \(reason) \(waiting)"
+        let name = pending.summary.isEmpty ? pending.target : pending.summary
+        guard (error as? ConnectorMutationCoordinatorError)?.isTerminal == true else {
+            let waiting = remaining == 1
+                ? "It is waiting for your review."
+                : "It and \(remaining - 1) more are waiting for your review."
+            return "Auto could not send \(name) to \(pending.target): \(reason) \(waiting)"
+        }
+        let later = remaining - 1
+        let waiting = later == 0 ? "" : later == 1
+            ? " The 1 proposal after it is waiting for your review."
+            : " The \(later) proposals after it are waiting for your review."
+        return "Auto did not finish sending \(name) to \(pending.target): \(reason)\(waiting)"
     }
 }

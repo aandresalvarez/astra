@@ -295,7 +295,7 @@ enum ShellCommandRiskClassifier {
     }
 
     private static let packageRegistryWriteVerbs: Set<String> = [
-        "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank"
+        "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank", "star", "unstar"
     ]
 
     private static let packageRegistryAdminCommands: Set<String> = [
@@ -656,12 +656,21 @@ enum ShellCommandRiskClassifier {
             return [
                 "--data", "--data-raw", "--data-binary", "--data-urlencode",
                 "--form", "--form-string", "--request", "--upload-file",
-                "--post-file", "--post-data", "--json"
-            ].contains(optionName.lowercased())
+                "--post-file", "--post-data", "--json", "--body-data", "--body-file"
+            ].contains(optionName.lowercased()) || isWriteMethodOption(normalized)
         }
         let remoteWriteShortFlags: Set<String> = ["-d", "-F", "-X", "-T"]
         return remoteWriteShortFlags.contains(optionName)
             || combinedShortOptions(normalized).contains(where: remoteWriteShortFlags.contains)
+    }
+
+    /// `wget --method=POST`. A bare `--method` hides its value in the next
+    /// token, so it counts as a write unless it names a read.
+    private static func isWriteMethodOption(_ token: String) -> Bool {
+        let parts = token.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.first?.lowercased() == "--method" else { return false }
+        guard parts.count == 2 else { return true }
+        return !["GET", "HEAD", "OPTIONS"].contains(parts[1].uppercased())
     }
 
     /// The short options one `-abc` token sets, up to the first that takes a

@@ -15,8 +15,7 @@ enum TaskSuccessfulCompletionService {
         executionPath: String? = nil,
         reviewOriginURL: @escaping (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
-        },
-        reviewPublicationService: GitHubReviewPublicationService? = nil
+        }
     ) async -> Bool {
         do {
             if try TaskPermissionContinuation.applyBlockingOutcomeIfNeeded(task: task, run: run, modelContext: modelContext) {
@@ -29,14 +28,15 @@ enum TaskSuccessfulCompletionService {
             modelContext: modelContext,
             originURL: reviewOriginURL
         )
-        await GitHubReviewAutoPost.postIfAuto(
+        // Auto posts the review this run wrote only after the run's
+        // validation, baseline check and plan review included, at settlement
+        // (`GitHubReviewAutoPost.postAfterValidation`). Posting here would
+        // publish before a check that can still fail the run.
+        let reviewPostedAfterValidation = GitHubReviewAutoPost.postsAfterValidation(
             task: task,
             run: run,
             policyLevel: permissionPolicy.agentPolicyLevel,
-            executionPath: executionPath,
-            modelContext: modelContext,
-            service: reviewPublicationService
-                ?? GitHubReviewPublicationService(modelContext: modelContext, originURL: reviewOriginURL)
+            executionPath: executionPath
         )
         if ExternalActionPolicy.asksUser(for: .gitPullRequestPublication, level: permissionPolicy.agentPolicyLevel) {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
@@ -48,7 +48,8 @@ enum TaskSuccessfulCompletionService {
         let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
             task: task,
             run: run,
-            permissionPolicy: permissionPolicy
+            permissionPolicy: permissionPolicy,
+            reviewPostedAfterValidation: reviewPostedAfterValidation
         )
         if decision.shouldBlockCompletion {
             TaskRuntimeOutcomeTransition.applyCompletionBlock(

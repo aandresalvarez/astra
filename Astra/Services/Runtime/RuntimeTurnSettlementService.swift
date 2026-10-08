@@ -113,6 +113,7 @@ enum RuntimeTurnSettlementService {
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
                        permissionPromotionPersistence: (() throws -> Void)? = nil,
                        connectorMutationCoordinator: ConnectorMutationCoordinator? = nil,
+                       reviewPublicationService: GitHubReviewPublicationService? = nil,
                        verdictPersistence: (() throws -> Void)? = nil,
                        sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
@@ -140,14 +141,18 @@ enum RuntimeTurnSettlementService {
                     modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
                 let outcomeCompleted = task.status == .completed
                 await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
-                // Auto's connector writes leave the machine only here: after the
-                // provider result and the staged proposals are durable, under the
-                // settlement marker (an exit mid-send is reconciled rather than
-                // replayed), and only once the outcome, its tests, AI check and
-                // plan review included, completed the run. A run that fails
-                // validation sends nothing; its proposals wait for review.
+                // Auto's GitHub review and connector writes leave the machine only
+                // here: after the provider result and the staged proposals are
+                // durable, under the settlement marker (an exit mid-send is
+                // reconciled rather than replayed), and only once the outcome,
+                // its tests, AI check, baseline check and plan review included,
+                // completed the run. A run that fails validation sends nothing.
                 if outcomeCompleted, run.status == .completed,
                    finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {
+                    await GitHubReviewAutoPost.postAfterValidation(
+                        task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
+                        executionPath: checkpoint.executionPath, modelContext: modelContext,
+                        service: reviewPublicationService ?? GitHubReviewPublicationService(modelContext: modelContext))
                     await ConnectorMutationAutoSend.sendPendingMutations(
                         task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
                         modelContext: modelContext, coordinator: connectorMutationCoordinator)

@@ -185,8 +185,33 @@ enum AgentRuntimeLaunchPreflight {
     ) async -> AgentRuntimeLaunchPreflightResult {
         let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
         if effectivePermissionPolicy == .autonomous {
+            let pendingConnectorOffers = TaskRuntimePermissionOpenRequestStore.openConnectorCredentialOffers(for: task)
             let closedRequestCount = TaskRuntimePermissionOpenRequestStore
                 .closeRequestsAuthorizedByAutonomousPolicy(for: task)
+            // A connector offer an Ask run left is answered, not dropped: Auto
+            // allows it for the task, as "Allow for this task" would have.
+            let offeredGrants = pendingConnectorOffers.flatMap(\.grants)
+            if !offeredGrants.isEmpty,
+               !TaskRuntimePermissionGrants.record(
+                   grants: offeredGrants, providerID: registeredLaunchRuntime(task: task, run: run),
+                   task: task, modelContext: modelContext, source: "auto_policy"
+               ).isEmpty {
+                // The connectors' own names; the offer's display name is a sentence.
+                let labels = offeredGrants.compactMap { grant -> String? in
+                    if case .credential(let label) = grant { return label } else { return nil }
+                }
+                let connectorNames = ConnectorRuntimeProjection.connectorIDs(inCredentialLabels: labels).compactMap { id in
+                    task.workspace?.connectors.first { $0.id == id }?.name
+                }
+                let names = connectorNames.isEmpty ? pendingConnectorOffers.map(\.displayName) : connectorNames
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.System.info,
+                    payload: "Auto allowed \(ConnectorRuntimeProjection.joinedNames(names)) to use "
+                        + "\(names.count > 1 ? "their" : "its") saved credentials for this task.",
+                    run: run
+                ))
+            }
             if closedRequestCount > 0 {
                 let requestNoun = closedRequestCount == 1 ? "request" : "requests"
                 task.updatedAt = Date()

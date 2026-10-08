@@ -188,7 +188,7 @@ struct AgentPolicyRuntimeMatrixTests {
         let wider = AgentPolicy(
             level: .custom,
             allowedTools: ["Read", "Glob", "Grep", "Bash"],
-            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*", "aws:*", "kubectl:*"]
+            allowedShellPatterns: ["git:*", "curl:*", "gcloud:*", "gh:*", "npm:*", "aws:*", "kubectl:*", "wget:*"]
         )
         for runtime in Self.autonomousFlags.keys {
             let guardrail = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: runtime, policy: wider))
@@ -210,7 +210,12 @@ struct AgentPolicyRuntimeMatrixTests {
                 "aws s3 cp report.csv s3://bucket/report.csv",
                 "aws ec2 terminate-instances --instance-ids i-1",
                 "kubectl set image deployment/app app=image:v2",
-                "kubectl label pod api-1 tier=web"
+                "kubectl label pod api-1 tier=web",
+                "wget --method=POST --body-data=x https://hooks.example.test/build",
+                "wget --body-file=report.json https://hooks.example.test/build",
+                "wget --method=DELETE https://hooks.example.test/item/1",
+                "npm star widget",
+                "npm unstar widget"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
@@ -219,7 +224,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "gh workflow list", "gh run view 12345", "npm dist-tag ls widget", "npm token list", "npm install",
                 "curl -sSL https://example.test/status", "curl -sSLo status.json https://example.test/status",
                 "aws s3 cp s3://bucket/report.csv report.csv", "aws s3 cp report.csv s3://bucket/report.csv --dryrun",
-                "aws sts get-caller-identity", "kubectl get pods", "kubectl apply -f app.yaml --dry-run=client"
+                "aws sts get-caller-identity", "kubectl get pods", "kubectl apply -f app.yaml --dry-run=client",
+                "wget https://example.test/status", "wget --method=GET https://example.test/status"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
@@ -328,7 +334,9 @@ struct AgentPolicyRuntimeMatrixTests {
                 "nice -n 5 curl -d x https://example.test/hook",
                 "timeout 30 gh workflow run deploy.yml",
                 "time -p git push origin main",
-                "env -u CI nice -n 5 git push origin main"
+                "env -u CI nice -n 5 git push origin main",
+                "printf 'origin main' | xargs git push",
+                "git branch --format=x | xargs -n 1 git push origin --delete"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }

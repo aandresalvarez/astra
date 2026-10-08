@@ -127,6 +127,17 @@ enum TaskRuntimePermissionOpenRequestStore {
     /// Auto authorizes provider-level requests, but it does not bypass the OS
     /// sandbox. Clear only requests whose enforcement tier Auto actually owns.
     @discardableResult
+    /// The connector credential offers still open, with their grants: Auto
+    /// grants these before it supersedes them, so switching a task to Auto
+    /// answers the user's pending decision instead of dropping it.
+    static func openConnectorCredentialOffers(for task: AgentTask) -> [(displayName: String, grants: [PermissionGrant])] {
+        typedEntries(for: task).compactMap { entry in
+            guard case .connectorCredentials(_, let displayName, _)? = entry.request else { return nil }
+            let grants = entry.grants.filter { if case .credential = $0 { return true } else { return false } }
+            return grants.isEmpty ? nil : (displayName, grants)
+        }
+    }
+
     static func closeRequestsAuthorizedByAutonomousPolicy(for task: AgentTask) -> Int {
         switch typedState(for: task) {
         case .available(let entries):

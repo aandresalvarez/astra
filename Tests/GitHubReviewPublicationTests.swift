@@ -798,14 +798,7 @@ struct GitHubReviewPublicationTests {
         let run = try postingRun(fixture, request: "Post the PR review comments")
         let cli = FakeCLI()
 
-        let completed = await TaskSuccessfulCompletionService.apply(
-            task: fixture.task,
-            run: run,
-            modelContext: fixture.context,
-            successPayload: "Review prepared",
-            permissionPolicy: .autonomous,
-            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
-        )
+        let completed = await finish(fixture, run: run, policy: .autonomous, cli: cli)
 
         #expect(completed)
         #expect(await cli.postCount() == 1)
@@ -841,6 +834,57 @@ struct GitHubReviewPublicationTests {
         #expect(!fixture.task.events.contains { $0.type == GitHubReviewPublicationEventTypes.dispatched })
     }
 
+    // Posting is irreversible, so Auto posts only after every check that can
+    // still fail the run: settlement's post-validation gate, after plan review.
+    // Source-shape pin: the settlement pipeline is too entangled to drive here.
+    @Test("Auto posts a review only at settlement's post-validation point")
+    func autoPostsOnlyAfterValidation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+        let settlement = try source("Astra/Services/Runtime/RuntimeTurnSettlementService.swift")
+        let plan = try #require(settlement.range(of: "await validatePlan(checkpoint: checkpoint"))
+        let gate = try #require(settlement.range(of: "if outcomeCompleted, run.status == .completed,"))
+        let post = try #require(settlement.range(of: "GitHubReviewAutoPost.postAfterValidation("))
+        #expect(plan.upperBound < gate.lowerBound && gate.upperBound < post.lowerBound)
+        let completion = try source("Astra/Services/Tasks/TaskSuccessfulCompletionService.swift")
+        #expect(!completion.contains("postIfAuto(") && !completion.contains("postAfterValidation("))
+    }
+
+    @Test("A top-level review file is found past a subdirectory larger than the walk")
+    func topLevelReviewFileBeatsTheWalkBound() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-review-walk-\(UUID().uuidString)", isDirectory: true)
+        let bulk = folder.appendingPathComponent("aaa-output", isDirectory: true)
+        try FileManager.default.createDirectory(at: bulk, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for index in 0..<GitHubReviewAutoPost.maximumEntriesExamined {
+            FileManager.default.createFile(atPath: bulk.appendingPathComponent("\(index).txt").path, contents: nil)
+        }
+        let review = folder.appendingPathComponent("pr12_review.json")
+        try Data("{}".utf8).write(to: review)
+
+        let found = GitHubReviewAutoPost.candidateReviewFiles(taskFolder: folder.path)
+        #expect(found.map { URL(fileURLWithPath: $0).standardizedFileURL.path } == [review.standardizedFileURL.path])
+    }
+
+    @Test("Auto's chat notice matches what happened to the review")
+    func autoNoticeMatchesTheFailure() {
+        #expect(GitHubReviewAutoPost.notice(for: GitHubReviewPublicationError.uncertain) == nil)
+        #expect(GitHubReviewAutoPost.notice(for: GitHubReviewPublicationError.requestWithdrawn) == nil)
+        let unsaved = GitHubReviewAutoPost.notice(for: GitHubReviewPublicationError.receiptPersistenceFailed(
+            "https://github.com/example/repo/pull/12#pullrequestreview-42"
+        ))
+        #expect(unsaved?.hasPrefix("Auto posted the GitHub review.") == true)
+        #expect(unsaved?.contains("pullrequestreview-42") == true)
+        let stale = GitHubReviewAutoPost.notice(for: GitHubReviewPublicationError.staleHead)
+        #expect(stale?.contains("waiting for your review") == false)
+        #expect(stale?.contains("new review file") == true)
+        #expect(GitHubReviewAutoPost.notice(for: GitHubReviewPublicationError.invalid("Bad."))?
+            .hasSuffix("It is waiting for your review.") == true)
+    }
+
     @Test("Ask and Custom leave the requested review for the user")
     func askLeavesTheReviewForTheUser() async throws {
         for policy in [PermissionPolicy.restricted, .interactive] {
@@ -849,14 +893,7 @@ struct GitHubReviewPublicationTests {
             let run = try postingRun(fixture, request: "Post the PR review comments")
             let cli = FakeCLI()
 
-            let completed = await TaskSuccessfulCompletionService.apply(
-                task: fixture.task,
-                run: run,
-                modelContext: fixture.context,
-                successPayload: "Review prepared",
-                permissionPolicy: policy,
-                reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
-            )
+            let completed = await finish(fixture, run: run, policy: policy, cli: cli)
 
             #expect(!completed, "\(policy.rawValue)")
             #expect(await cli.postCount() == 0, "\(policy.rawValue)")
@@ -873,14 +910,7 @@ struct GitHubReviewPublicationTests {
         let run = try postingRun(fixture, request: "Post the PR review comments", wroteReviewFile: false)
         let cli = FakeCLI()
 
-        let completed = await TaskSuccessfulCompletionService.apply(
-            task: fixture.task,
-            run: run,
-            modelContext: fixture.context,
-            successPayload: "Review prepared",
-            permissionPolicy: .autonomous,
-            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
-        )
+        let completed = await finish(fixture, run: run, policy: .autonomous, cli: cli)
 
         #expect(!completed)
         #expect(await cli.postCount() == 0)
@@ -901,15 +931,7 @@ struct GitHubReviewPublicationTests {
         let run = try postingRun(fixture, request: "Post the PR review comments", reportedPath: relative)
         let cli = FakeCLI()
 
-        let completed = await TaskSuccessfulCompletionService.apply(
-            task: fixture.task,
-            run: run,
-            modelContext: fixture.context,
-            successPayload: "Review prepared",
-            permissionPolicy: .autonomous,
-            executionPath: executionPath,
-            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
-        )
+        let completed = await finish(fixture, run: run, policy: .autonomous, executionPath: executionPath, cli: cli)
 
         #expect(completed)
         #expect(await cli.postCount() == 1)
@@ -922,14 +944,7 @@ struct GitHubReviewPublicationTests {
         let run = try postingRun(fixture, request: "Thanks, that analysis is enough")
         let cli = FakeCLI()
 
-        _ = await TaskSuccessfulCompletionService.apply(
-            task: fixture.task,
-            run: run,
-            modelContext: fixture.context,
-            successPayload: "Review prepared",
-            permissionPolicy: .autonomous,
-            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
-        )
+        _ = await finish(fixture, run: run, policy: .autonomous, cli: cli)
 
         #expect(await cli.postCount() == 0)
     }
@@ -942,19 +957,43 @@ struct GitHubReviewPublicationTests {
         let cli = FakeCLI()
         await cli.setHead(String(repeating: "b", count: 40))
 
-        let completed = await TaskSuccessfulCompletionService.apply(
-            task: fixture.task,
-            run: run,
-            modelContext: fixture.context,
-            successPayload: "Review prepared",
-            permissionPolicy: .autonomous,
-            reviewPublicationService: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
-        )
+        let completed = await finish(fixture, run: run, policy: .autonomous, cli: cli)
 
         #expect(!completed)
         #expect(await cli.postCount() == 0)
         #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
         #expect(fixture.task.events.contains { $0.payload.hasPrefix("Auto could not post the GitHub review") })
+    }
+
+    /// What settlement does with a finished run: the outcome's completion,
+    /// then Auto's post once that completion stands.
+    private func finish(
+        _ fixture: (root: URL, container: ModelContainer, context: ModelContext, task: AgentTask, file: URL, data: Data),
+        run: TaskRun,
+        policy: PermissionPolicy,
+        executionPath: String? = nil,
+        cli: FakeCLI
+    ) async -> Bool {
+        fixture.task.status = .running
+        _ = await TaskSuccessfulCompletionService.apply(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.context,
+            successPayload: "Review prepared",
+            permissionPolicy: policy,
+            executionPath: executionPath
+        )
+        if fixture.task.status == .completed {
+            await GitHubReviewAutoPost.postAfterValidation(
+                task: fixture.task,
+                run: run,
+                policyLevel: policy.agentPolicyLevel,
+                executionPath: executionPath,
+                modelContext: fixture.context,
+                service: GitHubReviewPublicationService(modelContext: fixture.context, cli: cli)
+            )
+        }
+        return fixture.task.status == .completed
     }
 
     private func postingRun(

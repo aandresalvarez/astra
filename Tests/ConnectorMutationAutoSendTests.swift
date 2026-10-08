@@ -178,6 +178,25 @@ struct ConnectorMutationAutoSendTests {
         #expect(clean(checkpoint(mode: .warning, used: 2_000)), "a warning budget does not fail the run")
     }
 
+    // A dispatch with no trustworthy answer is quarantined, not left in the
+    // dock, so the notice sends the user to the destination instead.
+    @Test("A terminal outcome is not called reviewable; the proposals after it are")
+    func terminalOutcomeNoticeSendsTheUserToTheDestination() {
+        let pending = TaskStagedConnectorMutation(
+            runID: UUID(), serviceType: "jira", operation: "create_issue", connectorID: UUID().uuidString,
+            connectorAlias: "jira", target: "STAR / Bug", summary: "The epic",
+            stagedPayloadPath: "/tmp/jira-create_issue-x-1.json", requestDigest: "d"
+        )
+        let terminal = ConnectorMutationCoordinatorError.dispatchedWithoutConfirmation(
+            target: "STAR / Bug", reason: "timed out"
+        )
+        let notice = ConnectorMutationAutoSend.stoppedNotice(pending: pending, remaining: 2, error: terminal)
+        #expect(notice.contains("check STAR / Bug"))
+        #expect(notice.hasSuffix("The 1 proposal after it is waiting for your review."))
+        #expect(!ConnectorMutationAutoSend.stoppedNotice(pending: pending, remaining: 1, error: terminal)
+            .contains("waiting for your review"))
+    }
+
     @Test("Auto stops at the first write that does not go out and says so")
     func autoStopsAtTheFirstRefusal() async throws {
         let fixture = try AutoSendFixture()
@@ -339,6 +358,21 @@ struct ConnectorProposalGuidanceTests {
         let prompt = HostControlPlanePromptGuidance.appendingAutoSendGuidance(to: Self.contract, permissionPolicy: .autonomous)
         #expect(prompt.hasPrefix(Self.contract))
         #expect(prompt.contains("sent by ASTRA with the connector credential when this turn ends"))
+    }
+
+    @Test("Auto tells the agent a requested GitHub review is posted, Ask keeps the sheet")
+    func autoGuidanceSaysTheReviewIsPosted() {
+        let rule = "ASTRA will show the exact payload and require the user to press Post review."
+        let auto = HostControlPlanePromptGuidance.appendingAutoSendGuidance(to: rule, permissionPolicy: .autonomous)
+        #expect(auto.hasPrefix(rule))
+        #expect(auto.contains("posted by ASTRA when this turn ends"))
+        #expect(HostControlPlanePromptGuidance.appendingAutoSendGuidance(to: rule, permissionPolicy: .restricted) == rule)
+        let catalog = (try? String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/Services/Capabilities/PluginCatalog.swift"),
+            encoding: .utf8
+        )) ?? ""
+        #expect(catalog.contains(HostControlPlanePromptGuidance.reviewPostingMarker), "the marker is the catalog's own words")
     }
 
     @Test("Ask keeps the review contract and a prompt without it gains nothing")

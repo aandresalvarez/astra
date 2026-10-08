@@ -38,17 +38,29 @@ enum HostControlPlanePromptGuidance {
     /// an agent that tells the user "it is waiting for your review" would be
     /// describing something that will not happen. Appended only where the
     /// contract was, and only in Auto.
+    /// The GitHub capability's review rule says the same of a review file
+    /// (`PluginCatalog`), and Auto posts that file too.
     static func appendingAutoSendGuidance(to prompt: String, permissionPolicy: PermissionPolicy) -> String {
-        guard !ExternalActionPolicy.asksUser(for: .connectorMutation, level: permissionPolicy.agentPolicyLevel),
-              prompt.contains(stagedWritesMarker) else {
-            return prompt
+        let level = permissionPolicy.agentPolicyLevel
+        var prompt = prompt
+        if !ExternalActionPolicy.asksUser(for: .connectorMutation, level: level), prompt.contains(stagedWritesMarker) {
+            prompt += """
+
+
+            ASTRA Auto mode: this task does not ask the user before acting outside ASTRA. A connector proposal you stage is sent by ASTRA with the connector credential when this turn ends, without a review, and the chat records it with a link. When you stage one, tell the user it will be sent when you finish, not that it is waiting for their review. Everything else above still holds: stage it through the propose operation, once, and never write it another way.
+            """
         }
-        return prompt + """
+        if !ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: level), prompt.contains(reviewPostingMarker) {
+            prompt += """
 
 
-        ASTRA Auto mode: this task does not ask the user before acting outside ASTRA. A connector proposal you stage is sent by ASTRA with the connector credential when this turn ends, without a review, and the chat records it with a link. When you stage one, tell the user it will be sent when you finish, not that it is waiting for their review. Everything else above still holds: stage it through the propose operation, once, and never write it another way.
-        """
+            ASTRA Auto mode: a GitHub review file you write this turn for a review the user asked to post is posted by ASTRA when this turn ends and its checks pass, without the Post review sheet, and the chat records it with a link. Tell the user it will be posted when you finish, not that it is waiting for them to press Post review. Everything else in the review rule still holds.
+            """
+        }
+        return prompt
     }
+
+    static let reviewPostingMarker = "require the user to press Post review"
 
     static let dockerRoutingContract = """
     Routing contract: provider reasoning runs on host macOS, workspace shell commands run in Docker, and host control-plane actions such as GitHub PR metadata, Jira, read-only Google Cloud checks, SSH, browser, and Keychain access must use ASTRA-exposed host capabilities when available. Use `mcp__astra_host__github`, `mcp__astra_host__gcloud`, `mcp__astra_host__ssh`, or `mcp__astra_host__jira` for host control-plane work; GitHub Copilot CLI may display these as `astra_host-github`, `astra_host-gcloud`, `astra_host-ssh`, and `astra_host-jira`. Use `mcp__astra_host__bq` only for bq help/version metadata; GitHub Copilot CLI may display it as `astra_host-bq`. BigQuery data access is not available through host-control; use an explicitly approved BigQuery capability, or report BigQuery data access as unavailable if no such capability is present. Do not ask a subagent to "run locally" or to use native host Bash to escape this routing; subagents must use the same Docker workspace MCP tools for project commands and ASTRA host-control MCP tools for host services. If a host control-plane capability is missing, report that capability as missing instead of trying to run a host CLI from the Docker workspace.

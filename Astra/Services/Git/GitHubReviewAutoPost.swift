@@ -21,7 +21,24 @@ enum GitHubReviewAutoPost {
     /// this only has to cover a task folder with a lot of other output.
     static let maximumEntriesExamined = 4_000
 
-    static func postIfAuto(
+    /// Whether Auto will post a review this run wrote once validation passes,
+    /// so the review gate must not hold the outcome back before that.
+    static func postsAfterValidation(
+        task: AgentTask,
+        run: TaskRun,
+        policyLevel: AgentPolicyLevel,
+        executionPath: String? = nil
+    ) -> Bool {
+        !ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: policyLevel)
+            && GitHubReviewPublicationRequirement.isPending(task: task)
+            && !runReviewFiles(task: task, run: run, executionPath: executionPath).isEmpty
+    }
+
+    /// Called from settlement once the outcome, tests, AI check, baseline
+    /// check and plan review included, completed the run: the point Auto's
+    /// connector writes wait for too. A review it does not post holds
+    /// completion back, as the review gate would have.
+    static func postAfterValidation(
         task: AgentTask,
         run: TaskRun,
         policyLevel: AgentPolicyLevel,
@@ -29,20 +46,63 @@ enum GitHubReviewAutoPost {
         modelContext: ModelContext,
         service: GitHubReviewPublicationService
     ) async {
+        await postIfAuto(task: task, run: run, policyLevel: policyLevel, executionPath: executionPath,
+                         modelContext: modelContext, service: service)
+        guard task.status == .completed, GitHubReviewPublicationRequirement.isPending(task: task) else { return }
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
+        if decision.shouldBlockCompletion {
+            TaskRuntimeOutcomeTransition.applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
+        }
+    }
+
+    /// What the chat says when Auto did not post, or nil when the failure
+    /// already has its own line (an unconfirmed or already-dispatched post) or
+    /// the user withdrew the request. A confirmed post whose receipt could not
+    /// be saved has none — the publish path rolled its own back — so it says
+    /// GitHub has it. A stale or unusable file is set aside rather than left in
+    /// the dock, so it is not called "waiting for your review".
+    static func notice(for error: Error) -> String? {
+        let reason = error.localizedDescription
+        guard let error = error as? GitHubReviewPublicationError else {
+            return "Auto could not post the GitHub review: \(reason) It is waiting for your review."
+        }
+        switch error {
+        case .uncertain, .alreadyDispatched, .requestWithdrawn:
+            return nil
+        case .receiptPersistenceFailed:
+            return "Auto posted the GitHub review. \(reason)"
+        case .staleHead, .unusableArtifact:
+            return "Auto could not post the GitHub review: \(reason) This file is set aside; "
+                + "a new review file is needed to post it."
+        case .invalid:
+            return "Auto could not post the GitHub review: \(reason) It is waiting for your review."
+        }
+    }
+
+    /// Only a review this run wrote is this run's to post. A file an earlier
+    /// run left — one composed under Ask and still waiting in the dock — is
+    /// that run's question, and switching the task to Auto must not answer it.
+    /// `allFileChanges` carries what the run touched in the task folder, shell
+    /// writes included.
+    private static func runReviewFiles(task: AgentTask, run: TaskRun, executionPath: String?) -> [String] {
+        let access = TaskWorkspaceAccess(task: task)
+        let produced = producedPaths(of: run, executionPath: executionPath ?? access.codeWorkingDirectory)
+        return candidateReviewFiles(taskFolder: access.taskFolder).filter { produced.contains(resolved($0)) }
+    }
+
+    private static func postIfAuto(
+        task: AgentTask,
+        run: TaskRun,
+        policyLevel: AgentPolicyLevel,
+        executionPath: String?,
+        modelContext: ModelContext,
+        service: GitHubReviewPublicationService
+    ) async {
         guard !ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: policyLevel),
               GitHubReviewPublicationRequirement.isPending(task: task) else {
             return
         }
-        // Only a review this run wrote is this run's to post. A file an earlier
-        // run left — one composed under Ask and still waiting in the dock — is
-        // that run's question, and switching the task to Auto must not answer
-        // it. `allFileChanges` carries what the run touched in the task folder,
-        // shell writes included.
-        let access = TaskWorkspaceAccess(task: task)
-        let taskFolder = access.taskFolder
-        let produced = producedPaths(of: run, executionPath: executionPath ?? access.codeWorkingDirectory)
-        let candidates = candidateReviewFiles(taskFolder: taskFolder)
-            .filter { produced.contains(resolved($0)) }
+        let candidates = runReviewFiles(task: task, run: run, executionPath: executionPath)
         // No review file from this run means the agent has not written one, or
         // an earlier run did; the pending requirement already tells the user
         // what is missing and the dock still offers the earlier file.
@@ -56,21 +116,11 @@ enum GitHubReviewAutoPost {
                 "candidate_count": String(candidates.count),
                 "result": "not_posted"
             ], level: .warning)
-            // An unconfirmed or already-dispatched post has its own error line;
-            // repeating it would read as a second attempt.
-            if let error = error as? GitHubReviewPublicationError {
-                switch error {
-                case .uncertain, .alreadyDispatched, .receiptPersistenceFailed, .requestWithdrawn:
-                    return
-                case .invalid, .unusableArtifact, .staleHead:
-                    break
-                }
-            }
+            guard let notice = notice(for: error) else { return }
             modelContext.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.System.info,
-                payload: "Auto could not post the GitHub review: \(error.localizedDescription) "
-                    + "It is waiting for your review.",
+                payload: notice,
                 run: run
             ))
         }
@@ -107,15 +157,28 @@ enum GitHubReviewAutoPost {
             return []
         }
         var found: [(path: String, modified: Date)] = []
-        var examined = 0
-        while let url = enumerator.nextObject() as? URL, examined < maximumEntriesExamined {
-            examined += 1
+        func consider(_ url: URL) {
             guard GitHubReviewArtifactPolicy.isReviewFile(url.path),
                   let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
                   values.isRegularFile == true else {
-                continue
+                return
             }
             found.append((url.path, values.contentModificationDate ?? .distantPast))
+        }
+        // The top level first, where review files are written, so a large
+        // subdirectory the walk reaches earlier cannot use up the bound.
+        let topLevel = (try? fileManager.contentsOfDirectory(
+            at: URL(fileURLWithPath: taskFolder, isDirectory: true),
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        topLevel.forEach(consider)
+        let topLevelPaths = Set(topLevel.map(\.standardizedFileURL.path))
+        var examined = 0
+        while let url = enumerator.nextObject() as? URL, examined < maximumEntriesExamined {
+            examined += 1
+            guard !topLevelPaths.contains(url.standardizedFileURL.path) else { continue }
+            consider(url)
         }
         return found
             .sorted { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }

@@ -47,33 +47,55 @@ enum AgentExternalActionObserver {
         var observations: [Observation] = []
         for (index, event) in runEvents.enumerated()
         where event.type == TaskEventTypes.Tool.use.rawValue && !alreadyRecorded.contains(event.id) {
-            guard let command = shellCommandText(fromToolUsePayload: event.payload),
-                  let action = classify(command) else {
-                continue
-            }
+            guard let command = shellCommandText(fromToolUsePayload: event.payload) else { continue }
+            let actions = actions(in: command)
+            guard !actions.isEmpty else { continue }
             // The call's own result decides whether anything happened. A failed
-            // or missing result is not evidence of an action.
-            guard let result = runEvents[(index + 1)...].first(where: {
-                $0.type == TaskEventTypes.Tool.result.rawValue || $0.type == TaskEventTypes.Tool.resultFailed.rawValue
-            }), result.type == TaskEventTypes.Tool.result.rawValue else {
+            // result names the call it belongs to (a batch can answer another
+            // call first); a successful one does not, so the first result not
+            // known to be someone else's decides, and a missing result is not
+            // evidence of an action.
+            let later = runEvents[(index + 1)...]
+            guard !later.contains(where: { failureEvidence($0) == event.payload }),
+                  let result = later.first(where: { candidate in
+                      candidate.type == TaskEventTypes.Tool.result.rawValue
+                          || (candidate.type == TaskEventTypes.Tool.resultFailed.rawValue
+                              && failureEvidence(candidate) == nil)
+                  }),
+                  result.type == TaskEventTypes.Tool.result.rawValue else {
                 continue
             }
-            let url = firstGitHubURL(in: result.payload) ?? firstGitHubURL(in: command)
-            let observation = Observation(
-                sourceEventID: event.id,
-                title: title(for: action, url: url),
-                destination: destination(for: action, url: url, result: result.payload),
-                url: url
-            )
-            modelContext.insert(TaskEvent.structuredPayloadEvent(
-                task: task,
-                type: eventType,
-                payload: observation,
-                run: run
-            ))
-            observations.append(observation)
+            let enterprise = enterpriseGitHub(in: command)
+            let url = firstGitHubURL(in: result.payload, host: enterprise?.host)
+                ?? firstGitHubURL(in: command, host: enterprise?.host)
+            for action in actions {
+                let observation = Observation(
+                    sourceEventID: event.id,
+                    title: title(for: action, url: url),
+                    destination: destination(for: action, url: url, result: result.payload, enterprise: enterprise),
+                    url: url
+                )
+                modelContext.insert(TaskEvent.structuredPayloadEvent(
+                    task: task,
+                    type: eventType,
+                    payload: observation,
+                    run: run
+                ))
+                observations.append(observation)
+            }
         }
         return observations
+    }
+
+    /// The `tool.use` payload a failed result names: the recorder stores the
+    /// call's own evidence on a failure (`ToolResultFailurePayload`). Nil for
+    /// anything else, or a failure recorded without it.
+    private static func failureEvidence(_ event: TaskEvent) -> String? {
+        guard event.type == TaskEventTypes.Tool.resultFailed.rawValue,
+              let data = event.payload.data(using: .utf8) else {
+            return nil
+        }
+        return (try? JSONDecoder().decode(ToolResultFailurePayload.self, from: data))?.toolUseEvidence
     }
 
     enum Action: Equatable, Sendable {
@@ -82,6 +104,14 @@ enum AgentExternalActionObserver {
         case issue(verb: String)
         case release
         case api(method: String)
+        /// A write outside the machine by any other command, with the host it
+        /// went to when the command named one.
+        case externalWrite(executable: String, destination: String)
+
+        var isExternalWrite: Bool {
+            if case .externalWrite = self { return true }
+            return false
+        }
     }
 
     /// The command text of a shell tool call, or nil for any other tool. File
@@ -107,48 +137,91 @@ enum AgentExternalActionObserver {
     /// on the separators a shell honours outside quotes, and each segment's
     /// executable is read after assignments and prefixes such as `env`: a
     /// quoted operand like `rg 'git push' .` or `echo 'gh pr create'` names a
-    /// command without running it.
-    nonisolated static func classify(_ command: String) -> Action? {
-        let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
-        for tokens in shellSegments(text) {
-            if let action = action(forSegment: tokens) { return action }
-        }
-        return nil
+    /// command without running it. `unwrapping: false` reads each segment as
+    /// written, for a caller that unwraps runners and `sh -c` itself.
+    nonisolated static func classify(_ command: String, unwrapping: Bool = true) -> Action? {
+        actions(in: command, depth: unwrapping ? 0 : maximumUnwrapDepth).first
     }
 
-    nonisolated private static func action(forSegment rawTokens: [String]) -> Action? {
+    /// Every recognised external action the command runs, in order —
+    /// `git push && gh pr create` did two things — including what a runner
+    /// (`env -u CI`, `timeout 30`, `xargs`) or `sh -c` runs.
+    nonisolated static func actions(in command: String, depth: Int = 0) -> [Action] {
+        let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
+        return shellSegments(text).flatMap { actions(forSegment: $0, depth: depth) }
+    }
+
+    nonisolated private static let maximumUnwrapDepth = 4
+
+    nonisolated private static func actions(forSegment rawTokens: [String], depth: Int) -> [Action] {
         var tokens = rawTokens.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "(){}")) }.filter { !$0.isEmpty }
         while let first = tokens.first,
               (first.contains("=") && !first.hasPrefix("-")) || commandPrefixes.contains(first.lowercased()) {
             tokens.removeFirst()
         }
-        guard let executable = tokens.first.map({ URL(fileURLWithPath: $0).lastPathComponent.lowercased() }) else {
-            return nil
+        guard let first = tokens.first else { return [] }
+        if depth < maximumUnwrapDepth {
+            if let inner = ShellCommandRunners.wrappedCommand(tokens.joined(separator: " ")) {
+                return actions(in: inner, depth: depth + 1)
+            }
+            if let payload = shellPayload(tokens) {
+                return actions(in: payload, depth: depth + 1)
+            }
         }
+        let executable = URL(fileURLWithPath: first).lastPathComponent.lowercased()
         let args = Array(tokens.dropFirst()).map { $0.lowercased() }
         switch executable {
         case "git":
-            return firstOperand(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree", "--namespace"]) == "push"
-                ? .push : nil
+            guard firstOperand(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree", "--namespace"]) == "push",
+                  !args.contains("--dry-run"), !args.contains("-n") else {
+                return []
+            }
+            return [.push]
         case "gh":
             let operands = operands(args, optionsWithValues: ["-r", "--repo", "--hostname"])
-            guard let area = operands.first else { return nil }
+            guard let area = operands.first else { return [] }
             let verb = operands.dropFirst().first ?? ""
             switch area {
-            case "pr" where ["create", "merge", "comment", "review", "edit", "close", "ready"].contains(verb):
-                return .pullRequest(verb: verb)
+            case "pr" where verb == "ready":
+                return [.pullRequest(verb: args.contains("--undo") ? "draft" : "ready")]
+            case "pr" where ["create", "merge", "comment", "review", "edit", "close"].contains(verb):
+                return [.pullRequest(verb: verb)]
             case "issue" where ["create", "comment", "edit", "close"].contains(verb):
-                return .issue(verb: verb)
+                return [.issue(verb: verb)]
             case "release" where verb == "create":
-                return .release
+                return [.release]
             case "api":
-                return apiAction(args)
+                return apiAction(args).map { [$0] } ?? []
             default:
-                return nil
+                return []
             }
         default:
+            // Any other command the shared risk classifier calls a write
+            // outside this machine: a curl that sends data, a cloud deploy, a
+            // package publish. Its own tokens, so case still reads (`-X`).
+            guard ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: tokens.joined(separator: " ")) else {
+                return []
+            }
+            let host = tokens.lazy.compactMap { URLComponents(string: $0)?.host }.first
+            return [.externalWrite(executable: executable, destination: host ?? executable)]
+        }
+    }
+
+    /// The command string of `sh|bash|zsh|dash|ksh -c <payload>`.
+    nonisolated private static func shellPayload(_ tokens: [String]) -> String? {
+        guard let first = tokens.first,
+              ["sh", "bash", "zsh", "dash", "ksh"].contains(URL(fileURLWithPath: first).lastPathComponent.lowercased()) else {
             return nil
         }
+        var index = 1
+        while index < tokens.count, tokens[index].hasPrefix("-") {
+            let option = tokens[index]
+            if !option.hasPrefix("--"), option.contains("c") {
+                return tokens.indices.contains(index + 1) ? tokens[index + 1] : nil
+            }
+            index += option == "-o" ? 2 : 1
+        }
+        return nil
     }
 
     /// `gh api` writes when given a write method, or — on its own — when given
@@ -167,6 +240,10 @@ enum AgentExternalActionObserver {
             }
             if let method, ["post", "patch", "put", "delete"].contains(method) {
                 return .api(method: method.uppercased())
+            }
+            // `--method GET` sends fields as a query string: a read.
+            if let method, ["get", "head"].contains(method) {
+                return nil
             }
         }
         let bodyFlags: Set<String> = ["-f", "--field", "--raw-field", "--input"]
@@ -330,6 +407,7 @@ enum AgentExternalActionObserver {
             case "review": return "Reviewed \(noun)"
             case "edit": return "Edited \(noun)"
             case "close": return "Closed \(noun)"
+            case "draft": return "Converted \(noun) to draft"
             default: return "Marked \(noun) ready for review"
             }
         case .issue(let verb):
@@ -344,6 +422,8 @@ enum AgentExternalActionObserver {
             return "Created a release"
         case .api(let method):
             return "Sent a GitHub API \(method) request"
+        case .externalWrite(let executable, _):
+            return "Ran \(executable), which changed something outside ASTRA"
         }
     }
 
@@ -352,16 +432,49 @@ enum AgentExternalActionObserver {
         return url[match].split(separator: "/").last.map(String.init)
     }
 
-    /// Where the action landed. `gh` only talks to GitHub, but `git push` goes
-    /// to whatever remote it names, so a push without a GitHub link reads its
-    /// destination from Git's own `To <remote>` line, and says only "Git
-    /// remote" when that is missing rather than guess GitHub.
-    static func destination(for action: Action, url: String?, result: String) -> String {
+    /// Where the action landed. `gh` talks to GitHub — or to the GitHub
+    /// Enterprise host its `--hostname` or `--repo HOST/OWNER/REPO` names —
+    /// but `git push` goes to whatever remote it names, so a push without a
+    /// GitHub link reads its destination from Git's own `To <remote>` line, and
+    /// says only "Git remote" when that is missing rather than guess GitHub.
+    static func destination(
+        for action: Action,
+        url: String?,
+        result: String,
+        enterprise: (host: String, repository: String?)? = nil
+    ) -> String {
+        if case .externalWrite(_, let destination) = action { return destination }
+        if let enterprise, action != .push {
+            let repository = url.flatMap { URLComponents(string: $0)?.path }
+                .map { $0.split(separator: "/").prefix(2).joined(separator: "/") }
+                .flatMap { $0.contains("/") ? $0 : nil }
+                ?? enterprise.repository
+            return repository.map { "\(enterprise.host)/\($0)" } ?? enterprise.host
+        }
         if let repository = url.flatMap(ExternalActionRecordProjection.repository(fromGitHubURL:)) {
             return repository
         }
         guard action == .push else { return "GitHub" }
         return pushRemote(in: result) ?? "Git remote"
+    }
+
+    /// The GitHub Enterprise host a `gh` command names, with the repository
+    /// when `--repo HOST/OWNER/REPO` gives one; nil for github.com.
+    nonisolated static func enterpriseGitHub(in command: String) -> (host: String, repository: String?)? {
+        for tokens in shellSegments(ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))) {
+            func value(after names: Set<String>) -> String? {
+                for (index, token) in tokens.enumerated() {
+                    if names.contains(token), tokens.indices.contains(index + 1) { return tokens[index + 1] }
+                    for name in names where token.hasPrefix(name + "=") { return String(token.dropFirst(name.count + 1)) }
+                }
+                return nil
+            }
+            let repoParts = value(after: ["-R", "--repo"])?.split(separator: "/").map(String.init) ?? []
+            let host = value(after: ["--hostname"]) ?? (repoParts.count == 3 ? repoParts[0] : nil)
+            guard let host, host.lowercased() != "github.com" else { continue }
+            return (host, repoParts.count >= 2 ? repoParts.suffix(2).joined(separator: "/") : nil)
+        }
+        return nil
     }
 
     /// `owner/repo` for GitHub, otherwise `host/path`, read from the first
@@ -386,8 +499,9 @@ enum AgentExternalActionObserver {
         return path.isEmpty ? hostAndPath.host : "\(hostAndPath.host)/\(path)"
     }
 
-    static func firstGitHubURL(in text: String) -> String? {
-        guard let match = text.range(of: #"https://github\.com/[^\s"'\)<>\]\\,]+"#, options: .regularExpression) else {
+    static func firstGitHubURL(in text: String, host: String? = nil) -> String? {
+        let escapedHost = NSRegularExpression.escapedPattern(for: host ?? "github.com")
+        guard let match = text.range(of: #"https://"# + escapedHost + #"/[^\s"'\)<>\]\\,]+"#, options: .regularExpression) else {
             return nil
         }
         var url = String(text[match])

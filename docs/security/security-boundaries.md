@@ -133,12 +133,14 @@ boundary. The full inventory is in
   mid-send is reconciled rather than replayed, and only for a run whose outcome,
   tests and AI check included, completed it (never after a cancel, failure,
   failed validation, timeout, or policy stop) — and a requested GitHub review
-  this run wrote is posted when the run finishes; each through the same checks an approved
+  this run wrote is posted at that same point, after validation; each through the same checks an approved
   action goes through (digest re-read, derived route, re-resolved destination,
   dispatch recorded before the network call, no resend of an ambiguous
   outcome). Every action outside ASTRA leaves a record in the chat, derived
   from its receipt, with an **Auto** pill; recognised `git`/`gh` commands the
-  agent ran itself are recorded with an **Agent** pill.
+  agent ran itself (also behind a runner or `sh -c`), and any other command the
+  risk classifier calls a write outside the machine, are recorded with an
+  **Agent** pill. The next turn's prompt lists these records too.
 - **Custom** applies the saved per-item tool, shell, and network rules (an
   enabled local tool becomes a grant only when those rules allow Bash, on
   every runtime) and follows Ask for actions outside ASTRA: a rule that allows Bash, `git:*`,
