@@ -126,12 +126,14 @@ struct GitHubReviewThreadWorkflowTests {
     }
 
     private func insertBatch(_ f: Fixture, _ type: String, _ proposal: String, operation: String,
-                             payload: GitHubReviewThreadPayload? = nil, threads: Int = 1) {
+                             payload: GitHubReviewThreadPayload? = nil, threads: Int = 1, firstThread: Int = 1, at: Date? = nil) {
         let url = "https://github.com/example/repo/pull/12"
         var record = GitHubReviewThreadReceipt(proposalID: proposal, filePath: "/x/\(proposal).json", pullRequestURL: url,
-            actions: (1...threads).map { .init(threadID: "T\($0)", operation: operation, commentID: "C", url: url) })
+            actions: (firstThread..<(firstThread + threads)).map { .init(threadID: "T\($0)", operation: operation, commentID: "C", url: url) })
         record.approvedPayload = payload
-        f.context.insert(TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record))
+        let event = TaskEvent.structuredPayloadEvent(task: f.task, type: type, payload: record)
+        if let at { event.timestamp = at }
+        f.context.insert(event)
     }
 
     private func mirroredProposals(_ f: Fixture) throws -> [WorkspaceConfigManager.EventConfig] {
@@ -854,5 +856,72 @@ struct GitHubReviewThreadWorkflowTests {
 
         let enough = GitHubReviewThreadPublicationService(modelContext: f.context, cli: cli, pageBudget: 2)
         _ = try await enough.prepare(task: f.task, filePath: f.file.path)
+    }
+
+    // MARK: - An older confirmation cannot settle a newer dispatch
+
+    @Test("a reply confirmed before a later dispatch does not settle that dispatch")
+    func olderConfirmationDoesNotSettleALaterDispatch() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        for artifact in f.task.artifacts { f.context.delete(artifact) }; f.task.artifacts.removeAll()
+        let reply = GitHubReviewThreadPayload(pullRequestUrl: "https://github.com/example/repo/pull/12", commitId: Self.head, threads: [
+            .init(threadId: "T1", expectedLastCommentId: "C1", reply: "Fixed", resolve: false)])
+        let start = Date()
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "first", operation: "reply", payload: reply, at: start)
+        insertBatch(f, GitHubReviewThreadEvents.actionReceipt, "first", operation: "reply", at: start.addingTimeInterval(1))
+        insertBatch(f, GitHubReviewThreadEvents.receipt, "first", operation: "reply", at: start.addingTimeInterval(2))
+        #expect(!GitHubReviewThreadPublicationService.hasPendingWork(task: f.task))
+
+        // A second reply to the same thread whose response was lost: still unconfirmed.
+        insertBatch(f, GitHubReviewThreadEvents.dispatched, "second", operation: "reply", payload: reply, at: start.addingTimeInterval(3))
+        #expect(GitHubReviewThreadPublicationService.hasPendingWork(task: f.task))
+    }
+
+    // MARK: - Dismissals are the only record of the user's decision
+
+    @Test("every dismissal stays in the recovery mirror; older ones keep a shortened reason")
+    func everyDismissalIsRetained() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let total = WorkspaceConfigManager.MirrorLimits.maxThreadDismissals + 5
+        let start = Date()
+        for index in 0..<total {
+            let event = TaskEvent.structuredPayloadEvent(task: f.task, type: GitHubReviewThreadEvents.dismissed,
+                payload: GitHubReviewThreadDismissal(filePath: "/x/pr12_threads_\(index).json", reason: String(repeating: "r", count: 2_000)))
+            event.timestamp = start.addingTimeInterval(TimeInterval(index))
+            f.context.insert(event)
+        }
+        let dismissals = try mirroredProposals(f).filter { $0.type == GitHubReviewThreadEvents.dismissed }
+        func reason(_ index: Int) -> String? {
+            dismissals.first { $0.payload.contains("pr12_threads_\(index).json") }
+                .flatMap { (try? JSONSerialization.jsonObject(with: Data($0.payload.utf8))) as? [String: Any] }?["reason"] as? String
+        }
+
+        #expect(dismissals.count == total)
+        #expect(reason(0)?.count == WorkspaceConfigManager.MirrorLimits.maxCompactedDismissalReasonCharacters)
+        #expect(reason(total - 1)?.count == 2_000)
+    }
+
+    // MARK: - Retention reads the same settlement rule as completion
+
+    @Test("a batch settled by its action receipts is kept as settled, not as live evidence")
+    func confirmedBatchesAreRetainedAsSettled() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let start = Date()
+        let total = WorkspaceConfigManager.MirrorLimits.maxSettledThreadBatches + 3
+        for index in 0..<total {   // every action confirmed, the final receipt never written; one thread each
+            let at = start.addingTimeInterval(TimeInterval(index * 10))
+            let payload = GitHubReviewThreadPayload(pullRequestUrl: "https://github.com/example/repo/pull/12", commitId: Self.head, threads: [
+                .init(threadId: "T\(index + 1)", expectedLastCommentId: "C1", reply: "Fixed", resolve: false)])
+            insertBatch(f, GitHubReviewThreadEvents.dispatched, "crashed-\(index)", operation: "reply", payload: payload, at: at)
+            insertBatch(f, GitHubReviewThreadEvents.actionReceipt, "crashed-\(index)", operation: "reply", firstThread: index + 1,
+                        at: at.addingTimeInterval(1))
+        }
+        let events = try mirroredProposals(f)
+        let records = events.map { GitHubReviewThreadSettlement.Record(type: $0.type, payload: $0.payload, timestamp: $0.timestamp) }
+
+        // Older batches shed their per-action records, and recovery still sees them as settled.
+        #expect(!events.contains { $0.type == GitHubReviewThreadEvents.actionReceipt && $0.payload.contains("\"crashed-0\"") })
+        #expect(events.contains { $0.type == GitHubReviewThreadEvents.dispatched && $0.payload.contains("\"crashed-0\"") })
+        #expect(GitHubReviewThreadSettlement.unsettledProposalIDs(records).isEmpty)
     }
 }

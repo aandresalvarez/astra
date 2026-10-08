@@ -18,68 +18,77 @@ extension WorkspaceConfigManager {
 
     static func isThreadWorkflowEvent(_ type: String) -> Bool { type.hasPrefix("github.review-threads.") }
 
-    /// The thread workflow events the mirror keeps, and which of them to compact. Keeping the
-    /// whole namespace whole forever made every export grow with each batch, and each dispatch
-    /// embeds its approved payload, up to 256 KiB. A batch that was sent and never receipted is
-    /// recovery evidence, so every one of them stays: the newest few whole, older ones without
-    /// the embedded payload. Settled batches keep the newest few whole; older ones keep what
-    /// stops a replay and what settles them, the dispatch (without its payload) and the final
-    /// receipt (one entry per operation). Dismissals are bounded.
-    static func threadWorkflowRetention(_ task: AgentTask) -> (kept: Set<UUID>, compact: Set<UUID>) {
+    /// The thread workflow events the mirror keeps, which of them to compact, and which compacted
+    /// dispatches to mark settled. Keeping the whole namespace whole forever made every export grow
+    /// with each batch, and each dispatch embeds its approved payload, up to 256 KiB.
+    ///
+    /// - Unsettled batches are recovery evidence, so every one stays: the newest few whole, older
+    ///   ones without the embedded payload.
+    /// - Settled batches (by the same rule completion uses, `GitHubReviewThreadSettlement`) keep the
+    ///   newest few whole. Older ones keep what stops a replay: the dispatch, without its payload and
+    ///   marked settled, so a batch settled by its action receipts stays settled without them, and
+    ///   the final receipt with one entry per operation.
+    /// - Every dismissal stays, because it is the only record of the user's decision and of a file
+    ///   that must not be offered again; beyond the newest few only its file identity is kept whole.
+    static func threadWorkflowRetention(_ task: AgentTask) -> (kept: Set<UUID>, compact: Set<UUID>, markSettled: Set<UUID>) {
         struct Entry { let id: UUID; let type: String; let proposalID: String?; let timestamp: Date }
-        let entries = task.events.compactMap { event -> Entry? in
-            guard !event.isDeleted, isThreadWorkflowEvent(event.type) else { return nil }
+        let events = task.events.filter { !$0.isDeleted && isThreadWorkflowEvent($0.type) }
+        let entries = events.map { event -> Entry in
             let object = event.payload.data(using: .utf8)
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             return Entry(id: event.id, type: event.type, proposalID: object?["proposalID"] as? String, timestamp: event.timestamp)
         }
-        let settledTypes: Set<String> = ["github.review-threads.receipt", "github.review-threads.receipt-recovery"]
+        let unsettled = GitHubReviewThreadSettlement.unsettledProposalIDs(events.map {
+            GitHubReviewThreadSettlement.Record(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
+        })
         typealias Batch = (events: [Entry], last: Date, settled: Bool)
         let batches: [Batch] = Dictionary(grouping: entries.filter { $0.proposalID != nil }, by: { $0.proposalID ?? "" })
-            .values.map { events in
-                (events: events, last: events.map(\.timestamp).max() ?? .distantPast,
-                 settled: events.contains { settledTypes.contains($0.type) })
+            .map { proposalID, events in
+                (events: events, last: events.map(\.timestamp).max() ?? .distantPast, settled: !unsettled.contains(proposalID))
             }
         let newestFirst = { (lhs: Batch, rhs: Batch) in lhs.last > rhs.last }
-        var kept = Set<UUID>(), compact = Set<UUID>()
+        var kept = Set<UUID>(), compact = Set<UUID>(), markSettled = Set<UUID>()
         for (index, batch) in batches.filter({ !$0.settled }).sorted(by: newestFirst).enumerated() {
             kept.formUnion(batch.events.map(\.id))
             if index >= MirrorLimits.maxActiveThreadBatches {
-                compact.formUnion(batch.events.filter { $0.type == "github.review-threads.dispatched" }.map(\.id))
+                compact.formUnion(batch.events.filter { $0.type == GitHubReviewThreadSettlement.dispatched }.map(\.id))
             }
         }
         for (index, batch) in batches.filter({ $0.settled }).sorted(by: newestFirst).enumerated() {
             if index < MirrorLimits.maxSettledThreadBatches {
                 kept.formUnion(batch.events.map(\.id))
             } else {
-                let identity = batch.events.filter { $0.type == "github.review-threads.dispatched" || settledTypes.contains($0.type) }
+                let dispatches = batch.events.filter { $0.type == GitHubReviewThreadSettlement.dispatched }
+                let identity = dispatches + batch.events.filter { GitHubReviewThreadSettlement.finalTypes.contains($0.type) }
                 kept.formUnion(identity.map(\.id))
                 compact.formUnion(identity.map(\.id))
+                markSettled.formUnion(dispatches.map(\.id))
             }
         }
-        kept.formUnion(entries.filter { $0.proposalID == nil }.sorted { $0.timestamp > $1.timestamp }
-            .prefix(MirrorLimits.maxThreadDismissals).map(\.id))
-        return (kept, compact)
+        for (index, dismissal) in entries.filter({ $0.proposalID == nil }).sorted(by: { $0.timestamp > $1.timestamp }).enumerated() {
+            kept.insert(dismissal.id)
+            if index >= MirrorLimits.maxThreadDismissals { compact.insert(dismissal.id) }
+        }
+        return (kept, compact, markSettled)
     }
 
-    /// A record with a summary in place of what recovery no longer needs: the approved payload
-    /// of a dispatch becomes the actions it required, and, for a settled batch's receipt, the
-    /// per-thread actions become one entry per operation, which is all that completion reads.
-    static func compactedThreadPayload(_ payload: String, collapsingActions: Bool = false) -> String {
+    /// A record with a summary in place of what recovery no longer needs: a dispatch keeps the
+    /// actions its approved payload required (and the settled mark, when given), a final receipt
+    /// keeps one entry per operation, which is all that completion reads, and a dismissal keeps
+    /// its file with a shortened reason.
+    static func compactedThreadPayload(_ payload: String, type: String, markSettled: Bool = false) -> String {
         guard var object = (try? JSONSerialization.jsonObject(with: Data(payload.utf8))) as? [String: Any] else { return payload }
-        if let approved = object.removeValue(forKey: "approvedPayload") as? [String: Any] {
-            // What completion recovery needs from the payload: which operations it required.
-            var required: [String] = []
-            for thread in (approved["threads"] as? [[String: Any]]) ?? [] {
-                guard let id = thread["threadId"] as? String else { continue }
-                if thread["reply"] is String { required.append("\(id):reply") }
-                if thread["resolve"] as? Bool == true { required.append("\(id):resolve") }
+        if type == GitHubReviewThreadSettlement.dispatched {
+            if object["approvedPayload"] != nil {
+                object["requiredActions"] = GitHubReviewThreadSettlement.requiredActions(object) ?? []
+                object.removeValue(forKey: "approvedPayload")
             }
-            object["requiredActions"] = required
-        }
-        if collapsingActions, let actions = object["actions"] as? [[String: Any]] {
+            if markSettled { object["settled"] = true }
+        } else if GitHubReviewThreadSettlement.finalTypes.contains(type), let actions = object["actions"] as? [[String: Any]] {
             let operations = Set(actions.compactMap { $0["operation"] as? String }).sorted()
             object["actions"] = operations.map { ["threadID": "*", "operation": $0] }
+        } else if type == "github.review-threads.dismissed", let reason = object["reason"] as? String {
+            object["reason"] = String(reason.prefix(MirrorLimits.maxCompactedDismissalReasonCharacters))
         }
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let compacted = String(data: data, encoding: .utf8) else { return payload }

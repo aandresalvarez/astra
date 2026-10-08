@@ -32,6 +32,7 @@ public enum WorkspaceConfigManager {
         public static let maxSettledThreadBatches = 5
         public static let maxActiveThreadBatches = 20
         public static let maxThreadDismissals = 20
+        public static let maxCompactedDismissalReasonCharacters = 120
         public static let maxWorkspaceAppRuns = 10
         public static let maxWorkspaceAppRunEvents = 10
         public static let maxRunOutputCharacters = 8_000
@@ -1897,7 +1898,7 @@ public enum WorkspaceConfigManager {
         let eventConfigs = mirroredEvents.compactMap { event -> EventConfig? in
             guard var payload = isTaskRecoveryEvent(event.type) || fullPayloadIDs.contains(event.id)
                 ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters) else { return nil }
-            if threadRetention.compact.contains(event.id) { payload = compactedThreadPayload(payload, collapsingActions: event.type != "github.review-threads.dispatched") }
+            if threadRetention.compact.contains(event.id) { payload = compactedThreadPayload(payload, type: event.type, markSettled: threadRetention.markSettled.contains(event.id)) }
             return EventConfig(
                 id: event.id.uuidString,
                 type: event.type,

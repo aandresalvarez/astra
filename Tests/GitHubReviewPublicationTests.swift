@@ -143,6 +143,29 @@ struct GitHubReviewPublicationTests {
         #expect(run.typedStopReason == .completed)
     }
 
+    @Test("posting a review nobody asked for does not complete a task held by thread work")
+    func unrequestedReviewDoesNotCompleteThreadWork() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let run = TaskRun(task: fixture.task)
+        run.recordExternalOutcomePending()
+        fixture.task.status = .pendingUser
+        fixture.context.insert(run)
+        // A thread proposal still waits for the user; no message asked to post a review.
+        let threads = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_threads.json")
+        try Data("{}".utf8).write(to: threads)
+        fixture.context.insert(Artifact(task: fixture.task, type: "JSON", path: threads.path))
+        try fixture.context.save()
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+        #expect(!GitHubReviewPublicationRequirement.reviewIsPending(task: fixture.task))
+
+        let service = GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI())
+        let proposal = try await service.prepare(task: fixture.task, filePath: fixture.file.path)
+        _ = try await service.publish(task: fixture.task, proposal: proposal)
+        #expect(!fixture.task.events.contains { $0.type == TaskEventTypes.Task.approved.rawValue })
+        #expect(fixture.task.status != .completed)
+    }
+
     @Test("publication sends the bytes verified before the final network metadata check")
     func postsRevalidatedBytesWhenFileChangesDuringCheck() async throws {
         let fixture = try makeFixture()

@@ -15,7 +15,7 @@ final class GitHubReviewThreadPublicationService {
     /// Discussion pages one proposal may read while it is validated. Each page is a `gh`
     /// process and its comments stay in memory, so a proposal of many large discussions is
     /// split rather than read whole.
-    static let defaultPageBudget = 400
+    nonisolated static let defaultPageBudget = 400
 
     init(modelContext: ModelContext, cli: any GitHubReviewCLI = NativeGitHubReviewCLI(),
          originURL: @escaping (String) async -> String? = { await GitService.shared.getRemoteOriginURL(at: $0) },
@@ -66,35 +66,12 @@ final class GitHubReviewThreadPublicationService {
         }
     }
 
-    /// ASTRA can stop after the last confirmed operation but before it writes the final batch
-    /// receipt. When every operation of the approved payload is durably confirmed there is
-    /// nothing left to send; any other dispatch without a final receipt is unsettled.
+    /// A sent batch that is neither receipted nor fully confirmed. The rule is shared with the
+    /// recovery mirror's retention (`GitHubReviewThreadSettlement`).
     private nonisolated static func hasUnsettledDispatch(task: AgentTask) -> Bool {
-        func records(_ types: [String]) -> [GitHubReviewThreadReceipt] {
-            task.events.compactMap { event in
-                guard types.contains(event.type), let data = event.payload.data(using: .utf8) else { return nil }
-                return try? JSONDecoder().decode(GitHubReviewThreadReceipt.self, from: data)
-            }
-        }
-        let settled = Set(records([GitHubReviewThreadEvents.receipt, GitHubReviewThreadEvents.receiptRecovery]).map(\.proposalID))
-        let confirmed = records([GitHubReviewThreadEvents.actionReceipt])
-        return records([GitHubReviewThreadEvents.dispatched]).contains { dispatch in
-            guard !settled.contains(dispatch.proposalID) else { return false }
-            // Across batches of the pull request: a reply confirmed by a batch that failed before
-            // resolving, and a resolution-only proposal sent to finish it, settle both.
-            let done = Set(confirmed.filter { $0.pullRequestURL == dispatch.pullRequestURL }
-                .flatMap(\.actions).map { "\($0.threadID):\($0.operation)" })
-            // The approved payload, or the summary a compacted dispatch keeps in its place.
-            let required: [String]
-            if let payload = dispatch.approvedPayload {
-                required = payload.threads.flatMap { thread in
-                    (thread.reply != nil ? ["\(thread.threadId):reply"] : []) + (thread.resolve ? ["\(thread.threadId):resolve"] : [])
-                }
-            } else if let summary = dispatch.requiredActions {
-                required = summary
-            } else { return true }
-            return required.isEmpty || !required.allSatisfy(done.contains)
-        }
+        let records = task.events.filter { !$0.isDeleted && $0.type.hasPrefix("github.review-threads.") }
+            .map { GitHubReviewThreadSettlement.Record(type: $0.type, payload: $0.payload, timestamp: $0.timestamp) }
+        return !GitHubReviewThreadSettlement.unsettledProposalIDs(records).isEmpty
     }
 
     /// The user chose not to send this proposal. Durable, so it is neither offered again nor

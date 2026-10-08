@@ -171,8 +171,14 @@ enum GitHubReviewPublicationRequirement {
         let eventID: UUID?
     }
 
+    /// The combined completion gate: GitHub thread work, or a requested review not yet posted.
     static func isPending(task: AgentTask) -> Bool {
-        if GitHubReviewThreadPublicationService.hasPendingWork(task: task) { return true }
+        GitHubReviewThreadPublicationService.hasPendingWork(task: task) || reviewIsPending(task: task)
+    }
+
+    /// Whether the user asked for a review to be posted and it has not been. Thread work is not a
+    /// requested review: posting a review never completes a task because of it.
+    static func reviewIsPending(task: AgentTask) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {
@@ -678,7 +684,7 @@ final class GitHubReviewPublicationService {
         let persistedEventIDs = Set(task.events.map(\.id))
         let priorState = TaskStateMachine.ExternalOutcomeReceiptSnapshot(task: task, run: run)
         do {
-            let completesRequestedReview = GitHubReviewPublicationRequirement.isPending(task: task)
+            let completesRequestedReview = GitHubReviewPublicationRequirement.reviewIsPending(task: task)
             modelContext.insert(TaskEvent.structuredPayloadEvent(
                 task: task,
                 type: GitHubReviewPublicationEventTypes.receipt,
