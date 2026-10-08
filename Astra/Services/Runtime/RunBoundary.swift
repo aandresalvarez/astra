@@ -74,9 +74,12 @@ struct RunBoundary: Equatable, Sendable {
         )
 
         let taskFolderName = String(manifest.taskID.uuidString.prefix(8)).uppercased()
+        let taskFolderSuffix = "/.astra/tasks/\(taskFolderName)"
         self.taskOutputRoots = Array(Set(
             workspaceRoots
-                .map { ($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)") }
+                // When the code root is not the durable workspace, only the
+                // task's own folder is granted; that root is the output root.
+                .map { $0.hasSuffix(taskFolderSuffix) ? $0 : ($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)") }
                 .map(Self.standardizedAbsolutePath)
                 .filter { !$0.isEmpty }
         )).sorted()
@@ -120,14 +123,22 @@ struct RunBoundary: Equatable, Sendable {
     }
 
     /// True when `rawPath` falls under one of the run's explicitly read-only
-    /// input paths — regardless of whether that same path also sits inside a
-    /// writable root (e.g. an attached context file inside the workspace).
-    /// Unlike `isReadable(_:) && !isWritable(_:)`, this stays true for
-    /// read-only inputs nested inside a writable workspace, so the
-    /// read-only-input mutation guard can't be bypassed just by attaching a file
-    /// that already lives under the workspace root.
+    /// paths and no more specific writable root covers it. Unlike
+    /// `isReadable(_:) && !isWritable(_:)`, a read-only input nested inside a
+    /// writable workspace (an attached file already under the workspace root)
+    /// stays read-only, so the mutation guard can't be bypassed that way. The
+    /// reverse also holds: a writable root nested inside a read-only one (the
+    /// task folder under a read-only workspace folder, a worktree inside its
+    /// read-only source checkout) stays writable.
     func isReadOnlyInput(_ rawPath: String) -> Bool {
-        contains(rawPath, in: readOnlyInputRoots)
+        guard let readOnly = longestMatch(rawPath, in: readOnlyInputRoots) else { return false }
+        guard let writable = longestMatch(rawPath, in: workspaceRoots) else { return true }
+        return writable.count <= readOnly.count
+    }
+
+    private func longestMatch(_ rawPath: String, in roots: [String]) -> String? {
+        let candidate = standardizedRunPath(rawPath)
+        return roots.filter { candidate == $0 || candidate.hasPrefix($0 + "/") }.max { $0.count < $1.count }
     }
 
     /// True when `rawPath` is the provider CLI's own private state rather than
