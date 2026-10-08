@@ -54,6 +54,11 @@ enum GitOperationIntentDetector {
         "sparse-checkout", "bisect", "maintenance"
     ])
 
+    /// `git [global options] <subcommand>` for subcommands that reach a remote.
+    private static let gitTransportCommandPattern = gitCommandPattern(subcommands: [
+        "pull", "fetch", "push", "clone", "ls-remote"
+    ])
+
     /// `git [global options] <subcommand>` for subcommands that only read it.
     private static let localGitInspectionCommandPattern = gitCommandPattern(subcommands: [
         "status", "diff", "log", "show", "branch", "rev-parse", "describe",
@@ -228,7 +233,8 @@ enum GitOperationIntentDetector {
             "git pull", "git fetch", "git push", "git clone", "git ls-remote",
             "git remote update", "git submodule update", "gh repo clone", "gh pr checkout"
         ]
-        if exactCommands.contains(where: { containsTokenPhrase($0, in: haystack) }) {
+        if exactCommands.contains(where: { containsTokenPhrase($0, in: haystack) })
+            || haystack.range(of: gitTransportCommandPattern, options: .regularExpression) != nil {
             return true
         }
 

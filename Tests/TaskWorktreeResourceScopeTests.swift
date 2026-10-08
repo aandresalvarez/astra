@@ -376,6 +376,9 @@ struct TaskWorktreeResourceScopeTests {
         for command in ["git -C repo status", "git --no-pager -C '/tmp/a b' log --oneline", "git --git-dir=/x/.git diff"] {
             #expect(GitOperationIntentDetector.detectsLocalGitInspectionOperation(prompt: command, task: task), "\(command)")
         }
+        for command in ["git -C repo push origin main", "git --git-dir=/x/.git fetch", "git -C repo pull --rebase"] {
+            #expect(GitOperationIntentDetector.detectsNetworkGitOperation(prompt: command, task: task), "\(command)")
+        }
     }
 
     @Test("Preflight manifest keeps read-only workspace folders inside the boundary")

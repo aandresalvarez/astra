@@ -84,6 +84,34 @@ struct RunBoundaryFirstPrinciplesTests {
 
     // MARK: - Provider-private state is not out-of-bounds task data
 
+    @Test("A writable root nested in a read-only root stays writable")
+    func nestedWritableRootBeatsReadOnlyParent() {
+        // The task folder sits under a read-only durable workspace folder.
+        let taskID = UUID()
+        let folder = Self.workspace + "/.astra/tasks/" + String(taskID.uuidString.prefix(8))
+        let durable = RunBoundary(manifest: Self.manifest(
+            workspacePath: "/tmp/astra-run-boundary-code-root",
+            additionalPaths: [folder],
+            additionalReadOnlyPaths: [Self.workspace],
+            taskID: taskID
+        ))
+        #expect(!durable.isReadOnlyInput(folder + "/outputs/report.md"))
+        #expect(durable.isReadOnlyInput(Self.workspace + "/notes.md"))
+
+        // A worktree nested inside its read-only source checkout.
+        let worktree = Self.workspace + "/.claude/worktrees/a"
+        let nested = RunBoundary(manifest: Self.manifest(
+            workspacePath: worktree,
+            additionalReadOnlyPaths: [Self.workspace]
+        ))
+        #expect(!nested.isReadOnlyInput(worktree + "/Sources/main.swift"))
+        #expect(nested.isReadOnlyInput(Self.workspace + "/README.md"))
+
+        // An attached input inside the writable workspace stays read-only.
+        let attached = RunBoundary(manifest: Self.manifest(additionalReadOnlyPaths: [Self.workspace + "/spec.md"]))
+        #expect(attached.isReadOnlyInput(Self.workspace + "/spec.md"))
+    }
+
     @Test("A granted task folder is its own task output root")
     func grantedTaskFolderIsItsOwnOutputRoot() {
         // The code root differs from the durable workspace, so the manifest
