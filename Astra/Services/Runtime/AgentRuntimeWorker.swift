@@ -417,6 +417,7 @@ final class AgentRuntimeWorker {
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { return }
+        executionPolicy.followsUpDeliveredRequest = TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: task)
         let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
             ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(

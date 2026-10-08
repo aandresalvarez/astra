@@ -220,6 +220,50 @@ struct TaskDeliverableFollowUpTests {
         #expect(TaskDeliverableExpectation.followsUpDeliveredRequest(followUpRun, in: fixture.task))
     }
 
+    @Test("a follow-up after delivery is not told to write the artifact again")
+    func deliveredFollowUpPromptDropsArtifactContract() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        fixture.task.status = .running
+        try fixture.context.save()
+        let message = "git add notes-a.txt && git commit -m 'Add notes A'"
+
+        // Sanity: without the verdict the follow-up prompt carries both contracts.
+        let owedPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: fixture.task)
+        #expect(owedPrompt.contains("Artifact first-action requirement:"))
+        #expect(owedPrompt.contains("Artifact delivery contract:"))
+
+        var policy = AgentRuntimeExecutionPolicy()
+        policy.followsUpDeliveredRequest = true
+        let deliveredPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: message,
+            task: fixture.task,
+            executionPolicy: policy
+        )
+        #expect(!deliveredPrompt.contains("Artifact first-action requirement:"))
+        #expect(!deliveredPrompt.contains("Artifact delivery contract:"))
+    }
+
+    @Test("a follow-up after delivery gets no Write bootstrap for the delivered artifact")
+    func deliveredFollowUpGetsNoWriteBootstrap() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        let tools = (allowed: ["Read", "Glob", "Grep"], askFirst: ["Write", "Edit", "Bash"])
+
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: fixture.task, followsUpDeliveredRequest: false, permissionPolicy: .restricted,
+            providerAllowedTools: tools.allowed, askFirstTools: tools.askFirst
+        ) == ["Write"])
+        #expect(ProviderArtifactBootstrapPolicy.launchTools(
+            task: fixture.task, followsUpDeliveredRequest: true, permissionPolicy: .restricted,
+            providerAllowedTools: tools.allowed, askFirstTools: tools.askFirst
+        ).isEmpty)
+        #expect(ProviderArtifactBootstrapPolicy.persistedLaunchTools(
+            task: fixture.task, followsUpDeliveredRequest: true, permissionPolicy: .restricted,
+            providerAllowedTools: ["Read", "Write"], askFirstTools: tools.askFirst
+        ).isEmpty)
+    }
+
     @Test("a pinned task's missing-deliverable message names the worktree, not the workspace")
     func pinnedTaskMessageNamesWorktree() async throws {
         let fixture = try DeliverableFollowUpFixture()

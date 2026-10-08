@@ -38,6 +38,12 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     /// Usage earlier runs of the same provider session already recorded in its current accounting
     /// epoch, which the resumed launch's stream reports again as part of the session's cumulative total.
     var providerSessionUsageBaseline = ProviderSessionUsageBaseline.zero
+    /// The run follows up a request the task already met, so it does not owe
+    /// the original deliverable (`TaskDeliverableExpectation`). Process local:
+    /// the worker resolves it once the run is bound to its source event, and
+    /// the prompt and the restricted-mode Write bootstrap read it so the
+    /// provider is not told or authorized to rewrite a delivered file.
+    var followsUpDeliveredRequest = false
 
     static let `default` = AgentRuntimeExecutionPolicy()
 
