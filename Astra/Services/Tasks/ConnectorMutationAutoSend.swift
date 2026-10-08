@@ -19,6 +19,33 @@ import ASTRAModels
 /// that run's question after the task switches to Auto.
 @MainActor
 enum ConnectorMutationAutoSend {
+    /// Called from settlement, never at the run boundary: the provider result
+    /// and the staged proposals are durable before anything leaves the
+    /// machine, so an exit mid-send pauses for reconciliation instead of
+    /// losing the run, and an exit before it lets recovery send what is still
+    /// pending. Only proposals that are still pending are read, and a reserved
+    /// or receipted one is never sent twice.
+    @discardableResult
+    static func sendPendingMutations(
+        task: AgentTask,
+        run: TaskRun,
+        policyLevel: AgentPolicyLevel,
+        modelContext: ModelContext,
+        coordinator: ConnectorMutationCoordinator? = nil
+    ) async -> [ConnectorMutationReceipt] {
+        guard !ExternalActionPolicy.asksUser(for: .connectorMutation, level: policyLevel) else { return [] }
+        let pending = ConnectorMutationRequirementResolver.pendingMutations(task: task).filter { $0.runID == run.id }
+        guard !pending.isEmpty else { return [] }
+        return await sendStagedMutations(
+            pending,
+            task: task,
+            run: run,
+            policyLevel: policyLevel,
+            modelContext: modelContext,
+            coordinator: coordinator ?? ConnectorMutationCoordinator(modelContext: modelContext)
+        )
+    }
+
     @discardableResult
     static func sendStagedMutations(
         _ staged: [TaskStagedConnectorMutation],

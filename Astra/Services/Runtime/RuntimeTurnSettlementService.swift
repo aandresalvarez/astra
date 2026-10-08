@@ -79,6 +79,7 @@ enum RuntimeTurnSettlementService {
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
                        permissionPromotionPersistence: (() throws -> Void)? = nil,
+                       connectorMutationCoordinator: ConnectorMutationCoordinator? = nil,
                        verdictPersistence: (() throws -> Void)? = nil,
                        sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
@@ -102,6 +103,13 @@ enum RuntimeTurnSettlementService {
                     payload: "Outcome settlement started. Validation must not be replayed without a prepared result.", run: run))
                 try save(task: task, modelContext: modelContext, operation: "runtime_settlement_started", persist: nil,
                     autoExport: autoExport)
+                // Auto's connector writes leave the machine only here: after the
+                // provider result and the staged proposals are durable, and under
+                // the settlement marker, so an exit mid-send is reconciled rather
+                // than replayed. Before the outcome, so completion reads receipts.
+                await ConnectorMutationAutoSend.sendPendingMutations(
+                    task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
+                    modelContext: modelContext, coordinator: connectorMutationCoordinator)
                 try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
                     modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
                 await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)

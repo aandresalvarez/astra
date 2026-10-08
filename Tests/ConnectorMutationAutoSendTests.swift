@@ -20,13 +20,7 @@ struct ConnectorMutationAutoSendTests {
 
         try fixture.stage(summary: "Age filter missing")
 
-        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
-            task: fixture.task,
-            run: fixture.run,
-            modelContext: fixture.context,
-            policyLevel: .autonomous,
-            connectorMutationCoordinator: fixture.coordinator(sender: sender)
-        )
+        await fixture.crossBoundaryAndSettle(policyLevel: .autonomous, sender: sender)
 
         #expect(sender.count == 1)
         let receiptEvent = try #require(fixture.task.events.first { $0.type == ConnectorMutationEventTypes.receipt })
@@ -49,13 +43,7 @@ struct ConnectorMutationAutoSendTests {
             let sender = AutoSendRecordingSender()
             try fixture.stage(summary: "Age filter missing")
 
-            await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
-                task: fixture.task,
-                run: fixture.run,
-                modelContext: fixture.context,
-                policyLevel: level,
-                connectorMutationCoordinator: fixture.coordinator(sender: sender)
-            )
+            await fixture.crossBoundaryAndSettle(policyLevel: level, sender: sender)
 
             #expect(sender.count == 0, "\(level.rawValue)")
             #expect(!fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.receipt })
@@ -69,13 +57,7 @@ struct ConnectorMutationAutoSendTests {
         let sender = AutoSendRecordingSender()
         try fixture.stage(summary: "Staged by an earlier Ask run", stagingRunID: UUID().uuidString)
 
-        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
-            task: fixture.task,
-            run: fixture.run,
-            modelContext: fixture.context,
-            policyLevel: .autonomous,
-            connectorMutationCoordinator: fixture.coordinator(sender: sender)
-        )
+        await fixture.crossBoundaryAndSettle(policyLevel: .autonomous, sender: sender)
 
         #expect(sender.count == 0)
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).count == 1)
@@ -99,36 +81,36 @@ struct ConnectorMutationAutoSendTests {
             target: "STAR-1", body: ["transition": ["id": "21"]]
         )
 
-        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
-            task: fixture.task,
-            run: fixture.run,
-            modelContext: fixture.context,
-            policyLevel: .autonomous,
-            connectorMutationCoordinator: fixture.coordinator(sender: sender)
-        )
+        await fixture.crossBoundaryAndSettle(policyLevel: .autonomous, sender: sender)
 
         #expect(sender.paths == ["/rest/api/2/issue/STAR-1", "/rest/api/2/issue/STAR-1/transitions"])
     }
 
-    // A store that cannot save the staged events will not save the receipt
-    // either; a real write with no durable record is worse than waiting.
-    @Test("Auto sends nothing when the staged proposals could not be saved")
-    func autoSendsNothingWithoutDurableDiscovery() async throws {
-        let fixture = try AutoSendFixture()
-        let sender = AutoSendRecordingSender()
-        try fixture.stage(summary: "Age filter missing")
+    // Auto's writes leave the machine only during settlement: after the run's
+    // provider result is captured and the settlement marker is saved. An exit
+    // before that lets recovery send what is still pending; an exit during it
+    // is reconciled instead of replayed. Source-shape pin: the worker and the
+    // settlement pipeline are too entangled to drive here.
+    @Test("Auto sends connector writes only during settlement, after the result is captured")
+    func autoSendsOnlyDuringSettlement() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        func source(_ path: String) throws -> String {
+            try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        }
+        let boundary = try source("Astra/Services/Runtime/RunBoundaryDiscovery.swift")
+        #expect(!boundary.contains("ConnectorMutationAutoSend.send"), "the run boundary must not leave the machine")
 
-        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
-            task: fixture.task,
-            run: fixture.run,
-            modelContext: fixture.context,
-            policyLevel: .autonomous,
-            connectorMutationCoordinator: fixture.coordinator(sender: sender),
-            persistDiscovery: { _, _, _ in false }
-        )
+        let settlement = try source("Astra/Services/Runtime/RuntimeTurnSettlementService.swift")
+        let started = try #require(settlement.range(of: "operation: \"runtime_settlement_started\""))
+        let send = try #require(settlement.range(of: "ConnectorMutationAutoSend.sendPendingMutations("))
+        let outcome = try #require(settlement.range(of: "RuntimeTurnOutcomeService.apply("))
+        #expect(started.upperBound < send.lowerBound, "send only after the settlement marker is saved")
+        #expect(send.upperBound < outcome.lowerBound, "send before the outcome reads receipts")
 
-        #expect(sender.count == 0)
-        #expect(!fixture.task.events.contains { $0.type == ConnectorMutationEventTypes.receipt })
+        let worker = try source("Astra/Services/Runtime/AgentRuntimeWorker.swift")
+        let capture = try #require(worker.range(of: "RuntimeTurnSettlementService.capture("))
+        let settle = try #require(worker.range(of: "RuntimeTurnSettlementService.settle("))
+        #expect(capture.upperBound < settle.lowerBound)
     }
 
     @Test("Auto stops at the first write that does not go out and says so")
@@ -138,13 +120,7 @@ struct ConnectorMutationAutoSendTests {
         try fixture.stage(summary: "The epic")
         try fixture.stage(summary: "A story under the epic")
 
-        await RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
-            task: fixture.task,
-            run: fixture.run,
-            modelContext: fixture.context,
-            policyLevel: .autonomous,
-            connectorMutationCoordinator: fixture.coordinator(sender: sender)
-        )
+        await fixture.crossBoundaryAndSettle(policyLevel: .autonomous, sender: sender)
 
         #expect(sender.count == 1, "the dependent proposal is not sent after its parent failed")
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).count == 2)
@@ -187,6 +163,18 @@ private final class AutoSendFixture {
     }
 
     deinit { try? FileManager.default.removeItem(at: workspaceRoot) }
+
+    /// What a finished run goes through: discovery at the run boundary, then
+    /// the settlement step that may send.
+    func crossBoundaryAndSettle(policyLevel: AgentPolicyLevel, sender: AutoSendRecordingSender) async {
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: task, run: run, modelContext: context, policyLevel: policyLevel
+        )
+        await ConnectorMutationAutoSend.sendPendingMutations(
+            task: task, run: run, policyLevel: policyLevel, modelContext: context,
+            coordinator: coordinator(sender: sender)
+        )
+    }
 
     func coordinator(sender: AutoSendRecordingSender) -> ConnectorMutationCoordinator {
         ConnectorMutationCoordinator(

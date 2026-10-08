@@ -24,22 +24,15 @@ enum RunBoundaryDiscovery {
     /// `policyLevel` is the user-facing level the run launched with: it decides
     /// whether what the run left behind is asked about or done (see
     /// `ExternalActionPolicy`), so switching the task's level afterwards
-    /// changes nothing the run already produced.
+    /// changes nothing the run already produced. Nothing here leaves the
+    /// machine: an Auto run's staged writes are sent during settlement, after
+    /// the provider result is durable (`ConnectorMutationAutoSend`).
     static func recordWhatTheRunLeftForTheUser(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        policyLevel: AgentPolicyLevel = .review,
-        connectorMutationCoordinator: ConnectorMutationCoordinator? = nil,
-        persistDiscovery: @MainActor (AgentTask, ModelContext, [String: String]) -> Bool = { task, modelContext, fields in
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: fields
-            )
-        }
-    ) async {
+        policyLevel: AgentPolicyLevel = .review
+    ) {
         let discovered = ConnectorMutationDiscovery.recordStagedMutations(
             task: task,
             run: run,
@@ -54,40 +47,22 @@ enum RunBoundaryDiscovery {
         // directory at startup: the proposal stays invisible until some later
         // run happens to finish. The write is on disk; this is what makes the
         // record of it match.
-        var discoveryPersisted = true
         if !discovered.isEmpty {
-            let persisted = persistDiscovery(task, modelContext, [
-                "operation": "connector_mutation_discovery",
-                "count": String(discovered.count)
-            ])
-            discoveryPersisted = persisted
+            let persisted = WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: [
+                    "operation": "connector_mutation_discovery",
+                    "count": String(discovered.count)
+                ]
+            )
             if !persisted {
                 AppLogger.audit(.dataStoreRecovered, category: "Worker", taskID: task.id, fields: [
                     "operation": "connector_mutation_discovery_unpersisted",
                     "count": String(discovered.count)
                 ], level: .error)
             }
-        }
-        // Auto asks nothing, so what an Auto run staged is sent now, through the
-        // same checks an approved send goes through. Each receipt saves itself.
-        // Never before the staged events are durable: a store that cannot save
-        // the proposal will not save its receipt either, and a real write with
-        // no durable record is worse than a proposal left for the next run.
-        if !discovered.isEmpty, discoveryPersisted {
-            await ConnectorMutationAutoSend.sendStagedMutations(
-                discovered,
-                task: task,
-                run: run,
-                policyLevel: policyLevel,
-                modelContext: modelContext,
-                coordinator: connectorMutationCoordinator ?? ConnectorMutationCoordinator(modelContext: modelContext)
-            )
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "connector_mutation_auto_send"]
-            )
         }
         // What the agent did outside the machine with its own tools, read from
         // its tool calls. Auto only: in Ask the run guard asked before each one.

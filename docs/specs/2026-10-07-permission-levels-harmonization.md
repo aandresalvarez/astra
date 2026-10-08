@@ -230,7 +230,7 @@ for a review that will not happen.
 | --- | --- |
 | B1 connector credential gate | Auto: grant the launch's labels for the task through the same path "Allow for this task" uses (`TaskRuntimePermissionGrants`), write the line, continue the launch. Ask/Custom unchanged. |
 | B2 credential offer | Auto: same grant instead of an offer card. |
-| B3 Jira writes | Auto: at the run boundary `ConnectorMutationDiscovery` hands each staged proposal of an Auto run straight to `ConnectorMutationCoordinator.send` (same digest checks, same receipt, `authorization: .autoPolicy`); failures fall back to today's "Review & send" row. Ask unchanged. |
+| B3 Jira writes | Auto: discovery still records staged proposals at the run boundary; settlement (after the provider result is captured and the settlement marker is saved) hands the Auto run's own pending proposals, in staging order, to `ConnectorMutationCoordinator.send` (same digest checks, same receipt, `authorization: .autoPolicy`). The first failure stops the rest, which fall back to the "Review & send" row. Ask unchanged. |
 | B4 Git PR | Decision 3: Auto unchanged (the agent publishes); add the observed-action record below. |
 | B5 GitHub review | Auto: post without the sheet when the request came from an Auto run; receipt with `.autoPolicy`. |
 | B6 PR #482 | Uses `ExternalActionPolicy` + `ExternalActionReceipt`; specified there. |
