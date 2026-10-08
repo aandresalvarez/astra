@@ -136,6 +136,7 @@ enum ShellCommandRunners {
         "nohup": [],
         "command": [],
         "builtin": [],
-        "eval": []
+        "eval": [],
+        "watch": ["-n", "--interval", "-q", "--equexit"]
     ]
 }

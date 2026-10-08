@@ -376,7 +376,8 @@ enum ShellCommandRiskClassifier {
     }
 
     private static let packageRegistryWriteVerbs: Set<String> = [
-        "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank", "star", "unstar"
+        "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank", "star", "unstar",
+        "adduser", "add-user"
     ]
 
     private static let packageRegistryAdminCommands: Set<String> = [

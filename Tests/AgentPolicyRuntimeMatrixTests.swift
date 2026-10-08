@@ -215,6 +215,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "wget --body-file=report.json https://hooks.example.test/build",
                 "wget --method=DELETE https://hooks.example.test/item/1",
                 "npm star widget",
+                "npm adduser --auth-type=legacy",
+                "npm add-user",
                 "npm unstar widget",
                 "gh api repos/o/r/issues/1/comments -fbody=hello",
                 "git send-pack git@github.com:owner/repo.git refs/heads/main",
@@ -370,6 +372,7 @@ struct AgentPolicyRuntimeMatrixTests {
                 "function g { git push origin main; }; g",
                 "h() ( gh workflow run deploy.yml ); h",
                 "eval 'git push origin main'",
+                "watch -n 5 git push origin main",
                 "eval git push origin main",
                 "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook",
                 "git -c alias.ship=push ship origin main",
@@ -448,13 +451,29 @@ struct AgentPolicyRuntimeMatrixTests {
             let asked = AgentRuntimePolicyGuard(manifest: workspace).violation(for: write)
             #expect(asked?.requiresApproval == true)
             #expect(AgentRuntimePolicyGuard(manifest: workspace).violation(for: .toolUse(
-                name: shellTool, id: "tool-4", input: ["command": "make test"]
-            )) == nil)
+                name: shellTool, id: "tool-4", input: ["command": "git status"]
+            )) == nil, "a command the shell rules allow runs")
+            #expect(AgentRuntimePolicyGuard(manifest: workspace).violation(for: .toolUse(
+                name: shellTool, id: "tool-5", input: ["command": "rm -rf build"]
+            ))?.requiresApproval == true, "one they do not allow is asked about, as Bash's would be")
             var approved = workspace
             approved.approvalGrants = asked?.approvalGrants ?? []
             #expect(AgentRuntimePolicyGuard(manifest: approved).violation(for: write) == nil)
         }
         #expect(!workspace.providerRender.runtimeSupportTools.isEmpty, "Claude Code can carry the workspace shell")
+
+        // Ask asks before every workspace command, as before every Bash
+        // command; Auto asks before none.
+        for (level, policy) in [(AgentPolicyLevel.review, AgentPolicy.preset(.review)), (.autonomous, .preset(.autonomous))] {
+            var manifest = Self.manifest(runtime: .claudeCode, policy: policy)
+            manifest.providerRender.runtimeSupportTools += DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(
+                runtimeProfile: AgentRuntimeCapabilityProfileService.profile(for: .claudeCode, executablePath: "")
+            )
+            let violation = AgentRuntimePolicyGuard(manifest: manifest).violation(for: .toolUse(
+                name: shellTool, id: "tool-6", input: ["command": "rm -rf build"]
+            ))
+            #expect((violation?.requiresApproval == true) == (level == .review), "\(level.rawValue)")
+        }
 
         // A command that only mentions one in a quoted operand runs nothing
         // outside ASTRA and keeps the rule.

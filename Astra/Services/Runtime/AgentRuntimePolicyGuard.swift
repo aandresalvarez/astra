@@ -248,12 +248,9 @@ struct AgentRuntimePolicyGuard: Sendable {
             if let violation = validateRuntimeSupportTool(supportTool, observed: observed, toolName: toolName) {
                 return violation
             }
-            // The Docker workspace's shell and job tools run a shell command:
-            // the same external-action gate, on another transport, approved as
-            // the shell command it is.
             if let command = observed.command,
                DockerWorkspaceMCPProjection.canonicalToolName(fromObservedToolName: toolName, runtime: manifest.providerID) != nil {
-                return externalCommandApprovalViolation(command: command, toolName: toolName, request: nil, grantToolName: "Bash")
+                return validateWorkspaceShellCommand(command, toolName: toolName)
             }
             return nil
         }
@@ -417,6 +414,36 @@ struct AgentRuntimePolicyGuard: Sendable {
             permissionRequest: request,
             approvalGrants: PermissionBroker.approvalGrants(for: request)
         )
+    }
+
+    /// The Docker workspace's shell and job tools run a shell command, so the
+    /// run's shell rules apply as they do to Bash: a denied pattern refuses it,
+    /// and below Auto a command Bash's rules, patterns and approvals do not
+    /// allow is asked about — not refused, since in a Docker run this is the
+    /// shell — before the external-action gate, approved as a shell command.
+    private func validateWorkspaceShellCommand(_ command: String, toolName: String) -> AgentRuntimePolicyViolation? {
+        if let denied = validateDeniedShellCommand(command: command, toolName: toolName) { return denied }
+        if manifest.policyLevel != .autonomous {
+            // As `validateShell`: an allow-list of patterns decides when there
+            // is one; otherwise the Bash tool rule (and approvals) does.
+            let patterns = manifest.providerRender.allowedShellPatterns
+            let allowed = !patterns.isEmpty && !patterns.contains("*")
+                ? shellCommandAllowedByPatterns(command, patterns: patterns) || toolPatternAllowsShellCommand(command)
+                : toolMatches("Bash", command: command, candidates: effectiveAllowedToolCandidates,
+                              shellMatchMode: .allActionableSegments)
+            if !allowed {
+                let request = PermissionRequest.shell(command: command, toolName: toolName)
+                return AgentRuntimePolicyViolation(
+                    reason: "The workspace command asks first at this permission level, as Bash would",
+                    toolName: toolName,
+                    detail: command,
+                    requiresApproval: true,
+                    permissionRequest: request,
+                    approvalGrants: PermissionBroker.approvalGrants(for: request)
+                )
+            }
+        }
+        return externalCommandApprovalViolation(command: command, toolName: toolName, request: nil, grantToolName: "Bash")
     }
 
     /// The browser MCP tool runs the same bridge commands as `astra-browser`,
