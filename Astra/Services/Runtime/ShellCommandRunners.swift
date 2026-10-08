@@ -124,7 +124,8 @@ enum ShellCommandRunners {
     }
 
     /// Commands git itself runs: `submodule foreach CMD` in every submodule,
-    /// `rebase -x|--exec CMD` after each commit, `bisect run CMD` per step.
+    /// `rebase -x|--exec CMD` after each commit, `bisect run CMD` per step,
+    /// `difftool -x|--extcmd CMD` per file.
     /// Several are joined with `;` so each is judged.
     static func gitRunCommands(_ segment: String) -> String? {
         guard let tokens = AgentExternalActionObserver.shellSegments(segment).first,
@@ -154,6 +155,14 @@ enum ShellCommandRunners {
             }
         case "bisect":
             if rest.first == "run", rest.count > 1 { commands.append(rest.dropFirst().joined(separator: " ")) }
+        case "difftool":
+            for (position, token) in rest.enumerated() {
+                if ["-x", "--extcmd"].contains(token), rest.indices.contains(position + 1) {
+                    commands.append(rest[position + 1])
+                } else if token.hasPrefix("--extcmd=") {
+                    commands.append(String(token.dropFirst("--extcmd=".count)))
+                }
+            }
         default:
             return nil
         }

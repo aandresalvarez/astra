@@ -616,7 +616,28 @@ struct AgentRuntimePolicyGuard: Sendable {
     private static func actsOutsideMachine(_ command: String) -> Bool {
         let recorded = AgentExternalActionObserver.classify(command, unwrapping: false)
         if let recorded, !recorded.isExternalWrite { return true }
-        return rawActionableShellSegments(command).contains(where: ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment:))
+        let dockerEnvironment = dockerEnvironmentAssignments(in: command)
+        return rawActionableShellSegments(command).contains {
+            ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: $0, dockerEnvironment: dockerEnvironment)
+        }
+    }
+
+    /// `DOCKER_HOST`, `DOCKER_CONTEXT` and `DOCKER_CONFIG` the command sets for
+    /// itself, as a prefix (`DOCKER_HOST=ssh://x docker …`) or with `export`:
+    /// the segment splitter drops them, but they pick the daemon.
+    private static func dockerEnvironmentAssignments(in command: String) -> [String: String] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?:^|[\s;&|(])(?:export\s+)?(DOCKER_HOST|DOCKER_CONTEXT|DOCKER_CONFIG)=("[^"]*"|'[^']*'|[^\s;&|]+)"#
+        ) else { return [:] }
+        var values: [String: String] = [:]
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        for match in regex.matches(in: command, range: range) {
+            guard let name = Range(match.range(at: 1), in: command), let value = Range(match.range(at: 2), in: command) else {
+                continue
+            }
+            values[String(command[name])] = String(command[value]).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
+        return values
     }
 
     /// `actionableShellSegments` without the lowercasing, so a command is

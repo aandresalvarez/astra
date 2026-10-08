@@ -59,7 +59,14 @@ enum ShellCommandRiskClassifier {
     /// even when a Custom rule allows the command family (`ExternalActionPolicy`,
     /// `AgentRuntimePolicyGuard`). Local writes such as `git commit` or `mv`
     /// stay with the user's per-item rules.
+    /// `dockerEnvironment`: `DOCKER_HOST`/`DOCKER_CONTEXT`/`DOCKER_CONFIG` the
+    /// command sets for itself (`DOCKER_HOST=ssh://x docker …`, `export …`),
+    /// which pick the daemon a docker segment reaches.
     static func actsOutsideMachine(forShellSegment segment: String) -> Bool {
+        actsOutsideMachine(forShellSegment: segment, dockerEnvironment: [:])
+    }
+
+    static func actsOutsideMachine(forShellSegment segment: String, dockerEnvironment: [String: String]) -> Bool {
         guard let assessment = assessment(forShellSegment: segment),
               [.mutation, .destructive, .packageMutation].contains(assessment.risk) else {
             return false
@@ -82,7 +89,7 @@ enum ShellCommandRiskClassifier {
         case "gh" where isLocalGitHubCLIOperation(args):
             // `repo clone` and `pr checkout` change this checkout, not GitHub.
             return false
-        case "docker" where reachesRemoteDockerDaemon(args):
+        case "docker" where reachesRemoteDockerDaemon(args, environment: dockerEnvironment):
             // Every mutating verb on another machine's daemon acts there.
             return true
         case "gh", "gcloud", "aws", "az", "bq", "kubectl", "helm", "terraform", "tofu", "psql", "mysql",
@@ -293,7 +300,7 @@ enum ShellCommandRiskClassifier {
     }
 
     private static func riskForGitHubCLI(_ args: [String]) -> Risk {
-        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "--hostname"])
+        let actionTokens = dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "-R", "--hostname"])
         guard let area = actionTokens.first else { return .unknown }
         let verb = actionTokens.dropFirst().first
         switch area {
@@ -373,7 +380,7 @@ enum ShellCommandRiskClassifier {
     /// Whether a `docker` command reaches a daemon other than this machine's:
     /// the one its `--context`/`-c` or `-H`/`--host` names, or else the one the
     /// CLI would pick (`DockerDaemonLocality`).
-    private static func reachesRemoteDockerDaemon(_ args: [String]) -> Bool {
+    private static func reachesRemoteDockerDaemon(_ args: [String], environment: [String: String]) -> Bool {
         var context: String?
         var host: String?
         var configDirectory: String?
@@ -400,7 +407,7 @@ enum ShellCommandRiskClassifier {
             index += 1
         }
         if let host { return !DockerDaemonLocality.isLocalEndpoint(host) }
-        return !DockerDaemonLocality.isLocal(context: context, configDirectory: configDirectory)
+        return !DockerDaemonLocality.isLocal(context: context, configDirectory: configDirectory, overrides: environment)
     }
 
     /// docker's global options that take a value, so it is not read as the verb.
@@ -431,7 +438,7 @@ enum ShellCommandRiskClassifier {
 
     private static let packageRegistryWriteVerbs: Set<String> = [
         "publish", "unpublish", "upload", "push", "deprecate", "undeprecate", "yank", "star", "unstar",
-        "adduser", "add-user"
+        "adduser", "add-user", "login", "logout"
     ]
 
     private static let packageRegistryAdminCommands: Set<String> = [
@@ -491,13 +498,41 @@ enum ShellCommandRiskClassifier {
               ["cp", "sync", "rsync", "mv"].contains(actionTokens[1]) else {
             return nil
         }
-        if args.contains(where: { ["--dryrun", "--dry-run", "-n"].contains($0) }) { return .read }
-        let locations = actionTokens.dropFirst(2).filter { !$0.hasPrefix("-") }
+        // `-n` is gcloud storage's --no-clobber, which still writes.
+        if args.contains(where: { ["--dryrun", "--dry-run"].contains($0) }) { return .read }
+        // Locations are the positionals; an option's value (`--storage-class
+        // STANDARD_IA`) is not one. A bucket anywhere but the first location
+        // is written to (the last is the destination; several sources may
+        // precede it), and `mv` removes it from either end.
+        var locations: [String] = []
+        var index = 2
+        let tokens = Array(actionTokens)
+        while index < tokens.count {
+            let token = tokens[index]
+            if token.hasPrefix("--") {
+                index += token.contains("=") || storageTransferBooleanOptions.contains(token) ? 1 : 2
+            } else if token.hasPrefix("-"), token.count > 1 {
+                index += 1
+            } else {
+                locations.append(token)
+                index += 1
+            }
+        }
         let isBucket: (String) -> Bool = { $0.hasPrefix("s3://") || $0.hasPrefix("gs://") }
         if actionTokens[1] == "mv" { return locations.contains(where: isBucket) ? .mutation : .read }
-        guard let destination = locations.last else { return .unknown }
-        return isBucket(destination) ? .mutation : .read
+        guard locations.count >= 2 else { return locations.contains(where: isBucket) ? .mutation : .unknown }
+        return locations.dropFirst().contains(where: isBucket) ? .mutation : .read
     }
+
+    /// aws s3 / gcloud storage transfer options that take no value.
+    private static let storageTransferBooleanOptions: Set<String> = [
+        "--recursive", "--dryrun", "--dry-run", "--quiet", "--only-show-errors", "--no-progress",
+        "--follow-symlinks", "--no-follow-symlinks", "--delete", "--delete-unmatched-destination-objects",
+        "--exact-timestamps", "--size-only", "--force-glacier-transfer", "--ignore-glacier-warnings",
+        "--no-guess-mime-type", "--no-paginate", "--debug", "--no-verify-ssl", "--no-sign-request",
+        "--no-clobber", "--continue-on-error", "--daisy-chain", "--preserve-posix", "--print-created-message",
+        "--skip-unsupported", "--do-not-decompress", "--checksums-only", "--skip-if-dest-has-newer-mtime"
+    ]
 
     private static let cloudReadOperationPrefixes = ["describe-", "list-", "get-", "head-", "show-", "lookup-"]
 
@@ -721,7 +756,7 @@ enum ShellCommandRiskClassifier {
     private static func commandActionTokens(executable: String, args: [String], risk: Risk) -> [String] {
         switch executable {
         case "gh":
-            return dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "--hostname"])
+            return dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "-R", "--hostname"])
         case "git":
             return dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"])
         case "gcloud", "aws", "az":
@@ -910,10 +945,11 @@ enum ShellCommandRiskClassifier {
             return [
                 "--data", "--data-raw", "--data-binary", "--data-urlencode",
                 "--form", "--form-string", "--request", "--upload-file",
-                "--post-file", "--post-data", "--json", "--body-data", "--body-file"
+                "--post-file", "--post-data", "--json", "--body-data", "--body-file", "--data-ascii", "--quote",
+                "--mail-rcpt"
             ].contains(optionName.lowercased()) || isWriteMethodOption(normalized)
         }
-        let remoteWriteShortFlags: Set<String> = ["-d", "-F", "-X", "-T"]
+        let remoteWriteShortFlags: Set<String> = ["-d", "-F", "-X", "-T", "-Q"]
         return remoteWriteShortFlags.contains(optionName)
             || combinedShortOptions(normalized).contains(where: remoteWriteShortFlags.contains)
     }
