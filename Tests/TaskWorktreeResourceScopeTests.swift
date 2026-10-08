@@ -147,6 +147,12 @@ struct TaskWorktreeResourceScopeTests {
 
         workspace.additionalPaths.append(try fixture.makeDirectory("added-later"))
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: request, task: task))
+
+        // A live root beneath a claimed one is covered by that claim.
+        let parentClaim = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, resourceClaims: [
+            TaskExecutionResourceClaim(kind: .workspace, key: fixture.root.path, access: .exclusive)
+        ])
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(request: parentClaim, task: task))
     }
 
     @Test("External Git metadata is writable only where admission claimed it")
@@ -376,7 +382,8 @@ struct TaskWorktreeResourceScopeTests {
         for command in ["git -C repo status", "git --no-pager -C '/tmp/a b' log --oneline", "git --git-dir=/x/.git diff"] {
             #expect(GitOperationIntentDetector.detectsLocalGitInspectionOperation(prompt: command, task: task), "\(command)")
         }
-        for command in ["git -C repo push origin main", "git --git-dir=/x/.git fetch", "git -C repo pull --rebase"] {
+        for command in ["git -C repo push origin main", "git --git-dir=/x/.git fetch", "git -C repo pull --rebase",
+                        "git lfs pull", "git -C repo lfs push origin main"] {
             #expect(GitOperationIntentDetector.detectsNetworkGitOperation(prompt: command, task: task), "\(command)")
         }
     }

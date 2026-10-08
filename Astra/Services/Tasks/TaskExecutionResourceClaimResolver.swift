@@ -122,8 +122,9 @@ enum TaskExecutionResourceClaimResolver {
     /// Compares the *full* persisted writable-resource claim set against the
     /// task's current writable set (working directory + every
     /// additionalPaths entry), not just the primary path. Drift means the
-    /// launch would write a root the request never claimed; a live set that
-    /// shrank since submission is still covered by the held lease.
+    /// launch would write a root the request never claimed; a live root equal
+    /// to or beneath a claimed one is still covered by the held lease, as the
+    /// broker's own path-overlap rule treats it.
     static func hasWorkspacePathDrift(request: TaskTurnRequest?, task: AgentTask) -> Bool {
         guard let request else { return false }
         let persistedKeys = Set(request.resourceClaims
@@ -131,7 +132,9 @@ enum TaskExecutionResourceClaimResolver {
             .map(\.key))
         let liveKeys = Set(workspaceKeys(for: task))
         guard !persistedKeys.isEmpty, !liveKeys.isEmpty else { return false }
-        return !liveKeys.isSubset(of: persistedKeys)
+        return !liveKeys.allSatisfy { live in
+            persistedKeys.contains { live == $0 || live.hasPrefix($0 + "/") }
+        }
     }
 
     /// Git common directories the request may write: those it admitted

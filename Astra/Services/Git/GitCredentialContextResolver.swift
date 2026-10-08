@@ -56,7 +56,7 @@ enum GitOperationIntentDetector {
 
     /// `git [global options] <subcommand>` for subcommands that reach a remote.
     private static let gitTransportCommandPattern = gitCommandPattern(subcommands: [
-        "pull", "fetch", "push", "clone", "ls-remote"
+        "pull", "fetch", "push", "clone", "ls-remote", "lfs"
     ])
 
     /// `git [global options] <subcommand>` for subcommands that only read it.
