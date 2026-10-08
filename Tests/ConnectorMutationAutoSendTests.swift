@@ -178,6 +178,36 @@ struct ConnectorMutationAutoSendTests {
         #expect(clean(checkpoint(mode: .warning, used: 2_000)), "a warning budget does not fail the run")
     }
 
+    // Each send suspends; a decline the user records meanwhile stands, and
+    // the proposals after it wait with it.
+    @Test("A proposal declined while an earlier send is in flight is not sent")
+    func declineDuringAnEarlierSendStands() async throws {
+        let fixture = try AutoSendFixture()
+        let sender = AutoSendRecordingSender(statusCode: 201, body: #"{"key":"STAR-1"}"#)
+        try fixture.stage(summary: "First")
+        try fixture.stage(summary: "Second")
+        try fixture.stage(summary: "Third")
+        RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        sender.duringFirstSend = {
+            guard let second = ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task)
+                .first(where: { $0.summary == "Second" }),
+                  let proposal = try? coordinator.prepare(task: fixture.task, pending: second) else { return }
+            try? coordinator.decline(task: fixture.task, proposal: proposal)
+        }
+
+        await ConnectorMutationAutoSend.sendPendingMutations(
+            task: fixture.task, run: fixture.run, policyLevel: .autonomous,
+            modelContext: fixture.context, coordinator: coordinator
+        )
+
+        #expect(sender.count == 1, "the declined proposal and the one after it are not sent")
+        #expect(fixture.task.events.contains { $0.payload.hasPrefix("Auto did not send Second") })
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).map(\.summary) == ["Third"])
+    }
+
     // A dispatch with no trustworthy answer is quarantined, not left in the
     // dock, so the notice sends the user to the destination instead.
     @Test("A terminal outcome is not called reviewable; the proposals after it are")
@@ -321,6 +351,8 @@ private final class AutoSendRecordingSender: ConnectorMutationSending, @unchecke
     private var sentPaths: [String] = []
     let statusCode: Int
     let body: String
+    /// Runs on the main actor during the first send, while it is in flight.
+    var duringFirstSend: (@MainActor () -> Void)?
 
     init(statusCode: Int = 201, body: String = "{}") {
         self.statusCode = statusCode
@@ -331,9 +363,13 @@ private final class AutoSendRecordingSender: ConnectorMutationSending, @unchecke
     var paths: [String] { lock.withLock { sentPaths } }
 
     func send(_ request: ConnectorMutationHTTPRequest) async throws -> ConnectorMutationHTTPResponse {
-        lock.withLock {
+        let first = lock.withLock {
             sent += 1
             sentPaths.append(request.url.path)
+            return sent == 1
+        }
+        if first, let duringFirstSend {
+            await MainActor.run { duringFirstSend() }
         }
         return ConnectorMutationHTTPResponse(statusCode: statusCode, body: body)
     }

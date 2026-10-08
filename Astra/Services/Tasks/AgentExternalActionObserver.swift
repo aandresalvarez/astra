@@ -30,7 +30,8 @@ enum AgentExternalActionObserver {
     }
 
     nonisolated static func resultMarker(evidence: String, output: String) -> ResultMarker? {
-        guard let command = shellCommandText(fromToolUsePayload: evidence), !actions(in: command).isEmpty else { return nil }
+        guard let command = shellCommandText(fromToolUsePayload: evidence),
+              !recordableActions(in: command).isEmpty else { return nil }
         return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)))
     }
 
@@ -71,7 +72,7 @@ enum AgentExternalActionObserver {
         for (index, event) in runEvents.enumerated()
         where event.type == TaskEventTypes.Tool.use.rawValue && !alreadyRecorded.contains(event.id) {
             guard let command = shellCommandText(fromToolUsePayload: event.payload) else { continue }
-            let actions = actions(in: command)
+            let actions = recordableActions(in: command)
             guard !actions.isEmpty else { continue }
             let output: String
             if pairsByMarker {
@@ -82,9 +83,8 @@ enum AgentExternalActionObserver {
                 output = fallback
             }
             let enterprise = enterpriseGitHub(in: command)
-            let url = firstGitHubURL(in: output, host: enterprise?.host)
-                ?? firstGitHubURL(in: command, host: enterprise?.host)
-            for action in actions {
+            let urls = actionURLs(for: actions, output: output, command: command, host: enterprise?.host)
+            for (action, url) in zip(actions, urls) {
                 let observation = Observation(
                     sourceEventID: event.id,
                     title: title(for: action, url: url),
@@ -101,6 +101,38 @@ enum AgentExternalActionObserver {
             }
         }
         return observations
+    }
+
+    /// One link per action. A single action takes the first link printed; in
+    /// a compound call each takes the first unused link of its own kind (a
+    /// pull request's `/pull/`, an issue's `/issues/`), and an action with
+    /// none gets no link rather than another action's.
+    static func actionURLs(for actions: [Action], output: String, command: String, host: String?) -> [String?] {
+        guard actions.count > 1 else {
+            return [firstGitHubURL(in: output, host: host) ?? firstGitHubURL(in: command, host: host)]
+        }
+        var available = allGitHubURLs(in: output, host: host)
+        return actions.map { action in
+            let marker: String
+            switch action {
+            case .pullRequest: marker = "/pull/"
+            case .issue: marker = "/issues/"
+            case .release: marker = "/releases/"
+            default: return nil
+            }
+            guard let index = available.firstIndex(where: { $0.contains(marker) }) else { return nil }
+            return available.remove(at: index)
+        }
+    }
+
+    static func allGitHubURLs(in text: String, host: String? = nil) -> [String] {
+        var urls: [String] = []
+        var rest = Substring(text)
+        while let url = firstGitHubURL(in: String(rest), host: host), let range = rest.range(of: url) {
+            urls.append(url)
+            rest = rest[range.upperBound...]
+        }
+        return urls
     }
 
     /// For runs recorded before result markers: the first result after the
@@ -187,9 +219,26 @@ enum AgentExternalActionObserver {
         return shellSegments(text).flatMap { actions(forSegment: $0, depth: depth) }
     }
 
+    /// The actions whose own failure would fail the call, so a successful
+    /// result proves they happened: none masked by `|| true`, a pipe, a later
+    /// `;`, a background `&`, or a substitution — only `&&` may follow them.
+    /// What the record claims; `actions(in:)` is what the guard asks about.
+    nonisolated static func recordableActions(in command: String, depth: Int = 0) -> [Action] {
+        let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
+        let segments = shellSegmentsWithSeparators(text)
+        return segments.indices.flatMap { index -> [Action] in
+            let decisive = (index..<segments.count).allSatisfy { later in
+                let separator = segments[later].trailing.trimmingCharacters(in: .whitespacesAndNewlines)
+                return later == segments.count - 1 ? ["", ";", "&&"].contains(separator) : separator == "&&"
+            }
+            guard decisive else { return [] }
+            return actions(forSegment: segments[index].tokens, depth: depth, recordable: true)
+        }
+    }
+
     nonisolated private static let maximumUnwrapDepth = 4
 
-    nonisolated private static func actions(forSegment rawTokens: [String], depth: Int) -> [Action] {
+    nonisolated private static func actions(forSegment rawTokens: [String], depth: Int, recordable: Bool = false) -> [Action] {
         var tokens = rawTokens.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "(){}")) }.filter { !$0.isEmpty }
         while let first = tokens.first,
               (first.contains("=") && !first.hasPrefix("-")) || commandPrefixes.contains(first.lowercased()) {
@@ -198,10 +247,10 @@ enum AgentExternalActionObserver {
         guard let first = tokens.first else { return [] }
         if depth < maximumUnwrapDepth {
             if let inner = ShellCommandRunners.wrappedCommand(tokens.joined(separator: " ")) {
-                return actions(in: inner, depth: depth + 1)
+                return recordable ? recordableActions(in: inner, depth: depth + 1) : actions(in: inner, depth: depth + 1)
             }
             if let payload = shellPayload(tokens) {
-                return actions(in: payload, depth: depth + 1)
+                return recordable ? recordableActions(in: payload, depth: depth + 1) : actions(in: payload, depth: depth + 1)
             }
         }
         let executable = URL(fileURLWithPath: first).lastPathComponent.lowercased()
@@ -231,7 +280,12 @@ enum AgentExternalActionObserver {
             case "api":
                 return apiAction(args).map { [$0] } ?? []
             default:
-                return []
+                // Any other gh write the classifier knows (`gist create`,
+                // `workflow run`), by its area and verb.
+                guard ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: tokens.joined(separator: " ")) else {
+                    return []
+                }
+                return [.externalWrite(executable: "gh \(area) \(verb)", destination: "GitHub")]
             }
         default:
             // Any other command the shared risk classifier calls a write
@@ -363,7 +417,14 @@ enum AgentExternalActionObserver {
     /// substitution (`$(` or a backtick) starts one anywhere but inside single
     /// quotes.
     nonisolated static func shellSegments(_ command: String) -> [[String]] {
-        var segments: [[String]] = []
+        shellSegmentsWithSeparators(command).map(\.tokens)
+    }
+
+    /// `shellSegments`, with the operator that ended each segment (`&&`,
+    /// `||`, `|`, `;`, `$(`, `)`), which decides whether the segment's own
+    /// status is the call's.
+    nonisolated static func shellSegmentsWithSeparators(_ command: String) -> [(tokens: [String], trailing: String)] {
+        var segments: [(tokens: [String], trailing: String)] = []
         var tokens: [String] = []
         var token = ""
         var inSingle = false
@@ -376,9 +437,13 @@ enum AgentExternalActionObserver {
             if !token.isEmpty { tokens.append(token) }
             token = ""
         }
-        func endSegment() {
+        func endSegment(_ separator: String) {
             endToken()
-            if !tokens.isEmpty { segments.append(tokens) }
+            if !tokens.isEmpty {
+                segments.append((tokens, separator))
+            } else if !segments.isEmpty {
+                segments[segments.count - 1].trailing += separator
+            }
             tokens = []
         }
         let characters = Array(command)
@@ -401,14 +466,14 @@ enum AgentExternalActionObserver {
                 continue
             }
             if character == "$", next == "(" {
-                endSegment()
+                endSegment("$(")
                 substitutions.append(inDouble)
                 inDouble = false
                 index += 1
                 continue
             }
             if character == "`" {
-                endSegment()
+                endSegment("`")
                 continue
             }
             if inDouble {
@@ -421,17 +486,17 @@ enum AgentExternalActionObserver {
             case "\"":
                 inDouble = true
             case ")" where !substitutions.isEmpty:
-                endSegment()
+                endSegment(")")
                 inDouble = substitutions.removeLast()
             case ";", "|", "&", "\n", "(", ")":
-                endSegment()
+                endSegment(String(character))
             case _ where character.isWhitespace:
                 endToken()
             default:
                 token.append(character)
             }
         }
-        endSegment()
+        endSegment("")
         return segments
     }
 

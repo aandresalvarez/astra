@@ -62,7 +62,23 @@ enum ConnectorMutationAutoSend {
                 && URL(fileURLWithPath: $0.stagedPayloadPath).lastPathComponent.contains(ownMarker)
         })
         var receipts: [ConnectorMutationReceipt] = []
-        for pending in own {
+        for (position, pending) in own.enumerated() {
+            // The send before this one suspended; a decision the user recorded
+            // meanwhile (declining this proposal) stands. The rest stop with it,
+            // since they commonly depend on it.
+            guard ConnectorMutationRequirementResolver.pendingMutations(task: task)
+                .contains(where: { $0.stagedPayloadPath == pending.stagedPayloadPath }) else {
+                let waiting = own.count - position - 1
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.System.info,
+                    payload: "Auto did not send \(pending.summary.isEmpty ? pending.target : pending.summary): "
+                        + "it was no longer waiting to be sent."
+                        + (waiting > 0 ? " \(waiting) more \(waiting == 1 ? "is" : "are") waiting for your review." : ""),
+                    run: run
+                ))
+                break
+            }
             do {
                 let proposal = try coordinator.prepare(task: task, pending: pending)
                 receipts.append(try await coordinator.send(task: task, proposal: proposal, authorization: .autoPolicy))

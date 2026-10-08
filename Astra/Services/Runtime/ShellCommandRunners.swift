@@ -11,6 +11,7 @@ enum ShellCommandRunners {
     /// first — which is how `env -u CI git push` read as a command named `-u`.
     static func wrappedCommand(_ segment: String) -> String? {
         if let expanded = gitInlineAliasExpansion(segment) { return expanded }
+        if let actions = findExecPayloads(segment) { return actions }
         var tokens = segment.split(whereSeparator: \.isWhitespace).map(String.init)
         guard let first = tokens.first else { return nil }
         let runner: String
@@ -91,6 +92,34 @@ enum ShellCommandRunners {
             return ([String(expansion.dropFirst())] + rest).joined(separator: " ")
         }
         return (["git"] + leading + [expansion] + rest).joined(separator: " ")
+    }
+
+    /// `find … -exec CMD {} ;` (and `-execdir`, `-ok`, `-okdir`) runs CMD per
+    /// match; several actions are joined with `;` so each is judged.
+    static func findExecPayloads(_ segment: String) -> String? {
+        let tokens = segment.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let first = tokens.first, URL(fileURLWithPath: first).lastPathComponent.lowercased() == "find" else {
+            return nil
+        }
+        // A segment split at an escaped `\;` ends in a lone backslash.
+        let terminators: Set<String> = [";", "\\;", "\\", "';'", "\";\"", "+"]
+        var payloads: [String] = []
+        var index = 1
+        while index < tokens.count {
+            guard ["-exec", "-execdir", "-ok", "-okdir"].contains(tokens[index]) else {
+                index += 1
+                continue
+            }
+            var command: [String] = []
+            index += 1
+            while index < tokens.count, !terminators.contains(tokens[index]) {
+                command.append(tokens[index])
+                index += 1
+            }
+            if !command.isEmpty { payloads.append(command.joined(separator: " ")) }
+            index += 1
+        }
+        return payloads.isEmpty ? nil : payloads.joined(separator: " ; ")
     }
 
     private static let runnerOptionsWithValues: [String: Set<String>] = [

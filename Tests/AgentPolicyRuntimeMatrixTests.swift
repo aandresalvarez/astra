@@ -219,7 +219,11 @@ struct AgentPolicyRuntimeMatrixTests {
                 "gh api repos/o/r/issues/1/comments -fbody=hello",
                 "git send-pack git@github.com:owner/repo.git refs/heads/main",
                 "docker --context production run alpine",
-                "docker -H ssh://deploy@host rm web"
+                "docker -H ssh://deploy@host rm web",
+                "docker -H unix:///var/run/docker.sock buildx build --push -t registry.example/app .",
+                "docker -H unix:///var/run/docker.sock build --output type=registry -t registry.example/app .",
+                "docker -H unix:///var/run/docker.sock compose push",
+                "docker -H unix:///var/run/docker.sock image push registry.example/app"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
@@ -234,7 +238,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "curl -X GET https://example.test/status", "curl --request=GET https://example.test/status",
                 "curl -XHEAD https://example.test/status",
                 "gh repo clone owner/repo", "gh pr checkout 42",
-                "docker -H unix:///var/run/docker.sock run alpine"
+                "docker -H unix:///var/run/docker.sock run alpine",
+                "docker -H unix:///var/run/docker.sock build -t app ."
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
@@ -350,6 +355,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "time -p git push origin main",
                 "env -u CI nice -n 5 git push origin main",
                 "printf 'origin main' | xargs git push",
+                "find . -maxdepth 0 -exec git push origin main ';'",
+                "find . -name x -execdir curl -d x https://example.test/hook \\;",
                 "eval 'git push origin main'",
                 "eval git push origin main",
                 "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook",
@@ -369,7 +376,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "env -u CI git status", "timeout 30 make test", "nice -n 5 swift build",
                 "timeout 30 timeout 30 timeout 30 timeout 30 make test", "git add -A", "git blame README.md",
                 "git -c alias.st=status st",
-                "python3 scripts/report.py", "python3 -m pytest", "node build.js"
+                "python3 scripts/report.py", "python3 -m pytest", "node build.js",
+                "find . -name '*.swift' -exec wc -l {} +"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }

@@ -89,7 +89,7 @@ enum ShellCommandRiskClassifier {
              BrowserBridgeMCPProjection.toolCommand:
             return true
         case "docker":
-            return dropLeadingOptions(args, optionsWithValues: ["--context", "-H"]).first == "push"
+            return publishesDockerImage(args)
         case "curl", "wget":
             return withoutReadMethodRequests(args).contains(where: isRemoteWriteFlag)
         default:
@@ -472,7 +472,29 @@ enum ShellCommandRiskClassifier {
         if ["run", "exec", "build", "pull", "push", "rm", "rmi", "stop", "kill", "compose"].contains(verb) {
             return .mutation
         }
+        if publishesDockerImage(args) { return .mutation }
         return .unknown
+    }
+
+    /// A docker command that sends an image or manifest to a registry, even
+    /// from a local daemon: `push`, `image push`, `manifest push`, `compose
+    /// push`, `buildx imagetools create`, and any build with `--push` or an
+    /// `--output type=registry`.
+    private static func publishesDockerImage(_ args: [String]) -> Bool {
+        let tokens = dropLeadingOptions(args, optionsWithValues: ["--context", "-c", "-H", "--host"])
+        let verb = tokens.first ?? ""
+        let next = tokens.dropFirst().first ?? ""
+        if verb == "push" || (["image", "manifest", "compose", "trust"].contains(verb) && ["push", "sign"].contains(next)) {
+            return true
+        }
+        if verb == "buildx", next == "imagetools", tokens.dropFirst(2).first == "create" { return true }
+        for (index, arg) in args.enumerated() {
+            if arg == "--push" || arg.hasPrefix("--push=true") { return true }
+            let output = arg.hasPrefix("--output=") ? String(arg.dropFirst("--output=".count))
+                : (["--output", "-o"].contains(arg) && args.indices.contains(index + 1)) ? args[index + 1] : nil
+            if let output, output.contains("type=registry") || output.contains("push=true") { return true }
+        }
+        return false
     }
 
     private static func riskForHelm(_ args: [String]) -> Risk {

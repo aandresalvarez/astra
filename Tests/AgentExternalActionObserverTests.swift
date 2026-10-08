@@ -37,7 +37,9 @@ struct AgentExternalActionObserverTests {
             ("bash -c 'git push origin main'", .push),
             ("printf 'origin main' | xargs git push", .push),
             ("curl -d x https://hooks.example.test/build", .externalWrite(executable: "curl", destination: "hooks.example.test")),
-            ("curl -XPOST https://hooks.example.test/build", .externalWrite(executable: "curl", destination: "hooks.example.test"))
+            ("curl -XPOST https://hooks.example.test/build", .externalWrite(executable: "curl", destination: "hooks.example.test")),
+            ("gh gist create notes.md", .externalWrite(executable: "gh gist create", destination: "GitHub")),
+            ("find . -maxdepth 0 -exec git push origin main ';'", .push)
         ]
     )
     func recognisedCommands(command: String, expected: AgentExternalActionObserver.Action) {
@@ -57,6 +59,32 @@ struct AgentExternalActionObserverTests {
     )
     func readsAreNotActions(command: String) {
         #expect(AgentExternalActionObserver.classify(command) == nil)
+    }
+
+    // A successful call proves an action only when its failure would have
+    // failed the call: nothing but `&&` may follow it.
+    @Test("An action whose failure the command masks is not recorded")
+    func maskedActionsAreNotRecorded() {
+        for masked in ["git push origin main || true", "git push origin main | cat", "git push origin main; echo done",
+                       "git push origin main &", #"echo "$(git push origin main)""#, "bash -c 'git push origin main || true'"] {
+            #expect(AgentExternalActionObserver.recordableActions(in: masked).isEmpty, "\(masked)")
+            #expect(!AgentExternalActionObserver.actions(in: masked).isEmpty, "the guard still asks: \(masked)")
+        }
+        for decisive in ["git push origin main", "cd repo && git push origin main", "git push origin main && echo ok",
+                         "false || git push origin main", "git push origin main;"] {
+            #expect(AgentExternalActionObserver.recordableActions(in: decisive) == [.push], "\(decisive)")
+        }
+    }
+
+    @Test("Each action of a compound call gets its own link, or none")
+    func compoundActionsGetTheirOwnLinks() {
+        let output = "https://github.com/acme/widgets/issues/7\nhttps://github.com/acme/widgets/pull/8\n"
+        #expect(AgentExternalActionObserver.actionURLs(
+            for: [.pullRequest(verb: "create"), .issue(verb: "create")], output: output, command: "", host: nil
+        ) == ["https://github.com/acme/widgets/pull/8", "https://github.com/acme/widgets/issues/7"])
+        #expect(AgentExternalActionObserver.actionURLs(
+            for: [.push, .pullRequest(verb: "create")], output: "https://github.com/acme/widgets/issues/7", command: "", host: nil
+        ) == [nil, nil], "no link of its own kind is no link, not another action's")
     }
 
     @Test("A compound command records every action it ran, in order")
