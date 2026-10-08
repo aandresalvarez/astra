@@ -200,6 +200,11 @@ struct AgentPolicyRuntimeMatrixTests {
             }
         }
 
+        // A command that only mentions one in a quoted operand runs nothing
+        // outside ASTRA and keeps the rule.
+        let mentioning = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: policy))
+        #expect(mentioning.disposition(toolName: "Bash", command: "git log --grep 'git push'") == .allowed)
+
         let request = PermissionRequest.shell(command: "git push origin main", toolName: "Bash")
         let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
             runtime: .claudeCode,

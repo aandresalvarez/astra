@@ -101,39 +101,219 @@ enum AgentExternalActionObserver {
         return summary.isEmpty ? nil : String(summary)
     }
 
+    /// The first recognised external action the command runs.
+    ///
+    /// Only an executable position counts. The command is split into segments
+    /// on the separators a shell honours outside quotes, and each segment's
+    /// executable is read after assignments and prefixes such as `env`: a
+    /// quoted operand like `rg 'git push' .` or `echo 'gh pr create'` names a
+    /// command without running it.
     nonisolated static func classify(_ command: String) -> Action? {
-        let text = " " + command.lowercased().replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        if text.range(of: #"[\s;&|(`"']git( -c [^ ]+)* push\b"#, options: .regularExpression) != nil {
-            return .push
-        }
-        let prVerbs = ["create", "merge", "comment", "review", "edit", "close", "ready"]
-        if let verb = verb(after: "gh pr", in: text, among: prVerbs) { return .pullRequest(verb: verb) }
-        if let verb = verb(after: "gh issue", in: text, among: ["create", "comment", "edit", "close"]) {
-            return .issue(verb: verb)
-        }
-        if text.range(of: #"[\s;&|(`"']gh release create\b"#, options: .regularExpression) != nil { return .release }
-        if text.range(of: #"[\s;&|(`"']gh api\b"#, options: .regularExpression) != nil {
-            if let match = text.range(of: #"(?:-x|--method)[ =](post|patch|put|delete)\b"#, options: .regularExpression) {
-                let method = text[match].split(whereSeparator: { $0 == " " || $0 == "=" }).last.map(String.init) ?? "post"
-                return .api(method: method.uppercased())
-            }
-            // `gh api` sends a POST on its own when it is given fields or a body.
-            if text.range(of: #" (?:-f|-F|--field|--raw-field|--input)[ =]"#, options: .regularExpression) != nil {
-                return .api(method: "POST")
-            }
+        let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
+        for tokens in shellSegments(text) {
+            if let action = action(forSegment: tokens) { return action }
         }
         return nil
     }
 
-    nonisolated private static func verb(after command: String, in text: String, among verbs: [String]) -> String? {
-        let pattern = #"[\s;&|(`"']"# + NSRegularExpression.escapedPattern(for: command)
-            + #" ("# + verbs.joined(separator: "|") + #")\b"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text) else {
+    nonisolated private static func action(forSegment rawTokens: [String]) -> Action? {
+        var tokens = rawTokens.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "(){}")) }.filter { !$0.isEmpty }
+        while let first = tokens.first,
+              (first.contains("=") && !first.hasPrefix("-")) || commandPrefixes.contains(first.lowercased()) {
+            tokens.removeFirst()
+        }
+        guard let executable = tokens.first.map({ URL(fileURLWithPath: $0).lastPathComponent.lowercased() }) else {
             return nil
         }
-        return String(text[range])
+        let args = Array(tokens.dropFirst()).map { $0.lowercased() }
+        switch executable {
+        case "git":
+            return firstOperand(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree", "--namespace"]) == "push"
+                ? .push : nil
+        case "gh":
+            let operands = operands(args, optionsWithValues: ["-r", "--repo", "--hostname"])
+            guard let area = operands.first else { return nil }
+            let verb = operands.dropFirst().first ?? ""
+            switch area {
+            case "pr" where ["create", "merge", "comment", "review", "edit", "close", "ready"].contains(verb):
+                return .pullRequest(verb: verb)
+            case "issue" where ["create", "comment", "edit", "close"].contains(verb):
+                return .issue(verb: verb)
+            case "release" where verb == "create":
+                return .release
+            case "api":
+                return apiAction(args)
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// `gh api` writes when given a write method, or — on its own — when given
+    /// fields or a body.
+    nonisolated private static func apiAction(_ args: [String]) -> Action? {
+        for (index, arg) in args.enumerated() {
+            let method: String?
+            if arg == "-x" || arg == "--method" {
+                method = args.indices.contains(index + 1) ? args[index + 1] : nil
+            } else if arg.hasPrefix("--method=") {
+                method = String(arg.dropFirst("--method=".count))
+            } else if arg.hasPrefix("-x"), arg.count > 2 {
+                method = String(arg.dropFirst(2))
+            } else {
+                method = nil
+            }
+            if let method, ["post", "patch", "put", "delete"].contains(method) {
+                return .api(method: method.uppercased())
+            }
+        }
+        let bodyFlags: Set<String> = ["-f", "--field", "--raw-field", "--input"]
+        if args.contains(where: { arg in bodyFlags.contains(arg) || bodyFlags.contains { arg.hasPrefix($0 + "=") } }) {
+            return .api(method: "POST")
+        }
+        return nil
+    }
+
+    nonisolated private static let commandPrefixes: Set<String> = [
+        "env", "command", "builtin", "exec", "time", "nohup", "sudo", "then", "do", "else", "if", "elif", "while", "until", "!"
+    ]
+
+    nonisolated private static func operands(_ args: [String], optionsWithValues: Set<String>) -> [String] {
+        var result: [String] = []
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            if optionsWithValues.contains(arg) {
+                index += 2
+                continue
+            }
+            if arg.hasPrefix("-") {
+                index += 1
+                continue
+            }
+            result.append(arg)
+            index += 1
+        }
+        return result
+    }
+
+    nonisolated private static func firstOperand(_ args: [String], optionsWithValues: Set<String>) -> String? {
+        operands(args, optionsWithValues: optionsWithValues).first
+    }
+
+    /// The command a tool-use summary carries. Providers report a shell call
+    /// either as the command itself or as a JSON object with a `command` (or
+    /// `cmd`) field, and the recorded summary can be cut off mid-string.
+    nonisolated static func commandText(fromSummary summary: String) -> String {
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{") else { return trimmed }
+        if let data = trimmed.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["command", "cmd"] {
+                if let value = object[key] as? String { return value }
+                if let parts = object[key] as? [String] { return parts.joined(separator: " ") }
+            }
+            return trimmed
+        }
+        // Truncated JSON: read the command string up to where it stops.
+        guard let range = trimmed.range(of: #""(?:command|cmd)"\s*:\s*""#, options: .regularExpression) else {
+            return trimmed
+        }
+        var value = ""
+        var escaped = false
+        for character in trimmed[range.upperBound...] {
+            if escaped {
+                value.append(character == "n" ? "\n" : character)
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else if character == "\"" {
+                break
+            } else {
+                value.append(character)
+            }
+        }
+        return value
+    }
+
+    /// Splits a command into the token lists of the commands it runs. Quotes
+    /// group text and are dropped; `;`, `&&`, `||`, `|`, `&`, newlines, and
+    /// subshell parentheses separate commands outside quotes, and command
+    /// substitution (`$(` or a backtick) starts one anywhere but inside single
+    /// quotes.
+    nonisolated static func shellSegments(_ command: String) -> [[String]] {
+        var segments: [[String]] = []
+        var tokens: [String] = []
+        var token = ""
+        var inSingle = false
+        var inDouble = false
+        var escaped = false
+        // A `$(` opened inside double quotes runs unquoted until its `)`; the
+        // quote state to return to is kept per nesting level.
+        var substitutions: [Bool] = []
+        func endToken() {
+            if !token.isEmpty { tokens.append(token) }
+            token = ""
+        }
+        func endSegment() {
+            endToken()
+            if !tokens.isEmpty { segments.append(tokens) }
+            tokens = []
+        }
+        let characters = Array(command)
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            index += 1
+            if escaped {
+                token.append(character)
+                escaped = false
+                continue
+            }
+            if character == "\\", !inSingle {
+                escaped = true
+                continue
+            }
+            if inSingle {
+                if character == "'" { inSingle = false } else { token.append(character) }
+                continue
+            }
+            if character == "$", next == "(" {
+                endSegment()
+                substitutions.append(inDouble)
+                inDouble = false
+                index += 1
+                continue
+            }
+            if character == "`" {
+                endSegment()
+                continue
+            }
+            if inDouble {
+                if character == "\"" { inDouble = false } else { token.append(character) }
+                continue
+            }
+            switch character {
+            case "'":
+                inSingle = true
+            case "\"":
+                inDouble = true
+            case ")" where !substitutions.isEmpty:
+                endSegment()
+                inDouble = substitutions.removeLast()
+            case ";", "|", "&", "\n", "(", ")":
+                endSegment()
+            case _ where character.isWhitespace:
+                endToken()
+            default:
+                token.append(character)
+            }
+        }
+        endSegment()
+        return segments
     }
 
     static func title(for action: Action, url: String?) -> String {

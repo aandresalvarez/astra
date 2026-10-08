@@ -24,7 +24,11 @@ struct AgentExternalActionObserverTests {
             ("gh release create v1.2.0", .release),
             ("gh api repos/acme/widgets/pulls/12/comments -X POST -f body=hi", .api(method: "POST")),
             ("gh api --method=DELETE repos/acme/widgets/git/refs/heads/old", .api(method: "DELETE")),
-            ("gh api repos/acme/widgets/issues/3/comments -f body=hi", .api(method: "POST"))
+            ("gh api repos/acme/widgets/issues/3/comments -f body=hi", .api(method: "POST")),
+            ("/bin/zsh -lc 'git push origin main'", .push),
+            ("env GIT_TRACE=1 git -C repo push", .push),
+            (#"echo "pushed: $(git push origin main)""#, .push),
+            (#"{"command":"gh pr create --draft --title 'A very long title that the recorder cut"#, .pullRequest(verb: "create"))
         ]
     )
     func recognisedCommands(command: String, expected: AgentExternalActionObserver.Action) {
@@ -35,7 +39,9 @@ struct AgentExternalActionObserverTests {
         "Reads and local Git are not external actions",
         arguments: [
             "git status", "git commit -m 'push the fix'", "gh pr view 12", "gh pr list",
-            "gh api repos/acme/widgets/pulls/12", "gh issue list", "echo gh-pr-create", "git log --grep push"
+            "gh api repos/acme/widgets/pulls/12", "gh issue list", "echo gh-pr-create", "git log --grep push",
+            "rg 'git push' .", "echo 'gh pr create'", #"grep -n "gh api -X POST" docs/notes.md"#,
+            #"printf '%s\n' "git push origin main""#, #"{"command":"rg -n 'gh release create' scripts"}"#
         ]
     )
     func readsAreNotActions(command: String) {
