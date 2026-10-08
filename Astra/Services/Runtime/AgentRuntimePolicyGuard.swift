@@ -461,14 +461,25 @@ struct AgentRuntimePolicyGuard: Sendable {
         if Self.actsOutsideMachine(command), !commandApprovedByGrant(command, toolName: toolName) {
             return command
         }
-        guard depth < 4 else { return nil }
-        for segment in Self.rawActionableShellSegments(command) {
-            let inner = [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment)].compactMap { $0 }
+        // Inline interpreter code cannot be proven local: it is asked about as
+        // Ask asks about it, and an approval that covers it as written lets it run.
+        if Self.rawActionableShellSegments(command).contains(where: ShellCommandRiskClassifier.runsInlineCode(forShellSegment:)),
+           !commandApprovedByGrant(command, toolName: toolName, onlyExternalGrants: false) {
+            return command
+        }
+        let inner = Self.rawActionableShellSegments(command).flatMap { segment in
+            [Self.shellInterpreterPayload(segment), ShellCommandRunners.wrappedCommand(segment)].compactMap { $0 }
                 + Self.commandSubstitutions(in: segment)
-            for payload in inner {
-                if let pending = unapprovedExternalCommand(payload, toolName: toolName, depth: depth + 1) {
-                    return pending
-                }
+        }
+        guard depth < 4 else {
+            // Still wrapped at the limit: what finally runs is not read, so it
+            // is asked about rather than declared local, and approved as written.
+            return inner.isEmpty || commandApprovedByGrant(command, toolName: toolName, onlyExternalGrants: false)
+                ? nil : command
+        }
+        for payload in inner {
+            if let pending = unapprovedExternalCommand(payload, toolName: toolName, depth: depth + 1) {
+                return pending
             }
         }
         return nil
@@ -607,10 +618,11 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// stand in for asking again. A reusable read grant — `curl` scoped to a
     /// host, `git status` — matches later commands too, and approving a read
     /// is not approving a write to the same place.
-    private func commandApprovedByGrant(_ command: String, toolName: String) -> Bool {
+    private func commandApprovedByGrant(_ command: String, toolName: String, onlyExternalGrants: Bool = true) -> Bool {
         let externalGrants = manifest.approvalGrants.filter { grant in
             guard case .shellCommand(let executable, let pattern) = grant else { return false }
-            return ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "\(executable) \(pattern)")
+            return !onlyExternalGrants
+                || ShellCommandRiskClassifier.actsOutsideMachine(forShellSegment: "\(executable) \(pattern)")
         }
         let approved = PermissionBroker.providerRuntimeGrantStrings(
             for: externalGrants,

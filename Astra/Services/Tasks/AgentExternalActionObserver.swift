@@ -18,6 +18,21 @@ import ASTRAModels
 @MainActor
 enum AgentExternalActionObserver {
     static let eventType = "external.action.observed"
+    /// The successful result of a call that ran a recognised external action,
+    /// named by that call's evidence (the `tool.use` payload). Not shown in
+    /// the thread; it is what pairs a result with its own call.
+    static let resultEventType = "external.action.result"
+
+    struct ResultMarker: Codable, Equatable, Sendable {
+        var version = 1
+        let toolUseEvidence: String
+        let output: String
+    }
+
+    nonisolated static func resultMarker(evidence: String, output: String) -> ResultMarker? {
+        guard let command = shellCommandText(fromToolUsePayload: evidence), !actions(in: command).isEmpty else { return nil }
+        return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)))
+    }
 
     struct Observation: Codable, Equatable, Sendable {
         var version = 1
@@ -44,35 +59,36 @@ enum AgentExternalActionObserver {
             guard event.type == eventType, let data = event.payload.data(using: .utf8) else { return nil }
             return (try? TaskEventPayloadCodec.makeDecoder().decode(Observation.self, from: data))?.sourceEventID
         })
+        // A run recorded with result markers pairs each call with its own
+        // successful result, in order for repeated identical calls; an older
+        // run falls back to reading the results that follow the call.
+        var markers = runEvents.compactMap { event -> ResultMarker? in
+            guard event.type == resultEventType, let data = event.payload.data(using: .utf8) else { return nil }
+            return try? TaskEventPayloadCodec.makeDecoder().decode(ResultMarker.self, from: data)
+        }
+        let pairsByMarker = !markers.isEmpty
         var observations: [Observation] = []
         for (index, event) in runEvents.enumerated()
         where event.type == TaskEventTypes.Tool.use.rawValue && !alreadyRecorded.contains(event.id) {
             guard let command = shellCommandText(fromToolUsePayload: event.payload) else { continue }
             let actions = actions(in: command)
             guard !actions.isEmpty else { continue }
-            // The call's own result decides whether anything happened. A failed
-            // result names the call it belongs to (a batch can answer another
-            // call first); a successful one does not, so the first result not
-            // known to be someone else's decides, and a missing result is not
-            // evidence of an action.
-            let later = runEvents[(index + 1)...]
-            guard !later.contains(where: { failureEvidence($0) == event.payload }),
-                  let result = later.first(where: { candidate in
-                      candidate.type == TaskEventTypes.Tool.result.rawValue
-                          || (candidate.type == TaskEventTypes.Tool.resultFailed.rawValue
-                              && failureEvidence(candidate) == nil)
-                  }),
-                  result.type == TaskEventTypes.Tool.result.rawValue else {
-                continue
+            let output: String
+            if pairsByMarker {
+                guard let position = markers.firstIndex(where: { $0.toolUseEvidence == event.payload }) else { continue }
+                output = markers.remove(at: position).output
+            } else {
+                guard let fallback = fallbackResult(after: index, call: event, in: runEvents) else { continue }
+                output = fallback
             }
             let enterprise = enterpriseGitHub(in: command)
-            let url = firstGitHubURL(in: result.payload, host: enterprise?.host)
+            let url = firstGitHubURL(in: output, host: enterprise?.host)
                 ?? firstGitHubURL(in: command, host: enterprise?.host)
             for action in actions {
                 let observation = Observation(
                     sourceEventID: event.id,
                     title: title(for: action, url: url),
-                    destination: destination(for: action, url: url, result: result.payload, enterprise: enterprise),
+                    destination: destination(for: action, url: url, result: output, enterprise: enterprise),
                     url: url
                 )
                 modelContext.insert(TaskEvent.structuredPayloadEvent(
@@ -85,6 +101,26 @@ enum AgentExternalActionObserver {
             }
         }
         return observations
+    }
+
+    /// For runs recorded before result markers: the first result after the
+    /// call that is not known to be another call's.
+    private static func fallbackResult(after index: Int, call event: TaskEvent, in runEvents: [TaskEvent]) -> String? {
+        // A failed result names the call it belongs to (a batch can answer
+        // another call first); a successful one does not, so the first result
+        // not known to be someone else's decides, and a missing result is not
+        // evidence of an action.
+        let later = runEvents[(index + 1)...]
+        guard !later.contains(where: { failureEvidence($0) == event.payload }),
+              let result = later.first(where: { candidate in
+                  candidate.type == TaskEventTypes.Tool.result.rawValue
+                      || (candidate.type == TaskEventTypes.Tool.resultFailed.rawValue
+                          && failureEvidence(candidate) == nil)
+              }),
+              result.type == TaskEventTypes.Tool.result.rawValue else {
+            return nil
+        }
+        return result.payload
     }
 
     /// The `tool.use` payload a failed result names: the recorder stores the
@@ -117,7 +153,7 @@ enum AgentExternalActionObserver {
     /// The command text of a shell tool call, or nil for any other tool. File
     /// tools are excluded on purpose: a document that mentions `gh pr create`
     /// did not open a pull request.
-    static func shellCommandText(fromToolUsePayload payload: String) -> String? {
+    nonisolated static func shellCommandText(fromToolUsePayload payload: String) -> String? {
         let prefix = "Using tool: "
         guard payload.hasPrefix(prefix) else { return nil }
         let rest = payload.dropFirst(prefix.count)

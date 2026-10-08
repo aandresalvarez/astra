@@ -10,6 +10,7 @@ enum ShellCommandRunners {
     /// leftovers, because callers drop the `env` word and bare assignments
     /// first — which is how `env -u CI git push` read as a command named `-u`.
     static func wrappedCommand(_ segment: String) -> String? {
+        if let expanded = gitInlineAliasExpansion(segment) { return expanded }
         var tokens = segment.split(whereSeparator: \.isWhitespace).map(String.init)
         guard let first = tokens.first else { return nil }
         let runner: String
@@ -53,6 +54,43 @@ enum ShellCommandRunners {
                 + command[command.index(after: close)...]
         }
         return command.isEmpty ? nil : command
+    }
+
+    /// `git -c alias.ship=push ship origin main` runs `git push origin main`,
+    /// and `-c 'alias.x=!curl …'` runs that shell command: an alias defined on
+    /// the command line is read, not guessed. One from the user's config cannot
+    /// be read here, so the classifier does not call it local.
+    static func gitInlineAliasExpansion(_ segment: String) -> String? {
+        guard let tokens = AgentExternalActionObserver.shellSegments(segment).first,
+              let first = tokens.first,
+              URL(fileURLWithPath: first).lastPathComponent.lowercased() == "git" else {
+            return nil
+        }
+        var aliases: [String: String] = [:]
+        var leading: [String] = []
+        var index = 1
+        while index < tokens.count, tokens[index].hasPrefix("-") {
+            let option = tokens[index]
+            if ["-c", "-C", "--git-dir", "--work-tree"].contains(option), index + 1 < tokens.count {
+                let value = tokens[index + 1]
+                if option == "-c", value.lowercased().hasPrefix("alias."), let equals = value.firstIndex(of: "=") {
+                    let name = value[value.index(value.startIndex, offsetBy: 6)..<equals].lowercased()
+                    aliases[name] = String(value[value.index(after: equals)...])
+                } else {
+                    leading += [option, value]
+                }
+                index += 2
+            } else {
+                leading.append(option)
+                index += 1
+            }
+        }
+        guard index < tokens.count, let expansion = aliases[tokens[index].lowercased()] else { return nil }
+        let rest = Array(tokens[(index + 1)...])
+        if expansion.hasPrefix("!") {
+            return ([String(expansion.dropFirst())] + rest).joined(separator: " ")
+        }
+        return (["git"] + leading + [expansion] + rest).joined(separator: " ")
     }
 
     private static let runnerOptionsWithValues: [String: Set<String>] = [

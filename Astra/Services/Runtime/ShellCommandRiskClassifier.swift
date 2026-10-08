@@ -69,10 +69,21 @@ enum ShellCommandRiskClassifier {
         switch executable {
         case "git":
             // `send-pack` is the plumbing under `push`; a dry run changes nothing.
-            let verb = dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first
-            return ["push", "send-pack"].contains(verb ?? "") && !args.contains("--dry-run") && !args.contains("-n")
-        case "docker" where selectsRemoteDockerDaemon(args):
-            // `--context`/`-H` point every verb at another machine's daemon.
+            // An alias or extension (`-c alias.ship=push ship`, `lfs push`) runs
+            // something this cannot read, so it is not declared local.
+            guard let verb = dropLeadingOptions(args, optionsWithValues: ["-c", "-C", "--git-dir", "--work-tree"]).first else {
+                return false
+            }
+            if ["push", "send-pack"].contains(verb) { return !args.contains("--dry-run") && !args.contains("-n") }
+            // An alias defined on this command line is judged by its expansion
+            // (`ShellCommandRunners.gitInlineAliasExpansion`).
+            if args.contains(where: { $0.hasPrefix("alias.\(verb)=") }) { return false }
+            return ["send-email", "imap-send", "http-push", "svn", "p4"].contains(verb) || !knownLocalGitVerbs.contains(verb)
+        case "gh" where isLocalGitHubCLIOperation(args):
+            // `repo clone` and `pr checkout` change this checkout, not GitHub.
+            return false
+        case "docker" where reachesRemoteDockerDaemon(args):
+            // Every mutating verb on another machine's daemon acts there.
             return true
         case "gh", "gcloud", "aws", "az", "bq", "kubectl", "helm", "terraform", "tofu", "psql", "mysql",
              BrowserBridgeMCPProjection.toolCommand:
@@ -244,7 +255,33 @@ enum ShellCommandRiskClassifier {
         if ["push", "send-pack", "reset", "clean", "checkout", "switch", "rebase", "merge", "commit", "tag", "restore", "stash", "pull", "fetch"].contains(verb) {
             return .mutation
         }
+        // An alias or extension: what it runs is not known.
+        if !knownLocalGitVerbs.contains(verb) { return .mutation }
         return .unknown
+    }
+
+    /// Git's own commands that change, at most, this machine or read a remote.
+    /// Anything else — an alias, an extension such as `lfs`, a mail or foreign
+    /// VCS bridge — is not proven local (`actsOutsideMachine`).
+    private static let knownLocalGitVerbs: Set<String> = [
+        "add", "am", "annotate", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file",
+        "check-attr", "check-ignore", "check-mailmap", "check-ref-format", "checkout", "checkout-index",
+        "cherry", "cherry-pick", "clean", "clone", "commit", "commit-graph", "commit-tree", "config",
+        "count-objects", "describe", "diff", "diff-files", "diff-index", "diff-tree", "difftool", "fetch",
+        "for-each-ref", "format-patch", "fsck", "gc", "grep", "hash-object", "help", "init",
+        "interpret-trailers", "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge", "merge-base",
+        "merge-file", "merge-tree", "mergetool", "mktag", "mktree", "mv", "name-rev", "notes", "pack-refs",
+        "prune", "pull", "range-diff", "read-tree", "rebase", "reflog", "remote", "repack", "replace",
+        "request-pull", "rerere", "reset", "restore", "rev-list", "rev-parse", "revert", "rm", "shortlog",
+        "show", "show-branch", "show-ref", "sparse-checkout", "stash", "status", "stripspace", "submodule",
+        "switch", "symbolic-ref", "tag", "update-index", "update-ref", "var", "verify-commit", "verify-pack",
+        "verify-tag", "version", "whatchanged", "worktree", "write-tree"
+    ]
+
+    private static func isLocalGitHubCLIOperation(_ args: [String]) -> Bool {
+        let tokens = dropLeadingOptions(args, optionsWithValues: ["--repo", "-r", "-R", "--hostname"])
+        guard tokens.count >= 2 else { return false }
+        return ["repo clone", "pr checkout", "repo set-default", "gist clone"].contains("\(tokens[0]) \(tokens[1])")
     }
 
     private static func riskForGitHubCLI(_ args: [String]) -> Risk {
@@ -289,18 +326,42 @@ enum ShellCommandRiskClassifier {
         "list", "ls", "view", "status", "diff", "checks", "download", "watch", "get", "check", "verify"
     ]
 
-    /// Whether a `docker` command names a daemon other than the local one:
-    /// `--context`/`-c` other than `default`, or `-H`/`--host`.
-    private static func selectsRemoteDockerDaemon(_ args: [String]) -> Bool {
+    /// Code an interpreter takes on the command line (`python3 -c`, `node -e`,
+    /// `osascript -e`): what it does cannot be read, so it is not declared
+    /// local. A script file or `-m module` is the user's own code and keeps
+    /// the rule.
+    static func runsInlineCode(forShellSegment segment: String) -> Bool {
+        let tokens = shellTokens(strippingBenignRedirections(segment))
+        guard let first = tokens.first, let executable = shellApprovalRoot(first)?.lowercased() else { return false }
+        let inlineFlags: Set<String>
+        switch executable {
+        case _ where executable.hasPrefix("python"): inlineFlags = ["-c"]
+        case "node", "nodejs": inlineFlags = ["-e", "--eval", "-p", "--print"]
+        case "ruby", "lua", "osascript", "rscript": inlineFlags = ["-e"]
+        case "perl": inlineFlags = ["-e", "-E"]
+        case "php": inlineFlags = ["-r"]
+        case "bun": inlineFlags = ["-e", "--eval", "-p", "--print"]
+        case "deno": inlineFlags = ["eval"]
+        case "pwsh", "powershell": inlineFlags = ["-c", "-command"]
+        default: return false
+        }
+        return tokens.dropFirst().contains { inlineFlags.contains($0.lowercased()) || inlineFlags.contains($0) }
+    }
+
+    /// Whether a `docker` command reaches a daemon other than this machine's:
+    /// the one its `--context`/`-c` or `-H`/`--host` names, or else the one the
+    /// CLI would pick (`DockerDaemonLocality`).
+    private static func reachesRemoteDockerDaemon(_ args: [String]) -> Bool {
         for (index, arg) in args.enumerated() {
             let name = arg.split(separator: "=", maxSplits: 1).first.map(String.init) ?? arg
             let attached = arg.contains("=") ? String(arg.split(separator: "=", maxSplits: 1).last ?? "") : nil
             let value = attached ?? (args.indices.contains(index + 1) ? args[index + 1] : nil)
-            if ["--context", "-c"].contains(name) { return value.map { $0.lowercased() != "default" } ?? false }
-            if ["-H", "--host"].contains(name) || (arg.hasPrefix("-H") && arg.count > 2) { return true }
-            if !arg.hasPrefix("-") { return false }
+            if ["--context", "-c"].contains(name) { return !DockerDaemonLocality.isLocal(context: value) }
+            if ["-H", "--host"].contains(name) { return !(value.map(DockerDaemonLocality.isLocalEndpoint) ?? false) }
+            if arg.hasPrefix("-H"), arg.count > 2 { return !DockerDaemonLocality.isLocalEndpoint(String(arg.dropFirst(2))) }
+            if !arg.hasPrefix("-") { break }
         }
-        return false
+        return !DockerDaemonLocality.isLocal()
     }
 
     /// A package-manager command that changes a registry rather than this

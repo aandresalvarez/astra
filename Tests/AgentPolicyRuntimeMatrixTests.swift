@@ -233,7 +233,8 @@ struct AgentPolicyRuntimeMatrixTests {
                 "git send-pack --dry-run git@github.com:owner/repo.git refs/heads/main",
                 "curl -X GET https://example.test/status", "curl --request=GET https://example.test/status",
                 "curl -XHEAD https://example.test/status",
-                "docker run alpine", "docker --context default run alpine"
+                "gh repo clone owner/repo", "gh pr checkout 42",
+                "docker -H unix:///var/run/docker.sock run alpine"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
@@ -351,13 +352,40 @@ struct AgentPolicyRuntimeMatrixTests {
                 "printf 'origin main' | xargs git push",
                 "eval 'git push origin main'",
                 "eval git push origin main",
+                "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook",
+                "git -c alias.ship=push ship origin main",
+                "git -c 'alias.ship=push --force' ship origin main",
+                "git ship origin main",
+                "git lfs push origin main",
+                "python3 -c 'import urllib.request;urllib.request.urlopen(\"https://example.test\", data=b\"x\")'",
+                "node -e \"fetch('https://example.test', {method: 'POST'})\"",
+                "osascript -e 'tell application \"Mail\" to send'",
+                "timeout 30 python3 -c 'print(1)'",
                 "git branch --format=x | xargs -n 1 git push origin --delete"
             ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .ask, "\(runtime.rawValue) \(command)")
             }
-            for command in ["env -u CI git status", "timeout 30 make test", "nice -n 5 swift build"] {
+            for command in [
+                "env -u CI git status", "timeout 30 make test", "nice -n 5 swift build",
+                "timeout 30 timeout 30 timeout 30 timeout 30 make test", "git add -A", "git blame README.md",
+                "git -c alias.st=status st",
+                "python3 scripts/report.py", "python3 -m pytest", "node build.js"
+            ] {
                 #expect(guardrail.disposition(toolName: "Bash", command: command) == .allowed, "\(runtime.rawValue) \(command)")
             }
+        }
+        for written in [
+            "git -c alias.ship=push ship origin main",
+            "git ship origin main",
+            "timeout 30 timeout 30 timeout 30 timeout 30 timeout 30 curl -d x https://example.test/hook"
+        ] {
+            let ask = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: broadBash))
+                .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": written]))
+            #expect(ask?.requiresApproval == true, "\(written)")
+            let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+                runtime: .claudeCode, policy: broadBash, approvalGrants: ask?.approvalGrants ?? []
+            ))
+            #expect(approved.disposition(toolName: "Bash", command: written) == .allowed, "\(written) approved once")
         }
         let wrappedPush = "env -u CI git push origin main"
         let pushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: broadBash))
@@ -420,6 +448,42 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(approved.disposition(toolName: "Bash", command: "git push origin main") == .allowed, "approved once, not asked twice")
     }
 
+    /// `docker context use` points every later command at another daemon, so
+    /// a plain `docker run` is local only when the daemon it reaches is.
+    @Test("A docker command is local only when the daemon it reaches is")
+    func dockerDaemonLocalityFollowsTheCLI() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-docker-config-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func context(_ name: String, host: String) throws {
+            let meta = directory.appendingPathComponent("contexts/meta/\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: meta, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["Name": name, "Endpoints": ["docker": ["Host": host]]])
+                .write(to: meta.appendingPathComponent("meta.json"))
+        }
+        func current(_ name: String) throws {
+            try JSONSerialization.data(withJSONObject: ["currentContext": name])
+                .write(to: directory.appendingPathComponent("config.json"))
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try context("desktop-linux", host: "unix:///Users/me/.docker/run/docker.sock")
+        try context("production", host: "ssh://deploy@prod.example")
+        func local(_ environment: [String: String] = [:], context explicit: String? = nil) -> Bool {
+            DockerDaemonLocality.isLocal(context: explicit, environment: environment, configDirectory: directory)
+        }
+
+        #expect(local(), "no current context: the default local socket")
+        try current("desktop-linux")
+        #expect(local())
+        try current("production")
+        #expect(!local(), "the CLI's current context is a remote daemon")
+        #expect(local(context: "desktop-linux"), "an explicit local context")
+        #expect(!local(["DOCKER_CONTEXT": "production"]))
+        #expect(!local(["DOCKER_HOST": "tcp://build.example:2376"]))
+        #expect(local(["DOCKER_HOST": "unix:///var/run/docker.sock"]))
+        #expect(!local(context: "unknown"), "a context that cannot be read is not called local")
+    }
+
     /// Custom's own rules decide whether enabled local tools become grants:
     /// with Bash ask-first (the default Custom policy) no runtime turns them
     /// into `<exe> *` patterns, and with Bash allowed every runtime does.
@@ -445,6 +509,35 @@ struct AgentPolicyRuntimeMatrixTests {
             #expect(!render(withoutBash).allowedShellPatterns.contains("gcloud *"), "\(runtime.rawValue) without Bash")
             #expect(render(withBash).allowedShellPatterns.contains("gcloud *"), "\(runtime.rawValue) with Bash")
         }
+
+        // Copilot renders the grant as `--allow-tool shell(gcloud:*)`, both in
+        // its adapter and when the launch recomposes its arguments.
+        let copilot = CopilotPolicyAdapter(capabilities: AgentRuntimePolicyCapabilities(
+            copilotCLI: CopilotCLICapabilities(helpText: "--allow-tool\n--output-format")
+        ))
+        func copilotRender(_ policy: AgentPolicy) -> ProviderPolicyRender {
+            copilot.render(policy: policy, context: PolicyRenderContext(
+                runtimeID: .copilotCLI,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .copilotCLI),
+                workspacePath: "/tmp/astra-policy-matrix",
+                additionalPaths: [],
+                requestedAllowedTools: ["Read", "Grep"],
+                localToolCommands: ["gcloud"],
+                environmentKeyNames: [],
+                credentialLabels: [],
+                providerFeatures: copilot.supportedFeatures
+            ))
+        }
+        #expect(!copilotRender(withoutBash).allowedTools.contains("shell(gcloud:*)"), "copilot without Bash")
+        #expect(copilotRender(withBash).allowedTools.contains("shell(gcloud:*)"), "copilot with Bash")
+        let adapters = (try? String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/Services/Runtime/AgentPolicyAdapters.swift"),
+            encoding: .utf8
+        )) ?? ""
+        #expect(adapters.contains(
+            "localToolCommands: PolicyLocalToolGrants.policyScoped(context.localToolCommands, for: policy),"
+        ), "the launch-time recomposition gets the policy-scoped commands")
     }
 
     /// A browser page change is a write to a site. It asks at Custom whether

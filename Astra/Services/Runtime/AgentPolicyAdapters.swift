@@ -268,10 +268,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
         let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
         let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
-        let localToolCommands = PolicyLocalToolGrants.levelScoped(
-            context.localToolCommands,
-            for: policy.level
-        )
+        let localToolCommands = PolicyLocalToolGrants.policyScoped(context.localToolCommands, for: policy)
         var diagnostics = diagnostics(for: policy, context: context)
         if !policy.deniedTools.isEmpty || !policy.deniedShellPatterns.isEmpty {
             diagnostics.append(PolicyDiagnostic(
@@ -1183,7 +1180,7 @@ enum AgentPolicyManifestService {
         render = refreshingCopilotLaunchArgumentEvidence(
             to: render,
             providerCapabilities: providerCapabilities,
-            localToolCommands: context.localToolCommands,
+            localToolCommands: PolicyLocalToolGrants.policyScoped(context.localToolCommands, for: policy),
             task: task,
             executionEnvironment: executionEnvironment,
             contextText: contextText,
@@ -1557,7 +1554,8 @@ enum AgentPolicyManifestService {
         // This refresher recomputes the launch flags and overwrites cliArgumentsSummary /
         // generatedConfigPreview / allowedTools, so it has to re-apply the read-only level
         // gate the adapter already applied. Without it, a review or locked run would ship
-        // `--allow-tool shell(gh:*)` on the real process command line.
+        // `--allow-tool shell(gh:*)` on the real process command line. The caller passes
+        // commands already scoped to the policy (Custom grants them only with Bash).
         let levelScopedLocalToolCommands = PolicyLocalToolGrants.levelScoped(
             localToolCommands,
             for: render.policyLevel

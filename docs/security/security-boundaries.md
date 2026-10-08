@@ -152,7 +152,11 @@ boundary. The full inventory is in
   command behind a runner such as `env -u NAME`, `nice -n 5`, or `timeout 30`
   are judged as commands of their own (so is `eval`, and the Docker
   workspace's shell tools are gated like Bash; approving a push does not
-  approve a force, delete, or mirror of it), and the browser MCP tool is judged as the
+  approve a force, delete, or mirror of it). What cannot be proven local is
+  asked about too: inline interpreter code (`python3 -c`, `node -e`), an
+  unknown Git subcommand or alias, a Docker command whose daemon (its
+  `--context`, `-H`, `DOCKER_HOST`, or the CLI's current context) is not a
+  local socket, and a command still wrapped at the unwrapping limit, and the browser MCP tool is judged as the
   `astra-browser` command it runs. Local writes such as `git commit`, reads,
   and browser navigation keep the rule.
 - `ExternalActionPolicy` is the only owner of "does this level ask before an

@@ -110,6 +110,33 @@ struct AgentExternalActionObserverTests {
         ).map(\.title) == ["Pushed commits"], "the read's failure is not the push's")
     }
 
+    // Successful results carry no call id, so the recorder keeps a marker
+    // naming the call; a batch answered out of order, and a write that printed
+    // nothing, are each recorded against their own call.
+    @Test("Recorded results pair with their own calls, out of order and silent")
+    func recordedResultsPairWithTheirCalls() throws {
+        let fixture = try ObserverFixture()
+        let state = AgentEventRecordingState()
+        func record(_ event: AgentEvent) {
+            AgentEventRecorder.recordClaudeEvent(event, to: fixture.task, run: fixture.run,
+                                                 modelContext: fixture.context, recordingState: state)
+        }
+        record(.toolUse(name: "Bash", id: "issue", inputSummary: "gh issue create --title Bug"))
+        record(.toolUse(name: "Bash", id: "pr", inputSummary: "gh pr create --fill"))
+        record(.toolUse(name: "Bash", id: "delete", inputSummary: "gh api -X DELETE repos/acme/widgets/git/refs/heads/old --silent"))
+        record(.toolResult(id: "pr", content: "https://github.com/acme/widgets/pull/34\n", isError: false))
+        record(.toolResult(id: "issue", content: "https://github.com/acme/widgets/issues/7\n", isError: false))
+        record(.toolResult(id: "delete", content: "", isError: false))
+
+        let observed = AgentExternalActionObserver.recordObservedActions(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        #expect(observed.map(\.title) == ["Opened issue #7", "Opened pull request #34", "Sent a GitHub API DELETE request"])
+        #expect(observed.map(\.url) == [
+            "https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/34", nil
+        ])
+    }
+
     @Test("Only shell tools count; a file that mentions a command did nothing")
     func onlyShellToolsCount() {
         #expect(AgentExternalActionObserver.shellCommandText(fromToolUsePayload: "Using tool: Bash: gh pr create") == "gh pr create")
