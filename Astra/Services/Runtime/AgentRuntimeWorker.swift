@@ -417,6 +417,7 @@ final class AgentRuntimeWorker {
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { return }
+        executionPolicy.followsUpDeliveredRequest = TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: task)
         let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
             ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
@@ -829,7 +830,8 @@ final class AgentRuntimeWorker {
         let semanticProgressTimeout = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: executionTask,
             phase: auditPhase,
-            idleTimeoutSeconds: timeoutSeconds
+            idleTimeoutSeconds: timeoutSeconds,
+            followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
         )
         // Record only admitted attempts, paired with the session this launch uses.
         // Fresh launches acquire their session ID from the provider's start event.

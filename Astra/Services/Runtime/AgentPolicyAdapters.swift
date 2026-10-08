@@ -1167,7 +1167,11 @@ enum AgentPolicyManifestService {
             hostControlTools: hostControlTools,
             requiredHostControlTools: requiredHostControlTools
         )
-        render = applyingArtifactBootstrapManifestSupport(to: render, task: task)
+        render = applyingArtifactBootstrapManifestSupport(
+            to: render,
+            task: task,
+            followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
+        )
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
@@ -1524,11 +1528,13 @@ enum AgentPolicyManifestService {
 
     private static func applyingArtifactBootstrapManifestSupport(
         to render: ProviderPolicyRender,
-        task: AgentTask
+        task: AgentTask,
+        followsUpDeliveredRequest: Bool
     ) -> ProviderPolicyRender {
         let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
         let launchTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: task,
+            followsUpDeliveredRequest: followsUpDeliveredRequest,
             permissionPolicy: permissionPolicy,
             providerAllowedTools: render.allowedTools,
             askFirstTools: render.askFirstTools

@@ -8,6 +8,14 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
+/// Budgets that only break a genuine hang, never a busy machine: the same
+/// convention as `hangBreakerTimeout` in `BinaryRunnerTests.swift`. A starved
+/// full run on 2026-10-07 held tests in this suite for over 100 s, so these sit
+/// well above that. Every assertion that must succeed awaits the owned work's
+/// own result first; these only bound how long a worker that never finishes can
+/// hold the suite.
+private let hangBreakerTimeout: Duration = .seconds(300)
+
 extension FeedbackReportPresentationTests {
     @Test("Prepared discard cancels the report and removes its adopted evidence")
     @MainActor
@@ -525,7 +533,8 @@ extension FeedbackReportPresentationTests {
         expectLifecyclePayload(router.launch, equals: original, hostID: hostID)
     }
 
-    @Test("Owned work timeouts leave no monitor waiters while the worker stays blocked")
+    // The time limit is a hang breaker like `hangBreakerTimeout`, not a budget.
+    @Test("Owned work timeouts leave no monitor waiters while the worker stays blocked", .timeLimit(.minutes(10)))
     @MainActor
     func ownedWorkSettlementHasNoMonitorSurvivors() async {
         let blocker = LifecycleAsyncBlocker()
@@ -543,7 +552,13 @@ extension FeedbackReportPresentationTests {
         #expect(!(await join.value))
         #expect(work.settlementWaiterCount == 0)
         await blocker.release()
-        #expect(await FeedbackReportTaskSettlement.wait(for: [work], timeout: .seconds(1)))
+        // The released worker has to run on the main actor, which a full
+        // parallel run can hold for longer than any short budget. Await its own
+        // terminal result instead of racing it against a clock; the settlement
+        // verdict is then about state, not scheduling.
+        #expect(await work.wait() == .succeeded)
+        #expect(work.settlementWaiterCount == 0)
+        #expect(await FeedbackReportTaskSettlement.wait(for: [work], timeout: hangBreakerTimeout))
     }
 
     @Test("Late successful cleanup repairs the exact failed host settlement")
@@ -631,7 +646,7 @@ extension FeedbackReportPresentationTests {
         }
     }
 
-    @Test("Persistent cleanup failure transfers exact capability to a later owner")
+    @Test("Persistent cleanup failure transfers exact capability to a later owner", .timeLimit(.minutes(10)))
     @MainActor
     func lateCleanupFailureRetainsCapabilityAndLeavesNoOrphan() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -752,10 +767,14 @@ extension FeedbackReportPresentationTests {
         ) == false)
 
         release.signal()
-        #expect(!(await FeedbackReportTaskSettlement.wait(
-            for: [work], timeout: .seconds(1)
-        )))
+        // A one-second settlement wait reads `false` both when the cleanup
+        // fails and when the clock wins first, so it could pass while the
+        // worker was still running and leave every check below racing it.
+        // Await the worker's own terminal result first.
+        let result = await work.wait()
         let key = try #require(retainedKey)
+        #expect(result == .failed(.retainedCleanup(key)))
+        #expect(!(await FeedbackReportTaskSettlement.wait(for: [work], timeout: hangBreakerTimeout)))
         #expect(fileManager.injectedFailureCount == 2)
         #expect(cleanupOwner.pendingKey == key)
         #expect(work.terminalResult == .failed(.retainedCleanup(key)))
@@ -832,7 +851,7 @@ extension FeedbackReportPresentationTests {
         expectLifecyclePayload(router.launch, equals: launch, hostID: nextHost)
     }
 
-    @Test("Live Close consumes exact late cleanup authority before dismissal")
+    @Test("Live Close consumes exact late cleanup authority before dismissal", .timeLimit(.minutes(10)))
     @MainActor
     func liveCloseConsumesLateCleanupCapability() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -917,10 +936,13 @@ extension FeedbackReportPresentationTests {
         #expect(cleanupOwner.pendingKey == nil)
         #expect(router.launch == launch)
         await blocker.release()
-        #expect(!(await FeedbackReportTaskSettlement.wait(
-            for: [work], timeout: .seconds(1)
-        )))
+        // Same race as the persistent-failure case: await the worker's own
+        // terminal result instead of a one-second wait that also reads `false`
+        // when the clock wins.
+        let result = await work.wait()
         let key = try #require(retainedKey)
+        #expect(result == .failed(.retainedCleanup(key)))
+        #expect(!(await FeedbackReportTaskSettlement.wait(for: [work], timeout: hangBreakerTimeout)))
         #expect(cleanupOwner.pendingKey == key)
 
         let sentinel = root.deletingLastPathComponent()
