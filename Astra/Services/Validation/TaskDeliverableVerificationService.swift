@@ -35,9 +35,9 @@ enum TaskDeliverableVerificationService {
         environment: TaskDeliverableVerificationEnvironment = .live
     ) async -> TaskDeliverableVerificationResult {
         let requiredFilenames = TaskDeliverableExpectation.requiredOutputFilenames(task)
-        // A turn after the task was accepted as complete does not owe the
+        // A follow-up after the task's request was met does not owe the
         // original deliverable again; it is still checked if it touched files.
-        let deliveredEarlier = run.map { TaskDeliverableExpectation.originalRequestCompleted(before: $0, in: task) } ?? false
+        let deliveredEarlier = run.map { TaskDeliverableExpectation.followsUpDeliveredRequest($0, in: task) } ?? false
         let owedFilenames: Set<String> = deliveredEarlier ? [] : requiredFilenames
         let requiresDeliverableArtifact = !deliveredEarlier && TaskDeliverableExpectation.requiresDeliverableArtifact(
             task,

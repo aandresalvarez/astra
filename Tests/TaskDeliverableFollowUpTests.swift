@@ -5,7 +5,7 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
-/// A turn after the task was accepted as complete does not owe the original
+/// A follow-up after the task's request was met does not owe the original
 /// deliverable again, and a task pinned to a worktree is reported where its
 /// code runs.
 ///
@@ -16,15 +16,16 @@ import ASTRAPersistence
 @Suite("Task deliverable follow-up turns")
 @MainActor
 struct TaskDeliverableFollowUpTests {
-    @Test("a turn after the task completed does not owe the original deliverable")
+    @Test("a follow-up after the task completed does not owe the original deliverable")
     func turnAfterCompletionDoesNotOweOriginalDeliverable() async throws {
         let fixture = try DeliverableFollowUpFixture()
         defer { fixture.removeFiles() }
         let firstRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-3_600))
         try fixture.writeNotes(modifiedAt: firstRun.startedAt.addingTimeInterval(5))
-        fixture.recordCompletion(of: firstRun)
 
         let commitRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(commitRun, with: TaskEventTypes.Conversation.userMessage.rawValue,
+                         payload: "git add notes-a.txt && git commit -m 'Add notes A'; git log --oneline -2")
 
         #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(fixture.task))
         #expect(!TaskDeliverableExpectation.owesDeliverable(fixture.task, run: commitRun))
@@ -62,28 +63,63 @@ struct TaskDeliverableFollowUpTests {
         #expect(result.checks.contains { $0.id == "artifact.required_files" && $0.summary.contains("notes-a.txt") })
     }
 
-    @Test("a retry of a first turn that never completed still owes the deliverable")
-    func retryOfIncompleteFirstTurnStillOwes() throws {
+    @Test("a retry or follow-up before the deliverable was ever produced still owes it")
+    func turnsBeforeDeliveryStillOwe() throws {
         let fixture = try DeliverableFollowUpFixture()
         defer { fixture.removeFiles() }
         let failedRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-600))
         failedRun.status = .failed
         failedRun.stopReason = TaskRunStopReason.noUsableResult.rawValue
 
-        let retryRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        let retryRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-300))
+        fixture.startRun(retryRun, with: TaskEventTypes.ExecutionRequest.retry.rawValue,
+                         payload: try fixture.envelope(TaskExecutionSourcePayloadV1(launchMode: .initial)))
+        retryRun.status = .failed
+        retryRun.stopReason = TaskRunStopReason.noUsableResult.rawValue
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "please try once more")
 
         #expect(TaskDeliverableExpectation.owesDeliverable(fixture.task, run: retryRun))
-        #expect(!TaskCompletionPolicy.decideAfterRequiredExternalOutcome(task: fixture.task, run: retryRun).canComplete)
+        #expect(TaskDeliverableExpectation.owesDeliverable(fixture.task, run: followUpRun))
+        #expect(!TaskCompletionPolicy.decideAfterRequiredExternalOutcome(task: fixture.task, run: followUpRun).canComplete)
     }
 
-    @Test("only a completion recorded before the run started counts")
-    func completionOfTheSameRunDoesNotCount() throws {
+    @Test("a later approved plan step still owes the task's deliverable")
+    func laterPlanStepStillOwes() throws {
         let fixture = try DeliverableFollowUpFixture()
         defer { fixture.removeFiles() }
-        let run = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
-        fixture.recordCompletion(of: run)
+        _ = fixture.makeRun(startedAt: Date().addingTimeInterval(-600))
 
-        #expect(TaskDeliverableExpectation.owesDeliverable(fixture.task, run: run))
+        let stepRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(stepRun, with: TaskEventTypes.ExecutionRequest.planStep.rawValue,
+                         payload: try fixture.envelope(TaskExecutionSourcePayloadV1(launchMode: .approvedPlan)))
+
+        #expect(TaskDeliverableExpectation.owesDeliverable(fixture.task, run: stepRun))
+    }
+
+    @Test("a user approval counts as delivery; a runtime permission approval does not")
+    func manualApprovalCountsAsDelivery() throws {
+        let fixture = try DeliverableFollowUpFixture()
+        defer { fixture.removeFiles() }
+        let blockedRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-600))
+        blockedRun.status = .failed
+        blockedRun.stopReason = TaskRunStopReason.noUsableResult.rawValue
+        fixture.recordEvent(TaskEventTypes.Task.approved.rawValue,
+                            payload: "Runtime permission approved by user. Continuation queued.",
+                            at: Date().addingTimeInterval(-500))
+        let resumeRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-300))
+        fixture.startRun(resumeRun, with: TaskEventTypes.ExecutionRequest.resume.rawValue,
+                         payload: try fixture.envelope(TaskExecutionSourcePayloadV1(launchMode: .continuation, message: "Continue")))
+        resumeRun.status = .failed
+        resumeRun.stopReason = TaskRunStopReason.noUsableResult.rawValue
+        #expect(TaskDeliverableExpectation.owesDeliverable(fixture.task, run: resumeRun))
+
+        fixture.recordEvent(TaskEventTypes.Task.approved.rawValue, payload: "Task approved by user.",
+                            at: Date().addingTimeInterval(-200))
+        let followUpRun = fixture.makeRun(startedAt: Date().addingTimeInterval(-30))
+        fixture.startRun(followUpRun, with: TaskEventTypes.Conversation.userMessage.rawValue, payload: "Commit it.")
+
+        #expect(!TaskDeliverableExpectation.owesDeliverable(fixture.task, run: followUpRun))
     }
 
     @Test("a pinned task's missing-deliverable message names the worktree, not the workspace")
@@ -176,11 +212,21 @@ private final class DeliverableFollowUpFixture {
         return run
     }
 
-    /// What `TaskSuccessfulCompletionService` records once every gate passed.
-    func recordCompletion(of run: TaskRun) {
-        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "Completed.", run: run)
-        event.timestamp = run.completedAt ?? run.startedAt
+    /// The request's source event, linked to the run that carried it out.
+    func startRun(_ run: TaskRun, with type: String, payload: String) {
+        let event = TaskEvent(task: task, type: type, payload: payload, run: run)
+        event.timestamp = run.startedAt.addingTimeInterval(-1)
         context.insert(event)
+    }
+
+    func recordEvent(_ type: String, payload: String, at date: Date) {
+        let event = TaskEvent(task: task, type: type, payload: payload)
+        event.timestamp = date
+        context.insert(event)
+    }
+
+    func envelope(_ payload: TaskExecutionSourcePayloadV1) throws -> String {
+        String(decoding: try JSONEncoder().encode(payload), as: UTF8.self)
     }
 
     func writeNotes(modifiedAt date: Date) throws {

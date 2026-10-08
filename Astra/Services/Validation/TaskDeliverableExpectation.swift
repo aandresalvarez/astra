@@ -78,31 +78,88 @@ enum TaskDeliverableExpectation {
     static func owesDeliverable(_ task: AgentTask, run: TaskRun?) -> Bool {
         guard requiresDeliverableArtifact(task) else { return false }
         guard let run else { return true }
-        return !originalRequestCompleted(before: run, in: task)
+        return !followsUpDeliveredRequest(run, in: task)
     }
 
-    /// Whether the task's own request was accepted as complete before `run`
-    /// started. `task.completed` is recorded only once every completion gate
-    /// has passed, so a later turn — a follow-up that commits, explains or
-    /// tweaks what was delivered — does not owe that deliverable again. A retry
-    /// of a first turn that never completed still does.
-    static func originalRequestCompleted(before run: TaskRun, in task: AgentTask) -> Bool {
-        let completed = TaskEventTypes.Task.completed.rawValue
-        return originalRequestCompleted(
-            beforeRunID: run.id,
+    /// One task-history row, as live events and transcript snapshots both carry it.
+    struct HistoryEvent {
+        let type: String
+        let runID: UUID?
+        let timestamp: Date
+        let payload: String
+    }
+
+    struct HistoryRun {
+        let startedAt: Date
+        let status: RunStatus
+        let stopReason: String
+    }
+
+    static func followsUpDeliveredRequest(_ run: TaskRun, in task: AgentTask) -> Bool {
+        let relevantTypes = deliveryHistoryEventTypes
+        return followsUpDeliveredRequest(
+            runID: run.id,
             startedAt: run.startedAt,
-            completions: task.events.lazy
-                .filter { $0.type == completed }
-                .map { (runID: $0.run?.id, timestamp: $0.timestamp) }
+            events: task.events.lazy
+                .filter { relevantTypes.contains($0.type) }
+                .map { HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload) },
+            runs: task.runs.lazy.map { HistoryRun(startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
         )
     }
 
-    static func originalRequestCompleted<Completions: Sequence>(
-        beforeRunID runID: UUID,
+    /// Whether `runID` continues the conversation after the task's own request
+    /// was already met, and so does not owe that deliverable again — "commit
+    /// notes-a.txt" after the run that wrote it.
+    ///
+    /// Met: an earlier run finished `completed` (runtime success or a published
+    /// required outcome; a blocked run is recorded as failed), or the user
+    /// approved the task. Continues the conversation: the run was started by a
+    /// user message or by a resume, retry or permission continuation of one.
+    /// An approved plan step carries out the task's own request, so it owes the
+    /// deliverable however many steps completed before it.
+    static func followsUpDeliveredRequest<Events: Sequence, Runs: Sequence>(
+        runID: UUID,
         startedAt: Date,
-        completions: Completions
-    ) -> Bool where Completions.Element == (runID: UUID?, timestamp: Date) {
-        completions.contains { $0.runID != runID && $0.timestamp < startedAt }
+        events: Events,
+        runs: Runs
+    ) -> Bool where Events.Element == HistoryEvent, Runs.Element == HistoryRun {
+        var startedByConversation = false
+        var approvedEarlier = false
+        for event in events {
+            if event.runID == runID, continuesConversation(type: event.type, payload: event.payload) {
+                startedByConversation = true
+            }
+            if event.timestamp < startedAt,
+               event.type == TaskEventTypes.Task.approved.rawValue,
+               !event.payload.localizedCaseInsensitiveContains("runtime permission approved") {
+                approvedEarlier = true
+            }
+        }
+        guard startedByConversation else { return false }
+        return approvedEarlier || runs.contains {
+            $0.startedAt < startedAt && $0.status == .completed && $0.stopReason == TaskRunStopReason.completed.rawValue
+        }
+    }
+
+    static let deliveryHistoryEventTypes: Set<String> = [
+        TaskEventTypes.Conversation.userMessage.rawValue,
+        TaskEventTypes.Task.approved.rawValue,
+        TaskEventTypes.ExecutionRequest.retry.rawValue,
+        TaskEventTypes.ExecutionRequest.resume.rawValue,
+        TaskEventTypes.ExecutionRequest.permissionResume.rawValue
+    ]
+
+    private static func continuesConversation(type: String, payload: String) -> Bool {
+        if type == TaskEventTypes.Conversation.userMessage.rawValue { return true }
+        guard [
+            TaskEventTypes.ExecutionRequest.retry.rawValue,
+            TaskEventTypes.ExecutionRequest.resume.rawValue,
+            TaskEventTypes.ExecutionRequest.permissionResume.rawValue
+        ].contains(type),
+            let source = try? JSONDecoder().decode(TaskExecutionSourcePayloadV1.self, from: Data(payload.utf8)) else {
+            return false
+        }
+        return source.launchMode == .continuation
     }
 
     static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {

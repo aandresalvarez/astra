@@ -25,15 +25,17 @@ extension PendingTaskReviewSnapshotInput {
         let latestRunSnapshot = latestRun.map(PendingTaskReviewRunSnapshot.init)
         let runSnapshots = snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init)
         let eventSnapshots = snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init)
-        let completed = TaskEventTypes.Task.completed.rawValue
+        let historyTypes = TaskDeliverableExpectation.deliveryHistoryEventTypes
         let requiresDeliverableArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
             && !(latestRun.map { latestRun in
-                TaskDeliverableExpectation.originalRequestCompleted(
-                    beforeRunID: latestRun.id,
+                TaskDeliverableExpectation.followsUpDeliveredRequest(
+                    runID: latestRun.id,
                     startedAt: latestRun.startedAt,
-                    completions: eventSnapshots.lazy
-                        .filter { $0.type == completed }
-                        .map { (runID: $0.runID, timestamp: $0.timestamp) }
+                    events: snapshot.sortedEvents.lazy
+                        .filter { historyTypes.contains($0.type) }
+                        .map { .init(type: $0.type, runID: $0.runID, timestamp: $0.timestamp, payload: $0.payload) },
+                    runs: runSnapshots.lazy
+                        .map { .init(startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
                 )
             } ?? false)
         let requiresScopedArtifactEvidence = PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
