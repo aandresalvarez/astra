@@ -52,6 +52,8 @@ struct ExternalActionRecordTests {
             return try #require(records(task: task, events: [event]).first).url
         }
         #expect(try link("https://example.atlassian.net/rest/api/2/issue/10001") != nil)
+        #expect(try link("https://SECRET@example.atlassian.net/browse/STAR-1?token=ADHOC#frag")?.absoluteString
+            == "https://example.atlassian.net/browse/STAR-1", "a user, query or fragment can carry a token")
         #expect(try link("file:///etc/passwd") == nil)
         #expect(try link("x-other-app://open") == nil)
         #expect(try link("https://elsewhere.example/phish") == nil)

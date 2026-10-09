@@ -122,10 +122,16 @@ enum ConnectorMutationRecordSource: ExternalActionRecordSource {
         guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
               let host = url.host?.lowercased(),
               let expected = destination.flatMap(URL.init(string:))?.host?.lowercased(),
-              host == expected else {
+              host == expected,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return nil
         }
-        return url
+        // A user, query or fragment from the response can carry a token.
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
 
     private static func serviceName(_ serviceType: String) -> String {

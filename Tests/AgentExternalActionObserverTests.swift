@@ -163,11 +163,14 @@ struct AgentExternalActionObserverTests {
 
     // Successful results carry no call id, so the recorder keeps a marker
     // naming the call; a batch answered out of order, and a write that printed
-    // nothing, are each recorded against their own call.
-    @Test("Recorded results pair with their own calls, out of order and silent")
+    // nothing, are each recorded against their own call. The marker is the
+    // record: it shows without the run-boundary pass, so a run interrupted
+    // before its boundary keeps it.
+    @Test("Recorded results pair with their own calls, out of order and silent, without the boundary")
     func recordedResultsPairWithTheirCalls() throws {
         let fixture = try ObserverFixture()
         let state = AgentEventRecordingState()
+        state.recordsExternalActions = true
         func record(_ event: AgentEvent) {
             AgentEventRecorder.recordClaudeEvent(event, to: fixture.task, run: fixture.run,
                                                  modelContext: fixture.context, recordingState: state)
@@ -179,13 +182,29 @@ struct AgentExternalActionObserverTests {
         record(.toolResult(id: "issue", content: "https://github.com/acme/widgets/issues/7\n", isError: false))
         record(.toolResult(id: "delete", content: "", isError: false))
 
-        let observed = AgentExternalActionObserver.recordObservedActions(
+        let records = projectedRecords(fixture.task)
+        #expect(Set(records.map(\.title)) == ["Opened issue #7", "Opened pull request #34", "Sent a GitHub API DELETE request"])
+        #expect(records.first { $0.title == "Opened issue #7" }?.url?.absoluteString == "https://github.com/acme/widgets/issues/7")
+        #expect(records.first { $0.title == "Opened pull request #34" }?.url?.absoluteString == "https://github.com/acme/widgets/pull/34")
+        #expect(AgentExternalActionObserver.recordObservedActions(
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
-        )
-        #expect(observed.map(\.title) == ["Opened issue #7", "Opened pull request #34", "Sent a GitHub API DELETE request"])
-        #expect(observed.map(\.url) == [
-            "https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/34", nil
-        ])
+        ).isEmpty, "the boundary pass writes nothing more for a marked call")
+        #expect(projectedRecords(fixture.task).count == 3)
+
+        // At a level that asks, the recorder keeps no marker.
+        let asked = try ObserverFixture()
+        let askState = AgentEventRecordingState()
+        AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "pr", inputSummary: "gh pr create --fill"),
+            to: asked.task, run: asked.run, modelContext: asked.context, recordingState: askState)
+        AgentEventRecorder.recordClaudeEvent(.toolResult(id: "pr", content: "https://github.com/a/b/pull/1", isError: false),
+            to: asked.task, run: asked.run, modelContext: asked.context, recordingState: askState)
+        #expect(projectedRecords(asked.task).isEmpty)
+    }
+
+    private func projectedRecords(_ task: AgentTask) -> [ExternalActionRecord] {
+        task.events.compactMap {
+            ExternalActionRecordProjection.record(type: $0.type, payload: $0.payload, eventID: $0.id, timestamp: $0.timestamp)
+        }
     }
 
     // The event keeps 300 characters; the record reads the whole call.
@@ -193,17 +212,16 @@ struct AgentExternalActionObserverTests {
     func longCommandsAreRecordedWhole() throws {
         let fixture = try ObserverFixture()
         let state = AgentEventRecordingState()
+        state.recordsExternalActions = true
         let long = "echo \(String(repeating: "x ", count: 200)) && git push origin main"
         AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "long", inputSummary: long),
                                              to: fixture.task, run: fixture.run, modelContext: fixture.context, recordingState: state)
         AgentEventRecorder.recordClaudeEvent(.toolResult(id: "long", content: "To github.com:acme/widgets.git", isError: false),
                                              to: fixture.task, run: fixture.run, modelContext: fixture.context, recordingState: state)
 
-        let observed = AgentExternalActionObserver.recordObservedActions(
-            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
-        )
-        #expect(observed.count == 1)
-        #expect(observed.first?.title == "Ran `git push`")
+        let records = projectedRecords(fixture.task)
+        #expect(records.count == 1)
+        #expect(records.first?.title == "Ran `git push`")
     }
 
     // The tool-use event keeps 300 characters; what follows (a header, a
@@ -348,6 +366,7 @@ struct AgentExternalActionObserverTests {
         // failure needs one too, next to a success that has one.
         let marked = try ObserverFixture()
         let state = AgentEventRecordingState()
+        state.recordsExternalActions = true
         AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "pr", inputSummary: "gh pr create --fill"),
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
         AgentEventRecorder.recordClaudeEvent(.toolResult(id: "pr", content: "https://github.com/acme/widgets/pull/9\n", isError: false),
@@ -357,9 +376,7 @@ struct AgentExternalActionObserverTests {
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
         AgentEventRecorder.recordClaudeEvent(.toolResult(id: "hook", content: "exit 1", isError: true),
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
-        #expect(AgentExternalActionObserver.recordObservedActions(
-            task: marked.task, run: marked.run, modelContext: marked.context, policyLevel: .autonomous
-        ).map(\.title) == ["Opened pull request #9", "Ran `curl`, which exited with an error"])
+        #expect(Set(projectedRecords(marked.task).map(\.title)) == ["Opened pull request #9", "Ran `curl`, which exited with an error"])
     }
 
     @Test("Ask and Custom record nothing")

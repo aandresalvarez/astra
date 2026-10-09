@@ -492,8 +492,12 @@ enum LocalShellCommands {
             return !args.contains { $0 == "-E" || $0.hasPrefix("--eval") || ($0.hasPrefix("-E") && !$0.hasPrefix("--")) }
                 && args.filter(isAssignment).allSatisfy { localEnvironmentNames.contains(String($0.prefix { $0 != "=" })) }
         case "cmake":
-            // `cmake -E env …` runs a program, and in `cmake --build` the words
-            // after `--` go to the native tool (`make --eval=…`).
+            // `cmake -E env …` runs a program, in `cmake --build` the words
+            // after `--` go to the native tool (`make --eval=…`), and `-P FILE`
+            // runs a script, judged as an interpreter's is.
+            if let script = args.firstIndex(of: "-P"), !(script + 1 < args.count && isProjectScript(args[script + 1])) {
+                return false
+            }
             return !args.contains("-E") && !(args.contains("--build") && args.contains("--"))
         case "ctest":
             return ctestIsLocal(args)
@@ -600,11 +604,18 @@ enum LocalShellCommands {
     /// A program in `awk` runs commands through `system()` and pipes.
     private static func awkIsLocal(_ args: [String]) -> Bool {
         var index = 0
+        var sawProgramFile = false
         while index < args.count, args[index].hasPrefix("-") {
-            // A program file is judged as an interpreter's script is.
-            if args[index] == "-f" { return index + 1 < args.count && isProjectScript(args[index + 1]) }
+            // Every program file is judged as an interpreter's script is.
+            if args[index] == "-f" {
+                guard index + 1 < args.count, isProjectScript(args[index + 1]) else { return false }
+                sawProgramFile = true
+                index += 2
+                continue
+            }
             index += ["-F", "-v"].contains(args[index]) ? 2 : 1
         }
+        if sawProgramFile { return true }
         guard index < args.count else { return false }
         let program = args[index]
         return !program.contains("system") && !program.contains("|")
@@ -1215,10 +1226,12 @@ enum LocalShellCommands {
     /// A script file of the project: not a standard-input stand-in (`-`,
     /// `/dev/stdin`, `/dev/fd/0`), and not a substitution's output (`<(…)`),
     /// which are code the command itself supplies.
+    /// A file under the working directory: not absolute, not in a home, no
+    /// `..` step, no expansion. Every operand that names code to run — an
+    /// interpreter's script, `awk -f`, `cmake -P` — is judged by this.
     private static func isProjectScript(_ word: String) -> Bool {
-        // An absolute or home path names a file outside the project, as for a
-        // program path (`isLocalProgram`).
         !word.hasPrefix("-") && !word.hasPrefix("/") && !word.hasPrefix("~") && !word.contains("$")
+            && !word.split(separator: "/").contains("..")
     }
 
     private static func nodeIsLocal(_ args: [String]) -> Bool {
@@ -1429,7 +1442,10 @@ enum LocalShellCommands {
         // connected device, which is not this machine. `simctl spawn DEVICE
         // COMMAND …` runs a command, which is judged as one.
         if tool == "simctl" {
-            guard args.dropFirst(index + 1).first == "spawn" else { return true }
+            // A global option (`--set`, `--noxpc`) before the subcommand is
+            // not read, so it is not local.
+            guard let subcommand = args.dropFirst(index + 1).first, !subcommand.hasPrefix("-") else { return false }
+            guard subcommand == "spawn" else { return true }
             var rest = Array(args.dropFirst(index + 2))
             while let first = rest.first, first.hasPrefix("-") {
                 guard ["-w", "--wait-for-debugger", "-s", "--standalone"].contains(first) else { return false }
