@@ -371,6 +371,14 @@ struct NewTaskWorktreeBaseTests {
         #expect(attemptedSave)
         #expect(FileManager.default.fileExists(atPath: path))
         #expect(await GitService.shared.listWorktrees(at: repository.path).count == 2)
+        // A failed adoption leaves nothing pending: the task is still there
+        // with its worktree, and the draft took nothing over. Without a
+        // draft, the task's own return to draft stays pending by design.
+        #expect(context.hasChanges == !adoptingDraft)
+        #expect(!task.isDeleted)
+        #expect(task.executionRootPath == path)
+        #expect(draft?.executionRootPath == nil)
+        #expect(draft.map { TaskWorktreeBinding.eventForInheritance(from: $0) == nil } ?? true)
         let recoveredContext = ModelContext(store)
         let durableTask = try #require(try recoveredContext.fetch(FetchDescriptor<AgentTask>()).first { $0.id == task.id })
         #expect(durableTask.executionRootPath == path)
@@ -936,6 +944,29 @@ struct NewTaskWorktreeBaseTests {
         #expect(workspace.activeWorkingPath == linked.path)
     }
 
+    @Test("A bound worktree whose folder is gone disables repository actions instead of using the source checkout")
+    func missingBoundWorktreeDisablesRepositoryActions() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        try FileManager.default.removeItem(atPath: path)
+
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace, selectedTask: draft)
+        panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
+        #expect(panel.unavailableWorktreeBinding?.worktreePath == path)
+        #expect(panel.workingPath == nil)
+        #expect(!panel.canOpenCommitSheet)
+        #expect(!panel.canChangeActiveCodePath)
+        #expect(panel.activeSelectionScopeLabel == "Worktree missing")
+        #expect(panel.createPullRequestCommentTask(modelContext: store.mainContext) == nil)
+    }
+
     @Test("A draft with its own worktree keeps it; the card explains how to choose another checkout")
     func draftWorktreeLocksCodeLocation() async throws {
         let fixture = try Fixture()
@@ -1011,6 +1042,18 @@ struct NewTaskWorktreeBaseTests {
             #expect(path.hasSuffix("gone"))
         }
         #expect(await TaskWorktreeService.baseLabel(for: request, git: GitService.shared) == nil)
+
+        // A folder that appeared at the recorded path, even another
+        // checkout with a commit the repository also holds, is not the
+        // recorded checkout.
+        let replacement = try fixture.repository("App-replacement")
+        let replaced = TaskWorktreeRequest(
+            repositoryPath: repository.path, checkoutPath: replacement.path, base: .currentBranch
+        )
+        await #expect(throws: TaskWorktreeCreationError.checkoutUnavailable(replacement.path)) {
+            try await TaskWorktreeService.resolveBase(for: replaced, git: GitService.shared)
+        }
+        #expect(await TaskWorktreeService.baseLabel(for: replaced, git: GitService.shared) == nil)
     }
 
     @Test("A recorded repository that disappears stays selected and cannot submit")

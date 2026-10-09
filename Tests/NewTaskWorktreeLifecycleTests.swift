@@ -115,6 +115,45 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!fixture.resourceQueue.canAcquireResourceLocks(mainWriter))
     }
 
+    @Test("With sandboxing off, linked-worktree and repository-subfolder writers claim the Git directory")
+    func sandboxOffWritersClaimGitDirectory() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try fixture.commit("Sources/main.swift", contents: "// main", message: "Add sources", at: repository)
+        let linked = fixture.root.appendingPathComponent("App-side", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "side", linked.path], at: repository)
+        let metadata = try #require(GitCheckoutLayout.commonDirectory(for: repository.path))
+        let container = try Fixture.container()
+        let context = container.mainContext
+
+        let subfolderWorkspace = Workspace(name: "Sources", primaryPath: repository.appendingPathComponent("Sources").path)
+        let subfolderTask = AgentTask(title: "Edit sources", goal: "Edit", workspace: subfolderWorkspace)
+        let worktreeWorkspace = Workspace(name: "App", primaryPath: repository.path)
+        let linkedTask = AgentTask(title: "Edit side", goal: "Edit", workspace: worktreeWorkspace)
+        linkedTask.executionRootPath = linked.path
+        context.insert(subfolderWorkspace)
+        context.insert(worktreeWorkspace)
+
+        for task in [subfolderTask, linkedTask] {
+            let enforced = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: task, runMode: "test")
+            #expect(!enforced.contains { $0.resourceKind == .gitCommonDirectory })
+            let unenforced = TaskExecutionResourceAdmissionPolicy.lockClaims(
+                for: nil, task: task, runMode: "test", sandboxEnforcement: .off
+            )
+            #expect(unenforced.contains {
+                $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .write
+            })
+            // The lifecycle lease and a prepared sibling's shared claim both wait for it.
+            let held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(unenforced, task: nil))
+            #expect(!fixture.resourceQueue.canAcquireResourceLocks(TaskExecutionResourceBroker.lockClaims(
+                for: [TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: metadata, access: .shared)],
+                taskID: UUID(), requestID: UUID(), runMode: "test"
+            )))
+            fixture.resourceQueue.releaseResourceLocks(held, task: nil)
+        }
+    }
+
     @Test("Creation holds runtime admission and other composers through submodule setup",
           arguments: [false, true])
     func creationLeaseSpansSubmodules(failSetup: Bool) async throws {

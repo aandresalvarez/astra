@@ -197,6 +197,9 @@ enum TaskWorktreeService {
             case .ready(let path):
                 checkout = path
             }
+            guard await isRegisteredCheckout(checkout, of: repository, git: git) else {
+                throw TaskWorktreeCreationError.checkoutUnavailable(checkout)
+            }
             guard let commit = await git.getCommitSHA("HEAD", at: checkout) else {
                 throw TaskWorktreeCreationError.noCommit(checkout)
             }
@@ -252,7 +255,8 @@ enum TaskWorktreeService {
         let repository = WorkspacePathPresentation.standardizedPath(request.repositoryPath)
         switch request.base {
         case .currentBranch:
-            guard case .ready(let checkout) = resolveCurrentCheckout(request) else { return nil }
+            guard case .ready(let checkout) = resolveCurrentCheckout(request),
+                  await isRegisteredCheckout(checkout, of: repository, git: git) else { return nil }
             let branch = await git.getCurrentBranch(at: checkout)
             if isNamedBranch(branch) { return branch }
             return await git.getCommitSHA("HEAD", at: checkout).map { String($0.prefix(8)) }
@@ -303,6 +307,20 @@ enum TaskWorktreeService {
             return .missing(WorkspacePathPresentation.standardizedPath(checkout))
         }
         return .ready(WorkspacePathPresentation.standardizedPath(checkout))
+    }
+
+    /// A folder that merely exists at a recorded checkout path is not the
+    /// recorded checkout: it must still be the repository's root or a
+    /// checkout its worktree registry names, or Current branch would start
+    /// from whatever replaced it.
+    private static func isRegisteredCheckout(
+        _ checkout: String, of repository: String, git: any GitRepositoryOperating
+    ) async -> Bool {
+        let resolved = WorkspacePathPresentation.resolvedPath(checkout)
+        if resolved == WorkspacePathPresentation.resolvedPath(repository) { return true }
+        return await git.listWorktrees(at: repository).contains {
+            WorkspacePathPresentation.resolvedPath($0.path) == resolved
+        }
     }
 
     private static func isNamedBranch(_ branch: String) -> Bool {
@@ -520,7 +538,13 @@ enum TaskWorktreeService {
 
     /// Undoes a task whose submission failed. A task that owns a worktree
     /// becomes (or hands its worktree to) the draft the user returns to, so
-    /// the worktree is never left without a task.
+    /// the worktree is never left without a task. When a draft's adoption
+    /// cannot be saved, it is undone in memory and in the context: the draft
+    /// gets its previous pin and isolation back, the copied binding is
+    /// removed, and the temporary task's deletion is rolled back, so no later
+    /// unrelated save can commit half of a failed recovery. SwiftData's
+    /// `rollback()` drops pending changes but leaves model properties stale,
+    /// which is why the draft's fields are restored explicitly first.
     static func recoverFailedSubmission(
         task: AgentTask,
         existingDraft: AgentTask?,
@@ -538,25 +562,45 @@ enum TaskWorktreeService {
         // Only a draft of the task's own workspace may take over its worktree.
         let adoptingDraft = existingDraft?.workspace?.id == workspace?.id ? existingDraft : nil
         let recovered: AgentTask?
+        var undoAdoption: (() -> Void)?
         if existingDraft === task || (adoptingDraft == nil && prepared != nil) {
             if task.status == .queued {
                 TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             }
             recovered = task
         } else {
+            let previousPin = adoptingDraft?.executionRootPath
+            let previousIsolation = adoptingDraft?.isolationStrategy
+            var copiedBinding: TaskEvent?
             if let draft = adoptingDraft, let prepared, activeWorktreeEvent(for: draft) == nil {
                 guard TaskWorktreeCheckoutReservation.commit(task.executionRootPath, to: draft) else {
                     throw TaskWorktreeCreationError.checkoutUnavailable(task.executionRootPath ?? "the selected checkout")
                 }
                 TaskWorktreeBinding.applyIsolation(to: draft, for: prepared)
-                modelContext.insert(TaskWorktreeBinding.copy(prepared, to: draft))
+                let copy = TaskWorktreeBinding.copy(prepared, to: draft)
+                modelContext.insert(copy)
+                copiedBinding = copy
             }
             modelContext.delete(task)
             recovered = adoptingDraft
+            undoAdoption = {
+                if let draft = adoptingDraft {
+                    // Restoring nil, the usual case, always succeeds; a prior
+                    // pin that cleanup has since reserved is not readopted.
+                    TaskWorktreeCheckoutReservation.commit(previousPin, to: draft)
+                    if let previousIsolation { draft.isolationStrategy = previousIsolation }
+                    if let copiedBinding {
+                        draft.events.removeAll { $0 === copiedBinding }
+                        modelContext.delete(copiedBinding)
+                    }
+                }
+                modelContext.rollback()
+            }
         }
         do {
             try persist(workspace, modelContext, recovered?.id ?? taskID)
         } catch {
+            undoAdoption?()
             AppLogger.audit(.taskFailed, category: "Persistence", taskID: recovered?.id ?? taskID, fields: [
                 "reason": "worktree_submission_recovery_save_failed",
                 "error": error.localizedDescription
