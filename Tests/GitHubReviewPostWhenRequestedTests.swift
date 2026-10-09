@@ -128,6 +128,35 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(await cli.postCount() == 1)
     }
 
+    /// The broad posting heuristic reads "add" and "leave", which is fine for
+    /// offering the sheet. Auto posts without it, so it needs post, publish or
+    /// submit — "add review comments to the file" is an edit, not consent.
+    @Test("Auto posts only on an explicit request to post, publish or submit")
+    func autoNeedsAnExplicitPostingRequest() async throws {
+        let url = "https://github.com/example/repo/pull/12"
+        for goal in ["Add review comments to the review file for \(url)", "Leave a review on \(url)"] {
+            let fixture = try Fixture(goal: goal)
+            let cli = FakeCLI()
+            #expect(GitHubReviewPublicationRequirement.postingRequest(task: fixture.task) != nil, "\(goal)")
+
+            let outcome = await fixture.handler(level: .autonomous, cli: cli).postGitHubReview(fixture.request(for: fixture.file))
+
+            #expect(outcome == .refused(message: GitHubReviewPublicationError.notRequested.localizedDescription), "\(goal)")
+            #expect(await cli.callCount() == 0, "\(goal)")
+        }
+        for goal in ["Submit a review on \(url)", "Please publish the review comments on \(url)"] {
+            let fixture = try Fixture(goal: goal)
+            let cli = FakeCLI()
+
+            let outcome = await fixture.handler(level: .autonomous, cli: cli).postGitHubReview(fixture.request(for: fixture.file))
+
+            guard case .performed = outcome else {
+                Issue.record("\(goal): expected a post, got \(outcome)")
+                continue
+            }
+        }
+    }
+
     @Test("An uncertain post is never posted a second time")
     func uncertainPostIsNotRepeated() async throws {
         let fixture = try Fixture()

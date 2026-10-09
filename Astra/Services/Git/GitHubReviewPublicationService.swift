@@ -165,6 +165,14 @@ enum GitHubReviewPublicationRequirement {
     private static let publicationRegex = try? NSRegularExpression(
         pattern: #"\b(?:post|posting|publish|publishing|submit|submitting|add|adding|send|sending|leave|leaving)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
     )
+    /// The verbs that say "put it on GitHub" and nothing else. The broad
+    /// pattern above also reads `add` and `leave`, which is right for offering
+    /// the Post review sheet — the user still decides there — but "add review
+    /// comments to the file" is an edit, not consent to a public write. Auto
+    /// posts without the sheet, so it acts only on these.
+    private static let explicitPublicationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:post|posting|publish|publishing|submit|submitting)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
+    )
     private static let pronounCancellationRegex = try? NSRegularExpression(
         pattern: #"\b(?:(?:do not|don't|dont|never)\s+(?:post|publish|submit|send|add)\s+(?:it|that|them|this)|(?:cancel|stop)\s+(?:that|it|this))\b"#
     )
@@ -322,6 +330,14 @@ enum GitHubReviewPublicationRequirement {
         publicationIntent(in: request) == .publish
     }
 
+    /// Whether the open posting request asks, in so many words, to post,
+    /// publish or submit the review — what Auto requires before it posts one
+    /// without the sheet. Offline: it reads the request, not GitHub.
+    static func explicitlyRequestsPosting(task: AgentTask) -> Bool {
+        guard let request = postingRequest(task: task) else { return false }
+        return publicationIntent(in: request.text, using: explicitPublicationRegex) == .publish
+    }
+
     private enum Intent { case publish, cancel }
 
     private static func pronounCancellation(in request: String) -> Bool {
@@ -331,10 +347,14 @@ enum GitHubReviewPublicationRequirement {
     }
 
     private static func publicationIntent(in request: String) -> Intent? {
+        publicationIntent(in: request, using: publicationRegex)
+    }
+
+    private static func publicationIntent(in request: String, using regex: NSRegularExpression?) -> Intent? {
         let lower = request.lowercased()
         // Bind the publishing verb to the review object. A request to add
         // tests while reviewing a PR must not become permission to post.
-        guard let regex = publicationRegex else { return nil }
+        guard let regex else { return nil }
         let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
         return regex.matches(in: lower, range: range).last.flatMap { match in
             guard let matchRange = Range(match.range, in: lower) else { return nil }
@@ -379,8 +399,9 @@ enum GitHubReviewPublicationError: LocalizedError {
         case .receiptPersistenceFailed(let reviewURL):
             "GitHub confirmed the review at \(reviewURL), but ASTRA could not save its receipt. Check GitHub before continuing; ASTRA will not resend this file."
         case .notRequested:
-            "No request to post a review is open on this task: the user has not asked for one, withdrew it, "
-                + "or it was already posted. ASTRA posts a review only when the user asks it to."
+            "No request to post a review is open on this task: the user has not asked ASTRA to post, publish "
+                + "or submit one, withdrew it, or it was already posted. Without that request ASTRA does not post "
+                + "a review on its own; the file waits for the user's review."
         }
     }
 }
@@ -633,7 +654,9 @@ final class GitHubReviewPublicationService {
         // the checks above awaited, or a review already posted for the
         // request, closes it, so it is read here, with no suspension before
         // dispatch is recorded.
-        if authorization == .autoPolicy, !GitHubReviewPublicationRequirement.isPending(task: task) {
+        if authorization == .autoPolicy,
+           !(GitHubReviewPublicationRequirement.isPending(task: task)
+               && GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task)) {
             throw GitHubReviewPublicationError.notRequested
         }
         let inputURL = FileManager.default.temporaryDirectory
@@ -830,7 +853,7 @@ final class GitHubReviewPublicationService {
         // open is read by `publish`, after `prepare` has bound a shorthand
         // target ("post a review on PR 12") to the workspace's origin — before
         // that binding a shorthand request does not yet read as pending.
-        guard GitHubReviewPublicationRequirement.postingRequest(task: task) != nil else {
+        guard GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task) else {
             throw GitHubReviewPublicationError.notRequested
         }
         let filePath = URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path

@@ -217,8 +217,10 @@ chooses none of them:
   the agent and is never offered for a later send. A requested review is
   posted through `GitHubReviewPublicationService.prepare` and `publish`, only
   for the file the request names while it still holds the bytes the broker
-  read, and only while the user's request to post a review is open. Whether a
-  run wrote or touched a review file never makes it eligible.
+  read, and only while the user's request to post a review is open and says
+  so in so many words (post, publish or submit — "add review comments" offers
+  the sheet but is not consent to an unreviewed post). Whether a run wrote or
+  touched a review file never makes it eligible.
 
 Nothing about either send depends on how the run ends, its checks,
 settlement, or crash recovery: the run boundary sends nothing at any level.
