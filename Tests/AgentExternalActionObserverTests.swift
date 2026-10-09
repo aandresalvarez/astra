@@ -206,6 +206,21 @@ struct AgentExternalActionObserverTests {
         #expect(observed.first?.title == "Ran `git push`")
     }
 
+    // The tool-use event keeps 300 characters; what follows (a header, a
+    // token) must not be stored elsewhere either. The marker keeps the
+    // verdict, never the command.
+    @Test("A result marker stores the verdict, not the command")
+    func markersStoreNoCommandText() throws {
+        let long = "curl -d \(String(repeating: "x", count: 320)) -H 'Authorization: Bearer SECRET' https://hooks.example.test/services/TOKEN"
+        let marker = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: \(long.prefix(300))", fullEvidence: "Using tool: Bash: \(long)", output: "ok"
+        ))
+        let stored = String(data: try JSONEncoder().encode(marker), encoding: .utf8) ?? ""
+        #expect(!stored.contains("SECRET") && !stored.contains("TOKEN"))
+        #expect(marker.verdict?.names == "`curl`")
+        #expect(marker.verdict?.webHost == "https://hooks.example.test")
+    }
+
     @Test("Docker the run's environment routes elsewhere is recorded")
     func dockerRoutedByTheRunIsRecorded() {
         #expect(AgentExternalActionObserver.recordedAction(in: "docker run alpine", environmentKeyNames: ["DOCKER_HOST"])

@@ -28,22 +28,83 @@ enum AgentExternalActionObserver {
         /// The `tool.use` payload, truncated as the event is: what pairs it.
         let toolUseEvidence: String
         let output: String
-        /// The whole command, which is what is classified; nil in older markers.
+        /// The whole command; only in markers written before `verdict`, which
+        /// replaced it so that the part of a command past the event's cut —
+        /// where a header or token can sit — is never stored.
         var command: String?
         /// The call came back as an error; nil in older markers, which were
         /// written only for successes.
         var failed: Bool?
+        /// What the whole command was judged to be when the call was recorded.
+        var verdict: Verdict?
+    }
+
+    /// The judgment of a call's whole command, kept instead of the command:
+    /// only the action, the names of the programs it ran, and the scheme and
+    /// host it named.
+    struct Verdict: Codable, Equatable, Sendable {
+        /// `push`, `pullRequest:<verb>`, `issue:<verb>`, `release`,
+        /// `api:<METHOD>`, or `command`.
+        var action: String
+        var names: String
+        var webHost: String?
+        var gitHubURL: String?
+        var enterpriseHost: String?
+        var enterpriseRepository: String?
+        /// Known local work that mentions Docker: recorded only for a run whose
+        /// environment routes Docker elsewhere.
+        var dockerOnly: Bool?
     }
 
     nonisolated static func resultMarker(
         evidence: String, fullEvidence: String? = nil, output: String, failed: Bool = false
     ) -> ResultMarker? {
-        // A command that mentions Docker keeps a marker too: whether it acted
-        // outside depends on the run's environment, read at the boundary.
         guard let command = shellCommandText(fromToolUsePayload: fullEvidence ?? evidence),
-              recordedAction(in: command) != nil || LocalShellCommands.mentionsDocker(command) else { return nil }
-        return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)), command: command,
-                            failed: failed ? true : nil)
+              let verdict = verdict(for: command) else { return nil }
+        return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)),
+                            failed: failed ? true : nil, verdict: verdict)
+    }
+
+    nonisolated static func verdict(for command: String) -> Verdict? {
+        let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
+        let enterprise = enterpriseGitHub(in: command)
+        if let action = recordedAction(in: command) {
+            return Verdict(action: encode(action), names: commandNames(text), webHost: firstWebURL(in: text),
+                           gitHubURL: firstGitHubURL(in: text, host: enterprise?.host),
+                           enterpriseHost: enterprise?.host, enterpriseRepository: enterprise?.repository)
+        }
+        // Whether a Docker command acted outside depends on the run's
+        // environment, read at the boundary.
+        guard LocalShellCommands.mentionsDocker(text) else { return nil }
+        let docker = (LocalShellCommands.simpleCommands(text) ?? [])
+            .filter { ($0.first.map { ($0 as NSString).lastPathComponent }) == "docker" }
+            .map { words in (["docker"] + words.dropFirst().prefix(1).filter { !$0.hasPrefix("-") }).joined(separator: " ") }
+        let names = docker.isEmpty ? "`docker`" : Array(Set(docker)).sorted().map { "`\($0)`" }.joined(separator: ", ")
+        return Verdict(action: "command", names: names, dockerOnly: true)
+    }
+
+    nonisolated static func encode(_ action: Action) -> String {
+        switch action {
+        case .push: return "push"
+        case .pullRequest(let verb): return "pullRequest:\(verb)"
+        case .issue(let verb): return "issue:\(verb)"
+        case .release: return "release"
+        case .api(let method): return "api:\(method)"
+        case .command: return "command"
+        }
+    }
+
+    /// The recognised action a verdict names; nil for a plain command.
+    static func decodeAction(_ value: String) -> Action? {
+        let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+        switch parts.first {
+        case "push": return .push
+        case "release": return .release
+        case "pullRequest" where parts.count == 2: return .pullRequest(verb: parts[1])
+        case "issue" where parts.count == 2: return .issue(verb: parts[1])
+        case "api" where parts.count == 2: return .api(method: parts[1])
+        default: return nil
+        }
     }
 
     struct Observation: Codable, Equatable, Sendable {
@@ -92,6 +153,14 @@ enum AgentExternalActionObserver {
             if pairsByMarker {
                 guard let position = markers.firstIndex(where: { $0.toolUseEvidence == event.payload }) else { continue }
                 let marker = markers.remove(at: position)
+                if let verdict = marker.verdict {
+                    if let observation = observation(of: verdict, event: event, output: marker.output,
+                                                     failed: marker.failed == true, environmentKeyNames: environmentKeyNames) {
+                        modelContext.insert(TaskEvent.structuredPayloadEvent(task: task, type: eventType, payload: observation, run: run))
+                        observations.append(observation)
+                    }
+                    continue
+                }
                 command = marker.command ?? truncated
                 output = marker.output
                 failed = marker.failed == true
@@ -130,6 +199,41 @@ enum AgentExternalActionObserver {
             }
         }
         return observations
+    }
+
+    /// The record of a call judged when it was recorded (`Verdict`).
+    private static func observation(
+        of verdict: Verdict, event: TaskEvent, output: String, failed: Bool, environmentKeyNames: [String]
+    ) -> Observation? {
+        if verdict.dockerOnly == true,
+           !environmentKeyNames.contains(where: { $0.uppercased().hasPrefix("DOCKER_") }) {
+            return nil
+        }
+        // A failed call is recorded as the programs it ran, never as the
+        // action it was trying.
+        let action = failed ? nil : decodeAction(verdict.action)
+        let enterprise = verdict.enterpriseHost.map { (host: $0, repository: verdict.enterpriseRepository) }
+        var url = firstGitHubURL(in: output, host: enterprise?.host) ?? verdict.gitHubURL
+        if action == .push, url == nil, let repository = pushGitHubRepository(in: output) {
+            url = "https://github.com/\(repository)"
+        }
+        guard let action else {
+            let link = url ?? verdict.webHost
+            return Observation(
+                sourceEventID: event.id,
+                title: "Ran \(verdict.names)" + (failed ? ", which exited with an error" : ""),
+                destination: link.flatMap { URLComponents(string: $0)?.host }
+                    ?? verdict.names.split(separator: "`").first.map { String($0.split(separator: " ").first ?? $0) }
+                    ?? "Command",
+                url: link
+            )
+        }
+        return Observation(
+            sourceEventID: event.id,
+            title: title(for: action, url: url),
+            destination: destination(for: action, url: url, result: output, enterprise: enterprise),
+            url: url
+        )
     }
 
     /// One link per action. A single action takes the first link printed; in
@@ -391,7 +495,7 @@ enum AgentExternalActionObserver {
     /// The programs a command ran outside the local list, by name and
     /// subcommand only (`curl`, `gh gist create`): its arguments can carry a
     /// token, a header or a body, and the title is kept and shown.
-    static func commandNames(_ text: String) -> String {
+    nonisolated static func commandNames(_ text: String) -> String {
         let outside = LocalShellCommands.commandsOutsideTheList(text) ?? []
         var names: [String] = []
         for words in outside {
@@ -512,7 +616,7 @@ enum AgentExternalActionObserver {
     /// The first http(s) address in `text`, reduced to scheme and host: a
     /// user, password, path or query string can carry a secret (a webhook
     /// token is often the path) the record must not show.
-    static func firstWebURL(in text: String) -> String? {
+    nonisolated static func firstWebURL(in text: String) -> String? {
         guard let match = text.range(of: #"https?://[^\s"'\)<>\]\\,]+"#, options: .regularExpression),
               var components = URLComponents(string: String(text[match])),
               components.host?.isEmpty == false else {
@@ -528,7 +632,7 @@ enum AgentExternalActionObserver {
         return url.isEmpty ? nil : url
     }
 
-    static func firstGitHubURL(in text: String, host: String? = nil) -> String? {
+    nonisolated static func firstGitHubURL(in text: String, host: String? = nil) -> String? {
         let escapedHost = NSRegularExpression.escapedPattern(for: host ?? "github.com")
         guard let match = text.range(of: #"https://"# + escapedHost + #"/[^\s"'\)<>\]\\,]+"#, options: .regularExpression) else {
             return nil

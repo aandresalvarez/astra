@@ -495,10 +495,15 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// The MCP tool's `arguments` as the CLI's words, keys sorted:
     /// `--selector 'button.primary'`; a nested value is its JSON.
     static func browserArgumentWords(_ value: Any?) -> String? {
-        guard let arguments = value as? [String: Any], !arguments.isEmpty else { return nil }
         func quoted(_ text: String) -> String {
             "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
+        // The browser MCP server takes CLI-style words, in order
+        // (`["--selector", "#delete"]`).
+        if let words = value as? [Any], !words.isEmpty {
+            return words.map { quoted(($0 as? String) ?? String(describing: $0)) }.joined(separator: " ")
+        }
+        guard let arguments = value as? [String: Any], !arguments.isEmpty else { return nil }
         return arguments.keys.sorted().map { key -> String in
             let raw = arguments[key]
             let text: String

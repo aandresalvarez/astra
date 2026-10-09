@@ -1424,8 +1424,18 @@ enum LocalShellCommands {
         guard index < args.count else { return false }
         let tool = args[index]
         // `simctl` drives this Mac's simulators; `devicectl` changes a
-        // connected device, which is not this machine.
-        if tool == "simctl" { return true }
+        // connected device, which is not this machine. `simctl spawn DEVICE
+        // COMMAND …` runs a command, which is judged as one.
+        if tool == "simctl" {
+            guard args.dropFirst(index + 1).first == "spawn" else { return true }
+            var rest = Array(args.dropFirst(index + 2))
+            while let first = rest.first, first.hasPrefix("-") {
+                guard ["-w", "--wait-for-debugger", "-s", "--standalone"].contains(first) else { return false }
+                rest.removeFirst()
+            }
+            guard rest.count >= 2 else { return false }
+            return isLocalCommand(Array(rest.dropFirst()), depth: depth + 1)
+        }
         return isLocalCommand(Array(args.dropFirst(index)), depth: depth + 1)
     }
 }

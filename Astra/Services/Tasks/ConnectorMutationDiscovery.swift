@@ -174,12 +174,20 @@ enum ConnectorMutationDiscovery {
     /// basename as the group, which puts it after every numbered name it shares
     /// a prefix with and leaves it ordered by name against everything else. It
     /// is never reordered arbitrarily and never dropped.
+    /// A run's proposals to one service in the order the broker numbered them,
+    /// across operations (`<service>-<operation>-<run>-<n>.json`): the service
+    /// and run, then the number, then the name.
     static func stagedOrderKey(_ name: String) -> (String, Int, String) {
         let base = name.hasSuffix(".json") ? String(name.dropLast(".json".count)) : name
         guard let separator = base.lastIndex(of: "-"),
               let sequence = Int(base[base.index(after: separator)...]) else {
             return (base, .max, name)
         }
-        return (String(base[..<separator]), sequence, name)
+        let prefix = String(base[..<separator])
+        let run = String(prefix.suffix(36))
+        guard UUID(uuidString: run) != nil, let service = prefix.split(separator: "-").first else {
+            return (prefix, sequence, name)
+        }
+        return ("\(service)-\(run)", sequence, name)
     }
 }

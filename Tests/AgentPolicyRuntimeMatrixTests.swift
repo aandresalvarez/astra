@@ -544,6 +544,18 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(approved.disposition(toolName: "Bash", command: "astra-browser fill --label Email --text a") == .ask,
                 "another page change needs its own approval")
 
+        // The MCP server takes CLI-style words in order, which are what is
+        // approved: another control is another approval.
+        let arrayClick = ParsedEvent.toolUse(name: tool, id: "tool-arr", input: ["command": "click", "arguments": ["--selector", "#save"]])
+        let arrayAsk = guardrail.violation(for: arrayClick)
+        #expect(arrayAsk?.permissionRequest == .shell(command: "astra-browser click '--selector' '#save'", toolName: tool))
+        let arrayApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: mcp, approvalGrants: arrayAsk?.approvalGrants ?? []
+        ))
+        #expect(arrayApproved.violation(for: arrayClick) == nil)
+        #expect(arrayApproved.violation(for: .toolUse(name: tool, id: "tool-arr2",
+            input: ["command": "click", "arguments": ["--selector", "#delete"]]))?.requiresApproval == true)
+
         // A provider callback carries only the recorder's summary of the call.
         for (input, expectAsk) in [
             (["summary": "astra-browser click --selector 'button'"] as [String: Any]?, true),
