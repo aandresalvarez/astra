@@ -329,13 +329,6 @@ struct AgentPolicyRuntimeMatrixTests {
             #expect(approved.disposition(toolName: "Bash", command: written) == .allowed, "\(written) approved once")
         }
 
-        // A skill that hands the provider DOCKER_HOST routes Docker where this
-        // process cannot see, so a rule allowing docker still asks.
-        var routed = Self.manifest(runtime: .claudeCode, policy: wider)
-        routed.environmentKeyNames = ["DOCKER_HOST"]
-        #expect(AgentRuntimePolicyGuard(manifest: routed).disposition(toolName: "Bash", command: "docker ps") == .ask)
-        #expect(AgentRuntimePolicyGuard(manifest: routed).disposition(toolName: "Bash", command: "git status") == .allowed)
-
         // Approving a push is not approving a force: that needs its own yes.
         let plainPushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
             .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": "git push origin main"]))
@@ -404,42 +397,6 @@ struct AgentPolicyRuntimeMatrixTests {
             approvalGrants: PermissionBroker.approvalGrants(for: request)
         ))
         #expect(approved.disposition(toolName: "Bash", command: "git push origin main") == .allowed, "approved once, not asked twice")
-    }
-
-    /// `docker context use` points every later command at another daemon, so
-    /// a plain `docker run` is local only when the daemon it reaches is.
-    @Test("A docker command is local only when the daemon it reaches is")
-    func dockerDaemonLocalityFollowsTheCLI() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("astra-docker-config-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        func context(_ name: String, host: String) throws {
-            let meta = directory.appendingPathComponent("contexts/meta/\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: meta, withIntermediateDirectories: true)
-            try JSONSerialization.data(withJSONObject: ["Name": name, "Endpoints": ["docker": ["Host": host]]])
-                .write(to: meta.appendingPathComponent("meta.json"))
-        }
-        func current(_ name: String) throws {
-            try JSONSerialization.data(withJSONObject: ["currentContext": name])
-                .write(to: directory.appendingPathComponent("config.json"))
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try context("desktop-linux", host: "unix:///Users/me/.docker/run/docker.sock")
-        try context("production", host: "ssh://deploy@prod.example")
-        func local(_ environment: [String: String] = [:], context explicit: String? = nil) -> Bool {
-            DockerDaemonLocality.isLocal(context: explicit, environment: environment, configDirectory: directory)
-        }
-
-        #expect(local(), "no current context: the default local socket")
-        try current("desktop-linux")
-        #expect(local())
-        try current("production")
-        #expect(!local(), "the CLI's current context is a remote daemon")
-        #expect(local(context: "desktop-linux"), "an explicit local context")
-        #expect(!local(["DOCKER_CONTEXT": "production"]))
-        #expect(!local(["DOCKER_HOST": "tcp://build.example:2376"]))
-        #expect(local(["DOCKER_HOST": "unix:///var/run/docker.sock"]))
-        #expect(!local(context: "unknown"), "a context that cannot be read is not called local")
     }
 
     /// Custom's own rules decide whether enabled local tools become grants:

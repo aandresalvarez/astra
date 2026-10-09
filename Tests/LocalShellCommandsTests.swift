@@ -147,13 +147,16 @@ struct LocalShellCommandsTests {
         #expect(!LocalShellCommands.isLocal(command), "\(command)")
     }
 
-    // A skill can hand the provider `DOCKER_HOST`; this process cannot see
-    // where that points, so Docker is not local work for that run.
-    @Test("Docker routed by the run's environment is not local")
-    func dockerRoutedByTheRunEnvironment() {
-        #expect(!LocalShellCommands.isLocal("docker ps", environmentKeyNames: ["DOCKER_HOST"]))
-        #expect(!LocalShellCommands.isLocal("bash -c 'docker run alpine'", environmentKeyNames: ["DOCKER_CONTEXT"]))
-        #expect(LocalShellCommands.isLocal("ls -la", environmentKeyNames: ["DOCKER_HOST"]))
+    // Which daemon `docker` reaches is the user's Docker configuration (a
+    // context, a provider home, a capability's DOCKER_HOST), like ~/.curlrc
+    // for curl: the list judges what the command expresses, and a daemon the
+    // command names itself is not local.
+    @Test("Docker is judged by what the command says about its daemon")
+    func dockerIsJudgedByTheCommand() {
+        #expect(LocalShellCommands.isLocal("docker ps"))
+        #expect(!LocalShellCommands.isLocal("docker -H ssh://deploy@prod ps"))
+        #expect(!LocalShellCommands.isLocal("docker --context production run alpine"))
+        #expect(!LocalShellCommands.isLocal("DOCKER_HOST=ssh://deploy@prod docker ps"))
         #expect(LocalShellCommands.isLocal("echo x > /dev/null && echo y > out.txt"))
     }
 
