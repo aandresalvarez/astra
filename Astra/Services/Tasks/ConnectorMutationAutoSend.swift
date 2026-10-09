@@ -3,6 +3,7 @@ import SwiftData
 import ASTRACore
 import ASTRALogging
 import ASTRAModels
+import HostControlToolSupport
 
 /// Sends, at the run boundary, the connector writes an Auto run staged.
 ///
@@ -109,18 +110,27 @@ enum ConnectorMutationAutoSend {
         return receipts
     }
 
-    /// The order the agent proposed them in. Discovery orders by file name, and
-    /// the broker numbers each service-and-operation pair separately, so an
-    /// update staged before a transition would sort after it (`transition_issue`
-    /// < `update_issue`) and be sent second. Each envelope is created
-    /// exclusively at staging time, so its creation date is the call order; the
-    /// discovery order breaks ties and covers a date that cannot be read.
+    /// The order the agent proposed them in. Discovery orders by file name,
+    /// which sorts a transition (`transition_issue`) ahead of an update staged
+    /// before it, so the run-wide number the broker puts at the end of each
+    /// name decides (`ConnectorMutationStaging.stagedNumber`). A file without
+    /// one, from an older broker, falls back to its creation date, then to the
+    /// discovery order.
     static func inStagingOrder(_ staged: [TaskStagedConnectorMutation]) -> [TaskStagedConnectorMutation] {
+        let numbers = staged.map { pending in
+            ConnectorMutationStaging.stagedNumber(
+                fileName: URL(fileURLWithPath: pending.stagedPayloadPath).lastPathComponent,
+                runID: pending.runID.uuidString
+            )
+        }
         let created = staged.map { pending in
             try? URL(fileURLWithPath: pending.stagedPayloadPath)
                 .resourceValues(forKeys: [.creationDateKey]).creationDate
         }
         return staged.indices.sorted { lhs, rhs in
+            if let left = numbers[lhs], let right = numbers[rhs], left != right {
+                return left < right
+            }
             if let left = created[lhs], let right = created[rhs], left != right {
                 return left < right
             }

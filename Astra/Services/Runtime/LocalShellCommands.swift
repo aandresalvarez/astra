@@ -366,7 +366,7 @@ enum LocalShellCommands {
 
     private static let toolSteeringNames: Set<String> = [
         "PATH", "HOME", "IFS", "CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PS4", "PROMPT_COMMAND",
-        "ZDOTDIR", "SHELL", "EDITOR", "VISUAL", "PAGER", "MANPAGER", "BROWSER", "HTTP_PROXY", "HTTPS_PROXY",
+        "ZDOTDIR", "SHELL", "EDITOR", "VISUAL", "PAGER", "MANPAGER", "LESSOPEN", "LESSCLOSE", "BROWSER", "HTTP_PROXY", "HTTPS_PROXY",
         "ALL_PROXY", "NO_PROXY", "FTP_PROXY", "CC", "CXX", "LD", "MAKEFLAGS", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS"
     ]
 
@@ -404,6 +404,15 @@ enum LocalShellCommands {
         switch name {
         case "awk":
             return awkIsLocal(args)
+        case "rg":
+            // `--pre` runs a program on every file searched.
+            return !args.contains { $0 == "--pre" || $0.hasPrefix("--pre=") }
+        case "sort":
+            return !args.contains { $0.hasPrefix("--compress-program") }
+        case "tar":
+            return tarIsLocal(args)
+        case "fd":
+            return fdIsLocal(args, depth: depth)
         case "find":
             return findIsLocal(args, depth: depth)
         case "xargs", "env", "nice", "nohup", "timeout", "command", "builtin", "exec", "caffeinate":
@@ -460,13 +469,13 @@ enum LocalShellCommands {
         "wait", "sleep", "exit", "return", "break", "continue", "shift", "set", "shopt", "unset", "hash", "type",
         "which", "whereis", "jobs", "umask", "getopts", "let",
         // Files and text.
-        "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "ag", "fd", "tree", "cut", "tr", "sort",
+        "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "ag", "tree", "cut", "tr",
         "uniq", "diff", "cmp", "comm", "jq", "yq", "xxd", "od", "hexdump", "file", "stat", "du", "df", "basename",
         "dirname", "realpath", "readlink", "mkdir", "rmdir", "touch", "cp", "mv", "rm", "ln", "chmod", "chown",
-        "chflags", "xattr", "tar", "zip", "unzip", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz",
+        "chflags", "xattr", "unzip", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz",
         "shasum", "sha1sum", "sha256sum", "md5", "md5sum", "cksum", "base64", "column", "paste", "nl", "fold",
         "expand", "unexpand", "seq", "tee", "sed", "ditto", "mktemp", "patch", "iconv", "strings", "split", "rev",
-        "less", "more", "man", "tput", "clear",
+        "tput", "clear",
         // This machine.
         "date", "cal", "whoami", "id", "uname", "hostname", "printenv", "ps", "pgrep", "pkill", "kill", "lsof",
         "sw_vers", "plutil", "defaults", "mdfind", "mdls", "pbcopy", "pbpaste", "uptime", "vm_stat", "sysctl",
@@ -487,6 +496,53 @@ enum LocalShellCommands {
         guard index < args.count else { return false }
         let program = args[index]
         return !program.contains("system") && !program.contains("|")
+    }
+
+    /// `tar` with the options that create, list and extract. One that names a
+    /// program to run (`--use-compress-program`, `-I`, `--checkpoint-action`,
+    /// `--to-command`) is not listed.
+    private static func tarIsLocal(_ args: [String]) -> Bool {
+        let letters = Set("cxtrufzjJvpkmOSqaChXTPn")
+        let valuedLetters = Set("fCXT")
+        let longFlags: Set<String> = [
+            "--create", "--extract", "--list", "--append", "--update", "--gzip", "--bzip2", "--xz", "--zstd",
+            "--verbose", "--preserve-permissions", "--same-owner", "--no-same-owner", "--keep-old-files",
+            "--overwrite", "--totals", "--numeric-owner", "--no-recursion", "--one-file-system", "--dereference",
+            "--auto-compress", "--absolute-names"
+        ]
+        let longValued: Set<String> = [
+            "--file", "--directory", "--exclude", "--exclude-from", "--files-from", "--include", "--strip-components",
+            "--format"
+        ]
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            index += 1
+            if arg.hasPrefix("--") {
+                let name = String(arg.prefix { $0 != "=" })
+                if longFlags.contains(name), !arg.contains("=") { continue }
+                guard longValued.contains(name) else { return false }
+                if !arg.contains("=") { index += 1 }
+            } else if arg.hasPrefix("-") || (index == 1 && !arg.isEmpty && arg.allSatisfy(letters.contains)) {
+                // `-czf out.tar`, or the old `czf out.tar`: each value letter
+                // takes the next word.
+                let cluster = arg.hasPrefix("-") ? arg.dropFirst() : Substring(arg)
+                guard !cluster.isEmpty, cluster.allSatisfy(letters.contains) else { return false }
+                index += cluster.filter(valuedLetters.contains).count
+            }
+        }
+        return true
+    }
+
+    /// `fd` is local when the command its `-x`/`-X` runs is.
+    private static func fdIsLocal(_ args: [String], depth: Int) -> Bool {
+        guard let flag = args.firstIndex(where: { ["-x", "--exec", "-X", "--exec-batch"].contains($0) }) else {
+            return !args.contains { $0.hasPrefix("--exec") }
+        }
+        let rest = args.dropFirst(flag + 1)
+        let command = Array(rest.prefix { $0 != ";" })
+        guard !command.isEmpty, isLocalCommand(command, depth: depth + 1) else { return false }
+        return fdIsLocal(Array(rest.dropFirst(command.count + 1)), depth: depth)
     }
 
     /// `find` is local when each `-exec`/`-ok` command it runs is.
@@ -822,14 +878,58 @@ enum LocalShellCommands {
               DockerDaemonLocality.isLocal() else {
             return false
         }
+        let rest = Array(args.dropFirst())
         switch verb {
-        case "image", "container", "volume", "network", "system", "compose", "builder":
-            return !args.contains { ["login", "logout"].contains($0) }
+        case "compose":
+            return dockerComposeIsLocal(rest)
         case "buildx":
-            return args.count > 1 && ["ls", "version", "du", "inspect"].contains(args[1])
+            return rest.first.map(["ls", "version", "du", "inspect"].contains) ?? false
         default:
+            if let subcommands = localDockerSubcommands[verb] {
+                return rest.first.map(subcommands.contains) ?? false
+            }
             return localDockerVerbs.contains(verb)
         }
+    }
+
+    /// The second word of the management commands, by command.
+    private static let localDockerSubcommands: [String: Set<String>] = [
+        "image": ["ls", "list", "inspect", "rm", "prune", "build", "history", "tag", "pull", "load", "save", "import"],
+        "container": [
+            "ls", "list", "ps", "inspect", "rm", "prune", "start", "stop", "restart", "kill", "logs", "exec", "run",
+            "create", "cp", "diff", "top", "stats", "port", "wait", "attach", "rename", "update", "export", "pause",
+            "unpause", "commit"
+        ],
+        "volume": ["ls", "list", "create", "rm", "inspect", "prune"],
+        "network": ["ls", "list", "create", "rm", "inspect", "prune", "connect", "disconnect"],
+        "system": ["df", "info", "prune", "events"],
+        "builder": ["prune", "ls", "du", "inspect"]
+    ]
+
+    /// `docker compose` running, building and reading the project's services;
+    /// never `publish` or `push`, which send it to a registry.
+    private static func dockerComposeIsLocal(_ args: [String]) -> Bool {
+        let valued: Set<String> = [
+            "-f", "--file", "-p", "--project-name", "--profile", "--env-file", "--project-directory", "--ansi",
+            "--progress", "--parallel"
+        ]
+        var index = 0
+        while index < args.count, args[index].hasPrefix("-") {
+            let option = args[index]
+            if valued.contains(option) {
+                index += 2
+            } else if valued.contains(String(option.prefix { $0 != "=" })) || ["--compatibility", "--dry-run"].contains(option) {
+                index += 1
+            } else {
+                return false
+            }
+        }
+        guard index < args.count else { return false }
+        return [
+            "up", "down", "ps", "logs", "build", "pull", "start", "stop", "restart", "rm", "exec", "run", "config",
+            "images", "ls", "top", "events", "kill", "pause", "unpause", "port", "create", "version", "cp", "wait",
+            "watch", "stats"
+        ].contains(args[index])
     }
 
     private static let localDockerVerbs: Set<String> = [
@@ -845,6 +945,8 @@ enum LocalShellCommands {
         guard let command = args.first else { return manager != "bun" }
         if ["-v", "--version", "--help", "-h"].contains(command) { return true }
         if command == "config" { return args.count > 1 && ["get", "list", "ls"].contains(args[1]) }
+        // `init <initializer>` installs and runs a registry package.
+        if command == "init" { return args.dropFirst().allSatisfy { $0.hasPrefix("-") } }
         return localPackageCommands.contains(command)
     }
 
@@ -1031,7 +1133,9 @@ enum LocalShellCommands {
         }
         guard index < args.count else { return false }
         let tool = args[index]
-        if ["simctl", "devicectl"].contains(tool) { return true }
+        // `simctl` drives this Mac's simulators; `devicectl` changes a
+        // connected device, which is not this machine.
+        if tool == "simctl" { return true }
         return isLocalCommand(Array(args.dropFirst(index)), depth: depth + 1)
     }
 }

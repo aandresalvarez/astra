@@ -81,6 +81,17 @@ struct ConnectorMutationAutoSendTests {
             target: "STAR-1", body: ["transition": ["id": "21"]]
         )
 
+        // The order is in the names, not in file dates a file system may
+        // round or not keep.
+        let same = Date(timeIntervalSince1970: 1_700_000_000)
+        let staging = ConnectorMutationStaging.stagingDirectory(taskFolder: TaskWorkspaceAccess(task: fixture.task).taskFolder)
+        let files = try FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        #expect(files.count == 2)
+        for file in files {
+            try FileManager.default.setAttributes([.creationDate: same], ofItemAtPath: file.path)
+        }
+
         await fixture.crossBoundaryAndSettle(policyLevel: .autonomous, sender: sender)
 
         #expect(sender.paths == ["/rest/api/2/issue/STAR-1", "/rest/api/2/issue/STAR-1/transitions"])
