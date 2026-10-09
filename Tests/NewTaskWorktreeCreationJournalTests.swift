@@ -342,11 +342,13 @@ struct NewTaskWorktreeCreationJournalTests {
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
         let journal = fixture.ownership.creationJournal
-        let intent = try intent("raced", in: repository, fixture: fixture)
+        var intent = try intent("raced", in: repository, fixture: fixture)
+        intent.identity = "raced-identity"
         let store = try Fixture.container()
         try TaskWorktreeCleanupService.beginCreation(intent, journal: journal)
         // Another process takes the branch and folder before ASTRA's
         // `git worktree add` runs, so that command fails and is abandoned.
+        // The competitor's worktree doesn't carry this intent's lock reason.
         try await addWorktree(for: intent, fixture: fixture)
 
         await TaskWorktreeCleanupService.abandonCreation(
@@ -357,6 +359,32 @@ struct NewTaskWorktreeCreationJournalTests {
         #expect(try !fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
         #expect(try journal.pendingURLs().isEmpty)
         #expect(!journal.ownership.owns(intent))
+    }
+
+    @Test("A creation that stopped after Git ran but before recording ownership is still removed")
+    func lockedCreationIsAdopted() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let journal = fixture.ownership.creationJournal
+        var intent = try intent("locked", in: repository, fixture: fixture)
+        intent.identity = "locked-identity"
+        // What a quit right after `git worktree add --lock` leaves: the
+        // journal entry and Git's own lock reason, but no ownership record.
+        try journal.record(intent)
+        let created = try await GitService.shared.addLockedTaskWorktree(
+            repoPath: repository.path, branch: intent.branch, base: intent.baseCommit,
+            worktreesRoot: fixture.worktrees.path, lockReason: TaskWorktreeBinding.lockReason(forIdentity: "locked-identity")
+        )
+        #expect(created == intent.worktreePath)
+        #expect(!fixture.ownership.owns(intent))
+        let store = try Fixture.container()
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 1)
+        #expect(!FileManager.default.fileExists(atPath: intent.worktreePath))
+        try await expectNothingLeft(in: repository, fixture: fixture)
     }
 
     @Test("A branch tip is a commit, positively absent, or unavailable")

@@ -177,6 +177,26 @@ public enum TaskWorktreeBinding {
 
     static let identityFileName = "astra-task-worktree"
 
+    /// The reason `git worktree add --lock` records for a creation with
+    /// `identity`. Git writes it in the same command that creates the
+    /// worktree, so it proves who created it even before ASTRA saved anything.
+    public static func lockReason(forIdentity identity: String) -> String {
+        "astra-task-worktree \(identity)"
+    }
+
+    /// The identity token and the lock reason in `worktreePath`'s registry
+    /// entry, or nil when the repository doesn't register that path.
+    public static func registeredMarkers(
+        repositoryPath: String, worktreePath: String
+    ) -> (identity: String?, lockReason: String?)? {
+        guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
+        func read(_ name: String) -> String? {
+            (try? String(contentsOf: registered.entry.appendingPathComponent(name), encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return (read(identityFileName), read("locked"))
+    }
+
     /// Marks the worktree `payload` names, just created, with its identity.
     public static func recordIdentity(of payload: TaskWorktreePayload) throws {
         guard let identity = payload.identity,

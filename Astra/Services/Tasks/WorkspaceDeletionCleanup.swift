@@ -79,8 +79,14 @@ enum WorkspaceDeletionCleanupService {
         // The deletion was never saved: there is nothing to clean up.
         guard !workspaces.contains(where: { $0.id == record.workspaceID }) else { return true }
         let path = WorkspacePathPresentation.standardizedPath(record.primaryPath)
-        if !workspaces.contains(where: { WorkspacePathPresentation.standardizedPath($0.primaryPath) == path }) {
-            removeMirrors(for: record.primaryPath)
+        // A mirror left behind would let recovery reimport the workspace, so
+        // the record, and the credentials it needs, are kept for a retry.
+        if !workspaces.contains(where: { WorkspacePathPresentation.standardizedPath($0.primaryPath) == path }),
+           !removeMirrors(for: record.primaryPath) {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "mirror_removal_failed"
+            ], level: .error)
+            return false
         }
         let liveConnectors = Set(connectors.map(\.id))
         let liveSkills = Set(skills.map(\.id))
@@ -104,13 +110,20 @@ enum WorkspaceDeletionCleanupService {
         return settled
     }
 
-    static func removeMirrors(for workspacePath: String) {
+    /// False when a mirror that exists couldn't be removed.
+    static func removeMirrors(for workspacePath: String) -> Bool {
         let mirrorPaths = Set([
             WorkspaceFileLayout.workspaceConfigFile(for: workspacePath),
             WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspacePath)
         ])
-        for path in mirrorPaths {
-            try? FileManager.default.removeItem(atPath: path)
+        var removedAll = true
+        for path in mirrorPaths where FileManager.default.fileExists(atPath: path) {
+            do {
+                try FileManager.default.removeItem(atPath: path)
+            } catch {
+                removedAll = false
+            }
         }
+        return removedAll
     }
 }

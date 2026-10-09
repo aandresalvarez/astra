@@ -91,6 +91,9 @@ struct TaskWorktreeDiscard: Codable, Equatable, Sendable {
     /// repository after a linked-worktree source checkout is removed. Absent
     /// on records written before it was kept.
     var commonDirectory: String? = nil
+    /// The worktree's identity token, so cleanup never removes a worktree
+    /// recreated at the same path. Absent on older records.
+    var identity: String? = nil
 }
 
 /// Populates a new worktree's submodules once Git has checked it out.
@@ -459,6 +462,12 @@ enum TaskWorktreeService {
         ) else {
             throw TaskWorktreeCreationError.nameUnavailable(path)
         }
+        // The destination is claimed too, so a running task whose root
+        // contains the worktrees folder can't touch it while Git fills it.
+        let destinationLease = try TaskWorktreeResourceLease.acquireCheckout(
+            destination, taskID: task.id, queue: resourceQueue
+        )
+        defer { destinationLease.release() }
         let commonDirectory = GitCheckoutLayout.commonDirectory(for: path)
         let binding = TaskWorktreePayload(
             repositoryPath: path,
@@ -474,7 +483,7 @@ enum TaskWorktreeService {
         let payload = try TaskEvent.encodePayload(binding).get()
         let intent = TaskWorktreeDiscard(
             taskID: task.id, repositoryPath: path, worktreePath: destination, branch: branch, baseCommit: base.commit,
-            commonDirectory: commonDirectory
+            commonDirectory: commonDirectory, identity: binding.identity
         )
         try Task.checkCancellation()
         do {
@@ -485,15 +494,16 @@ enum TaskWorktreeService {
 
         let createdPath: String
         do {
-            createdPath = try await git.addWorktree(
-                repoPath: path,
-                branch: branch,
-                createBranch: true,
-                base: base.commit,
-                worktreesRoot: worktreesRoot
+            // Git writes the lock reason in the same command that creates the
+            // worktree, so recovery can tell this creation's worktree from a
+            // competing one even if ASTRA stops before recording ownership.
+            createdPath = try await git.addLockedTaskWorktree(
+                repoPath: path, branch: branch, base: base.commit, worktreesRoot: worktreesRoot,
+                lockReason: TaskWorktreeBinding.lockReason(forIdentity: binding.identity ?? "")
             )
-            try TaskWorktreeCleanupService.recordCreated(intent, journal: journal)
             try TaskWorktreeBinding.recordIdentity(of: binding)
+            try TaskWorktreeCleanupService.recordCreated(intent, journal: journal)
+            try await git.unlockWorktree(repoPath: path, worktreePath: createdPath)
             if FileManager.default.fileExists(atPath: (createdPath as NSString).appendingPathComponent(".gitmodules")) {
                 do {
                     try await setUpSubmodules(git, createdPath)
@@ -505,7 +515,9 @@ enum TaskWorktreeService {
                 throw TaskWorktreeCreationError.checkoutUnavailable(createdPath)
             }
         } catch {
+            // Cleanup takes the same claims, so they are released first.
             resourceLease.release()
+            destinationLease.release()
             await TaskWorktreeCleanupService.abandonCreation(
                 intent, journal: journal, modelContext: modelContext, resourceQueue: resourceQueue, git: git
             )
@@ -651,7 +663,8 @@ enum TaskWorktreeService {
                     worktreePath: binding.worktreePath,
                     branch: binding.branch,
                     baseCommit: baseCommit,
-                    commonDirectory: binding.commonDirectory ?? GitCheckoutLayout.commonDirectory(for: binding.repositoryPath)
+                    commonDirectory: binding.commonDirectory ?? GitCheckoutLayout.commonDirectory(for: binding.repositoryPath),
+                    identity: binding.identity
                 )
                 guard ownership.owns(discard) else {
                     AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
@@ -754,6 +767,22 @@ enum TaskWorktreeService {
             case true?: nil
             case false?: kept("uncommitted_changes")
             case nil: kept("status_unavailable", retry: true)
+            }
+        }
+        // A worktree that recorded an identity is removed only while the
+        // registered checkout is still that incarnation, never one recreated
+        // at the same path on the same branch. A lock this creation took is
+        // released first, or Git refuses the removal.
+        if let identity = discard.identity,
+           let markers = TaskWorktreeBinding.registeredMarkers(repositoryPath: repository, worktreePath: path) {
+            let reason = TaskWorktreeBinding.lockReason(forIdentity: identity)
+            guard markers.identity == identity || markers.lockReason == reason else { return kept("replaced") }
+            if markers.lockReason == reason {
+                do {
+                    try await git.unlockWorktree(repoPath: repository, worktreePath: path)
+                } catch {
+                    return kept("unlock_failed", retry: true)
+                }
             }
         }
         let exists = FileManager.default.fileExists(atPath: path)

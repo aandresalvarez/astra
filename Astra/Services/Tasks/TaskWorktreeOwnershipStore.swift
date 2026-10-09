@@ -12,12 +12,15 @@ struct TaskWorktreeOwnershipStore: Sendable {
         let worktreePath: String
         let branch: String
         let baseCommit: String
+        /// The incarnation this install created; absent on older records.
+        let identity: String?
 
-        init(repositoryPath: String, worktreePath: String, branch: String, baseCommit: String) {
+        init(repositoryPath: String, worktreePath: String, branch: String, baseCommit: String, identity: String? = nil) {
             self.repositoryPath = WorkspacePathPresentation.standardizedPath(repositoryPath)
             self.worktreePath = WorkspacePathPresentation.standardizedPath(worktreePath)
             self.branch = branch
             self.baseCommit = baseCommit
+            self.identity = identity
         }
 
         init(_ discard: TaskWorktreeDiscard) {
@@ -25,7 +28,8 @@ struct TaskWorktreeOwnershipStore: Sendable {
                 repositoryPath: discard.repositoryPath,
                 worktreePath: discard.worktreePath,
                 branch: discard.branch,
-                baseCommit: discard.baseCommit
+                baseCommit: discard.baseCommit,
+                identity: discard.identity
             )
         }
     }

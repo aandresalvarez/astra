@@ -403,6 +403,64 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pending().isEmpty)
     }
 
+    @Test("A mirror that can't be removed keeps the deletion record for a retry")
+    func unremovableMirrorKeepsRecord() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Locked", primaryPath: folder.path)
+        context.insert(workspace)
+        try context.save()
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        let mirrorFolder = (mirror as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: mirrorFolder, withIntermediateDirectories: true)
+        try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        context.delete(workspace)
+        try context.save()
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: mirrorFolder)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mirrorFolder) }
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 0)
+        #expect(FileManager.default.fileExists(atPath: mirror))
+        #expect(store.pending().count == 1)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mirrorFolder)
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(!FileManager.default.fileExists(atPath: mirror))
+        #expect(store.pending().isEmpty)
+    }
+
+    @Test("Creation claims its destination, so a task whose root holds the worktrees folder blocks it")
+    func creationClaimsDestination() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Workspace", primaryPath: repository.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "Explore", goal: "Explore", workspace: workspace)
+        let held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(
+            claims(kind: .workspace, path: fixture.worktrees.path), task: nil
+        ))
+        await #expect(throws: TaskWorktreeCreationError.self) {
+            try await prepare(task, repository: repository, context: context, fixture: fixture)
+        }
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+        #expect(try fixture.ownership.creationJournal.pendingURLs().isEmpty)
+        #expect(fixture.resourceQueue.activeResourceLocks == held)
+
+        fixture.resourceQueue.releaseResourceLocks(held, task: nil)
+        try await prepare(task, repository: repository, context: context, fixture: fixture)
+        #expect(task.executionRootPath != nil)
+        #expect(fixture.resourceQueue.activeResourceLocks.isEmpty)
+    }
+
     @Test("Config and folder replacement save imported bindings before cleaning omitted drafts",
           arguments: ["config_keep", "config_omit", "folder"])
     func workspaceReplacementHonorsImportedPins(mode: String) async throws {
@@ -452,6 +510,11 @@ struct NewTaskWorktreeLifecycleTests {
         let taskID = task.id
         let checkout = try #require(task.executionRootPath)
         let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: fixture.storage.path))
+        // Auto-export writes the mirror from a detached task; under load it
+        // can land after `draft` returns, so wait for it by count, not time.
+        for _ in 0..<500 where !FileManager.default.fileExists(atPath: configURL.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         let originalConfig = try Data(contentsOf: configURL)
         let blocker = fixture.root.appendingPathComponent("blocked-outbox")
         try Data().write(to: blocker)

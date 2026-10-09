@@ -96,6 +96,28 @@ extension GitService {
         )
     }
 
+    func addLockedTaskWorktree(
+        repoPath: String, branch: String, base: String, worktreesRoot: String, lockReason: String
+    ) async throws -> String {
+        guard Self.isSafeRefComponent(branch), Self.isSafeRefComponent(base) else {
+            throw GitWorktreeError.invalidBranchName(branch)
+        }
+        let destination = Self.worktreeLocation(repoPath: repoPath, branch: branch, worktreesRoot: worktreesRoot)
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: destination).deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        _ = try await runGit(
+            at: repoPath,
+            arguments: ["worktree", "add", "--lock", "--reason", lockReason, "-b", branch, destination, base],
+            timeout: Self.networkGitTimeout
+        )
+        return destination
+    }
+
+    func unlockWorktree(repoPath: String, worktreePath: String) async throws {
+        _ = try await runGit(at: repoPath, arguments: ["worktree", "unlock", worktreePath], failureLogLevel: .warning)
+    }
+
     /// `for-each-ref` exits cleanly with no output for a missing ref and fails
     /// when the repository can't be read, so absence is positively verified.
     /// Its patterns match by prefix, so only the exact ref name counts.

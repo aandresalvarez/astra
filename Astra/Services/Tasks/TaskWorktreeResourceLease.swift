@@ -52,6 +52,25 @@ final class TaskWorktreeResourceLease {
         return TaskWorktreeResourceLease(queue: queue, claims: claims)
     }
 
+    /// An exclusive claim on one checkout folder, such as a new worktree's
+    /// destination, for anything whose root contains it.
+    static func acquireCheckout(
+        _ checkoutPath: String, taskID: UUID, queue: TaskQueue?
+    ) throws -> TaskWorktreeResourceLease {
+        guard let queue else { throw TaskWorktreeCreationError.resourceQueueUnavailable }
+        let claims = TaskExecutionResourceBroker.lockClaims(
+            for: [TaskExecutionResourceClaim(kind: .workspace, key: checkoutPath, access: .exclusive)],
+            taskID: taskID, requestID: UUID(), runMode: runMode
+        )
+        guard queue.acquireResourceLocksIfAvailable(claims, task: nil) != nil else {
+            AppLogger.audit(.resourceLockWaiting, category: "Git", taskID: taskID, fields: [
+                "run_mode": runMode, "checkout": checkoutPath
+            ])
+            throw TaskWorktreeCreationError.repositoryBusy(checkoutPath)
+        }
+        return TaskWorktreeResourceLease(queue: queue, claims: claims)
+    }
+
     func release() {
         guard let queue else { return }
         self.queue = nil

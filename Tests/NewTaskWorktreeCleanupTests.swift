@@ -810,6 +810,28 @@ struct NewTaskWorktreeCleanupTests {
         #expect(released.tasks.map(\.executionRootPath) == [discard.worktreePath])
     }
 
+    @Test("Cleanup keeps a worktree recreated at the same path on the same branch and base")
+    func cleanupKeepsRecreatedWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        #expect(discard.identity != nil)
+        #expect(fixture.ownership.owns(discard))
+        // Removed outside ASTRA, then recreated by someone else: same path,
+        // same branch, same commit, but not the worktree ASTRA created.
+        try fixture.git(["worktree", "remove", "--force", discard.worktreePath], at: repository)
+        try fixture.git(["worktree", "add", "--quiet", discard.worktreePath, discard.branch], at: repository)
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue) == .kept("replaced"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
     @Test("Cleanup reaches the repository through its shared Git directory after a linked-worktree source is removed")
     func cleanupSurvivesRemovedLinkedSource() async throws {
         let fixture = try Fixture()

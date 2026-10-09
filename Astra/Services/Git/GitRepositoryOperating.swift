@@ -102,6 +102,12 @@ protocol GitRepositoryOperating: AnyObject {
     func fetchRemoteBranch(remote: String, branch: String, at repoPath: String) async -> Bool
     /// Deletes `refs/heads/<branch>` only while it still points at `expectedCommit`.
     func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws
+    /// `git worktree add -b` with `--lock --reason`, so Git records who
+    /// created the worktree in the same command that creates it.
+    func addLockedTaskWorktree(
+        repoPath: String, branch: String, base: String, worktreesRoot: String, lockReason: String
+    ) async throws -> String
+    func unlockWorktree(repoPath: String, worktreePath: String) async throws
     /// Where `refs/heads/<branch>` points, or that it positively doesn't exist.
     func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult
     /// Whether the checkout has no tracked or untracked changes; nil when
@@ -199,6 +205,14 @@ extension GitRepositoryOperating {
     /// files can't be read is kept.
     func worktreeIsClean(at repoPath: String) async -> Bool? { nil }
     func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult { .unavailable }
+    /// Alternate operators add without a lock: with no provenance from Git,
+    /// recovery keeps an interrupted creation's worktree rather than removing it.
+    func addLockedTaskWorktree(
+        repoPath: String, branch: String, base: String, worktreesRoot: String, lockReason: String
+    ) async throws -> String {
+        try await addWorktree(repoPath: repoPath, branch: branch, createBranch: true, base: base, worktreesRoot: worktreesRoot)
+    }
+    func unlockWorktree(repoPath: String, worktreePath: String) async throws {}
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
     func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
 

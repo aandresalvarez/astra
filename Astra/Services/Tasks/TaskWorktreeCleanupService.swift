@@ -160,6 +160,9 @@ enum TaskWorktreeCleanupService {
         defer { activeRecords.remove(key) }
         do {
             guard try store.read(url) == discard else { throw TaskWorktreeCleanupStore.StoreError.invalidRecord }
+            if !store.ownership.owns(discard), createdByThisIntent(discard) {
+                try store.ownership.record(.init(discard))
+            }
             guard store.ownership.owns(discard) else {
                 AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
                     "worktree": discard.worktreePath,
@@ -280,7 +283,8 @@ enum TaskWorktreeCleanupService {
             do {
                 let discard = try journal.read(url)
                 guard !activeRecords.contains(activeKey(journal.recordURL(for: discard))) else { continue }
-                if try bindingIsSaved(discard, modelContext: modelContext) || !journal.ownership.owns(discard) {
+                if try bindingIsSaved(discard, modelContext: modelContext)
+                    || !(journal.ownership.owns(discard) || createdByThisIntent(discard)) {
                     try journal.remove(discard)
                     continue
                 }
@@ -311,6 +315,17 @@ enum TaskWorktreeCleanupService {
                 return WorkspacePathPresentation.standardizedPath(binding.worktreePath) == worktree
             }
         }
+    }
+
+    /// A creation that stopped after `git worktree add` but before recording
+    /// ownership is still recognized: Git recorded this intent's lock reason
+    /// in the same command, which a competing worktree never carries.
+    private static func createdByThisIntent(_ discard: TaskWorktreeDiscard) -> Bool {
+        guard let identity = discard.identity,
+              let markers = TaskWorktreeBinding.registeredMarkers(
+                  repositoryPath: TaskWorktreeService.cleanupRepository(for: discard), worktreePath: discard.worktreePath
+              ) else { return false }
+        return markers.lockReason == TaskWorktreeBinding.lockReason(forIdentity: identity)
     }
 
     private static func activeKey(_ url: URL) -> String {
