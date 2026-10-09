@@ -157,6 +157,34 @@ struct GitHubReviewPostWhenRequestedTests {
         }
     }
 
+    /// Auto posts while a request is open, so every way the user calls it off
+    /// has to close it — the noun forms too, and a stopping verb before the
+    /// posting one, which the broad pattern used to read as a request.
+    @Test("A request the user called off is never posted by Auto")
+    func cancelledRequestIsNotPosted() async throws {
+        for cancellation in ["Cancel the review", "Stop the review.", "Actually, withdraw the comments",
+                             "stop posting the review", "Don't post it", "cancel that"] {
+            let fixture = try Fixture()
+            fixture.context.insert(TaskEvent(
+                task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage, payload: cancellation
+            ))
+            let cli = FakeCLI()
+
+            let outcome = await fixture.handler(level: .autonomous, cli: cli).postGitHubReview(fixture.request(for: fixture.file))
+
+            #expect(!GitHubReviewPublicationRequirement.isPending(task: fixture.task), "\(cancellation)")
+            #expect(outcome == .refused(message: GitHubReviewPublicationError.notRequested.localizedDescription), "\(cancellation)")
+            #expect(await cli.callCount() == 0, "\(cancellation)")
+        }
+        // Talk that does not call it off leaves it open.
+        let fixture = try Fixture()
+        fixture.context.insert(TaskEvent(
+            task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Also stop the build warnings in the meantime"
+        ))
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+    }
+
     @Test("An uncertain post is never posted a second time")
     func uncertainPostIsNotRepeated() async throws {
         let fixture = try Fixture()

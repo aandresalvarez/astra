@@ -173,8 +173,12 @@ enum GitHubReviewPublicationRequirement {
     private static let explicitPublicationRegex = try? NSRegularExpression(
         pattern: #"\b(?:post|posting|publish|publishing|submit|submitting)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
     )
-    private static let pronounCancellationRegex = try? NSRegularExpression(
-        pattern: #"\b(?:(?:do not|don't|dont|never)\s+(?:post|publish|submit|send|add)\s+(?:it|that|them|this)|(?:cancel|stop)\s+(?:that|it|this))\b"#
+    /// A message that closes an open request without restating it: "don't post
+    /// it", "cancel that", and the noun forms — "cancel the review", "stop the
+    /// review", "withdraw the comments". Auto posts while a request is open,
+    /// so a cancellation it cannot read is a post the user called off.
+    private static let cancellationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:(?:do not|don't|dont|never)\s+(?:post|publish|submit|send|add)\s+(?:it|that|them|this)|(?:cancel|stop|withdraw|abort|scrap|drop|discard|forget)\s+(?:that|it|this|(?:(?:the|that|this|my|your|our)\s+)?(?:github\s+)?(?:pr\s+)?(?:review|reviews|posting|post|comments?)))\b"#
     )
 
     struct PostingRequest {
@@ -221,7 +225,7 @@ enum GitHubReviewPublicationRequirement {
             case .cancel:
                 current = nil
             case nil:
-                if current != nil, pronounCancellation(in: message.payload) {
+                if current != nil, cancellation(in: message.payload) {
                     current = nil
                 }
             }
@@ -340,8 +344,8 @@ enum GitHubReviewPublicationRequirement {
 
     private enum Intent { case publish, cancel }
 
-    private static func pronounCancellation(in request: String) -> Bool {
-        guard let regex = pronounCancellationRegex else { return false }
+    private static func cancellation(in request: String) -> Bool {
+        guard let regex = cancellationRegex else { return false }
         let lower = request.lowercased()
         return regex.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) != nil
     }
@@ -366,7 +370,8 @@ enum GitHubReviewPublicationRequirement {
         let words = clause.split(whereSeparator: { $0.isWhitespace }).suffix(4)
         let lead = words.joined(separator: " ")
         let matchedClause = String(lower[matchRange])
-        let negationPattern = #"\b(?:do not|don't|dont|never|without|no|not)\b"#
+        // "stop posting the review" calls it off as surely as "don't post it".
+        let negationPattern = #"\b(?:do not|don't|dont|never|without|no|not|stop|cancel|abort|withdraw|skip)\b"#
         let negatedBeforeVerb = lead.range(of: negationPattern, options: .regularExpression) != nil
         let negatedBetweenVerbAndObject = matchedClause.range(of: negationPattern, options: .regularExpression) != nil
         return !negatedBeforeVerb && !negatedBetweenVerbAndObject
