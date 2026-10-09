@@ -720,9 +720,18 @@ enum TaskWorktreeService {
         guard !(await git.listWorktrees(at: discard.repositoryPath)).isEmpty else {
             return kept("repository_unavailable", retry: true)
         }
+        // A status that can't be read is never taken as clean: the forced
+        // removal below deletes tracked and untracked edits.
+        func uncleanOutcome() async -> TaskWorktreeCleanupOutcome? {
+            switch await git.worktreeIsClean(at: path) {
+            case true?: nil
+            case false?: kept("uncommitted_changes")
+            case nil: kept("status_unavailable", retry: true)
+            }
+        }
         let exists = FileManager.default.fileExists(atPath: path)
         if exists {
-            guard await git.getStatusFiles(at: path).isEmpty else { return kept("uncommitted_changes") }
+            if let unclean = await uncleanOutcome() { return unclean }
             guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
             let branch = await git.getCurrentBranch(at: path)
             guard branch != "unknown" else { return kept("branch_unavailable", retry: true) }
@@ -762,7 +771,7 @@ enum TaskWorktreeService {
                 case .notPopulated, .unknown:
                     return kept("remove_failed", retry: true)
                 case .unchanged:
-                    guard await git.getStatusFiles(at: path).isEmpty else { return kept("uncommitted_changes") }
+                    if let unclean = await uncleanOutcome() { return unclean }
                     guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
                     if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
                     do {

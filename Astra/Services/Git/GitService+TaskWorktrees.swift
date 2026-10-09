@@ -96,6 +96,20 @@ extension GitService {
         )
     }
 
+    /// The same status `getStatusFiles` reads, but a failure is nil rather
+    /// than an empty, clean-looking list.
+    func worktreeIsClean(at repoPath: String) async -> Bool? {
+        do {
+            let output = try await runGit(
+                at: repoPath, arguments: ["--no-optional-locks", "status", "--porcelain=v1", "-z"],
+                failureLogLevel: .warning
+            )
+            return output.isEmpty
+        } catch {
+            return nil
+        }
+    }
+
     /// `git status` hides ignored files such as `.env` or local build output,
     /// yet a non-forced `git worktree remove` deletes them. Any listed entry,
     /// or a failure to list, means the checkout is kept.

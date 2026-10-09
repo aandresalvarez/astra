@@ -180,6 +180,22 @@ struct NewTaskWorktreeCreationJournalTests {
         case deinitialized
     }
 
+    @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
+    func worktreeCleanlinessFailsClosed() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        #expect(await GitService.shared.worktreeIsClean(at: repository.path) == true)
+        try "edit".write(to: repository.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+        #expect(await GitService.shared.worktreeIsClean(at: repository.path) == false)
+        // Where `git status` fails, the status list reads as clean; the
+        // cleanliness check reports it as unknown instead.
+        let notARepository = fixture.root.appendingPathComponent("not-a-repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: notARepository, withIntermediateDirectories: true)
+        #expect(await GitService.shared.getStatusFiles(at: notARepository.path).isEmpty)
+        #expect(await GitService.shared.worktreeIsClean(at: notARepository.path) == nil)
+    }
+
     @Test("Discarding removes submodules only while they hold no local work", arguments: SubmoduleWork.allCases)
     func discardRespectsSubmoduleWork(work: SubmoduleWork) async throws {
         let fixture = try Fixture()

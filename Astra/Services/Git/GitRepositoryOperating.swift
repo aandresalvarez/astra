@@ -94,6 +94,10 @@ protocol GitRepositoryOperating: AnyObject {
     func fetchRemoteBranch(remote: String, branch: String, at repoPath: String) async -> Bool
     /// Deletes `refs/heads/<branch>` only while it still points at `expectedCommit`.
     func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws
+    /// Whether the checkout has no tracked or untracked changes; nil when
+    /// `git status` fails. `getStatusFiles` reads a failure as clean, which
+    /// is safe for display but not before deleting a worktree.
+    func worktreeIsClean(at repoPath: String) async -> Bool?
     /// True when the checkout holds ignored files, which a non-forced
     /// `git worktree remove` deletes without asking; also true on error.
     func hasIgnoredFiles(at repoPath: String) async -> Bool
@@ -181,8 +185,9 @@ extension GitRepositoryOperating {
         throw GitWorktreeError.invalidBranchName(branch)
     }
 
-    /// Alternate operators fail closed: a checkout that may hold ignored files
-    /// is kept.
+    /// Alternate operators fail closed: a checkout whose status or ignored
+    /// files can't be read is kept.
+    func worktreeIsClean(at repoPath: String) async -> Bool? { nil }
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
     func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
 
