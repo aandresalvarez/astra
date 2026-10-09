@@ -148,6 +148,24 @@ struct BrokeredExternalActionRequestTests {
         #expect(requester.connectorRequests.isEmpty)
     }
 
+    /// The schema advertises `timeout_seconds` for the tool, so a client that
+    /// sends it on every call must still be able to ask ASTRA to post.
+    @Test("post_review accepts the schema's timeout_seconds")
+    func postReviewAcceptsTimeout() throws {
+        let folder = try temporaryTaskFolder()
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: folder).appendingPathComponent("pr12_review.json"))
+        let requester = RecordingRequester(outcome: .awaitingReview)
+
+        for timeout in [30, "30"] as [Any] {
+            let object = try call(server(folder, requester: requester), tool: "github", arguments: [
+                "operation": "post_review", "review_file": "pr12_review.json", "timeout_seconds": timeout
+            ])
+            #expect(object["error"] == nil, "\(timeout)")
+        }
+        #expect(requester.reviewRequests.count == 2)
+    }
+
     @Test("post_review without ASTRA's answer leaves the review for the user")
     func postReviewAwaitingReview() throws {
         let folder = try temporaryTaskFolder()

@@ -43,7 +43,8 @@ enum GitHubReviewPostPolicy {
         properties["operation"] = [
             "type": "string",
             "enum": [GitHubReviewHostControlOperations.postReview],
-            "description": "post_review: ask ASTRA to post the review file named by review_file. Omit for a gh command."
+            "description": "post_review: ask ASTRA to post the review file named by review_file. Omit for a gh command. "
+                + "timeout_seconds is accepted but does not apply: ASTRA bounds the post itself."
         ]
         properties[GitHubReviewHostControlOperations.reviewFileKey] = [
             "type": "string",
@@ -63,11 +64,15 @@ enum GitHubReviewPostPolicy {
         diagnostics: HostControlToolDiagnosticsRecorder?
     ) -> MCPServerReply {
         let fileKey = GitHubReviewHostControlOperations.reviewFileKey
-        let unknown = Set(arguments.keys).subtracting(["operation", fileKey]).sorted()
+        // `timeout_seconds` is in the tool's schema for its gh commands, and a
+        // client that sends it on every call must still be able to ask. It
+        // does not apply here: ASTRA bounds the post, and a shorter wait
+        // could only turn an answer into "not known yet".
+        let unknown = Set(arguments.keys).subtracting(["operation", fileKey, "timeout_seconds"]).sorted()
         guard unknown.isEmpty else {
             return .error(
                 code: -32602,
-                message: "github post_review takes only operation and \(fileKey); "
+                message: "github post_review takes only operation, \(fileKey) and timeout_seconds; "
                     + "\(unknown.joined(separator: ", ")) belong to a gh command, which is a separate call"
             )
         }
