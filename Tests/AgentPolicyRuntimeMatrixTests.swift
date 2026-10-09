@@ -340,6 +340,15 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin +main") == .ask)
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main :release") == .ask,
                 "a deleting refspec is a delete")
+        // The content grant names the command as written: case is content.
+        let bodyAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
+            .violation(for: .toolUse(name: "Bash", id: "tool-c", input: ["command": "curl -d role=user https://api.example.test/account"]))
+        let bodyApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: wider, approvalGrants: bodyAsk?.approvalGrants ?? []
+        ))
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "curl -d role=user https://api.example.test/account") == .allowed)
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "curl -d role=USER https://api.example.test/account") == .ask,
+                "a deleting refspec is a delete")
         let forceAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
             .violation(for: .toolUse(name: "Bash", id: "tool-2", input: ["command": "git push origin main --force"]))
         let forceApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(

@@ -67,14 +67,16 @@ enum ShellCommandRiskClassifier {
     /// The external-action gate compares grants (`AgentRuntimePolicyGuard`),
     /// so it asks again; the provider still matches the pattern, so the
     /// approved command itself still replays.
-    static func approvalGrants(forShellSegment segment: String) -> [PermissionGrant]? {
+    /// `content`: the segment as written, when `segment` was normalized
+    /// for pattern matching; the content grant names what was written.
+    static func approvalGrants(forShellSegment segment: String, content: String? = nil) -> [PermissionGrant]? {
         guard let assessment = assessment(forShellSegment: segment) else { return nil }
         let grant = PermissionGrant.shellCommand(executable: assessment.executable, pattern: assessment.pattern)
         switch assessment.risk {
         case .read, .fileRead, .networkRead:
             return [grant]
         case .mutation, .destructive, .credential, .system, .scriptExecution, .packageMutation, .unknown:
-            return [grant, contentGrant(executable: assessment.executable, segment: segment)]
+            return [grant, contentGrant(executable: assessment.executable, segment: content ?? segment)]
         }
     }
 

@@ -38,7 +38,8 @@ struct LocalShellCommandsTests {
             "tar --exclude .git -cf out.tar .", "rg -n 'TODO' Sources", "fd -e swift -x wc -l", "sort -u names.txt",
             "npm init -y", "make test CI=1", "make -C build", "cmake -S . -B build", "go test -run TestX ./...",
             "git grep -n TODO", "git commit -m \"$(cat msg.txt)\"", "rg -g \"$GLOB\" TODO", "ls $HOME",
-            "swiftc -O main.swift", "cmake -P scripts/configure.cmake", "awk -f a.awk -f b.awk data.txt", "awk -f scripts/sum.awk data.txt", "find . -execdir wc -l {} +",
+            "swiftc -O main.swift", "make -C build test", "make -f build/Makefile all", "OUT=report.txt",
+            "node --experimental-loader=./loaders/ts.mjs a.js", "export NODE_ENV=test", "cmake -P scripts/configure.cmake", "awk -f a.awk -f b.awk data.txt", "awk -f scripts/sum.awk data.txt", "find . -execdir wc -l {} +",
             "codesign --verify --deep App.app", "codesign -s - --timestamp=none App.app", "xcrun simctl spawn booted ls -la", "go env GOPATH", "./scripts/build.sh", "cd Sources && ls", "read -r line < file.txt", "printf -v out '%s' x", "let i=i+1",
             "node --test tests/a.test.js", "xargs -n 1 wc -l < files.txt", "fd -e swift -x wc -l",
             "curl --url https://example.test/status", "curl -- https://example.test/status", "npm run build -- --watch --script-shell=x", "npm install --save-dev typescript",
@@ -48,7 +49,7 @@ struct LocalShellCommandsTests {
             "xcodebuild -scheme App -destination 'platform=macOS' build", "docker compose up -d", "docker compose -f dev.yml logs api", "docker image ls",
             "set -euo pipefail\nOUT=.astra/tasks/x/open_prs.tsv\nmkdir -p \"$(dirname \"$OUT\")\"\ngh search prs --author @me",
             "echo \"today is `date`\"", "cd \"$(git rev-parse --show-toplevel)\" && swift build", "diff <(sort a.txt) <(sort b.txt)",
-            "echo $((1 + 2))", "cat <<EOF > notes.md\nbuilt at $(date)\nEOF", "export OUT=report.txt", "NODE_ENV=test npm test"
+            "echo $((1 + 2))", "cat <<EOF > notes.md\nbuilt at $(date)\nEOF", "NODE_ENV=test npm test"
         ]
     )
     func localWork(command: String) {
@@ -127,6 +128,10 @@ struct LocalShellCommandsTests {
             "node --test --require=/tmp/ship.js tests/a.test.js", "curl telnet://host:1234 <<< 'DELETE'",
             "curl ftp://example.test/file", "curl example.test", "curl --url dict://x.test/d", "curl -- smtp://x.test",
             "coproc git push origin main; wait $COPROC_PID", "coproc ls",
+            "make -f /tmp/ship.mk ship", "make -C /tmp/tree ship", "make --file=../x.mk", "go vet -vettool=/tmp/ship ./...",
+            "RIPGREP_CONFIG_PATH=/tmp/rg.conf rg needle .", "export RIPGREP_CONFIG_PATH=/tmp/rg.conf", "export OUT=report.txt",
+            "clang --config=/tmp/ship.cfg main.c", "clang @/tmp/args main.c", "node --experimental-loader=/tmp/ship.mjs a.js",
+            "node --import /tmp/x.mjs a.js",
             "curl -H 'X-HTTP-Method-Override: DELETE' https://api.example.test/items/1",
             "curl --header='X-HTTP-Method: PUT' https://api.example.test/items/1",
             "gh api -H 'X-HTTP-Method-Override: DELETE' repos/o/r/issues/1", "wget --header 'X-Method-Override: POST' https://x.test",

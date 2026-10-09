@@ -388,7 +388,13 @@ enum LocalShellCommands {
                 words = words.dropFirst()
                 if words.first == "-p" { words = words.dropFirst() }
             } else if isAssignment(first) {
-                guard isLocalAssignment(first) else { return false }
+                // A variable set for the command that follows is that
+                // program's environment, so only a listed name is local; a
+                // standalone assignment only steers the shell.
+                let setsAProgramsEnvironment = words.dropFirst().contains { !isAssignment($0) }
+                guard setsAProgramsEnvironment ? isListedEnvironmentAssignment(first) : isLocalAssignment(first) else {
+                    return false
+                }
                 words = words.dropFirst()
             } else {
                 break
@@ -402,8 +408,9 @@ enum LocalShellCommands {
             return true
         case "export", "readonly", "declare", "typeset", "local":
             // `-n` makes a name a reference to another variable (`PATH`).
+            // An exported variable is every later program's environment.
             return !args.contains { $0.hasPrefix("-") && $0.contains("n") }
-                && args.filter(isAssignment).allSatisfy(isLocalAssignment)
+                && args.filter(isAssignment).allSatisfy(program == "export" ? isListedEnvironmentAssignment : isLocalAssignment)
         case "read", "getopts", "printf", "let":
             // Builtins that assign to the variables they name (`read PATH`,
             // `printf -v PATH`, `let PATH=…`): each name is judged as an
@@ -433,6 +440,33 @@ enum LocalShellCommands {
         let name = String(word.prefix { $0 != "=" && $0 != "+" }).uppercased()
         if localEnvironmentNames.contains(name) || name.hasPrefix("LC_") { return true }
         return !toolSteeringNames.contains(name) && !toolSteeringPrefixes.contains(where: name.hasPrefix)
+    }
+
+    /// A variable on the list of ones that only tune a local program; any
+    /// other can be a tool's configuration (`RIPGREP_CONFIG_PATH`).
+    private static func isListedEnvironmentAssignment(_ word: String) -> Bool {
+        let name = String(word.prefix { $0 != "=" && $0 != "+" }).uppercased()
+        return localEnvironmentNames.contains(name) || name.hasPrefix("LC_")
+    }
+
+    /// The values of the named options, in either spelling (`-f FILE`,
+    /// `-fFILE`, `--file=FILE`).
+    private static func optionOperands(_ args: [String], names: Set<String>) -> [String] {
+        var values: [String] = []
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            index += 1
+            if names.contains(arg) {
+                values.append(index < args.count ? args[index] : "-")
+                index += 1
+            } else if let name = names.first(where: { $0.hasPrefix("--") && arg.hasPrefix($0 + "=") }) {
+                values.append(String(arg.dropFirst(name.count + 1)))
+            } else if let name = names.first(where: { !$0.hasPrefix("--") && arg.hasPrefix($0) && arg.count > $0.count && !arg.hasPrefix("--") }) {
+                values.append(String(arg.dropFirst(name.count)))
+            }
+        }
+        return values
     }
 
     private static let toolSteeringNames: Set<String> = [
@@ -489,8 +523,11 @@ enum LocalShellCommands {
         case "make", "gmake":
             // `--eval` adds a rule, recipe included, from the command line, and
             // a variable set there can name what a recipe runs.
+            // `-f FILE` and `-C DIR` pick the recipes that run, so they are
+            // judged as an interpreter's script is.
             return !args.contains { $0 == "-E" || $0.hasPrefix("--eval") || ($0.hasPrefix("-E") && !$0.hasPrefix("--")) }
                 && args.filter(isAssignment).allSatisfy { localEnvironmentNames.contains(String($0.prefix { $0 != "=" })) }
+                && optionOperands(args, names: ["-f", "--file", "--makefile", "-C", "--directory"]).allSatisfy(isProjectScript)
         case "cmake":
             // `cmake -E env …` runs a program, in `cmake --build` the words
             // after `--` go to the native tool (`make --eval=…`), and `-P FILE`
@@ -1254,6 +1291,14 @@ enum LocalShellCommands {
                 index += 1
                 continue
             }
+            // An option that loads a module (`--experimental-loader=…`,
+            // `--import`) names code to run, judged as the script is.
+            let name = String(option.prefix { $0 != "=" })
+            if name.contains("loader") || name.contains("import") || name.contains("require") {
+                guard option.contains("="), isProjectScript(String(option.drop { $0 != "=" }.dropFirst())) else { return false }
+                index += 1
+                continue
+            }
             guard ["--enable-source-maps", "--no-warnings", "--trace-warnings", "--trace-uncaught"].contains(option)
                     || option.hasPrefix("--experimental-") || option.hasPrefix("--max-old-space-size=") else {
                 return false
@@ -1381,7 +1426,10 @@ enum LocalShellCommands {
             let lower = arg.lowercased()
             // Also a linker or helper named on the command line (`rustc -C
             // linker=…`, `-fuse-ld=…`, `gcc -B dir`, `-wrapper`).
+            // A configuration or response file (`--config=…`, `@args`)
+            // holds options this cannot read.
             return lower.contains("plugin") || lower.hasPrefix("-load") || lower.contains("linker")
+                || lower.hasPrefix("--config") || lower.hasPrefix("@")
                 || lower.contains("link-arg") || lower.hasPrefix("-fuse-ld") || lower.hasPrefix("--ld-path")
                 || lower.hasPrefix("-b") || lower == "-wrapper" || lower.hasPrefix("-z")
                 || ["-xfrontend", "-xclang", "-xllvm", "-xswiftc", "-xcc", "-xlinker"].contains(lower)
@@ -1423,7 +1471,9 @@ enum LocalShellCommands {
         }
         // `go generate` runs the commands its directives name, and `-exec` and
         // `-toolexec` name a program to run.
-        guard !args.contains(where: { $0.hasPrefix("-exec") || $0.hasPrefix("-toolexec") || $0.hasPrefix("--exec") }) else {
+        guard !args.contains(where: {
+            $0.hasPrefix("-exec") || $0.hasPrefix("-toolexec") || $0.hasPrefix("--exec") || $0.hasPrefix("-vettool")
+        }) else {
             return false
         }
         return ["build", "test", "vet", "fmt", "run", "list", "env", "version", "doc", "clean", "install", "get", "work", "help"]
