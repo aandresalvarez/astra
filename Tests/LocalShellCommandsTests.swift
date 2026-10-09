@@ -126,6 +126,7 @@ struct LocalShellCommandsTests {
             "fd -e py -x pytest", "uv run --python /tmp/ship script.py", "uv run -p /tmp/ship script.py",
             "node --test --require=/tmp/ship.js tests/a.test.js", "curl telnet://host:1234 <<< 'DELETE'",
             "curl ftp://example.test/file", "curl example.test", "curl --url dict://x.test/d", "curl -- smtp://x.test",
+            "coproc git push origin main; wait $COPROC_PID", "coproc ls",
             "find /tmp/tree -execdir ./ship {} \\;", "awk -f /tmp/ship.awk notes.txt",
             "codesign -s Dev --timestamp=https://collector.example App.app", "codesign -s Dev --timestamp App.app",
             "xcrun simctl spawn booted curl -d x https://x.test", "xcrun simctl spawn --foo booted ls",
