@@ -164,10 +164,13 @@ boundary. The full inventory is in
   `python3 scripts/report.py` and `docker run` execute project code or an
   image, and what that code does is the project's. So every operand that
   chooses which code runs stays in the project: an interpreter's script,
-  `awk -f`, `make -f`, a loader, and every path a build, test or package
-  tool is given (`--package-path`, `--manifest-path`, a test file,
-  `-project`, a toolchain file, `git -C`), as well as the directory it runs
-  in after a `cd`. A variable set for a program, or exported, is that
+  `awk -f`, `make -f`, a loader, and every path a build, test, lint or
+  package tool is given (`--package-path`, `--manifest-path`, a test file,
+  `-project`, a toolchain file, a linter's config or formatter, `git -C`),
+  as well as the directory it runs in after a `cd`. A tool is "local with
+  any arguments" only when no argument can make it run code: `sed` is read
+  command by command (GNU `e`), and a header or cookie curl reads from a
+  file (`-H @file`) is not local. A variable set for a program, or exported, is that
   program's environment and is local only when it is on the list of ones
   that only tune a local program (`NODE_ENV`, `LC_*`). A user's own tool
   configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context,
