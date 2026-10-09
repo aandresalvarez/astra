@@ -587,12 +587,13 @@ final class TaskLifecycleCoordinator {
     /// exists — then remove the rows so terminal history doesn't accumulate
     /// as permanent orphans.
     /// Runs before a deletion is recorded. Stopping the worker is not
-    /// reversible, so the cancellation must never sit inside the deletion's
-    /// rollback scope: `saveDeletionThenDiscard` checkpoints it before the
-    /// delete, and a failed deletion save then keeps a task whose requests
-    /// are already cancelled, never a restored request with no worker.
+    /// reversible, so the cancellation is saved by the same call that stops
+    /// it and never sits inside the deletion's rollback scope: a failed
+    /// deletion save keeps a task whose requests are already durably
+    /// cancelled, never a restored request with no worker. The request rows
+    /// are removed in the deletion's checkpoint save.
     private func cancelAndRemoveTurnRequests(for task: AgentTask) {
-        taskQueue.cancel(task: task, modelContext: modelContext, persistCancellation: false)
+        taskQueue.cancel(task: task, modelContext: modelContext)
         if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
             for request in requests {
                 modelContext.delete(request)
