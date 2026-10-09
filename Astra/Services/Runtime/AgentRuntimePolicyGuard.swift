@@ -534,8 +534,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// (`LocalShellCommands`): only a command made of listed local tools runs
     /// on a Custom rule alone, and anything else is asked about as written.
     private func unapprovedExternalCommand(_ command: String) -> String? {
-        if LocalShellCommands.isLocal(command, environmentKeyNames: Set(manifest.environmentKeyNames))
-            || commandApprovedByGrant(command) {
+        if LocalShellCommands.isLocal(command) || commandApprovedByGrant(command) {
             return nil
         }
         return command

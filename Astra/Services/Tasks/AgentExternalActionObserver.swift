@@ -51,9 +51,6 @@ enum AgentExternalActionObserver {
         var gitHubURL: String?
         var enterpriseHost: String?
         var enterpriseRepository: String?
-        /// Known local work that mentions Docker: recorded only for a run whose
-        /// environment routes Docker elsewhere.
-        var dockerOnly: Bool?
     }
 
     nonisolated static func resultMarker(
@@ -73,14 +70,7 @@ enum AgentExternalActionObserver {
                            gitHubURL: firstGitHubURL(in: text, host: enterprise?.host),
                            enterpriseHost: enterprise?.host, enterpriseRepository: enterprise?.repository)
         }
-        // Whether a Docker command acted outside depends on the run's
-        // environment, read at the boundary.
-        guard LocalShellCommands.mentionsDocker(text) else { return nil }
-        let docker = (LocalShellCommands.simpleCommands(text) ?? [])
-            .filter { ($0.first.map { ($0 as NSString).lastPathComponent }) == "docker" }
-            .map { words in (["docker"] + words.dropFirst().prefix(1).filter { !$0.hasPrefix("-") }).joined(separator: " ") }
-        let names = docker.isEmpty ? "`docker`" : Array(Set(docker)).sorted().map { "`\($0)`" }.joined(separator: ", ")
-        return Verdict(action: "command", names: names, dockerOnly: true)
+        return nil
     }
 
     nonisolated static func encode(_ action: Action) -> String {
@@ -118,14 +108,11 @@ enum AgentExternalActionObserver {
     }
 
     @discardableResult
-    /// `environmentKeyNames`: the variables the run's provider was given
-    /// (`RunPermissionManifest.environmentKeyNames`), judged as the guard does.
     static func recordObservedActions(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        policyLevel: AgentPolicyLevel,
-        environmentKeyNames: [String] = []
+        policyLevel: AgentPolicyLevel
     ) -> [Observation] {
         guard !ExternalActionPolicy.asksUser(for: .agentCommand, level: policyLevel) else { return [] }
         let runEvents = task.events
@@ -155,7 +142,7 @@ enum AgentExternalActionObserver {
                 let marker = markers.remove(at: position)
                 if let verdict = marker.verdict {
                     if let observation = observation(of: verdict, event: event, output: marker.output,
-                                                     failed: marker.failed == true, environmentKeyNames: environmentKeyNames) {
+                                                     failed: marker.failed == true) {
                         modelContext.insert(TaskEvent.structuredPayloadEvent(task: task, type: eventType, payload: observation, run: run))
                         observations.append(observation)
                     }
@@ -170,7 +157,7 @@ enum AgentExternalActionObserver {
                 output = fallback.output
                 failed = fallback.failed
             }
-            guard let recognised = recordedAction(in: command, environmentKeyNames: Set(environmentKeyNames)) else { continue }
+            guard let recognised = recordedAction(in: command) else { continue }
             // A call that came back as an error may still have acted partway
             // (`curl -d … ; false`), so it is recorded too, as the command it
             // ran and that it failed, never as the action it was trying.
@@ -203,12 +190,8 @@ enum AgentExternalActionObserver {
 
     /// The record of a call judged when it was recorded (`Verdict`).
     private static func observation(
-        of verdict: Verdict, event: TaskEvent, output: String, failed: Bool, environmentKeyNames: [String]
+        of verdict: Verdict, event: TaskEvent, output: String, failed: Bool
     ) -> Observation? {
-        if verdict.dockerOnly == true,
-           !environmentKeyNames.contains(where: { $0.uppercased().hasPrefix("DOCKER_") }) {
-            return nil
-        }
         // A failed call is recorded as the programs it ran, never as the
         // action it was trying.
         let action = failed ? nil : decodeAction(verdict.action)
@@ -343,10 +326,10 @@ enum AgentExternalActionObserver {
     /// exactly what Ask would have asked about. A call that is one recognised
     /// `git push` or `gh` write gets that action's title; any other is
     /// recorded as the command it ran, never as what it may have done.
-    nonisolated static func recordedAction(in command: String, environmentKeyNames: Set<String> = []) -> Action? {
+    nonisolated static func recordedAction(in command: String) -> Action? {
         let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !LocalShellCommands.isLocal(text, environmentKeyNames: environmentKeyNames) else { return nil }
+        guard !text.isEmpty, !LocalShellCommands.isLocal(text) else { return nil }
         // One command whose own status is the call's: no separator, and not
         // sent to the background.
         if let commands = LocalShellCommands.simpleCommands(text), commands.count == 1, !text.hasSuffix("&"),

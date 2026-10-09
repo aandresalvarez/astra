@@ -153,7 +153,7 @@ boundary. The full inventory is in
   `submodule foreach` or `bisect run`); `gh` reads (`view`, `list`,
   `status`, `checks`, `diff`, a `gh api` GET or a GraphQL query without
   `mutation`); `curl`/`wget` with fetch-only options and a GET or HEAD;
-  `docker` against the local daemon with no global option, push, or login;
+  `docker` with no global option, push, login, or `DOCKER_*` assignment;
   package managers' install/run/test (never publish, login, `npx`, `exec`);
   build, test and format tools; and an interpreter running a script file.
   A shell's `-c` string, a runner's command (`env`, `xargs`, `timeout`,
@@ -163,8 +163,10 @@ boundary. The full inventory is in
   the command, not the program it runs: `make`, `swift test`, `npm run build`,
   `python3 scripts/report.py` and `docker run` execute project code or an
   image, and what that code does is the project's. A user's own tool
-  configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context)
-  is the user's.
+  configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context,
+  a provider home's Docker config, a capability's `DOCKER_HOST`) is the
+  user's: it decides where a command the list accepts goes, and the command
+  does not express it.
 - **What the list is not.** It decides whether a command *expresses* an
   action outside ASTRA (`git push`, `gh pr create`, `curl -d`, `npm
   publish`, `ssh`), so that the action asks in Ask and Custom and is recorded

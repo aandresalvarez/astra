@@ -225,14 +225,6 @@ struct AgentExternalActionObserverTests {
         #expect(marker.verdict?.webHost == "https://hooks.example.test")
     }
 
-    @Test("Docker the run's environment routes elsewhere is recorded")
-    func dockerRoutedByTheRunIsRecorded() {
-        #expect(AgentExternalActionObserver.recordedAction(in: "docker run alpine", environmentKeyNames: ["DOCKER_HOST"])
-            == .command("docker run alpine"))
-        #expect(AgentExternalActionObserver.resultMarker(evidence: "Using tool: Bash: docker ps", output: "") != nil,
-                "a Docker call keeps a marker, judged at the boundary with the run's environment")
-    }
-
     @Test("An SSH push links its GitHub repository")
     func sshPushLinksTheRepository() throws {
         let fixture = try ObserverFixture()

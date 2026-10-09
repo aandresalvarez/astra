@@ -24,19 +24,8 @@ import Foundation
 /// same capability. Forms of that it knows are rejected because it is free
 /// to, but containing hidden actions is the sandbox's job (spec decision 14).
 enum LocalShellCommands {
-    /// `environmentKeyNames`: the variables the run's provider is given
-    /// beyond ASTRA's own (a skill's `DOCKER_HOST`). One that routes Docker
-    /// elsewhere means this process cannot tell which daemon a `docker`
-    /// command reaches, so a command that mentions Docker is not local.
-    static func isLocal(_ command: String, environmentKeyNames: Set<String> = []) -> Bool {
-        if environmentKeyNames.contains(where: { $0.uppercased().hasPrefix("DOCKER_") }), mentionsDocker(command) {
-            return false
-        }
-        return isLocal(command, depth: 0)
-    }
-
-    static func mentionsDocker(_ command: String) -> Bool {
-        command.range(of: #"(^|[^A-Za-z0-9_-])docker([^A-Za-z0-9_]|$)"#, options: .regularExpression) != nil
+    static func isLocal(_ command: String) -> Bool {
+        isLocal(command, depth: 0)
     }
 
     /// The simple commands of a shell string, each as its words with quotes
@@ -1017,14 +1006,16 @@ enum LocalShellCommands {
 
     // MARK: Containers and packages
 
-    /// `docker` against this machine's daemon, without a push, a login, or a
-    /// global option that picks another daemon or configuration.
+    /// `docker` without a push, a login, or a global option that picks a
+    /// daemon or configuration on the command line. Which daemon it reaches
+    /// otherwise is the user's Docker configuration — a context, a provider
+    /// home, a capability's `DOCKER_HOST` — which the command does not
+    /// express (spec decision 14), as `~/.curlrc` is curl's.
     private static func dockerIsLocal(_ args: [String]) -> Bool {
         guard let verb = args.first else { return true }
         if ["--version", "-v", "--help"].contains(verb) { return true }
         guard !verb.hasPrefix("-"),
-              !args.contains(where: { $0.lowercased().contains("push") || $0.lowercased().contains("registry") }),
-              DockerDaemonLocality.isLocal() else {
+              !args.contains(where: { $0.lowercased().contains("push") || $0.lowercased().contains("registry") }) else {
             return false
         }
         let rest = Array(args.dropFirst())
