@@ -125,6 +125,7 @@ struct LocalShellCommandsTests {
             "fd -e py -x pytest", "uv run --python /tmp/ship script.py", "uv run -p /tmp/ship script.py",
             "node --test --require=/tmp/ship.js tests/a.test.js", "curl telnet://host:1234 <<< 'DELETE'",
             "curl ftp://example.test/file", "curl example.test", "curl --url dict://x.test/d", "curl -- smtp://x.test",
+            "bash -c 'echo DELETE >/dev/tcp/host/1234'", "exec 3<>/dev/tcp/example.test/80", "cat < /dev/udp/host/53",
             "printf 'x\\n' | mapfile -C /tmp/ship -c 1 rows", "go env -w GOFLAGS=-toolexec=/tmp/ship; go build .",
             "../../tmp/ship", "cd /tmp && ./ship", "cd .. && bash scripts/x.sh", "cd \"$OTHER\" && ./run",
             "npm run build --script-shell=/tmp/ship", "pnpm --filter web test", "rg --{pre=ship,x} TODO", "npm test --node-options='--require ./x.js'", "rustc -C linker=/tmp/ship a.rs",
@@ -137,6 +138,16 @@ struct LocalShellCommandsTests {
     )
     func notLocal(command: String) {
         #expect(!LocalShellCommands.isLocal(command), "\(command)")
+    }
+
+    // A skill can hand the provider `DOCKER_HOST`; this process cannot see
+    // where that points, so Docker is not local work for that run.
+    @Test("Docker routed by the run's environment is not local")
+    func dockerRoutedByTheRunEnvironment() {
+        #expect(!LocalShellCommands.isLocal("docker ps", environmentKeyNames: ["DOCKER_HOST"]))
+        #expect(!LocalShellCommands.isLocal("bash -c 'docker run alpine'", environmentKeyNames: ["DOCKER_CONTEXT"]))
+        #expect(LocalShellCommands.isLocal("ls -la", environmentKeyNames: ["DOCKER_HOST"]))
+        #expect(LocalShellCommands.isLocal("echo x > /dev/null && echo y > out.txt"))
     }
 
     @Test("Simple commands drop quotes, redirections and here documents")

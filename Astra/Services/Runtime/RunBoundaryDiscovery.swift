@@ -33,7 +33,8 @@ enum RunBoundaryDiscovery {
         run: TaskRun,
         modelContext: ModelContext,
         policyLevel: AgentPolicyLevel = .review,
-        runFinishedCleanly: Bool = false
+        runFinishedCleanly: Bool = false,
+        environmentKeyNames: [String] = []
     ) {
         let discovered = ConnectorMutationDiscovery.recordStagedMutations(
             task: task,
@@ -72,7 +73,8 @@ enum RunBoundaryDiscovery {
             task: task,
             run: run,
             modelContext: modelContext,
-            policyLevel: policyLevel
+            policyLevel: policyLevel,
+            environmentKeyNames: environmentKeyNames
         ).isEmpty {
             WorkspacePersistenceCoordinator.saveAndAutoExport(
                 workspace: task.workspace,

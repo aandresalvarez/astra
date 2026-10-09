@@ -1116,7 +1116,8 @@ final class AgentRuntimeWorker {
             modelContext: modelContext,
             policyLevel: manifest.policyLevel,
             runFinishedCleanly: RuntimeTurnSettlementService.finishedCleanly(
-                checkpoint: resultCheckpoint, taskStatus: task.status)
+                checkpoint: resultCheckpoint, taskStatus: task.status),
+            environmentKeyNames: manifest.environmentKeyNames
         )
 
         do {

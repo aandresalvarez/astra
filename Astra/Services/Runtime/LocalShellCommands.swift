@@ -24,8 +24,19 @@ import Foundation
 /// same capability. Forms of that it knows are rejected because it is free
 /// to, but containing hidden actions is the sandbox's job (spec decision 14).
 enum LocalShellCommands {
-    static func isLocal(_ command: String) -> Bool {
-        isLocal(command, depth: 0)
+    /// `environmentKeyNames`: the variables the run's provider is given
+    /// beyond ASTRA's own (a skill's `DOCKER_HOST`). One that routes Docker
+    /// elsewhere means this process cannot tell which daemon a `docker`
+    /// command reaches, so a command that mentions Docker is not local.
+    static func isLocal(_ command: String, environmentKeyNames: Set<String> = []) -> Bool {
+        if environmentKeyNames.contains(where: { $0.uppercased().hasPrefix("DOCKER_") }), mentionsDocker(command) {
+            return false
+        }
+        return isLocal(command, depth: 0)
+    }
+
+    static func mentionsDocker(_ command: String) -> Bool {
+        command.range(of: #"(^|[^A-Za-z0-9_-])docker([^A-Za-z0-9_]|$)"#, options: .regularExpression) != nil
     }
 
     /// The simple commands of a shell string, each as its words with quotes
@@ -68,6 +79,7 @@ enum LocalShellCommands {
         // shell may expand it into a file named like one (`--pastebin=all`).
         var wordGlobsIntoOption = false
         var wordBraceAtOptionPosition = false
+        var opensSocket = false
         var inSingle = false
         var inDouble = false
         var redirectionTarget = false
@@ -88,6 +100,9 @@ enum LocalShellCommands {
                 heredocDelimiterNext = nil
             } else if redirectionTarget {
                 redirectionTarget = false
+                // Bash opens `/dev/tcp/HOST/PORT` and `/dev/udp/…` as sockets:
+                // a redirection there sends to another machine.
+                if word.hasPrefix("/dev/tcp/") || word.hasPrefix("/dev/udp/") { opensSocket = true }
             } else {
                 // Marked as an expansion, which is judged where an option could stand.
                 // `{a,b}` and `{1..3}` expand; a lone `{}` (find's placeholder) does not.
@@ -240,7 +255,7 @@ enum LocalShellCommands {
         }
         guard !inSingle, !inDouble, heredocDelimiterNext == nil else { return nil }
         endCommand()
-        guard pendingHeredocs.isEmpty, !redirectionTarget else { return nil }
+        guard pendingHeredocs.isEmpty, !redirectionTarget, !opensSocket else { return nil }
         return (commands, substitutions)
     }
 

@@ -329,6 +329,13 @@ struct AgentPolicyRuntimeMatrixTests {
             #expect(approved.disposition(toolName: "Bash", command: written) == .allowed, "\(written) approved once")
         }
 
+        // A skill that hands the provider DOCKER_HOST routes Docker where this
+        // process cannot see, so a rule allowing docker still asks.
+        var routed = Self.manifest(runtime: .claudeCode, policy: wider)
+        routed.environmentKeyNames = ["DOCKER_HOST"]
+        #expect(AgentRuntimePolicyGuard(manifest: routed).disposition(toolName: "Bash", command: "docker ps") == .ask)
+        #expect(AgentRuntimePolicyGuard(manifest: routed).disposition(toolName: "Bash", command: "git status") == .allowed)
+
         // Approving a push is not approving a force: that needs its own yes.
         let plainPushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
             .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": "git push origin main"]))
