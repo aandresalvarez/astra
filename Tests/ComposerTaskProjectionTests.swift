@@ -131,6 +131,35 @@ struct ComposerTaskProjectionTests {
         #expect(fixture.skill.tasks.isEmpty)
     }
 
+    @Test("A selected skill's workspace-owned connector stays in the preview's inventory")
+    func detachedPreviewKeepsWorkspaceOwnedConnectors() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let owned = Connector(name: "Workspace Jira", serviceType: "jira")
+        fixture.context.insert(owned)
+        owned.skill = fixture.skill
+        owned.workspace = fixture.workspace
+        try fixture.context.save()
+
+        let preview = ComposerTaskProjection.detachedTask(
+            title: "Preview",
+            goal: "Summarize the zebrafish assay notes",
+            workspace: fixture.workspace,
+            skills: [fixture.skill],
+            inputs: []
+        )
+
+        #expect(preview.modelContext == nil)
+        let clone = try #require(preview.skills.first?.connectors.first { $0.id == owned.id })
+        #expect(clone.workspace?.id == fixture.workspace.id)
+        #expect(clone.workspace !== fixture.workspace)
+        #expect(TaskCapabilityResolver(task: preview).allConnectors.contains { $0.id == owned.id })
+        try fixture.context.save()
+        #expect(try storedTaskIDs(fixture.context).isEmpty)
+        #expect(try fixture.context.fetchCount(FetchDescriptor<Workspace>()) == 1)
+        #expect(try fixture.context.fetchCount(FetchDescriptor<Connector>()) == 2)
+    }
+
     @Test("Scoping skills on Run returns the managed skills and leaves no probe task behind")
     func skillScopeProbeLeavesNoPhantomDraft() throws {
         let fixture = try makeFixture()

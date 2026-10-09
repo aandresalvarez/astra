@@ -123,6 +123,33 @@ enum TaskExecutionLaunchSnapshotApplicator {
             ),
             workspace: nil
         )
+        // The resolver keeps a non-global skill connector only when its
+        // workspace id matches the task's, so the copies keep that ownership —
+        // through an unmanaged workspace projection, never the managed one.
+        var workspaceProjections: [UUID: Workspace] = [:]
+        func projection(of source: Workspace?) -> Workspace? {
+            guard let source else { return nil }
+            if let existing = workspaceProjections[source.id] { return existing }
+            let workspace = detachedWorkspace(source)
+            workspaceProjections[source.id] = workspace
+            return workspace
+        }
+        let connectorWorkspaces = Dictionary(
+            connectors.map { ($0.id, $0.workspace) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let localToolWorkspaces = Dictionary(
+            localTools.map { ($0.id, $0.workspace) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for skill in graph.skillsByID.values {
+            for connector in skill.connectors {
+                connector.workspace = projection(of: connectorWorkspaces[connector.id] ?? nil)
+            }
+            for tool in skill.localTools {
+                tool.workspace = projection(of: localToolWorkspaces[tool.id] ?? nil)
+            }
+        }
         return skills.compactMap { graph.skillsByID[$0.id] }
     }
 
