@@ -493,6 +493,10 @@ enum LocalShellCommands {
         switch name {
         case "awk":
             return awkIsLocal(args)
+        case "codesign":
+            // `--timestamp` asks a timestamp service on the network; only
+            // `--timestamp=none` keeps the signature on this machine.
+            return !args.contains { $0.hasPrefix("--timestamp") && $0 != "--timestamp=none" }
         case "make", "gmake":
             // `--eval` adds a rule, recipe included, from the command line, and
             // a variable set there can name what a recipe runs.
@@ -599,7 +603,7 @@ enum LocalShellCommands {
         "sw_vers", "plutil", "defaults", "mdfind", "mdls", "pbcopy", "pbpaste", "uptime", "vm_stat", "sysctl",
         // Build, test and format tools, which run the project's own code.
         "ninja", "swift-format", "swiftlint", "xcodegen",
-        "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "codesign", "dsymutil",
+        "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "dsymutil",
         "rustfmt", "gofmt", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
         "mypy", "flake8", "pylint", "isort"
     ]
@@ -608,7 +612,8 @@ enum LocalShellCommands {
     private static func awkIsLocal(_ args: [String]) -> Bool {
         var index = 0
         while index < args.count, args[index].hasPrefix("-") {
-            if args[index] == "-f" { return true }
+            // A program file is judged as an interpreter's script is.
+            if args[index] == "-f" { return index + 1 < args.count && isProjectScript(args[index + 1]) }
             index += ["-F", "-v"].contains(args[index]) ? 2 : 1
         }
         guard index < args.count else { return false }
@@ -676,6 +681,12 @@ enum LocalShellCommands {
             }
             guard let end = args[(index + 1)...].firstIndex(where: { $0 == ";" || $0 == "+" }),
                   isLocalCommand(Array(args[(index + 1)..<end]), depth: depth + 1) else {
+                return false
+            }
+            // `-execdir` and `-okdir` run in each match's directory, where a
+            // relative program path is no longer a project file.
+            if ["-execdir", "-okdir"].contains(args[index]),
+               runsRelativeProgramFile(Array(args[(index + 1)..<end])) {
                 return false
             }
             index = end + 1
