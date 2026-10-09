@@ -725,14 +725,15 @@ enum AgentEventRecorder {
 
         case .toolResult(let toolID, let content, let isError):
             recordingState?.breakConversationCoalescing(for: run)
-            // A successful external action keeps its own call's evidence, even
-            // when it printed nothing: a batch answers its calls in any order,
-            // and successful results otherwise carry no call id.
-            if !isError, let evidence = recordingState?.toolUseEvidence(id: toolID, run: run),
+            // An external action keeps its own call's evidence, even when it
+            // printed nothing or failed partway: a batch answers its calls in
+            // any order, and successful results otherwise carry no call id.
+            if let evidence = recordingState?.toolUseEvidence(id: toolID, run: run),
                let marker = AgentExternalActionObserver.resultMarker(
                    evidence: evidence,
                    fullEvidence: recordingState?.toolUseFullEvidence(id: toolID, run: run),
-                   output: content
+                   output: content,
+                   failed: isError
                ) {
                 modelContext.insert(TaskEvent.structuredPayloadEvent(
                     task: task, type: AgentExternalActionObserver.resultEventType, payload: marker, run: run

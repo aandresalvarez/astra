@@ -1107,7 +1107,8 @@ final class AgentRuntimeWorker {
                 cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
                 approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
                 sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
-                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase))
+                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase),
+                autoSendsAtSettlement: true)
 
         // Before the outcome branches, not inside one. What the run left behind
         // for the user is waiting whether the run succeeded, was cancelled, or

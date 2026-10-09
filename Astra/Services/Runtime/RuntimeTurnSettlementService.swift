@@ -36,6 +36,11 @@ enum RuntimeTurnSettlementService {
         let chainedGoal: String
         let scheduleID: UUID?
         var sessionMessage: String? = nil
+        /// Set on a result captured by a build in which Auto sends its own
+        /// staged writes and requested review at settlement. A checkpoint an
+        /// older build captured — recovered after an upgrade — was launched
+        /// under the promise that those wait for review, so it sends nothing.
+        var autoSendsAtSettlement: Bool? = nil
     }
 
     struct Verdict: Codable {
@@ -147,7 +152,7 @@ enum RuntimeTurnSettlementService {
                 // reconciled rather than replayed), and only once the outcome,
                 // its tests, AI check, baseline check and plan review included,
                 // completed the run. A run that fails validation sends nothing.
-                if outcomeCompleted, run.status == .completed,
+                if checkpoint.autoSendsAtSettlement == true, outcomeCompleted, run.status == .completed,
                    finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {
                     await GitHubReviewAutoPost.postAfterValidation(
                         task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,

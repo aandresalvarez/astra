@@ -341,8 +341,29 @@ enum LocalShellCommands {
 
     private static func isLocal(_ command: String, depth: Int) -> Bool {
         guard depth < maximumDepth, let parsed = parse(command) else { return false }
+        // After a `cd` out of the working directory, a relative program path
+        // no longer names a project file.
+        let leavesWorkingDirectory = parsed.commands.contains { words in
+            ["cd", "pushd", "popd"].contains(words.first ?? "")
+                && (words.count == 1 || words.dropFirst().contains { word in
+                    word.hasPrefix("/") || word.hasPrefix("~") || word.contains("..") || word.contains("$") || word == "-"
+                })
+        }
+        if leavesWorkingDirectory, parsed.commands.contains(where: runsRelativeProgramFile) { return false }
         return parsed.commands.allSatisfy { isLocalCommand($0, depth: depth) }
             && parsed.substitutions.allSatisfy { isLocal($0, depth: depth + 1) }
+    }
+
+    /// A relative program path, or the script an interpreter runs, which
+    /// resolve against the working directory.
+    private static func runsRelativeProgramFile(_ words: [String]) -> Bool {
+        let command = words.drop(while: isAssignment)
+        guard let program = command.first else { return false }
+        let relative: (String) -> Bool = { $0.contains("/") && !$0.hasPrefix("/") && !$0.hasPrefix("~") }
+        if relative(program) { return true }
+        let interpreters: Set<String> = ["python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh", "dash", "ksh", "swift"]
+        guard interpreters.contains((program as NSString).lastPathComponent) else { return false }
+        return command.dropFirst().first { !$0.hasPrefix("-") }.map(relative) ?? false
     }
 
     /// One simple command: shell grammar and assignments first, then the
@@ -373,7 +394,7 @@ enum LocalShellCommands {
             // `-n` makes a name a reference to another variable (`PATH`).
             return !args.contains { $0.hasPrefix("-") && $0.contains("n") }
                 && args.filter(isAssignment).allSatisfy(isLocalAssignment)
-        case "read", "getopts", "printf", "let", "mapfile", "readarray":
+        case "read", "getopts", "printf", "let":
             // Builtins that assign to the variables they name (`read PATH`,
             // `printf -v PATH`, `let PATH=…`): each name is judged as an
             // assignment would be.
@@ -433,7 +454,10 @@ enum LocalShellCommands {
             // A relative path is a program file of the project, like a build
             // script; an absolute one is judged by its name only in a system
             // directory, where the name means the listed tool.
-            guard program.hasPrefix("/") || program.hasPrefix("~") else { return true }
+            // A `..` step can leave the project.
+            guard program.hasPrefix("/") || program.hasPrefix("~") else {
+                return !program.split(separator: "/").contains("..")
+            }
             let directory = (program as NSString).deletingLastPathComponent
             guard ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/usr/sbin", "/sbin"].contains(directory) else {
                 return false
@@ -1315,6 +1339,9 @@ enum LocalShellCommands {
 
     private static func goIsLocal(_ args: [String]) -> Bool {
         guard let command = args.first else { return true }
+        // `go env -w`/`-u` change the defaults every later `go` reads
+        // (`GOFLAGS=-toolexec=…`).
+        if command == "env" { return !args.contains { $0 == "-w" || $0 == "-u" } }
         if command == "mod" {
             return args.count > 1 && ["tidy", "download", "graph", "verify", "why", "edit", "init", "vendor"].contains(args[1])
         }

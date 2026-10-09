@@ -158,7 +158,7 @@ struct ConnectorMutationAutoSendTests {
                 .appendingPathComponent("Astra/Services/Runtime/RuntimeTurnSettlementService.swift"),
             encoding: .utf8
         )) ?? ""
-        let gate = settlement.range(of: "if outcomeCompleted, run.status == .completed,")
+        let gate = settlement.range(of: "if checkpoint.autoSendsAtSettlement == true, outcomeCompleted, run.status == .completed,")
         let clean = settlement.range(of: "finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {")
         #expect(gate != nil && clean != nil && gate!.upperBound < clean!.lowerBound)
         let send = settlement.range(of: "ConnectorMutationAutoSend.sendPendingMutations(")
@@ -167,6 +167,28 @@ struct ConnectorMutationAutoSendTests {
         let outcome = settlement.range(of: "RuntimeTurnOutcomeService.apply(")
         #expect(outcome != nil && completed != nil && outcome!.upperBound < completed!.lowerBound,
                 "the gate reads the outcome's own verdict, tests and AI check included")
+    }
+
+    // A result an older build captured was launched under the promise that
+    // its writes wait for review; recovered after an upgrade, it sends nothing.
+    @Test("A checkpoint captured before Auto sent at settlement does not send")
+    func legacyCheckpointDoesNotAutoSend() throws {
+        let current = RuntimeTurnSettlementService.Checkpoint(
+            requestID: nil, result: AgentProcessResult(exitCode: 0), runtime: .claudeCode, phase: .run,
+            executionPath: "/tmp", launchSnapshot: .init(task: AgentTask(title: "T", goal: "G")),
+            permissionPolicy: .autonomous, sandboxEnforcement: nil,
+            verifierRuntime: AgentUtilityRuntimeConfiguration(runtime: .claudeCode, model: nil),
+            timeoutSeconds: 60, budgetEnforcementMode: "warning", effectiveTokenBudget: 0, tokensUsed: 0,
+            agentReportedError: false, cancelled: false, failureDiagnostic: nil, approvedPlan: nil,
+            chainedGoal: "", scheduleID: nil, autoSendsAtSettlement: true
+        )
+        var object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
+        #expect(object["autoSendsAtSettlement"] as? Bool == true)
+        object.removeValue(forKey: "autoSendsAtSettlement")
+        let legacy = try JSONDecoder().decode(
+            RuntimeTurnSettlementService.Checkpoint.self, from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(legacy.autoSendsAtSettlement == nil, "a legacy checkpoint reads as not sending")
     }
 
     // The outcome fails a run whose provider reported an error but exited 0

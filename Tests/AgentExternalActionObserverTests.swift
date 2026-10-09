@@ -144,7 +144,8 @@ struct AgentExternalActionObserverTests {
         failedPush.failure(of: "Using tool: Bash: git push origin main", message: "rejected", at: 4)
         #expect(AgentExternalActionObserver.recordObservedActions(
             task: failedPush.task, run: failedPush.run, modelContext: failedPush.context, policyLevel: .autonomous
-        ).isEmpty, "the push failed even though the read's success came first")
+        ).map(\.title) == ["Ran `git push`, which exited with an error"],
+                "the push failed even though the read's success came first, and is recorded as failed")
 
         let pushAfterFailedRead = try ObserverFixture()
         pushAfterFailedRead.toolCall("Using tool: Read: missing.md", result: nil, at: 1)
@@ -311,15 +312,29 @@ struct AgentExternalActionObserverTests {
         #expect(prompt.contains("Opened pull request #34 (acme/widgets): https://github.com/acme/widgets/pull/34"))
     }
 
-    @Test("A failed or unanswered command is not recorded")
-    func failedCommandsAreNotRecorded() throws {
+    // A failed call may have acted partway (`curl -d … ; false`), so it is
+    // recorded as failed — never as the action it tried; an unanswered one
+    // is not evidence of anything.
+    @Test("A failed command is recorded as failed; an unanswered one is not recorded")
+    func failedCommandsAreRecordedAsFailed() throws {
         let fixture = try ObserverFixture()
         fixture.toolCall("Using tool: Bash: gh pr create --title Fix", result: "pull request create failed", failed: true, at: 1)
         fixture.toolCall("Using tool: Bash: git push", result: nil, at: 3)
 
         #expect(AgentExternalActionObserver.recordObservedActions(
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
-        ).isEmpty)
+        ).map(\.title) == ["Ran `gh pr create`, which exited with an error"])
+
+        let marked = try ObserverFixture()
+        let state = AgentEventRecordingState()
+        AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "hook",
+            inputSummary: "curl -d payload https://hooks.example.test/build; false"),
+            to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
+        AgentEventRecorder.recordClaudeEvent(.toolResult(id: "hook", content: "exit 1", isError: true),
+            to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
+        #expect(AgentExternalActionObserver.recordObservedActions(
+            task: marked.task, run: marked.run, modelContext: marked.context, policyLevel: .autonomous
+        ).map(\.title) == ["Ran `curl`, which exited with an error"])
     }
 
     @Test("Ask and Custom record nothing")

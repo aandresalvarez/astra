@@ -845,7 +845,7 @@ struct GitHubReviewPublicationTests {
         }
         let settlement = try source("Astra/Services/Runtime/RuntimeTurnSettlementService.swift")
         let plan = try #require(settlement.range(of: "await validatePlan(checkpoint: checkpoint"))
-        let gate = try #require(settlement.range(of: "if outcomeCompleted, run.status == .completed,"))
+        let gate = try #require(settlement.range(of: "if checkpoint.autoSendsAtSettlement == true, outcomeCompleted, run.status == .completed,"))
         let post = try #require(settlement.range(of: "GitHubReviewAutoPost.postAfterValidation("))
         #expect(plan.upperBound < gate.lowerBound && gate.upperBound < post.lowerBound)
         let completion = try source("Astra/Services/Tasks/TaskSuccessfulCompletionService.swift")

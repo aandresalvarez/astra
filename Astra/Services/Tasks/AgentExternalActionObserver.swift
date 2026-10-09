@@ -12,9 +12,9 @@ import ASTRAModels
 /// what Ask would have asked about — so the chat says what was run on the
 /// user's behalf, with the link the command printed.
 ///
-/// A record, never a gate: it names the command, and gives a recognised
-/// `git push` or `gh` write its own title only when the call was that one
-/// command. Nothing about whether the command was allowed depends on it.
+/// A record, never a gate: it names the programs the command ran, gives a
+/// recognised `git push` or `gh` write its own title only when the call was
+/// that one command and succeeded, and says when a call failed. Nothing about whether the command was allowed depends on it.
 @MainActor
 enum AgentExternalActionObserver {
     static let eventType = "external.action.observed"
@@ -30,12 +30,18 @@ enum AgentExternalActionObserver {
         let output: String
         /// The whole command, which is what is classified; nil in older markers.
         var command: String?
+        /// The call came back as an error; nil in older markers, which were
+        /// written only for successes.
+        var failed: Bool?
     }
 
-    nonisolated static func resultMarker(evidence: String, fullEvidence: String? = nil, output: String) -> ResultMarker? {
+    nonisolated static func resultMarker(
+        evidence: String, fullEvidence: String? = nil, output: String, failed: Bool = false
+    ) -> ResultMarker? {
         guard let command = shellCommandText(fromToolUsePayload: fullEvidence ?? evidence),
               recordedAction(in: command) != nil else { return nil }
-        return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)), command: command)
+        return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)), command: command,
+                            failed: failed ? true : nil)
     }
 
     struct Observation: Codable, Equatable, Sendable {
@@ -77,17 +83,24 @@ enum AgentExternalActionObserver {
             guard let truncated = shellCommandText(fromToolUsePayload: event.payload) else { continue }
             let command: String
             let output: String
+            let failed: Bool
             if pairsByMarker {
                 guard let position = markers.firstIndex(where: { $0.toolUseEvidence == event.payload }) else { continue }
                 let marker = markers.remove(at: position)
                 command = marker.command ?? truncated
                 output = marker.output
+                failed = marker.failed == true
             } else {
                 guard let fallback = fallbackResult(after: index, call: event, in: runEvents) else { continue }
                 command = truncated
-                output = fallback
+                output = fallback.output
+                failed = fallback.failed
             }
-            guard let action = recordedAction(in: command) else { continue }
+            guard let recognised = recordedAction(in: command) else { continue }
+            // A call that came back as an error may still have acted partway
+            // (`curl -d … ; false`), so it is recorded too, as the command it
+            // ran and that it failed, never as the action it was trying.
+            let action = failed ? Action.command(command) : recognised
             let actions = [action]
             let enterprise = enterpriseGitHub(in: command)
             var urls = actionURLs(for: actions, output: output, command: command, host: enterprise?.host)
@@ -98,7 +111,7 @@ enum AgentExternalActionObserver {
             for (action, url) in zip(actions, urls) {
                 let observation = Observation(
                     sourceEventID: event.id,
-                    title: title(for: action, url: url),
+                    title: failed ? "Ran \(commandNames(command)), which exited with an error" : title(for: action, url: url),
                     destination: destination(for: action, url: url, result: output, enterprise: enterprise),
                     url: url
                 )
@@ -150,23 +163,26 @@ enum AgentExternalActionObserver {
     }
 
     /// For runs recorded before result markers: the first result after the
-    /// call that is not known to be another call's.
-    private static func fallbackResult(after index: Int, call event: TaskEvent, in runEvents: [TaskEvent]) -> String? {
+    /// call that is not known to be another call's, and whether it failed.
+    private static func fallbackResult(
+        after index: Int, call event: TaskEvent, in runEvents: [TaskEvent]
+    ) -> (output: String, failed: Bool)? {
         // A failed result names the call it belongs to (a batch can answer
         // another call first); a successful one does not, so the first result
         // not known to be someone else's decides, and a missing result is not
-        // evidence of an action.
+        // evidence of anything.
         let later = runEvents[(index + 1)...]
-        guard !later.contains(where: { failureEvidence($0) == event.payload }),
-              let result = later.first(where: { candidate in
+        if let own = later.first(where: { failureEvidence($0) == event.payload }) {
+            return (own.payload, true)
+        }
+        guard let result = later.first(where: { candidate in
                   candidate.type == TaskEventTypes.Tool.result.rawValue
                       || (candidate.type == TaskEventTypes.Tool.resultFailed.rawValue
                           && failureEvidence(candidate) == nil)
-              }),
-              result.type == TaskEventTypes.Tool.result.rawValue else {
+              }) else {
             return nil
         }
-        return result.payload
+        return (result.payload, result.type == TaskEventTypes.Tool.resultFailed.rawValue)
     }
 
     /// The `tool.use` payload a failed result names: the recorder stores the
