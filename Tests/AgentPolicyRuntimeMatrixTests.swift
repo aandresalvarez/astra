@@ -345,6 +345,8 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main") == .allowed)
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main --force") == .ask)
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin +main") == .ask)
+        #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main :release") == .ask,
+                "a deleting refspec is a delete")
         let forceAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
             .violation(for: .toolUse(name: "Bash", id: "tool-2", input: ["command": "git push origin main --force"]))
         let forceApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(

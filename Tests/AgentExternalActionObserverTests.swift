@@ -218,6 +218,10 @@ struct AgentExternalActionObserverTests {
         let stored = String(data: try JSONEncoder().encode(marker), encoding: .utf8) ?? ""
         #expect(!stored.contains("SECRET") && !stored.contains("TOKEN"))
         #expect(marker.verdict?.names == "`curl`")
+        let comment = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: gh pr comment 'https://github.com/acme/repo/pull/1?token=ADHOC#x' --body hi", output: ""
+        ))
+        #expect(comment.verdict?.gitHubURL == "https://github.com/acme/repo/pull/1", "a GitHub link keeps only the resource")
         #expect(marker.verdict?.webHost == "https://hooks.example.test")
     }
 

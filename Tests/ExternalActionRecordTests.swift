@@ -36,6 +36,27 @@ struct ExternalActionRecordTests {
         #expect(ExternalActionRecordPresentation.provenancePill(for: record.authorization) == "Auto")
     }
 
+    // The created item's link comes from the connector's response: only an
+    // http(s) link on the host the request went to is clickable.
+    @Test("A receipt link is shown only as a web link on the connector's host")
+    func receiptLinksStayOnTheConnector() throws {
+        let task = AgentTask(title: "Jira", goal: "File the bug")
+        func link(_ created: String) throws -> URL? {
+            let receipt = ConnectorMutationReceipt(
+                stagedPayloadPath: "/tmp/task/outputs/jira-9.json", requestDigest: "x", serviceType: "jira",
+                operation: "create_issue", target: "STAR / Bug",
+                destinationURL: "https://example.atlassian.net/rest/api/2/issue", statusCode: 201,
+                createdKey: nil, createdURL: created
+            )
+            let event = receiptEvent(task: task, type: ConnectorMutationEventTypes.receipt, payload: receipt, at: 10)
+            return try #require(records(task: task, events: [event]).first).url
+        }
+        #expect(try link("https://example.atlassian.net/rest/api/2/issue/10001") != nil)
+        #expect(try link("file:///etc/passwd") == nil)
+        #expect(try link("x-other-app://open") == nil)
+        #expect(try link("https://elsewhere.example/phish") == nil)
+    }
+
     @Test("A receipt written before levels were harmonized reads as reviewed by the user")
     func legacyReceiptReadsAsUserReviewed() throws {
         let task = AgentTask(title: "Jira", goal: "Comment on the ticket")

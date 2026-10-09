@@ -340,17 +340,23 @@ enum ShellCommandRiskClassifier {
             let flagPattern = writeFlag.contains("=") ? "\(name)=*" : name
             return "\(flagPattern) \(hostPattern)"
         }
-        let actionTokens = commandActionTokens(executable: executable, args: args, risk: risk)
+        let allActionTokens = commandActionTokens(executable: executable, args: args, risk: risk)
             .map(normalizedPatternToken)
-            .filter(isSafeShellPatternToken)
+        let actionTokens = allActionTokens.filter(isSafeShellPatternToken)
         guard !actionTokens.isEmpty else { return "*" }
         let tokenLimit = patternTokenLimit(for: risk)
         let kept = Array(actionTokens.prefix(tokenLimit))
         // A force or delete past the kept tokens stays in the pattern, so
-        // approving a push is not approving a force.
-        let escalations = executable == "git"
+        // approving a push is not approving a force. A deleting refspec
+        // (`:branch`) is not a safe pattern token, so it is named by the
+        // flag that means the same.
+        var escalations = executable == "git"
             ? actionTokens.dropFirst(tokenLimit).filter { isPushEscalation($0) }
             : []
+        if executable == "git", allActionTokens.contains(where: { $0.hasPrefix(":") && $0.count > 1 }),
+           !kept.contains("--delete"), !escalations.contains("--delete") {
+            escalations.append("--delete")
+        }
         return (kept + escalations + ["*"]).joined(separator: " ")
     }
 

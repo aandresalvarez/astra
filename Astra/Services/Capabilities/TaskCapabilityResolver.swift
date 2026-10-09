@@ -77,10 +77,10 @@ struct TaskCapabilityResolutionSnapshot {
         _ labels: [String],
         secretStore: SecretStore = KeychainSecretStore()
     ) -> TaskCapabilityResolutionSnapshot {
-        let added = Set(labels).subtracting(connectorCredentialExposurePolicy.approvedCredentialLabels)
-        guard !added.isEmpty else { return self }
+        // Re-projected even when no label is new: a secret rotated or deleted
+        // between admission and launch must not reach the process as it was.
         var policy = connectorCredentialExposurePolicy
-        policy.approvedCredentialLabels.formUnion(added)
+        policy.approvedCredentialLabels.formUnion(labels)
         return TaskCapabilityResolutionSnapshot(
             fullInventory: fullInventory.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),
             providerLaunch: providerLaunch.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),

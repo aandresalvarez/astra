@@ -639,7 +639,23 @@ enum AgentExternalActionObserver {
         }
         var url = String(text[match])
         while let last = url.last, ".;:".contains(last) { url.removeLast() }
-        return url
+        return canonicalGitHubURL(url)
+    }
+
+    /// A GitHub link reduced to the resource it names — the repository, a
+    /// pull request or issue by number, or a release tag — without a user,
+    /// query or fragment, which can carry a token the record must not keep.
+    nonisolated static func canonicalGitHubURL(_ url: String) -> String? {
+        guard let components = URLComponents(string: url), let scheme = components.scheme,
+              let host = components.host, !host.isEmpty else { return nil }
+        let parts = components.path.split(separator: "/").map(String.init)
+        var kept = Array(parts.prefix(2))
+        if parts.count >= 4, ["pull", "issues"].contains(parts[2]), Int(parts[3]) != nil {
+            kept = Array(parts.prefix(4))
+        } else if parts.count >= 5, parts[2] == "releases", parts[3] == "tag" {
+            kept = Array(parts.prefix(5))
+        }
+        return "\(scheme)://\(host)" + (kept.isEmpty ? "" : "/" + kept.joined(separator: "/"))
     }
 }
 

@@ -82,6 +82,7 @@ enum ConnectorMutationRecordSource: ExternalActionRecordSource {
         let target: String
         let createdKey: String?
         let createdURL: String?
+        let destinationURL: String?
         let authorization: ExternalActionAuthorization?
     }
 
@@ -108,11 +109,23 @@ enum ConnectorMutationRecordSource: ExternalActionRecordSource {
             kind: .connectorMutation,
             title: title,
             destination: destination,
-            url: fields.createdURL.flatMap(URL.init(string:)),
+            url: fields.createdURL.flatMap { linkOnTheConnector($0, destination: fields.destinationURL) },
             authorization: fields.authorization ?? .userReviewed,
             timestamp: timestamp,
             legacyNotices: []
         )
+    }
+
+    /// The created item's link comes from the connector's response, so it is
+    /// shown only as an http(s) link on the host the request went to.
+    private static func linkOnTheConnector(_ value: String, destination: String?) -> URL? {
+        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
+              let host = url.host?.lowercased(),
+              let expected = destination.flatMap(URL.init(string:))?.host?.lowercased(),
+              host == expected else {
+            return nil
+        }
+        return url
     }
 
     private static func serviceName(_ serviceType: String) -> String {
