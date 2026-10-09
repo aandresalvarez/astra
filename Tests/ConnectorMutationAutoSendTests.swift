@@ -120,6 +120,10 @@ struct ConnectorMutationAutoSendTests {
         #expect(outcome.upperBound < send.lowerBound, "send only after the outcome and its validation")
         let plan = try #require(settlement.range(of: "await validatePlan(checkpoint: checkpoint"))
         #expect(plan.upperBound < send.lowerBound, "send only after the approved plan is reviewed")
+        let review = try #require(settlement.range(of: "GitHubReviewAutoPost.postAfterValidation("))
+        let recheck = try #require(settlement.range(of: "if task.status == .completed, run.status == .completed {"))
+        #expect(review.upperBound < recheck.lowerBound && recheck.upperBound < send.lowerBound,
+                "a review that could not be posted fails the run, and the writes wait with it")
 
         let worker = try source("Astra/Services/Runtime/AgentRuntimeWorker.swift")
         let capture = try #require(worker.range(of: "RuntimeTurnSettlementService.capture("))

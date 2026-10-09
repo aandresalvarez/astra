@@ -153,9 +153,13 @@ enum RuntimeTurnSettlementService {
                         task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
                         executionPath: checkpoint.executionPath, modelContext: modelContext,
                         service: reviewPublicationService ?? GitHubReviewPublicationService(modelContext: modelContext))
-                    await ConnectorMutationAutoSend.sendPendingMutations(
-                        task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
-                        modelContext: modelContext, coordinator: connectorMutationCoordinator)
+                    // A review that could not be posted blocks completion and
+                    // fails the run; the connector writes then wait with it.
+                    if task.status == .completed, run.status == .completed {
+                        await ConnectorMutationAutoSend.sendPendingMutations(
+                            task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
+                            modelContext: modelContext, coordinator: connectorMutationCoordinator)
+                    }
                 }
                 // Validation effects are durable before writing derived files.
                 // Projection I/O failures can retry without re-executing work.

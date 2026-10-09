@@ -370,7 +370,20 @@ enum LocalShellCommands {
             // `for name in words`: the words are values, the body is its own command.
             return true
         case "export", "readonly", "declare", "typeset", "local":
-            return args.filter(isAssignment).allSatisfy(isLocalAssignment)
+            // `-n` makes a name a reference to another variable (`PATH`).
+            return !args.contains { $0.hasPrefix("-") && $0.contains("n") }
+                && args.filter(isAssignment).allSatisfy(isLocalAssignment)
+        case "read", "getopts", "printf", "let", "mapfile", "readarray":
+            // Builtins that assign to the variables they name (`read PATH`,
+            // `printf -v PATH`, `let PATH=…`): each name is judged as an
+            // assignment would be.
+            return args.allSatisfy { word in
+                let name = String(word.prefix { $0 != "=" })
+                return name.hasPrefix("-") || isLocalAssignment(name + "=")
+            }
+        case "hash":
+            // `hash -p PATH NAME` points a command name at another program.
+            return !args.contains { $0.hasPrefix("-") && $0.contains("p") }
         default:
             return isLocalProgram(program, args: args, depth: depth)
         }
@@ -525,9 +538,9 @@ enum LocalShellCommands {
     /// whatever their arguments, plus the shell's own builtins.
     private static let plainLocalPrograms: Set<String> = [
         // Shell builtins and keywords.
-        ":", "true", "false", "test", "[", "[[", "]]", "echo", "printf", "pwd", "cd", "pushd", "popd", "dirs", "read",
-        "wait", "sleep", "exit", "return", "break", "continue", "shift", "set", "shopt", "unset", "hash", "type",
-        "which", "whereis", "jobs", "umask", "getopts", "let",
+        ":", "true", "false", "test", "[", "[[", "]]", "echo", "pwd", "cd", "pushd", "popd", "dirs",
+        "wait", "sleep", "exit", "return", "break", "continue", "shift", "set", "shopt", "unset", "type",
+        "which", "whereis", "jobs", "umask",
         // Files and text.
         "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "ag", "tree", "cut", "tr",
         "uniq", "diff", "cmp", "comm", "jq", "yq", "xxd", "od", "hexdump", "file", "stat", "du", "df", "basename",
@@ -601,7 +614,10 @@ enum LocalShellCommands {
         }
         let rest = args.dropFirst(flag + 1)
         let command = Array(rest.prefix { $0 != ";" })
-        guard !command.isEmpty, isLocalCommand(command, depth: depth + 1) else { return false }
+        // fd adds the paths it found, which can read as options, so only a
+        // program whose arguments are not judged.
+        guard let program = command.first, plainLocalPrograms.contains(program),
+              isLocalCommand(command, depth: depth + 1) else { return false }
         return fdIsLocal(Array(rest.dropFirst(command.count + 1)), depth: depth)
     }
 
@@ -679,6 +695,9 @@ enum LocalShellCommands {
         }
         // `xargs` alone runs `echo`; `env` alone prints the environment.
         guard !rest.isEmpty else { return ["xargs", "env", "caffeinate"].contains(runner) }
+        // `xargs` adds words read from its input, unread here, so it runs only
+        // a program whose arguments are not judged.
+        if runner == "xargs" { return rest.first.map(plainLocalPrograms.contains) ?? false }
         return isLocalCommand(rest, depth: depth + 1)
     }
 
@@ -879,7 +898,7 @@ enum LocalShellCommands {
         while index < args.count {
             let arg = args[index]
             index += 1
-            if arg == "--" { break }
+            if arg == "--" { return args.dropFirst(index).allSatisfy(isWebURL) }
             if arg.hasPrefix("--") {
                 let name = String(arg.prefix { $0 != "=" })
                 let attached = arg.contains("=") ? String(arg.drop { $0 != "=" }.dropFirst()) : nil
@@ -888,6 +907,7 @@ enum LocalShellCommands {
                 let value = attached ?? (index < args.count ? args[index] : "")
                 if attached == nil { index += 1 }
                 if name == "--request", !["GET", "HEAD"].contains(value.uppercased()) { return false }
+                if name == "--url", !isWebURL(value) { return false }
             } else if arg.hasPrefix("-"), arg.count > 1 {
                 for (offset, letter) in arg.dropFirst().enumerated() {
                     if flags.contains(letter) { continue }
@@ -898,9 +918,18 @@ enum LocalShellCommands {
                     if letter == "X", !["GET", "HEAD"].contains(value.uppercased()) { return false }
                     break
                 }
+            } else if !isWebURL(arg) {
+                // `telnet://`, `ftp://`, `smtp://`, `dict://` and a bare host
+                // curl guesses a protocol for can send what curl reads.
+                return false
             }
         }
         return true
+    }
+
+    private static func isWebURL(_ word: String) -> Bool {
+        let lower = word.lowercased()
+        return lower.hasPrefix("https://") || lower.hasPrefix("http://")
     }
 
     private static func wgetIsLocal(_ args: [String]) -> Bool {
@@ -1065,7 +1094,8 @@ enum LocalShellCommands {
         case "run":
             var rest = Array(args.dropFirst())
             while let first = rest.first, first.hasPrefix("-") {
-                guard ["--with", "--python", "-p", "--project", "--directory", "--extra", "--group", "--package"].contains(first)
+                // `--python`/`-p` names the interpreter uv runs.
+                guard ["--with", "--project", "--directory", "--extra", "--group", "--package"].contains(first)
                         || ["--frozen", "--locked", "--no-sync", "--all-extras", "-q", "--quiet"].contains(first) else {
                     return false
                 }
@@ -1119,7 +1149,11 @@ enum LocalShellCommands {
         var index = 0
         while index < args.count, args[index].hasPrefix("-") {
             let option = args[index]
-            if ["--version", "-v", "--test"].contains(option) { return true }
+            if ["--version", "-v"].contains(option) { return true }
+            if option == "--test" {
+                index += 1
+                continue
+            }
             guard ["--enable-source-maps", "--no-warnings", "--trace-warnings", "--trace-uncaught"].contains(option)
                     || option.hasPrefix("--experimental-") || option.hasPrefix("--max-old-space-size=") else {
                 return false
