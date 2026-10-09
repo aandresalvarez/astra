@@ -508,7 +508,7 @@ enum LocalShellCommands {
     private static let localEnvironmentNames: Set<String> = [
         "CI", "DEBUG", "VERBOSE", "NODE_ENV", "RUST_LOG", "RUST_BACKTRACE", "PYTHONUNBUFFERED",
         "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "LANG", "LANGUAGE", "TZ", "TERM", "NO_COLOR", "FORCE_COLOR",
-        "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "CGO_ENABLED", "GOOS", "GOARCH", "DEVELOPER_DIR",
+        "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "CGO_ENABLED", "GOOS", "GOARCH",
         "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "TMPDIR", "GIT_TERMINAL_PROMPT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
         "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE", "HOMEBREW_NO_AUTO_UPDATE",
         "HOMEBREW_NO_INSTALL_CLEANUP", "HOMEBREW_NO_ENV_HINTS", "PIP_DISABLE_PIP_VERSION_CHECK"
@@ -578,6 +578,9 @@ enum LocalShellCommands {
             return !args.contains { $0.hasPrefix("--filter") }
         case "ag":
             return !args.contains { $0.hasPrefix("--pager") }
+        case "nm":
+            // GNU nm's `--plugin` loads a library.
+            return !args.contains { $0.hasPrefix("--plugin") }
         case "rg":
             // `--pre` runs a program on every file searched, `--hostname-bin`
             // one for hyperlinks.
@@ -669,7 +672,7 @@ enum LocalShellCommands {
         "sw_vers", "plutil", "defaults", "mdfind", "mdls", "pbcopy", "pbpaste", "uptime", "vm_stat", "sysctl",
         // Formatters and binary tools no argument can make load code; a tool
         // one can (a config, plugin, formatter or test file) is a code runner.
-        "swift-format", "swiftlint", "lipo", "otool", "nm", "dwarfdump", "atos", "dsymutil",
+        "swift-format", "swiftlint", "lipo", "otool", "dwarfdump", "atos", "dsymutil",
         "rustfmt", "gofmt", "tsc", "ruff", "black", "isort"
     ]
 
@@ -800,23 +803,32 @@ enum LocalShellCommands {
         return true
     }
 
+    /// `awk` with listed options only: GNU awk's `-l`/`--load` and `-E`
+    /// load code, as `@load` and `@include` in a program do. Every program
+    /// file is judged as an interpreter's script is.
     private static func awkIsLocal(_ args: [String]) -> Bool {
         var index = 0
         var sawProgramFile = false
         while index < args.count, args[index].hasPrefix("-") {
-            // Every program file is judged as an interpreter's script is.
-            if args[index] == "-f" {
-                guard index + 1 < args.count, isProjectScript(args[index + 1]) else { return false }
-                sawProgramFile = true
-                index += 2
-                continue
+            let option = args[index]
+            if option == "--" {
+                index += 1
+                break
             }
-            index += ["-F", "-v"].contains(args[index]) ? 2 : 1
+            guard let letter = option.dropFirst().first, "Fvf".contains(letter), !option.hasPrefix("--") else { return false }
+            let attached = String(option.dropFirst(2))
+            let value = attached.isEmpty ? (index + 1 < args.count ? args[index + 1] : "") : attached
+            if letter == "f" {
+                guard isProjectScript(value) else { return false }
+                sawProgramFile = true
+            }
+            index += attached.isEmpty ? 2 : 1
         }
         if sawProgramFile { return true }
         guard index < args.count else { return false }
         let program = args[index]
         return !program.contains("system") && !program.contains("|")
+            && !program.contains("@load") && !program.contains("@include")
     }
 
     /// `tar` with the options that create, list and extract. One that names a
@@ -1646,8 +1658,12 @@ enum LocalShellCommands {
 
     /// `pytest` runs the project's tests; `--pastebin` sends the session to
     /// bpaste.net.
+    /// `-o`/`--override-ini` can set `addopts`, options this does not read.
     private static func pytestIsLocal(_ args: [String]) -> Bool {
-        !args.contains { $0.hasPrefix("--pastebin") }
+        !args.contains { arg in
+            arg.hasPrefix("--pastebin") || arg.hasPrefix("--override-ini") || arg.contains("addopts")
+                || (arg.hasPrefix("-") && !arg.hasPrefix("--") && arg.contains("o"))
+        }
     }
 
     private static func cargoIsLocal(_ args: [String]) -> Bool {
