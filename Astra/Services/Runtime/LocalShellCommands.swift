@@ -17,6 +17,12 @@ import Foundation
 /// `swift test`, `npm run build`, `python3 scripts/report.py` and `docker run`
 /// execute project code or an image, and what that code does is the
 /// project's (`docs/security/security-boundaries.md`).
+///
+/// So it guarantees that an action the command itself expresses asks; it is
+/// not a boundary against code that hides one. Writing a script and running
+/// it is local, and an option or variable that names a program to run is the
+/// same capability. Forms of that it knows are rejected because it is free
+/// to, but containing hidden actions is the sandbox's job (spec decision 14).
 enum LocalShellCommands {
     static func isLocal(_ command: String) -> Bool {
         isLocal(command, depth: 0)

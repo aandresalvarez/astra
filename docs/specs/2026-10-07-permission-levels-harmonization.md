@@ -346,6 +346,19 @@ Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
     from a fixed list of known local work (`LocalShellCommands`)**: anything
     not on it, or not readable, asks in Ask and Custom and is recorded in
     Auto. The list judges the command, not the project code it runs.
+14. **What the list guarantees (2026-10-09).** After decision 13, about two
+    thirds of the review findings were of two kinds: a listed tool with an
+    option, variable or setting that names a program to run (`rg --pre`,
+    `make --eval`, `rustc -C linker=`, `GOFLAGS=-toolexec`), and shell state
+    that changes what a word means at run time (`rg "$OPT"`, a glob that
+    expands to `--x`, `read PATH`). Both are code hiding an action, and the
+    list cannot stop that by construction: running project code is local, so
+    `printf 'curl -d …' > x.sh && bash x.sh` passes. **The list guarantees
+    that an action the command itself expresses asks (Ask, Custom) or is
+    recorded (Auto); containing code that hides one is the operating-system
+    boundary's job** (Seatbelt sandbox, network policy, launch credentials).
+    The forms already rejected stay rejected. A new form of either kind is
+    answered with this decision rather than another entry.
 
 ## PR #482 reuse
 

@@ -169,6 +169,19 @@ boundary. The full inventory is in
   image, and what that code does is the project's. A user's own tool
   configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context)
   is the user's.
+- **What the list is not.** It decides whether a command *expresses* an
+  action outside ASTRA (`git push`, `gh pr create`, `curl -d`, `npm
+  publish`, `ssh`), so that the action asks in Ask and Custom and is recorded
+  in Auto. It is not a boundary against code that hides an action: running
+  the project's code is local by design, so `printf 'curl -d …' > x.sh &&
+  bash x.sh` is two local commands, and an option, variable or setting that
+  names a program to run (`rg --pre`, `make --eval`, `cargo --config
+  build.rustc-wrapper`, `npm --script-shell`, `GOFLAGS=-toolexec`) is the same
+  capability as that script. The list rejects such forms it knows about,
+  because doing so costs nothing, but a new one is a known limit rather than a
+  hole. Code that hides an action is contained by the operating-system
+  boundary (the Seatbelt sandbox, its network policy, and the credentials a
+  launch is given), never by reading shell text.
 - **An approval** of a shell command is the set of grants its request yields,
   one per command in it (the program and its first words, as the prompt
   shows). The command runs unasked once all of them were granted, so a
