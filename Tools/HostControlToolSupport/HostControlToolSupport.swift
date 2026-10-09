@@ -827,6 +827,9 @@ public final class HostControlMCPServer {
     private let cancellationRegistry: HostControlOperationCancellationRegistry
     private let diagnosticsRecorder: HostControlToolDiagnosticsRecorder?
     private let withholdingObserver: BrokeredCredentialWithholdingObserving?
+    /// ASTRA's side of a write: the only way a request here can lead to one.
+    /// Nil in the standalone helper, where every write waits for review.
+    private let externalActionRequester: (any BrokeredExternalActionRequesting)?
     private let processLimits: HostControlProcessLimits
     private lazy var server = MCPServer(
         name: "astra-host-control",
@@ -844,11 +847,13 @@ public final class HostControlMCPServer {
         diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil,
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
         processLimits: HostControlProcessLimits = .standard,
-        historyReader: (any TaskHistoryReading)? = nil
+        historyReader: (any TaskHistoryReading)? = nil,
+        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil
     ) {
         let cancellationRegistry = HostControlOperationCancellationRegistry()
         self.configuration = configuration
         self.historyReader = historyReader
+        self.externalActionRequester = externalActionRequester
         self.cancellationRegistry = cancellationRegistry
         self.processRunner = processRunner ?? HostControlProcessRunner(
             limits: processLimits,
@@ -877,6 +882,17 @@ public final class HostControlMCPServer {
         case "history":
             return TaskHistoryHostControlPolicy.handle(arguments: arguments, reader: historyReader)
         case "github":
+            // A typed request, not a gh command: the agent asks ASTRA to post a
+            // review file it wrote. Told apart by the key, so a gh call that
+            // happens to mention reviews can never become one.
+            if arguments["operation"] != nil {
+                return GitHubReviewPostPolicy.handle(
+                    arguments: arguments,
+                    configuration: configuration,
+                    requester: externalActionRequester,
+                    diagnostics: diagnosticsRecorder
+                )
+            }
             return handleProcessTool(
                 toolName: normalizedToolName,
                 executable: configuration.githubExecutable,
@@ -1077,7 +1093,8 @@ public final class HostControlMCPServer {
             arguments: arguments,
             connector: connector,
             configuration: configuration,
-            diagnostics: diagnosticsRecorder
+            diagnostics: diagnosticsRecorder,
+            requester: externalActionRequester
         )
     }
 
@@ -1276,11 +1293,13 @@ public final class HostControlMCPServer {
 
     private func toolSchemas() -> [[String: Any]] {
         [
-            processSchema(
+            GitHubReviewPostPolicy.githubSchema(base: processSchema(
                 name: "github",
-                description: "Run GitHub CLI control-plane commands on the host through ASTRA without provider Bash.",
-                argumentDescription: "Arguments for gh, for example [\"pr\", \"view\", \"123\", \"--comments\"]."
-            ),
+                description: "Run GitHub CLI control-plane commands on the host through ASTRA without provider Bash, "
+                    + "or ask ASTRA to post a pull-request review file you wrote with operation post_review. "
+                    + "ASTRA posts it only as the task's permission level allows; the reply says whether it was posted.",
+                argumentDescription: "Arguments for gh, for example [\"pr\", \"view\", \"123\", \"--comments\"]. Omit with operation."
+            )),
             processSchema(
                 name: "gcloud",
                 description: "Run read-only Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",

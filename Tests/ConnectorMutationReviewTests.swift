@@ -7,28 +7,34 @@ import ASTRAPersistence
 @testable import ASTRA
 @testable import HostControlToolSupport
 
-/// A connector write the agent staged is sent only after the user reviews it,
-/// at every level for now: ASTRA learns of it only when it reads the task
-/// folder after the run, so sending without asking would mean sending after
-/// the turn, across every state the run can reach in between. Auto will send
-/// it when the agent asks, in its own change (spec decision 15).
+/// A connector write the agent staged is sent only when someone asks: the user
+/// in the review sheet, or, in Auto, the agent at the moment it proposes it
+/// (spec decision 15, `ConnectorMutationSendWhenProposedTests`). The run
+/// boundary sends nothing at any level — a send there would depend on every
+/// state the run can reach after proposing — so what it finds waits for review.
 @Suite("Connector mutation review")
 @MainActor
 struct ConnectorMutationReviewTests {
-    @Test("Every level leaves a staged write for review; nothing is sent at the run boundary")
-    func everyLevelLeavesTheWriteForReview() throws {
+    @Test("The run boundary sends nothing at any level; what it finds waits for review")
+    func runBoundarySendsNothing() throws {
         for level in [AgentPolicyLevel.review, .custom, .autonomous] {
             let fixture = try ConnectorReviewFixture()
             try fixture.stage(summary: "Login fails")
             fixture.crossBoundary(policyLevel: level)
-            #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).count == 1, "\(level.rawValue)")
-            #expect(ExternalActionPolicy.asksUser(for: .connectorMutation, level: level), "\(level.rawValue)")
-            #expect(ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: level), "\(level.rawValue)")
+            let pending = ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task)
+            #expect(pending.count == 1, "\(level.rawValue)")
+            #expect(pending.first?.authorization == nil, "\(level.rawValue)")
         }
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        for path in ["Astra/Services/Runtime/RuntimeTurnSettlementService.swift", "Astra/Services/Runtime/RunBoundaryDiscovery.swift"] {
+        for path in [
+            "Astra/Services/Runtime/RuntimeTurnSettlementService.swift",
+            "Astra/Services/Runtime/RunBoundaryDiscovery.swift",
+            "Astra/Services/Tasks/ConnectorMutationDiscovery.swift"
+        ] {
             let source = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
-            #expect(!source.contains("ConnectorMutationCoordinator"), "\(path) sends nothing")
+            for sender in ["ConnectorMutationCoordinator", "GitHubReviewPublicationService", "BrokeredExternalActionHandler"] {
+                #expect(!source.contains(sender), "\(path) sends nothing (\(sender))")
+            }
         }
     }
 

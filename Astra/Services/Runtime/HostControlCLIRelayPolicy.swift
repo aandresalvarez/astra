@@ -40,6 +40,10 @@ enum HostControlCLIRelayPolicy {
             return allowsREDCap(Array(tokens.dropFirst(2)))
         case "ssh":
             return allowsSSH(Array(tokens.dropFirst(2)))
+        case "github" where tokens.count > 2 && tokens[2] == GitHubReviewHostControlOperations.postReviewOption:
+            // Exactly one bare review file name, as the binary's own parser and
+            // the broker accept: nothing else rides along with a request to post.
+            return tokens.count == 4 && GitHubReviewHostControlOperations.isReviewFileName(tokens[3])
         case "github", "gcloud", "bq":
             let arguments = tokens.dropFirst(2).drop(while: { $0 == "--" })
             return !arguments.isEmpty

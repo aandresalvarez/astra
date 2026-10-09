@@ -3,8 +3,9 @@ import MCPServerKit
 
 // The writes an agent may *compose* against Jira, and the single place that stages
 // them. Nothing here reaches the network, and nothing here can: the staged file is
-// the whole channel, and ASTRA's own review-and-send path is the only thing that
-// turns one into a request.
+// the payload, and ASTRA's own send path is the only thing that turns one into a
+// request — after the user's review, or, where the run's level does not ask, when
+// the broker asks ASTRA right after staging (`BrokeredExternalActionRequesting`).
 //
 // Split from `JiraHostControlPolicy.swift`, which is the read gate. The two are the
 // same idiom — enumerate what is allowed, refuse the rest — and the fitness suite
@@ -328,7 +329,8 @@ enum JiraProposalPolicy {
         arguments: [String: Any],
         connector: HostControlConnector,
         configuration: HostControlToolConfiguration,
-        diagnostics: HostControlToolDiagnosticsRecorder?
+        diagnostics: HostControlToolDiagnosticsRecorder?,
+        requester: (any BrokeredExternalActionRequesting)? = nil
     ) -> MCPServerReply {
         let proposal: any JiraStagedProposal
         do {
@@ -363,17 +365,26 @@ enum JiraProposalPolicy {
             ])
         }
 
+        // Asked once, with the file this call wrote and the digest of what it
+        // wrote — never a path the agent named. ASTRA decides from the run's
+        // level whether to send now or leave it for the user's review.
+        let outcome = requester?.sendStagedConnectorMutation(
+            StagedConnectorMutationRequest(stagedPath: staged.path, requestDigest: staged.digest)
+        ) ?? .awaitingReview
         diagnostics?.record(
             toolName: "jira",
-            summary: "jira \(proposal.operation) \(proposal.target) staged \(staged.digest)",
+            summary: "jira \(proposal.operation) \(proposal.target) staged \(staged.digest) \(outcome.diagnosticWord)",
             result: nil
         )
+        var isError = false
+        if case .refused = outcome { isError = true }
+        if case .uncertain = outcome { isError = true }
         return .result([
             "content": [[
                 "type": "text",
-                "text": formatted(staged, proposal: proposal, configuration: configuration)
+                "text": formatted(staged, proposal: proposal, outcome: outcome, configuration: configuration)
             ]],
-            "isError": false
+            "isError": isError
         ])
     }
 
@@ -449,6 +460,7 @@ enum JiraProposalPolicy {
     private static func formatted(
         _ staged: ConnectorMutationStaging.StagedConnectorMutation,
         proposal: any JiraStagedProposal,
+        outcome: BrokeredExternalActionOutcome,
         configuration: HostControlToolConfiguration
     ) -> String {
         var lines = [
@@ -457,17 +469,45 @@ enum JiraProposalPolicy {
             "summary: \(configuration.redacted(proposal.summary, includingSecretFragments: false))"
         ]
         lines.append(contentsOf: proposal.replyDetails)
-        let note = """
-            note: nothing was sent. ASTRA will ask the user to review this exact payload and, if \
-            they approve, will post it using the connector credential — the user decides whether \
-            and when. Read the staged file if you need to check what you composed. Do not retry \
-            this call and do not attempt the write another way — a second proposal is a second \
-            thing for the user to approve, not a faster one.
-            """
         lines.append("staged_path: \(staged.path)")
         lines.append("request_digest: \(staged.digest)")
-        lines.append("sent: false")
-        lines.append(note)
+        switch outcome {
+        case .awaitingReview:
+            lines.append("sent: false")
+            lines.append("""
+                note: nothing was sent. ASTRA will ask the user to review this exact payload and, if \
+                they approve, will post it using the connector credential — the user decides whether \
+                and when. Read the staged file if you need to check what you composed. Do not retry \
+                this call and do not attempt the write another way — a second proposal is a second \
+                thing for the user to approve, not a faster one.
+                """)
+        case .performed(let receipt):
+            lines.append("sent: true")
+            if let key = receipt.identifier { lines.append("key: \(key)") }
+            if let url = receipt.url { lines.append("url: \(url)") }
+            lines.append("""
+                note: ASTRA sent this exact payload with the connector credential when you proposed \
+                it, because this task's permission level (Auto) does not ask first, and recorded it in \
+                the chat. Report the key and link, and build on them — for example, pass a new epic's \
+                key as parent_key when you propose a story under it. Do not propose this again: a \
+                second proposal is a second write.
+                """)
+        case .refused(let message):
+            lines.append("sent: false")
+            lines.append("error: \(configuration.redacted(message, includingSecretFragments: false))")
+            lines.append("""
+                note: nothing was sent. If the error names something you can fix in the proposal, \
+                fix it and propose again; otherwise report the error. Do not attempt the write \
+                another way.
+                """)
+        case .uncertain(let message):
+            lines.append("sent: unknown")
+            lines.append("error: \(configuration.redacted(message, includingSecretFragments: false))")
+            lines.append("""
+                note: ASTRA may have sent this and will not send it again. Do not propose it again: \
+                check whether it exists with get_issue or search_jql, and report what you find.
+                """)
+        }
         return lines.joined(separator: "\n")
     }
 }

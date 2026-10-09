@@ -18,8 +18,9 @@ enum JiraToolSchema {
         let description = """
             Use typed ASTRA-projected Jira connector operations on the host. Reads return data \
             directly. Writes are proposals: propose_issue, propose_comment, propose_update and \
-            propose_transition only stage a change for the user to approve — this tool never posts \
-            to Jira and never exposes the credential, so do not fall back to curl or a script.
+            propose_transition stage a change, and ASTRA posts it — after the user approves it, or \
+            at once where the task's permission level does not ask; the reply says sent: true or \
+            sent: false. This tool never exposes the credential, so do not fall back to curl or a script.
             """
         return [
             "name": "jira",

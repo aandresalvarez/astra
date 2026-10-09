@@ -24,6 +24,8 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case sendNotReserved(reason: String)
     case dispatchedWithoutConfirmation(target: String, reason: String)
     case sentButNotRecorded(target: String, reason: String)
+    /// Auto could not durably record the proposal, so it did not send it.
+    case proposalNotRecorded(reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -72,6 +74,8 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
         case let .sentButNotRecorded(target, reason):
             "ASTRA sent this to \(target) and the connector accepted it, but the receipt could not be "
                 + "saved to this task (\(reason)). The change has been made — do not send it again."
+        case let .proposalNotRecorded(reason):
+            "ASTRA could not record this proposal on the task (\(reason)), so it did not send it."
         }
     }
 
@@ -294,11 +298,11 @@ struct ConnectorMutationProposal: Equatable, Identifiable {
 }
 
 /// Owns the app's side of a staged connector mutation: reading it back for
-/// review, and recording the user's decision.
+/// review, sending it, and recording what happened.
 ///
-/// The agent proposed; this is where the user disposes. Sending itself is the
-/// next piece of work — until it lands, approving is deliberately not offered,
-/// because a button that claims to send and does not is worse than no button.
+/// The agent proposed; this is where it is disposed of — by the user in the
+/// review sheet, or, where the run's level does not ask, by Auto at the moment
+/// the broker asks (`sendWhenProposed`). Both go through `prepare` and `send`.
 @MainActor
 final class ConnectorMutationCoordinator {
     typealias DurableEventSave = @MainActor (
@@ -610,6 +614,132 @@ final class ConnectorMutationCoordinator {
         return receipt
     }
 
+    /// Auto: sends a proposal the moment the broker staged it, and returns the
+    /// receipt to the agent that proposed it.
+    ///
+    /// There is no later window. The proposal is recorded, prepared and sent
+    /// in this one call, through the same `prepare` and `send` the review sheet
+    /// uses — the digest re-read, the derived route, the re-resolved
+    /// destination, the durable reservation before dispatch, and no resend of
+    /// an ambiguous outcome — so nothing about it waits for the run to end,
+    /// pass its checks, or be recovered after a crash. The record carries
+    /// `.autoPolicy`, so any outcome retires it: a refusal goes back to the
+    /// agent rather than waiting in the dock for a second attempt.
+    ///
+    /// `stagedPath` and `requestDigest` come from the broker's own write, never
+    /// from the agent, and the bytes are re-read against that digest here.
+    func sendWhenProposed(
+        task: AgentTask,
+        run: TaskRun,
+        stagedPath: String,
+        requestDigest: String
+    ) async throws -> ConnectorMutationReceipt {
+        let staged = try readStaged(task: task, path: stagedPath, digest: requestDigest)
+        guard !ConnectorMutationRequirementResolver.recordedStagedPaths(task: task).contains(staged.path) else {
+            throw ConnectorMutationCoordinatorError.staleProposal(
+                "This proposal is already recorded on the task, so ASTRA will not send it from this request."
+            )
+        }
+        let pending = TaskStagedConnectorMutation(
+            runID: run.id,
+            serviceType: staged.serviceType,
+            operation: staged.operation,
+            connectorID: staged.connectorID,
+            connectorAlias: staged.connectorAlias,
+            target: staged.target,
+            summary: staged.summary,
+            stagedPayloadPath: staged.path,
+            requestDigest: staged.digest,
+            authorization: .autoPolicy
+        )
+        // Claimed before the record exists, so no rebuild of the dock can see
+        // the record without the claim and offer a review of a send in flight.
+        Self.sendingWhenProposed.insert(staged.path)
+        defer { Self.sendingWhenProposed.remove(staged.path) }
+        do {
+            try record(pending, type: ConnectorMutationEventTypes.staged, task: task, run: run,
+                       operation: "connector_mutation_staged_auto")
+        } catch {
+            throw ConnectorMutationCoordinatorError.proposalNotRecorded(reason: error.localizedDescription)
+        }
+
+        var proposal: ConnectorMutationProposal?
+        do {
+            let prepared = try prepare(task: task, pending: pending)
+            proposal = prepared
+            return try await send(task: task, proposal: prepared, authorization: .autoPolicy)
+        } catch {
+            retireIfStillPending(task: task, pending: pending, proposal: proposal, error: error)
+            throw error
+        }
+    }
+
+    /// Gives an Auto record the outcome its attempt did not record itself.
+    ///
+    /// `send` records what happens once it is past its first checks; `prepare`
+    /// and `send`'s own entry checks record nothing, because for a proposal the
+    /// user reviews a refusal there leaves it as reviewable as it was. An Auto
+    /// record must not be left like that — the agent was already told — so it
+    /// is closed here: as indeterminate when the error says the write may have
+    /// happened, as a failure otherwise. Best effort, like `recordFailure`: the
+    /// caller is already throwing what the agent needs to see.
+    private func retireIfStillPending(
+        task: AgentTask,
+        pending: TaskStagedConnectorMutation,
+        proposal: ConnectorMutationProposal?,
+        error: Error
+    ) {
+        guard ConnectorMutationRequirementResolver.pendingMutations(task: task)
+            .contains(where: { $0.stagedPayloadPath == pending.stagedPayloadPath }) else { return }
+        let coordinatorError = error as? ConnectorMutationCoordinatorError
+        if coordinatorError?.isTerminal == true {
+            try? record(
+                ConnectorMutationIndeterminateOutcome(
+                    stagedPayloadPath: pending.stagedPayloadPath,
+                    requestDigest: pending.requestDigest,
+                    serviceType: pending.serviceType,
+                    operation: pending.operation,
+                    target: pending.target,
+                    destinationURL: proposal?.destinationURL ?? "",
+                    statusCode: 0,
+                    message: error.localizedDescription
+                ),
+                type: ConnectorMutationEventTypes.indeterminate,
+                task: task,
+                stagedPath: pending.stagedPayloadPath,
+                operation: "connector_mutation_indeterminate"
+            )
+        } else {
+            try? record(
+                ConnectorMutationFailure(
+                    stagedPayloadPath: pending.stagedPayloadPath,
+                    requestDigest: pending.requestDigest,
+                    statusCode: coordinatorError?.statusCode ?? 0,
+                    message: error.localizedDescription
+                ),
+                type: ConnectorMutationEventTypes.failed,
+                task: task,
+                stagedPath: pending.stagedPayloadPath,
+                operation: "connector_mutation_failed"
+            )
+        }
+    }
+
+    /// Proposals this process is sending the moment they were proposed.
+    ///
+    /// Presentation only, and only for the seconds a dispatch is in flight: the
+    /// record exists from before the request goes out, and without this the
+    /// dock would offer "Review & send" for a write Auto is already making. The
+    /// events stay the authority — once the send returns, its outcome retires
+    /// the record and this set no longer holds it.
+    private static var sendingWhenProposed: Set<String> = []
+
+    /// The pending proposals the user can review now: every one except those
+    /// Auto is sending at this moment.
+    static func reviewable(_ pending: [TaskStagedConnectorMutation]) -> [TaskStagedConnectorMutation] {
+        pending.filter { !sendingWhenProposed.contains($0.stagedPayloadPath) }
+    }
+
     private func buildRequest(_ proposal: ConnectorMutationProposal) throws -> ConnectorMutationHTTPRequest {
         let connector = try resolveConnector(proposal)
         guard let url = URL(string: proposal.destinationURL) else {
@@ -897,12 +1027,22 @@ final class ConnectorMutationCoordinator {
         stagedPath: String,
         operation: String
     ) throws {
+        try record(payload, type: type, task: task, run: run(for: task, stagedPath: stagedPath), operation: operation)
+    }
+
+    private func record<T: Encodable>(
+        _ payload: T,
+        type: String,
+        task: AgentTask,
+        run: TaskRun?,
+        operation: String
+    ) throws {
         let previousUpdatedAt = task.updatedAt
         let event = TaskEvent.structuredPayloadEvent(
             task: task,
             type: type,
             payload: payload,
-            run: run(for: task, stagedPath: stagedPath)
+            run: run
         )
         modelContext.insert(event)
         do {

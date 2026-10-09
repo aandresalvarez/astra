@@ -3,6 +3,7 @@ import Foundation
 import SwiftData
 import ASTRAModels
 import ASTRAPersistence
+import HostControlToolSupport
 
 /// A review composed by an agent is data until the user approves this exact
 /// destination, commit, summary, and set of inline comments.
@@ -362,6 +363,8 @@ enum GitHubReviewPublicationError: LocalizedError {
     case uncertain
     case receiptPersistenceFailed(String)
     case requestWithdrawn
+    /// Auto posts a review only because the user asked for one to be posted.
+    case notRequested
 
     var errorDescription: String? {
         switch self {
@@ -377,6 +380,9 @@ enum GitHubReviewPublicationError: LocalizedError {
             "GitHub confirmed the review at \(reviewURL), but ASTRA could not save its receipt. Check GitHub before continuing; ASTRA will not resend this file."
         case .requestWithdrawn:
             "The request to post this review was withdrawn before it was sent."
+        case .notRequested:
+            "No request to post a review is open on this task: the user has not asked for one, withdrew it, "
+                + "or it was already posted. ASTRA posts a review only when the user asks it to."
         }
     }
 }
@@ -388,10 +394,31 @@ enum GitHubReviewArtifactPolicy {
         }
     }
 
+    /// The one rule, shared with the broker's post-review request, so a file
+    /// the agent can ask ASTRA to post is a file the dock would offer.
     static func isReviewFile(_ path: String) -> Bool {
-        let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
-        return name == "github_review.json"
-            || name.range(of: #"^pr[0-9]+_review(?:_[a-z0-9-]+)?\.json$"#, options: .regularExpression) != nil
+        GitHubReviewHostControlOperations.isReviewFileName(URL(fileURLWithPath: path).lastPathComponent)
+    }
+
+    /// Whether two spellings name the same review file in the task folder.
+    ///
+    /// Dispatch and dismissal are recorded against the path the poster used,
+    /// and the dock asks about paths from artifacts and tool events, which may
+    /// spell the task folder through a symlink (`/var` and `/private/var`) or
+    /// not. Compared as strings, a review Auto posted under one spelling would
+    /// be offered again under the other — and a second Post is a second
+    /// review. Compared by their place under the task folder, lexically, so the
+    /// dock's check stays free of per-path filesystem work.
+    static func sameFile(_ lhs: String, _ rhs: String, root: TaskOutputArtifactPathPolicy.ResolvedRoot) -> Bool {
+        lhs == rhs || (taskFolderKey(lhs, root: root).map { $0 == taskFolderKey(rhs, root: root) } ?? false)
+    }
+
+    private static func taskFolderKey(_ path: String, root: TaskOutputArtifactPathPolicy.ResolvedRoot) -> String? {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        for base in [root.standardized, root.resolved] where !base.isEmpty && standardized.hasPrefix(base + "/") {
+            return String(standardized.dropFirst(base.count + 1))
+        }
+        return nil
     }
 }
 
@@ -433,24 +460,26 @@ final class GitHubReviewPublicationService {
     }
 
     static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
-        task.events.contains { event in
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
+        return task.events.contains { event in
             guard event.type == GitHubReviewPublicationEventTypes.dispatched,
                   let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
                 return false
             }
-            return record.filePath == filePath
+            return GitHubReviewArtifactPolicy.sameFile(record.filePath, filePath, root: root)
         }
     }
 
     static func hasDismissed(task: AgentTask, filePath: String) -> Bool {
-        task.events.contains { event in
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
+        return task.events.contains { event in
             guard event.type == GitHubReviewPublicationEventTypes.unusable,
                   let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewUnusableArtifactRecord.self, from: data) else {
                 return false
             }
-            return record.filePath == filePath
+            return GitHubReviewArtifactPolicy.sameFile(record.filePath, filePath, root: root)
         }
     }
 
@@ -767,6 +796,41 @@ final class GitHubReviewPublicationService {
                 throw GitHubReviewPublicationError.receiptPersistenceFailed(response.htmlUrl)
             }
         }
+    }
+
+    /// Auto: posts the review file the agent asked ASTRA to post, at the moment
+    /// it asks, and returns the receipt to it.
+    ///
+    /// What is eligible is this request's artifact: the file it names, holding
+    /// the bytes whose digest the broker read when the agent asked. Never a
+    /// review file a run wrote or touched — that rule let Auto post a review an
+    /// earlier Ask run had left for the user — and never anything after the
+    /// run, so there is no window in which a cancel, a failed check, a crash
+    /// or a decline has to decide whether to post. Every check `prepare` and
+    /// `publish` make for the sheet still holds, including that the user asked
+    /// for a review to be posted and has not withdrawn it.
+    func publishWhenRequested(
+        task: AgentTask,
+        fileName: String,
+        contentDigest: String
+    ) async throws -> GitHubReviewPublicationRecord {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard GitHubReviewHostControlOperations.isReviewFileName(fileName), !fileName.contains("/"),
+              !taskFolder.isEmpty else {
+            throw GitHubReviewPublicationError.invalid("Choose a PR review JSON file from this task’s folder.")
+        }
+        guard GitHubReviewPublicationRequirement.isPending(task: task) else {
+            throw GitHubReviewPublicationError.notRequested
+        }
+        let filePath = URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path
+        let proposal = try await prepare(task: task, filePath: filePath)
+        guard proposal.digest == contentDigest.lowercased() else {
+            throw GitHubReviewPublicationError.invalid(
+                "The review file changed after you asked to post it. Write the review you want posted to a new "
+                    + "file name and ask again."
+            )
+        }
+        return try await publish(task: task, proposal: proposal, authorization: .autoPolicy)
     }
 
     private func readPayload(task: AgentTask, filePath: String) throws -> (Data, GitHubReviewPayload) {
