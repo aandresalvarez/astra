@@ -165,13 +165,30 @@ enum GitHubReviewPublicationRequirement {
     private static let publicationRegex = try? NSRegularExpression(
         pattern: #"\b(?:post|posting|publish|publishing|submit|submitting|add|adding|send|sending|leave|leaving)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
     )
-    /// The verbs that say "put it on GitHub" and nothing else. The broad
-    /// pattern above also reads `add` and `leave`, which is right for offering
-    /// the Post review sheet — the user still decides there — but "add review
-    /// comments to the file" is an edit, not consent to a public write. Auto
-    /// posts without the sheet, so it acts only on these.
-    private static let explicitPublicationRegex = try? NSRegularExpression(
-        pattern: #"\b(?:post|posting|publish|publishing|submit|submitting)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
+    /// What Auto takes as consent to post without the sheet: a command, in
+    /// so many words. The broad pattern above is right for offering the Post
+    /// review sheet, where the user still decides; read as consent it let
+    /// "add review comments to the file", "ask me before posting the review"
+    /// and "hold off on posting the review" through, one phrasing per review
+    /// round. So this is a positive list rather than a list of negations: the
+    /// base verb post, publish or submit, before the review or its comments,
+    /// with nothing ahead of it in its clause but words that keep it a
+    /// command. Being wrong costs a review left for the sheet, never a post.
+    private static let imperativePublicationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:post|publish|submit)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
+    )
+    private static let imperativeLeadWords: Set<String> = [
+        "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
+        "finally", "lastly", "next", "can", "could", "would", "will", "you", "yes", "sure", "alright"
+    ]
+    /// A condition after the command ("post the review once I approve") or a
+    /// pause anywhere in the message ("…, but ask me first") makes it not yet
+    /// a command to post now.
+    private static let deferringRegex = try? NSRegularExpression(
+        pattern: #"\b(?:after|once|when|whenever|until|till|if|unless|before|only|later|tomorrow)\b"#
+    )
+    private static let pausingRegex = try? NSRegularExpression(
+        pattern: #"\b(?:ask me|check with me|let me|wait|hold|don't|do not|dont|never|not yet|first|approve|approval|confirm|draft|prepare|i will|i'll|i am going to|i'm going to|we will|we'll|myself|ourselves)\b"#
     )
     /// A message that closes an open request without restating it: "don't post
     /// it", "cancel that", and the noun forms — "cancel the review", "stop the
@@ -339,7 +356,35 @@ enum GitHubReviewPublicationRequirement {
     /// without the sheet. Offline: it reads the request, not GitHub.
     static func explicitlyRequestsPosting(task: AgentTask) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
-        return publicationIntent(in: request.text, using: explicitPublicationRegex) == .publish
+        return commandsPosting(request.text)
+    }
+
+    /// The positive list `imperativePublicationRegex` describes.
+    static func commandsPosting(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        guard let imperative = imperativePublicationRegex, let deferring = deferringRegex,
+              let pausing = pausingRegex,
+              pausing.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil else {
+            return false
+        }
+        // Clauses end at punctuation before a space or the end of the text, so
+        // a link's dots do not split one, and a joined command ("review it
+        // and post the review") starts after its `and` or `then`.
+        let clauses = lower
+            .replacingOccurrences(of: #"[.!?;,](?=\s|$)|\n"#, with: "\u{1E}", options: .regularExpression)
+            .components(separatedBy: "\u{1E}")
+        let joiners: Set<String> = ["and", "then"]
+        return clauses.contains { clause in
+            let range = NSRange(clause.startIndex..<clause.endIndex, in: clause)
+            return imperative.matches(in: clause, range: range).contains { match in
+                guard let matched = Range(match.range, in: clause) else { return false }
+                let words = clause[..<matched.lowerBound].split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
+                let lead = words.lastIndex(where: joiners.contains).map { Array(words[($0 + 1)...]) } ?? words
+                let rest = String(clause[matched.upperBound...])
+                return lead.allSatisfy(imperativeLeadWords.contains)
+                    && deferring.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) == nil
+            }
+        }
     }
 
     private enum Intent { case publish, cancel }

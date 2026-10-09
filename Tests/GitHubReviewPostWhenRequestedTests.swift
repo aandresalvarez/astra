@@ -157,6 +157,32 @@ struct GitHubReviewPostWhenRequestedTests {
         }
     }
 
+    /// Consent for Auto is a positive list — a command to post — so a request
+    /// that defers, conditions or pauses the post is left for the sheet. The
+    /// errors this allows are reviews not posted, never reviews posted.
+    @Test("Auto takes only a command to post now as consent")
+    func autoConsentIsACommandToPostNow() {
+        let url = "https://github.com/example/repo/pull/12"
+        for command in [
+            "Post a review on \(url)", "Please post the review on \(url)", "Review \(url) and post the review",
+            "Review \(url), then submit the review", "Can you publish the review comments on \(url)?",
+            "Post a review on \(url) again"
+        ] {
+            #expect(GitHubReviewPublicationRequirement.commandsPosting(command), "\(command)")
+        }
+        for notYet in [
+            "Ask me before posting the review on \(url)", "Hold off on posting the review on \(url)",
+            "Post the review on \(url) after I approve it", "Post the review on \(url), but ask me first",
+            "Don't post the review on \(url) yet", "Wait before you post the review on \(url)",
+            "Draft the review comments for \(url) and let me post them", "I will post the review on \(url) myself",
+            "Add review comments to the review file for \(url)", "Leave a review on \(url)",
+            "Post the review on \(url) once the tests pass", "Stop posting the review on \(url)",
+            "I'll review \(url) and post the review myself", "Someone else should post the review on \(url)"
+        ] {
+            #expect(!GitHubReviewPublicationRequirement.commandsPosting(notYet), "\(notYet)")
+        }
+    }
+
     /// Auto posts while a request is open, so every way the user calls it off
     /// has to close it — the noun forms too, and a stopping verb before the
     /// posting one, which the broad pattern used to read as a request.

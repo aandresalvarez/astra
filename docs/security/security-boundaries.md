@@ -217,10 +217,14 @@ chooses none of them:
   the agent and is never offered for a later send. A requested review is
   posted through `GitHubReviewPublicationService.prepare` and `publish`, only
   for the file the request names while it still holds the bytes the broker
-  read, and only while the user's request to post a review is open and says
-  so in so many words (post, publish or submit — "add review comments" offers
-  the sheet but is not consent to an unreviewed post). Whether a run wrote or
-  touched a review file never makes it eligible.
+  read, and only while the user's request to post a review is open and is a
+  command to post it now: a positive list — the base verb post, publish or
+  submit before the review or its comments, nothing ahead of it but words
+  that keep it a command, no condition after it, and no pause anywhere in the
+  message ("ask me first", "hold off", "draft"). Wording that falls outside
+  the list still offers the sheet, so a misreading leaves a review unposted,
+  never posts one. Whether a run wrote or touched a review file never makes
+  it eligible.
 
 Nothing about either send depends on how the run ends, its checks,
 settlement, or crash recovery: the run boundary sends nothing at any level.

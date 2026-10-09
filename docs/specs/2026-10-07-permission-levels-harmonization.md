@@ -389,9 +389,10 @@ Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
       dock for a second attempt; the dock hides one while it is in flight.
     - A requested review is posted only for the file the request names, while
       it holds the bytes the broker read, through `prepare` and `publish`, and
-      only while the user's request to post is open and explicit — post,
-      publish or submit; the broader wording that offers the sheet ("add
-      review comments") is not consent to an unreviewed post
+      only while the user's request to post is open and is a command to post
+      now — a positive list (`commandsPosting`) rather than a growing list of
+      negations, so wording outside it ("ask me before posting", "hold off",
+      "add review comments") offers the sheet instead of posting
       (`publishWhenRequested`).
       "A file at this path was written or touched by the run" never makes one
       eligible, so a review an earlier Ask run left for the user waits for the
