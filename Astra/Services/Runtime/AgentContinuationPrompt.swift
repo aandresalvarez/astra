@@ -16,11 +16,8 @@ enum AgentContinuationPrompt {
             message: message, task: task, executionPolicy: executionPolicy,
             usesNativeContinuation: true
         )
-        let policy = HostControlPlanePromptGuidance.appendingAutoSendGuidance(
-            to: AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
-                to: base, task: task, permissionPolicy: permissionPolicy, contextText: contextText
-            ),
-            permissionPolicy: permissionPolicy
+        let policy = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+            to: base, task: task, permissionPolicy: permissionPolicy, contextText: contextText
         )
         return runEnvironment.appendingReadOnlyInputGuidance(to:
             GitHubCapabilityLaunchContext.appendingProviderGuidance(to: policy, repositoryStatus: repositoryStatus))

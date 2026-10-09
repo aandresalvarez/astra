@@ -217,12 +217,9 @@ no receipt; they get one `system.info` line ("Auto allowed Jira to use its
 saved credentials for this task.") next to the task-scoped grant, recorded with
 source `auto_policy`.
 
-What the agent sees also follows the level. The broker's reply to a Jira
-proposal says the write happens "only as the task's permission level allows",
-and in Auto an addendum to the prompt
-(`HostControlPlanePromptGuidance.appendingAutoSendGuidance`) tells the agent the
-write is sent when the turn ends, so it does not tell the user it is waiting
-for a review that will not happen.
+What the agent sees is unchanged: a Jira proposal waits for the user's review
+at every level for now (decision 15), so the broker's reply and the prompt
+contract still say so.
 
 ### 3. Per-action changes
 
@@ -230,9 +227,9 @@ for a review that will not happen.
 | --- | --- |
 | B1 connector credential gate | Auto: grant the launch's labels for the task through the same path "Allow for this task" uses (`TaskRuntimePermissionGrants`), write the line, continue the launch. Ask/Custom unchanged. |
 | B2 credential offer | Auto: same grant instead of an offer card. |
-| B3 Jira writes | Auto: discovery still records staged proposals at the run boundary; settlement (after the provider result is captured and the settlement marker is saved) hands the Auto run's own pending proposals, in staging order, to `ConnectorMutationCoordinator.send` (same digest checks, same receipt, `authorization: .autoPolicy`). The first failure stops the rest, which fall back to the "Review & send" row. Ask unchanged. |
+| B3 Jira writes | Deferred (decision 15): reviewed in the sheet at every level until Auto sends when the agent asks. Ask unchanged. |
 | B4 Git PR | Decision 3: Auto unchanged (the agent publishes); add the observed-action record below. |
-| B5 GitHub review | Auto: post without the sheet when the request came from an Auto run; receipt with `.autoPolicy`. |
+| B5 GitHub review | Deferred (decision 15), as B3. |
 | B6 PR #482 | Uses `ExternalActionPolicy` + `ExternalActionReceipt`; specified there. |
 | A4/A7 Ask local tools | Apply `PolicyLocalToolGrants.levelScoped` in every adapter so Ask asks the same on every runtime (Decision 6). |
 | A4 Ask hard denies | Decision 5: `rm`, `chmod`, `chown`, `git push`, `deploy`, `publish` become ask-first in Ask; `sudo` stays denied. |
@@ -359,6 +356,19 @@ Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
     boundary's job** (Seatbelt sandbox, network policy, launch credentials).
     The forms already rejected stay rejected. A new form of either kind is
     answered with this decision rather than another entry.
+15. **When Auto sends a staged write (2026-10-09).** Decision 2 had Auto
+    send a staged Jira write and post a requested GitHub review without the
+    sheet. ASTRA learns of either only when it reads the task folder after the
+    run, so it sent them during settlement, and every state a run can reach
+    between proposing and sending became a review finding: a failed check, a
+    cancel, a crash, an upgrade, a decline in the meantime, the order of
+    dependent proposals, a review that failed beside a Jira write. That window
+    is a second owner of "when the write happens". **Auto sends when the agent
+    asks**, as the agent's own `git push` happens when it runs: the broker asks
+    the app, the app sends through the same checks, and the agent gets the
+    receipt (key, link, or error) back and can build on it. That needs a
+    request from the broker to the app, so it is its own change; until then
+    both are reviewed in the sheet at every level, as before this work.
 
 ## PR #482 reuse
 

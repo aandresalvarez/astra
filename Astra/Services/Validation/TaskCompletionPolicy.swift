@@ -124,14 +124,10 @@ enum TaskCompletionPolicy {
     }
 
     @MainActor
-    /// `reviewPostedAfterValidation`: Auto posts the review this run wrote
-    /// once validation passes (`GitHubReviewAutoPost.postAfterValidation`), so
-    /// the review gate does not hold the outcome back before that.
     static func decideSuccessfulCompletion(
         task: AgentTask,
         run: TaskRun,
-        permissionPolicy: PermissionPolicy = .autonomous,
-        reviewPostedAfterValidation: Bool = false
+        permissionPolicy: PermissionPolicy = .autonomous
     ) -> TaskCompletionPolicyDecision {
         let remainingGateDecision = decideAfterRequiredExternalOutcome(
             task: task,
@@ -141,7 +137,7 @@ enum TaskCompletionPolicy {
             return remainingGateDecision
         }
 
-        if !reviewPostedAfterValidation, GitHubReviewPublicationRequirement.isPending(task: task) {
+        if GitHubReviewPublicationRequirement.isPending(task: task) {
             return .block(
                 gate: .requiredExternalOutcome,
                 stopReason: .externalOutcomePending,

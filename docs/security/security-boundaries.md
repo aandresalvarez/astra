@@ -128,16 +128,12 @@ boundary. The full inventory is in
 - **Auto** asks nothing. Connector credentials are allowed for the task (the
   launch stops if that grant cannot be saved; a connector the agent reached for
   mid-run is allowed only after a clean finish and a durable save, and offered
-  otherwise; an Auto launch answers an offer still open), staged Jira writes are sent
-  during settlement — after the provider result is captured, so an exit
-  mid-send is reconciled rather than replayed, and only for a run whose outcome,
-  tests and AI check included, completed it (never after a cancel, failure,
-  failed validation, timeout, or policy stop) — and a requested GitHub review
-  this run wrote is posted at that same point, after validation; each through the same checks an approved
-  action goes through (digest re-read, derived route, re-resolved destination,
-  dispatch recorded before the network call, no resend of an ambiguous
-  outcome). Every action outside ASTRA leaves a record in the chat, derived
-  from its receipt, with an **Auto** pill. A command the agent ran itself that
+  otherwise; an Auto launch answers an offer still open). A staged Jira write
+  and a requested GitHub review are still reviewed in the sheet in Auto for
+  now: ASTRA learns of them only after the run, so sending them without asking
+  would mean sending after the turn; they will be sent when the agent asks
+  (spec decision 15). Every action outside ASTRA leaves a record in the chat,
+  derived from its receipt. A command the agent ran itself that
   is not known local work — exactly what Ask would have asked about — is
   recorded with an **Agent** pill as the command it ran; a call that is one
   `git push` or `gh` write gets that action's title. The next turn's prompt
@@ -193,7 +189,7 @@ boundary. The full inventory is in
 - `ExternalActionPolicy` is the only owner of "does this level ask before an
   external action". It reads the user-facing level of the run that produced
   the action, so a proposal composed under Ask is still reviewed after the task
-  switches to Auto, and only proposals the Auto run itself staged are sent.
+  switches to Auto.
 - Prompts that are not action approvals stay in every level: widening the
   Seatbelt sandbox after a denial and the sensitive-data runtime-switch
   acknowledgement.

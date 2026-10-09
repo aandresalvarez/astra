@@ -2,10 +2,10 @@ import Foundation
 import ASTRAModels
 
 /// What ASTRA did outside the machine on this task, from the same receipts the
-/// chat shows. An Auto-sent Jira issue is created after the provider's turn
-/// ends, so only its receipt knows the key and link, and a follow-up such as
-/// "comment on the issue you just created" needs them in the provider's own
-/// context, not only on screen.
+/// chat shows. A Jira issue sent from the review dock is created after the
+/// provider's turn ends, so only its receipt knows the key and link, and a
+/// follow-up such as "comment on the issue you just created" needs them in the
+/// provider's own context, not only on screen.
 enum ExternalActionPromptContext {
     static let maximumRecords = 12
 

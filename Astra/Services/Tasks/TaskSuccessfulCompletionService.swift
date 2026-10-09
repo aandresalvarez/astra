@@ -12,8 +12,7 @@ enum TaskSuccessfulCompletionService {
         modelContext: ModelContext,
         successPayload: String,
         permissionPolicy: PermissionPolicy,
-        executionPath: String? = nil,
-        reviewOriginURL: @escaping (String) async -> String? = { path in
+        reviewOriginURL: (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
         }
     ) async -> Bool {
@@ -28,16 +27,6 @@ enum TaskSuccessfulCompletionService {
             modelContext: modelContext,
             originURL: reviewOriginURL
         )
-        // Auto posts the review this run wrote only after the run's
-        // validation, baseline check and plan review included, at settlement
-        // (`GitHubReviewAutoPost.postAfterValidation`). Posting here would
-        // publish before a check that can still fail the run.
-        let reviewPostedAfterValidation = GitHubReviewAutoPost.postsAfterValidation(
-            task: task,
-            run: run,
-            policyLevel: permissionPolicy.agentPolicyLevel,
-            executionPath: executionPath
-        )
         if ExternalActionPolicy.asksUser(for: .gitPullRequestPublication, level: permissionPolicy.agentPolicyLevel) {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
                 task: task,
@@ -48,8 +37,7 @@ enum TaskSuccessfulCompletionService {
         let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
             task: task,
             run: run,
-            permissionPolicy: permissionPolicy,
-            reviewPostedAfterValidation: reviewPostedAfterValidation
+            permissionPolicy: permissionPolicy
         )
         if decision.shouldBlockCompletion {
             TaskRuntimeOutcomeTransition.applyCompletionBlock(

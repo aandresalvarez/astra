@@ -28,11 +28,16 @@ struct PermissionLevelActionMatrixTests {
         #expect(Set(ExternalActionKind.allCases) == Self.declaredKinds)
     }
 
-    @Test("Auto performs every external action without asking and records it")
+    /// Reviewed in Auto too until they are sent when the agent asks (spec
+    /// decision 15): ASTRA learns of them only after the run.
+    private static let reviewedAtEveryLevel: Set<ExternalActionKind> = [.connectorMutation, .githubReviewPublication]
+
+    @Test("Auto performs every other external action without asking and records it")
     func autoPerformsAndRecords() {
         for kind in ExternalActionKind.allCases {
             #expect(
-                ExternalActionPolicy.disposition(for: kind, level: .autonomous) == .performAndRecord,
+                ExternalActionPolicy.disposition(for: kind, level: .autonomous)
+                    == (Self.reviewedAtEveryLevel.contains(kind) ? .askUser : .performAndRecord),
                 "Auto \(kind.rawValue)"
             )
         }

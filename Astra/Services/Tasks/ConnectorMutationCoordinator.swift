@@ -924,9 +924,9 @@ final class ConnectorMutationCoordinator {
     /// a new file and therefore a new review, which is the point: the user said
     /// no to that request, not to the sentence it contained.
     func decline(task: AgentTask, proposal: ConnectorMutationProposal) throws {
-        // A send that claimed this proposal may already have gone out — an
-        // Auto send runs while the review sheet can still be open — so a
-        // decline recorded now would sit beside the write it claims to refuse.
+        // A send that claimed this proposal may already have gone out — the
+        // review can be open in more than one place — so a decline recorded
+        // now would sit beside the write it claims to refuse.
         guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
             throw ConnectorMutationCoordinatorError.alreadySent(proposal.target)
         }

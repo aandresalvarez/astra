@@ -63,13 +63,14 @@ no runtime pre-grants a local tool in Ask.
 
 `Tests/PermissionLevelActionMatrixTests.swift` pins `ExternalActionPolicy` for
 every level and every external action ASTRA performs or owns: Auto performs and
-records, Ask and Custom ask, and a new action kind fails the suite until it is
-placed. The behaviour behind each answer has its own pins:
+records (except staged connector writes and requested GitHub reviews, which are
+reviewed at every level for now), Ask and Custom ask, and a new action kind
+fails the suite until it is placed. The behaviour behind each answer has its own pins:
 
 - connector credentials — `ConnectorPreflightServiceTests` (launch gate) and
   `BrokeredCredentialLevelTests` (run-boundary offer);
-- Jira writes — `ConnectorMutationAutoSendTests`;
-- GitHub review posting — the Auto cases in `GitHubReviewPublicationTests`;
+- Jira writes, reviewed at every level for now — `ConnectorMutationReviewTests`;
+- GitHub review posting — `GitHubReviewPublicationTests`;
 - commands the agent ran itself — `AgentExternalActionObserverTests`;
 - the chat record — `ExternalActionRecordTests`.
 

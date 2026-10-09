@@ -25,8 +25,7 @@ enum RunBoundaryDiscovery {
     /// whether what the run left behind is asked about or done (see
     /// `ExternalActionPolicy`), so switching the task's level afterwards
     /// changes nothing the run already produced. Nothing here leaves the
-    /// machine: an Auto run's staged writes are sent during settlement, after
-    /// the provider result is durable (`ConnectorMutationAutoSend`).
+    /// machine: staged writes wait in the dock for the user's review.
     /// `runFinishedCleanly` decides whether Auto may allow a connector the run
     /// reached for; it defaults to false, so a caller that cannot say offers.
     static func recordWhatTheRunLeftForTheUser(

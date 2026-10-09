@@ -36,11 +36,6 @@ enum RuntimeTurnSettlementService {
         let chainedGoal: String
         let scheduleID: UUID?
         var sessionMessage: String? = nil
-        /// Set on a result captured by a build in which Auto sends its own
-        /// staged writes and requested review at settlement. A checkpoint an
-        /// older build captured — recovered after an upgrade — was launched
-        /// under the promise that those wait for review, so it sends nothing.
-        var autoSendsAtSettlement: Bool? = nil
     }
 
     struct Verdict: Codable {
@@ -80,13 +75,13 @@ enum RuntimeTurnSettlementService {
         } && verdict(for: run, task: task) == nil
     }
 
-    /// Whether a run finished the work its staged writes belong to. Auto sends
-    /// them only then: a cancelled run is the user saying stop, and a run that
-    /// failed, timed out, or was stopped by policy, budget, or repetition did
-    /// not finish. Either way the proposals stay in the dock for review.
-    /// The verdicts the outcome reads from the checkpoint rather than the
-    /// process count too: a provider that reported an error but exited 0, and
-    /// usage over a hard budget, both end the run as failed.
+    /// Whether a run's provider finished its work. Auto allows a connector the
+    /// run reached for only then (`BrokeredCredentialApprovalDiscovery`): a
+    /// cancelled run is the user saying stop, and a run that failed, timed
+    /// out, or was stopped by policy, budget, or repetition did not finish.
+    /// The verdicts the outcome reads from the checkpoint count too: a
+    /// provider that reported an error but exited 0, and usage over a hard
+    /// budget, both end the run as failed.
     static func finishedCleanly(checkpoint: Checkpoint, taskStatus: TaskStatus) -> Bool {
         let budget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: checkpoint.effectiveTokenBudget,
                                                 tokensUsed: checkpoint.tokensUsed)
@@ -117,8 +112,6 @@ enum RuntimeTurnSettlementService {
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,
                        permissionPromotionPersistence: (() throws -> Void)? = nil,
-                       connectorMutationCoordinator: ConnectorMutationCoordinator? = nil,
-                       reviewPublicationService: GitHubReviewPublicationService? = nil,
                        verdictPersistence: (() throws -> Void)? = nil,
                        sessionProjection: (() -> Bool)? = nil, autoExport: Bool = true) async -> Bool {
         if verdict(for: run, task: task) != nil { return true }
@@ -144,28 +137,7 @@ enum RuntimeTurnSettlementService {
                     autoExport: autoExport)
                 try await RuntimeTurnOutcomeService.apply(checkpoint: checkpoint, task: task, run: run,
                     modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence)
-                let outcomeCompleted = task.status == .completed
                 await validatePlan(checkpoint: checkpoint, task: task, run: run, modelContext: modelContext)
-                // Auto's GitHub review and connector writes leave the machine only
-                // here: after the provider result and the staged proposals are
-                // durable, under the settlement marker (an exit mid-send is
-                // reconciled rather than replayed), and only once the outcome,
-                // its tests, AI check, baseline check and plan review included,
-                // completed the run. A run that fails validation sends nothing.
-                if checkpoint.autoSendsAtSettlement == true, outcomeCompleted, run.status == .completed,
-                   finishedCleanly(checkpoint: checkpoint, taskStatus: task.status) {
-                    await GitHubReviewAutoPost.postAfterValidation(
-                        task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
-                        executionPath: checkpoint.executionPath, modelContext: modelContext,
-                        service: reviewPublicationService ?? GitHubReviewPublicationService(modelContext: modelContext))
-                    // A review that could not be posted blocks completion and
-                    // fails the run; the connector writes then wait with it.
-                    if task.status == .completed, run.status == .completed {
-                        await ConnectorMutationAutoSend.sendPendingMutations(
-                            task: task, run: run, policyLevel: checkpoint.permissionPolicy.agentPolicyLevel,
-                            modelContext: modelContext, coordinator: connectorMutationCoordinator)
-                    }
-                }
                 // Validation effects are durable before writing derived files.
                 // Projection I/O failures can retry without re-executing work.
                 RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext,

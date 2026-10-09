@@ -120,8 +120,7 @@ enum RuntimeTurnOutcomeService {
                             run: run,
                             modelContext: modelContext,
                             successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
-                            permissionPolicy: launchPermissionPolicy,
-                            executionPath: executionPath
+                            permissionPolicy: launchPermissionPolicy
                         )
                         if completed {
                             await AgentRuntimeCompletionValidation.applyAutomaticBaselineVerificationIfNeeded(
@@ -153,8 +152,7 @@ enum RuntimeTurnOutcomeService {
                                 run: run,
                                 modelContext: modelContext,
                                 successPayload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))",
-                                permissionPolicy: launchPermissionPolicy,
-                                executionPath: executionPath
+                                permissionPolicy: launchPermissionPolicy
                             )
                         case .failed(let details):
                             TaskStateMachine.failFromValidation(task, modelContext: modelContext)
@@ -182,8 +180,7 @@ enum RuntimeTurnOutcomeService {
                                 run: run,
                                 modelContext: modelContext,
                                 successPayload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))",
-                                permissionPolicy: launchPermissionPolicy,
-                                executionPath: executionPath
+                                permissionPolicy: launchPermissionPolicy
                             )
                         case .failed(let details):
                             TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
@@ -201,8 +198,7 @@ enum RuntimeTurnOutcomeService {
                         run: run,
                         modelContext: modelContext,
                         successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
-                        permissionPolicy: launchPermissionPolicy,
-                        executionPath: executionPath
+                        permissionPolicy: launchPermissionPolicy
                     )
                     if completed {
                         await AgentRuntimeCompletionValidation.applyAutomaticBaselineVerificationIfNeeded(

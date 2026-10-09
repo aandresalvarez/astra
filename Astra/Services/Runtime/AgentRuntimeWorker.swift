@@ -651,10 +651,7 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText
         )
         let readinessPrompt = GitHubCapabilityLaunchContext.appendingProviderGuidance(
-            to: HostControlPlanePromptGuidance.appendingAutoSendGuidance(
-                to: policyPrompt,
-                permissionPolicy: launchPermissionPolicy
-            ),
+            to: policyPrompt,
             repositoryStatus: githubRepositoryStatus
         )
         var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
@@ -1107,8 +1104,7 @@ final class AgentRuntimeWorker {
                 cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
                 approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
                 sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
-                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase),
-                autoSendsAtSettlement: true)
+                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase))
 
         // Before the outcome branches, not inside one. What the run left behind
         // for the user is waiting whether the run succeeded, was cancelled, or
@@ -1136,8 +1132,7 @@ final class AgentRuntimeWorker {
             return
         }
         guard await RuntimeTurnSettlementService.settle(checkpoint: checkpoint, task: task, run: run,
-            modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence,
-            connectorMutationCoordinator: connectorMutationCoordinatorFactory?(modelContext)) else { return }
+            modelContext: modelContext, permissionPromotionPersistence: permissionPromotionPersistence) else { return }
 
         RuntimeTurnSettlementService.dispatchChainedTask(task: task, run: run, modelContext: modelContext)
         if runtimeAdapter.performsPostRunFollowUps(phase: auditPhase) {
@@ -1670,10 +1665,5 @@ final class AgentRuntimeWorker {
     /// protocol) for providers that support it, instead of failing the run and
     /// relaunching after approval.
     var liveApprovalsEnabled: Bool = true
-
-    /// Builds the coordinator an Auto run's staged connector writes are sent
-    /// through during settlement. Nil uses the real sender; tests inject one
-    /// so they can prove what would have gone out without reaching a network.
-    var connectorMutationCoordinatorFactory: (@MainActor (ModelContext) -> ConnectorMutationCoordinator)?
 
 }
