@@ -740,10 +740,12 @@ final class TaskLifecycleCoordinator {
             persist: persistWorkspaceChange
         )
         // Cancellation exports mirrors, so remove them only after it and the
-        // workspace deletion are saved.
+        // workspace deletion are saved. Mirrors go before credentials: a quit
+        // between the two then leaves only unreachable Keychain items, never
+        // a mirror that recovery reimports as a workspace without its secrets.
         if result.persisted {
-            for cleanup in keychainCleanups { cleanup() }
             removeGeneratedWorkspaceMirrors(for: path)
+            for cleanup in keychainCleanups { cleanup() }
         }
         return (result.persisted, result.persisted ? next : nil, result.cleanup)
     }
