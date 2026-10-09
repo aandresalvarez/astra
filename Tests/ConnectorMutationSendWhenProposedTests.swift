@@ -376,6 +376,25 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(sender.requests.count == 1)
     }
 
+    /// The binding is what makes the level the run's own: the worker binds it
+    /// with the launch manifest's level before the provider starts, and the
+    /// registry hands it to the session it prepares. Without it every request
+    /// answers "waits for review" and Auto silently stops sending.
+    @Test("Each run's broker is bound to that run's launch level")
+    func workerBindsTheRunsLevel() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let worker = try String(contentsOf: root.appendingPathComponent("Astra/Services/Runtime/AgentRuntimeWorker.swift"), encoding: .utf8)
+        let binding = try #require(worker.range(of: "bindExternalActions("))
+        let bound = worker[binding.lowerBound...].prefix(900)
+        #expect(bound.contains("policyLevel: manifest.policyLevel"))
+        #expect(bound.contains("runID: run.id"))
+        #expect(worker.contains("unbindExternalActions(taskID: task.id, runID: run.id)"))
+        #expect(worker.range(of: "let manifest = AgentPolicyManifestService.recordPreflightManifest")!.lowerBound < binding.lowerBound)
+
+        let registry = try String(contentsOf: root.appendingPathComponent("Astra/Services/Runtime/HostControlBrokerSessionRegistry.swift"), encoding: .utf8)
+        #expect(registry.contains("externalActionRequester: externalActionRequester(taskID: task.id, runID: runID)"))
+    }
+
     /// On a GCD thread, as the broker's connection queue is — never the
     /// cooperative pool, which a semaphore wait would starve.
     nonisolated private static func offMain<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {

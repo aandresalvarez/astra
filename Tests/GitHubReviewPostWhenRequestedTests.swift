@@ -162,6 +162,22 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(!GitHubReviewArtifactPolicy.sameFile("/elsewhere/pr1_review.json", "/var/folders/x/task/pr1_review.json", root: root))
     }
 
+    /// The runtime guard stops a host tool call whose input keys are outside
+    /// its schema, so a request the broker accepts but the guard does not is a
+    /// request the agent is told exists and then stopped for.
+    @Test("The runtime guard admits a post_review call's input keys")
+    func runtimeGuardAdmitsPostReviewKeys() throws {
+        let descriptor = try #require(HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(
+            for: .claudeCode, tools: ["github"]
+        ).first)
+        for key in ["operation", GitHubReviewHostControlOperations.reviewFileKey, "arguments"] {
+            #expect(descriptor.allowedInputKeys.contains(key), "\(key)")
+            #expect(!descriptor.deniedInputKeys.contains(key), "\(key)")
+        }
+        #expect(!descriptor.allowedInputKeys.contains("body"))
+        #expect(!descriptor.allowedInputKeys.contains("file"))
+    }
+
     // MARK: - Fixture
 
     private actor FakeCLI: GitHubReviewCLI {
