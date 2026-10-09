@@ -21,10 +21,14 @@ enum TaskExecutionResourceClaimResolver {
         let readOnlyClaims = readOnlyWorkspaceKeys(for: task).map {
             TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .shared)
         }
-        // Prepared worktrees always receive their verified shared Git directory,
-        // regardless of prompt intent. Writable main checkouts also claim their
-        // Git metadata because they have direct write access to .git. Other checkouts
-        // retain the credential grant's Git-intent predicate, including its context-only
+        // Prepared worktrees always claim their verified shared Git directory,
+        // regardless of prompt intent, but `.shared`: Git locks refs, the
+        // index, and config per operation, so sibling worktree tasks of one
+        // repository run together, while a writer of the main checkout, which
+        // holds that directory exclusively, still waits for them and they for
+        // it. Writable main checkouts claim their Git metadata because they
+        // have direct write access to .git. Other checkouts retain the
+        // credential grant's Git-intent predicate, including its context-only
         // known gap documented in TaskExecutionResourceClaimCoverageTests.
         let mutatesGitMetadata = task.isolationStrategy == .gitBranch
             || GitOperationIntentDetector.detectsRuntimeGitOperation(
@@ -35,12 +39,22 @@ enum TaskExecutionResourceClaimResolver {
         let credentialKeys = mutatesGitMetadata
             ? gitCommonDirectoryKeys(for: keys)
             : gitCommonDirectoryKeys(for: writableMainKeys)
-        let worktreeKeys = TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths
+        let worktreeKeys = worktreeGitMetadataKeys(for: task)
+        let sharedKeys = Set(worktreeKeys)
         var seen = Set<String>()
         return workspaceClaims + readOnlyClaims + (worktreeKeys + credentialKeys).compactMap { rawKey in
             guard let key = standardizedPath(rawKey), seen.insert(key).inserted else { return nil }
-            return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access)
+            return TaskExecutionResourceClaim(
+                kind: .gitCommonDirectory, key: key, access: sharedKeys.contains(key) ? .shared : access
+            )
         }
+    }
+
+    /// The verified shared Git directory of a prepared worktree, as claim
+    /// keys. Admission holds it `.shared` whatever the run's workspace access,
+    /// so the key is exempt from every exclusive upgrade.
+    static func worktreeGitMetadataKeys(for task: AgentTask) -> [String] {
+        TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths.compactMap(standardizedPath)
     }
 
     static func workspaceClaim(
@@ -135,7 +149,7 @@ enum TaskExecutionResourceClaimResolver {
         }
         if !covered { return true }
         let persistedGitKeys = Set(request.resourceClaims.filter { $0.kind == .gitCommonDirectory }.map(\.key))
-        let worktreeGitKeys = Set(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths.compactMap(standardizedPath))
+        let worktreeGitKeys = Set(worktreeGitMetadataKeys(for: task))
         return !persistedGitKeys.isEmpty && !worktreeGitKeys.isSubset(of: persistedGitKeys)
     }
 
@@ -261,10 +275,8 @@ enum TaskExecutionResourceClaimResolver {
     ) -> [TaskExecutionResourceClaim] {
         var result = claims
         var seen = Set(claims.filter { $0.kind == .gitCommonDirectory }.map(\.key))
-        let access = claims.first { $0.kind == .workspace }?.access ?? .exclusive
-        for path in TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths {
-            guard let key = standardizedPath(path), seen.insert(key).inserted else { continue }
-            result.append(TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access))
+        for key in worktreeGitMetadataKeys(for: task) where seen.insert(key).inserted {
+            result.append(TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: .shared))
         }
         return result
     }
@@ -296,12 +308,14 @@ enum TaskExecutionResourceClaimResolver {
         let policy = request?.executionPolicySnapshot
         let isolation = policy.flatMap { IsolationStrategy(rawValue: $0.isolationStrategyRawValue) }
             ?? task.isolationStrategy
+        // `readOnlyWorkspaceKeys` holds the prepared worktree's Git directory
+        // too, so its `.gitCommonDirectory` claim stays shared here as well.
         let readOnlyKeys = Set(readOnlyWorkspaceKeys(for: task))
         var effective = claims.map { claim in
             guard claim.kind == .workspace || claim.kind == .gitCommonDirectory else {
                 return claim
             }
-            if claim.kind == .workspace && readOnlyKeys.contains(claim.key) { return claim }
+            if readOnlyKeys.contains(claim.key) { return claim }
             return TaskExecutionResourceClaim(kind: claim.kind, key: claim.key, access: .exclusive)
         }
         guard isolation == .gitBranch else { return effective }

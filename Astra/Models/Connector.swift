@@ -374,14 +374,26 @@ public final class Connector {
 
     /// Delete all Keychain entries when connector is deleted.
     public func cleanupKeychain() {
-        if isStanfordOutlookMail {
-            OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
+        deferredKeychainCleanup()()
+    }
+
+    /// `cleanupKeychain()` with its inputs captured now, so a deletion can
+    /// run it only once the connector's row is durably gone.
+    public func deferredKeychainCleanup() -> () -> Void {
+        let isStanfordOutlookMail = isStanfordOutlookMail
+        let id = id
+        let facts = secretFacts
+        let serviceType = serviceType
+        return {
+            if isStanfordOutlookMail {
+                OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
+            }
+            ConnectorSecretSeam.required.deleteAllCredentials(facts: facts)
+            AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
+                "connector_id": id.uuidString,
+                "service_type": serviceType
+            ])
         }
-        ConnectorSecretSeam.required.deleteAllCredentials(facts: secretFacts)
-        AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType
-        ])
     }
 
     // MARK: - Stanford Outlook Mail (pure members)

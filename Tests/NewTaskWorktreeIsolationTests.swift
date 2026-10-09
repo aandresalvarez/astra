@@ -769,15 +769,17 @@ struct NewTaskWorktreeIsolationTests {
             for: nil, task: task, runMode: "test", fallbackAccess: .readOnly
         )
         // Everything the run touches is written; only the source checkout it
-        // reads and the marker on its Git metadata stay shared, so
-        // main-checkout readers keep running.
+        // reads, the marker on its Git metadata, and the shared Git directory
+        // itself stay read-only, so main-checkout readers and sibling
+        // worktree tasks keep running.
         let isReadOnlyMarker = { (claim: TaskResourceLockClaim) in
             claim.resourceKind == .workspace && [metadata, repository.path].contains(claim.resourceKey)
         }
         #expect(lockClaims.filter(isReadOnlyMarker).map(\.accessMode) == [.readOnly, .readOnly])
-        #expect(lockClaims.filter { !isReadOnlyMarker($0) }.allSatisfy { $0.accessMode == .write })
+        #expect(lockClaims.filter { !isReadOnlyMarker($0) && $0.resourceKind != .gitCommonDirectory }
+            .allSatisfy { $0.accessMode == .write })
         #expect(lockClaims.contains {
-            $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .write
+            $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .readOnly
         })
 
         let fake = FakeAgentProcessRunner()
@@ -813,7 +815,7 @@ struct NewTaskWorktreeIsolationTests {
         #expect(restored["hooks"] == nil)
     }
 
-    @Test("Writable worktree Git grants always have matching admission claims, without Git prompt intent")
+    @Test("Writable worktree Git grants always have matching shared admission claims, and siblings run together")
     func worktreeGitGrantsAlwaysHaveClaims() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -831,21 +833,34 @@ struct NewTaskWorktreeIsolationTests {
         let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
         #expect(Set(firstClaims.filter { $0.kind == .workspace && $0.access == .exclusive }.map(\.key))
             .isDisjoint(with: secondClaims.filter { $0.kind == .workspace && $0.access == .exclusive }.map(\.key)))
+        // The shared Git directory is claimed, but shared: Git locks refs,
+        // index, and config per operation, so two worktree writers of one
+        // repository run in parallel; the main checkout's writer (next test)
+        // still excludes them.
         for (task, claims) in [(first, firstClaims), (second, secondClaims)] {
             #expect(launchPlan(task).hostPathGrants.contains { $0.path == metadata && $0.access == .readWrite })
-            #expect(claims.contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .exclusive })
+            #expect(claims.contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .shared })
             #expect(claims.contains { $0.kind == .workspace && $0.key == metadata && $0.access == .shared })
         }
         let firstLease = TaskExecutionResourceBroker.lockClaims(for: firstClaims, taskID: first.id, requestID: nil, runMode: "test")
         let secondLease = TaskExecutionResourceBroker.lockClaims(for: secondClaims, taskID: second.id, requestID: nil, runMode: "test")
-        #expect(!TaskExecutionResourceBroker.canAcquire(secondLease, active: firstLease))
+        #expect(TaskExecutionResourceBroker.canAcquire(secondLease, active: firstLease))
+        #expect(TaskExecutionResourceBroker.canAcquire(firstLease, active: secondLease))
+        // Admission upgrades every writable claim to exclusive for workflow
+        // steps that need it, but never the shared Git directory.
+        first.templateHooksJSON = #"{"PreToolUse":[]}"#
+        let hookClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: first, runMode: "test")
+        #expect(hookClaims.contains {
+            $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .readOnly
+        })
+        first.templateHooksJSON = ""
 
         let oldRequest = TaskTurnRequest(
             task: first, messageEventID: UUID(), sequence: 1,
             resourceClaims: firstClaims.filter { $0.kind == .workspace }
         )
         #expect(TaskExecutionResourceClaimResolver.admissionClaims(for: oldRequest, task: first)
-            .contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .exclusive })
+            .contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .shared })
         let fallback = TaskExecutionResourceAdmissionPolicy.lockClaims(
             for: nil, task: first, runMode: "test", fallbackAccess: .readOnly
         )
@@ -869,7 +884,10 @@ struct NewTaskWorktreeIsolationTests {
             return TaskExecutionResourceBroker.lockClaims(for: claims, taskID: task.id, requestID: nil, runMode: "test")
         }
         #expect(TaskExecutionResourceBroker.canAcquire(readers[1], active: readers[0]))
-        #expect(!TaskExecutionResourceBroker.canAcquire(firstLease, active: readers[1]))
+        // A worktree writer runs beside a reader of a sibling worktree, but
+        // not beside a reader of its own checkout.
+        #expect(TaskExecutionResourceBroker.canAcquire(firstLease, active: readers[1]))
+        #expect(!TaskExecutionResourceBroker.canAcquire(firstLease, active: readers[0]))
     }
 
     @Test("Writers whose root holds the repository's Git directory wait for its worktree tasks, without Git wording")

@@ -372,9 +372,29 @@ final class WorkspaceGitViewModel: ObservableObject {
         .compactMap { $0 }
         .map(WorkspacePathPresentation.standardizedPath)
 
+        // A checkout root is matched to its repository through the Git
+        // directory it shares, read from disk; `git worktree list` runs only
+        // for a checkout whose folder is gone and may still be registered.
+        let repositoriesByCommonDirectory = Dictionary(
+            repos.compactMap { repository in
+                GitCheckoutLayout.commonDirectory(for: repository.path)
+                    .map { (URL(fileURLWithPath: $0).resolvingSymlinksInPath().path, repository) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         for candidate in candidates {
             if let exact = repos.first(where: { $0.path == candidate }) {
                 return (exact, candidate == active)
+            }
+            if FileManager.default.fileExists(atPath: candidate) {
+                if GitCheckoutLayout.worktreeRoot(containing: candidate) == candidate,
+                   let commonDirectory = GitCheckoutLayout.commonDirectory(for: candidate),
+                   let repository = repositoriesByCommonDirectory[
+                    URL(fileURLWithPath: commonDirectory).resolvingSymlinksInPath().path
+                   ] {
+                    return (repository, candidate == active)
+                }
+                continue
             }
             let resolved = URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path
             for repository in repos {
@@ -804,6 +824,7 @@ final class WorkspaceGitViewModel: ObservableObject {
            owner.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
             == WorkspacePathPresentation.standardizedPath(path),
            let binding = TaskWorktreeBinding.eventForInheritance(from: owner) {
+            TaskWorktreeBinding.applyIsolation(to: task, for: binding)
             modelContext.insert(TaskWorktreeBinding.copy(binding, to: task))
         }
         TaskCapabilitySnapshotter.capture(for: task)

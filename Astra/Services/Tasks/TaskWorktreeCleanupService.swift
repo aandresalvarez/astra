@@ -151,7 +151,8 @@ enum TaskWorktreeCleanupService {
         modelContext: ModelContext,
         resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
-        pinsOwnTask: Bool = true
+        pinsOwnTask: Bool = true,
+        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot
     ) async -> Bool {
         let url = store.recordURL(for: discard)
         let key = activeKey(url)
@@ -176,8 +177,8 @@ enum TaskWorktreeCleanupService {
                     let durable = ModelContext(context.container)
                     let taskID = discard.taskID
                     let descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-                    var pins = try TaskWorktreeService.durableCheckoutPins(modelContext: durable)
-                    pins.formUnion(try TaskWorktreeService.durableCheckoutPins(modelContext: context))
+                    var pins = try TaskWorktreeService.durableCheckoutPins(modelContext: durable, worktreesRoot: worktreesRoot)
+                    pins.formUnion(try TaskWorktreeService.durableCheckoutPins(modelContext: context, worktreesRoot: worktreesRoot))
                     // A saved task keeps a worktree it was deleted from or
                     // retargeted away from. An interrupted creation never
                     // bound its worktree, so only real pins keep that one.

@@ -19,6 +19,8 @@ struct ComposerPresentationTests {
     @Test("new task worktree choice sits in the composer dock strip with trailing controls")
     func newTaskWorktreeControlsAreWiredIntoComposer() throws {
         let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
+        // The creation flow and the cached binding live in the composer's companion.
+        let creation = try sourceFile("Astra/Views/ChatPanelViewWorktreeCreation.swift")
         let strip = try sourceFile("Astra/Views/NewTaskWorktreeDockView.swift")
         let decisionDock = try sourceFile("Astra/Views/TaskDecisionDockView.swift")
 
@@ -30,14 +32,22 @@ struct ComposerPresentationTests {
         // A draft that already has its worktree keeps it; any other may opt in.
         #expect(composer.contains("allowsChoice: allowsWorktreeChoice"))
         #expect(composer.contains("binding: worktreeBinding"))
-        #expect(composer.contains("private var allowsWorktreeChoice: Bool { worktreeBinding == nil }"))
+        #expect(creation.contains("var allowsWorktreeChoice: Bool { worktreeBinding == nil }"))
+        // The binding is read from disk only when the draft, its pin, or its
+        // prepared event changes, never per keystroke.
+        #expect(creation.contains("var worktreeBinding: TaskWorktreePayload? { cachedWorktreeBinding }"))
+        #expect(composer.contains(".onChange(of: worktreeBindingSignature, initial: true) { refreshWorktreeBinding() }"))
+        #expect(!composer.contains(".disabled(isPreparingWorktree)"))
+        #expect(composer.contains("onCancel: cancelTaskCreation"))
+        #expect(strip.contains("accessibilityIdentifier(\"NewTaskWorktreeCancel\")"))
         #expect(composer.contains("isPreparing: isPreparingWorktree"))
         #expect(composer.contains("problem: taskCreationError"))
         #expect(composer.contains("selection: $worktreeSelection"))
         #expect(composer.contains("hasInput: hasInput && canSubmitWorktreeSelection"))
         // A refused submission names why: a gone checkout, not a missing repository.
-        #expect(composer.contains("worktreeSelection.submitError"))
+        #expect(creation.contains("worktreeSelection.submitError"))
         #expect(!composer.contains("TaskWorktreeCreationError.repositoryUnavailable"))
+        #expect(!creation.contains("TaskWorktreeCreationError.repositoryUnavailable"))
         #expect(!composer.contains("NewTaskWorktreeOptionsView"))
         #expect(!composer.contains("ProgressView(\"Preparing task checkout...\")"))
 

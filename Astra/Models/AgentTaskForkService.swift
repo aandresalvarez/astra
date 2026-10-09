@@ -303,9 +303,11 @@ public enum AgentTaskForkService {
             return newEvent
         }
         remapAttachmentRecords(from: eventsToCopy, into: copiedEvents, using: manifestPathMapping)
-        if let binding = TaskWorktreeBinding.eventForInheritance(from: source),
-           !eventsToCopy.contains(where: { $0.id == binding.id }) {
-            copiedEvents.append(TaskWorktreeBinding.copy(binding, to: forked))
+        if let binding = TaskWorktreeBinding.eventForInheritance(from: source) {
+            TaskWorktreeBinding.applyIsolation(to: forked, for: binding)
+            if !eventsToCopy.contains(where: { $0.id == binding.id }) {
+                copiedEvents.append(TaskWorktreeBinding.copy(binding, to: forked))
+            }
         }
 
         copiedEvents.append(TaskEvent(

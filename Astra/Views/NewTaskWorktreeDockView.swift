@@ -25,6 +25,8 @@ struct NewTaskWorktreeDockView: View {
     let isPreparing: Bool
     let problem: String?
     @Binding var selection: NewTaskWorktreeSelection
+    /// Stops a creation in flight; shown while `isPreparing`.
+    var onCancel: (() -> Void)? = nil
     @Environment(\.modelContext) private var modelContext
     @Environment(\.newTaskWorktreeIntents) private var intents
     @State private var intentOwner = UUID()
@@ -402,23 +404,34 @@ struct NewTaskWorktreeDockView: View {
     }
 
     /// The checkbox stays rightmost so it does not move under the pointer
-    /// when checking it reveals the repository menu to its left.
+    /// when checking it reveals the repository menu to its left. While a
+    /// worktree is being created the choice controls are disabled and a
+    /// Cancel button, which stays enabled, leads them.
     @ViewBuilder
     private func controls(_ presentation: NewTaskWorktreeDockPresentation) -> some View {
-        if presentation.showsToggle {
-            HStack(alignment: .center, spacing: 10) {
-                if presentation.showsRepositoryMenu {
-                    repositoryMenu
-                }
-                Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: enabledBinding)
-                    .toggleStyle(.checkbox)
-                    .font(Stanford.caption(12).weight(.medium))
-                    .foregroundStyle(Stanford.black.opacity(0.84))
-                    .help(NewTaskWorktreeDockPresentation.toggleHelp)
-                    .accessibilityIdentifier("NewTaskWorktreeToggle")
+        HStack(alignment: .center, spacing: 10) {
+            if isPreparing, let onCancel {
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(NewTaskWorktreeRepositoryChipStyle())
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .help("Stop creating this worktree and free the composer")
+                    .accessibilityIdentifier("NewTaskWorktreeCancel")
             }
-            .fixedSize()
-            .disabled(presentation.controlsDisabled)
+            if presentation.showsToggle {
+                HStack(alignment: .center, spacing: 10) {
+                    if presentation.showsRepositoryMenu {
+                        repositoryMenu
+                    }
+                    Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: enabledBinding)
+                        .toggleStyle(.checkbox)
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(Stanford.black.opacity(0.84))
+                        .help(NewTaskWorktreeDockPresentation.toggleHelp)
+                        .accessibilityIdentifier("NewTaskWorktreeToggle")
+                }
+                .fixedSize()
+                .disabled(presentation.controlsDisabled)
+            }
         }
     }
 

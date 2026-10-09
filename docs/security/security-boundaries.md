@@ -124,7 +124,10 @@ and `~/Documents/Astra Dev/Workspaces`.
   read-only; shared workspace admission claims serialize writers against these
   reads, including for legacy requests. Every
   worktree Git grant has a matching admission claim, independent of Git prompt
-  intent, including legacy requests; shared runs claim it read-only. Template
+  intent, including legacy requests. That claim is shared, whatever the run's
+  workspace access: Git locks refs, the index, and config per operation, so
+  sibling worktree tasks of one repository run together, while a writer of the
+  main checkout holds the directory exclusively and waits for them. Template
   hooks are injected and restored at the same captured code checkout that
   admission claims. Provider-native sandboxes do not receive the Git directory:
   Codex keeps `.git` read-only by design, and a writable
@@ -150,10 +153,12 @@ and `~/Documents/Astra Dev/Workspaces`.
   paths, including symlink aliases and overlapping ancestors or descendants,
   and a competing removal retries without replacing the first reservation.
   Fetch, creation, submodule setup, removal, and branch deletion acquire
-  exclusive Git-common-directory and metadata workspace claims from the
-  runtime queue's existing lease owner; cleanup also claims the checkout.
-  Busy creation fails visibly before mutation, while busy cleanup retains its
-  intent. Leases release on success or failure and survive queue cancellation
+  shared Git-common-directory and metadata workspace claims from the
+  runtime queue's existing lease owner, so they run beside sibling worktree
+  tasks but never beside a main-checkout writer; cleanup also claims the
+  checkout exclusively, and concurrent creations on one repository are
+  serialized in-process. Busy creation fails visibly before mutation, while
+  busy cleanup retains its intent. Leases release on success or failure and survive queue cancellation
   until the lifecycle operation finishes.
   Cleanup keeps any
   worktree that has changes, ignored files, or new

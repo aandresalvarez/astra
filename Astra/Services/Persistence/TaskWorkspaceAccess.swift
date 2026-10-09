@@ -11,6 +11,22 @@ public struct TaskWorkspaceAccess {
         self.fileSystem = fileSystem
     }
 
+    /// Resolving the binding probes the repository's worktree registry on
+    /// disk and most derived properties need it, so an instance reads it
+    /// once. Instances are short-lived; a binding change needs a new one.
+    private final class BindingStateCache {
+        var state: TaskWorktreeBinding.State?
+    }
+
+    private let bindingStateCache = BindingStateCache()
+
+    private var worktreeBindingState: TaskWorktreeBinding.State {
+        if let state = bindingStateCache.state { return state }
+        let state = TaskWorktreeBinding.state(of: task)
+        bindingStateCache.state = state
+        return state
+    }
+
     public var effectiveWorkspacePath: String {
         task.workspace?.primaryPath ?? ""
     }
@@ -52,7 +68,7 @@ public struct TaskWorkspaceAccess {
     public var runtimeWritableCodeRoot: String? {
         let codeRoot = codeWorkingDirectory
         guard !codeRoot.isEmpty else { return nil }
-        if case .invalid = TaskWorktreeBinding.state(of: task) { return nil }
+        if case .invalid = worktreeBindingState { return nil }
         return codeRoot
     }
 
@@ -74,7 +90,7 @@ public struct TaskWorkspaceAccess {
     /// their access. Identities are compared after resolving symlinks, so an
     /// aliased checkout path still matches Git's real admin path.
     public var replacedSourceCheckoutPaths: [String] {
-        let state = TaskWorktreeBinding.state(of: task)
+        let state = worktreeBindingState
         let additionalPaths = task.workspace?.additionalPaths ?? []
         let folders = normalizedUniquePaths([task.workspace?.primaryPath ?? ""] + additionalPaths)
         let projected = Set(runtimePathProjection(folders, state: state).projected)
@@ -150,11 +166,13 @@ public struct TaskWorkspaceAccess {
     /// worktree. Nil for legacy pins, retargeted drafts, and unreadable
     /// bindings.
     public var worktreeBindingEvent: TaskEvent? {
-        TaskWorktreeBinding.event(for: task)
+        guard case .bound(_, let event, _) = worktreeBindingState else { return nil }
+        return event
     }
 
     public var worktreeBinding: TaskWorktreePayload? {
-        TaskWorktreeBinding.payload(for: task)
+        guard case .bound(let payload, _, _) = worktreeBindingState else { return nil }
+        return payload
     }
 
     /// The task's folders for prompts and context: `runtimeWorkspacePaths`,
@@ -196,15 +214,11 @@ public struct TaskWorkspaceAccess {
         var projected: [String] = []
     }
 
+    /// An invalid binding is reported once, at the launch gates
+    /// (`TaskQueue.prepareTaskFolder`, `TaskLaunchResourceResolver`), not by
+    /// every projection that reads it.
     private func runtimePathProjection(_ paths: [String]) -> RuntimePathProjection {
-        let state = TaskWorktreeBinding.state(of: task)
-        if case .invalid(let error) = state {
-            AuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: task.id, fields: [
-                "reason": "worktree_binding_invalid",
-                "error": error
-            ], level: .error)
-        }
-        return runtimePathProjection(paths, state: state)
+        runtimePathProjection(paths, state: worktreeBindingState)
     }
 
     private func runtimePathProjection(_ paths: [String], state: TaskWorktreeBinding.State) -> RuntimePathProjection {

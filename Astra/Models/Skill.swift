@@ -246,10 +246,19 @@ public final class Skill {
     }
 
     public func cleanupKeychain() {
-        SkillSecretSeam.required.deleteAllSecrets(skillID: id)
-        AuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
-            "skill_id": id.uuidString
-        ])
+        deferredKeychainCleanup()()
+    }
+
+    /// `cleanupKeychain()` with its inputs captured now, so a deletion can
+    /// run it only once the skill's row is durably gone.
+    public func deferredKeychainCleanup() -> () -> Void {
+        let id = id
+        return {
+            SkillSecretSeam.required.deleteAllSecrets(skillID: id)
+            AuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
+                "skill_id": id.uuidString
+            ])
+        }
     }
 
     public func normalizedEnvironmentValue(at index: Int) -> String {

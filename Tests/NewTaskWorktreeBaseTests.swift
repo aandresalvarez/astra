@@ -617,6 +617,11 @@ struct NewTaskWorktreeBaseTests {
         let discards = TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership)
         #expect(discards.count == 1)
 
+        // Unrelated unsaved work is checkpointed before the deletion, so
+        // rolling the failed deletion back does not discard it.
+        let unrelated = AgentTask(title: "Unrelated", goal: "Keep me", workspace: workspace)
+        context.insert(unrelated)
+        unrelated.title = "Unrelated, edited"
         let unsaved = TaskWorktreeService.saveDeletionThenDiscard(
             discards, workspace: workspace, modelContext: context, resourceQueue: fixture.resourceQueue, cleanupStore: fixture.cleanupStore,
             delete: { context.delete(draft) },
@@ -625,6 +630,9 @@ struct NewTaskWorktreeBaseTests {
         #expect(!unsaved.persisted)
         #expect(unsaved.cleanup == nil)
         #expect(!draft.isDeleted)
+        #expect(!unrelated.isDeleted)
+        #expect(unrelated.title == "Unrelated, edited")
+        #expect(!context.hasChanges)
         try await Task.sleep(for: .milliseconds(50))
         #expect(FileManager.default.fileExists(atPath: path))
 

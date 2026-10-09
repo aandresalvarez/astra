@@ -101,6 +101,12 @@ enum TaskWorktreeService {
     static let slugLimit = 32
     static let maxNameAttempts = 20
 
+    /// Repositories a creation is currently fetching into or adding a
+    /// worktree to. Creations share the repository's Git directory with
+    /// running worktree tasks but not with each other, so a second composer
+    /// on the same repository fails visibly instead of racing the fetch.
+    private static var activeCreationRepositories: Set<String> = []
+
     private static let slugStopWords: Set<String> = [
         "a", "an", "and", "are", "as", "at", "be", "by", "can", "could", "for", "from",
         "i", "in", "into", "is", "it", "me", "my", "of", "on", "or", "our", "please",
@@ -414,6 +420,11 @@ enum TaskWorktreeService {
         guard repositories.contains(where: { $0.path == path }) else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
+        let repositoryKey = WorkspacePathPresentation.resolvedPath(path)
+        guard activeCreationRepositories.insert(repositoryKey).inserted else {
+            throw TaskWorktreeCreationError.repositoryBusy(path)
+        }
+        defer { activeCreationRepositories.remove(repositoryKey) }
         let resourceLease = try TaskWorktreeResourceLease.acquire(repositoryPath: path, taskID: task.id, queue: resourceQueue)
         defer { resourceLease.release() }
         try Task.checkCancellation()
@@ -537,6 +548,7 @@ enum TaskWorktreeService {
                 guard TaskWorktreeCheckoutReservation.commit(task.executionRootPath, to: draft) else {
                     throw TaskWorktreeCreationError.checkoutUnavailable(task.executionRootPath ?? "the selected checkout")
                 }
+                TaskWorktreeBinding.applyIsolation(to: draft, for: prepared)
                 modelContext.insert(TaskWorktreeBinding.copy(prepared, to: draft))
             }
             modelContext.delete(task)
@@ -609,7 +621,7 @@ enum TaskWorktreeService {
         modelContext: ModelContext,
         resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
-        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:)
+        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = { try durableCheckoutPins(modelContext: $0) }
     ) async -> Bool {
         await discardOutcome(
             discard, modelContext: modelContext, resourceQueue: resourceQueue, git: git, checkoutPins: checkoutPins
@@ -621,7 +633,7 @@ enum TaskWorktreeService {
         modelContext: ModelContext,
         resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
-        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = durableCheckoutPins(modelContext:),
+        checkoutPins: @MainActor (ModelContext) throws -> Set<String> = { try durableCheckoutPins(modelContext: $0) },
         duringReservation: @MainActor () async -> Void = {}
     ) async -> TaskWorktreeCleanupOutcome {
         let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
@@ -741,22 +753,40 @@ enum TaskWorktreeService {
     /// additional paths, which it uses implicitly while no default is set.
     /// Cleanup follows saved deletion; never exclude task UUIDs, which
     /// Duplicate imports preserve. Unreadable stores keep the worktree.
-    static func durableCheckoutPins(modelContext: ModelContext) throws -> Set<String> {
+    ///
+    /// A configured folder at or above `worktreesRoot`, such as `~/Documents`
+    /// above the app-managed `Worktrees` folder, is not a checkout a task
+    /// writes through; counting it would keep every discarded worktree of
+    /// every repository forever. Pins and workspace defaults always count.
+    static func durableCheckoutPins(
+        modelContext: ModelContext,
+        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot
+    ) throws -> Set<String> {
         let tasks = try modelContext.fetch(FetchDescriptor<AgentTask>(
             predicate: #Predicate<AgentTask> { $0.executionRootPath != nil }
         ))
         let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
+        let root = WorkspacePathPresentation.resolvedPath(worktreesRoot)
+        func containsWorktreesRoot(_ path: String) -> Bool {
+            guard !root.isEmpty else { return false }
+            let resolved = WorkspacePathPresentation.resolvedPath(path)
+            return !resolved.isEmpty && (root == resolved || root.hasPrefix(resolved.hasSuffix("/") ? resolved : resolved + "/"))
+        }
         return Set(tasks.compactMap { standardized($0.executionRootPath) }
             + workspaces.flatMap { workspace -> [String] in
-                ([workspace.activeWorkingPath, workspace.primaryPath] + workspace.additionalPaths.map(Optional.some))
-                    .compactMap { standardized($0) }
+                [standardized(workspace.activeWorkingPath)].compactMap { $0 }
+                    + ([workspace.primaryPath] + workspace.additionalPaths)
+                        .filter { !containsWorktreesRoot($0) }
+                        .compactMap { standardized($0) }
             })
     }
 
     /// Records cleanup of each worktree before deleting the draft, then saves
     /// the deletion. Removal starts only after both are durable and resumes on
     /// next launch if interrupted. A failed intent write never runs `delete`.
-    /// A failed save rolls the deletion back so the draft stays in the context.
+    /// A failed save rolls the deletion back so the draft stays in the context;
+    /// unrelated unsaved work is saved first so that rollback reverts only the
+    /// deletion, and `delete` must not save on its own.
     @discardableResult
     static func saveDeletionThenDiscard(
         _ discards: [TaskWorktreeDiscard],
@@ -769,6 +799,20 @@ enum TaskWorktreeService {
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         }
     ) -> TaskWorktreeDeletionResult {
+        if modelContext.hasChanges {
+            do {
+                try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(
+                    workspace: workspace, modelContext: modelContext,
+                    auditFields: ["operation": "deletion_checkpoint"]
+                )
+            } catch {
+                AppLogger.audit(.taskFailed, category: "Persistence", taskID: discards.first?.taskID, fields: [
+                    "reason": "deletion_checkpoint_save_failed",
+                    "error": error.localizedDescription
+                ], level: .error)
+                return TaskWorktreeDeletionResult(persisted: false, cleanup: nil)
+            }
+        }
         for discard in discards {
             do {
                 try cleanupStore.record(discard)

@@ -590,6 +590,59 @@ struct NewTaskWorktreeCleanupTests {
         #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
     }
 
+    @Test("A configured folder at or above the worktrees root is not a reference", arguments: ["at", "above"])
+    func folderAboveWorktreesRootDoesNotKeepCheckout(placement: String) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let root = placement == "at" ? fixture.worktrees.path : fixture.worktrees.deletingLastPathComponent().path
+        let other = Workspace(name: "Documents", primaryPath: fixture.storage.path, additionalPaths: [root])
+        context.insert(other)
+        context.delete(draft)
+        try context.save()
+        let pins = { (modelContext: ModelContext) in
+            try TaskWorktreeService.durableCheckoutPins(modelContext: modelContext, worktreesRoot: fixture.worktrees.path)
+        }
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, checkoutPins: pins
+        ) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
+    @Test("A folder below the worktrees root, or a default pointing above it, still keeps the worktree")
+    func folderBelowWorktreesRootKeepsCheckout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let repositoryFolder = URL(fileURLWithPath: discard.worktreePath).deletingLastPathComponent().path
+        let other = Workspace(name: "Checkouts", primaryPath: fixture.storage.path, additionalPaths: [repositoryFolder])
+        context.insert(other)
+        context.delete(draft)
+        try context.save()
+        let pins = { (modelContext: ModelContext) in
+            try TaskWorktreeService.durableCheckoutPins(modelContext: modelContext, worktreesRoot: fixture.worktrees.path)
+        }
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, checkoutPins: pins
+        ) == .kept("referenced"))
+
+        other.additionalPaths = []
+        other.activeWorkingPath = fixture.worktrees.path
+        try context.save()
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, checkoutPins: pins
+        ) == .kept("referenced"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
     @Test("A task pinned above the worktree keeps it, and removal refuses roots above it")
     func ancestorTaskPinKeepsCheckout() async throws {
         let fixture = try Fixture()

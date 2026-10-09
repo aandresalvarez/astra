@@ -23,10 +23,16 @@ final class TaskWorktreeResourceLease {
         guard let commonDirectory = GitCheckoutLayout.commonDirectory(for: repositoryPath) else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
+        // The Git directory is held shared, like the sibling worktree tasks
+        // that run in it: Git locks each ref, the registry entry, and config
+        // per operation, so adding or removing a worktree beside running
+        // siblings is safe, while a writer of the main checkout, which holds
+        // the directory exclusively, still excludes the operation and vice
+        // versa. The checkout being removed is held exclusively.
         var resources = [
-            TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: commonDirectory, access: .exclusive),
+            TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: commonDirectory, access: .shared),
             // Also conflicts with a legacy workspace claim containing .git.
-            TaskExecutionResourceClaim(kind: .workspace, key: commonDirectory, access: .exclusive)
+            TaskExecutionResourceClaim(kind: .workspace, key: commonDirectory, access: .shared)
         ]
         if let worktreePath {
             resources.append(TaskExecutionResourceClaim(kind: .workspace, key: worktreePath, access: .exclusive))

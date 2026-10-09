@@ -1654,7 +1654,8 @@ final class TaskQueue {
     }
 
     @MainActor
-    func cancel(task: AgentTask, modelContext: ModelContext? = nil) {
+    /// A deletion that saves the cancellation itself, and may roll it back, passes `persistCancellation: false`.
+    func cancel(task: AgentTask, modelContext: ModelContext? = nil, persistCancellation: Bool = true) {
         if let worker = taskWorkerMap[task.id] {
             worker.cancel()
             taskWorkerMap.removeValue(forKey: task.id)
@@ -1673,12 +1674,12 @@ final class TaskQueue {
                     terminalReason: "cancelled_by_user"
                 )
             }
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "cancel_turn_requests"]
-            )
+            if persistCancellation {
+                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                    workspace: task.workspace, modelContext: modelContext, taskID: task.id,
+                    auditFields: ["operation": "cancel_turn_requests"]
+                )
+            }
         }
         wakeTurnAdmissionWaiters(taskID: task.id)
         wakeDispatchWaiters()

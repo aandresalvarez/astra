@@ -144,7 +144,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct WorkspaceConfigImportResult {
-        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int) {
+        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int, droppedAdditionalPaths: [String] = []) {
             self.status = status
             self.workspace = workspace
             self.workspaceID = workspaceID
@@ -155,6 +155,7 @@ public enum WorkspaceConfigManager {
             self.quarantinedScheduleCount = quarantinedScheduleCount
             self.skippedConnectorCount = skippedConnectorCount
             self.skippedLocalToolCount = skippedLocalToolCount
+            self.droppedAdditionalPaths = droppedAdditionalPaths
         }
 
         public enum Status: String {
@@ -171,6 +172,9 @@ public enum WorkspaceConfigManager {
         public var quarantinedScheduleCount: Int
         public var skippedConnectorCount: Int
         public var skippedLocalToolCount: Int
+        /// Configured additional folders left out because worktree cleanup
+        /// was removing them when the import ran. Callers tell the user.
+        public var droppedAdditionalPaths: [String]
 
         public var didImport: Bool {
             status == .imported
@@ -186,7 +190,8 @@ public enum WorkspaceConfigManager {
                 "task_count": String(taskCount),
                 "quarantined_schedule_count": String(quarantinedScheduleCount),
                 "skipped_connector_count": String(skippedConnectorCount),
-                "skipped_local_tool_count": String(skippedLocalToolCount)
+                "skipped_local_tool_count": String(skippedLocalToolCount),
+                "dropped_additional_path_count": String(droppedAdditionalPaths.count)
             ]
         }
     }
@@ -1209,7 +1214,10 @@ public enum WorkspaceConfigManager {
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
     /// Callers refuse a config whose `reservedRoot(of:)` is set before any
-    /// destructive step; an additional root cleanup is removing is dropped here.
+    /// destructive step. An additional root that cleanup starts removing
+    /// between that check and this import is dropped and reported in
+    /// `droppedAdditionalPaths`, never persisted silently as part of the
+    /// workspace.
     @MainActor
     public static func importWorkspaceResult(
         from config: WorkspaceConfig,
@@ -1218,11 +1226,13 @@ public enum WorkspaceConfigManager {
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
-        if additionalPaths.count < config.additionalPaths.count {
+        let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
+        if !droppedAdditionalPaths.isEmpty {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "import_additional_root",
                 "reason": "workspace_root_being_removed",
-                "dropped_root_count": String(config.additionalPaths.count - additionalPaths.count)
+                "dropped_root_count": String(droppedAdditionalPaths.count),
+                "dropped_roots": droppedAdditionalPaths.joined(separator: ", ")
             ], level: .warning)
         }
         let workspace = Workspace(
@@ -1388,7 +1398,8 @@ public enum WorkspaceConfigManager {
             taskCount: workspace.tasks.count,
             quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
-            skippedLocalToolCount: skippedLocalToolCount
+            skippedLocalToolCount: skippedLocalToolCount,
+            droppedAdditionalPaths: droppedAdditionalPaths
         )
         AuditLoggingSeam.required.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
         return result

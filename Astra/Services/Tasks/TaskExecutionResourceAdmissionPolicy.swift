@@ -17,10 +17,12 @@ enum TaskExecutionResourceAdmissionPolicy {
         if request == nil,
            !TaskExecutionResourceClaimResolver.requiresExclusiveWorkflowAccess(for: request, task: task),
            let fallbackAccess {
+            // The read-only keys include a prepared worktree's Git directory,
+            // whose `.gitCommonDirectory` claim is always shared.
             let readOnlyKeys = Set(TaskExecutionResourceClaimResolver.readOnlyWorkspaceKeys(for: task))
             claims = claims.map { claim in
                 guard claim.kind == .workspace || claim.kind == .gitCommonDirectory else { return claim }
-                if claim.kind == .workspace && readOnlyKeys.contains(claim.key) { return claim }
+                if readOnlyKeys.contains(claim.key) { return claim }
                 return TaskExecutionResourceClaim(
                     kind: claim.kind, key: claim.key,
                     access: fallbackAccess == .readOnly ? .shared : .exclusive

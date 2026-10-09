@@ -231,16 +231,24 @@ public enum TaskWorktreeBinding {
     public static func inheritPin(from source: AgentTask, into target: AgentTask) -> TaskEvent? {
         guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: target) else { return nil }
         guard let binding = eventForInheritance(from: source) else { return nil }
+        applyIsolation(to: target, for: binding)
         return copy(binding, to: target)
     }
 
+    /// A task pinned to the worktree `binding` names runs in it directly:
+    /// branch and copy isolation are superseded by the worktree itself.
+    /// Callers that pin a task to a binding's worktree apply this before
+    /// inserting the copied event.
+    public static func applyIsolation(to target: AgentTask, for binding: TaskEvent) {
+        guard case .success(let payload) = binding.decodePayload(as: TaskWorktreePayload.self),
+              target.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
+                == WorkspacePathPresentation.standardizedPath(payload.worktreePath) else { return }
+        target.isolationStrategy = .sameDirectory
+    }
+
+    /// A copy of the binding event for `target`. It changes nothing else.
     public static func copy(_ binding: TaskEvent, to target: AgentTask) -> TaskEvent {
-        if case .success(let payload) = binding.decodePayload(as: TaskWorktreePayload.self),
-           target.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
-            == WorkspacePathPresentation.standardizedPath(payload.worktreePath) {
-            target.isolationStrategy = .sameDirectory
-        }
-        return TaskEvent(task: target, eventType: TaskEventTypes.Task.worktreePrepared, payload: binding.payload)
+        TaskEvent(task: target, eventType: TaskEventTypes.Task.worktreePrepared, payload: binding.payload)
     }
 }
 

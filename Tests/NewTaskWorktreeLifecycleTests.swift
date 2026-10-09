@@ -80,6 +80,41 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(fixture.resourceQueue.activeResourceLocks.isEmpty)
     }
 
+    @Test("A running sibling worktree task shares the Git directory with creation and cleanup")
+    func siblingWorktreeTaskDoesNotBlockLifecycle() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let running = try await draft(repository: repository, context: context, fixture: fixture)
+        let metadata = try #require(GitCheckoutLayout.commonDirectory(for: repository.path))
+        // What an admitted writer in `running`'s worktree holds.
+        let siblingClaims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: running, runMode: "test")
+        #expect(siblingClaims.contains {
+            $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .readOnly
+        })
+        let held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(siblingClaims, task: nil))
+        defer { fixture.resourceQueue.releaseResourceLocks(held, task: nil) }
+
+        let next = AgentTask(title: "Second", goal: "Explore", workspace: try #require(running.workspace))
+        try await prepare(next, repository: repository, context: context, fixture: fixture)
+        #expect(next.executionRootPath != nil)
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 3)
+        #expect(fixture.resourceQueue.activeResourceLocks == held)
+
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: next, ownership: fixture.ownership).first)
+        context.delete(next)
+        try context.save()
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(fixture.resourceQueue.activeResourceLocks == held)
+
+        // A writer of the main checkout still excludes the lifecycle.
+        let mainWriter = claims(kind: .gitCommonDirectory, path: metadata)
+        #expect(!fixture.resourceQueue.canAcquireResourceLocks(mainWriter))
+    }
+
     @Test("Creation holds runtime admission and other composers through submodule setup",
           arguments: [false, true])
     func creationLeaseSpansSubmodules(failSetup: Bool) async throws {
@@ -201,6 +236,36 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath) == (state != "unused"))
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty == (state == "unused"))
         #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
+    }
+
+    @Test("A workspace deletion whose save fails keeps the workspace, its connectors, and its drafts' worktrees")
+    func failedWorkspaceDeletionSaveKeepsEverything() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let task = try await draft(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(task.workspace)
+        let connector = Connector(name: "Jira", serviceType: "jira")
+        connector.workspace = workspace
+        context.insert(connector)
+        try context.save()
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            persistWorkspaceChange: { _, _ in false }
+        )
+        let result = coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace])
+        #expect(!result.persisted)
+        #expect(result.nextWorkspace == nil)
+        #expect(result.cleanup == nil)
+        #expect(!workspace.isDeleted)
+        #expect(!connector.isDeleted)
+        #expect(try context.fetchCount(FetchDescriptor<Workspace>()) == 1)
+        #expect(try context.fetchCount(FetchDescriptor<Connector>()) == 1)
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try fixture.cleanupStore.pendingURLs().count == 1)
     }
 
     @Test("Config and folder replacement save imported bindings before cleaning omitted drafts",

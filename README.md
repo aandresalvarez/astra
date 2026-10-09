@@ -135,6 +135,9 @@ output or `.env`, including commits retained only in branch or checkout reflogs
 after a reset. It also keeps a worktree that another task or the workspace
 default uses, or that it can't confirm is unused. Configured folders and task pins protect checkouts they
 reach through symbolic links, including folders above or inside the checkout.
+A configured folder at or above the app-managed `Worktrees` folder itself,
+such as `~/Documents`, does not count: it is not a checkout, and treating it
+as one would keep every discarded worktree forever.
 Tasks copied by **Duplicate** import still protect their
 shared checkout, even when they retain the original task ID. Leave the checkbox
 off to use the existing checkout behavior. If a task's new worktree is removed,

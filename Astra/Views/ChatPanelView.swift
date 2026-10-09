@@ -45,14 +45,14 @@ struct ChatPanelView: View {
     var onStartWorkspaceAppStudio: ((String?) -> Void)?
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelContext) var modelContext
     @Environment(\.newTaskWorkspaceSwitcher) private var workspaceSwitcher
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State var messageText = ""
-    @State private var messages: [ChatMessage] = []
+    @State var messages: [ChatMessage] = []
     @State private var isChatAtBottom = true
     @State private var hasUnseenChatActivity = false
-    @State private var isThinking = false
+    @State var isThinking = false
     @State private var extractedSpec: TaskSpec?
     @State private var showSpecCard = false
     // Read by `runtimeEligibilityPreviewRequest` in RuntimeEligibilityPreviewModifier.swift.
@@ -100,11 +100,15 @@ struct ChatPanelView: View {
     // In-flight planning chat round-trips. Cancelled in `.onDisappear` so a dismissed composer
     // tears down the utility LLM subprocess instead of running it to completion for an assistant
     // reply / pending plan that only lives in this view's @State and is discarded on recreate.
-    @State private var chatReplyTask: Task<Void, Never>?
-    @State private var planGenerationTask: Task<Void, Never>?
-    @State private var taskCreation = NewTaskCreationRun()
-    @State private var worktreeSelection = NewTaskWorktreeSelection()
-    @State private var taskCreationError: String?
+    @State var chatReplyTask: Task<Void, Never>?
+    @State var planGenerationTask: Task<Void, Never>?
+    @State var taskCreation = NewTaskCreationRun()
+    @State var worktreeSelection = NewTaskWorktreeSelection()
+    @State var taskCreationError: String?
+    /// The composer draft's worktree binding. Resolving it probes the
+    /// repository's worktree registry on disk, so it is refreshed only when
+    /// `worktreeBindingSignature` changes, never per keystroke.
+    @State var cachedWorktreeBinding: TaskWorktreePayload?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
     @State var capabilitySnapshot = ComposerCapabilitySnapshot.empty
@@ -124,29 +128,6 @@ struct ChatPanelView: View {
 
     var hasInput: Bool {
         !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var isPreparingWorktree: Bool { taskCreation.isPreparing }
-
-    private var composerDraft: AgentTask? {
-        NewTaskWorktreeComposerFlow.liveDraft(draftTask, in: workspace)
-            ?? NewTaskWorktreeComposerFlow.liveDraft(draftToLoad, in: workspace)
-    }
-
-    private var worktreeBinding: TaskWorktreePayload? {
-        composerDraft.flatMap(TaskWorktreeService.activeWorktreeBinding)
-    }
-
-    /// A draft that already has its worktree keeps it; anything else may opt in.
-    private var allowsWorktreeChoice: Bool { worktreeBinding == nil }
-
-    /// The worktree the next planning step or run creates, if any.
-    private var requestedWorktree: TaskWorktreeRequest? {
-        allowsWorktreeChoice ? worktreeSelection.request : nil
-    }
-
-    private var canSubmitWorktreeSelection: Bool {
-        !allowsWorktreeChoice || worktreeSelection.canSubmit
     }
 
     private var defaultRuntime: AgentRuntimeID {
@@ -479,7 +460,6 @@ struct ChatPanelView: View {
             // Composer
             composerView
         }
-        .disabled(isPreparingWorktree)
         .navigationTitle(draftTask != nil ? "Draft" : "New Task")
         .navigationSubtitle(workspace?.name ?? "Astra")
         .background {
@@ -507,6 +487,7 @@ struct ChatPanelView: View {
             planGenerationTask?.cancel()
             taskCreation.detach()
         }
+        .onChange(of: worktreeBindingSignature, initial: true) { refreshWorktreeBinding() }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
         .onChange(of: claudeAvailableModels) { alignDefaultModelWithRuntime() }
@@ -921,7 +902,8 @@ struct ChatPanelView: View {
                     binding: worktreeBinding,
                     isPreparing: isPreparingWorktree,
                     problem: taskCreationError,
-                    selection: $worktreeSelection
+                    selection: $worktreeSelection,
+                    onCancel: cancelTaskCreation
                 )
 
                 if !attachedFiles.isEmpty {
@@ -1108,73 +1090,6 @@ struct ChatPanelView: View {
     }
 
     // MARK: - Actions
-
-    private func reportTaskCreationError(_ error: Error) {
-        guard !Task.isCancelled, !(error is CancellationError) else { return }
-        taskCreationError = error.localizedDescription
-        AppLogger.error("Task creation failed: \(error.localizedDescription)", category: "UI")
-    }
-
-    private func performTaskCreation(_ action: @escaping @MainActor () async throws -> Void) {
-        guard !isPreparingWorktree, !isThinking else { return }
-        guard canSubmitWorktreeSelection else {
-            return taskCreationError = worktreeSelection.submitError.localizedDescription
-        }
-        taskCreationError = nil
-        taskCreation.start(action, onError: reportTaskCreationError)
-    }
-
-    private func prepareTaskCheckout(_ task: AgentTask) async throws {
-        guard canSubmitWorktreeSelection else {
-            throw worktreeSelection.submitError
-        }
-        let draft = composerDraft
-        let request = requestedWorktree
-        do {
-            if draft == nil, request != nil { try NewTaskWorktreeComposerFlow.keepConversation(messages, on: task) }
-            try await TaskWorktreeService.prepare(
-                task: task,
-                request: request,
-                inheritingFrom: NewTaskWorktreeComposerFlow.checkoutSource(draft: draft, isSelectedDraft: draftToLoad != nil),
-                modelContext: modelContext, resourceQueue: taskQueue
-            )
-            try Task.checkCancellation()
-        } catch {
-            // A completed Git operation may already have saved the task with its
-            // worktree. The draft keeps that worktree for retry, never a second one.
-            if task.modelContext != nil {
-                let recovered = try TaskWorktreeService.recoverFailedSubmission(
-                    task: task, existingDraft: draft, modelContext: modelContext
-                )
-                // A detached creation's draft stays with the workspace it began in.
-                if !Task.isCancelled { draftTask = recovered }
-            }
-            throw error
-        }
-    }
-
-    /// Planning reads the code the task will run in, so a requested worktree
-    /// is created for the draft before the planner first runs.
-    private func ensurePlanningWorktree(for draft: AgentTask, branchTitle: String? = nil) async throws {
-        guard let request = requestedWorktree else { return }
-        try await taskCreation.preparing {
-            try await TaskWorktreeService.prepare(
-                task: draft, request: request, branchTitle: branchTitle, modelContext: modelContext, resourceQueue: taskQueue
-            )
-        }
-        try Task.checkCancellation()
-    }
-
-    /// Template tasks take the checkout a quick run would; the conversation's
-    /// draft holds a requested worktree for them.
-    private func templateCheckoutSource(branchTitle: String) async throws -> AgentTask? {
-        guard requestedWorktree != nil else {
-            return NewTaskWorktreeComposerFlow.checkoutSource(draft: composerDraft, isSelectedDraft: draftToLoad != nil)
-        }
-        guard let draft = try await saveDraft() else { throw TaskWorktreeCreationError.noDraft }
-        try await ensurePlanningWorktree(for: draft, branchTitle: branchTitle)
-        return draft
-    }
 
     private func focusComposerInput() {
         DispatchQueue.main.async {
@@ -2201,7 +2116,7 @@ struct ChatPanelView: View {
     // MARK: - Draft Management
 
     @discardableResult
-    private func saveDraft() async throws -> AgentTask? {
+    func saveDraft() async throws -> AgentTask? {
         guard !messages.isEmpty else { return composerDraft }
 
         let draftMessages = messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }

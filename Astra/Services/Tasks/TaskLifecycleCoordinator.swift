@@ -586,8 +586,11 @@ final class TaskLifecycleCoordinator {
     /// exit instead of resuming provider work for a task that no longer
     /// exists — then remove the rows so terminal history doesn't accumulate
     /// as permanent orphans.
+    /// Runs inside a deletion's `delete` closure, so the deletion's own save
+    /// persists the cancellation: saving here would leave nothing for a failed
+    /// deletion save to roll back.
     private func cancelAndRemoveTurnRequests(for task: AgentTask) {
-        taskQueue.cancel(task: task, modelContext: modelContext)
+        taskQueue.cancel(task: task, modelContext: modelContext, persistCancellation: false)
         if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
             for request in requests {
                 modelContext.delete(request)
@@ -681,23 +684,27 @@ final class TaskLifecycleCoordinator {
     ) {
         let path = ws.primaryPath
         let next = existingWorkspaces.first(where: { $0.id != ws.id })
+        // Keychain items cannot be rolled back, so they are deleted only once
+        // the deletion is saved; the facts are captured before the rows go.
+        let keychainCleanups = ws.connectors.map { $0.deferredKeychainCleanup() }
+            + ws.skills.flatMap { skill in
+                [skill.deferredKeychainCleanup()] + skill.connectors.map { $0.deferredKeychainCleanup() }
+            }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
                 for task in ws.tasks { cancelAndRemoveTurnRequests(for: task) }
-                for connector in ws.connectors { connector.cleanupKeychain() }
-                for skill in ws.skills {
-                    skill.cleanupKeychain()
-                    for connector in skill.connectors { connector.cleanupKeychain() }
-                }
                 modelContext.delete(ws)
             },
             persist: persistWorkspaceChange
         )
         // Cancellation exports mirrors, so remove them only after it and the
         // workspace deletion are saved.
-        if result.persisted { removeGeneratedWorkspaceMirrors(for: path) }
+        if result.persisted {
+            for cleanup in keychainCleanups { cleanup() }
+            removeGeneratedWorkspaceMirrors(for: path)
+        }
         return (result.persisted, result.persisted ? next : nil, result.cleanup)
     }
 
