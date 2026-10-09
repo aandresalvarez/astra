@@ -182,7 +182,11 @@ boundary. The full inventory is in
   one per command in it (the program and its first words, as the prompt
   shows). The command runs unasked once all of them were granted, so a
   host-scoped read does not approve a write to that host and a push does not
-  approve a force. A command one of whose parts yields no grant (inline code,
+  approve a force. Anything but a read also yields a grant naming its whole
+  content (`content-sha256-…`, ASTRA's gate only; providers replay by the
+  pattern), so approving one comment or body does not approve another, and a
+  `curl`/`wget` write keeps its method, so a POST does not approve a DELETE.
+  A command one of whose parts yields no grant (inline code,
   `$CMD`) cannot be approved for replay, and the run stops with that reason.
   The browser MCP tool is judged and approved as the `astra-browser` command
   it runs, and the Docker workspace's shell tools are gated like Bash.

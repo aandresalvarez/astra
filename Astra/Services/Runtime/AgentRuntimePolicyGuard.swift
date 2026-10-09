@@ -10,8 +10,10 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
     var permissionRequest: PermissionRequest?
     var approvalGrants: [PermissionGrant] = []
 
+    /// The grant a person reads: the pattern, not the digest that binds it
+    /// to this command's content.
     var approvalGrant: String? {
-        approvalGrants.first?.displayName
+        approvalGrants.first { !ShellCommandRiskClassifier.isContentGrant($0) }?.displayName
     }
 
     var userMessage: String {
