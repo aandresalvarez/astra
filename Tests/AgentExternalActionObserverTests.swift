@@ -325,8 +325,14 @@ struct AgentExternalActionObserverTests {
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
         ).map(\.title) == ["Ran `gh pr create`, which exited with an error"])
 
+        // With result markers each call pairs only with its own marker, so a
+        // failure needs one too, next to a success that has one.
         let marked = try ObserverFixture()
         let state = AgentEventRecordingState()
+        AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "pr", inputSummary: "gh pr create --fill"),
+            to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
+        AgentEventRecorder.recordClaudeEvent(.toolResult(id: "pr", content: "https://github.com/acme/widgets/pull/9\n", isError: false),
+            to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
         AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "hook",
             inputSummary: "curl -d payload https://hooks.example.test/build; false"),
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
@@ -334,7 +340,7 @@ struct AgentExternalActionObserverTests {
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
         #expect(AgentExternalActionObserver.recordObservedActions(
             task: marked.task, run: marked.run, modelContext: marked.context, policyLevel: .autonomous
-        ).map(\.title) == ["Ran `curl`, which exited with an error"])
+        ).map(\.title) == ["Opened pull request #9", "Ran `curl`, which exited with an error"])
     }
 
     @Test("Ask and Custom record nothing")
