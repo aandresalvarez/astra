@@ -1750,7 +1750,7 @@ struct RunPermissionManifestTests {
         })
         #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
             descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
-                && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+                && descriptor.allowedInputKeys == ["arguments", "operation", "review_file", "timeout_seconds"]
         })
         #expect(!manifest.providerRender.allowedTools.contains { tool in
             let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -2459,7 +2459,7 @@ struct RunPermissionManifestTests {
         })
         #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
             descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
-                && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+                && descriptor.allowedInputKeys == ["arguments", "operation", "review_file", "timeout_seconds"]
         })
         #expect(!manifest.providerRender.allowedTools.contains { tool in
             let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
