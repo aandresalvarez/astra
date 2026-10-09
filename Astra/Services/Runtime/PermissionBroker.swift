@@ -440,13 +440,14 @@ enum PermissionBroker {
 
     /// The grants approving a shell command, one for each of its commands,
     /// or nil when one of them yields none: an approval of the rest would not
-    /// cover it.
+    /// cover it. A content grant names the whole command as written — its
+    /// setup (`cd`, `export`) and its case included — so a command that
+    /// differs anywhere is a new one to approve.
     static func completeShellApprovalGrants(command: String) -> [PermissionGrant]? {
+        let content = ProviderToolSemantics.semanticShellCommand(command)
         var grants: [PermissionGrant] = []
-        for segment in actionableShellSegmentPairs(command) where !isBenignShellSetupSegment(segment.normalized) {
-            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(
-                      forShellSegment: segment.normalized, content: segment.asWritten
-                  ),
+        for segment in actionableShellSegments(command) where !isBenignShellSetupSegment(segment) {
+            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(forShellSegment: segment, content: content),
                   segmentGrants.allSatisfy(isSafeGrant) else {
                 return nil
             }
@@ -457,32 +458,16 @@ enum PermissionBroker {
 
     private static func shellApprovalGrants(command: String?) -> [PermissionGrant] {
         guard let command else { return [] }
+        let content = ProviderToolSemantics.semanticShellCommand(command)
         var grants: [PermissionGrant] = []
-        for segment in actionableShellSegmentPairs(command) where !isBenignShellSetupSegment(segment.normalized) {
-            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(
-                      forShellSegment: segment.normalized, content: segment.asWritten
-                  ),
+        for segment in actionableShellSegments(command) where !isBenignShellSetupSegment(segment) {
+            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(forShellSegment: segment, content: content),
                   segmentGrants.allSatisfy(isSafeGrant) else {
                 continue
             }
             grants.append(contentsOf: segmentGrants)
         }
         return sanitizeGrants(grants)
-    }
-
-    /// Each segment twice: normalized as patterns are matched, and as
-    /// written, which the content grant names — `role=user` and `role=USER`
-    /// are different requests.
-    private static func actionableShellSegmentPairs(_ command: String) -> [(normalized: String, asWritten: String)] {
-        let semanticCommand = ProviderToolSemantics.semanticShellCommand(command)
-        return shellSegmentSeparatorsNormalized(semanticCommand)
-            .split(whereSeparator: { $0.isNewline || $0 == ";" })
-            .map(String.init)
-            .compactMap { raw in
-                let segment = actionableShellSegment(raw).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !segment.isEmpty else { return nil }
-                return (optionCasePreservingShellText(segment), segment)
-            }
     }
 
     private static func shellGrant(fromProviderString value: String) -> PermissionGrant? {

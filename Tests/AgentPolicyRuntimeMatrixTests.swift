@@ -347,6 +347,10 @@ struct AgentPolicyRuntimeMatrixTests {
             runtime: .claudeCode, policy: wider, approvalGrants: bodyAsk?.approvalGrants ?? []
         ))
         #expect(bodyApproved.disposition(toolName: "Bash", command: "curl -d role=user https://api.example.test/account") == .allowed)
+        // Setup that changes what the command does (`cd`, `export`) is part
+        // of what was approved.
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "cd alternate; curl -d role=user https://api.example.test/account") == .ask)
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "export CURL_HOME=x && curl -d role=user https://api.example.test/account") == .ask)
         #expect(bodyApproved.disposition(toolName: "Bash", command: "curl -d role=USER https://api.example.test/account") == .ask,
                 "a deleting refspec is a delete")
         let forceAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))

@@ -425,9 +425,15 @@ enum LocalShellCommands {
             return true
         case "export", "readonly", "declare", "typeset", "local":
             // `-n` makes a name a reference to another variable (`PATH`).
-            // An exported variable is every later program's environment.
+            // A name exported (`export`, `declare -x`), whether assigned here
+            // or before, is every later program's environment.
+            let exports = program == "export" || args.contains { $0.hasPrefix("-") && $0.contains("x") }
+            let names = args.filter { !$0.hasPrefix("-") && !$0.hasPrefix("+") }
             return !args.contains { $0.hasPrefix("-") && $0.contains("n") }
-                && args.filter(isAssignment).allSatisfy(program == "export" ? isListedEnvironmentAssignment : isLocalAssignment)
+                && (exports ? names.allSatisfy(isListedEnvironmentAssignment) : names.filter(isAssignment).allSatisfy(isLocalAssignment))
+        case "set":
+            // `-a`/`allexport` exports every assignment after it.
+            return !args.contains { ($0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("a")) || $0 == "allexport" }
         case "read", "getopts", "printf", "let":
             // Builtins that assign to the variables they name (`read PATH`,
             // `printf -v PATH`, `let PATH=…`): each name is judged as an
@@ -648,7 +654,7 @@ enum LocalShellCommands {
     private static let plainLocalPrograms: Set<String> = [
         // Shell builtins and keywords.
         ":", "true", "false", "test", "[", "[[", "]]", "echo", "pwd", "cd", "pushd", "popd", "dirs",
-        "wait", "sleep", "exit", "return", "break", "continue", "shift", "set", "shopt", "unset", "type",
+        "wait", "sleep", "exit", "return", "break", "continue", "shift", "shopt", "unset", "type",
         "which", "whereis", "jobs", "umask",
         // Files and text.
         "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "tree", "cut", "tr",
@@ -936,8 +942,9 @@ enum LocalShellCommands {
         if index < args.count, args[index] == "--" { index += 1 }
         var rest = Array(args.dropFirst(index))
         if runner == "env" {
+            // The program's environment, as a prefix assignment is.
             while let first = rest.first, isAssignment(first) {
-                guard isLocalAssignment(first) else { return false }
+                guard isListedEnvironmentAssignment(first) else { return false }
                 rest.removeFirst()
             }
         }
@@ -1460,6 +1467,11 @@ enum LocalShellCommands {
     /// A path that leaves the project: absolute, in a home, or with a `..`
     /// step; an option's attached value (`--package-path=/tmp/x`) counts.
     private static func leavesTheProject(_ word: String) -> Bool {
+        // A short option's attached value (`-f/tmp/x`, `-C..`, `-C~/x`).
+        if word.hasPrefix("-"), !word.hasPrefix("--"), !word.contains("="),
+           word.range(of: #"^-[A-Za-z]+(\.\.(/|$)|[/~])"#, options: .regularExpression) != nil {
+            return true
+        }
         let value = word.hasPrefix("-") ? String(word.drop { $0 != "=" }.dropFirst()) : word
         return value.hasPrefix("/") || value.hasPrefix("~") || value.split(separator: "/").contains("..")
     }
