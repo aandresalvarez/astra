@@ -410,8 +410,13 @@ enum LocalShellCommands {
             return !args.contains { $0 == "-E" || $0.hasPrefix("--eval") || ($0.hasPrefix("-E") && !$0.hasPrefix("--")) }
                 && args.filter(isAssignment).allSatisfy { localEnvironmentNames.contains(String($0.prefix { $0 != "=" })) }
         case "cmake":
-            // `cmake -E env …` runs a program.
-            return !args.contains("-E")
+            // `cmake -E env …` runs a program, and in `cmake --build` the words
+            // after `--` go to the native tool (`make --eval=…`).
+            return !args.contains("-E") && !(args.contains("--build") && args.contains("--"))
+        case "ctest":
+            return ctestIsLocal(args)
+        case "pytest":
+            return pytestIsLocal(args)
         case "rg":
             // `--pre` runs a program on every file searched, `--hostname-bin`
             // one for hyperlinks.
@@ -463,8 +468,7 @@ enum LocalShellCommands {
         case "xcrun":
             return xcrunIsLocal(args, depth: depth)
         case "xcodebuild":
-            // `-exportArchive` can upload to App Store Connect.
-            return !args.contains { $0.hasPrefix("-export") }
+            return xcodebuildIsLocal(args)
         case BrowserBridgeMCPProjection.toolCommand:
             return args.first.map { !ShelfBrowserBridgeCommandRouter.commandChangesPage($0) } ?? true
         default:
@@ -491,9 +495,9 @@ enum LocalShellCommands {
         "date", "cal", "whoami", "id", "uname", "hostname", "printenv", "ps", "pgrep", "pkill", "kill", "lsof",
         "sw_vers", "plutil", "defaults", "mdfind", "mdls", "pbcopy", "pbpaste", "uptime", "vm_stat", "sysctl",
         // Build, test and format tools, which run the project's own code.
-        "ninja", "ctest", "swiftc", "swift-format", "swiftlint", "xcodegen", "clang",
+        "ninja", "swiftc", "swift-format", "swiftlint", "xcodegen", "clang",
         "clang++", "cc", "gcc", "g++", "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "codesign", "dsymutil",
-        "rustc", "rustfmt", "gofmt", "pytest", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
+        "rustc", "rustfmt", "gofmt", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
         "mypy", "flake8", "pylint", "isort"
     ]
 
@@ -1014,6 +1018,7 @@ enum LocalShellCommands {
                 guard index + 1 < args.count else { return false }
                 let module = args[index + 1]
                 if module == "pip" { return pipIsLocal(Array(args.dropFirst(index + 2))) }
+                if module == "pytest" { return pytestIsLocal(Array(args.dropFirst(index + 2))) }
                 return [
                     "pytest", "unittest", "venv", "py_compile", "compileall", "json.tool", "doctest", "mypy", "black",
                     "ruff", "isort", "flake8", "pylint", "coverage"
@@ -1110,6 +1115,62 @@ enum LocalShellCommands {
         }
     }
 
+    /// `xcodebuild` building and testing on this Mac or a simulator. Exporting
+    /// (`-exportArchive` can upload), provisioning (`-allowProvisioning…`
+    /// changes the developer account) and a physical device destination are
+    /// not local work.
+    private static func xcodebuildIsLocal(_ args: [String]) -> Bool {
+        if args.contains(where: { $0.hasPrefix("-export") || $0.hasPrefix("-allowProvisioning") || $0.hasPrefix("-authenticationKey") }) {
+            return false
+        }
+        for (index, arg) in args.enumerated() where arg == "-destination" {
+            guard index + 1 < args.count else { return false }
+            let destination = args[index + 1]
+            guard destination.contains("Simulator") || destination.contains("platform=macOS")
+                    || destination.hasPrefix("generic/") else {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// `ctest` running the project's tests with listed options; `--build-and-test`
+    /// and `--test-command` run a given command, and dashboard modes submit
+    /// results to a server.
+    private static func ctestIsLocal(_ args: [String]) -> Bool {
+        let flags: Set<String> = [
+            "--output-on-failure", "-V", "-VV", "--verbose", "--extra-verbose", "-N", "--show-only", "--rerun-failed",
+            "--stop-on-failure", "--schedule-random", "-Q", "--quiet", "--progress", "--no-tests=error",
+            "--no-tests=ignore"
+        ]
+        let valued: Set<String> = [
+            "-R", "--tests-regex", "-E", "--exclude-regex", "-L", "--label-regex", "-LE", "--label-exclude", "-j",
+            "--parallel", "--test-dir", "-C", "--build-config", "--timeout", "--repeat", "-I", "--tests-information",
+            "--output-junit", "-O", "--output-log"
+        ]
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            let name = String(arg.prefix { $0 != "=" })
+            if flags.contains(arg) {
+                index += 1
+            } else if valued.contains(name) {
+                index += arg.contains("=") ? 1 : 2
+            } else if arg.hasPrefix("-j"), Int(arg.dropFirst(2)) != nil {
+                index += 1
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// `pytest` runs the project's tests; `--pastebin` sends the session to
+    /// bpaste.net.
+    private static func pytestIsLocal(_ args: [String]) -> Bool {
+        !args.contains { $0.hasPrefix("--pastebin") }
+    }
+
     private static func cargoIsLocal(_ args: [String]) -> Bool {
         var rest = args[...]
         if rest.first?.hasPrefix("+") == true { rest = rest.dropFirst() }
@@ -1119,6 +1180,9 @@ enum LocalShellCommands {
             rest = rest.dropFirst()
         }
         guard let command = rest.first else { return true }
+        // `--config` after the verb can name a program Cargo runs
+        // (`build.rustc-wrapper`, `target.*.runner`).
+        guard !rest.contains(where: { $0 == "--config" || $0.hasPrefix("--config=") || $0 == "-Z" }) else { return false }
         return [
             "build", "b", "check", "c", "test", "t", "run", "r", "clippy", "fmt", "doc", "d", "clean", "tree", "metadata",
             "fetch", "update", "add", "remove", "rm", "bench", "init", "new", "generate-lockfile", "vendor", "version",
