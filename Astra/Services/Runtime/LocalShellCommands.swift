@@ -378,7 +378,7 @@ enum LocalShellCommands {
     ]
 
     private static let localEnvironmentNames: Set<String> = [
-        "CI", "DEBUG", "VERBOSE", "NODE_ENV", "RUST_LOG", "RUST_BACKTRACE", "PYTHONPATH", "PYTHONUNBUFFERED",
+        "CI", "DEBUG", "VERBOSE", "NODE_ENV", "RUST_LOG", "RUST_BACKTRACE", "PYTHONUNBUFFERED",
         "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "LANG", "LANGUAGE", "TZ", "TERM", "NO_COLOR", "FORCE_COLOR",
         "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "CGO_ENABLED", "GOOS", "GOARCH", "DEVELOPER_DIR",
         "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "TMPDIR", "GIT_TERMINAL_PROMPT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
@@ -401,6 +401,10 @@ enum LocalShellCommands {
             name = (program as NSString).lastPathComponent
         }
         if plainLocalPrograms.contains(name) { return true }
+        // A word the shell expands can become any option (`rg "$OPT"` with
+        // `OPT=--pre=…`), so a program whose options are judged is not local
+        // with one where an option could stand, only as an option's value.
+        if hasExpansionWhereAnOptionCouldBe(args) { return false }
         switch name {
         case "awk":
             return awkIsLocal(args)
@@ -415,6 +419,8 @@ enum LocalShellCommands {
             return !args.contains("-E") && !(args.contains("--build") && args.contains("--"))
         case "ctest":
             return ctestIsLocal(args)
+        case "swiftc", "clang", "clang++", "cc", "gcc", "g++":
+            return !loadsCompilerPlugin(args)
         case "pytest":
             return pytestIsLocal(args)
         case "rg":
@@ -476,6 +482,18 @@ enum LocalShellCommands {
         }
     }
 
+    private static func hasExpansionWhereAnOptionCouldBe(_ args: [String]) -> Bool {
+        let valueOptions: Set<String> = [
+            "-m", "--message", "-F", "--file", "-f", "-o", "--output", "-C", "-g", "--glob", "-e", "--regexp",
+            "-b", "--branch", "-n"
+        ]
+        return args.indices.contains { index in
+            let word = args[index]
+            guard let dollar = word.firstIndex(of: "$"), word[..<dollar].allSatisfy({ $0 == "-" }) else { return false }
+            return index == 0 || !valueOptions.contains(args[index - 1])
+        }
+    }
+
     /// Programs that only read or change files and processes on this machine,
     /// whatever their arguments, plus the shell's own builtins.
     private static let plainLocalPrograms: Set<String> = [
@@ -495,8 +513,8 @@ enum LocalShellCommands {
         "date", "cal", "whoami", "id", "uname", "hostname", "printenv", "ps", "pgrep", "pkill", "kill", "lsof",
         "sw_vers", "plutil", "defaults", "mdfind", "mdls", "pbcopy", "pbpaste", "uptime", "vm_stat", "sysctl",
         // Build, test and format tools, which run the project's own code.
-        "ninja", "swiftc", "swift-format", "swiftlint", "xcodegen", "clang",
-        "clang++", "cc", "gcc", "g++", "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "codesign", "dsymutil",
+        "ninja", "swift-format", "swiftlint", "xcodegen",
+        "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "codesign", "dsymutil",
         "rustc", "rustfmt", "gofmt", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
         "mypy", "flake8", "pylint", "isort"
     ]
@@ -1083,7 +1101,9 @@ enum LocalShellCommands {
     private static func swiftIsLocal(_ args: [String]) -> Bool {
         guard let command = args.first else { return false }
         switch command {
-        case "build", "test", "run", "format", "--version", "-version", "--help", "-h":
+        case "build", "test", "run":
+            return !loadsCompilerPlugin(Array(args.dropFirst()))
+        case "format", "--version", "-version", "--help", "-h":
             return true
         case "package":
             let valued: Set<String> = [
@@ -1163,6 +1183,16 @@ enum LocalShellCommands {
             }
         }
         return true
+    }
+
+    /// A compiler option that loads a plugin runs it (`-load-plugin-executable`,
+    /// `-fplugin=`), and the frontend passthroughs can name one.
+    private static func loadsCompilerPlugin(_ args: [String]) -> Bool {
+        args.contains { arg in
+            let lower = arg.lowercased()
+            return lower.contains("plugin") || lower.hasPrefix("-load")
+                || ["-xfrontend", "-xclang", "-xllvm", "-xswiftc", "-xcc"].contains(lower)
+        }
     }
 
     /// `pytest` runs the project's tests; `--pastebin` sends the session to

@@ -166,15 +166,23 @@ enum GitHubReviewAutoPost {
             found.append((url.path, values.contentModificationDate ?? .distantPast))
         }
         // The top level first, where review files are written, so a large
-        // subdirectory the walk reaches earlier cannot use up the bound.
-        let topLevel = (try? fileManager.contentsOfDirectory(
-            at: URL(fileURLWithPath: taskFolder, isDirectory: true),
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        )) ?? []
-        topLevel.forEach(consider)
-        let topLevelPaths = Set(topLevel.map(\.standardizedFileURL.path))
+        // subdirectory the walk reaches earlier cannot use up the bound. Read
+        // lazily and under the same bound, and only a review file's name is
+        // stat'ed, so a flat folder of thousands of outputs costs no more.
+        var topLevelPaths: Set<String> = []
         var examined = 0
+        if let topLevel = fileManager.enumerator(
+            at: URL(fileURLWithPath: taskFolder, isDirectory: true),
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants, .skipsPackageDescendants]
+        ) {
+            while let url = topLevel.nextObject() as? URL, examined < maximumEntriesExamined {
+                examined += 1
+                topLevelPaths.insert(url.standardizedFileURL.path)
+                consider(url)
+            }
+        }
+        examined = 0
         while let url = enumerator.nextObject() as? URL, examined < maximumEntriesExamined {
             examined += 1
             guard !topLevelPaths.contains(url.standardizedFileURL.path) else { continue }

@@ -460,8 +460,10 @@ enum JiraProposalPolicy {
         let note = """
             note: nothing was sent yet. ASTRA posts this exact payload using the connector \
             credential only as the task's permission level allows: in Ask the user reviews it \
-            first and decides whether and when; in Auto ASTRA sends it when this turn ends and \
-            records it in the chat. Read the staged file if you need to check what you composed. \
+            first and decides whether and when; in Auto ASTRA sends it after this turn finishes \
+            cleanly and its checks pass, and records it in the chat — otherwise it waits for the \
+            user's review, so do not report it as sent. Read the staged file if you need to check \
+            what you composed. \
             Do not retry this call and do not attempt the write another way — a second proposal \
             is a second write, not a faster one.
             """
