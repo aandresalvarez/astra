@@ -195,7 +195,10 @@ enum GitPullRequestRecordSource: ExternalActionRecordSource {
             kind: .gitPullRequestPublication,
             title: title,
             destination: ExternalActionRecordProjection.repository(fromGitHubURL: fields.pullRequestURL) ?? "GitHub",
-            url: URL(string: fields.pullRequestURL),
+            // The link comes from `gh`'s output: only an https link, reduced
+            // to the pull request it names, is clickable.
+            url: AgentExternalActionObserver.canonicalGitHubURL(fields.pullRequestURL)
+                .flatMap { $0.hasPrefix("https://") ? URL(string: $0) : nil },
             authorization: fields.authorization ?? .userReviewed,
             timestamp: timestamp,
             legacyNotices: ["Published draft pull request #\(fields.pullRequestNumber): \(fields.pullRequestURL)"]

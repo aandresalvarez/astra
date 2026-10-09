@@ -86,6 +86,22 @@ struct ExternalActionRecordTests {
         #expect(text.contains("STAR-11"), "the newest records are the ones kept")
     }
 
+    // The pull request link comes from `gh`'s output.
+    @Test("A pull request receipt links only an https GitHub pull request")
+    func pullRequestReceiptLinksAreCanonical() throws {
+        func link(_ url: String) throws -> URL? {
+            let payload = try #require(String(data: try JSONSerialization.data(withJSONObject: [
+                "pullRequestNumber": 1, "pullRequestURL": url, "isDraft": true
+            ]), encoding: .utf8))
+            return try #require(ExternalActionRecordProjection.record(
+                type: TaskExternalOutcomeEventTypes.publicationReceipt, payload: payload, eventID: UUID(), timestamp: Date()
+            )).url
+        }
+        #expect(try link("https://github.com/acme/widgets/pull/1?token=x")?.absoluteString == "https://github.com/acme/widgets/pull/1")
+        #expect(try link("file:///tmp/pull/1") == nil)
+        #expect(try link("x-app://host/o/r/pull/1") == nil)
+    }
+
     @Test("A receipt written before levels were harmonized reads as reviewed by the user")
     func legacyReceiptReadsAsUserReviewed() throws {
         let task = AgentTask(title: "Jira", goal: "Comment on the ticket")

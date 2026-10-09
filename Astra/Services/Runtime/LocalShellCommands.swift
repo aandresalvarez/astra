@@ -885,6 +885,7 @@ enum LocalShellCommands {
     /// `gh api` reads without fields, with GET, or with a GraphQL query that
     /// holds no `mutation`; fields alone make it a POST.
     private static func gitHubAPIReads(_ args: [String]) -> Bool {
+        if args.contains(where: overridesMethod) { return false }
         let flags: Set<String> = ["--paginate", "--slurp", "--include", "-i", "--silent", "--verbose"]
         let valued: Set<String> = ["--jq", "-q", "--template", "-t", "--cache", "--hostname", "--preview", "-p", "--header", "-H"]
         let fields: Set<String> = ["-f", "--raw-field", "-F", "--field"]
@@ -935,7 +936,16 @@ enum LocalShellCommands {
 
     /// `curl` with only the options that fetch: no body, no upload, no
     /// config file, and a GET or HEAD method. (`~/.curlrc` is the user's own.)
+    /// A header that names another method (`X-HTTP-Method-Override: DELETE`)
+    /// turns a GET into whatever the server honours, so a request carrying
+    /// one is not a fetch.
+    private static func overridesMethod(_ word: String) -> Bool {
+        guard let colon = word.firstIndex(of: ":") else { return false }
+        return word[..<colon].lowercased().contains("method")
+    }
+
     private static func curlIsLocal(_ args: [String]) -> Bool {
+        if args.contains(where: overridesMethod) { return false }
         let flags: Set<Character> = ["s", "S", "L", "f", "I", "i", "v", "k", "O", "J", "q", "N", "g", "4", "6"]
         let valued: Set<Character> = ["o", "w", "A", "H", "m", "X", "u", "e", "r", "C", "x", "b", "c", "y", "Y"]
         let longFlags: Set<String> = [
@@ -989,6 +999,7 @@ enum LocalShellCommands {
     }
 
     private static func wgetIsLocal(_ args: [String]) -> Bool {
+        if args.contains(where: overridesMethod) { return false }
         let flags: Set<String> = [
             "-q", "--quiet", "-nv", "--no-verbose", "-c", "--continue", "-S", "--server-response", "--spider",
             "--no-check-certificate", "-N", "--timestamping", "-r", "--recursive", "-np", "--no-parent"

@@ -347,9 +347,16 @@ enum AgentExternalActionObserver {
         switch program {
         case "git":
             let operands = operands(args, optionsWithValues: ["-C", "--git-dir", "--work-tree", "--namespace"])
-            guard operands.first == "push", !args.contains("--dry-run"), !args.contains("-n") else { return nil }
+            // A dry run, alone or in a short-option cluster (`-vn`), pushes
+            // nothing, so it is not titled as a push.
+            let dryRun = args.contains("--dry-run")
+                || args.contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("n") }
+            guard operands.first == "push", !dryRun else { return nil }
             return .push
         case "gh":
+            // Help and a dry run create nothing, so they are not titled as
+            // the action.
+            guard !args.contains(where: { ["--help", "-h", "--dry-run"].contains($0) }) else { return nil }
             let operands = operands(args, optionsWithValues: ["-R", "--repo", "--hostname"])
             guard let area = operands.first else { return nil }
             let verb = operands.dropFirst().first ?? ""

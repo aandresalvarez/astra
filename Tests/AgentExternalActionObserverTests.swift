@@ -47,7 +47,8 @@ struct AgentExternalActionObserverTests {
             #"echo "pushed: $(git push origin main)""#, "git push --dry-run origin main", "bash -c 'git push origin main'",
             "curl -d x https://hooks.example.test/build", "gh gist create notes.md",
             "node --eval='require(\"child_process\").execSync(\"git push origin main\")'", "npm --scope @foo publish",
-            "DOCKER_HOST=ssh://deploy@prod docker create alpine", "python3 -c 'print(1)'"
+            "DOCKER_HOST=ssh://deploy@prod docker create alpine", "python3 -c 'print(1)'",
+            "git push -vn origin main", "gh pr create --dry-run --fill", "gh pr create --help"
         ]
     )
     func otherCommandsAreRecordedAsRun(command: String) {
