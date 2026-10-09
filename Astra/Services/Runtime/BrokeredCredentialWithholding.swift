@@ -259,10 +259,13 @@ enum BrokeredCredentialApprovalDiscovery {
         guard !recorded.isEmpty else { return [] }
         // Auto asks nothing: the run's own request is the consent, so the
         // connectors are allowed for the task and the chat says so — but only
-        // for a run that finished cleanly. A cancelled or failed run's reach is
-        // not consent for a retry to hold the credentials; it becomes an offer,
-        // as does a grant that could not be saved. Offers an earlier Ask run
-        // left open are that run's question and stay open.
+        // for a run whose provider finished cleanly (exit, error, budget,
+        // cancel). A run that did not becomes an offer, as does a grant that
+        // could not be saved, so the user sees it before the next run; the
+        // next Auto launch answers open offers the same way
+        // (`AutoConnectorOfferGrant`), which is why validation, run later in
+        // settlement, does not decide this. Offers an earlier Ask run left
+        // open are that run's question and stay open.
         if !ExternalActionPolicy.asksUser(for: .connectorCredentialUse, level: policyLevel),
            runFinishedCleanly,
            grantForAuto(recorded, task: task, run: run, runtime: runtime, modelContext: modelContext,

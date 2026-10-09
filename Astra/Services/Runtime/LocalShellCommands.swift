@@ -404,6 +404,14 @@ enum LocalShellCommands {
         switch name {
         case "awk":
             return awkIsLocal(args)
+        case "make", "gmake":
+            // `--eval` adds a rule, recipe included, from the command line, and
+            // a variable set there can name what a recipe runs.
+            return !args.contains { $0 == "-E" || $0.hasPrefix("--eval") || ($0.hasPrefix("-E") && !$0.hasPrefix("--")) }
+                && args.filter(isAssignment).allSatisfy { localEnvironmentNames.contains(String($0.prefix { $0 != "=" })) }
+        case "cmake":
+            // `cmake -E env …` runs a program.
+            return !args.contains("-E")
         case "rg":
             // `--pre` runs a program on every file searched.
             return !args.contains { $0 == "--pre" || $0.hasPrefix("--pre=") }
@@ -480,7 +488,7 @@ enum LocalShellCommands {
         "date", "cal", "whoami", "id", "uname", "hostname", "printenv", "ps", "pgrep", "pkill", "kill", "lsof",
         "sw_vers", "plutil", "defaults", "mdfind", "mdls", "pbcopy", "pbpaste", "uptime", "vm_stat", "sysctl",
         // Build, test and format tools, which run the project's own code.
-        "make", "gmake", "cmake", "ninja", "ctest", "swiftc", "swift-format", "swiftlint", "xcodegen", "clang",
+        "ninja", "ctest", "swiftc", "swift-format", "swiftlint", "xcodegen", "clang",
         "clang++", "cc", "gcc", "g++", "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "codesign", "dsymutil",
         "rustc", "rustfmt", "gofmt", "pytest", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
         "mypy", "flake8", "pylint", "isort"
@@ -648,6 +656,9 @@ enum LocalShellCommands {
             return !rest.contains { $0 == "--exec" || $0.hasPrefix("--exec=") || ($0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("x")) }
         case "submodule":
             return !rest.contains("foreach")
+        case "grep":
+            // `-O`/`--open-files-in-pager` runs a program on the matches.
+            return !rest.contains { $0.hasPrefix("--open-files-in-pager") || ($0.hasPrefix("-O") && !$0.hasPrefix("--")) }
         case "bisect":
             return !rest.contains("run")
         case "config":
@@ -732,7 +743,8 @@ enum LocalShellCommands {
         case "pr":
             return reads.contains(verb) || verb == "checkout"
         case "repo":
-            return reads.contains(verb) || verb == "clone"
+            // Words after `--` go to `git clone` itself (`-c core.sshCommand=…`).
+            return reads.contains(verb) || (verb == "clone" && !args.contains("--"))
         case "release", "run":
             return reads.contains(verb) || verb == "download" || verb == "watch"
         case "issue", "workflow", "label", "gist", "cache", "ruleset", "variable", "secret", "project", "org":
@@ -1109,7 +1121,11 @@ enum LocalShellCommands {
         if command == "mod" {
             return args.count > 1 && ["tidy", "download", "graph", "verify", "why", "edit", "init", "vendor"].contains(args[1])
         }
-        // `go generate` runs the commands its directives name.
+        // `go generate` runs the commands its directives name, and `-exec` and
+        // `-toolexec` name a program to run.
+        guard !args.contains(where: { $0.hasPrefix("-exec") || $0.hasPrefix("-toolexec") || $0.hasPrefix("--exec") }) else {
+            return false
+        }
         return ["build", "test", "vet", "fmt", "run", "list", "env", "version", "doc", "clean", "install", "get", "work", "help"]
             .contains(command)
     }
