@@ -205,14 +205,33 @@ enum GitHubReviewPublicationRequirement {
     }
 
     static func isPending(task: AgentTask) -> Bool {
+        isOpen(task: task, answeredBy: [
+            GitHubReviewPublicationEventTypes.receipt,
+            GitHubReviewPublicationEventTypes.receiptRecovery
+        ])
+    }
+
+    /// Whether no post has even been attempted for the open request — what
+    /// Auto posts on. A dispatch with no receipt may have posted the review
+    /// (GitHub accepted it, the answer was lost), so it answers the request
+    /// too: under the same request a second file could be a second review.
+    /// Ask keeps `isPending`, where the user decides each post in the sheet.
+    static func isOpenForUnreviewedPost(task: AgentTask) -> Bool {
+        isOpen(task: task, answeredBy: [
+            GitHubReviewPublicationEventTypes.receipt,
+            GitHubReviewPublicationEventTypes.receiptRecovery,
+            GitHubReviewPublicationEventTypes.dispatched
+        ])
+    }
+
+    private static func isOpen(task: AgentTask, answeredBy answering: Set<String>) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {
             return hasUnresolvedTarget(task: task, request: request)
         }
         return !task.events.contains { event in
-            guard [GitHubReviewPublicationEventTypes.receipt,
-                   GitHubReviewPublicationEventTypes.receiptRecovery].contains(event.type),
+            guard answering.contains(event.type),
                   (request.timestamp.map { event.timestamp >= $0 } ?? true),
                   let data = event.payload.data(using: .utf8),
                   let receipt = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
@@ -705,7 +724,7 @@ final class GitHubReviewPublicationService {
         // request, closes it, so it is read here, with no suspension before
         // dispatch is recorded.
         if authorization == .autoPolicy,
-           !(GitHubReviewPublicationRequirement.isPending(task: task)
+           !(GitHubReviewPublicationRequirement.isOpenForUnreviewedPost(task: task)
                && GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task)) {
             throw GitHubReviewPublicationError.notRequested
         }

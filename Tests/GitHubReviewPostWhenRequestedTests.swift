@@ -211,6 +211,28 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
     }
 
+    /// GitHub may have accepted a review whose answer was lost, so the
+    /// request it was posted under is answered: a second file must not
+    /// become a second review on the strength of it.
+    @Test("After an uncertain post, another file under the same request is not posted")
+    func uncertainPostAnswersTheRequest() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI(failsPost: true)
+        let handler = fixture.handler(level: .autonomous, cli: cli)
+        _ = await handler.postGitHubReview(fixture.request(for: fixture.file))
+        let second = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_review_2.json")
+        try Data("""
+            {"event":"COMMENT","commit_id":"\(Self.head)","body":"A second try"}
+            """.utf8).write(to: second)
+
+        let outcome = await handler.postGitHubReview(fixture.request(for: second))
+
+        #expect(outcome == .refused(message: GitHubReviewPublicationError.notRequested.localizedDescription))
+        #expect(await cli.postCount() == 1)
+        // Ask still reads the request as open: the user decides there.
+        #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
+    }
+
     @Test("An uncertain post is never posted a second time")
     func uncertainPostIsNotRepeated() async throws {
         let fixture = try Fixture()
