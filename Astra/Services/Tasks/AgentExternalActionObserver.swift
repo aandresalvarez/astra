@@ -116,7 +116,10 @@ enum AgentExternalActionObserver {
     /// none gets no link rather than another action's.
     static func actionURLs(for actions: [Action], output: String, command: String, host: String?) -> [String?] {
         guard actions.count > 1 else {
-            return [firstGitHubURL(in: output, host: host) ?? firstGitHubURL(in: command, host: host)]
+            let github = firstGitHubURL(in: output, host: host) ?? firstGitHubURL(in: command, host: host)
+            // Any other command links where it went: the first web address it names.
+            if case .command = actions.first { return [github ?? firstWebURL(in: command)] }
+            return [github]
         }
         var available = allGitHubURLs(in: output, host: host)
         return actions.map { action in
@@ -434,6 +437,24 @@ enum AgentExternalActionObserver {
         guard !hostAndPath.host.isEmpty else { return nil }
         if hostAndPath.host.lowercased() == "github.com", !path.isEmpty { return path }
         return path.isEmpty ? hostAndPath.host : "\(hostAndPath.host)/\(path)"
+    }
+
+    /// The first http(s) address in `text`, reduced to scheme, host and path:
+    /// a user, password or query string can carry a secret the record must
+    /// not show.
+    static func firstWebURL(in text: String) -> String? {
+        guard let match = text.range(of: #"https?://[^\s"'\)<>\]\\,]+"#, options: .regularExpression),
+              var components = URLComponents(string: String(text[match])),
+              components.host?.isEmpty == false else {
+            return nil
+        }
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        var url = components.string ?? ""
+        while let last = url.last, ".;:".contains(last) { url.removeLast() }
+        return url.isEmpty ? nil : url
     }
 
     static func firstGitHubURL(in text: String, host: String? = nil) -> String? {

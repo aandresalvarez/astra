@@ -380,7 +380,7 @@ enum LocalShellCommands {
     private static let localEnvironmentNames: Set<String> = [
         "CI", "DEBUG", "VERBOSE", "NODE_ENV", "RUST_LOG", "RUST_BACKTRACE", "PYTHONPATH", "PYTHONUNBUFFERED",
         "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "LANG", "LANGUAGE", "TZ", "TERM", "NO_COLOR", "FORCE_COLOR",
-        "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "CGO_ENABLED", "GOOS", "GOARCH", "GOFLAGS", "DEVELOPER_DIR",
+        "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "CGO_ENABLED", "GOOS", "GOARCH", "DEVELOPER_DIR",
         "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "TMPDIR", "GIT_TERMINAL_PROMPT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
         "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE", "HOMEBREW_NO_AUTO_UPDATE",
         "HOMEBREW_NO_INSTALL_CLEANUP", "HOMEBREW_NO_ENV_HINTS", "PIP_DISABLE_PIP_VERSION_CHECK"
@@ -413,8 +413,11 @@ enum LocalShellCommands {
             // `cmake -E env …` runs a program.
             return !args.contains("-E")
         case "rg":
-            // `--pre` runs a program on every file searched.
-            return !args.contains { $0 == "--pre" || $0.hasPrefix("--pre=") }
+            // `--pre` runs a program on every file searched, `--hostname-bin`
+            // one for hyperlinks.
+            return !args.contains { arg in
+                ["--pre", "--hostname-bin"].contains { arg == $0 || arg.hasPrefix($0 + "=") }
+            }
         case "sort":
             return !args.contains { $0.hasPrefix("--compress-program") }
         case "tar":
@@ -446,7 +449,7 @@ enum LocalShellCommands {
         case "node":
             return nodeIsLocal(args)
         case "ruby", "perl":
-            return args.first.map { !$0.hasPrefix("-") } ?? false
+            return args.first.map(isProjectScript) ?? false
         case "sh", "bash", "zsh", "dash", "ksh":
             return shellIsLocal(args, depth: depth)
         case "swift":
@@ -992,7 +995,7 @@ enum LocalShellCommands {
                 rest.removeFirst(["--frozen", "--locked", "--no-sync", "--all-extras", "-q", "--quiet"].contains(first) ? 1 : min(2, rest.count))
             }
             guard let program = rest.first else { return false }
-            if program.hasSuffix(".py") { return true }
+            if program.hasSuffix(".py") { return isProjectScript(program) }
             return isLocalCommand(rest, depth: depth + 1)
         default:
             return ["sync", "lock", "add", "remove", "venv", "tree", "init", "build", "version", "--version"].contains(command)
@@ -1024,7 +1027,14 @@ enum LocalShellCommands {
             guard ["-u", "-B", "-O", "-OO", "-E", "-s", "-S", "-I", "-q", "-b", "-bb"].contains(option) else { return false }
             index += 1
         }
-        return index < args.count && args[index] != "-"
+        return index < args.count && isProjectScript(args[index])
+    }
+
+    /// A script file of the project: not a standard-input stand-in (`-`,
+    /// `/dev/stdin`, `/dev/fd/0`), and not a substitution's output (`<(…)`),
+    /// which are code the command itself supplies.
+    private static func isProjectScript(_ word: String) -> Bool {
+        !word.hasPrefix("-") && !word.hasPrefix("/dev/") && !word.hasPrefix("/proc/") && !word.contains("$")
     }
 
     private static func nodeIsLocal(_ args: [String]) -> Bool {
@@ -1038,7 +1048,7 @@ enum LocalShellCommands {
             }
             index += 1
         }
-        return index < args.count && args[index] != "-"
+        return index < args.count && isProjectScript(args[index])
     }
 
     /// A shell running a script file, or a `-c` string judged as a command.
@@ -1060,7 +1070,7 @@ enum LocalShellCommands {
             index += takesOptionName ? 2 : 1
         }
         // With no script, a shell reads its commands from standard input.
-        return index < args.count
+        return index < args.count && isProjectScript(args[index])
     }
 
     // MARK: Apple and language toolchains
@@ -1096,7 +1106,7 @@ enum LocalShellCommands {
             ].contains(args[index])
         default:
             // `swift script.swift` runs a project file.
-            return command.hasSuffix(".swift")
+            return command.hasSuffix(".swift") && isProjectScript(command)
         }
     }
 

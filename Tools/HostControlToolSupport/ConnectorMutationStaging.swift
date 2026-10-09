@@ -228,6 +228,8 @@ public enum ConnectorMutationStaging {
         )
     }
 
+    static let maximumStagedNumber = 1_000_000
+
     /// The highest number a staged file of `runID` carries in `directory`, or 0.
     static func highestStagedNumber(forRun runID: String, in directory: String) -> Int {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
@@ -239,7 +241,10 @@ public enum ConnectorMutationStaging {
     public static func stagedNumber(fileName: String, runID: String? = nil) -> Int? {
         guard fileName.hasSuffix(".json") else { return nil }
         let stem = fileName.dropLast(".json".count)
-        guard let dash = stem.lastIndex(of: "-"), let number = Int(stem[stem.index(after: dash)...]) else { return nil }
+        // Bounded: the folder is agent-writable, and a name at `Int.max` must
+        // not overflow the next number.
+        guard let dash = stem.lastIndex(of: "-"), let number = Int(stem[stem.index(after: dash)...]),
+              (0...maximumStagedNumber).contains(number) else { return nil }
         if let runID, !stem[..<dash].hasSuffix("-\(runID)") { return nil }
         return number
     }

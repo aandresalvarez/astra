@@ -80,6 +80,12 @@ struct AgentExternalActionObserverTests {
         #expect(AgentExternalActionObserver.title(for: long, url: nil) == "Ran `\(String(repeating: "a", count: 79))…`")
         #expect(AgentExternalActionObserver.title(for: .pullRequest(verb: "draft"), url: "https://github.com/a/b/pull/7")
             == "Converted pull request #7 to draft")
+        // A command's row links where it went, without credentials or query.
+        let hook = "curl -d x https://bot:secret@hooks.example.test/build?token=abc"
+        #expect(AgentExternalActionObserver.actionURLs(for: [.command(hook)], output: "ok", command: hook, host: nil)
+            == ["https://hooks.example.test/build"])
+        #expect(AgentExternalActionObserver.actionURLs(for: [.command("ssh deploy@host")], output: "", command: "ssh deploy@host", host: nil)
+            == [nil])
         // A summary the recorder cut mid-quote cannot be read as one command.
         #expect(AgentExternalActionObserver.recordedAction(
             in: #"{"command":"gh pr create --draft --title 'A very long title that the recorder cut"#

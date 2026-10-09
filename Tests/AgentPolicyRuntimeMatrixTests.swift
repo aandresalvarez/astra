@@ -524,12 +524,16 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(guardrail.violation(for: read) == nil)
         let asked = guardrail.violation(for: click)
         #expect(asked?.requiresApproval == true)
-        #expect(asked?.permissionRequest == .shell(command: "astra-browser click", toolName: tool))
+        #expect(asked?.permissionRequest == .shell(command: "astra-browser click --selector 'button'", toolName: tool),
+                "the card shows what will be clicked")
         let approved = AgentRuntimePolicyGuard(manifest: Self.manifest(
             runtime: .claudeCode, policy: mcp, approvalGrants: asked?.approvalGrants ?? []
         ))
         #expect(approved.violation(for: click) == nil, "approving the page change does not ask again")
-        #expect(approved.disposition(toolName: "Bash", command: "astra-browser click") == .allowed)
+        #expect(approved.disposition(toolName: "Bash", command: "astra-browser click --selector button") == .allowed,
+                "one approval covers both transports")
+        let otherClick = ParsedEvent.toolUse(name: tool, id: "tool-3", input: ["command": "click", "arguments": ["selector": "#delete"]])
+        #expect(approved.violation(for: otherClick)?.requiresApproval == true, "a click on another control asks again")
         #expect(approved.disposition(toolName: "Bash", command: "astra-browser fill --label Email --text a") == .ask,
                 "another page change needs its own approval")
 

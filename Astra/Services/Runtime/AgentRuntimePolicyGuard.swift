@@ -207,10 +207,16 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         let request = adapter.permissionRequest(from: parsed)
             ?? PermissionBroker.permissionRequest(from: observed)
+        // The browser MCP tool carries its target in `arguments`, which the
+        // observed event does not keep; it is part of what is approved.
+        var browserArguments: String?
+        if case .toolUse(let name, _, let input) = parsed, Self.isBrowserBridgeTool(name) {
+            browserArguments = Self.browserArgumentWords(input?["arguments"])
+        }
 
         switch observed.kind {
         case .toolUse, .fileChange, .networkAccess:
-            return validateObservedAction(observed, request: request)
+            return validateObservedAction(observed, request: request, browserArguments: browserArguments)
         case .toolResult, .deniedAction:
             return nil
         }
@@ -237,7 +243,8 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func validateObservedAction(
         _ observed: PolicyObservedEvent,
-        request: PermissionRequest?
+        request: PermissionRequest?,
+        browserArguments: String? = nil
     ) -> AgentRuntimePolicyViolation? {
         guard let toolName = observed.toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !toolName.isEmpty else {
@@ -378,7 +385,9 @@ struct AgentRuntimePolicyGuard: Sendable {
             return violation
         }
         if Self.isBrowserBridgeTool(toolName),
-           let violation = externalBrowserActionApprovalViolation(command: observed.command, toolName: toolName) {
+           let violation = externalBrowserActionApprovalViolation(
+               command: observed.command, arguments: browserArguments, toolName: toolName
+           ) {
             return violation
         }
 
@@ -443,12 +452,18 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     /// The browser MCP tool runs the same bridge commands as `astra-browser`,
     /// so a page change asks at Ask and Custom even when a rule allows the
-    /// tool. It is judged, asked about, and approved as that CLI command: MCP
-    /// tools carry no grant of their own, and one approval then covers both
-    /// transports.
-    private func externalBrowserActionApprovalViolation(command: String?, toolName: String) -> AgentRuntimePolicyViolation? {
-        let equivalent = [BrowserBridgeMCPProjection.toolCommand, command?.trimmingCharacters(in: .whitespacesAndNewlines)]
+    /// tool. It is judged, asked about, and approved as that CLI command, its
+    /// arguments included, so the card shows what will be changed and one
+    /// approved click is not every later click: MCP tools carry no grant of
+    /// their own, and one approval then covers both transports.
+    private func externalBrowserActionApprovalViolation(
+        command: String?,
+        arguments: String?,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        let equivalent = [BrowserBridgeMCPProjection.toolCommand, command?.trimmingCharacters(in: .whitespacesAndNewlines), arguments]
             .compactMap { $0 }
+            .filter { !$0.isEmpty }
             .joined(separator: " ")
         guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
               let pending = unapprovedExternalCommand(equivalent) else {
@@ -464,6 +479,29 @@ struct AgentRuntimePolicyGuard: Sendable {
             permissionRequest: request,
             approvalGrants: PermissionBroker.approvalGrants(for: request)
         )
+    }
+
+    /// The MCP tool's `arguments` as the CLI's words, keys sorted:
+    /// `--selector 'button.primary'`; a nested value is its JSON.
+    static func browserArgumentWords(_ value: Any?) -> String? {
+        guard let arguments = value as? [String: Any], !arguments.isEmpty else { return nil }
+        func quoted(_ text: String) -> String {
+            "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        return arguments.keys.sorted().map { key -> String in
+            let raw = arguments[key]
+            let text: String
+            switch raw {
+            case let string as String:
+                text = string
+            case let number as NSNumber:
+                text = number.stringValue
+            default:
+                let data = raw.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys, .fragmentsAllowed]) }
+                text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            }
+            return "--\(key) \(quoted(text))"
+        }.joined(separator: " ")
     }
 
     private static func isBrowserBridgeTool(_ tool: String) -> Bool {

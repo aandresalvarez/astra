@@ -219,6 +219,17 @@ struct ConnectorMutationAutoSendTests {
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).map(\.summary) == ["Third"])
     }
 
+    // The staging folder is agent-writable; a planted name at `Int.max` must
+    // not overflow the broker's next number.
+    @Test("A staged file number out of range is ignored")
+    func stagedNumbersAreBounded() {
+        #expect(ConnectorMutationStaging.stagedNumber(fileName: "jira-create_issue-RUN-7.json", runID: "RUN") == 7)
+        #expect(ConnectorMutationStaging.stagedNumber(
+            fileName: "jira-create_issue-RUN-\(Int.max).json", runID: "RUN"
+        ) == nil)
+        #expect(ConnectorMutationStaging.stagedNumber(fileName: "jira-create_issue-OTHER-7.json", runID: "RUN") == nil)
+    }
+
     // The review sheet can be open on a proposal while Auto sends it; once the
     // send has claimed it, a decline would sit beside the write it refuses.
     @Test("A proposal an in-flight Auto send claimed cannot be declined")
