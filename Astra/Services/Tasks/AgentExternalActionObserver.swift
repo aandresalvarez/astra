@@ -90,7 +90,11 @@ enum AgentExternalActionObserver {
             guard let action = recordedAction(in: command) else { continue }
             let actions = [action]
             let enterprise = enterpriseGitHub(in: command)
-            let urls = actionURLs(for: actions, output: output, command: command, host: enterprise?.host)
+            var urls = actionURLs(for: actions, output: output, command: command, host: enterprise?.host)
+            // An SSH push prints `To git@github.com:owner/repo.git`, no web address.
+            if action == .push, urls.first == .some(nil), let repository = pushGitHubRepository(in: output) {
+                urls = ["https://github.com/\(repository)"]
+            }
             for (action, url) in zip(actions, urls) {
                 let observation = Observation(
                     sourceEventID: event.id,
@@ -195,11 +199,16 @@ enum AgentExternalActionObserver {
         let rest = payload.dropFirst(prefix.count)
         let name = rest.prefix { $0 != ":" }.trimmingCharacters(in: .whitespaces)
         let lowered = name.lowercased()
+        let summary = rest.dropFirst(name.count).drop { $0 == ":" || $0 == " " }
+        // The browser MCP tool is recorded as the `astra-browser` command it
+        // ran, the same words the approval gate judges.
+        if AgentRuntimePolicyGuard.isBrowserBridgeTool(name) {
+            return summary.hasPrefix(BrowserBridgeMCPProjection.toolCommand + " ") ? String(summary) : nil
+        }
         guard ProviderToolSemantics.isShellTool(name)
                 || ["command", "terminal", "exec"].contains(where: lowered.contains) else {
             return nil
         }
-        let summary = rest.dropFirst(name.count).drop { $0 == ":" || $0 == " " }
         return summary.isEmpty ? nil : String(summary)
     }
 
@@ -354,10 +363,29 @@ enum AgentExternalActionObserver {
         case .api(let method):
             return "Sent a GitHub API \(method) request"
         case .command(let text):
-            let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
-            let shown = line.count > 80 ? String(line.prefix(79)) + "…" : line
-            return "Ran `\(shown)`"
+            return "Ran " + commandNames(text)
         }
+    }
+
+    /// The programs a command ran outside the local list, by name and
+    /// subcommand only (`curl`, `gh gist create`): its arguments can carry a
+    /// token, a header or a body, and the title is kept and shown.
+    static func commandNames(_ text: String) -> String {
+        let outside = LocalShellCommands.commandsOutsideTheList(text) ?? []
+        var names: [String] = []
+        for words in outside {
+            let program = words.drop { $0.range(of: #"^[A-Za-z_][A-Za-z0-9_]*\+?="#, options: .regularExpression) != nil }
+            guard let first = program.first else { continue }
+            let programName = (first as NSString).lastPathComponent
+            // `gh` names an area and a verb; other programs one subcommand.
+            let subcommands = program.dropFirst().prefix(programName == "gh" ? 2 : 1)
+                .prefix { $0.range(of: #"^[a-z][a-z0-9-]*$"#, options: .regularExpression) != nil }
+            let name = ([programName] + subcommands).joined(separator: " ")
+            if !names.contains(name) { names.append(name) }
+        }
+        guard !names.isEmpty else { return "a command" }
+        let shown = names.prefix(3).map { "`\($0)`" }.joined(separator: ", ")
+        return names.count > 3 ? shown + " and \(names.count - 3) more" : shown
     }
 
     private static func numberedItem(in url: String) -> String? {
@@ -415,6 +443,27 @@ enum AgentExternalActionObserver {
             return (host, repoParts.count >= 2 ? repoParts.suffix(2).joined(separator: "/") : nil)
         }
         return nil
+    }
+
+    /// `owner/repo` when the first `To <remote>` line `git push` prints is a
+    /// github.com remote, in any of its spellings; nil otherwise.
+    static func pushGitHubRepository(in result: String) -> String? {
+        guard let match = result.range(of: #"(?m)^To\s+(\S+)"#, options: .regularExpression) else { return nil }
+        var remote = String(result[match].dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        if remote.lowercased().hasSuffix(".git") { remote.removeLast(4) }
+        let host: String
+        let path: String
+        if let components = URLComponents(string: remote), let parsedHost = components.host, components.scheme != nil {
+            (host, path) = (parsedHost, components.path)
+        } else if let colon = remote.firstIndex(of: ":") {
+            host = remote[..<colon].split(separator: "@").last.map(String.init) ?? ""
+            path = String(remote[remote.index(after: colon)...])
+        } else {
+            return nil
+        }
+        let parts = path.split(separator: "/").map(String.init)
+        guard host.lowercased() == "github.com", parts.count == 2 else { return nil }
+        return parts.joined(separator: "/")
     }
 
     /// `owner/repo` for GitHub, otherwise `host/path`, read from the first

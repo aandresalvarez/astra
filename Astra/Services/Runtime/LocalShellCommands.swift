@@ -32,6 +32,22 @@ enum LocalShellCommands {
         parse(command)?.commands
     }
 
+    /// The simple commands that are not known local work, substitution bodies
+    /// included, or nil when the string cannot be read.
+    static func commandsOutsideTheList(_ command: String) -> [[String]]? {
+        commandsOutsideTheList(command, depth: 0)
+    }
+
+    private static func commandsOutsideTheList(_ command: String, depth: Int) -> [[String]]? {
+        guard depth < maximumDepth, let parsed = parse(command) else { return nil }
+        var outside = parsed.commands.filter { !isLocalCommand($0, depth: depth) }
+        for body in parsed.substitutions {
+            guard let inner = commandsOutsideTheList(body, depth: depth + 1) else { return nil }
+            outside += inner
+        }
+        return outside
+    }
+
     /// The commands a shell string runs: its simple commands, and the bodies
     /// of its command and process substitutions (`$(…)`, `` `…` ``, `<(…)`),
     /// which run too, even inside double quotes or an unquoted here document.
@@ -42,6 +58,10 @@ enum LocalShellCommands {
         var word = ""
         var wordStarted = false
         var wordQuoted = false
+        // An unquoted `*`, `?`, `[` or `{` where an option could begin: the
+        // shell may expand it into a file named like one (`--pastebin=all`).
+        var wordGlobsIntoOption = false
+        var wordBraceAtOptionPosition = false
         var inSingle = false
         var inDouble = false
         var redirectionTarget = false
@@ -53,6 +73,8 @@ enum LocalShellCommands {
                 word = ""
                 wordStarted = false
                 wordQuoted = false
+                wordGlobsIntoOption = false
+                wordBraceAtOptionPosition = false
             }
             guard wordStarted else { return }
             if let stripsTabs = heredocDelimiterNext {
@@ -61,7 +83,10 @@ enum LocalShellCommands {
             } else if redirectionTarget {
                 redirectionTarget = false
             } else {
-                words.append(word)
+                // Marked as an expansion, which is judged where an option could stand.
+                // `{a,b}` and `{1..3}` expand; a lone `{}` (find's placeholder) does not.
+                let braceExpands = wordBraceAtOptionPosition && (word.contains(",") || word.contains(".."))
+                words.append(wordGlobsIntoOption || braceExpands ? "$" + word : word)
             }
         }
         func endCommand() {
@@ -200,6 +225,8 @@ enum LocalShellCommands {
                 redirectionTarget = true
                 continue
             default:
+                if "*?[".contains(character), word.allSatisfy({ $0 == "-" }) { wordGlobsIntoOption = true }
+                if character == "{", word.allSatisfy({ $0 == "-" }) { wordBraceAtOptionPosition = true }
                 word.append(character)
                 wordStarted = true
             }
@@ -419,7 +446,7 @@ enum LocalShellCommands {
             return !args.contains("-E") && !(args.contains("--build") && args.contains("--"))
         case "ctest":
             return ctestIsLocal(args)
-        case "swiftc", "clang", "clang++", "cc", "gcc", "g++":
+        case "swiftc", "clang", "clang++", "cc", "gcc", "g++", "rustc":
             return !loadsCompilerPlugin(args)
         case "pytest":
             return pytestIsLocal(args)
@@ -485,7 +512,7 @@ enum LocalShellCommands {
     private static func hasExpansionWhereAnOptionCouldBe(_ args: [String]) -> Bool {
         let valueOptions: Set<String> = [
             "-m", "--message", "-F", "--file", "-f", "-o", "--output", "-C", "-g", "--glob", "-e", "--regexp",
-            "-b", "--branch", "-n"
+            "-b", "--branch", "-n", "-name", "-iname", "-path", "-ipath", "-regex", "--include", "--exclude", "-type"
         ]
         return args.indices.contains { index in
             let word = args[index]
@@ -515,7 +542,7 @@ enum LocalShellCommands {
         // Build, test and format tools, which run the project's own code.
         "ninja", "swift-format", "swiftlint", "xcodegen",
         "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "codesign", "dsymutil",
-        "rustc", "rustfmt", "gofmt", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
+        "rustfmt", "gofmt", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
         "mypy", "flake8", "pylint", "isort"
     ]
 
@@ -984,7 +1011,35 @@ enum LocalShellCommands {
         if command == "config" { return args.count > 1 && ["get", "list", "ls"].contains(args[1]) }
         // `init <initializer>` installs and runs a registry package.
         if command == "init" { return args.dropFirst().allSatisfy { $0.hasPrefix("-") } }
-        return localPackageCommands.contains(command)
+        return localPackageCommands.contains(command) && packageOptionsAreListed(Array(args.dropFirst()))
+    }
+
+    /// The manager reads any `--name=value` as configuration, and some name a
+    /// program (`--script-shell`, `--node-options`) or a config file, so only
+    /// listed options pass; words after `--` go to the project's own script.
+    private static func packageOptionsAreListed(_ args: [String]) -> Bool {
+        let flags: Set<String> = [
+            "-D", "-S", "-E", "-g", "-O", "-P", "-y", "-s", "-q", "-r", "--save", "--save-dev", "--save-exact",
+            "--save-optional", "--save-prod", "--no-save", "--global", "--production", "--legacy-peer-deps",
+            "--no-audit", "--no-fund", "--prefer-offline", "--offline", "--frozen-lockfile", "--immutable", "--silent",
+            "--quiet", "--verbose", "--workspaces", "--if-present", "--ignore-scripts", "--dry-run", "--json", "--long",
+            "--all", "--watch", "--coverage", "--recursive", "--parallel", "--stream", "--dev", "--exact", "--yes"
+        ]
+        let valued: Set<String> = ["-w", "--workspace", "--omit", "--include", "--depth", "--filter", "--tag"]
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            if arg == "--" { return true }
+            let name = String(arg.prefix { $0 != "=" })
+            if !arg.hasPrefix("-") || flags.contains(arg) {
+                index += 1
+            } else if valued.contains(name) {
+                index += arg.contains("=") ? 1 : 2
+            } else {
+                return false
+            }
+        }
+        return true
     }
 
     private static let localPackageCommands: Set<String> = [
@@ -1190,8 +1245,12 @@ enum LocalShellCommands {
     private static func loadsCompilerPlugin(_ args: [String]) -> Bool {
         args.contains { arg in
             let lower = arg.lowercased()
-            return lower.contains("plugin") || lower.hasPrefix("-load")
-                || ["-xfrontend", "-xclang", "-xllvm", "-xswiftc", "-xcc"].contains(lower)
+            // Also a linker or helper named on the command line (`rustc -C
+            // linker=…`, `-fuse-ld=…`, `gcc -B dir`, `-wrapper`).
+            return lower.contains("plugin") || lower.hasPrefix("-load") || lower.contains("linker")
+                || lower.contains("link-arg") || lower.hasPrefix("-fuse-ld") || lower.hasPrefix("--ld-path")
+                || lower.hasPrefix("-b") || lower == "-wrapper" || lower.hasPrefix("-z")
+                || ["-xfrontend", "-xclang", "-xllvm", "-xswiftc", "-xcc", "-xlinker"].contains(lower)
         }
     }
 

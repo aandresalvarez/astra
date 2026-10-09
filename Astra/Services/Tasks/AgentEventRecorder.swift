@@ -465,6 +465,13 @@ enum AgentEventRecordingPresentation {
         if ["webfetch", "websearch"].contains(lower) {
             return firstString(in: input, keys: ["url", "uri", "summary"])
         }
+        // The browser MCP tool, as the `astra-browser` command it runs, with
+        // its arguments: what the approval gate judged and Auto records.
+        if AgentRuntimePolicyGuard.isBrowserBridgeTool(name), let command = firstString(in: input, keys: ["command"]) {
+            return ([BrowserBridgeMCPProjection.toolCommand, command]
+                + [AgentRuntimePolicyGuard.browserArgumentWords(input["arguments"])].compactMap { $0 })
+                .joined(separator: " ")
+        }
         return firstString(in: input, keys: ["summary"])
     }
 

@@ -504,7 +504,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         }.joined(separator: " ")
     }
 
-    private static func isBrowserBridgeTool(_ tool: String) -> Bool {
+    static func isBrowserBridgeTool(_ tool: String) -> Bool {
         let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let name = BrowserBridgeMCPProjection.toolName
         return lower.contains(BrowserBridgeMCPProjection.serverID) && (lower.hasSuffix(name) || lower.hasSuffix("\(name))"))

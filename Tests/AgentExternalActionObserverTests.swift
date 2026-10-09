@@ -72,12 +72,14 @@ struct AgentExternalActionObserverTests {
     @Test("A command's record names it and where it went")
     func commandRecordsNameTheCommand() {
         let curl = AgentExternalActionObserver.Action.command("curl -d x https://hooks.example.test/build")
-        #expect(AgentExternalActionObserver.title(for: curl, url: nil) == "Ran `curl -d x https://hooks.example.test/build`")
+        #expect(AgentExternalActionObserver.title(for: curl, url: nil) == "Ran `curl`")
+        // Only names reach the title: arguments can carry a token or a header.
+        let secret = AgentExternalActionObserver.Action.command("curl -H 'Authorization: Bearer SECRET' -X POST https://hooks.example.test")
+        #expect(!AgentExternalActionObserver.title(for: secret, url: nil).contains("SECRET"))
+        #expect(AgentExternalActionObserver.title(for: .command("gh gist create notes.md"), url: nil) == "Ran `gh gist create`")
         #expect(AgentExternalActionObserver.destination(for: curl, url: nil, result: "") == "hooks.example.test")
         let gist = AgentExternalActionObserver.Action.command("gh gist create notes.md")
         #expect(AgentExternalActionObserver.destination(for: gist, url: nil, result: "") == "gh")
-        let long = AgentExternalActionObserver.Action.command(String(repeating: "a", count: 120) + "\nsecond line")
-        #expect(AgentExternalActionObserver.title(for: long, url: nil) == "Ran `\(String(repeating: "a", count: 79))…`")
         #expect(AgentExternalActionObserver.title(for: .pullRequest(verb: "draft"), url: "https://github.com/a/b/pull/7")
             == "Converted pull request #7 to draft")
         // A command's row links where it went, without credentials or query.
@@ -111,7 +113,7 @@ struct AgentExternalActionObserverTests {
         let observed = AgentExternalActionObserver.recordObservedActions(
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
         )
-        #expect(observed.map(\.title) == ["Ran `git push -u origin fix && gh pr create --fill`"])
+        #expect(observed.map(\.title) == ["Ran `git push`, `gh pr create`"])
         #expect(observed.map(\.url) == ["https://github.com/acme/widgets/pull/34"])
     }
 
@@ -200,7 +202,36 @@ struct AgentExternalActionObserverTests {
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
         )
         #expect(observed.count == 1)
-        #expect(observed.first?.title.hasPrefix("Ran `echo x x") == true)
+        #expect(observed.first?.title == "Ran `git push`")
+    }
+
+    @Test("An SSH push links its GitHub repository")
+    func sshPushLinksTheRepository() throws {
+        let fixture = try ObserverFixture()
+        fixture.toolCall("Using tool: Bash: git push origin main", result: "To git@github.com:acme/widgets.git\n   1a..2b  main -> main", at: 1)
+        let observed = AgentExternalActionObserver.recordObservedActions(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        #expect(observed.map(\.url) == ["https://github.com/acme/widgets"])
+        #expect(AgentExternalActionObserver.pushGitHubRepository(in: "To git@gitlab.com:group/project.git") == nil)
+    }
+
+    // Auto lets the browser MCP tool change a page without asking; the
+    // record says so, as the command the gate would have asked about.
+    @Test("A browser page change through the MCP tool is recorded in Auto")
+    func browserMCPChangesAreRecorded() throws {
+        let tool = BrowserBridgeMCPProjection.providerToolPermission
+        let summary = AgentEventRecordingPresentation.toolInputSummary(
+            name: tool, input: ["command": "click", "arguments": ["selector": "button.primary"]]
+        )
+        #expect(summary == "astra-browser click --selector 'button.primary'")
+        let fixture = try ObserverFixture()
+        fixture.toolCall("Using tool: \(tool): \(summary ?? "")", result: "clicked", at: 1)
+        fixture.toolCall("Using tool: \(tool): astra-browser read-page", result: "page", at: 3)
+        let observed = AgentExternalActionObserver.recordObservedActions(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        #expect(observed.map(\.title) == ["Ran `astra-browser click`"], "a read is local and not recorded")
     }
 
     @Test("Only shell tools count; a file that mentions a command did nothing")
