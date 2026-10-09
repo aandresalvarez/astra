@@ -399,6 +399,76 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(approved.disposition(toolName: "Bash", command: "git push origin main") == .allowed, "approved once, not asked twice")
     }
 
+    /// An approval is of the command the user read. A grant's pattern stops
+    /// after a few words (`gh pr comment 12 *`), so a content grant is what
+    /// keeps approving one comment from approving another; and a write to a
+    /// host keeps its method, so approving a POST is not approving a DELETE.
+    @Test("An approved write does not approve another body or another method")
+    func approvalIsBoundToContentAndMethod() {
+        let policy = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Glob", "Grep", "Bash"],
+            allowedShellPatterns: ["gh:*", "curl:*", "wget:*"]
+        )
+        func approved(_ command: String) -> AgentRuntimePolicyGuard {
+            let ask = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: policy))
+                .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": command]))
+            #expect(ask?.requiresApproval == true, "\(command) asks first")
+            return AgentRuntimePolicyGuard(manifest: Self.manifest(
+                runtime: .claudeCode, policy: policy, approvalGrants: ask?.approvalGrants ?? []
+            ))
+        }
+
+        let comment = approved("gh pr comment 12 --body 'first text'")
+        #expect(comment.disposition(toolName: "Bash", command: "gh pr comment 12 --body 'first text'") == .allowed)
+        #expect(comment.disposition(toolName: "Bash", command: #"gh pr comment 12 --body "first text""#) == .allowed,
+                "quoting is not content")
+        #expect(comment.disposition(toolName: "Bash", command: "gh pr comment 12 --body 'different text'") == .ask)
+        #expect(comment.disposition(toolName: "Bash", command: "gh pr comment 13 --body 'first text'") == .ask)
+
+        let post = approved("curl -X POST https://example.com/hooks")
+        #expect(post.disposition(toolName: "Bash", command: "curl -X POST https://example.com/hooks") == .allowed)
+        for other in [
+            "curl -X DELETE https://example.com/hooks",
+            "curl --request=DELETE https://example.com/hooks",
+            "curl -XDELETE https://example.com/hooks",
+            "curl -sX PUT https://example.com/hooks"
+        ] {
+            #expect(post.disposition(toolName: "Bash", command: other) == .ask, "\(other)")
+        }
+        let body = approved("curl -d x https://example.com/hooks")
+        #expect(body.disposition(toolName: "Bash", command: "curl -d x -X DELETE https://example.com/hooks") == .ask)
+        let wget = approved("wget --method=POST https://example.com/hooks")
+        #expect(wget.disposition(toolName: "Bash", command: "wget --method=DELETE https://example.com/hooks") == .ask)
+
+        // The pattern a provider replays the approved command by is unchanged,
+        // and the content grant never reaches a provider.
+        let grants = PermissionBroker.approvalGrants(for: .shell(command: "curl -X POST https://example.com/hooks", toolName: "Bash"))
+        #expect(grants.contains(.shellCommand(executable: "curl", pattern: "-X POST *example.com*")))
+        #expect(grants.contains(where: ShellCommandRiskClassifier.isContentGrant))
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI) == ["shell(curl:-X POST *example.com*)"])
+    }
+
+    @Test("Every spelling of a request method names it in the grant")
+    func requestMethodSpellings() {
+        for command in [
+            "curl -X POST https://example.com/hooks", "curl -XPOST https://example.com/hooks",
+            "curl --request POST https://example.com/hooks", "curl --request=post https://example.com/hooks",
+            "curl -sXPOST https://example.com/hooks", "curl -sX POST https://example.com/hooks"
+        ] {
+            #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: command)
+                == .shellCommand(executable: "curl", pattern: "-X POST *example.com*"), "\(command)")
+        }
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "curl -d x -X PUT https://example.com/hooks")
+            == .shellCommand(executable: "curl", pattern: "-d -X PUT *example.com*"))
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "curl -X POST -X DELETE https://example.com/hooks")
+            == .shellCommand(executable: "curl", pattern: "-X DELETE *example.com*"), "the last method is the one curl sends")
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "wget --method POST https://example.com/hooks")
+            == .shellCommand(executable: "wget", pattern: "--method POST *example.com*"))
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "curl -X P0ST https://example.com/hooks") == nil,
+                "a method that cannot be read yields no grant")
+    }
+
     /// Custom's own rules decide whether enabled local tools become grants:
     /// with Bash ask-first (the default Custom policy) no runtime turns them
     /// into `<exe> *` patterns, and with Bash allowed every runtime does.

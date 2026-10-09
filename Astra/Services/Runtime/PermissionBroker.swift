@@ -444,10 +444,11 @@ enum PermissionBroker {
     static func completeShellApprovalGrants(command: String) -> [PermissionGrant]? {
         var grants: [PermissionGrant] = []
         for segment in actionableShellSegments(command) where !isBenignShellSetupSegment(segment) {
-            guard let grant = ShellCommandRiskClassifier.approvalGrant(forShellSegment: segment), isSafeGrant(grant) else {
+            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(forShellSegment: segment),
+                  segmentGrants.allSatisfy(isSafeGrant) else {
                 return nil
             }
-            grants.append(grant)
+            grants.append(contentsOf: segmentGrants)
         }
         return grants.isEmpty ? nil : sanitizeGrants(grants)
     }
@@ -457,11 +458,11 @@ enum PermissionBroker {
         let segments = actionableShellSegments(command).filter { !isBenignShellSetupSegment($0) }
         var grants: [PermissionGrant] = []
         for segment in segments {
-            guard let grant = ShellCommandRiskClassifier.approvalGrant(forShellSegment: segment),
-                  isSafeGrant(grant) else {
+            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(forShellSegment: segment),
+                  segmentGrants.allSatisfy(isSafeGrant) else {
                 continue
             }
-            grants.append(grant)
+            grants.append(contentsOf: segmentGrants)
         }
         return sanitizeGrants(grants)
     }
@@ -513,7 +514,9 @@ enum PermissionBroker {
             case .sandboxPath, .gitPublish, .connectorMutation:
                 return false
             default:
-                return true
+                // A content grant is ASTRA's gate's half of a shell approval;
+                // the provider replays the command by its pattern.
+                return !ShellCommandRiskClassifier.isContentGrant(grant)
             }
         }
     }
