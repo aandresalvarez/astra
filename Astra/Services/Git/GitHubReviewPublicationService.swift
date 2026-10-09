@@ -244,17 +244,7 @@ enum GitHubReviewPublicationRequirement {
     static func postingRequest(task: AgentTask) -> PostingRequest? {
         var current = publicationIntent(in: task.goal) == .publish
             ? PostingRequest(text: task.goal, timestamp: nil, eventID: nil) : nil
-        let messages = task.events
-            .filter {
-                $0.type == TaskEventTypes.Conversation.userMessage.rawValue
-                    || $0.type == TaskPlanConversationEventTypes.userMessage
-            }
-            .sorted { lhs, rhs in
-                lhs.timestamp == rhs.timestamp
-                    ? lhs.id.uuidString < rhs.id.uuidString
-                    : lhs.timestamp < rhs.timestamp
-            }
-        for message in messages {
+        for message in userMessages(task: task) {
             switch publicationIntent(in: message.payload) {
             case .publish:
                 current = PostingRequest(text: message.payload, timestamp: message.timestamp, eventID: message.id)
@@ -374,8 +364,31 @@ enum GitHubReviewPublicationRequirement {
     /// publish or submit the review — what Auto requires before it posts one
     /// without the sheet. Offline: it reads the request, not GitHub.
     static func explicitlyRequestsPosting(task: AgentTask) -> Bool {
-        guard let request = postingRequest(task: task) else { return false }
+        guard let request = postingRequest(task: task), isLatestInstruction(request, task: task) else { return false }
         return commandsPosting(request.text)
+    }
+
+    /// Whether nothing the user said came after the request. Auto acts on the
+    /// user's latest word only: "actually, no", "never mind" or anything else
+    /// after a command to post leaves the review for the sheet, so no way of
+    /// taking it back has to be recognised for Auto to honour it.
+    private static func isLatestInstruction(_ request: PostingRequest, task: AgentTask) -> Bool {
+        let messages = userMessages(task: task)
+        guard let eventID = request.eventID else { return messages.isEmpty }
+        return messages.last?.id == eventID
+    }
+
+    private static func userMessages(task: AgentTask) -> [TaskEvent] {
+        task.events
+            .filter {
+                $0.type == TaskEventTypes.Conversation.userMessage.rawValue
+                    || $0.type == TaskPlanConversationEventTypes.userMessage
+            }
+            .sorted { lhs, rhs in
+                lhs.timestamp == rhs.timestamp
+                    ? lhs.id.uuidString < rhs.id.uuidString
+                    : lhs.timestamp < rhs.timestamp
+            }
     }
 
     /// The positive list `imperativePublicationRegex` describes.

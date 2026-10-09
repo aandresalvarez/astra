@@ -183,6 +183,41 @@ struct GitHubReviewPostWhenRequestedTests {
         }
     }
 
+    /// Auto acts on the user's latest word: whatever follows a command to post
+    /// — a reversal it could never list, or anything else — leaves the review
+    /// for the sheet, where Ask's broader reading still offers it.
+    @Test("Auto posts only when the request is the user's latest instruction")
+    func autoActsOnTheLatestInstructionOnly() async throws {
+        for later in ["Actually, no", "Never mind", "Thanks! Also look at the flaky test"] {
+            let fixture = try Fixture()
+            fixture.context.insert(TaskEvent(
+                task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage, payload: later
+            ))
+            let cli = FakeCLI()
+
+            let outcome = await fixture.handler(level: .autonomous, cli: cli).postGitHubReview(fixture.request(for: fixture.file))
+
+            #expect(outcome == .refused(message: GitHubReviewPublicationError.notRequested.localizedDescription), "\(later)")
+            #expect(await cli.callCount() == 0, "\(later)")
+        }
+        // A command restated last is the latest word again.
+        let fixture = try Fixture()
+        let thanks = TaskEvent(task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage, payload: "Thanks")
+        let restated = TaskEvent(
+            task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post the review on https://github.com/example/repo/pull/12"
+        )
+        thanks.timestamp = Date(timeIntervalSinceNow: -60)
+        restated.timestamp = Date(timeIntervalSinceNow: -30)
+        fixture.context.insert(thanks)
+        fixture.context.insert(restated)
+        let outcome = await fixture.handler(level: .autonomous, cli: FakeCLI()).postGitHubReview(fixture.request(for: fixture.file))
+        guard case .performed = outcome else {
+            Issue.record("Expected the restated command to post, got \(outcome)")
+            return
+        }
+    }
+
     /// Auto posts while a request is open, so every way the user calls it off
     /// has to close it — the noun forms too, and a stopping verb before the
     /// posting one, which the broad pattern used to read as a request.
