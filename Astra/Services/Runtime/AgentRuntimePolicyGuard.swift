@@ -207,16 +207,14 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         let request = adapter.permissionRequest(from: parsed)
             ?? PermissionBroker.permissionRequest(from: observed)
-        // The browser MCP tool carries its target in `arguments`, which the
-        // observed event does not keep; it is part of what is approved.
-        var browserArguments: String?
+        var browserCommand: String?
         if case .toolUse(let name, _, let input) = parsed, Self.isBrowserBridgeTool(name) {
-            browserArguments = Self.browserArgumentWords(input?["arguments"])
+            browserCommand = Self.browserCommand(fromInput: input)
         }
 
         switch observed.kind {
         case .toolUse, .fileChange, .networkAccess:
-            return validateObservedAction(observed, request: request, browserArguments: browserArguments)
+            return validateObservedAction(observed, request: request, browserCommand: browserCommand)
         case .toolResult, .deniedAction:
             return nil
         }
@@ -244,7 +242,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     private func validateObservedAction(
         _ observed: PolicyObservedEvent,
         request: PermissionRequest?,
-        browserArguments: String? = nil
+        browserCommand: String? = nil
     ) -> AgentRuntimePolicyViolation? {
         guard let toolName = observed.toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !toolName.isEmpty else {
@@ -386,7 +384,8 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         if Self.isBrowserBridgeTool(toolName),
            let violation = externalBrowserActionApprovalViolation(
-               command: observed.command, arguments: browserArguments, toolName: toolName
+               equivalent: browserCommand ?? Self.browserCommand(fromInput: observed.command.map { ["command": $0] }),
+               toolName: toolName
            ) {
             return violation
         }
@@ -457,14 +456,9 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// approved click is not every later click: MCP tools carry no grant of
     /// their own, and one approval then covers both transports.
     private func externalBrowserActionApprovalViolation(
-        command: String?,
-        arguments: String?,
+        equivalent: String,
         toolName: String
     ) -> AgentRuntimePolicyViolation? {
-        let equivalent = [BrowserBridgeMCPProjection.toolCommand, command?.trimmingCharacters(in: .whitespacesAndNewlines), arguments]
-            .compactMap { $0 }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
         guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
               let pending = unapprovedExternalCommand(equivalent) else {
             return nil
@@ -479,6 +473,23 @@ struct AgentRuntimePolicyGuard: Sendable {
             permissionRequest: request,
             approvalGrants: PermissionBroker.approvalGrants(for: request)
         )
+    }
+
+    /// The `astra-browser` command a browser MCP call runs. Read from its
+    /// structured `command` and `arguments`, or from the summary the event
+    /// recorder made of them (`astra-browser click --selector '…'`), which is
+    /// all a provider callback carries. A call whose command cannot be read is
+    /// judged as an unregistered command, which counts as a page change.
+    static func browserCommand(fromInput input: [String: Any]?) -> String {
+        let tool = BrowserBridgeMCPProjection.toolCommand
+        if let command = (input?["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty {
+            return ([tool, command] + [browserArgumentWords(input?["arguments"])].compactMap { $0 }).joined(separator: " ")
+        }
+        if let summary = (input?["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           summary.hasPrefix(tool + " ") {
+            return summary
+        }
+        return tool + " unreadable-call"
     }
 
     /// The MCP tool's `arguments` as the CLI's words, keys sorted:

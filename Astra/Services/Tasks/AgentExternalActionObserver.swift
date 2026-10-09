@@ -509,9 +509,9 @@ enum AgentExternalActionObserver {
         return path.isEmpty ? hostAndPath.host : "\(hostAndPath.host)/\(path)"
     }
 
-    /// The first http(s) address in `text`, reduced to scheme, host and path:
-    /// a user, password or query string can carry a secret the record must
-    /// not show.
+    /// The first http(s) address in `text`, reduced to scheme and host: a
+    /// user, password, path or query string can carry a secret (a webhook
+    /// token is often the path) the record must not show.
     static func firstWebURL(in text: String) -> String? {
         guard let match = text.range(of: #"https?://[^\s"'\)<>\]\\,]+"#, options: .regularExpression),
               var components = URLComponents(string: String(text[match])),
@@ -520,6 +520,7 @@ enum AgentExternalActionObserver {
         }
         components.user = nil
         components.password = nil
+        components.path = ""
         components.query = nil
         components.fragment = nil
         var url = components.string ?? ""

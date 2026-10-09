@@ -83,9 +83,9 @@ struct AgentExternalActionObserverTests {
         #expect(AgentExternalActionObserver.title(for: .pullRequest(verb: "draft"), url: "https://github.com/a/b/pull/7")
             == "Converted pull request #7 to draft")
         // A command's row links where it went, without credentials or query.
-        let hook = "curl -d x https://bot:secret@hooks.example.test/build?token=abc"
+        let hook = "curl -d x https://bot:secret@hooks.example.test/services/SECRET?token=abc"
         #expect(AgentExternalActionObserver.actionURLs(for: [.command(hook)], output: "ok", command: hook, host: nil)
-            == ["https://hooks.example.test/build"])
+            == ["https://hooks.example.test"], "a webhook's token is often its path")
         #expect(AgentExternalActionObserver.actionURLs(for: [.command("ssh deploy@host")], output: "", command: "ssh deploy@host", host: nil)
             == [nil])
         // A summary the recorder cut mid-quote cannot be read as one command.

@@ -1017,6 +1017,10 @@ enum LocalShellCommands {
             return false
         }
         let rest = Array(args.dropFirst())
+        // A build can export its cache or result to a service (`--cache-to
+        // type=gha|s3|azblob`, `--output type=registry|…`): only a local
+        // destination is local work.
+        if ["build", "buildx", "image"].contains(verb), !dockerBuildExportsLocally(rest) { return false }
         switch verb {
         case "compose":
             return dockerComposeIsLocal(rest)
@@ -1028,6 +1032,29 @@ enum LocalShellCommands {
             }
             return localDockerVerbs.contains(verb)
         }
+    }
+
+    private static func dockerBuildExportsLocally(_ args: [String]) -> Bool {
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            index += 1
+            if arg == "--cache-to" || arg.hasPrefix("--cache-to=") { return false }
+            let value: String
+            if arg == "--output" || arg == "-o" {
+                value = index < args.count ? args[index] : ""
+                index += 1
+            } else if arg.hasPrefix("--output=") {
+                value = String(arg.dropFirst("--output=".count))
+            } else if arg.hasPrefix("-o"), arg.count > 2 {
+                value = String(arg.dropFirst(2))
+            } else {
+                continue
+            }
+            let type = value.split(separator: ",").first { $0.hasPrefix("type=") }.map { String($0.dropFirst(5)) }
+            guard type == nil || ["local", "tar", "docker", "oci", "cacheonly"].contains(type!) else { return false }
+        }
+        return true
     }
 
     /// The second word of the management commands, by command.
@@ -1187,7 +1214,9 @@ enum LocalShellCommands {
     /// `/dev/stdin`, `/dev/fd/0`), and not a substitution's output (`<(…)`),
     /// which are code the command itself supplies.
     private static func isProjectScript(_ word: String) -> Bool {
-        !word.hasPrefix("-") && !word.hasPrefix("/dev/") && !word.hasPrefix("/proc/") && !word.contains("$")
+        // An absolute or home path names a file outside the project, as for a
+        // program path (`isLocalProgram`).
+        !word.hasPrefix("-") && !word.hasPrefix("/") && !word.hasPrefix("~") && !word.contains("$")
     }
 
     private static func nodeIsLocal(_ args: [String]) -> Bool {

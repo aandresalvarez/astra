@@ -125,6 +125,8 @@ struct LocalShellCommandsTests {
             "fd -e py -x pytest", "uv run --python /tmp/ship script.py", "uv run -p /tmp/ship script.py",
             "node --test --require=/tmp/ship.js tests/a.test.js", "curl telnet://host:1234 <<< 'DELETE'",
             "curl ftp://example.test/file", "curl example.test", "curl --url dict://x.test/d", "curl -- smtp://x.test",
+            "python3 /tmp/ship.py", "bash /tmp/ship.sh", "node ~/ship.js", "docker build --cache-to=type=gha .",
+            "docker build -o type=registry,name=x .", "docker build --output=type=s3 .",
             "bash -c 'echo DELETE >/dev/tcp/host/1234'", "exec 3<>/dev/tcp/example.test/80", "cat < /dev/udp/host/53",
             "printf 'x\\n' | mapfile -C /tmp/ship -c 1 rows", "go env -w GOFLAGS=-toolexec=/tmp/ship; go build .",
             "../../tmp/ship", "cd /tmp && ./ship", "cd .. && bash scripts/x.sh", "cd \"$OTHER\" && ./run",

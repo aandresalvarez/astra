@@ -544,6 +544,16 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(approved.disposition(toolName: "Bash", command: "astra-browser fill --label Email --text a") == .ask,
                 "another page change needs its own approval")
 
+        // A provider callback carries only the recorder's summary of the call.
+        for (input, expectAsk) in [
+            (["summary": "astra-browser click --selector 'button'"] as [String: Any]?, true),
+            (["summary": "astra-browser read-page"], false),
+            (nil, true)
+        ] {
+            let event = ParsedEvent.toolUse(name: tool, id: "tool-cb", input: input)
+            #expect((guardrail.violation(for: event)?.requiresApproval == true) == expectAsk, "\(String(describing: input))")
+        }
+
         let auto = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: .preset(.autonomous)))
         #expect(auto.violation(for: click) == nil, "Auto asks nothing")
     }
