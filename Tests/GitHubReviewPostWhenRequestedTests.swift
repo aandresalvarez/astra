@@ -92,6 +92,42 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(await cli.callCount() == 0)
     }
 
+    /// A shorthand request names no repository; `prepare` binds it to the
+    /// workspace's GitHub origin. Before that binding the request does not
+    /// read as pending, so checking that first refused what the user asked for.
+    @Test("A shorthand request is bound to the workspace's origin and posted")
+    func shorthandRequestIsBoundAndPosted() async throws {
+        let fixture = try Fixture(goal: "Post a review on PR 12")
+        let cli = FakeCLI()
+
+        let outcome = await fixture.handler(level: .autonomous, cli: cli, origin: "https://github.com/example/repo.git")
+            .postGitHubReview(fixture.request(for: fixture.file))
+
+        #expect(outcome == .performed(BrokeredExternalActionReceipt(
+            identifier: "review 42", url: "https://github.com/example/repo/pull/12#pullrequestreview-42"
+        )))
+        #expect(await cli.postedPayloads() == [fixture.data])
+    }
+
+    /// One request, one review: a second file asked for after the first was
+    /// posted is not posted on the strength of a request already answered.
+    @Test("A request that was already answered does not post a second review")
+    func answeredRequestDoesNotPostAgain() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI()
+        let handler = fixture.handler(level: .autonomous, cli: cli)
+        _ = await handler.postGitHubReview(fixture.request(for: fixture.file))
+        let second = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_review_2.json")
+        try Data("""
+            {"event":"COMMENT","commit_id":"\(Self.head)","body":"Another review"}
+            """.utf8).write(to: second)
+
+        let outcome = await handler.postGitHubReview(fixture.request(for: second))
+
+        #expect(outcome == .refused(message: GitHubReviewPublicationError.notRequested.localizedDescription))
+        #expect(await cli.postCount() == 1)
+    }
+
     @Test("An uncertain post is never posted a second time")
     func uncertainPostIsNotRepeated() async throws {
         let fixture = try Fixture()
@@ -252,14 +288,18 @@ struct GitHubReviewPostWhenRequestedTests {
 
         deinit { try? FileManager.default.removeItem(at: root) }
 
-        func handler(level: AgentPolicyLevel, cli: some GitHubReviewCLI) -> BrokeredExternalActionHandler {
+        func handler(
+            level: AgentPolicyLevel,
+            cli: some GitHubReviewCLI,
+            origin: String? = nil
+        ) -> BrokeredExternalActionHandler {
             BrokeredExternalActionHandler(
                 modelContext: context,
                 taskID: task.id,
                 runID: run.id,
                 policyLevel: level,
                 makeReviewService: { context in
-                    GitHubReviewPublicationService(modelContext: context, cli: cli, originURL: { _ in nil })
+                    GitHubReviewPublicationService(modelContext: context, cli: cli, originURL: { _ in origin })
                 }
             )
         }

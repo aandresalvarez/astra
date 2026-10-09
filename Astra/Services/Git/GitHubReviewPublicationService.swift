@@ -362,8 +362,8 @@ enum GitHubReviewPublicationError: LocalizedError {
     case staleHead
     case uncertain
     case receiptPersistenceFailed(String)
-    case requestWithdrawn
-    /// Auto posts a review only because the user asked for one to be posted.
+    /// Auto posts a review only because the user asked for one to be posted,
+    /// and only while that request is open.
     case notRequested
 
     var errorDescription: String? {
@@ -378,8 +378,6 @@ enum GitHubReviewPublicationError: LocalizedError {
             "ASTRA sent the review request but could not confirm the result. Check the pull request on GitHub before trying again."
         case .receiptPersistenceFailed(let reviewURL):
             "GitHub confirmed the review at \(reviewURL), but ASTRA could not save its receipt. Check GitHub before continuing; ASTRA will not resend this file."
-        case .requestWithdrawn:
-            "The request to post this review was withdrawn before it was sent."
         case .notRequested:
             "No request to post a review is open on this task: the user has not asked for one, withdrew it, "
                 + "or it was already posted. ASTRA posts a review only when the user asks it to."
@@ -625,10 +623,11 @@ final class GitHubReviewPublicationService {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
         // Auto posts because the user asked; a "don't post it" recorded while
-        // the checks above awaited withdraws that, so it is read again here,
-        // with no suspension before dispatch is recorded.
+        // the checks above awaited, or a review already posted for the
+        // request, closes it, so it is read here, with no suspension before
+        // dispatch is recorded.
         if authorization == .autoPolicy, !GitHubReviewPublicationRequirement.isPending(task: task) {
-            throw GitHubReviewPublicationError.requestWithdrawn
+            throw GitHubReviewPublicationError.notRequested
         }
         let inputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-github-review-\(UUID().uuidString).json")
@@ -819,7 +818,12 @@ final class GitHubReviewPublicationService {
               !taskFolder.isEmpty else {
             throw GitHubReviewPublicationError.invalid("Choose a PR review JSON file from this task’s folder.")
         }
-        guard GitHubReviewPublicationRequirement.isPending(task: task) else {
+        // Offline and first, so a task whose user never asked for a review to
+        // be posted reaches no GitHub endpoint. Whether that request is still
+        // open is read by `publish`, after `prepare` has bound a shorthand
+        // target ("post a review on PR 12") to the workspace's origin — before
+        // that binding a shorthand request does not yet read as pending.
+        guard GitHubReviewPublicationRequirement.postingRequest(task: task) != nil else {
             throw GitHubReviewPublicationError.notRequested
         }
         let filePath = URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path

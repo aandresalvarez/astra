@@ -94,7 +94,11 @@ struct ConnectorMutationSendWhenProposedTests {
         let fixture = try Fixture()
         let sender = Sender()
         let staged = try fixture.stage()
-        try Data(#"{"tampered":true}"#.utf8).write(to: URL(fileURLWithPath: staged.staged.path))
+        // A different, well-formed envelope in its place, so only the digest
+        // can tell the two apart.
+        let other = try fixture.stage(summary: "Delete every ticket in STAR")
+        try Data(contentsOf: URL(fileURLWithPath: other.staged.path)).write(to: URL(fileURLWithPath: staged.staged.path))
+        try FileManager.default.removeItem(atPath: other.staged.path)
 
         let outcome = await fixture.handler(level: .autonomous, sender: sender).sendStagedConnectorMutation(staged.request)
 
@@ -240,7 +244,10 @@ struct ConnectorMutationSendWhenProposedTests {
         let handler = fixture.handler(level: .autonomous, sender: sender)
 
         let sending = Task { await handler.sendStagedConnectorMutation(staged.request) }
-        await sender.waitUntilHeld()
+        guard await sender.waitUntilHeld() else {
+            Issue.record("Auto never started sending: \(await sending.value)")
+            return
+        }
 
         let pending = ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task)
         #expect(pending.map(\.stagedPayloadPath) == [staged.staged.path])
@@ -366,7 +373,7 @@ struct ConnectorMutationSendWhenProposedTests {
             Issue.record("Expected an uncertain outcome, got \(outcome)")
             return
         }
-        await sender.waitUntilHeld()
+        #expect(await sender.waitUntilHeld())
         sender.release()
         // Polls, not a clock: the send finishes on the main actor once released.
         for _ in 0..<500 where fixture.receipts().isEmpty {
@@ -553,7 +560,6 @@ private final class Sender: ConnectorMutationSending, @unchecked Sendable {
     private let failure: (any Error)?
     private let holdsFirstSend: Bool
     private var held: CheckedContinuation<Void, Never>?
-    private var heldWaiter: CheckedContinuation<Void, Never>?
     private var isHeld = false
 
     init(
@@ -575,13 +581,10 @@ private final class Sender: ConnectorMutationSending, @unchecked Sendable {
         }
         if holdsFirstSend, first {
             await withCheckedContinuation { continuation in
-                let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                lock.withLock {
                     held = continuation
                     isHeld = true
-                    defer { heldWaiter = nil }
-                    return heldWaiter
                 }
-                waiter?.resume()
             }
         }
         if let failure { throw failure }
@@ -592,15 +595,14 @@ private final class Sender: ConnectorMutationSending, @unchecked Sendable {
         }
     }
 
-    func waitUntilHeld() async {
-        await withCheckedContinuation { continuation in
-            let alreadyHeld = lock.withLock { () -> Bool in
-                if isHeld { return true }
-                heldWaiter = continuation
-                return false
-            }
-            if alreadyHeld { continuation.resume() }
+    /// Whether the first send reached the hold. Polled a bounded number of
+    /// times, so a send that never starts fails the test instead of hanging it.
+    func waitUntilHeld() async -> Bool {
+        for _ in 0..<500 {
+            if lock.withLock({ isHeld }) { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
+        return false
     }
 
     func release() {
