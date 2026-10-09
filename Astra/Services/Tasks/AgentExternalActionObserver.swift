@@ -27,6 +27,8 @@ enum AgentExternalActionObserver {
         var version = 1
         /// The `tool.use` payload, truncated as the event is: what pairs it.
         let toolUseEvidence: String
+        /// The receipt the record reads (`receipt(in:host:)`); older markers
+        /// hold the result's first 4,000 characters.
         let output: String
         /// The whole command; only in markers written before `verdict`, which
         /// replaced it so that the part of a command past the event's cut —
@@ -58,8 +60,20 @@ enum AgentExternalActionObserver {
     ) -> ResultMarker? {
         guard let command = shellCommandText(fromToolUsePayload: fullEvidence ?? evidence),
               let verdict = verdict(for: command) else { return nil }
-        return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)),
+        return ResultMarker(toolUseEvidence: evidence, output: receipt(in: output, host: verdict.enterpriseHost),
                             failed: failed ? true : nil, verdict: verdict)
+    }
+
+    /// What the record reads from a result, taken from all of it: the first
+    /// GitHub link and the first `To <remote>` line `git push` prints, which
+    /// can follow any amount of hook output.
+    nonisolated static func receipt(in output: String, host: String?) -> String {
+        var lines: [String] = []
+        if let url = firstGitHubURL(in: output, host: host) { lines.append(url) }
+        if let remote = output.range(of: #"(?m)^To\s+\S+"#, options: .regularExpression) {
+            lines.append(String(output[remote].prefix(1_000)))
+        }
+        return lines.joined(separator: "\n")
     }
 
     nonisolated static func verdict(for command: String) -> Verdict? {
@@ -647,6 +661,8 @@ enum AgentExternalActionObserver {
         } else if parts.count >= 5, parts[2] == "releases", parts[3] == "tag" {
             kept = Array(parts.prefix(5))
         }
+        // An HTTPS remote (`To https://github.com/o/r.git`) names the repository.
+        if kept.count == 2, kept[1].lowercased().hasSuffix(".git") { kept[1].removeLast(4) }
         return "\(scheme)://\(host)" + (kept.isEmpty ? "" : "/" + kept.joined(separator: "/"))
     }
 }

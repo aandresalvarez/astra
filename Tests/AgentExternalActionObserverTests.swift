@@ -244,6 +244,31 @@ struct AgentExternalActionObserverTests {
         #expect(marker.verdict?.webHost == "https://hooks.example.test")
     }
 
+    // A pre-push hook can print any amount before git's `To` line; the
+    // receipt is read from the whole result, not from a prefix of it.
+    @Test("A receipt printed after a long output keeps its link")
+    func receiptAfterLongOutputKeepsItsLink() throws {
+        let hookLog = String(repeating: "lint: checked a file\n", count: 400)
+        let push = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: git push origin main",
+            output: hookLog + "To https://github.com/acme/widgets.git\n   1a..2b  main -> main"
+        ))
+        let pushVerdict = try #require(push.verdict)
+        let pushed = try #require(AgentExternalActionObserver.observation(
+            of: pushVerdict, sourceEventID: UUID(), output: push.output, failed: false
+        ))
+        #expect(pushed.url == "https://github.com/acme/widgets")
+        #expect(pushed.destination == "acme/widgets")
+        let opened = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: gh pr create --fill", output: hookLog + "https://github.com/acme/widgets/pull/7\n"
+        ))
+        let openedVerdict = try #require(opened.verdict)
+        #expect(AgentExternalActionObserver.observation(
+            of: openedVerdict, sourceEventID: UUID(), output: opened.output, failed: false
+        )?.url == "https://github.com/acme/widgets/pull/7")
+        #expect(push.output.count < 200, "only the receipt is stored")
+    }
+
     @Test("An SSH push links its GitHub repository")
     func sshPushLinksTheRepository() throws {
         let fixture = try ObserverFixture()

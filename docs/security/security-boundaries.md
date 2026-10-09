@@ -162,7 +162,14 @@ boundary. The full inventory is in
   `GIT_*`, `DOCKER_*`, `NODE_OPTIONS`, proxies) is not local. The list judges
   the command, not the program it runs: `make`, `swift test`, `npm run build`,
   `python3 scripts/report.py` and `docker run` execute project code or an
-  image, and what that code does is the project's. A user's own tool
+  image, and what that code does is the project's. So every operand that
+  chooses which code runs stays in the project: an interpreter's script,
+  `awk -f`, `make -f`, a loader, and every path a build, test or package
+  tool is given (`--package-path`, `--manifest-path`, a test file,
+  `-project`, a toolchain file, `git -C`), as well as the directory it runs
+  in after a `cd`. A variable set for a program, or exported, is that
+  program's environment and is local only when it is on the list of ones
+  that only tune a local program (`NODE_ENV`, `LC_*`). A user's own tool
   configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context,
   a provider home's Docker config, a capability's `DOCKER_HOST`) is the
   user's: it decides where a command the list accepts goes, and the command

@@ -352,14 +352,21 @@ enum LocalShellCommands {
     private static func isLocal(_ command: String, depth: Int) -> Bool {
         guard depth < maximumDepth, let parsed = parse(command) else { return false }
         // After a `cd` out of the working directory, a relative program path
-        // no longer names a project file.
+        // no longer names a project file. The root of the working
+        // directory's own repository is still the project.
+        let toRepositoryRoot = parsed.substitutions.allSatisfy {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == "git rev-parse --show-toplevel"
+        }
         let leavesWorkingDirectory = parsed.commands.contains { words in
             ["cd", "pushd", "popd"].contains(words.first ?? "")
                 && (words.count == 1 || words.dropFirst().contains { word in
-                    word.hasPrefix("/") || word.hasPrefix("~") || word.contains("..") || word.contains("$") || word == "-"
+                    !(word == "$(…)" && toRepositoryRoot)
+                        && (word.hasPrefix("/") || word.hasPrefix("~") || word.contains("..") || word.contains("$") || word == "-")
                 })
         }
-        if leavesWorkingDirectory, parsed.commands.contains(where: runsRelativeProgramFile) { return false }
+        if leavesWorkingDirectory, parsed.commands.contains(where: { runsRelativeProgramFile($0) || runsDirectorysCode($0) }) {
+            return false
+        }
         return parsed.commands.allSatisfy { isLocalCommand($0, depth: depth) }
             && parsed.substitutions.allSatisfy { isLocal($0, depth: depth + 1) }
     }
@@ -374,6 +381,16 @@ enum LocalShellCommands {
         let interpreters: Set<String> = ["python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh", "dash", "ksh", "swift"]
         guard interpreters.contains((program as NSString).lastPathComponent) else { return false }
         return command.dropFirst().first { !$0.hasPrefix("-") }.map(relative) ?? false
+    }
+
+    /// A tool that runs the code of the directory it is in: a build, test or
+    /// package tool, `python -m`, or `git`, whose repository configuration
+    /// names programs (`core.fsmonitor`, hooks).
+    private static func runsDirectorysCode(_ words: [String]) -> Bool {
+        let command = words.drop(while: isAssignment)
+        guard let program = command.first.map({ ($0 as NSString).lastPathComponent }) else { return false }
+        return projectCodeRunners.contains(program) || program == "git"
+            || (["python", "python3"].contains(program) && command.contains("-m"))
     }
 
     /// One simple command: shell grammar and assignments first, then the
@@ -513,6 +530,7 @@ enum LocalShellCommands {
         // `OPT=--pre=…`), so a program whose options are judged is not local
         // with one where an option could stand, only as an option's value.
         if hasExpansionWhereAnOptionCouldBe(args) { return false }
+        if projectCodeRunners.contains(name), !pathsStayInTheProject(args) { return false }
         switch name {
         case "awk":
             return awkIsLocal(args)
@@ -800,11 +818,16 @@ enum LocalShellCommands {
         var index = 0
         while index < args.count, args[index].hasPrefix("-") {
             let option = args[index]
+            // The repository chosen (`-C`, `--git-dir`, `--work-tree`) brings
+            // its configuration, which names programs git runs.
             if ["-C", "--git-dir", "--work-tree", "--namespace"].contains(option) {
+                guard option == "--namespace" || (index + 1 < args.count && !leavesTheProject(args[index + 1])) else {
+                    return false
+                }
                 index += 2
             } else if ["--no-pager", "-P", "--paginate", "-p", "--bare", "--no-optional-locks", "--literal-pathspecs",
                        "--no-replace-objects", "--version", "--help"].contains(option)
-                        || ["--git-dir=", "--work-tree=", "--namespace="].contains(where: option.hasPrefix) {
+                        || ["--git-dir=", "--work-tree=", "--namespace="].contains(where: option.hasPrefix) && !leavesTheProject(option) {
                 index += 1
             } else {
                 // `-c`, `--exec-path`, `--config-env`: they change what runs.
@@ -1254,6 +1277,7 @@ enum LocalShellCommands {
                 guard index + 1 < args.count else { return false }
                 let module = args[index + 1]
                 if module == "pip" { return pipIsLocal(Array(args.dropFirst(index + 2))) }
+                guard pathsStayInTheProject(Array(args.dropFirst(index + 2))) else { return false }
                 if module == "pytest" { return pytestIsLocal(Array(args.dropFirst(index + 2))) }
                 return [
                     "pytest", "unittest", "venv", "py_compile", "compileall", "json.tool", "doctest", "mypy", "black",
@@ -1280,6 +1304,26 @@ enum LocalShellCommands {
     private static func isProjectScript(_ word: String) -> Bool {
         !word.hasPrefix("-") && !word.hasPrefix("/") && !word.hasPrefix("~") && !word.contains("$")
             && !word.split(separator: "/").contains("..")
+    }
+
+    /// A path that leaves the project: absolute, in a home, or with a `..`
+    /// step; an option's attached value (`--package-path=/tmp/x`) counts.
+    private static func leavesTheProject(_ word: String) -> Bool {
+        let value = word.hasPrefix("-") ? String(word.drop { $0 != "=" }.dropFirst()) : word
+        return value.hasPrefix("/") || value.hasPrefix("~") || value.split(separator: "/").contains("..")
+    }
+
+    /// Tools that build, test or run the project's code. Any path one is
+    /// given can choose which code that is (`--package-path`,
+    /// `--manifest-path`, a test file, `-project`, a toolchain file), so every
+    /// path stays in the project, as does the directory it runs in.
+    private static let projectCodeRunners: Set<String> = [
+        "swift", "cargo", "go", "pytest", "xcodebuild", "ctest", "cmake", "make", "gmake", "npm", "pnpm", "yarn", "bun", "uv"
+    ]
+
+    /// Words after `--` are the program's own arguments, its data.
+    private static func pathsStayInTheProject(_ args: [String]) -> Bool {
+        !args.prefix { $0 != "--" }.contains(where: leavesTheProject)
     }
 
     private static func nodeIsLocal(_ args: [String]) -> Bool {
@@ -1476,6 +1520,9 @@ enum LocalShellCommands {
         }) else {
             return false
         }
+        // `go run module@version` downloads and runs a module that is not
+        // the project's, as `npx` would.
+        if command == "run", args.dropFirst().contains(where: { !$0.hasPrefix("-") && $0.contains("@") }) { return false }
         return ["build", "test", "vet", "fmt", "run", "list", "env", "version", "doc", "clean", "install", "get", "work", "help"]
             .contains(command)
     }
