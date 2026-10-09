@@ -26,6 +26,9 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case sentButNotRecorded(target: String, reason: String)
     /// Auto could not durably record the proposal, so it did not send it.
     case proposalNotRecorded(reason: String)
+    /// Auto tried this one when the agent proposed it, and the agent was told
+    /// why it did not go. Not a send anyone can make from the dock.
+    case returnedToAgent(target: String)
 
     var errorDescription: String? {
         switch self {
@@ -76,6 +79,10 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
                 + "saved to this task (\(reason)). The change has been made — do not send it again."
         case let .proposalNotRecorded(reason):
             "ASTRA could not record this proposal on the task (\(reason)), so it did not send it."
+        case let .returnedToAgent(target):
+            "Auto tried to send this to \(target) when the agent proposed it, and the agent was told why it "
+                + "did not go. ASTRA will not send it from here; if it is still wanted, ask the agent to propose "
+                + "it again."
         }
     }
 
@@ -358,6 +365,9 @@ final class ConnectorMutationCoordinator {
         guard !Self.hasBeenSent(stagedPath: staged.path) else {
             throw ConnectorMutationCoordinatorError.alreadySent(staged.target)
         }
+        guard !Self.wasReturnedToAgent(stagedPath: staged.path) else {
+            throw ConnectorMutationCoordinatorError.returnedToAgent(target: staged.target)
+        }
         return try resolveProposal(staged)
     }
 
@@ -464,6 +474,9 @@ final class ConnectorMutationCoordinator {
     ) async throws -> ConnectorMutationReceipt {
         guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
             throw ConnectorMutationCoordinatorError.alreadySent(proposal.target)
+        }
+        guard !Self.wasReturnedToAgent(stagedPath: proposal.stagedPayloadPath) else {
+            throw ConnectorMutationCoordinatorError.returnedToAgent(target: proposal.target)
         }
         let staged = try readStaged(
             task: task,
@@ -710,18 +723,38 @@ final class ConnectorMutationCoordinator {
                 operation: "connector_mutation_indeterminate"
             )
         } else {
-            try? record(
-                ConnectorMutationFailure(
-                    stagedPayloadPath: pending.stagedPayloadPath,
-                    requestDigest: pending.requestDigest,
-                    statusCode: coordinatorError?.statusCode ?? 0,
-                    message: error.localizedDescription
-                ),
-                type: ConnectorMutationEventTypes.failed,
-                task: task,
-                stagedPath: pending.stagedPayloadPath,
-                operation: "connector_mutation_failed"
-            )
+            // Marked before the event, and on disk: if the store that would not
+            // take the failure send itself recorded will not take this one
+            // either, the record stays pending, and without the mark the dock
+            // would offer a manual send of what the agent was told to correct —
+            // a second Jira write once the corrected one lands.
+            Self.markReturnedToAgent(stagedPath: pending.stagedPayloadPath)
+            do {
+                try record(
+                    ConnectorMutationFailure(
+                        stagedPayloadPath: pending.stagedPayloadPath,
+                        requestDigest: pending.requestDigest,
+                        statusCode: coordinatorError?.statusCode ?? 0,
+                        message: error.localizedDescription
+                    ),
+                    type: ConnectorMutationEventTypes.failed,
+                    task: task,
+                    stagedPath: pending.stagedPayloadPath,
+                    operation: "connector_mutation_failed"
+                )
+            } catch {
+                AuditLoggingSeam.required.audit(
+                    .dataStoreRecovered,
+                    category: "Tasks",
+                    fields: [
+                        "operation": "connector_mutation_auto_failure_unrecorded",
+                        "service_type": pending.serviceType,
+                        "connector_operation": pending.operation,
+                        "error": error.localizedDescription
+                    ],
+                    level: .error
+                )
+            }
         }
     }
 
@@ -1175,6 +1208,33 @@ final class ConnectorMutationCoordinator {
             || fileManager.fileExists(atPath: sentMarkerPath(stagedPath: stagedPath))
     }
 
+    // MARK: - Returned to the agent
+
+    /// Auto proposals whose one attempt failed, the agent having been told.
+    /// The event that retires one is the authority; this mark is what still
+    /// holds when that event could not be saved, beside the envelope like the
+    /// send claim and for the same reason: deleting it only re-exposes the
+    /// agent's own proposal to the user's review.
+    private static var returnedStagedPaths: Set<String> = []
+    private static let returnedMarkerExtension = "returned"
+
+    static func wasReturnedToAgent(stagedPath: String, fileManager: FileManager = .default) -> Bool {
+        returnedStagedPaths.contains(stagedPath)
+            || fileManager.fileExists(atPath: stagedPath + "." + returnedMarkerExtension)
+    }
+
+    /// Best effort on disk, always in memory: a mark that cannot be written
+    /// still holds for this launch, and the audit line says it was needed.
+    private static func markReturnedToAgent(stagedPath: String) {
+        returnedStagedPaths.insert(stagedPath)
+        let markerPath = stagedPath + "." + returnedMarkerExtension
+        let descriptor = markerPath.withCString { open($0, O_CREAT | O_WRONLY, 0o600) }
+        guard descriptor >= 0 else { return }
+        try? writeAll(descriptor: descriptor, bytes: Array("returned\n".utf8))
+        fsync(descriptor)
+        close(descriptor)
+    }
+
     /// Claims the send on disk, before it happens, and refuses to proceed if the
     /// claim cannot be made durable.
     ///
@@ -1268,6 +1328,7 @@ final class ConnectorMutationCoordinator {
     /// Test seam. Production never forgets a send.
     static func resetSentStagedPathsForTesting() {
         sentStagedPaths.removeAll()
+        returnedStagedPaths.removeAll()
     }
 
     /// Re-indented for reading. Falls back to the exact bytes rather than an

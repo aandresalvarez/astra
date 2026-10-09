@@ -128,6 +128,46 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(sender.requests.count == 1)
     }
 
+    /// The store that would not take the failure is the case the event cannot
+    /// cover: the record stays pending and the dock shows it. What it must not
+    /// be is sendable — the agent was told to correct it, and the corrected
+    /// one may already have landed — and that has to survive a relaunch.
+    @Test("An Auto failure that cannot be saved still can never be sent from the dock")
+    func unsavedFailureStillCannotBeSent() async throws {
+        let fixture = try Fixture()
+        let sender = Sender(responses: [.init(statusCode: 400, body: #"{"errorMessages":["Field 'priority' is invalid"]}"#)])
+        let staged = try fixture.stage()
+        let failingFailureSave: ConnectorMutationCoordinator.DurableEventSave = { _, context, _, fields in
+            if fields["operation"] == "connector_mutation_failed" { throw URLError(.cannotWriteToFile) }
+            try context.save()
+        }
+        let handler = BrokeredExternalActionHandler(
+            modelContext: fixture.context,
+            taskID: fixture.task.id,
+            runID: fixture.run.id,
+            policyLevel: .autonomous,
+            makeCoordinator: { context in
+                fixture.coordinator(sender: sender, context: context, durableEventSave: failingFailureSave)
+            }
+        )
+
+        let outcome = await handler.sendStagedConnectorMutation(staged.request)
+
+        guard case .refused = outcome else {
+            Issue.record("Expected a refusal, got \(outcome)")
+            return
+        }
+        let record = try #require(ConnectorMutationCoordinator.reviewable(
+            ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task)
+        ).first, "the unsaved retirement leaves the record pending")
+        // As after a relaunch: only what is on disk is left.
+        ConnectorMutationCoordinator.resetSentStagedPathsForTesting()
+        #expect(throws: ConnectorMutationCoordinatorError.returnedToAgent(target: record.target)) {
+            try fixture.coordinator(sender: sender).prepare(task: fixture.task, pending: record)
+        }
+        #expect(sender.requests.count == 1)
+    }
+
     @Test("A refusal before dispatch retires the Auto proposal too")
     func preDispatchRefusalRetires() async throws {
         let fixture = try Fixture(baseURL: "http://jira.auto.test")
