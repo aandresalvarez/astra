@@ -5,6 +5,24 @@ import Testing
 
 @Suite("Host Control Tool Support", .serialized)
 struct HostControlToolSupportTests {
+    @Test("GitHub review reads use only app-owned GraphQL and reject extra options")
+    func githubReviewThreadReadsAreFixed() throws {
+        let runner = RecordingHostControlProcessRunner(stdout: "{\"data\":{}}")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(githubExecutable: "gh"), processRunner: runner)
+        let allowed = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["review-threads", "--repo", "example/repo", "--pr", "12"]
+        ])
+        #expect(try resultText(allowed).contains("stdout:"))
+        #expect(runner.invocations.count == 1)
+        #expect(runner.invocations[0].arguments.contains("number=12"))
+        #expect(runner.invocations[0].arguments.contains { $0.hasPrefix("query=query(") && !$0.contains("mutation") })
+        let denied = try call(server, id: 2, tool: "github", arguments: [
+            "arguments": ["review-thread", "--id", "T1", "--query", "mutation {}"]
+        ])
+        #expect(try errorMessage(denied).contains("No other options"))
+        #expect(runner.invocations.count == 1)
+    }
+
     @Test("GitHub host-control denies credential export and broad mutations before launch")
     func githubHostControlDeniesCredentialExportAndBroadMutationsBeforeLaunch() throws {
         let runner = RecordingHostControlProcessRunner(stdout: "ok")

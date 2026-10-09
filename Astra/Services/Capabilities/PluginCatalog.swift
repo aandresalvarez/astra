@@ -433,6 +433,7 @@ final class PluginCatalog {
                 • View PR: arguments `["pr", "view", "PR_NUMBER", "--comments", "--json", "title,author,state,labels,files,reviews,statusCheckRollup,url"]`; CLI relay `astra-host-control github -- pr view PR_NUMBER --comments --json title,author,state,labels,files,reviews,statusCheckRollup,url`
                 • PR diff: arguments `["pr", "diff", "PR_NUMBER"]`; CLI relay `astra-host-control github -- pr diff PR_NUMBER`
                 • Review checks: arguments `["pr", "checks", "PR_NUMBER"]`; CLI relay `astra-host-control github -- pr checks PR_NUMBER`
+                • Read review threads: arguments `["review-threads", "--repo", "OWNER/REPO", "--pr", "PR_NUMBER"]`; CLI relay `astra-host-control github -- review-threads --repo OWNER/REPO --pr PR_NUMBER`. Read a thread's full comments with `["review-thread", "--id", "THREAD_ID"]`. Both support `--after CURSOR`; follow all thread and comment pages.
                 • Workflow runs: arguments `["run", "list", "--limit", "10"]`; CLI relay `astra-host-control github -- run list --limit 10`
                 • View workflow run: arguments `["run", "view", "RUN_ID", "--log"]`; CLI relay `astra-host-control github -- run view RUN_ID --log`
 
@@ -446,6 +447,7 @@ final class PluginCatalog {
                 • In Ask, request the normal one-run Write approval to create only the task-folder review proposal. This skill does not grant broad Write access. Do not edit repository files through this inspection skill.
                 • If the user explicitly asks to post a review on an existing PR, prepare a GitHub Create Review JSON payload as `pr<NUMBER>_review.json` in the task folder. Include `commit_id`, `event` (`COMMENT` or `REQUEST_CHANGES`), `body`, and any inline `comments` with `path`, `line`, `side`, and `body`. Use a new filename such as `pr<NUMBER>_review_2.json` for a later, separate review. ASTRA will show the exact payload and require the user to press Post review. A saved file is a proposal, not a posted review; report it as pending until ASTRA records the GitHub receipt.
                 • In Ask, GitHub writes require ASTRA's confirmed typed publication workflow. In Auto, native developer tools may perform an explicitly requested normal branch/commit/push/draft-PR workflow when Bash is available.
+                • ASTRA cannot reply to or resolve review threads yet. When asked, read the threads, summarize what each one asks, make the requested fixes, and give the user the reply you would post for each thread. Do not try other write paths.
                 • Never merge, force-push, delete branches or repositories, change secrets, or modify repository administration through this inspection capability.
                 • Use `--json` for structured output; do not use `--jq` or `-q` because ASTRA's host-control GitHub broker rejects jq filters.
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.

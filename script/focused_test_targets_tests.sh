@@ -34,6 +34,10 @@ assert_targets "HostControlToolSupportTests" \
   "Tools/AstraHostControlTool/main.swift" \
   "Tests/HostControlToolSupportTests.swift"
 
+assert_targets $'GitHubReviewThreadReadOperationTests\nHostControlToolSupportTests' \
+  "Tools/HostControlToolSupport/GitHubReviewThreadReadOperation.swift" \
+  "Tests/GitHubReviewThreadReadOperationTests.swift"
+
 assert_targets $'MCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
   "Package.swift"
 

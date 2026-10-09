@@ -114,6 +114,10 @@ target_for_path() {
     Tests/MailToolSupportTests/*|Tools/MailToolSupport/*|Tools/StanfordAppleMailTool/*|Tools/StanfordGraphMailTool/*|Tools/StanfordMailTool/*)
       add_target "MailToolSupportTests"
       ;;
+    Tests/GitHubReviewThreadReadOperationTests.swift|Tools/HostControlToolSupport/GitHubReviewThreadReadOperation.swift)
+      add_target "GitHubReviewThreadReadOperationTests"
+      add_target "HostControlToolSupportTests"
+      ;;
     Tests/HostControlToolSupportTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
       add_target "HostControlToolSupportTests"
       ;;
