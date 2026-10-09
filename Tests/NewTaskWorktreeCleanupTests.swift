@@ -774,6 +774,72 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("An import never unbinds a task whose worktree cleanup is removing")
+    func reservedWorktreeTaskIsNotImportedUnbound() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(draft.workspace)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: repository.path))
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: configURL)
+        let config = try WorkspaceConfigManager.loadConfig(from: configURL)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: TaskQueue(poolSize: 0), worktreeCleanupStore: fixture.cleanupStore
+        )
+        let importCopy = {
+            coordinator.importFromConfig(at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .duplicate })
+        }
+
+        // The scratch container must outlive the import, or SwiftData traps.
+        let scratchStore = try Fixture.container()
+        let reservation = try #require(TaskWorktreeCheckoutReservation.acquire(discard.worktreePath))
+        // The configured roots don't reach the checkout, but a task pin does.
+        #expect(WorkspaceConfigManager.reservedRoot(of: config) != nil)
+        let reservedImport = importCopy()
+        let directImport = WorkspaceConfigManager.importWorkspace(from: config, modelContext: scratchStore.mainContext)
+        TaskWorktreeCheckoutReservation.release(reservation)
+        #expect(reservedImport == nil)
+        // Past that guard, the bound task is left out rather than imported
+        // without its pin, which would run it in the default checkout.
+        #expect(directImport.tasks.isEmpty)
+
+        let released = try #require(importCopy())
+        #expect(released.tasks.map(\.executionRootPath) == [discard.worktreePath])
+    }
+
+    @Test("Cleanup reaches the repository through its shared Git directory after a linked-worktree source is removed")
+    func cleanupSurvivesRemovedLinkedSource() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let main = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-linked", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "linked-source", linked.path], at: main)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Linked", primaryPath: linked.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Explore", goal: "Explore the implementation", workspace: workspace)
+        try await TaskWorktreeService.prepare(
+            task: draft, request: TaskWorktreeRequest(repositoryPath: linked.path, base: .currentBranch),
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).first)
+        #expect(discard.commonDirectory.map(WorkspacePathPresentation.resolvedPath)
+            == WorkspacePathPresentation.resolvedPath(main.appendingPathComponent(".git").path))
+        context.delete(draft)
+        context.delete(workspace)
+        try context.save()
+        try fixture.git(["worktree", "remove", linked.path], at: main)
+        #expect(!FileManager.default.fileExists(atPath: linked.path))
+
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: main).isEmpty)
+    }
+
     @Test("New tasks and imports never adopt a checkout cleanup is removing")
     func reservedCheckoutIsNeverAdopted() throws {
         let fixture = try Fixture()

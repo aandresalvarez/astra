@@ -979,6 +979,35 @@ struct NewTaskWorktreeBaseTests {
         #expect(panel.createPullRequestCommentTask(modelContext: store.mainContext) == nil)
     }
 
+    @Test("A binding survives a branch switch inside its worktree but not a same-repository replacement")
+    func bindingRejectsSameRepositoryReplacement() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        let payload = try #require(TaskWorktreeBinding.payload(for: draft))
+        #expect(payload.identity != nil)
+
+        try fixture.git(["checkout", "--quiet", "-b", "agent-branch"], at: URL(fileURLWithPath: path))
+        #expect(TaskWorktreeBinding.payload(for: draft)?.worktreePath == path)
+
+        try fixture.git(["worktree", "remove", "--force", path], at: repository)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "someone-else", path], at: repository)
+        guard case .invalid = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A worktree recreated at the same path must not pass as the task's")
+            return
+        }
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace, selectedTask: draft)
+        panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
+        #expect(panel.unavailableWorktreeBinding?.worktreePath == path)
+        #expect(panel.workingPath == nil)
+    }
+
     @Test("A draft with its own worktree keeps it; the card explains how to choose another checkout")
     func draftWorktreeLocksCodeLocation() async throws {
         let fixture = try Fixture()
@@ -1068,6 +1097,39 @@ struct NewTaskWorktreeBaseTests {
         #expect(await TaskWorktreeService.baseLabel(for: replaced, git: GitService.shared) == nil)
     }
 
+    @Test("A composer draft's recorded location follows Repository-card edits of the workspace default")
+    func composerDraftFollowsWorkspaceDefault() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let first = try fixture.repository("First")
+        let second = try fixture.repository("Second")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Both", primaryPath: first.path, additionalPaths: [second.path])
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        var selection = NewTaskWorktreeSelection()
+        selection.isEnabled = true
+        selection.base = .currentBranch
+        selection.repositoryPath = first.path
+        selection.checkoutPath = first.path
+        try NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: context)
+        TaskCodeLocationPin.set(first.path, workspace: workspace, task: draft)
+        // The strip's own pick of the primary matches the default: no change.
+        #expect(try !NewTaskWorktreeComposerFlow.followWorkspaceLocation(selection, on: draft, modelContext: context))
+
+        workspace.activeWorkingPath = second.path
+        #expect(try NewTaskWorktreeComposerFlow.followWorkspaceLocation(selection, on: draft, modelContext: context))
+        let request = try #require(TaskWorktreeService.latestRequest(for: draft))
+        #expect(request.enabled)
+        #expect(request.base == .currentBranch)
+        #expect(request.repositoryPath == nil)
+        #expect(request.checkoutPath == nil)
+        #expect(draft.executionRootPath == second.path)
+        #expect(try !NewTaskWorktreeComposerFlow.followWorkspaceLocation(selection, on: draft, modelContext: context))
+    }
+
     @Test("A recorded repository that disappears stays selected and cannot submit")
     func missingRecordedRepositoryIsNotReplaced() async {
         let app = GitRepositoryInfo(name: "App", path: "/repos/app")
@@ -1080,7 +1142,7 @@ struct NewTaskWorktreeBaseTests {
             codePath: missing.path, primaryPath: app.path, repositories: [app, other],
             recorded: recorded, git: GitService.shared
         )
-        #expect(gone == .missingRepository(missing.path))
+        #expect(gone == .missingRepository(missing.path, checkout: nil))
         NewTaskWorktreeDockView.applyScan(gone, repositories: [app, other], to: &selection)
         #expect(selection.repositoryPath == missing.path)
         #expect(selection.checkoutPath == nil)
@@ -1095,6 +1157,23 @@ struct NewTaskWorktreeBaseTests {
         NewTaskWorktreeDockView.applyScan(back, repositories: [app, other, missing], to: &selection)
         #expect(selection.repositoryPath == missing.path)
         #expect(selection.canSubmit)
+
+        // A recorded Current-branch checkout survives the repository being
+        // gone, so editing the choice meanwhile saves it unchanged.
+        let side = "/repos/missing-side"
+        var withCheckout = NewTaskWorktreeSelection()
+        withCheckout.isEnabled = true
+        withCheckout.base = .currentBranch
+        let goneWithCheckout = await NewTaskWorktreeDockView.scanSelection(
+            codePath: nil, primaryPath: app.path, repositories: [app, other],
+            recorded: .init(repository: missing.path, checkout: side), git: GitService.shared
+        )
+        #expect(goneWithCheckout == .missingRepository(missing.path, checkout: side))
+        NewTaskWorktreeDockView.applyScan(goneWithCheckout, repositories: [app, other], to: &withCheckout)
+        withCheckout.base = .defaultBranch
+        #expect(withCheckout.requestPayload.repositoryPath == missing.path)
+        #expect(withCheckout.requestPayload.checkoutPath == side)
+        #expect(!withCheckout.canSubmit)
     }
 
     @Test(

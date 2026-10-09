@@ -1189,7 +1189,7 @@ public enum WorkspaceConfigManager {
     /// vanish or that still reaches the checkout, so callers refuse the import
     /// and the user can retry once cleanup ends.
     public static func reservedRoot(of config: WorkspaceConfig) -> String? {
-        reservedRoot(among: [config.primaryPath] + config.additionalPaths)
+        reservedRoot(among: [config.primaryPath] + config.additionalPaths + (config.tasks ?? []).compactMap(\.executionRootPath))
     }
 
     public static func reservedRoot(among roots: [String]) -> String? {
@@ -2413,6 +2413,11 @@ public enum WorkspaceConfigManager {
         toolsByID: inout [String: LocalTool],
         toolsByName: inout [String: LocalTool]
     ) {
+        // Unpinned, a task bound to a worktree cleanup is removing would run in
+        // the workspace's default checkout, so it is not imported. Importers
+        // refuse such configs first; this runs before the task can be adopted.
+        if TaskWorktreeCheckoutReservation.isReserved(config.executionRootPath),
+           config.events.contains(where: { $0.type == TaskEventTypes.Task.worktreePrepared.rawValue }) { return }
         let importedRuntime = config.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) ?? .claudeCode
         let task = AgentTask(
             title: config.title,

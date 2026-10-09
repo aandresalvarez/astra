@@ -93,6 +93,39 @@ enum NewTaskWorktreeComposerFlow {
         }
     }
 
+    /// The Repository card edits the workspace default while the composer
+    /// shows a draft the scene hasn't selected. The draft's recorded location
+    /// and pin follow that edit instead of diverging from the card, and its
+    /// worktree choice then follows the workspace default. The strip's own
+    /// repository pick also writes the default, matching what it recorded, so
+    /// it changes nothing here. Returns true when the draft changed.
+    @discardableResult
+    static func followWorkspaceLocation(
+        _ selection: NewTaskWorktreeSelection,
+        on draft: AgentTask,
+        modelContext: ModelContext
+    ) throws -> Bool {
+        guard let workspace = draft.workspace,
+              TaskWorktreeService.activeWorktreeBinding(for: draft) == nil,
+              let recorded = TaskWorktreeService.latestRequest(for: draft), recorded.enabled,
+              let location = recorded.checkoutPath ?? recorded.repositoryPath else { return false }
+        let active = workspace.activeWorkingPath ?? workspace.primaryPath
+        guard WorkspacePathPresentation.standardizedPath(location) != WorkspacePathPresentation.standardizedPath(active)
+        else { return false }
+        var following = selection
+        following.repositoryPath = nil
+        following.checkoutPath = nil
+        let previousPin = draft.executionRootPath
+        TaskCodeLocationPin.set(workspace.activeWorkingPath, workspace: workspace, task: draft)
+        do {
+            try persistChoice(following, on: draft, modelContext: modelContext)
+        } catch {
+            TaskCodeLocationPin.set(previousPin, workspace: workspace, task: draft)
+            throw error
+        }
+        return true
+    }
+
     /// A task started straight from the composer into a new worktree keeps the
     /// conversation, so a failed launch can hand the worktree back as a draft.
     static func keepConversation(_ messages: [ChatMessage], on task: AgentTask) throws {

@@ -119,6 +119,7 @@ struct NewTaskWorktreeDockView: View {
             claimIntent()
         }
         .onChange(of: intentSnapshot) { publishIntent() }
+        .onChange(of: workspace?.activeWorkingPath) { followWorkspaceLocation() }
         .onDisappear { intents?.release(owner: intentOwner) }
     }
 
@@ -170,8 +171,9 @@ struct NewTaskWorktreeDockView: View {
         /// `path` is the repository's root or one of its worktrees; it is not
         /// `available` when that checkout is gone.
         case checkout(repository: String, path: String, available: Bool)
-        /// A recorded repository the scan did not find.
-        case missingRepository(String)
+        /// A recorded repository the scan did not find, with the checkout
+        /// recorded for it, kept until the user chooses another.
+        case missingRepository(String, checkout: String?)
         case none
     }
 
@@ -202,7 +204,7 @@ struct NewTaskWorktreeDockView: View {
         }
         if let recorded {
             guard let repository = repositories.first(where: { $0.path == recorded.repository }) else {
-                return .missingRepository(recorded.repository)
+                return .missingRepository(recorded.repository, checkout: recorded.checkout)
             }
             guard let checkout = recorded.checkout, checkout != repository.path else {
                 return .checkout(repository: repository.path, path: repository.path, available: true)
@@ -229,8 +231,8 @@ struct NewTaskWorktreeDockView: View {
             selection.updateRepositories(
                 repositories, selectedPath: repository, checkoutPath: path, checkoutAvailable: available
             )
-        case .missingRepository(let recorded):
-            selection.updateRepositories(repositories, missingSelection: recorded)
+        case .missingRepository(let recorded, let checkout):
+            selection.updateRepositories(repositories, missingSelection: recorded, checkout: checkout)
         case .none:
             selection.updateRepositories(repositories, selectedPath: nil)
         }
@@ -271,6 +273,19 @@ struct NewTaskWorktreeDockView: View {
             entry.base = snapshot.base
             entry.baseLabel = snapshot.baseLabel
             entry.preparedDraft = snapshot.hasPreparedDraft ? draft : nil
+        }
+    }
+
+    /// Only a draft the scene hasn't selected follows the workspace default;
+    /// a selected draft's pin is what the Repository card edits directly.
+    private func followWorkspaceLocation() {
+        guard pinOwner == nil, allowsChoice,
+              let draft = NewTaskWorktreeComposerFlow.liveDraft(draft, in: workspace) else { return }
+        do {
+            try NewTaskWorktreeComposerFlow.followWorkspaceLocation(selection, on: draft, modelContext: modelContext)
+            choiceProblem = nil
+        } catch {
+            choiceProblem = error.localizedDescription
         }
     }
 

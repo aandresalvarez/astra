@@ -344,6 +344,65 @@ struct NewTaskWorktreeLifecycleTests {
         }
     }
 
+    @Test("A workspace deletion's mirror and credential cleanup is recorded first and finished after a quit")
+    func workspaceDeletionCleanupSurvivesQuit() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        func folder(_ name: String) throws -> String {
+            let url = fixture.root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url.path
+        }
+        func writeMirror(_ path: String) throws -> String {
+            let mirror = WorkspaceFileLayout.workspaceConfigFile(for: path)
+            try FileManager.default.createDirectory(
+                atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true
+            )
+            try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+            return mirror
+        }
+
+        // A saved deletion removes the mirror and clears its record.
+        let deleted = Workspace(name: "Deleted", primaryPath: try folder("Deleted"))
+        context.insert(deleted)
+        try context.save()
+        let deletedMirror = try writeMirror(deleted.primaryPath)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            workspaceDeletionCleanupStore: store
+        )
+        #expect(coordinator.deleteWorkspace(deleted, existingWorkspaces: [deleted]).persisted)
+        #expect(!FileManager.default.fileExists(atPath: deletedMirror))
+        #expect(store.pending().isEmpty)
+
+        // A quit after the deletion was saved leaves the record; the next
+        // launch finishes it. A record for a workspace still in the store was
+        // never saved and is dropped, and a mirror another workspace uses at
+        // the same path is kept.
+        let interrupted = Workspace(name: "Interrupted", primaryPath: try folder("Interrupted"))
+        let survivor = Workspace(name: "Survivor", primaryPath: try folder("Survivor"))
+        let shared = Workspace(name: "Shared", primaryPath: try folder("Shared"))
+        let sharing = Workspace(name: "Shared copy", primaryPath: shared.primaryPath)
+        for workspace in [interrupted, survivor, shared, sharing] { context.insert(workspace) }
+        try context.save()
+        let mirrors = try [interrupted, survivor, shared].map { try writeMirror($0.primaryPath) }
+        for workspace in [interrupted, survivor, shared] {
+            try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        }
+        context.delete(interrupted)
+        context.delete(shared)
+        try context.save()
+
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 3)
+        #expect(!FileManager.default.fileExists(atPath: mirrors[0]))
+        #expect(FileManager.default.fileExists(atPath: mirrors[1]))
+        #expect(FileManager.default.fileExists(atPath: mirrors[2]))
+        #expect(store.pending().isEmpty)
+    }
+
     @Test("Config and folder replacement save imported bindings before cleaning omitted drafts",
           arguments: ["config_keep", "config_omit", "folder"])
     func workspaceReplacementHonorsImportedPins(mode: String) async throws {

@@ -96,6 +96,27 @@ extension GitService {
         )
     }
 
+    /// `for-each-ref` exits cleanly with no output for a missing ref and fails
+    /// when the repository can't be read, so absence is positively verified.
+    /// Its patterns match by prefix, so only the exact ref name counts.
+    func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult {
+        guard Self.isSafeRefComponent(branch) else { return .unavailable }
+        let ref = "refs/heads/\(branch)"
+        do {
+            let output = try await runGit(
+                at: repoPath, arguments: ["for-each-ref", "--format=%(refname) %(objectname)", ref],
+                failureLogLevel: .warning
+            )
+            for line in output.split(whereSeparator: \.isNewline) {
+                let fields = line.split(separator: " ")
+                if fields.count == 2, fields[0] == ref { return .commit(String(fields[1])) }
+            }
+            return .absent
+        } catch {
+            return .unavailable
+        }
+    }
+
     /// The same status `getStatusFiles` reads, but a failure is nil rather
     /// than an empty, clean-looking list.
     func worktreeIsClean(at repoPath: String) async -> Bool? {

@@ -270,8 +270,8 @@ struct NewTaskWorktreeCreationJournalTests {
         let repository = try fixture.repository("App")
         let journal = fixture.ownership.creationJournal
         let intent = try intent("unowned", in: repository, fixture: fixture)
-        // Ownership is recorded before Git runs, so a checkout at this path
-        // without it isn't one this creation made.
+        // Ownership is recorded only once Git created the worktree, so a
+        // checkout at this path without it isn't one this creation made.
         try journal.record(intent)
         try await addWorktree(for: intent, fixture: fixture)
         let store = try Fixture.container()
@@ -327,12 +327,53 @@ struct NewTaskWorktreeCreationJournalTests {
             modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
         ) == 0)
         #expect(try journal.pendingURLs().count == 1)
-        #expect(journal.ownership.owns(intent))
+        // Nothing is owned until Git has created the worktree.
+        #expect(!journal.ownership.owns(intent))
 
         await TaskWorktreeCleanupService.abandonCreation(
             intent, journal: journal, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, git: GitService.shared
         )
         try await expectNothingLeft(in: repository, fixture: fixture)
+    }
+
+    @Test("A creation that loses its branch and folder to another process never removes them")
+    func failedCreationLeavesCompetingWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let journal = fixture.ownership.creationJournal
+        let intent = try intent("raced", in: repository, fixture: fixture)
+        let store = try Fixture.container()
+        try TaskWorktreeCleanupService.beginCreation(intent, journal: journal)
+        // Another process takes the branch and folder before ASTRA's
+        // `git worktree add` runs, so that command fails and is abandoned.
+        try await addWorktree(for: intent, fixture: fixture)
+
+        await TaskWorktreeCleanupService.abandonCreation(
+            intent, journal: journal, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, git: GitService.shared
+        )
+
+        #expect(FileManager.default.fileExists(atPath: intent.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
+        #expect(try journal.pendingURLs().isEmpty)
+        #expect(!journal.ownership.owns(intent))
+    }
+
+    @Test("A branch tip is a commit, positively absent, or unavailable")
+    func branchTipIsTriState() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let head = try fixture.git(["rev-parse", "HEAD"], at: repository)
+        #expect(await GitService.shared.localBranchTip("main", at: repository.path) == .commit(head))
+        try fixture.git(["branch", "main-extra"], at: repository)
+        // `for-each-ref` matches by prefix; only the exact branch counts.
+        #expect(await GitService.shared.localBranchTip("mai", at: repository.path) == .absent)
+        #expect(await GitService.shared.localBranchTip("gone", at: repository.path) == .absent)
+        let notARepository = fixture.root.appendingPathComponent("not-a-repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: notARepository, withIntermediateDirectories: true)
+        #expect(await GitService.shared.getCommitSHA("refs/heads/main", at: notARepository.path) == nil)
+        #expect(await GitService.shared.localBranchTip("main", at: notARepository.path) == .unavailable)
     }
 
     @Test("A name an unsettled creation journaled is not reused")

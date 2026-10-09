@@ -109,12 +109,14 @@ struct NewTaskWorktreeSelection {
         return isCheckoutUnavailable || !FileManager.default.fileExists(atPath: checkoutPath)
     }
 
-    /// Keeps a recorded repository that the latest scan could not find.
-    /// Submitting stays blocked until that repository returns or the user
-    /// chooses another one.
+    /// Keeps a recorded repository that the latest scan could not find, and
+    /// the checkout recorded for it, so a later edit of the choice saves them
+    /// unchanged. Submitting stays blocked until that repository returns or
+    /// the user chooses another one.
     mutating func updateRepositories(
         _ repositories: [GitRepositoryInfo],
-        missingSelection missing: String
+        missingSelection missing: String,
+        checkout: String? = nil
     ) {
         self.repositories = repositories
         isLoading = false
@@ -124,8 +126,8 @@ struct NewTaskWorktreeSelection {
             currentBaseLabel = nil
         }
         repositoryPath = recorded
-        checkoutPath = nil
-        isCheckoutUnavailable = false
+        checkoutPath = checkout.map(WorkspacePathPresentation.standardizedPath)
+        isCheckoutUnavailable = checkoutPath != nil
     }
 }
 

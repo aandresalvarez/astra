@@ -212,12 +212,19 @@ enum TaskWorktreeCleanupService {
         guard activeRecords.insert(key).inserted else { throw TaskWorktreeCleanupStore.StoreError.invalidRecord }
         do {
             try journal.record(discard)
-            try journal.ownership.record(.init(discard))
         } catch {
-            try? journal.remove(discard)
             activeRecords.remove(key)
             throw error
         }
+    }
+
+    /// Grants destructive-cleanup ownership once `git worktree add` has
+    /// created the branch and folder. Recorded before Git ran, it would let
+    /// a creation that failed on another process's branch or folder remove
+    /// them; a crash in the moment between leaves the worktree unowned and
+    /// kept, never removed.
+    static func recordCreated(_ discard: TaskWorktreeDiscard, journal: TaskWorktreeCleanupStore) throws {
+        try journal.ownership.record(.init(discard))
     }
 
     /// Clears the intent once the task's binding is saved. A record that

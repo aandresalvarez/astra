@@ -10,6 +10,7 @@ final class TaskLifecycleCoordinator {
     let taskQueue: TaskQueue
     private let reviewOriginURL: (String) async -> String?
     private let worktreeCleanupStore: TaskWorktreeCleanupStore
+    private let workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore
     private let persistWorkspaceChange: @MainActor (Workspace?, ModelContext) -> Bool
 
     init(
@@ -19,6 +20,7 @@ final class TaskLifecycleCoordinator {
             await GitService.shared.getRemoteOriginURL(at: path)
         },
         worktreeCleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
+        workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore = WorkspaceDeletionCleanupStore(),
         persistWorkspaceChange: @escaping @MainActor (Workspace?, ModelContext) -> Bool = { workspace, context in
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context)
         }
@@ -27,6 +29,7 @@ final class TaskLifecycleCoordinator {
         self.taskQueue = taskQueue
         self.reviewOriginURL = reviewOriginURL
         self.worktreeCleanupStore = worktreeCleanupStore
+        self.workspaceDeletionCleanupStore = workspaceDeletionCleanupStore
         self.persistWorkspaceChange = persistWorkspaceChange
     }
 
@@ -721,15 +724,24 @@ final class TaskLifecycleCoordinator {
     func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> (
         persisted: Bool, nextWorkspace: Workspace?, cleanup: Task<Bool, Never>?
     ) {
-        let path = ws.primaryPath
         let next = existingWorkspaces.first(where: { $0.id != ws.id })
-        // Keychain items cannot be rolled back, so they are deleted only once
-        // the deletion is saved; the facts are captured before the rows go.
-        let keychainCleanups = ws.connectors.map { $0.deferredKeychainCleanup() }
-            + ws.skills.flatMap { skill in
-                [skill.deferredKeychainCleanup()] + skill.connectors.map { $0.deferredKeychainCleanup() }
-            }
-        guard cancelDurably(ws.tasks) else { return (false, nil, nil) }
+        // Mirrors and Keychain items can't be rolled back, so they are removed
+        // only once the deletion is saved. What to remove is recorded first,
+        // so a quit after the save is finished at the next launch.
+        let cleanupRecord = WorkspaceDeletionCleanupRecord(ws)
+        do {
+            try workspaceDeletionCleanupStore.record(cleanupRecord)
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",
+                "error": error.localizedDescription
+            ], level: .error)
+            return (false, nil, nil)
+        }
+        guard cancelDurably(ws.tasks) else {
+            workspaceDeletionCleanupStore.remove(cleanupRecord)
+            return (false, nil, nil)
+        }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
@@ -739,13 +751,10 @@ final class TaskLifecycleCoordinator {
             },
             persist: persistWorkspaceChange
         )
-        // Cancellation exports mirrors, so remove them only after it and the
-        // workspace deletion are saved. Mirrors go before credentials: a quit
-        // between the two then leaves only unreachable Keychain items, never
-        // a mirror that recovery reimports as a workspace without its secrets.
-        if result.persisted {
-            removeGeneratedWorkspaceMirrors(for: path)
-            for cleanup in keychainCleanups { cleanup() }
+        // Cancellation exports mirrors, so they are removed only after it and
+        // the deletion are saved. An unsaved deletion needs no cleanup.
+        if !result.persisted || WorkspaceDeletionCleanupService.settle(cleanupRecord, modelContext: modelContext) {
+            workspaceDeletionCleanupStore.remove(cleanupRecord)
         }
         return (result.persisted, result.persisted ? next : nil, result.cleanup)
     }
@@ -774,16 +783,6 @@ final class TaskLifecycleCoordinator {
             }
         )
         return result.persisted ? replacement : nil
-    }
-
-    private func removeGeneratedWorkspaceMirrors(for workspacePath: String) {
-        let mirrorPaths = Set([
-            WorkspaceFileLayout.workspaceConfigFile(for: workspacePath),
-            WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspacePath)
-        ])
-        for path in mirrorPaths {
-            try? FileManager.default.removeItem(atPath: path)
-        }
     }
 
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],

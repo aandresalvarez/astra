@@ -87,6 +87,10 @@ struct TaskWorktreeDiscard: Codable, Equatable, Sendable {
     let worktreePath: String
     let branch: String
     let baseCommit: String
+    /// The Git directory the worktree shares, so cleanup can still reach the
+    /// repository after a linked-worktree source checkout is removed. Absent
+    /// on records written before it was kept.
+    var commonDirectory: String? = nil
 }
 
 /// Populates a new worktree's submodules once Git has checked it out.
@@ -455,17 +459,22 @@ enum TaskWorktreeService {
         ) else {
             throw TaskWorktreeCreationError.nameUnavailable(path)
         }
-        let payload = try TaskEvent.encodePayload(TaskWorktreePayload(
+        let commonDirectory = GitCheckoutLayout.commonDirectory(for: path)
+        let binding = TaskWorktreePayload(
             repositoryPath: path,
             worktreePath: destination,
             branch: branch,
             baseRef: base.ref,
             baseCommit: base.commit,
             baseSource: base.source,
-            baseFetched: base.fetched
-        )).get()
+            baseFetched: base.fetched,
+            commonDirectory: commonDirectory,
+            identity: UUID().uuidString.lowercased()
+        )
+        let payload = try TaskEvent.encodePayload(binding).get()
         let intent = TaskWorktreeDiscard(
-            taskID: task.id, repositoryPath: path, worktreePath: destination, branch: branch, baseCommit: base.commit
+            taskID: task.id, repositoryPath: path, worktreePath: destination, branch: branch, baseCommit: base.commit,
+            commonDirectory: commonDirectory
         )
         try Task.checkCancellation()
         do {
@@ -483,6 +492,8 @@ enum TaskWorktreeService {
                 base: base.commit,
                 worktreesRoot: worktreesRoot
             )
+            try TaskWorktreeCleanupService.recordCreated(intent, journal: journal)
+            try TaskWorktreeBinding.recordIdentity(of: binding)
             if FileManager.default.fileExists(atPath: (createdPath as NSString).appendingPathComponent(".gitmodules")) {
                 do {
                     try await setUpSubmodules(git, createdPath)
@@ -639,7 +650,8 @@ enum TaskWorktreeService {
                     repositoryPath: binding.repositoryPath,
                     worktreePath: binding.worktreePath,
                     branch: binding.branch,
-                    baseCommit: baseCommit
+                    baseCommit: baseCommit,
+                    commonDirectory: binding.commonDirectory ?? GitCheckoutLayout.commonDirectory(for: binding.repositoryPath)
                 )
                 guard ownership.owns(discard) else {
                     AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
@@ -672,6 +684,20 @@ enum TaskWorktreeService {
         ) == .removed
     }
 
+    /// The checkout cleanup runs Git from: the recorded source while it
+    /// exists, otherwise the main checkout of the recorded shared Git
+    /// directory, so removing a linked-worktree source doesn't strand the
+    /// cleanup. A moved main checkout takes its Git directory with it, and
+    /// Git itself loses the worktree, so that case keeps retrying.
+    static func cleanupRepository(for discard: TaskWorktreeDiscard) -> String {
+        let fileManager = FileManager.default
+        guard !fileManager.fileExists(atPath: discard.repositoryPath),
+              let common = discard.commonDirectory,
+              URL(fileURLWithPath: common).lastPathComponent == ".git" else { return discard.repositoryPath }
+        let main = URL(fileURLWithPath: common).deletingLastPathComponent().path
+        return fileManager.fileExists(atPath: common) && fileManager.fileExists(atPath: main) ? main : discard.repositoryPath
+    }
+
     static func discardOutcome(
         _ discard: TaskWorktreeDiscard,
         modelContext: ModelContext,
@@ -681,6 +707,7 @@ enum TaskWorktreeService {
         duringReservation: @MainActor () async -> Void = {}
     ) async -> TaskWorktreeCleanupOutcome {
         let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
+        let repository = cleanupRepository(for: discard)
         func kept(_ reason: String, retry: Bool = false) -> TaskWorktreeCleanupOutcome {
             AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
                 "worktree": path,
@@ -707,7 +734,7 @@ enum TaskWorktreeService {
         let resourceLease: TaskWorktreeResourceLease
         do {
             resourceLease = try TaskWorktreeResourceLease.acquire(
-                repositoryPath: discard.repositoryPath, worktreePath: path, taskID: discard.taskID, queue: resourceQueue
+                repositoryPath: repository, worktreePath: path, taskID: discard.taskID, queue: resourceQueue
             )
         } catch TaskWorktreeCreationError.repositoryBusy {
             return kept("repository_busy", retry: true)
@@ -717,7 +744,7 @@ enum TaskWorktreeService {
         defer { resourceLease.release() }
         // An unborn primary checkout is still a repository. Availability is the
         // worktree registry, not whether that checkout's HEAD is a commit.
-        guard !(await git.listWorktrees(at: discard.repositoryPath)).isEmpty else {
+        guard !(await git.listWorktrees(at: repository)).isEmpty else {
             return kept("repository_unavailable", retry: true)
         }
         // A status that can't be read is never taken as clean: the forced
@@ -737,7 +764,13 @@ enum TaskWorktreeService {
             guard branch != "unknown" else { return kept("branch_unavailable", retry: true) }
             guard branch == discard.branch else { return kept("branch_switched") }
         }
-        let commit = await git.getCommitSHA("refs/heads/\(discard.branch)", at: discard.repositoryPath)
+        // A tip that can't be read is retried, never taken as a missing branch.
+        let commit: String?
+        switch await git.localBranchTip(discard.branch, at: repository) {
+        case .commit(let tip): commit = tip
+        case .absent: commit = nil
+        case .unavailable: return kept("branch_unavailable", retry: true)
+        }
         if let commit {
             guard commit == discard.baseCommit else { return kept("has_commits") }
         } else if exists {
@@ -745,11 +778,11 @@ enum TaskWorktreeService {
         }
         if commit != nil, await git.hasWorktreeReflogChanges(
             branch: discard.branch, baseCommit: discard.baseCommit,
-            worktreePath: exists ? path : nil, repoPath: discard.repositoryPath
+            worktreePath: exists ? path : nil, repoPath: repository
         ) {
             return kept("reflog_changes")
         }
-        let registered = await git.listWorktrees(at: discard.repositoryPath)
+        let registered = await git.listWorktrees(at: repository)
         guard !registered.isEmpty else { return kept("registry_unavailable", retry: true) }
         if Task.isCancelled { return kept("cancelled", retry: true) }
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
@@ -761,7 +794,7 @@ enum TaskWorktreeService {
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
         if exists || isRegistered {
             do {
-                try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: false)
+                try await git.removeWorktree(repoPath: repository, worktreePath: path, force: false)
             } catch {
                 // Git removes a worktree that stores submodule repositories
                 // only when forced, which deletes them too.
@@ -775,7 +808,7 @@ enum TaskWorktreeService {
                     guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
                     if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
                     do {
-                        try await git.removeWorktree(repoPath: discard.repositoryPath, worktreePath: path, force: true)
+                        try await git.removeWorktree(repoPath: repository, worktreePath: path, force: true)
                     } catch {
                         return kept("remove_failed", retry: true)
                     }
@@ -783,12 +816,12 @@ enum TaskWorktreeService {
             }
             if let problem = referenceProblem() { return kept(problem, retry: true) }
         }
-        let remaining = await git.listWorktrees(at: discard.repositoryPath)
+        let remaining = await git.listWorktrees(at: repository)
         guard !remaining.isEmpty else { return kept("registry_unavailable", retry: true) }
         guard !remaining.contains(where: { $0.branch == discard.branch }) else { return kept("branch_in_use") }
         if commit != nil {
             do {
-                try await git.deleteLocalBranch(discard.branch, ifAt: discard.baseCommit, at: discard.repositoryPath)
+                try await git.deleteLocalBranch(discard.branch, ifAt: discard.baseCommit, at: repository)
             } catch {
                 return kept("branch_delete_failed", retry: true)
             }

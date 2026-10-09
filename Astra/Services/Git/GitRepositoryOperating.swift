@@ -19,6 +19,14 @@ enum GitRemoteHeadLookupResult: Equatable, Sendable {
     case unavailable
 }
 
+/// A local branch's tip, distinguishing a branch that is gone from one that
+/// couldn't be read. `getCommitSHA` returns nil for both.
+enum GitBranchLookupResult: Equatable, Sendable {
+    case commit(String)
+    case absent
+    case unavailable
+}
+
 protocol GitRepositoryOperating: AnyObject {
     func acquireIndexGuard() -> Bool
     func releaseIndexGuard()
@@ -94,6 +102,8 @@ protocol GitRepositoryOperating: AnyObject {
     func fetchRemoteBranch(remote: String, branch: String, at repoPath: String) async -> Bool
     /// Deletes `refs/heads/<branch>` only while it still points at `expectedCommit`.
     func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws
+    /// Where `refs/heads/<branch>` points, or that it positively doesn't exist.
+    func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult
     /// Whether the checkout has no tracked or untracked changes; nil when
     /// `git status` fails. `getStatusFiles` reads a failure as clean, which
     /// is safe for display but not before deleting a worktree.
@@ -188,6 +198,7 @@ extension GitRepositoryOperating {
     /// Alternate operators fail closed: a checkout whose status or ignored
     /// files can't be read is kept.
     func worktreeIsClean(at repoPath: String) async -> Bool? { nil }
+    func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult { .unavailable }
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
     func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
 

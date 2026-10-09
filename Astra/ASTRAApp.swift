@@ -887,6 +887,9 @@ public struct ASTRAApp: App {
             )
         }
 
+        // A workspace deletion a quit interrupted is finished before mirror
+        // recovery below, which would otherwise reimport the workspace.
+        WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
         if !skipWorkspaceRecovery {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled

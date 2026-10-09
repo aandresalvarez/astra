@@ -53,6 +53,15 @@ public struct TaskWorktreePayload: Codable, Equatable, Sendable {
     /// False when the remote could not be reached and the last fetched ref
     /// was used instead.
     public let baseFetched: Bool?
+    /// The Git directory the worktree shares with its source, recorded at
+    /// creation so cleanup can reach the repository if a linked-worktree
+    /// source checkout is later removed. Never used to grant access.
+    public let commonDirectory: String?
+    /// A token written into the worktree's own Git admin folder at creation.
+    /// Git deletes that folder with the worktree, so a worktree recreated at
+    /// the same path, even of the same repository, lacks it, while switching
+    /// branches inside the worktree keeps it. Absent on older bindings.
+    public let identity: String?
 
     public init(
         repositoryPath: String,
@@ -61,7 +70,9 @@ public struct TaskWorktreePayload: Codable, Equatable, Sendable {
         baseRef: String? = nil,
         baseCommit: String? = nil,
         baseSource: TaskWorktreeBaseChoice? = nil,
-        baseFetched: Bool? = nil
+        baseFetched: Bool? = nil,
+        commonDirectory: String? = nil,
+        identity: String? = nil
     ) {
         self.repositoryPath = repositoryPath
         self.worktreePath = worktreePath
@@ -70,6 +81,8 @@ public struct TaskWorktreePayload: Codable, Equatable, Sendable {
         self.baseCommit = baseCommit
         self.baseSource = baseSource
         self.baseFetched = baseFetched
+        self.commonDirectory = commonDirectory
+        self.identity = identity
     }
 }
 
@@ -150,9 +163,28 @@ public enum TaskWorktreeBinding {
     }
 
     /// Validate through the source repository, never through the task-writable
-    /// worktree's `.git` pointer.
+    /// worktree's `.git` pointer. A binding that recorded an identity also
+    /// needs the registered worktree to still carry it.
     public static func gitCommonDirectory(for payload: TaskWorktreePayload) -> String? {
-        registeredCommonDirectory(repositoryPath: payload.repositoryPath, worktreePath: payload.worktreePath)
+        guard let registered = registeredEntry(repositoryPath: payload.repositoryPath, worktreePath: payload.worktreePath)
+        else { return nil }
+        if let identity = payload.identity {
+            let stored = try? String(contentsOf: registered.entry.appendingPathComponent(identityFileName), encoding: .utf8)
+            guard stored?.trimmingCharacters(in: .whitespacesAndNewlines) == identity else { return nil }
+        }
+        return registered.commonDirectory
+    }
+
+    static let identityFileName = "astra-task-worktree"
+
+    /// Marks the worktree `payload` names, just created, with its identity.
+    public static func recordIdentity(of payload: TaskWorktreePayload) throws {
+        guard let identity = payload.identity,
+              let registered = registeredEntry(repositoryPath: payload.repositoryPath, worktreePath: payload.worktreePath)
+        else { throw ValidationError.invalid("The new worktree at \(payload.worktreePath) is not registered.") }
+        try Data((identity + "\n").utf8).write(
+            to: registered.entry.appendingPathComponent(identityFileName), options: .atomic
+        )
     }
 
     /// The source repository must itself be a configured folder, the same rule
@@ -164,6 +196,13 @@ public enum TaskWorktreeBinding {
     }
 
     private static func registeredCommonDirectory(repositoryPath: String, worktreePath: String) -> String? {
+        registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath)?.commonDirectory
+    }
+
+    /// The shared Git directory and the worktree's own registry entry in it.
+    private static func registeredEntry(
+        repositoryPath: String, worktreePath: String
+    ) -> (commonDirectory: String, entry: URL)? {
         guard let repository = resolvedPath(repositoryPath),
               let expected = resolvedPath((worktreePath as NSString).appendingPathComponent(".git")) else { return nil }
         let fileManager = FileManager.default
@@ -194,13 +233,13 @@ public enum TaskWorktreeBinding {
         }
         let registry = URL(fileURLWithPath: commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
         guard let entries = try? fileManager.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil),
-              entries.contains(where: { entry in
+              let entry = entries.first(where: { entry in
                   guard let raw = try? String(contentsOf: entry.appendingPathComponent("gitdir"), encoding: .utf8) else {
                       return false
                   }
                   return resolvedGitPath(raw, relativeTo: entry.path) == expected
               }) else { return nil }
-        return commonDirectory
+        return (commonDirectory, entry)
     }
 
     private static func resolvedPath(_ rawValue: String) -> String? {
