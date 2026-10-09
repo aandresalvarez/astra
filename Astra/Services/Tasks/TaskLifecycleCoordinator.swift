@@ -586,9 +586,11 @@ final class TaskLifecycleCoordinator {
     /// exit instead of resuming provider work for a task that no longer
     /// exists — then remove the rows so terminal history doesn't accumulate
     /// as permanent orphans.
-    /// Runs inside a deletion's `delete` closure, so the deletion's own save
-    /// persists the cancellation: saving here would leave nothing for a failed
-    /// deletion save to roll back.
+    /// Runs before a deletion is recorded. Stopping the worker is not
+    /// reversible, so the cancellation must never sit inside the deletion's
+    /// rollback scope: `saveDeletionThenDiscard` checkpoints it before the
+    /// delete, and a failed deletion save then keeps a task whose requests
+    /// are already cancelled, never a restored request with no worker.
     private func cancelAndRemoveTurnRequests(for task: AgentTask) {
         taskQueue.cancel(task: task, modelContext: modelContext, persistCancellation: false)
         if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
@@ -612,12 +614,12 @@ final class TaskLifecycleCoordinator {
         let unusedWorktrees = task.status == .draft && task.runs.isEmpty
             ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
             : []
+        cancelAndRemoveTurnRequests(for: task)
         return TaskWorktreeService.saveDeletionThenDiscard(
             unusedWorktrees, workspace: workspace, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
                 willDelete()
-                cancelAndRemoveTurnRequests(for: task)
                 modelContext.delete(task)
             }
         ).persisted
@@ -690,13 +692,11 @@ final class TaskLifecycleCoordinator {
             + ws.skills.flatMap { skill in
                 [skill.deferredKeychainCleanup()] + skill.connectors.map { $0.deferredKeychainCleanup() }
             }
+        for task in ws.tasks { cancelAndRemoveTurnRequests(for: task) }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
-            delete: {
-                for task in ws.tasks { cancelAndRemoveTurnRequests(for: task) }
-                modelContext.delete(ws)
-            },
+            delete: { modelContext.delete(ws) },
             persist: persistWorkspaceChange
         )
         // Cancellation exports mirrors, so remove them only after it and the
@@ -718,11 +718,11 @@ final class TaskLifecycleCoordinator {
     /// removed, so imported tasks keep worktrees they take over.
     private func replaceWorkspace(_ existing: Workspace, create: () -> Workspace) -> Workspace? {
         var replacement: Workspace?
+        for task in existing.tasks { cancelAndRemoveTurnRequests(for: task) }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
-                for task in existing.tasks { cancelAndRemoveTurnRequests(for: task) }
                 modelContext.delete(existing)
                 replacement = create()
             },
