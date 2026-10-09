@@ -307,6 +307,43 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(try fixture.cleanupStore.pendingURLs().count == 1)
     }
 
+    @Test("A deletion whose cancellation can't be saved stops nothing and keeps the task's requests", arguments: [false, true])
+    func unsavedCancellationKeepsRequests(saves: Bool) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "Queued", goal: "Explore", workspace: workspace)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceClaims: [])
+        context.insert(request)
+        try context.save()
+        let previousState = request.state
+        #expect(!previousState.isTerminal)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            persistWorkspaceChange: { _, context in saves && (try? context.save()) != nil }
+        )
+
+        let deleted = coordinator.deleteTask(task)
+        #expect(deleted == saves)
+        if saves {
+            #expect(try ModelContext(container).fetchCount(FetchDescriptor<TaskTurnRequest>()) == 0)
+        } else {
+            // Nothing was stopped or recorded: the request keeps its state
+            // in memory and in the store, and the task is still there.
+            #expect(!task.isDeleted)
+            #expect(!request.isDeleted)
+            #expect(request.state == previousState)
+            #expect(request.terminalReason == nil)
+            let durable = try #require(try ModelContext(container).fetch(FetchDescriptor<TaskTurnRequest>()).first)
+            #expect(durable.state == previousState)
+        }
+    }
+
     @Test("Config and folder replacement save imported bindings before cleaning omitted drafts",
           arguments: ["config_keep", "config_omit", "folder"])
     func workspaceReplacementHonorsImportedPins(mode: String) async throws {

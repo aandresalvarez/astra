@@ -586,18 +586,53 @@ final class TaskLifecycleCoordinator {
     /// exit instead of resuming provider work for a task that no longer
     /// exists — then remove the rows so terminal history doesn't accumulate
     /// as permanent orphans.
-    /// Runs before a deletion is recorded. Stopping the worker is not
-    /// reversible, so the cancellation is saved by the same call that stops
-    /// it and never sits inside the deletion's rollback scope: a failed
-    /// deletion save keeps a task whose requests are already durably
-    /// cancelled, never a restored request with no worker. The request rows
-    /// are removed in the deletion's checkpoint save.
-    private func cancelAndRemoveTurnRequests(for task: AgentTask) {
-        taskQueue.cancel(task: task, modelContext: modelContext)
-        if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
-            for request in requests {
-                modelContext.delete(request)
+    ///
+    /// Stopping a worker is not reversible, so a deletion first saves its
+    /// tasks' requests as cancelled and stops their workers only once that
+    /// save succeeds. When it fails, the requests get their previous values
+    /// back, nothing is stopped, and the deletion does not proceed. The
+    /// fields are restored explicitly rather than by `rollback()`, which
+    /// would leave stale model properties and discard unrelated edits.
+    private func cancelDurably(_ tasks: [AgentTask]) -> Bool {
+        typealias Snapshot = (
+            request: TaskTurnRequest, state: TaskTurnRequestState, blockingTaskID: UUID?,
+            blockerSummary: String?, terminalAt: Date?, terminalReason: String?
+        )
+        var snapshots: [Snapshot] = []
+        for task in tasks {
+            for request in (try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext)) ?? [] {
+                snapshots.append((
+                    request, request.state, request.blockingTaskID,
+                    request.blockerSummary, request.terminalAt, request.terminalReason
+                ))
+                _ = TaskTurnRequestStateMachine.transition(request, to: .cancelled, terminalReason: "cancelled_by_user")
             }
+        }
+        if !snapshots.isEmpty, !persistWorkspaceChange(tasks.first?.workspace, modelContext) {
+            for snapshot in snapshots {
+                snapshot.request.state = snapshot.state
+                snapshot.request.blockingTaskID = snapshot.blockingTaskID
+                snapshot.request.blockerSummary = snapshot.blockerSummary
+                snapshot.request.terminalAt = snapshot.terminalAt
+                snapshot.request.terminalReason = snapshot.terminalReason
+            }
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: tasks.first?.id, fields: [
+                "reason": "deletion_cancellation_save_failed",
+                "request_count": String(snapshots.count)
+            ], level: .error)
+            return false
+        }
+        // The requests are durably cancelled; without a context, `cancel`
+        // only stops the worker and wakes waiters.
+        for task in tasks { taskQueue.cancel(task: task) }
+        return true
+    }
+
+    /// Runs inside a deletion, after `cancelDurably`, so a failed deletion
+    /// save rolls the removal back and leaves already-cancelled rows.
+    private func removeTurnRequests(for task: AgentTask) {
+        for request in (try? TaskTurnRequestRepository.requests(for: task, in: modelContext)) ?? [] {
+            modelContext.delete(request)
         }
     }
 
@@ -615,12 +650,13 @@ final class TaskLifecycleCoordinator {
         let unusedWorktrees = task.status == .draft && task.runs.isEmpty
             ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
             : []
-        cancelAndRemoveTurnRequests(for: task)
+        guard cancelDurably([task]) else { return false }
         return TaskWorktreeService.saveDeletionThenDiscard(
             unusedWorktrees, workspace: workspace, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
                 willDelete()
+                removeTurnRequests(for: task)
                 modelContext.delete(task)
             }
         ).persisted
@@ -693,11 +729,14 @@ final class TaskLifecycleCoordinator {
             + ws.skills.flatMap { skill in
                 [skill.deferredKeychainCleanup()] + skill.connectors.map { $0.deferredKeychainCleanup() }
             }
-        for task in ws.tasks { cancelAndRemoveTurnRequests(for: task) }
+        guard cancelDurably(ws.tasks) else { return (false, nil, nil) }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
-            delete: { modelContext.delete(ws) },
+            delete: {
+                for task in ws.tasks { removeTurnRequests(for: task) }
+                modelContext.delete(ws)
+            },
             persist: persistWorkspaceChange
         )
         // Cancellation exports mirrors, so remove them only after it and the
@@ -719,11 +758,12 @@ final class TaskLifecycleCoordinator {
     /// removed, so imported tasks keep worktrees they take over.
     private func replaceWorkspace(_ existing: Workspace, create: () -> Workspace) -> Workspace? {
         var replacement: Workspace?
-        for task in existing.tasks { cancelAndRemoveTurnRequests(for: task) }
+        guard cancelDurably(existing.tasks) else { return nil }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
+                for task in existing.tasks { removeTurnRequests(for: task) }
                 modelContext.delete(existing)
                 replacement = create()
             },
