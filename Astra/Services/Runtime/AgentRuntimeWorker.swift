@@ -417,6 +417,7 @@ final class AgentRuntimeWorker {
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { return }
+        executionPolicy.followsUpDeliveredRequest = TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: task)
         let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
             ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
@@ -655,6 +656,8 @@ final class AgentRuntimeWorker {
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,
             workspaceAccess: executionWorkspaceAccess,
+            admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
+                .admittedWritableGitMetadataRoots(for: turnBegin.request, task: launchTask),
             // appliedRuntime.requirements is already resolved above (~line 528),
             // so no reordering was needed here — closes the last spot that
             // independently re-derived GitHub host-control routing instead of
@@ -812,7 +815,8 @@ final class AgentRuntimeWorker {
         let semanticProgressTimeout = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: executionTask,
             phase: auditPhase,
-            idleTimeoutSeconds: timeoutSeconds
+            idleTimeoutSeconds: timeoutSeconds,
+            followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
         )
         // Record only admitted attempts, paired with the session this launch uses.
         // Fresh launches acquire their session ID from the provider's start event.

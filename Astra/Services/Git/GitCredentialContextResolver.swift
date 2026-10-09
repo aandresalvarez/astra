@@ -27,6 +27,55 @@ enum GitOperationIntentDetector {
     static func detectsRuntimeGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
         detectsNetworkGitOperation(prompt: prompt, task: task, contextText: contextText)
             || detectsLocalGitInspectionOperation(prompt: prompt, task: task, contextText: contextText)
+            || detectsLocalGitMutationOperation(prompt: prompt, task: task, contextText: contextText)
+    }
+
+    /// Local commands that write a linked worktree's shared Git metadata
+    /// (objects, refs, the worktree's admin directory). A false positive adds
+    /// an exclusive Git-common-directory claim and its matching write grant,
+    /// which is what the source checkout used to cover; a miss leaves that
+    /// metadata read-only. The list therefore leans toward matching.
+    static func detectsLocalGitMutationOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        if haystack.range(of: localGitMutationCommandPattern, options: .regularExpression) != nil {
+            return true
+        }
+        let naturalLanguageSignals = ["commit", "amend", "rebase", "cherry-pick", "squash"]
+        return naturalLanguageSignals.contains(where: { containsTokenPhrase($0, in: haystack) })
+    }
+
+    /// `git [global options] <subcommand>` for subcommands that write Git
+    /// metadata.
+    private static let localGitMutationCommandPattern = gitCommandPattern(subcommands: [
+        "add", "commit", "checkout", "switch", "restore", "merge", "rebase", "reset",
+        "revert", "cherry-pick", "stash", "tag", "am", "apply", "rm", "mv", "config",
+        "update-ref", "symbolic-ref", "notes", "replace", "worktree", "gc", "prune",
+        "pack-refs", "repack", "reflog", "update-index", "remote", "submodule",
+        "sparse-checkout", "bisect", "maintenance"
+    ])
+
+    /// `git [global options] <subcommand>` for subcommands that reach a remote.
+    private static let gitTransportCommandPattern = gitCommandPattern(subcommands: [
+        "pull", "fetch", "push", "clone", "ls-remote", "lfs"
+    ])
+
+    /// `git [global options] <subcommand>` for subcommands that only read it.
+    private static let localGitInspectionCommandPattern = gitCommandPattern(subcommands: [
+        "status", "diff", "log", "show", "branch", "rev-parse", "describe",
+        "ls-files", "grep", "blame"
+    ])
+
+    /// Global options such as `-C <path>`, `-c key=value`, or `--git-dir=<dir>`
+    /// may sit between `git` and the subcommand; the text is lowercased, so
+    /// `-C` and `-c` share one alternative.
+    private static func gitCommandPattern(subcommands: [String]) -> String {
+        let value = #"(?:'[^']*'|"[^"]*"|\S+)"#
+        let option = #"(?:-c\s+"# + value
+            + #"|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+"# + value
+            + #"|--[a-z-]+(?:="# + value + #")?|-p)"#
+        return #"(?<![a-z0-9_-])git(?:\s+"# + option + #")*\s+(?:"#
+            + subcommands.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
+            + #")(?![a-z0-9_-])"#
     }
 
     static func detectsNetworkGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
@@ -184,7 +233,8 @@ enum GitOperationIntentDetector {
             "git pull", "git fetch", "git push", "git clone", "git ls-remote",
             "git remote update", "git submodule update", "gh repo clone", "gh pr checkout"
         ]
-        if exactCommands.contains(where: { containsTokenPhrase($0, in: haystack) }) {
+        if exactCommands.contains(where: { containsTokenPhrase($0, in: haystack) })
+            || haystack.range(of: gitTransportCommandPattern, options: .regularExpression) != nil {
             return true
         }
 
@@ -318,7 +368,8 @@ enum GitOperationIntentDetector {
             "git rev-parse", "git describe", "git ls-files", "git grep",
             "git blame", "git stash list", "git worktree list"
         ]
-        if exactCommands.contains(where: { haystack.contains($0) }) {
+        if exactCommands.contains(where: { haystack.contains($0) })
+            || haystack.range(of: localGitInspectionCommandPattern, options: .regularExpression) != nil {
             return true
         }
 
@@ -525,6 +576,10 @@ enum GitCredentialContextResolver {
             )
         }
         if GitOperationIntentDetector.detectsLocalGitInspectionOperation(
+            prompt: prompt,
+            task: task,
+            contextText: contextText
+        ) || GitOperationIntentDetector.detectsLocalGitMutationOperation(
             prompt: prompt,
             task: task,
             contextText: contextText

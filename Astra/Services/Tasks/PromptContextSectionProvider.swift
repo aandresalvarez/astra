@@ -81,6 +81,11 @@ struct PromptContextSectionProviderContext {
     /// that resolution. `nil` means "resolve it yourself" - never "assume the
     /// static table", which for Copilot is a guess about the installed binary.
     let runtimeCapabilityProfile: AgentRuntimeCapabilityProfile?
+    /// The run follows up a request already met (`TaskDeliverableExpectation`);
+    /// its prompt treats the original goal as delivered rather than asking for
+    /// the artifact again, even when verification stopped at review_needed,
+    /// which `originalGoalDelivery` alone does not accept.
+    let followsUpDeliveredRequest: Bool
 
     init(
         mode: PromptAssemblyMode,
@@ -90,7 +95,8 @@ struct PromptContextSectionProviderContext {
         capabilityScope: TaskCapabilityPromptScope,
         ioSnapshot: PromptContextIOSnapshot = .empty,
         connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil,
-        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil,
+        followsUpDeliveredRequest: Bool = false
     ) {
         self.mode = mode
         self.task = task
@@ -100,6 +106,7 @@ struct PromptContextSectionProviderContext {
         self.ioSnapshot = ioSnapshot
         self.connectorCredentialExposurePolicy = connectorCredentialExposurePolicy
         self.runtimeCapabilityProfile = runtimeCapabilityProfile
+        self.followsUpDeliveredRequest = followsUpDeliveredRequest
     }
 }
 

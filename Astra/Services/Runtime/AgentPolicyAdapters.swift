@@ -1117,8 +1117,11 @@ enum AgentPolicyManifestService {
             ?? AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
-        let runtimePaths = runtimeWritablePaths(for: task)
+        let runtimePaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
+        // Workspace folders the run may only read stay inside the boundary, so
+        // reading a replaced source checkout does not ask for approval again.
         let additionalReadOnlyPaths = brokeredReadOnlyPaths(from: launchResourcePlan)
+            + TaskWorkspaceAccess(task: task).runtimeReadOnlyWorkspacePaths
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
@@ -1149,7 +1152,11 @@ enum AgentPolicyManifestService {
             hostControlTools: hostControlTools,
             requiredHostControlTools: requiredHostControlTools
         )
-        render = applyingArtifactBootstrapManifestSupport(to: render, task: task)
+        render = applyingArtifactBootstrapManifestSupport(
+            to: render,
+            task: task,
+            followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
+        )
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
@@ -1372,23 +1379,6 @@ enum AgentPolicyManifestService {
         return manifest
     }
 
-    private static func runtimeWritablePaths(for task: AgentTask) -> [String] {
-        let access = TaskWorkspaceAccess(task: task)
-        var paths = access.runtimeWritablePaths
-        if !access.effectiveWorkspacePath.isEmpty {
-            paths.append(access.effectiveWorkspacePath)
-        }
-        if !access.taskFolder.isEmpty {
-            paths.append(access.taskFolder)
-        }
-        var seen: Set<String> = []
-        return paths.compactMap { rawPath in
-            let path = (rawPath as NSString).expandingTildeInPath
-            guard !path.isEmpty, seen.insert(path).inserted else { return nil }
-            return path
-        }
-    }
-
     private static func brokeredReadOnlyPaths(from plan: TaskLaunchResourcePlan?) -> [String] {
         guard let plan else { return [] }
         var seen: Set<String> = []
@@ -1523,11 +1513,13 @@ enum AgentPolicyManifestService {
 
     private static func applyingArtifactBootstrapManifestSupport(
         to render: ProviderPolicyRender,
-        task: AgentTask
+        task: AgentTask,
+        followsUpDeliveredRequest: Bool
     ) -> ProviderPolicyRender {
         let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
         let launchTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: task,
+            followsUpDeliveredRequest: followsUpDeliveredRequest,
             permissionPolicy: permissionPolicy,
             providerAllowedTools: render.allowedTools,
             askFirstTools: render.askFirstTools

@@ -179,7 +179,7 @@ enum TaskCompletionPolicy {
         task: AgentTask,
         run: TaskRun
     ) -> TaskCompletionPolicyDecision {
-        let requiresArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+        let requiresArtifact = TaskDeliverableExpectation.owesDeliverable(task, run: run)
         let hasArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
         let fields = [
             "gate": TaskCompletionPolicyGate.manualArtifactRequirement.rawValue,
