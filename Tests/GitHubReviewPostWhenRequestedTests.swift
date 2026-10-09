@@ -190,10 +190,39 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(!GitHubReviewPublicationService.hasDispatched(task: fixture.task, filePath: other))
     }
 
+    /// The default macOS volume ignores case, and the review-file rule accepts
+    /// either, so one file must not be postable twice under two casings.
+    @Test("A review posted under one casing is not posted again under another")
+    func postedReviewIsNotRepostedUnderAnotherCasing() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI()
+        let handler = fixture.handler(level: .autonomous, cli: cli)
+        _ = await handler.postGitHubReview(fixture.request(for: fixture.file))
+        // The user asks again, so only the dispatch record stands between the
+        // same file and a second review.
+        fixture.context.insert(TaskEvent(
+            task: fixture.task,
+            eventType: TaskEventTypes.Conversation.userMessage,
+            payload: "Post a review on https://github.com/example/repo/pull/12 again"
+        ))
+        let shouted = fixture.request(for: fixture.file)
+
+        _ = await handler.postGitHubReview(GitHubReviewPostRequest(
+            fileName: "PR12_REVIEW.JSON", contentDigest: shouted.contentDigest
+        ))
+
+        #expect(await cli.postCount() == 1)
+        #expect(GitHubReviewPublicationService.hasDispatched(
+            task: fixture.task,
+            filePath: fixture.file.deletingLastPathComponent().appendingPathComponent("PR12_REVIEW.JSON").path
+        ))
+    }
+
     @Test("Two spellings of one task-folder file are the same review file")
     func sameFileAcrossSpellings() {
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot("/var/folders/x/task")
         #expect(GitHubReviewArtifactPolicy.sameFile("/var/folders/x/task/pr1_review.json", "/var/folders/x/task/./pr1_review.json", root: root))
+        #expect(GitHubReviewArtifactPolicy.sameFile("/var/folders/x/task/pr1_review.json", "/var/folders/x/task/PR1_Review.JSON", root: root))
         #expect(!GitHubReviewArtifactPolicy.sameFile("/var/folders/x/task/pr1_review.json", "/var/folders/x/task/pr2_review.json", root: root))
         #expect(!GitHubReviewArtifactPolicy.sameFile("/elsewhere/pr1_review.json", "/var/folders/x/task/pr1_review.json", root: root))
     }

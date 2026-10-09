@@ -407,6 +407,13 @@ enum GitHubReviewArtifactPolicy {
     /// be offered again under the other — and a second Post is a second
     /// review. Compared by their place under the task folder, lexically, so the
     /// dock's check stays free of per-path filesystem work.
+    ///
+    /// And without regard to case. The default macOS volume does not tell
+    /// `PR12_REVIEW.JSON` from `pr12_review.json`, and the review-file rule
+    /// accepts both, so a case-sensitive comparison let one file be posted
+    /// twice under two spellings. On a case-sensitive volume this can only
+    /// refuse a second file whose name differs by case alone — the safe way to
+    /// be wrong, and a new review takes a new name anyway.
     static func sameFile(_ lhs: String, _ rhs: String, root: TaskOutputArtifactPathPolicy.ResolvedRoot) -> Bool {
         lhs == rhs || (taskFolderKey(lhs, root: root).map { $0 == taskFolderKey(rhs, root: root) } ?? false)
     }
@@ -414,7 +421,7 @@ enum GitHubReviewArtifactPolicy {
     private static func taskFolderKey(_ path: String, root: TaskOutputArtifactPathPolicy.ResolvedRoot) -> String? {
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         for base in [root.standardized, root.resolved] where !base.isEmpty && standardized.hasPrefix(base + "/") {
-            return String(standardized.dropFirst(base.count + 1))
+            return String(standardized.dropFirst(base.count + 1)).lowercased()
         }
         return nil
     }
