@@ -944,8 +944,9 @@ struct NewTaskWorktreeBaseTests {
         #expect(workspace.activeWorkingPath == linked.path)
     }
 
-    @Test("A bound worktree whose folder is gone disables repository actions instead of using the source checkout")
-    func missingBoundWorktreeDisablesRepositoryActions() async throws {
+    @Test("A bound worktree that is gone or replaced disables repository actions instead of using another checkout",
+          arguments: ["missing", "folder", "repository"])
+    func missingBoundWorktreeDisablesRepositoryActions(state: String) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
@@ -954,16 +955,27 @@ struct NewTaskWorktreeBaseTests {
         let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
         try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
         let path = try #require(draft.executionRootPath)
-        try FileManager.default.removeItem(atPath: path)
 
         let panel = WorkspaceGitViewModel()
         panel.setWorkspaceForTesting(workspace, selectedTask: draft)
         panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
+        // The live worktree is usable.
+        #expect(panel.unavailableWorktreeBinding == nil)
+        #expect(panel.workingPath == path)
+
+        try FileManager.default.removeItem(atPath: path)
+        switch state {
+        case "folder":
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        case "repository":
+            _ = try fixture.repository(String(path.dropFirst(fixture.root.path.count + 1)))
+        default: break
+        }
         #expect(panel.unavailableWorktreeBinding?.worktreePath == path)
         #expect(panel.workingPath == nil)
         #expect(!panel.canOpenCommitSheet)
         #expect(!panel.canChangeActiveCodePath)
-        #expect(panel.activeSelectionScopeLabel == "Worktree missing")
+        #expect(panel.activeSelectionScopeLabel == "Worktree unavailable")
         #expect(panel.createPullRequestCommentTask(modelContext: store.mainContext) == nil)
     }
 

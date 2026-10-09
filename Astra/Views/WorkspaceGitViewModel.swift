@@ -429,26 +429,40 @@ final class WorkspaceGitViewModel: ObservableObject {
         return selectedRepository?.path
     }
 
-    /// The selected task's prepared worktree while its folder is gone.
-    /// Status, commit, push, and pull-request actions stay off until the
-    /// worktree is restored or the draft is deleted. This reads the prepared
-    /// event that names the pin rather than the verified binding: once the
-    /// folder is gone, symlinked prefixes such as `/var` no longer resolve,
-    /// so verification can report the binding invalid instead of bound.
+    /// The selected task's prepared worktree while its pin no longer holds
+    /// that worktree: the folder is gone, or something else now sits at the
+    /// path, such as a plain folder or another repository. Status, commit,
+    /// push, and pull-request actions stay off until the worktree is restored
+    /// or the draft is deleted. This reads the prepared event that names the
+    /// pin rather than the verified binding: once the folder is gone,
+    /// symlinked prefixes such as `/var` no longer resolve, so verification
+    /// can report the binding invalid instead of bound.
     var unavailableWorktreeBinding: TaskWorktreePayload? {
         guard let task = selectedTask,
               let pin = task.executionRootPath, !pin.isEmpty,
-              !FileManager.default.fileExists(atPath: pin),
               let event = TaskWorktreeBinding.eventForInheritance(from: task),
               case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self),
               WorkspacePathPresentation.standardizedPath(payload.worktreePath)
                 == WorkspacePathPresentation.standardizedPath(pin) else { return nil }
-        return payload
+        return Self.holdsWorktree(pin, of: payload) ? nil : payload
+    }
+
+    /// Whether `pin` is still the worktree `payload` recorded: a checkout
+    /// root whose own Git directory is the one the source repository
+    /// registers for it. This only ever denies actions, so reading the
+    /// checkout's `.git` file here is safe.
+    private static func holdsWorktree(_ pin: String, of payload: TaskWorktreePayload) -> Bool {
+        guard FileManager.default.fileExists(atPath: pin),
+              let root = GitCheckoutLayout.worktreeRoot(containing: pin),
+              WorkspacePathPresentation.resolvedPath(root) == WorkspacePathPresentation.resolvedPath(pin),
+              let own = GitCheckoutLayout.commonDirectory(for: pin),
+              let registered = TaskWorktreeBinding.gitCommonDirectory(for: payload) else { return false }
+        return WorkspacePathPresentation.resolvedPath(own) == WorkspacePathPresentation.resolvedPath(registered)
     }
 
     var unavailableWorktreeMessage: String? {
         unavailableWorktreeBinding.map {
-            "This draft's worktree is missing at \(WorkspacePathPresentation.abbreviatePath($0.worktreePath)). Restore it, or delete the draft, before using repository actions."
+            "This draft's worktree at \(WorkspacePathPresentation.abbreviatePath($0.worktreePath)) is missing or has been replaced. Restore it, or delete the draft, before using repository actions."
         }
     }
 
@@ -477,7 +491,7 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     var activeSelectionScopeLabel: String {
         guard let task = selectedTask else { return "Workspace default" }
-        if unavailableWorktreeBinding != nil { return "Worktree missing" }
+        if unavailableWorktreeBinding != nil { return "Worktree unavailable" }
         if task.status == .draft { return "Draft task" }
         // Only claim a durable pin when the pinned path still exists on disk:
         // `TaskWorkspaceAccess` falls back to the workspace default when the

@@ -440,7 +440,7 @@ struct WorkspaceGitSectionView: View {
             return viewModel.selectedRepositorySubtitle
         }
         if let preview = newWorktreePreview { return preview.summary }
-        if viewModel.unavailableWorktreeBinding != nil { return "Worktree missing · repository actions unavailable" }
+        if viewModel.unavailableWorktreeBinding != nil { return "Worktree unavailable · repository actions off" }
 
         var parts: [String] = []
         let branch = viewModel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
