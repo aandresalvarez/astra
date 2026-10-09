@@ -393,12 +393,13 @@ enum AgentPromptBuilder {
     private static func appendTaskOutputFolder(
         for task: AgentTask,
         followUpMessage: String = "",
+        followsUpDeliveredRequest: Bool = false,
         to sections: inout [PromptContextSection]
     ) {
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
-            let artifactDirective = standaloneArtifactDirective(
+            let artifactDirective = followsUpDeliveredRequest ? "" : standaloneArtifactDirective(
                 for: task,
                 followUpMessage: followUpMessage,
                 relativePath: relativePath,
@@ -729,7 +730,8 @@ enum AgentPromptBuilder {
                 capabilityScope: capabilityContext.snapshot.providerLaunch,
                 ioSnapshot: ioSnapshot,
                 connectorCredentialExposurePolicy: capabilityContext.snapshot.connectorCredentialExposurePolicy,
-                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile
+                runtimeCapabilityProfile: executionPolicy.runtimeCapabilityProfile,
+                followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
             )
         )
     }
@@ -866,7 +868,7 @@ enum AgentPromptBuilder {
                 to: &sections,
                 sourcePointers: taskSourcePointers(task)
             )
-            switch TaskContextStateManager.originalGoalDelivery(for: task) {
+            switch context.followsUpDeliveredRequest ? .delivered : TaskContextStateManager.originalGoalDelivery(for: task) {
             case .active:
                 if let pivot = followUpTier2ObjectivePivot(for: task, followUpMessage: context.followUpMessage) {
                     appendTier2DemotedOriginalGoal(pivot, for: task, to: &sections)
@@ -1194,7 +1196,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendTaskOutputFolder(for: context.task, followUpMessage: context.followUpMessage, to: &sections)
+            appendTaskOutputFolder(for: context.task, followUpMessage: context.followUpMessage, followsUpDeliveredRequest: context.followsUpDeliveredRequest, to: &sections)
         }
     }
 

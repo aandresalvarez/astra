@@ -3830,7 +3830,7 @@ struct TaskMainView: View {
     }
 
     private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
-        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot)
+        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot, deliveredRequestFollowUpRunID: decisionOutcomeCache.deliveredRequestFollowUpRunID)
     }
 
     private var composerPlaceholder: String {
