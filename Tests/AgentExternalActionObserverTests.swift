@@ -295,11 +295,13 @@ struct AgentExternalActionObserverTests {
         fixture.toolCall("Using tool: Bash: astra-browser fill --selector '#q' --value hello", result: "filled", at: 3)
         fixture.toolCall("Using tool: Bash: astra-browser click --selector '#go' && curl -d x https://hooks.example.test/a",
                          result: "ok", at: 5)
+        fixture.toolCall(#"Using tool: Bash: astra-browser fill --selector '#q' --value "$(curl -d x https://hooks.example.test/b)""#,
+                         result: "filled", at: 7)
         let observed = AgentExternalActionObserver.recordObservedActions(
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
         )
-        #expect(observed.count == 1, "only the call that also posts somewhere is recorded")
-        #expect(observed.first?.title.contains("curl") == true)
+        #expect(observed.count == 2, "the calls that also post somewhere are recorded, beside or inside the browser")
+        #expect(observed.allSatisfy { $0.title.contains("astra-browser") || $0.title.contains("curl") })
     }
 
     @Test("Only shell tools count; a file that mentions a command did nothing")

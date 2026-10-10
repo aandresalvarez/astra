@@ -349,9 +349,11 @@ enum AgentExternalActionObserver {
         // A page change in the browser is not recorded (spec decision 12): its
         // tool row already shows each click, and a row per click would bury the
         // actions the record exists for. Only a call made of nothing else —
-        // anything beside it still records the call.
-        if let commands = LocalShellCommands.simpleCommands(text), !commands.isEmpty,
-           commands.allSatisfy({ $0.first == BrowserBridgeMCPProjection.toolCommand }) {
+        // anything beside it, or inside it (`--value "$(curl -d …)"`), still
+        // records the call: every command the string runs that is not known
+        // local work, substitution bodies included, has to be the browser.
+        if let outside = LocalShellCommands.commandsOutsideTheList(text), !outside.isEmpty,
+           outside.allSatisfy({ $0.first == BrowserBridgeMCPProjection.toolCommand }) {
             return nil
         }
         // One command whose own status is the call's: no separator, and not
