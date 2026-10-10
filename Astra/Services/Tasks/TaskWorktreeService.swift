@@ -757,8 +757,11 @@ enum TaskWorktreeService {
         defer { TaskWorktreeCheckoutReservation.release(reservation) }
         let resourceLease: TaskWorktreeResourceLease
         do {
+            // Exclusive across the whole check-then-delete sequence, so no
+            // sibling worktree task can check out the branch in between.
             resourceLease = try TaskWorktreeResourceLease.acquire(
-                repositoryPath: repository, worktreePath: path, taskID: discard.taskID, queue: resourceQueue
+                repositoryPath: repository, worktreePath: path, gitAccess: .exclusive,
+                taskID: discard.taskID, queue: resourceQueue
             )
         } catch TaskWorktreeCreationError.repositoryBusy {
             return kept("repository_busy", retry: true)
@@ -838,14 +841,11 @@ enum TaskWorktreeService {
         }
         await duringReservation()
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
-        if exists || isRegistered {
-            do {
-                try ownership?.markRemoving(discard)
-            } catch {
-                return kept("removal_mark_failed", retry: true)
-            }
+        /// Nil once Git removed the worktree; otherwise why it was kept.
+        func removeWorktree() async -> TaskWorktreeCleanupOutcome? {
             do {
                 try await git.removeWorktree(repoPath: repository, worktreePath: path, force: false)
+                return nil
             } catch {
                 // Git removes a worktree that stores submodule repositories
                 // only when forced, which deletes them too.
@@ -860,10 +860,28 @@ enum TaskWorktreeService {
                     if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
                     do {
                         try await git.removeWorktree(repoPath: repository, worktreePath: path, force: true)
+                        return nil
                     } catch {
                         return kept("remove_failed", retry: true)
                     }
                 }
+            }
+        }
+        if exists || isRegistered {
+            do {
+                try ownership?.markRemoving(discard)
+            } catch {
+                return kept("removal_mark_failed", retry: true)
+            }
+            // The mark vouches only for a removal this cleanup made, so it is
+            // taken back whenever Git didn't remove the worktree.
+            if let notRemoved = await removeWorktree() {
+                do {
+                    try ownership?.clearRemoving(discard)
+                } catch {
+                    return kept("removal_mark_clear_failed", retry: true)
+                }
+                return notRemoved
             }
             if let problem = referenceProblem() { return kept(problem, retry: true) }
         }

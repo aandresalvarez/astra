@@ -890,12 +890,22 @@ public struct ASTRAApp: App {
         // A workspace deletion a quit interrupted is finished before mirror
         // recovery below, which would otherwise reimport the workspace.
         WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
-        if !skipWorkspaceRecovery {
+        // A deletion still unsettled, for example a mirror that couldn't be
+        // removed, keeps its mirror out of recovery; an unreadable record
+        // stops recovery for this launch, since its mirror is unknown.
+        let unsettledDeletionMirrors = WorkspaceDeletionCleanupStore().pendingMirrorPaths()
+        if unsettledDeletionMirrors == nil {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
+            ], level: .error)
+        }
+        if !skipWorkspaceRecovery, let unsettledDeletionMirrors {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
             workspaceRecoveryAfterLaunch = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
+                excludingConfigFiles: unsettledDeletionMirrors,
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
         }

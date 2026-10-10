@@ -1005,6 +1005,39 @@ struct NewTaskWorktreeBaseTests {
         #expect(!panel.canOpenCommitSheet)
     }
 
+    @Test("A binding fails closed for a symlink standing in for its worktree, or a prepared event without a pin")
+    func bindingRejectsSymlinkAndMissingPin() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        #expect(TaskWorktreeBinding.payload(for: draft)?.worktreePath == path)
+
+        // The folder is replaced by a link to the source checkout; Git's
+        // registry entry and its identity are untouched.
+        try FileManager.default.removeItem(atPath: path)
+        try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: repository.path)
+        guard case .invalid = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A symlink to the source checkout must not pass as the task's worktree")
+            return
+        }
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace, selectedTask: draft)
+        panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
+        #expect(panel.unavailableWorktreePath == path)
+        #expect(panel.workingPath == nil)
+
+        draft.executionRootPath = nil
+        guard case .invalid = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A prepared event without a pin must not fall back to the default checkout")
+            return
+        }
+    }
+
     @Test("A binding survives a branch switch inside its worktree but not a same-repository replacement")
     func bindingRejectsSameRepositoryReplacement() async throws {
         let fixture = try Fixture()

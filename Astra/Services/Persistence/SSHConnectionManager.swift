@@ -129,15 +129,16 @@ public enum SSHConnectionManager {
     }
 
     /// Puts back a `snapshot`, removing a file that didn't exist then.
+    /// Throws when the file couldn't be put back.
     public static func restore(
         _ snapshot: Data?, workspacePath: String, fileWriter: any SSHConnectionFileWriting = defaultFileWriter
-    ) {
+    ) throws {
         guard !workspacePath.isEmpty else { return }
         let url = URL(fileURLWithPath: connectionsFilePath(for: workspacePath))
         if let snapshot {
-            try? fileWriter.writeAtomically(snapshot, to: url)
-        } else {
-            try? FileManager.default.removeItem(at: url)
+            try fileWriter.writeAtomically(snapshot, to: url)
+        } else if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
     }
 

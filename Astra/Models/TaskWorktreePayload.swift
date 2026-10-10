@@ -113,10 +113,14 @@ public enum TaskWorktreeBinding {
     }
 
     public static func state(of task: AgentTask) -> State {
-        guard let pinned = task.executionRootPath, !pinned.isEmpty else { return .none }
         let events = task.events
             .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
             .sorted { $0.timestamp > $1.timestamp }
+        guard let pinned = task.executionRootPath, !pinned.isEmpty else {
+            // A task that prepared a worktree but lost its pin must not fall
+            // back to the workspace's default checkout.
+            return events.isEmpty ? .none : .invalid("This task's worktree is no longer pinned.")
+        }
         guard !events.isEmpty else { return .none }
         let pin = WorkspacePathPresentation.standardizedPath(pinned)
         var repositories: [String] = []
@@ -166,13 +170,31 @@ public enum TaskWorktreeBinding {
     /// worktree's `.git` pointer. A binding that recorded an identity also
     /// needs the registered worktree to still carry it.
     public static func gitCommonDirectory(for payload: TaskWorktreePayload) -> String? {
-        guard let registered = registeredEntry(repositoryPath: payload.repositoryPath, worktreePath: payload.worktreePath)
+        guard let registered = registeredEntry(repositoryPath: payload.repositoryPath, worktreePath: payload.worktreePath),
+              holdsRegisteredCheckout(payload.worktreePath, entry: registered.entry)
         else { return nil }
         if let identity = payload.identity {
             let stored = try? String(contentsOf: registered.entry.appendingPathComponent(identityFileName), encoding: .utf8)
             guard stored?.trimmingCharacters(in: .whitespacesAndNewlines) == identity else { return nil }
         }
         return registered.commonDirectory
+    }
+
+    /// The path must be the registered checkout itself: a real folder, not a
+    /// symlink standing in for one, whose own `.git` file points back at the
+    /// registry entry. Resolving symlinks alone would let a link to the source
+    /// checkout match a stale entry. This only ever denies, so reading the
+    /// worktree's `.git` file is safe.
+    private static func holdsRegisteredCheckout(_ worktreePath: String, entry: URL) -> Bool {
+        let fileManager = FileManager.default
+        let dotGit = (worktreePath as NSString).appendingPathComponent(".git")
+        guard (try? fileManager.attributesOfItem(atPath: worktreePath)[.type] as? FileAttributeType) == .typeDirectory,
+              (try? fileManager.attributesOfItem(atPath: dotGit)[.type] as? FileAttributeType) == .typeRegular,
+              let raw = try? String(contentsOfFile: dotGit, encoding: .utf8),
+              raw.lowercased().hasPrefix("gitdir:"),
+              let pointed = resolvedGitPath(String(raw.dropFirst("gitdir:".count)), relativeTo: worktreePath)
+        else { return false }
+        return pointed == resolvedPath(entry.path)
     }
 
     static let identityFileName = "astra-task-worktree"

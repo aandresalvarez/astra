@@ -353,12 +353,17 @@ struct NewTaskWorktreeIsolationTests {
         #expect(launchPlan(task, workspaceAccess: .shared).hostPathGrants.first { $0.path == metadata }?.access == .read)
 
         // The grant comes from the recorded source repository, never from the
-        // worktree's own `.git` file, which the task can rewrite.
+        // worktree's own `.git` file, which the task can rewrite. A rewritten
+        // pointer no longer leads back to the registry entry, so the binding
+        // fails closed and grants nothing, least of all the pointer's target.
         let pointer = URL(fileURLWithPath: path).appendingPathComponent(".git")
         let original = try String(contentsOf: pointer, encoding: .utf8)
         try "gitdir: \(other.appendingPathComponent(".git").path)\n".write(to: pointer, atomically: true, encoding: .utf8)
-        #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths == [metadata])
+        #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths.isEmpty)
+        #expect(!AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task)
+            .contains(other.appendingPathComponent(".git").path))
         try original.write(to: pointer, atomically: true, encoding: .utf8)
+        #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths == [metadata])
 
         // A binding edited to name another repository opens nothing: that
         // repository doesn't register the worktree.
@@ -813,6 +818,26 @@ struct NewTaskWorktreeIsolationTests {
         #expect(try Data(contentsOf: sourceSettings) == original)
         let restored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any])
         #expect(restored["hooks"] == nil)
+    }
+
+    @Test("A configured folder in a sibling checkout of the bound repository stays read-only")
+    func siblingCheckoutFolderStaysReadOnly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let sibling = fixture.root.appendingPathComponent("App-sibling", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "sibling-folder", sibling.path], at: repository)
+        let siblingSources = sibling.appendingPathComponent("Sources", isDirectory: true).path
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path, additionalPaths: [siblingSources])
+        context.insert(workspace)
+        let draft = AgentTask(title: "Explore", goal: "Explore", workspace: workspace)
+        _ = try await prepare(draft, repository, context: context, fixture: fixture)
+
+        let access = TaskWorkspaceAccess(task: draft)
+        #expect(!access.runtimeWritablePaths.contains(siblingSources))
+        #expect(access.runtimeReadOnlyWorkspacePaths.contains(siblingSources))
     }
 
     @Test("Writable worktree Git grants always have matching shared admission claims, and siblings run together")

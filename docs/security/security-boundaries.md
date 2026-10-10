@@ -152,12 +152,14 @@ and `~/Documents/Astra Dev/Workspaces`.
   record keeps the checkout. Exclusive cleanup reservations compare resolved
   paths, including symlink aliases and overlapping ancestors or descendants,
   and a competing removal retries without replacing the first reservation.
-  Fetch, creation, submodule setup, removal, and branch deletion acquire
-  shared Git-common-directory and metadata workspace claims from the
-  runtime queue's existing lease owner, so they run beside sibling worktree
-  tasks but never beside a main-checkout writer; cleanup also claims the
-  checkout exclusively, and concurrent creations on one repository are
-  serialized in-process. Busy creation fails visibly before mutation, while
+  Fetch, creation, and submodule setup acquire shared Git-common-directory
+  and metadata workspace claims from the runtime queue's existing lease
+  owner, so they run beside sibling worktree tasks but never beside a
+  main-checkout writer; creation also claims its destination exclusively,
+  and concurrent creations on one repository are serialized in-process.
+  Removal and branch deletion hold those claims exclusively, so no sibling
+  can check out a branch between cleanup's check and its deletion; cleanup
+  also claims the checkout exclusively. Busy creation fails visibly before mutation, while
   busy cleanup retains its intent. Leases release on success or failure and survive queue cancellation
   until the lifecycle operation finishes.
   Cleanup keeps any

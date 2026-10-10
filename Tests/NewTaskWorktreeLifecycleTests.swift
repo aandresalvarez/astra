@@ -80,7 +80,7 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(fixture.resourceQueue.activeResourceLocks.isEmpty)
     }
 
-    @Test("A running sibling worktree task shares the Git directory with creation and cleanup")
+    @Test("A running sibling worktree task shares the Git directory with creation; cleanup waits for it")
     func siblingWorktreeTaskDoesNotBlockLifecycle() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -94,7 +94,7 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(siblingClaims.contains {
             $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .readOnly
         })
-        let held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(siblingClaims, task: nil))
+        var held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(siblingClaims, task: nil))
         defer { fixture.resourceQueue.releaseResourceLocks(held, task: nil) }
 
         let next = AgentTask(title: "Second", goal: "Explore", workspace: try #require(running.workspace))
@@ -106,9 +106,18 @@ struct NewTaskWorktreeLifecycleTests {
         let discard = try #require(TaskWorktreeService.discardSnapshots(for: next, ownership: fixture.ownership).first)
         context.delete(next)
         try context.save()
-        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue) == .removed)
+        // Cleanup checks a branch and then deletes it, so it waits for the
+        // sibling rather than letting it check that branch out in between.
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .retry("repository_busy"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        fixture.resourceQueue.releaseResourceLocks(held, task: nil)
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .removed)
         #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
-        #expect(fixture.resourceQueue.activeResourceLocks == held)
+        held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(siblingClaims, task: nil))
 
         // A writer of the main checkout still excludes the lifecycle.
         let mainWriter = claims(kind: .gitCommonDirectory, path: metadata)
@@ -484,6 +493,40 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!workspace.isDeleted)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: files[1].path)
         #expect(try Data(contentsOf: files[1]) == before[1])
+    }
+
+    @Test("Startup recovery leaves out the mirror of an unsettled deletion, and waits when a record is unreadable")
+    func unsettledDeletionMirrorIsNotRecovered() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try Fixture.container()
+        let folder = fixture.root.appendingPathComponent("Deleted", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Deleted", primaryPath: folder.path)
+        source.mainContext.insert(workspace)
+        try source.mainContext.save()
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+
+        let excluded = try #require(store.pendingMirrorPaths())
+        #expect(excluded.contains(WorkspacePathPresentation.standardizedPath(mirror.path)))
+        let empty = try Fixture.container()
+        await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: empty.mainContext, excludingConfigFiles: excluded,
+            extraRoots: [fixture.root.path], includeDefaultRoots: false
+        ).value
+        #expect(try empty.mainContext.fetchCount(FetchDescriptor<Workspace>()) == 0)
+        // Without the record the same mirror is recovered.
+        await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: empty.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false
+        ).value
+        #expect(try empty.mainContext.fetchCount(FetchDescriptor<Workspace>()) == 1)
+
+        try Data("not json".utf8).write(to: store.directory.appendingPathComponent("broken.json"))
+        #expect(store.pendingMirrorPaths() == nil)
     }
 
     @Test("A mirror that can't be removed keeps the deletion record for a retry")

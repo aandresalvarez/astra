@@ -17,22 +17,25 @@ final class TaskWorktreeResourceLease {
     }
 
     static func acquire(
-        repositoryPath: String, worktreePath: String? = nil, taskID: UUID, queue: TaskQueue?
+        repositoryPath: String, worktreePath: String? = nil, gitAccess: TaskExecutionResourceAccess = .shared,
+        taskID: UUID, queue: TaskQueue?
     ) throws -> TaskWorktreeResourceLease {
         guard let queue else { throw TaskWorktreeCreationError.resourceQueueUnavailable }
         guard let commonDirectory = GitCheckoutLayout.commonDirectory(for: repositoryPath) else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
-        // The Git directory is held shared, like the sibling worktree tasks
-        // that run in it: Git locks each ref, the registry entry, and config
-        // per operation, so adding or removing a worktree beside running
-        // siblings is safe, while a writer of the main checkout, which holds
-        // the directory exclusively, still excludes the operation and vice
-        // versa. The checkout being removed is held exclusively.
+        // Creation holds the Git directory shared, like the sibling worktree
+        // tasks that run in it: Git locks each ref, the registry entry, and
+        // config per operation, so adding a worktree beside running siblings
+        // is safe, while a writer of the main checkout, which holds the
+        // directory exclusively, still excludes it. Cleanup holds it
+        // exclusively: it checks a branch, then deletes it, and a sibling must
+        // not check that branch out in between. The checkout being removed is
+        // held exclusively.
         var resources = [
-            TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: commonDirectory, access: .shared),
+            TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: commonDirectory, access: gitAccess),
             // Also conflicts with a legacy workspace claim containing .git.
-            TaskExecutionResourceClaim(kind: .workspace, key: commonDirectory, access: .shared)
+            TaskExecutionResourceClaim(kind: .workspace, key: commonDirectory, access: gitAccess)
         ]
         if let worktreePath {
             resources.append(TaskExecutionResourceClaim(kind: .workspace, key: worktreePath, access: .exclusive))

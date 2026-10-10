@@ -596,20 +596,35 @@ final class TaskLifecycleCoordinator {
     /// back, nothing is stopped, and the deletion does not proceed. The
     /// fields are restored explicitly rather than by `rollback()`, which
     /// would leave stale model properties and discard unrelated edits.
-    private func cancelDurably(_ tasks: [AgentTask]) -> Bool {
+    ///
+    /// Returns every request row of the tasks, for the deletion to remove,
+    /// or nil when they can't be read: a failed lookup would otherwise stop
+    /// workers with nothing cancelled and leave rows orphaned.
+    private func cancelDurably(_ tasks: [AgentTask]) -> [TaskTurnRequest]? {
         typealias Snapshot = (
             request: TaskTurnRequest, state: TaskTurnRequestState, blockingTaskID: UUID?,
             blockerSummary: String?, terminalAt: Date?, terminalReason: String?
         )
-        var snapshots: [Snapshot] = []
-        for task in tasks {
-            for request in (try? TaskTurnRequestRepository.activeRequests(for: task, in: modelContext)) ?? [] {
-                snapshots.append((
-                    request, request.state, request.blockingTaskID,
-                    request.blockerSummary, request.terminalAt, request.terminalReason
-                ))
-                _ = TaskTurnRequestStateMachine.transition(request, to: .cancelled, terminalReason: "cancelled_by_user")
+        var active: [TaskTurnRequest] = []
+        var allRequests: [TaskTurnRequest] = []
+        do {
+            for task in tasks {
+                active += try TaskTurnRequestRepository.activeRequests(for: task, in: modelContext)
+                allRequests += try TaskTurnRequestRepository.requests(for: task, in: modelContext)
             }
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: tasks.first?.id, fields: [
+                "reason": "deletion_request_lookup_failed", "error": error.localizedDescription
+            ], level: .error)
+            return nil
+        }
+        var snapshots: [Snapshot] = []
+        for request in active {
+            snapshots.append((
+                request, request.state, request.blockingTaskID,
+                request.blockerSummary, request.terminalAt, request.terminalReason
+            ))
+            _ = TaskTurnRequestStateMachine.transition(request, to: .cancelled, terminalReason: "cancelled_by_user")
         }
         if !snapshots.isEmpty, !persistWorkspaceChange(tasks.first?.workspace, modelContext) {
             for snapshot in snapshots {
@@ -623,20 +638,12 @@ final class TaskLifecycleCoordinator {
                 "reason": "deletion_cancellation_save_failed",
                 "request_count": String(snapshots.count)
             ], level: .error)
-            return false
+            return nil
         }
         // The requests are durably cancelled; without a context, `cancel`
         // only stops the worker and wakes waiters.
         for task in tasks { taskQueue.cancel(task: task) }
-        return true
-    }
-
-    /// Runs inside a deletion, after `cancelDurably`, so a failed deletion
-    /// save rolls the removal back and leaves already-cancelled rows.
-    private func removeTurnRequests(for task: AgentTask) {
-        for request in (try? TaskTurnRequestRepository.requests(for: task, in: modelContext)) ?? [] {
-            modelContext.delete(request)
-        }
+        return allRequests
     }
 
     /// Deletes `task` and returns whether the deletion was saved. `willDelete`
@@ -653,13 +660,14 @@ final class TaskLifecycleCoordinator {
         let unusedWorktrees = task.status == .draft && task.runs.isEmpty
             ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
             : []
-        guard cancelDurably([task]) else { return false }
+        guard let requests = cancelDurably([task]) else { return false }
         return TaskWorktreeService.saveDeletionThenDiscard(
             unusedWorktrees, workspace: workspace, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
                 willDelete()
-                removeTurnRequests(for: task)
+                // Removed inside the deletion, so a failed save rolls it back.
+                for request in requests { modelContext.delete(request) }
                 modelContext.delete(task)
             }
         ).persisted
@@ -738,7 +746,7 @@ final class TaskLifecycleCoordinator {
             ], level: .error)
             return (false, nil, nil)
         }
-        guard cancelDurably(ws.tasks) else {
+        guard let requests = cancelDurably(ws.tasks) else {
             workspaceDeletionCleanupStore.remove(cleanupRecord)
             return (false, nil, nil)
         }
@@ -746,7 +754,7 @@ final class TaskLifecycleCoordinator {
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
-                for task in ws.tasks { removeTurnRequests(for: task) }
+                for request in requests { modelContext.delete(request) }
                 modelContext.delete(ws)
             },
             persist: persistWorkspaceChange
@@ -786,12 +794,12 @@ final class TaskLifecycleCoordinator {
                 return nil
             }
         }
-        guard cancelDurably(existing.tasks) else { return nil }
+        guard let requests = cancelDurably(existing.tasks) else { return nil }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
-                for task in existing.tasks { removeTurnRequests(for: task) }
+                for request in requests { modelContext.delete(request) }
                 modelContext.delete(existing)
                 replacement = create()
             },
@@ -800,7 +808,19 @@ final class TaskLifecycleCoordinator {
             }
         )
         guard result.persisted else {
-            for snapshot in sshSnapshots { SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path) }
+            for snapshot in sshSnapshots {
+                do {
+                    try SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path)
+                } catch {
+                    // Not retried later: replaying an old file at the next
+                    // launch could overwrite edits made in between.
+                    AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                        "operation": "replace_workspace", "reason": "ssh_restore_failed",
+                        "path": SSHConnectionManager.connectionsFilePath(for: snapshot.path),
+                        "error": error.localizedDescription
+                    ], level: .error)
+                }
+            }
             return nil
         }
         return replacement

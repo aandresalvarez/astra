@@ -58,6 +58,21 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         }
     }
 
+    /// The mirror files of every unsettled deletion, which startup recovery
+    /// must not reimport. Nil when a record can't be read, since then which
+    /// mirror it guards is unknown.
+    func pendingMirrorPaths() -> Set<String>? {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        var mirrors = Set<String>()
+        for url in urls where url.pathExtension == "json" {
+            guard let record = try? JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
+            else { return nil }
+            mirrors.insert(WorkspacePathPresentation.standardizedPath(WorkspaceFileLayout.workspaceConfigFile(for: record.primaryPath)))
+            mirrors.insert(WorkspacePathPresentation.standardizedPath(WorkspaceFileLayout.legacyWorkspaceConfigFile(for: record.primaryPath)))
+        }
+        return mirrors
+    }
+
     func recordURL(for workspaceID: UUID) -> URL {
         directory.appendingPathComponent(workspaceID.uuidString.lowercased() + ".json")
     }

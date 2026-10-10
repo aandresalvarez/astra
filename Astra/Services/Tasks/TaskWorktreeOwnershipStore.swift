@@ -81,6 +81,13 @@ struct TaskWorktreeOwnershipStore: Sendable {
         try Data((identity + "\n").utf8).write(to: removalMarkerURL(forWorktree: discard.worktreePath), options: .atomic)
     }
 
+    /// Takes the mark back when Git didn't remove the worktree after all.
+    func clearRemoving(_ discard: TaskWorktreeDiscard) throws {
+        let url = removalMarkerURL(forWorktree: discard.worktreePath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
     func isRemoving(_ discard: TaskWorktreeDiscard) -> Bool {
         guard let identity = discard.identity,
               let raw = try? String(contentsOf: removalMarkerURL(forWorktree: discard.worktreePath), encoding: .utf8)

@@ -254,6 +254,11 @@ public struct TaskWorkspaceAccess {
                     // the worktree takes its writable place.
                     readOnly.append(path)
                     writable.append(pinned)
+                } else if isInSiblingCheckout(resolved, of: binding, pinned: pinned) {
+                    // Another checkout of the same repository, or a folder in
+                    // one, is a copy of the source too: readable, not
+                    // writable, so the task changes only its own worktree.
+                    continue
                 } else {
                     writable.append(path)
                 }
@@ -272,6 +277,16 @@ public struct TaskWorkspaceAccess {
     private static func resolvedPath(_ path: String) -> String {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
             .resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// Whether `path` lies in a checkout, other than the task's worktree,
+    /// that shares the bound repository's Git directory.
+    private func isInSiblingCheckout(_ path: String, of binding: TaskWorktreePayload, pinned: String) -> Bool {
+        guard let checkout = GitCheckoutLayout.worktreeRoot(containing: path),
+              Self.resolvedPath(checkout) != Self.resolvedPath(pinned),
+              let common = GitCheckoutLayout.commonDirectory(for: path),
+              let bound = TaskWorktreeBinding.gitCommonDirectory(for: binding) else { return false }
+        return Self.resolvedPath(common) == Self.resolvedPath(bound)
     }
 
     /// Whether a folder between `repository` (exclusive) and `path`

@@ -116,7 +116,9 @@ enum NewTaskWorktreeComposerFlow {
         following.repositoryPath = nil
         following.checkoutPath = nil
         let previousPin = draft.executionRootPath
-        TaskCodeLocationPin.set(workspace.activeWorkingPath, workspace: workspace, task: draft)
+        // A draft keeps an explicit pin: one that prepared a worktree earlier
+        // and lost its pin would read as invalid rather than as the default.
+        TaskCodeLocationPin.set(workspace.activeWorkingPath ?? workspace.primaryPath, workspace: workspace, task: draft)
         do {
             try persistChoice(following, on: draft, modelContext: modelContext)
         } catch {

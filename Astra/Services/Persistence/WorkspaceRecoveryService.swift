@@ -514,6 +514,7 @@ public enum WorkspaceRecoveryService {
     @discardableResult
     public static func recoverMissingWorkspacesAfterLaunch(
         modelContext: ModelContext,
+        excludingConfigFiles excluded: Set<String> = [],
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -536,7 +537,10 @@ public enum WorkspaceRecoveryService {
                 }
                 return await group.next() ?? []
             }
-            let loadedConfigs = await loadWorkspaceConfigs(configs)
+            // Mirrors of workspaces whose deletion is still being cleaned up.
+            let loadedConfigs = await loadWorkspaceConfigs(configs.filter {
+                !excluded.contains(WorkspacePathPresentation.standardizedPath($0.path))
+            })
             guard !Task.isCancelled else { return }
             if recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs) > 0 {
                 afterImport()

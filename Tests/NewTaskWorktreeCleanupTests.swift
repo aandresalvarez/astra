@@ -309,6 +309,26 @@ struct NewTaskWorktreeCleanupTests {
         ))
     }
 
+    @Test("A removal Git refuses takes back the removal mark")
+    func refusedRemovalClearsMark() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        // A lock someone else took makes the non-forced removal fail.
+        try fixture.git(["worktree", "lock", "--reason", "someone else", discard.worktreePath], at: repository)
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .retry("remove_failed"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(!fixture.ownership.isRemoving(discard))
+    }
+
     @Test("A branch recreated after its worktree vanished outside cleanup is kept")
     func branchWithoutVerifiableWorktreeIsKept() async throws {
         let fixture = try Fixture()
