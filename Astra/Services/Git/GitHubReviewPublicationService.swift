@@ -207,14 +207,23 @@ enum GitHubReviewPublicationRequirement {
         "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
         "finally", "lastly", "next", "can", "could", "would", "will", "you", "yes", "sure", "alright"
     ]
-    /// A condition after the command ("post the review once I approve") or a
-    /// pause anywhere in the message ("…, but ask me first") makes it not yet
-    /// a command to post now.
+    /// A condition after the command ("post the review once I approve"), a
+    /// pause in the command itself ("post the draft myself"), or a message
+    /// that holds the posting back ("…, but ask me first") makes it not yet a
+    /// command to post now.
     private static let deferringRegex = try? NSRegularExpression(
         pattern: #"\b(?:after|once|when|whenever|until|till|if|unless|before|only|later|tomorrow)\b"#
     )
-    private static let pausingRegex = try? NSRegularExpression(
-        pattern: #"\b(?:ask me|check with me|let me|wait|hold|don't|do not|dont|never|not yet|first|approve|approval|confirm|draft|prepare|i will|i'll|i am going to|i'm going to|we will|we'll|myself|ourselves)\b"#
+    /// Phrases that hold the posting back wherever they are in the message.
+    /// Only these: "first" or "prepare" elsewhere ("First, post the review,
+    /// then summarize it") is about other work, not the post.
+    private static let messagePausingRegex = try? NSRegularExpression(
+        pattern: #"\b(?:ask me|check with me|wait|hold off|hold on|hold it|not yet|let me|(?:don't|do not|dont|never)\s+(?:post|publish|submit|send)|(?:i|we)\s*(?:will|'ll|am going to|'m going to|are going to)\s+(?:post|publish|submit))\b"#
+    )
+    /// Words that, inside the command itself — from its verb to the end of its
+    /// clause — make it something other than a post now.
+    private static let commandPausingRegex = try? NSRegularExpression(
+        pattern: #"\b(?:first|approve|approval|confirm|draft|prepare|myself|ourselves|i will|i'll|we will|we'll)\b"#
     )
     /// A message that closes an open request without restating it: "don't post
     /// it", "cancel that", and the noun forms — "cancel the review", "stop the
@@ -424,9 +433,13 @@ enum GitHubReviewPublicationRequirement {
     static func commandsPosting(_ text: String) -> Bool {
         let lower = text.lowercased()
         guard let imperative = imperativePublicationRegex, let deferring = deferringRegex,
-              let pausing = pausingRegex,
-              pausing.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil else {
+              let messagePausing = messagePausingRegex, let commandPausing = commandPausingRegex,
+              messagePausing.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil else {
             return false
+        }
+        func pausesCommand(_ clause: String, _ matched: Range<String.Index>) -> Bool {
+            let command = String(clause[matched.lowerBound...])
+            return commandPausing.firstMatch(in: command, range: NSRange(command.startIndex..<command.endIndex, in: command)) != nil
         }
         // Clauses end at punctuation before a space or the end of the text, so
         // a link's dots do not split one, and a joined command ("review it
@@ -451,7 +464,7 @@ enum GitHubReviewPublicationRequirement {
             let named = imperative.matches(in: clause, range: range).contains { match in
                 guard let matched = Range(match.range, in: clause) else { return false }
                 let rest = String(clause[matched.upperBound...])
-                return isCommand(clause, matched)
+                return isCommand(clause, matched) && !pausesCommand(clause, matched)
                     && deferring.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) == nil
             }
             guard !named, let referential = referentialPublicationRegex, let destination = gitHubDestinationRegex else {
@@ -463,7 +476,7 @@ enum GitHubReviewPublicationRequirement {
                 let rest = String(clause[matched.upperBound...])
                 let reviewNamedFirst = mentionedReview
                     || reviewMentionRegex?.firstMatch(in: before, range: NSRange(before.startIndex..<before.endIndex, in: before)) != nil
-                return reviewNamedFirst && isCommand(clause, matched)
+                return reviewNamedFirst && isCommand(clause, matched) && !pausesCommand(clause, matched)
                     && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
             }
         }

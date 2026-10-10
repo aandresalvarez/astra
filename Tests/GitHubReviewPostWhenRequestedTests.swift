@@ -165,7 +165,11 @@ struct GitHubReviewPostWhenRequestedTests {
         for command in [
             "Post a review on \(url)", "Please post the review on \(url)", "Review \(url) and post the review",
             "Review \(url), then submit the review", "Can you publish the review comments on \(url)?",
-            "Post a review on \(url) again"
+            "Post a review on \(url) again",
+            // Pause words that are about other work, not the post.
+            "First, post the review on \(url), then summarize it",
+            "Post the review on \(url); I will prepare the follow-up",
+            "Draft the review for \(url) and then post the review"
         ] {
             #expect(GitHubReviewPublicationRequirement.commandsPosting(command), "\(command)")
         }
@@ -176,7 +180,9 @@ struct GitHubReviewPostWhenRequestedTests {
             "Draft the review comments for \(url) and let me post them", "I will post the review on \(url) myself",
             "Add review comments to the review file for \(url)", "Leave a review on \(url)",
             "Post the review on \(url) once the tests pass", "Stop posting the review on \(url)",
-            "I'll review \(url) and post the review myself", "Someone else should post the review on \(url)"
+            "I'll review \(url) and post the review myself", "Someone else should post the review on \(url)",
+            "Post the review on \(url), then wait", "Post the draft review on \(url) first",
+            "Review \(url); I'll post the review later"
         ] {
             #expect(!GitHubReviewPublicationRequirement.commandsPosting(notYet), "\(notYet)")
         }
