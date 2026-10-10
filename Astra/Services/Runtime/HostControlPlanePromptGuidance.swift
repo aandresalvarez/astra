@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum HostControlPlanePromptGuidance {
     /// Appended wherever the routing contract is stated, because "use the host
@@ -27,9 +28,52 @@ enum HostControlPlanePromptGuidance {
             On Jira the proposals are `propose_issue` (a new ticket), `propose_comment` (a comment on an existing ticket; say whether it is `public` or `internal`), `propose_update` (edit an existing ticket's fields), and `propose_transition` (move a ticket to another status; read `get_transitions` first for the ids). Call them on `mcp__astra_host__jira` and pass the fields as arguments.
             """
         return """
-        Writes through host control-plane connectors are staged, not sent. Where a typed operation exists to propose a change, call it, report that the proposal is staged for the user's review, and stop. When the user asks you to file, send, reply, comment, update, or move something, that is a request to propose it: stage it and say it is waiting for their review. \(transport) A reply saying nothing was sent is the operation succeeding. ASTRA performs the write itself, after the user reads the exact payload and decides to send it, using a credential you are never given. Do not retry a staged proposal, do not stage the same change twice hoping the second one sends, and never substitute a script, curl command, or written instructions that would have someone run the write with an API token — moving a credential out of ASTRA and into a shell is worse than the change not happening. If no propose operation exists for what you were asked to change, say the change cannot be made through ASTRA and stop.
+        \(stagedWritesMarker) Where a typed operation exists to propose a change, call it, report that the proposal is staged for the user's review, and stop. When the user asks you to file, send, reply, comment, update, or move something, that is a request to propose it: stage it and say it is waiting for their review. \(transport) A reply saying nothing was sent is the operation succeeding. ASTRA performs the write itself, after the user reads the exact payload and decides to send it, using a credential you are never given. Do not retry a staged proposal, do not stage the same change twice hoping the second one sends, and never substitute a script, curl command, or written instructions that would have someone run the write with an API token — moving a credential out of ASTRA and into a shell is worse than the change not happening. If no propose operation exists for what you were asked to change, say the change cannot be made through ASTRA and stop.
         """
     }
+
+    static let stagedWritesMarker = "Writes through host control-plane connectors are staged, not sent."
+
+    /// The contract above, and the GitHub capability's review rule
+    /// (`PluginCatalog`), describe a level that asks first. In Auto ASTRA sends
+    /// a proposal, or posts a review file, at the moment the agent asks, and
+    /// returns the receipt as the tool result — so an agent that says "waiting
+    /// for your review" is describing something that will not happen, and one
+    /// that does not know the review request exists never makes it. Appended
+    /// only where the contract or the rule is, only where the run's level does
+    /// not ask (`ExternalActionPolicy`), and with the level the broker binding
+    /// uses, so the prompt and the broker cannot disagree.
+    static func appendingAutoSendGuidance(
+        to prompt: String,
+        policyLevel: AgentPolicyLevel,
+        usesHostControlCLIRelay: Bool,
+        offersGitHubHostTool: Bool
+    ) -> String {
+        var prompt = prompt
+        if !ExternalActionPolicy.asksUser(for: .connectorMutation, level: policyLevel),
+           prompt.contains(stagedWritesMarker) {
+            prompt += """
+
+
+            ASTRA Auto mode: this task does not ask the user before acting outside ASTRA, so a proposal is the write. When you call a propose operation, ASTRA sends it with the connector credential before the reply comes back, and the chat records it with a link. A reply with `sent: true` carries the new `key` and `url`: report those rather than a pending review, and build on them — for example, propose an epic first and pass its key as `parent_key` when you propose the stories under it. A reply with `sent: false` and an `error` sent nothing: fix what it names and propose again, or report it. A reply with `sent: unknown` may have been sent: do not propose it again; check with `get_issue` or `search_jql`. A reply that says the proposal waits for the user's review means exactly that. Everything else above still holds: propose each change once, through the propose operation, and never write it another way.
+            """
+        }
+        if offersGitHubHostTool,
+           !ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: policyLevel),
+           prompt.contains(reviewPostingMarker) {
+            let request = usesHostControlCLIRelay
+                ? "run `astra-host-control github --post-review pr<NUMBER>_review.json`"
+                : #"call `mcp__astra_host__github` with `{"operation":"post_review","review_file":"pr<NUMBER>_review.json"}`"#
+            prompt += """
+
+
+            ASTRA Auto mode: this task does not ask before posting a review the user asked to post. After you write the review file, ask ASTRA to post it: \(request), naming the file you wrote. ASTRA posts exactly that file while it still holds the bytes you wrote and the pull request's head is still its `commit_id`, and the chat records it with a link. `posted: true` carries the `review_url`: report it rather than a pending Post review. `posted: false` with an `error` posted nothing: fix it in a new file name and ask again, or report it. `posted: unknown` may have been posted: do not ask again; check the pull request's reviews. A file you do not ask ASTRA to post is not posted; it waits for the user's review. Everything else in the review rule still holds.
+            """
+        }
+        return prompt
+    }
+
+    static let reviewPostingMarker = "require the user to press Post review"
 
     static let dockerRoutingContract = """
     Routing contract: provider reasoning runs on host macOS, workspace shell commands run in Docker, and host control-plane actions such as GitHub PR metadata, Jira, read-only Google Cloud checks, SSH, browser, and Keychain access must use ASTRA-exposed host capabilities when available. Use `mcp__astra_host__github`, `mcp__astra_host__gcloud`, `mcp__astra_host__ssh`, or `mcp__astra_host__jira` for host control-plane work; GitHub Copilot CLI may display these as `astra_host-github`, `astra_host-gcloud`, `astra_host-ssh`, and `astra_host-jira`. Use `mcp__astra_host__bq` only for bq help/version metadata; GitHub Copilot CLI may display it as `astra_host-bq`. BigQuery data access is not available through host-control; use an explicitly approved BigQuery capability, or report BigQuery data access as unavailable if no such capability is present. Do not ask a subagent to "run locally" or to use native host Bash to escape this routing; subagents must use the same Docker workspace MCP tools for project commands and ASTRA host-control MCP tools for host services. If a host control-plane capability is missing, report that capability as missing instead of trying to run a host CLI from the Docker workspace.

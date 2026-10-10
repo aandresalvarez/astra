@@ -30,7 +30,9 @@ final class TaskConnectorMutationReviewState {
     /// earlier one having been filed.
     func prepare(task: AgentTask, modelContext: ModelContext) {
         guard !isPreparing else { return }
-        guard let pending = ConnectorMutationRequirementResolver.pendingMutations(task: task).first else {
+        guard let pending = ConnectorMutationCoordinator.reviewable(
+            ConnectorMutationRequirementResolver.pendingMutations(task: task)
+        ).first else {
             return
         }
         isPreparing = true

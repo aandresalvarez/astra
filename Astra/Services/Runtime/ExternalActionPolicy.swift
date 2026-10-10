@@ -55,23 +55,22 @@ enum ExternalActionAuthorization: String, Codable, Sendable {
 /// produced the action, so a proposal composed under Ask is still reviewed
 /// after the task switches to Auto.
 ///
-/// For now a staged connector write and a requested GitHub review are
-/// reviewed in Auto too. ASTRA learns of them only when it reads the task
-/// folder after the run, so sending them without asking means sending after
-/// the turn, and every state the run can reach in between (a failed check, a
-/// cancel, a crash, a decline) becomes a question about whether to send.
-/// They will be sent when the agent asks, with the receipt returned to it, in
-/// their own change (spec decision 15).
+/// In Auto a staged connector write and a requested GitHub review are sent
+/// when the agent asks, as its own `git push` happens when it runs: the broker
+/// asks ASTRA, ASTRA sends through the same checks the review sheet uses, and
+/// the receipt is the agent's tool result (`BrokeredExternalActionHandler`,
+/// spec decision 15). Nothing waits for the run to end, so no state the run
+/// reaches afterwards decides whether to send.
 enum ExternalActionPolicy {
     static func disposition(
         for kind: ExternalActionKind,
         level: AgentPolicyLevel
     ) -> ExternalActionDisposition {
         switch kind {
-        case .connectorMutation, .githubReviewPublication:
-            return .askUser
         case .connectorCredentialUse,
+             .connectorMutation,
              .gitPullRequestPublication,
+             .githubReviewPublication,
              .githubThreadReply,
              .githubThreadResolution,
              .agentCommand:

@@ -199,6 +199,49 @@ struct BrokeredConnectorFitnessTests {
         }
     }
 
+    /// Spec decision 15 gave the broker a way to ask ASTRA to send. The ask is
+    /// the whole of it: the request types carry a path, a name and a digest,
+    /// and the review request reads a file. Neither may grow a transport, or
+    /// the broker would be sending and ASTRA's checks would be advisory.
+    @Test("The broker's request seam has no way to send anything")
+    func requestSeamHasNoWayToSendAnything() throws {
+        for path in [
+            "Tools/HostControlToolSupport/BrokeredExternalActionRequests.swift",
+            "Tools/HostControlToolSupport/GitHubReviewPostPolicy.swift"
+        ] {
+            let source = try fileText(path)
+            for networking in ["URLRequest", "URLSession", "dataTask", "httpMethod", "Process(", "processRunner", "posix_spawn"] {
+                #expect(
+                    !source.contains(networking),
+                    """
+                    \(path) references \(networking). The broker asks ASTRA to send; \
+                    the moment it can send itself, ASTRA's checks stop being what \
+                    decides whether a write happens.
+                    """
+                )
+            }
+        }
+    }
+
+    /// Whether a write is sent now or reviewed later is the run's level, read
+    /// by `ExternalActionPolicy` in the app. A broker that read a level would be
+    /// a second owner of that answer — and one the agent's environment feeds.
+    @Test("The broker never reads a permission level")
+    func brokerNeverReadsAPermissionLevel() throws {
+        let root = try repositoryRoot()
+        let violations = try swiftFiles(under: root.appendingPathComponent("Tools/HostControlToolSupport"))
+            .flatMap { file -> [String] in
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return ["AgentPolicyLevel", "ExternalActionPolicy", "PermissionPolicy", "policyLevel", "autonomous", "import ASTRACore"]
+                    .filter { text.contains($0) }
+                    .map { "\(file.lastPathComponent): \($0)" }
+            }
+        #expect(
+            violations.isEmpty,
+            "The broker reads a permission level, so it could decide to send by itself: \(violations)"
+        )
+    }
+
     // MARK: - Helpers
 
     private func functionBody(named name: String, in source: String) throws -> String {

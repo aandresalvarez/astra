@@ -78,6 +78,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var sessions: [SessionKey: HostControlBrokerSession] = [:]
     private var historyReaders: [SessionKey: any TaskHistoryReading] = [:]
+    private var externalActionRequesters: [SessionKey: any BrokeredExternalActionRequesting] = [:]
 
     /// Bind the durable store before handing a detached execution task to a provider.
     func bindHistory(container: ModelContainer, taskID: UUID, runID: UUID) {
@@ -95,6 +96,28 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     func unbindHistory(taskID: UUID, runID: UUID) {
         lock.lock()
         historyReaders.removeValue(forKey: sessionKey(taskID: taskID, runID: runID))
+        lock.unlock()
+    }
+
+    /// Bind ASTRA's side of this run's writes before the provider launches: the
+    /// only way a broker request can lead to one (`BrokeredExternalActionHandler`).
+    /// A session prepared without a binding answers every write request as
+    /// waiting for the user's review.
+    func bindExternalActions(_ requester: any BrokeredExternalActionRequesting, taskID: UUID, runID: UUID) {
+        lock.lock()
+        externalActionRequesters[sessionKey(taskID: taskID, runID: runID)] = requester
+        lock.unlock()
+    }
+
+    func externalActionRequester(taskID: UUID, runID: UUID?) -> (any BrokeredExternalActionRequesting)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return externalActionRequesters[sessionKey(taskID: taskID, runID: runID)]
+    }
+
+    func unbindExternalActions(taskID: UUID, runID: UUID) {
+        lock.lock()
+        externalActionRequesters.removeValue(forKey: sessionKey(taskID: taskID, runID: runID))
         lock.unlock()
     }
 
@@ -147,7 +170,8 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             configuration: configuration,
             expectedHelperPath: expectedHelperPath,
             withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID),
-            historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id) }
+            historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id) },
+            externalActionRequester: externalActionRequester(taskID: task.id, runID: runID)
         )
         guard let socketPath = session.start(
             allowsFileDropFallback: runtime.map(Self.providerSandboxedRuntimes.contains) == true
@@ -312,12 +336,14 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         configuration: HostControlToolConfiguration,
         expectedHelperPath: String,
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
-        historyReader: (any TaskHistoryReading)? = nil
+        historyReader: (any TaskHistoryReading)? = nil,
+        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil
     ) {
         server = HostControlMCPServer(
             configuration: configuration,
             withholdingObserver: withholdingObserver,
-            historyReader: historyReader
+            historyReader: historyReader,
+            externalActionRequester: externalActionRequester
         )
         self.expectedHelperPath = Self.canonicalPath(expectedHelperPath)
     }

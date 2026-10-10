@@ -129,11 +129,11 @@ boundary. The full inventory is in
   launch stops if that grant cannot be saved; a connector the agent reached for
   mid-run is allowed only after a clean finish and a durable save, and offered
   otherwise; an Auto launch answers an offer still open). A staged Jira write
-  and a requested GitHub review are still reviewed in the sheet in Auto for
-  now: ASTRA learns of them only after the run, so sending them without asking
-  would mean sending after the turn; they will be sent when the agent asks
-  (spec decision 15). Every action outside ASTRA leaves a record in the chat,
-  derived from its receipt. A command the agent ran itself that
+  is sent when the agent proposes it, and a requested GitHub review is posted
+  when the agent asks ASTRA to post the file it wrote; the receipt (key, link,
+  or error) is the agent's tool result (spec decision 15, below). Every action
+  outside ASTRA leaves a record in the chat, derived from its receipt. A
+  command the agent ran itself that
   is not known local work — exactly what Ask would have asked about — is
   recorded with an **Agent** pill as the command it ran; a call that is one
   `git push` or `gh` write gets that action's title. The next turn's prompt
@@ -209,6 +209,49 @@ boundary. The full inventory is in
 - Prompts that are not action approvals stay in every level: widening the
   Seatbelt sandbox after a denial and the sensitive-data runtime-switch
   acknowledgement.
+
+### Writes sent when the agent asks (Auto)
+
+The host-control broker composes and stages a connector write, or reads a
+review file the agent names, and then asks the app over
+`BrokeredExternalActionRequesting`. The broker never sends anything and never
+reads a permission level (`BrokeredConnectorFitnessTests` pins both). The app
+answers through `BrokeredExternalActionHandler`, bound when the run launches
+to the task, the run, and the run's own user-facing level, so a request
+chooses none of them:
+
+- **Ask and Custom**: `ExternalActionPolicy` asks, so nothing is sent or
+  recorded at proposal time. The run boundary records the proposal and the
+  dock offers the review sheet, exactly as before.
+- **Auto**: the proposal is recorded with `authorization: .autoPolicy` and
+  sent at once through the sheet's own `ConnectorMutationCoordinator.prepare`
+  and `send`: the staged bytes are re-read against the digest of the bytes the
+  broker wrote (never a path the agent named), the route is derived from
+  ASTRA's table, the destination is re-resolved from the connector, the send
+  is reserved durably before dispatch, and an ambiguous outcome is never sent
+  again. Any outcome retires an Auto record, so a refused write goes back to
+  the agent and is never offered for a later send. A requested review is
+  posted through `GitHubReviewPublicationService.prepare` and `publish`, only
+  for the file the request names while it still holds the bytes the broker
+  read, and only while the user's request to post a review is open and is a
+  command to post it now: a positive list — the base verb post, publish or
+  submit before the review or its comments, nothing ahead of it but words
+  that keep it a command, no condition after it, and no pause anywhere in the
+  message ("ask me first", "hold off", "draft"), and it is the user's latest
+  word — anything said after it ("actually, no", "never mind", or any other
+  message) leaves the review for the sheet. Wording that falls outside
+  the list still offers the sheet, so a misreading leaves a review unposted,
+  never posts one. Whether a run wrote or touched a review file never makes
+  it eligible.
+
+Nothing about either send depends on how the run ends, its checks,
+settlement, or crash recovery: the run boundary sends nothing at any level.
+If the app cannot record the proposal, it sends nothing and the proposal waits
+for review. A send still in flight when ASTRA stops leaves a record with no
+outcome, which the dock shows like any other proposal, refused as already sent
+when the send was claimed. The broker waits a bounded time for the answer;
+past it the agent is told the outcome is not yet known and not to ask again,
+while the send finishes and records its own outcome.
 
 ## Repeatable Checks
 

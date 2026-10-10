@@ -1,9 +1,10 @@
 # Permission levels mean one thing everywhere
 
-Status: **implemented on `codex/permission-levels-harmonization`.** Every
-open question was settled with its recommended default; see
-[Decisions](#decisions). Where the implementation refined the design, the
-section below says so.
+Status: **implemented on `codex/permission-levels-harmonization`;** decision
+15 (Auto sends a staged write when the agent asks) on
+`claude/auto-sends-at-proposal`, stacked on it. Every open question was
+settled with its recommended default; see [Decisions](#decisions). Where the
+implementation refined the design, the section below says so.
 
 ## The rule (decided 2026-10-07)
 
@@ -71,9 +72,9 @@ relaunching — the first effect may already have happened.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | B1 | Connector credential first use in a task (launch gate) | Card "Permission needed" (Allow once / Allow for task) | **Card** — "Allow for this task" leads (PR #441); a test pins that Auto never bypasses it | Card | `AgentRuntimeLaunchPreflight.finishPreLaunchCredentialApprovalRequest`; `TaskDecisionDockPresentation.prefersTaskScopedRuntimePermission`; `ConnectorPreflightServiceTests` | `permission.approval.requested` card | Asks (unchanged) | **No card.** Granted for the task, one chat line: "Auto allowed Jira for this task" (Decision 4) |
 | B2 | Connector credential offer after a sealed call ("this turn's wording did not mention it") | Offer card (`futureUse`) | **Offer card** | Offer card | `BrokeredCredentialWithholding.recordOpenRequest` | Card | Asks (unchanged) | Granted for the task + chat line; the run continues next turn |
-| B3 | Jira write: `create_issue`, `add_comment`, `update_issue`, `transition_issue` | Agent proposes → staged file → dock "Review & send" → sheet → send | **Same sheet** | Same | `ConnectorMutationDiscovery`, `ConnectorMutationCoordinator`, `ConnectorMutationSender`, `Astra/Views/TaskConnectorMutationReview.swift` | **None in the chat** — `connector.mutation.receipt` is a structured event the thread never shows | Asks (sheet, unchanged; Decision 10 on "for this task") | **Sent without a sheet** when the run that proposed it was Auto; chat record with key and link |
+| B3 | Jira write: `create_issue`, `add_comment`, `update_issue`, `transition_issue` | Agent proposes → staged file → dock "Review & send" → sheet → send | **Same sheet** | Same | `ConnectorMutationDiscovery`, `ConnectorMutationCoordinator`, `ConnectorMutationSender`, `Astra/Views/TaskConnectorMutationReview.swift` | **None in the chat** — `connector.mutation.receipt` is a structured event the thread never shows | Asks (sheet, unchanged; Decision 10 on "for this task") | **Sent when the agent proposes it** in a run that launched in Auto, the receipt returned to the agent; chat record with key and link (decision 15) |
 | B4 | Git draft pull request publication | Agent told not to push; ASTRA builds the exact proposal → "Publication approval needed" → "Review & publish" sheet → `gitPublish` grant | **Agent publishes itself** with native credentials (A9); ASTRA queues no proposal (`TaskSuccessfulCompletionService` skips it for `.autonomous`; `TaskCompletionPolicy` only blocks on an already-pending one) | As Ask | `AskGitPullRequestWorkflowPolicy`, `TaskGitPullRequestPublishCoordinator`, `TaskCompletionPolicy.decideSuccessfulCompletion`, `gitPublishProposal` sheet in `TaskMainView.swift` | `task.approved` text "Published draft pull request #N: url" | Asks (unchanged) | Agent keeps publishing; ASTRA records it (Decision 3) |
-| B5 | GitHub pull-request review posting | "GitHub review ready to post" → "Review comments" sheet → POST | **Same sheet** | Same | `GitHubReviewPublicationService`, `GitHubReviewPublicationRequirement`, `TaskCompletionPolicy` | `system.info` "Posted GitHub review: url" | Asks (unchanged) | **Posted without a sheet**; chat record with link (Decision 2) |
+| B5 | GitHub pull-request review posting | "GitHub review ready to post" → "Review comments" sheet → POST | **Same sheet** | Same | `GitHubReviewPublicationService`, `GitHubReviewPublicationRequirement`, `TaskCompletionPolicy` | `system.info` "Posted GitHub review: url" | Asks (unchanged) | **Posted when the agent asks ASTRA to post the file**, the link returned to it; chat record with link (Decisions 2, 15) |
 | B6 | GitHub thread reply / resolve (PR #482, paused) | — | — | — | future host `github` write operations | — | Asks in the chat: "Allow once & continue" / "Allow for this task" | Executes, result returned to the agent, chat record with link |
 | B7 | Messages (mail) | No send operation exists: `stanford-*-mail` tools are read-only | — | — | `Tools/Stanford*MailTool` | — | Must ask when one is added | Must record when one is added |
 | B8 | REDCap, gcloud, bq, ssh, GitHub reads via the host broker | Free (read-only by construction) | Free | Free | `Tools/HostControlToolSupport/*Policy.swift` | — | Free | Free |
@@ -217,9 +218,10 @@ no receipt; they get one `system.info` line ("Auto allowed Jira to use its
 saved credentials for this task.") next to the task-scoped grant, recorded with
 source `auto_policy`.
 
-What the agent sees is unchanged: a Jira proposal waits for the user's review
-at every level for now (decision 15), so the broker's reply and the prompt
-contract still say so.
+What the agent sees follows the level (decision 15): in Ask and Custom a
+proposal waits for the user's review, and the broker's reply and the prompt
+contract say so; in Auto the reply carries the receipt, and Auto guidance is
+appended to the contract with the same level the broker uses.
 
 ### 3. Per-action changes
 
@@ -227,9 +229,9 @@ contract still say so.
 | --- | --- |
 | B1 connector credential gate | Auto: grant the launch's labels for the task through the same path "Allow for this task" uses (`TaskRuntimePermissionGrants`), write the line, continue the launch. Ask/Custom unchanged. |
 | B2 credential offer | Auto: same grant instead of an offer card. |
-| B3 Jira writes | Deferred (decision 15): reviewed in the sheet at every level until Auto sends when the agent asks. Ask unchanged. |
+| B3 Jira writes | Decision 15: in Auto the broker asks the app right after staging, the app sends through `ConnectorMutationCoordinator.prepare`/`send` and the receipt is the tool result (`BrokeredExternalActionHandler`, `sendWhenProposed`). Ask and Custom unchanged: reviewed in the sheet after the run. |
 | B4 Git PR | Decision 3: Auto unchanged (the agent publishes); add the observed-action record below. |
-| B5 GitHub review | Deferred (decision 15), as B3. |
+| B5 GitHub review | Decision 15: in Auto the agent asks ASTRA to post a review file it wrote (`github` `post_review`, CLI `--post-review`); the app posts that file, bound to the digest the broker read, through `GitHubReviewPublicationService.prepare`/`publish`, and returns the link (`publishWhenRequested`). Ask and Custom unchanged. |
 | B6 PR #482 | Uses `ExternalActionPolicy` + `ExternalActionReceipt`; specified there. |
 | A4/A7 Ask local tools | Apply `PolicyLocalToolGrants.levelScoped` in every adapter so Ask asks the same on every runtime (Decision 6). |
 | A4 Ask hard denies | Decision 5: `rm`, `chmod`, `chown`, `git push`, `deploy`, `publish` become ask-first in Ask; `sudo` stays denied. |
@@ -358,17 +360,52 @@ Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
     answered with this decision rather than another entry.
 15. **When Auto sends a staged write (2026-10-09).** Decision 2 had Auto
     send a staged Jira write and post a requested GitHub review without the
-    sheet. ASTRA learns of either only when it reads the task folder after the
+    sheet. ASTRA learned of either only when it read the task folder after the
     run, so it sent them during settlement, and every state a run can reach
     between proposing and sending became a review finding: a failed check, a
     cancel, a crash, an upgrade, a decline in the meantime, the order of
     dependent proposals, a review that failed beside a Jira write. That window
-    is a second owner of "when the write happens". **Auto sends when the agent
-    asks**, as the agent's own `git push` happens when it runs: the broker asks
-    the app, the app sends through the same checks, and the agent gets the
-    receipt (key, link, or error) back and can build on it. That needs a
-    request from the broker to the app, so it is its own change; until then
-    both are reviewed in the sheet at every level, as before this work.
+    was a second owner of "when the write happens". **Auto sends when the agent
+    asks**, as the agent's own `git push` happens when it runs. Implemented on
+    `claude/auto-sends-at-proposal`:
+    - The broker gets one way to ask the app, `BrokeredExternalActionRequesting`,
+      bound by the worker to the task, the run, and the run's own level
+      (`RunPermissionManifest.policyLevel`), like the history reader. It never
+      sends and never reads a level. After staging a Jira proposal it asks with
+      the file it wrote and the digest of what it wrote; `github` gains
+      `post_review` (`--post-review` on the CLI relay), which reads the named
+      review file under the task folder and asks with its name and digest. The
+      reply tells the agent exactly what the app answered: `sent: true` with
+      the key and link, `sent: false` with the error, `sent: unknown` (do not
+      ask again), or that the proposal waits for review.
+    - The app answers on the main actor (`BrokeredExternalActionHandler`)
+      through `ExternalActionPolicy`. Ask and Custom record nothing and the
+      run boundary offers the proposal for review, as before. Auto records the
+      proposal with `authorization: .autoPolicy` and sends it through the
+      sheet's own `prepare` and `send` (`sendWhenProposed`): digest re-read,
+      derived route, re-resolved destination, durable reservation before
+      dispatch, no resend of an ambiguous outcome. Any outcome retires an Auto
+      record, so a refusal goes back to the agent rather than waiting in the
+      dock for a second attempt; the dock hides one while it is in flight.
+    - A requested review is posted only for the file the request names, while
+      it holds the bytes the broker read, through `prepare` and `publish`, and
+      only while the user's request to post is open and is a command to post
+      now — a positive list (`commandsPosting`) rather than a growing list of
+      negations, so wording outside it ("ask me before posting", "hold off",
+      "add review comments") offers the sheet instead of posting — and is
+      the user's latest message, so nothing said after it has to be read as
+      a cancellation for Auto to honour it (`publishWhenRequested`).
+      "A file at this path was written or touched by the run" never makes one
+      eligible, so a review an earlier Ask run left for the user waits for the
+      user unless an Auto run's agent names that file in a request of its own.
+      Dispatch is matched by the file's place in the task folder, so the dock
+      never re-offers a posted review under another spelling of its path.
+    - Nothing depends on how the run ends, its checks, settlement or crash
+      recovery; the run boundary sends nothing at any level. A send still in
+      flight when ASTRA stops leaves a record with no outcome, which the dock
+      shows like any other proposal, refused as already sent when the send was
+      claimed. The broker waits a bounded time; past it the agent is told the
+      outcome is not yet known, and the send still records its own.
 
 ## PR #482 reuse
 
