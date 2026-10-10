@@ -14,6 +14,7 @@ enum TaskWorktreeCreationError: LocalizedError, Equatable {
     case nameUnavailable(String)
     case journalFailed(String)
     case submodulesUnavailable(path: String, reason: String)
+    case destinationInsideRepository(repository: String, worktreesRoot: String)
     case persistenceFailed(path: String, reason: String)
     case recoveryPersistenceFailed(String)
     case choicePersistenceFailed(String)
@@ -39,6 +40,8 @@ enum TaskWorktreeCreationError: LocalizedError, Equatable {
             "ASTRA could not record the new worktree before creating it, so nothing was created and no agent was launched. \(reason)"
         case .submodulesUnavailable(let path, let reason):
             "ASTRA could not set up the Git submodules of \(path) in a new worktree, so no agent was launched. Check that you can fetch the submodules, or start the task without a worktree. \(reason)"
+        case .destinationInsideRepository(let repository, let worktreesRoot):
+            "ASTRA keeps task worktrees in \(WorkspacePathPresentation.abbreviatePath(worktreesRoot)), which is inside \(WorkspacePathPresentation.abbreviatePath(repository)). A worktree there would show up as untracked files in that checkout, so none was created. Start the task without a worktree, or move the repository outside that folder."
         case .persistenceFailed(let path, let reason):
             "The worktree was created at \(path), but ASTRA could not save the task, so no agent was launched. If the task is still unsaved when ASTRA next starts, the unused worktree is removed. \(reason)"
         case .recoveryPersistenceFailed(let reason):
@@ -445,6 +448,13 @@ enum TaskWorktreeService {
         guard repositories.contains(where: { $0.path == path }) else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
+        // A worktree inside its own source checkout would appear there as
+        // untracked files, polluting the checkout the option leaves alone.
+        let sourceCheckout = WorkspacePathPresentation.resolvedPath(GitCheckoutLayout.worktreeRoot(containing: path) ?? path)
+        let resolvedRoot = WorkspacePathPresentation.resolvedPath(worktreesRoot)
+        if resolvedRoot == sourceCheckout || resolvedRoot.hasPrefix(sourceCheckout + "/") {
+            throw TaskWorktreeCreationError.destinationInsideRepository(repository: path, worktreesRoot: worktreesRoot)
+        }
         let repositoryKey = WorkspacePathPresentation.resolvedPath(path)
         guard activeCreationRepositories.insert(repositoryKey).inserted else {
             throw TaskWorktreeCreationError.repositoryBusy(path)
@@ -795,6 +805,7 @@ enum TaskWorktreeService {
         if exists {
             if let unclean = await uncleanOutcome() { return unclean }
             guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }
+            guard !(await git.unpopulatedGitlinksHoldFiles(at: path)) else { return kept("submodule_files") }
             let branch = await git.getCurrentBranch(at: path)
             guard branch != "unknown" else { return kept("branch_unavailable", retry: true) }
             guard branch == discard.branch else { return kept("branch_switched") }

@@ -767,13 +767,26 @@ final class TaskLifecycleCoordinator {
 
     /// Replacements save the new reference graph before any checkout is
     /// removed, so imported tasks keep worktrees they take over.
-    private func replaceWorkspace(_ existing: Workspace, create: () -> Workspace) -> Workspace? {
+    private func replaceWorkspace(
+        _ existing: Workspace, replacementPath: String, create: () -> Workspace
+    ) -> Workspace? {
         var replacement: Workspace?
+        // The import writes the replacement's SSH connections, at its own
+        // path, before the save. Both files are captured first and put back
+        // if the replacement isn't saved; one that can't be read stops it.
+        var sshSnapshots: [(path: String, data: Data?)] = []
+        for path in Set([existing.primaryPath, replacementPath]) {
+            do {
+                sshSnapshots.append((path, try SSHConnectionManager.snapshot(workspacePath: path)))
+            } catch {
+                AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                    "operation": "replace_workspace", "reason": "ssh_snapshot_failed",
+                    "error": error.localizedDescription
+                ], level: .error)
+                return nil
+            }
+        }
         guard cancelDurably(existing.tasks) else { return nil }
-        // The import writes the replacement's SSH connections to disk before
-        // the save; a replacement that isn't saved puts the old file back.
-        let sshPath = existing.primaryPath
-        let sshSnapshot = SSHConnectionManager.snapshot(workspacePath: sshPath)
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
@@ -787,7 +800,7 @@ final class TaskLifecycleCoordinator {
             }
         )
         guard result.persisted else {
-            SSHConnectionManager.restore(sshSnapshot, workspacePath: sshPath)
+            for snapshot in sshSnapshots { SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path) }
             return nil
         }
         return replacement
@@ -820,7 +833,7 @@ final class TaskLifecycleCoordinator {
                         }
                     }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
-                    return replaceWorkspace(existing) {
+                    return replaceWorkspace(existing, replacementPath: config.primaryPath) {
                         WorkspaceConfigManager.importWorkspace(
                             from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy
                         )
@@ -901,14 +914,14 @@ final class TaskLifecycleCoordinator {
                 if var exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path
-                    return replaceWorkspace(existing) {
+                    return replaceWorkspace(existing, replacementPath: exportedConfig.primaryPath) {
                         WorkspaceConfigManager.importWorkspace(
                             from: exportedConfig, modelContext: modelContext,
                             scheduleTrustPolicy: .preserveEnabledState, taskRecoveryTrustPolicy: .trustedLocalRecovery
                         )
                     }
                 }
-                return replaceWorkspace(existing) { insertWorkspaceFromFolder(name: name, path: url.path) }
+                return replaceWorkspace(existing, replacementPath: url.path) { insertWorkspaceFromFolder(name: name, path: url.path) }
             case .duplicate:
                 return insertWorkspaceFromFolder(name: name + " (Imported)", path: url.path)
             }

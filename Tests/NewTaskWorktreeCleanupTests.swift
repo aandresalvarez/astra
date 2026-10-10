@@ -283,6 +283,32 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
     }
 
+    @Test("With reflogs off, a commit reset away still keeps the worktree, and a missing reflog proves nothing")
+    func reflogsOffStillKeepResetCommits() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try fixture.git(["config", "core.logAllRefUpdates", "false"], at: repository)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        try fixture.commit("work.txt", contents: "work", message: "Task work", at: checkout)
+        try fixture.git(["reset", "--hard", "--quiet", discard.baseCommit], at: checkout)
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("reflog_changes"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+
+        try fixture.git(["branch", "no-reflog"], at: repository)
+        #expect(await GitService.shared.hasWorktreeReflogChanges(
+            branch: "no-reflog", baseCommit: discard.baseCommit, worktreePath: nil, repoPath: repository.path
+        ))
+    }
+
     @Test("A branch recreated after its worktree vanished outside cleanup is kept")
     func branchWithoutVerifiableWorktreeIsKept() async throws {
         let fixture = try Fixture()

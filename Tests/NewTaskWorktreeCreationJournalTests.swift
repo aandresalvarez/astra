@@ -336,6 +336,36 @@ struct NewTaskWorktreeCreationJournalTests {
         try await expectNothingLeft(in: repository, fixture: fixture)
     }
 
+    @Test("Files inside a submodule folder that isn't populated keep the worktree")
+    func filesInUnpopulatedGitlinkKeepWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let task = draft(in: app, context: store.mainContext)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: discard.worktreePath) == false)
+        // `libs/b` is registered but never initialized, so its folder is an
+        // empty gitlink that Git doesn't look inside.
+        let stray = URL(fileURLWithPath: discard.worktreePath).appendingPathComponent("libs/b/notes.txt")
+        try FileManager.default.createDirectory(at: stray.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "keep me".write(to: stray, atomically: true, encoding: .utf8)
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: discard.worktreePath))
+        store.mainContext.delete(task)
+        try store.mainContext.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("submodule_files"))
+        #expect(FileManager.default.fileExists(atPath: stray.path))
+    }
+
     @Test("A creation that loses its branch and folder to another process never removes them")
     func failedCreationLeavesCompetingWorktree() async throws {
         let fixture = try Fixture()

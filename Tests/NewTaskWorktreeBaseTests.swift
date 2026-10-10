@@ -1156,6 +1156,28 @@ struct NewTaskWorktreeBaseTests {
         #expect(try !NewTaskWorktreeComposerFlow.followWorkspaceLocation(selection, on: draft, modelContext: context))
     }
 
+    @Test("A worktree is never created inside its own source checkout")
+    func destinationInsideRepositoryIsRejected() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let task = AgentTask(title: "Explore", goal: "Explore", workspace: workspace)
+        let inside = repository.appendingPathComponent("Worktrees", isDirectory: true)
+        await #expect(throws: TaskWorktreeCreationError.destinationInsideRepository(
+            repository: repository.path, worktreesRoot: inside.path
+        )) {
+            try await TaskWorktreeService.prepare(
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+                modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
+                worktreesRoot: inside.path, ownership: fixture.ownership
+            )
+        }
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+        #expect(try fixture.git(["status", "--porcelain"], at: repository).isEmpty)
+    }
+
     @Test("A recorded repository that disappears stays selected and cannot submit")
     func missingRecordedRepositoryIsNotReplaced() async {
         let app = GitRepositoryInfo(name: "App", path: "/repos/app")

@@ -439,6 +439,53 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(SSHConnectionManager.load(workspacePath: fixture.storage.path).map(\.name) == ["original"])
     }
 
+    @Test("A replacement at another path restores both SSH files, and an unreadable one stops it")
+    func replacementAtAnotherPathRestoresBothSSHFiles() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let other = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        try context.save()
+        func connection(_ name: String) -> SSHConnection {
+            SSHConnection(name: name, host: name + "-host", user: "me", keyPath: "", configAlias: name)
+        }
+        SSHConnectionManager.save([connection("original")], workspacePath: fixture.storage.path)
+        SSHConnectionManager.save([connection("other-original")], workspacePath: other.path)
+        let files = [fixture.storage.path, other.path].map {
+            URL(fileURLWithPath: SSHConnectionManager.connectionsFilePath(for: $0))
+        }
+        let before = try files.map { try Data(contentsOf: $0) }
+        // Matched by ID, the replacement lives at the config's own folder.
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        config.sshConnections = [connection("replacement")]
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: other.path))
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(config).write(to: configURL, options: .atomic)
+        func replace(saves: Bool) -> Workspace? {
+            TaskLifecycleCoordinator(
+                modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+                persistWorkspaceChange: { _, context in saves && (try? context.save()) != nil }
+            ).importFromConfig(at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .replace })
+        }
+
+        #expect(replace(saves: false) == nil)
+        #expect(try files.map { try Data(contentsOf: $0) } == before)
+
+        // An SSH file that can't be read can't be restored, so nothing starts.
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: files[1].path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: files[1].path) }
+        #expect(replace(saves: true) == nil)
+        #expect(!workspace.isDeleted)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: files[1].path)
+        #expect(try Data(contentsOf: files[1]) == before[1])
+    }
+
     @Test("A mirror that can't be removed keeps the deletion record for a retry")
     func unremovableMirrorKeepsRecord() throws {
         let fixture = try Fixture()

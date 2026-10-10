@@ -108,6 +108,9 @@ protocol GitRepositoryOperating: AnyObject {
         repoPath: String, branch: String, base: String, worktreesRoot: String, lockReason: String
     ) async throws -> String
     func unlockWorktree(repoPath: String, worktreePath: String) async throws
+    /// True when a gitlink folder whose submodule isn't populated holds files,
+    /// which no status reports; also true when that can't be read.
+    func unpopulatedGitlinksHoldFiles(at worktreePath: String) async -> Bool
     /// Where `refs/heads/<branch>` points, or that it positively doesn't exist.
     func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult
     /// Whether the checkout has no tracked or untracked changes; nil when
@@ -213,6 +216,7 @@ extension GitRepositoryOperating {
         try await addWorktree(repoPath: repoPath, branch: branch, createBranch: true, base: base, worktreesRoot: worktreesRoot)
     }
     func unlockWorktree(repoPath: String, worktreePath: String) async throws {}
+    func unpopulatedGitlinksHoldFiles(at worktreePath: String) async -> Bool { true }
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
     func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
 

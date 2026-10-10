@@ -108,7 +108,13 @@ extension GitService {
         )
         _ = try await runGit(
             at: repoPath,
-            arguments: ["worktree", "add", "--lock", "--reason", lockReason, "-b", branch, destination, base],
+            // Reflogs are created now even where `core.logAllRefUpdates` is
+            // off; Git keeps appending to a reflog that exists, so cleanup
+            // can always see commits that were later reset away.
+            arguments: [
+                "-c", "core.logAllRefUpdates=true",
+                "worktree", "add", "--lock", "--reason", lockReason, "-b", branch, destination, base
+            ],
             timeout: Self.networkGitTimeout
         )
         return destination
@@ -116,6 +122,34 @@ extension GitService {
 
     func unlockWorktree(repoPath: String, worktreePath: String) async throws {
         _ = try await runGit(at: repoPath, arguments: ["worktree", "unlock", worktreePath], failureLogLevel: .warning)
+    }
+
+    /// Git reports nothing for files inside a gitlink folder whose submodule
+    /// isn't populated, and a non-forced `git worktree remove` deletes them.
+    /// Checks the worktree and every populated submodule in it; any failure
+    /// to read counts as files present.
+    func unpopulatedGitlinksHoldFiles(at worktreePath: String) async -> Bool {
+        let fileManager = FileManager.default
+        do {
+            let populated = try await runGit(
+                at: worktreePath, arguments: ["submodule", "foreach", "--quiet", "--recursive", "pwd"],
+                failureLogLevel: .warning
+            ).split(whereSeparator: \.isNewline).map(String.init)
+            for root in [worktreePath] + populated {
+                let entries = try await runGit(at: root, arguments: ["ls-files", "--stage", "-z"], failureLogLevel: .warning)
+                for entry in entries.split(separator: "\0") where entry.hasPrefix("160000 ") {
+                    guard let tab = entry.firstIndex(of: "\t") else { return true }
+                    let folder = (root as NSString).appendingPathComponent(String(entry[entry.index(after: tab)...]))
+                    var isDirectory = ObjCBool(false)
+                    guard fileManager.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue,
+                          !fileManager.fileExists(atPath: (folder as NSString).appendingPathComponent(".git")) else { continue }
+                    if try !fileManager.contentsOfDirectory(atPath: folder).isEmpty { return true }
+                }
+            }
+            return false
+        } catch {
+            return true
+        }
     }
 
     /// `for-each-ref` exits cleanly with no output for a missing ref and fails
@@ -179,7 +213,10 @@ extension GitService {
         do {
             for (path, ref) in refs {
                 let output = try await runGit(at: path, arguments: ["reflog", "show", "--format=%H", ref])
-                if output.split(whereSeparator: \.isNewline).contains(where: { $0 != baseCommit }) { return true }
+                let entries = output.split(whereSeparator: \.isNewline)
+                // No reflog proves nothing: with reflogs off, a commit reset
+                // away leaves no trace, so the branch is kept.
+                if entries.isEmpty || entries.contains(where: { $0 != baseCommit }) { return true }
             }
             return false
         } catch {

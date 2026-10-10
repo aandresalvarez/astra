@@ -115,11 +115,15 @@ public enum SSHConnectionManager {
     }
 
     /// The connections file as it is now, so a caller whose change may be
-    /// rolled back can put it back. Nil when there is no file.
-    public static func snapshot(workspacePath: String) -> Data? {
+    /// rolled back can put it back. Nil only when there is no file; a file
+    /// that exists but can't be read throws, since restoring "no file" would
+    /// delete it.
+    public static func snapshot(workspacePath: String) throws -> Data? {
         guard !workspacePath.isEmpty else { return nil }
-        return try? HostFileAccessBroker().readData(
-            at: URL(fileURLWithPath: connectionsFilePath(for: workspacePath)),
+        let path = connectionsFilePath(for: workspacePath)
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        return try HostFileAccessBroker().readData(
+            at: URL(fileURLWithPath: path),
             intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
         )
     }
