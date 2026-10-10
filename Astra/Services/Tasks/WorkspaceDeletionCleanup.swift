@@ -15,26 +15,48 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     let primaryPath: String
     let connectors: [ConnectorKeychainCleanup]
     let skills: [SkillKeychainCleanup]
+    /// True once a deletion of this workspace was saved. Its cleanup is owed
+    /// from then on, even after the same workspace is reimported at the same
+    /// path; until then a stored workspace means the deletion never happened.
+    let committed: Bool
 
     init(
         workspaceID id: UUID, primaryPath path: String,
-        connectors connectorCleanups: [ConnectorKeychainCleanup], skills skillCleanups: [SkillKeychainCleanup]
+        connectors connectorCleanups: [ConnectorKeychainCleanup], skills skillCleanups: [SkillKeychainCleanup],
+        committed isCommitted: Bool = false
     ) {
         workspaceID = id
         primaryPath = path
         connectors = connectorCleanups
         skills = skillCleanups
+        committed = isCommitted
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
+        primaryPath = try container.decode(String.self, forKey: .primaryPath)
+        connectors = try container.decode([ConnectorKeychainCleanup].self, forKey: .connectors)
+        skills = try container.decode([SkillKeychainCleanup].self, forKey: .skills)
+        committed = try container.decodeIfPresent(Bool.self, forKey: .committed) ?? false
     }
 
     /// Both records' credentials, so a cleanup still pending for the same
-    /// deletion is never dropped by a later one.
+    /// deletion is never dropped by a later one. Committed if either was.
     func merging(_ other: WorkspaceDeletionCleanupRecord) -> WorkspaceDeletionCleanupRecord {
         WorkspaceDeletionCleanupRecord(
             workspaceID: workspaceID, primaryPath: primaryPath,
             // By every namespace-defining fact, not only the connector ID: a
             // reimported connector can keep its ID under a new base URL.
             connectors: connectors + other.connectors.filter { !connectors.contains($0) },
-            skills: skills + other.skills.filter { new in !skills.contains { $0.skillID == new.skillID } }
+            skills: skills + other.skills.filter { new in !skills.contains { $0.skillID == new.skillID } },
+            committed: committed || other.committed
+        )
+    }
+
+    var markedCommitted: WorkspaceDeletionCleanupRecord {
+        WorkspaceDeletionCleanupRecord(
+            workspaceID: workspaceID, primaryPath: primaryPath, connectors: connectors, skills: skills, committed: true
         )
     }
 
@@ -45,6 +67,7 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         connectors = workspace.connectors.map(\.keychainCleanup)
             + workspace.skills.flatMap { $0.connectors.map(\.keychainCleanup) }
         skills = workspace.skills.map(\.keychainCleanup)
+        committed = false
     }
 }
 
@@ -64,20 +87,42 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// that can't be read stops the deletion instead of being overwritten.
     @discardableResult
     func record(_ record: WorkspaceDeletionCleanupRecord) throws -> WorkspaceDeletionCleanupRecord {
+        let stored = try existing(matching: record).map { $0.merging(record) } ?? record
+        try write(stored)
+        return stored
+    }
+
+    /// The pending record with `record`'s key, if any. One that can't be read
+    /// throws rather than reading as absent.
+    func existing(matching record: WorkspaceDeletionCleanupRecord) throws -> WorkspaceDeletionCleanupRecord? {
+        let url = recordURL(for: record)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
+    }
+
+    /// Replaces whatever is stored under the record's key.
+    func write(_ record: WorkspaceDeletionCleanupRecord) throws {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
         )
         let url = recordURL(for: record)
-        var stored = record
-        if FileManager.default.fileExists(atPath: url.path) {
-            let existing = try JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
-            stored = existing.merging(record)
-        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(stored).write(to: url, options: .atomic)
+        try encoder.encode(record).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        return stored
+    }
+
+    /// Undoes a `record` whose deletion wasn't saved: what was pending before
+    /// it is put back, so a retry that rolls back never drops cleanup an
+    /// earlier saved deletion still owes. With nothing before it, the record
+    /// is removed. A write that fails keeps the merged record, which only
+    /// ever names more to clean.
+    func restore(_ previous: WorkspaceDeletionCleanupRecord?, replacing record: WorkspaceDeletionCleanupRecord) throws {
+        if let previous {
+            try write(previous)
+        } else {
+            remove(record)
+        }
     }
 
     func remove(_ record: WorkspaceDeletionCleanupRecord) {
@@ -132,14 +177,8 @@ enum WorkspaceDeletionCleanupService {
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
               let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return false }
-        // The deletion was never saved only when that same workspace, by ID
-        // and path, is still stored; an import that reused the ID elsewhere
-        // doesn't make this deletion's cleanup unnecessary.
+        guard deletionWasSaved(record, workspaces: workspaces) else { return true }
         let path = WorkspacePathPresentation.standardizedPath(record.primaryPath)
-        let resolvedRecordPath = WorkspacePathPresentation.resolvedPath(record.primaryPath)
-        guard !workspaces.contains(where: {
-            $0.id == record.workspaceID && WorkspacePathPresentation.resolvedPath($0.primaryPath) == resolvedRecordPath
-        }) else { return true }
         // A mirror left behind would let recovery reimport the workspace, so
         // the record, and the credentials it needs, are kept for a retry.
         if !workspaces.contains(where: { WorkspacePathPresentation.standardizedPath($0.primaryPath) == path }),
@@ -166,6 +205,19 @@ enum WorkspaceDeletionCleanupService {
             ], level: .error)
         }
         return cleared
+    }
+
+    /// Whether `record`'s cleanup is owed. An uncommitted record's deletion
+    /// was never saved when that same workspace, by ID and path, is still
+    /// stored; an import that reused the ID elsewhere doesn't make its
+    /// cleanup unnecessary. A committed one is owed even then: the stored
+    /// workspace is a reimport, whose mirror and live connectors and skills
+    /// `settle` spares.
+    static func deletionWasSaved(_ record: WorkspaceDeletionCleanupRecord, workspaces: [Workspace]) -> Bool {
+        let resolvedRecordPath = WorkspacePathPresentation.resolvedPath(record.primaryPath)
+        return record.committed || !workspaces.contains {
+            $0.id == record.workspaceID && WorkspacePathPresentation.resolvedPath($0.primaryPath) == resolvedRecordPath
+        }
     }
 
     /// Settles deletions a quit interrupted, reading committed state through

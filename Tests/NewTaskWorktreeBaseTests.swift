@@ -1086,6 +1086,48 @@ struct NewTaskWorktreeBaseTests {
         #expect(panel.activeCodePathChangeBlockedMessage.contains("own worktree"))
     }
 
+    @Test("A retargeted draft can't be moved to a foreign repository, and an invalid one can be moved back")
+    func retargetedDraftStaysOnItsRepository() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let other = try fixture.repository("Other")
+        let store = try Fixture.container()
+        // An accepted choice refreshes in a detached task that can outlive
+        // the test; the store must outlive it too.
+        PanelRefreshLifetime.retained.append(store)
+        let workspace = workspace(repository, in: store.mainContext)
+        workspace.additionalPaths.append(other.path)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        #expect(TaskCodeLocationPin.set(repository.path, workspace: workspace, task: draft))
+        guard case .retargeted = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("Expected the draft to be retargeted")
+            return
+        }
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace, selectedTask: draft)
+        #expect(panel.canChangeActiveCodePath)
+
+        panel.selectRepository(GitRepositoryInfo(name: "Other", path: other.path))
+        #expect(draft.executionRootPath == WorkspacePathPresentation.standardizedPath(repository.path))
+        #expect(panel.errorMessage == WorkspaceGitViewModel.foreignRepositoryMessage)
+        guard case .retargeted = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A rejected choice must leave the draft retargeted")
+            return
+        }
+
+        // An import can still arrive pinned to the foreign repository; the
+        // picker stays open so the draft can be moved back.
+        #expect(TaskCodeLocationPin.set(other.path, workspace: workspace, task: draft))
+        panel.setWorkspaceForTesting(workspace, selectedTask: draft)
+        #expect(panel.unavailableWorktreePath != nil)
+        #expect(panel.canChangeActiveCodePath)
+        panel.selectRepository(GitRepositoryInfo(name: "App", path: repository.path))
+        #expect(draft.executionRootPath == WorkspacePathPresentation.standardizedPath(repository.path))
+        #expect(panel.unavailableWorktreePath == nil)
+    }
+
     @Test("Addressing PR comments from a task's worktree keeps that task's binding")
     func pullRequestCommentDraftKeepsWorktreeBinding() async throws {
         let fixture = try Fixture()
@@ -1393,4 +1435,11 @@ struct NewTaskWorktreeBaseTests {
         #expect(restored.canSubmit)
         #expect(!restored.isNewChoice(appInfo))
     }
+}
+
+/// Stores whose models a detached panel refresh may still read after its
+/// test returns. Releasing one resets its models under that refresh.
+@MainActor
+private enum PanelRefreshLifetime {
+    static var retained: [Any] = []
 }

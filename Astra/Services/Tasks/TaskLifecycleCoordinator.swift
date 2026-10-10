@@ -762,10 +762,14 @@ final class TaskLifecycleCoordinator {
         // only once the deletion is saved. What to remove is recorded first,
         // so a quit after the save is finished at the next launch.
         // What is stored may include a cleanup still pending for this same
-        // deletion; settling uses all of it.
+        // deletion; settling uses all of it, and a rollback puts it back.
+        let store = workspaceDeletionCleanupStore
+        let previousRecord: WorkspaceDeletionCleanupRecord?
         let cleanupRecord: WorkspaceDeletionCleanupRecord
         do {
-            cleanupRecord = try workspaceDeletionCleanupStore.record(WorkspaceDeletionCleanupRecord(ws))
+            let snapshot = WorkspaceDeletionCleanupRecord(ws)
+            previousRecord = try store.existing(matching: snapshot)
+            cleanupRecord = try store.record(snapshot)
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",
@@ -773,8 +777,18 @@ final class TaskLifecycleCoordinator {
             ], level: .error)
             return (false, nil, nil)
         }
+        func restoreRecord() {
+            do {
+                try store.restore(previousRecord, replacing: cleanupRecord)
+            } catch {
+                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "delete_workspace", "reason": "deletion_cleanup_restore_failed",
+                    "error": error.localizedDescription
+                ], level: .error)
+            }
+        }
         guard let requests = cancelDurably(ws.tasks) else {
-            workspaceDeletionCleanupStore.remove(cleanupRecord)
+            restoreRecord()
             return (false, nil, nil)
         }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
@@ -787,11 +801,24 @@ final class TaskLifecycleCoordinator {
             persist: persistWorkspaceChange
         )
         // Cancellation exports mirrors, so they are removed only after it and
-        // the deletion are saved. An unsaved deletion needs no cleanup.
-        if !result.persisted || WorkspaceDeletionCleanupService.settle(cleanupRecord, modelContext: modelContext) {
-            workspaceDeletionCleanupStore.remove(cleanupRecord)
+        // the deletion are saved. An unsaved deletion owes nothing new.
+        if result.persisted {
+            // Marked committed first, so a reimport at the same path before a
+            // failed cleanup is retried doesn't read as an unsaved deletion.
+            let committed = cleanupRecord.markedCommitted
+            do {
+                try store.write(committed)
+            } catch {
+                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "delete_workspace", "reason": "deletion_cleanup_commit_failed",
+                    "error": error.localizedDescription
+                ], level: .error)
+            }
+            if WorkspaceDeletionCleanupService.settle(committed, modelContext: modelContext) { store.remove(committed) }
+        } else {
+            restoreRecord()
+            settleAfterUnsavedDeletion(ws.tasks)
         }
-        if !result.persisted { settleAfterUnsavedDeletion(ws.tasks) }
         return (result.persisted, result.persisted ? next : nil, result.cleanup)
     }
 

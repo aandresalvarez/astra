@@ -507,9 +507,26 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     var canChangeActiveCodePath: Bool {
         guard let task = selectedTask else { return true }
-        return task.status == .draft && TaskWorktreeService.activeWorktreeBinding(for: task) == nil
-            && unavailableWorktreePath == nil
+        guard task.status == .draft, TaskWorktreeService.activeWorktreeBinding(for: task) == nil else { return false }
+        if unavailableWorktreePath == nil { return true }
+        // A pin on a checkout the binding doesn't accept stays editable so it
+        // can be moved back; each choice is still checked against the
+        // binding. A missing or replaced worktree of the draft's own stays
+        // locked until it is restored or the draft is deleted.
+        if case .invalid = TaskWorktreeBinding.state(of: task) { return !TaskWorktreeBinding.pinsPreparedWorktree(task) }
+        return false
     }
+
+    /// Whether the selected draft may be pinned to `path`: only a checkout
+    /// of the repository its prepared worktree came from, so a retargeted or
+    /// invalid draft never strands itself on a foreign repository.
+    func acceptsCodePath(_ path: String?) -> Bool {
+        guard let task = selectedTask else { return true }
+        return TaskWorktreeBinding.accepts(TaskCodeLocationPin.normalize(path), for: task)
+    }
+
+    static let foreignRepositoryMessage =
+        "This draft prepared a worktree in another repository. Choose that repository or one of its worktrees, or delete the draft."
 
     var activeCodePathChangeBlockedMessage: String {
         if selectedTask?.status == .draft {
@@ -519,8 +536,8 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     func selectRepository(_ repo: GitRepositoryInfo) {
-        guard canChangeActiveCodePath else {
-            errorMessage = activeCodePathChangeBlockedMessage
+        guard canChangeActiveCodePath, acceptsCodePath(repo.path) else {
+            errorMessage = canChangeActiveCodePath ? Self.foreignRepositoryMessage : activeCodePathChangeBlockedMessage
             AppLogger.audit(.gitActiveRepositoryChanged, category: "Git", fields: [
                 "result": "blocked",
                 "repo": repo.path,
@@ -921,7 +938,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     private func reconcileActiveWorkingPathWithDisk() {
         guard let active = activeWorkingPath, !active.isEmpty else { return }
         if !FileManager.default.fileExists(atPath: active) {
-            if canChangeActiveCodePath {
+            if canChangeActiveCodePath, acceptsCodePath(nil) {
                 _ = setActiveWorkingPath(nil)
             } else {
                 activeWorkingPath = nil
@@ -940,6 +957,10 @@ final class WorkspaceGitViewModel: ObservableObject {
         }
         if TaskWorktreeCheckoutReservation.isReserved(path) {
             errorMessage = TaskCodeLocationPin.reservedCheckoutMessage
+            return false
+        }
+        guard acceptsCodePath(path) else {
+            errorMessage = Self.foreignRepositoryMessage
             return false
         }
 

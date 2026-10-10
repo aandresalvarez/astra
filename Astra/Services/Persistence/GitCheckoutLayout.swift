@@ -21,8 +21,45 @@ public enum GitCheckoutLayout {
     /// The Git directory every worktree of the checkout containing `path`
     /// shares: refs, objects, and config. A main checkout's own `.git`
     /// directory is its common directory.
+    ///
+    /// Like Git's own discovery, a Git directory with no `.git` entry of its
+    /// own, such as a submodule's `.git/modules/<name>`, is its own
+    /// repository rather than part of the one that stores it.
     public static func commonDirectory(for path: String) -> String? {
-        guard let worktreeRoot = worktreeRoot(containing: path) else { return nil }
+        guard let standardized = standardizedPath(path) else { return nil }
+        var candidate = URL(fileURLWithPath: standardized, isDirectory: true)
+        while true {
+            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
+                return commonDirectory(ofWorktreeRoot: candidate.path)
+            }
+            if let common = commonDirectory(ofGitDirectory: candidate.path) { return common }
+            let parent = candidate.deletingLastPathComponent()
+            guard parent.path != candidate.path else { return nil }
+            candidate = parent
+        }
+    }
+
+    /// The common directory of `path` when it is itself a Git directory: a
+    /// `HEAD` file and, directly or through `commondir`, objects and refs.
+    public static func commonDirectory(ofGitDirectory path: String) -> String? {
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: (path as NSString).appendingPathComponent("HEAD"), isDirectory: &isDirectory),
+              !isDirectory.boolValue else { return nil }
+        var common = path
+        if let raw = try? String(contentsOfFile: (path as NSString).appendingPathComponent("commondir"), encoding: .utf8) {
+            guard let resolved = resolvedGitPath(raw, relativeTo: path) else { return nil }
+            common = resolved
+        }
+        for name in ["objects", "refs"] {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: (common as NSString).appendingPathComponent(name), isDirectory: &isDirectory),
+                  isDirectory.boolValue else { return nil }
+        }
+        return standardizedPath(common)
+    }
+
+    private static func commonDirectory(ofWorktreeRoot worktreeRoot: String) -> String? {
         let dotGit = (worktreeRoot as NSString).appendingPathComponent(".git")
         var isDirectory: ObjCBool = false
         _ = FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory)

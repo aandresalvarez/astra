@@ -1023,6 +1023,47 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.git(["branch", "--list", discard.branch], at: main).isEmpty)
     }
 
+    @Test("Cleanup reaches a submodule's repository through its modules Git directory after the submodule is deinitialized")
+    func cleanupSurvivesDeinitializedSubmoduleSource() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let library = try fixture.repository("Library")
+        let parent = try fixture.repository("Parent")
+        try fixture.git(["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", library.path, "Library"], at: parent)
+        try fixture.git([
+            "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Add submodule"
+        ], at: parent)
+        let submodule = parent.appendingPathComponent("Library", isDirectory: true)
+        let modules = parent.appendingPathComponent(".git/modules/Library", isDirectory: true)
+        // Git's own discovery: the modules directory is its own repository.
+        #expect(GitCheckoutLayout.commonDirectory(for: modules.path).map(WorkspacePathPresentation.resolvedPath)
+            == WorkspacePathPresentation.resolvedPath(modules.path))
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Library", primaryPath: submodule.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Explore", goal: "Explore the implementation", workspace: workspace)
+        try await TaskWorktreeService.prepare(
+            task: draft, request: TaskWorktreeRequest(repositoryPath: submodule.path, base: .currentBranch),
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).first)
+        #expect(discard.commonDirectory.map(WorkspacePathPresentation.resolvedPath)
+            == WorkspacePathPresentation.resolvedPath(modules.path))
+        context.delete(draft)
+        context.delete(workspace)
+        try context.save()
+        // Deinitializing leaves an empty folder that Git resolves as the
+        // parent repository; it is never taken for the submodule.
+        try fixture.git(["submodule", "deinit", "--quiet", "--force", "Library"], at: parent)
+        #expect(TaskWorktreeService.cleanupRepository(for: discard) == discard.commonDirectory)
+
+        #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: modules).isEmpty)
+    }
+
     @Test("New tasks and imports never adopt a checkout cleanup is removing")
     func reservedCheckoutIsNeverAdopted() throws {
         let fixture = try Fixture()

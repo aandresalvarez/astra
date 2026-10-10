@@ -113,10 +113,35 @@ public enum TaskWorktreeBinding {
     }
 
     public static func state(of task: AgentTask) -> State {
+        state(of: task, pinned: task.executionRootPath)
+    }
+
+    /// Whether pinning `path` would leave the task's prepared worktrees
+    /// verifiable. A draft that prepared one may move only to a checkout of
+    /// that repository; any other choice would make its binding invalid and
+    /// lock the picker that could undo it.
+    public static func accepts(_ path: String?, for task: AgentTask) -> Bool {
+        if case .invalid = state(of: task, pinned: path) { return false }
+        return true
+    }
+
+    /// Whether the task's pin names a worktree it prepared, rather than a
+    /// checkout it was retargeted to. A payload that can't be read counts.
+    public static func pinsPreparedWorktree(_ task: AgentTask) -> Bool {
+        guard let pinned = task.executionRootPath, !pinned.isEmpty else { return false }
+        let pin = WorkspacePathPresentation.standardizedPath(pinned)
+        return task.events.contains { event in
+            guard !event.isDeleted, event.hasType(TaskEventTypes.Task.worktreePrepared) else { return false }
+            guard case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return true }
+            return WorkspacePathPresentation.standardizedPath(payload.worktreePath) == pin
+        }
+    }
+
+    private static func state(of task: AgentTask, pinned candidate: String?) -> State {
         let events = task.events
             .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
             .sorted { $0.timestamp > $1.timestamp }
-        guard let pinned = task.executionRootPath, !pinned.isEmpty else {
+        guard let pinned = candidate, !pinned.isEmpty else {
             // A task that prepared a worktree but lost its pin must not fall
             // back to the workspace's default checkout.
             return events.isEmpty ? .none : .invalid("This task's worktree is no longer pinned.")
@@ -271,9 +296,17 @@ public enum TaskWorktreeBinding {
         let fileManager = FileManager.default
         let dotGit = (repository as NSString).appendingPathComponent(".git")
         var isDirectory = ObjCBool(false)
-        guard fileManager.fileExists(atPath: dotGit, isDirectory: &isDirectory) else { return nil }
         var gitDirectory = dotGit
-        if !isDirectory.boolValue {
+        if !fileManager.fileExists(atPath: dotGit, isDirectory: &isDirectory) {
+            // A Git directory used as the repository, as cleanup does once a
+            // submodule's checkout is gone, is its own Git directory; objects
+            // and refs are checked below.
+            var headIsDirectory = ObjCBool(false)
+            guard fileManager.fileExists(
+                atPath: (repository as NSString).appendingPathComponent("HEAD"), isDirectory: &headIsDirectory
+            ), !headIsDirectory.boolValue else { return nil }
+            gitDirectory = repository
+        } else if !isDirectory.boolValue {
             guard let raw = try? String(contentsOfFile: dotGit, encoding: .utf8),
                   raw.lowercased().hasPrefix("gitdir:"),
                   let resolved = resolvedGitPath(String(raw.dropFirst("gitdir:".count)), relativeTo: repository) else {

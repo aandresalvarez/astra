@@ -726,8 +726,11 @@ enum TaskWorktreeService {
     /// The checkout cleanup runs Git from: the recorded source while it
     /// exists, otherwise the main checkout of the recorded shared Git
     /// directory, so removing a linked-worktree source doesn't strand the
-    /// cleanup. A moved main checkout takes its Git directory with it, and
-    /// Git itself loses the worktree, so that case keeps retrying.
+    /// cleanup. A shared Git directory not named `.git`, such as a
+    /// submodule's `.git/modules/<name>` after the submodule was
+    /// deinitialized, is used directly. A moved main checkout takes its Git
+    /// directory with it, and Git itself loses the worktree, so that case
+    /// keeps retrying.
     static func cleanupRepository(for discard: TaskWorktreeDiscard) -> String {
         let fileManager = FileManager.default
         guard let common = discard.commonDirectory else { return discard.repositoryPath }
@@ -738,9 +741,16 @@ enum TaskWorktreeService {
            WorkspacePathPresentation.resolvedPath(current) == WorkspacePathPresentation.resolvedPath(common) {
             return discard.repositoryPath
         }
-        guard URL(fileURLWithPath: common).lastPathComponent == ".git" else { return discard.repositoryPath }
-        let main = URL(fileURLWithPath: common).deletingLastPathComponent().path
-        return fileManager.fileExists(atPath: common) && fileManager.fileExists(atPath: main) ? main : discard.repositoryPath
+        guard fileManager.fileExists(atPath: common) else { return discard.repositoryPath }
+        if URL(fileURLWithPath: common).lastPathComponent == ".git" {
+            let main = URL(fileURLWithPath: common).deletingLastPathComponent().path
+            if fileManager.fileExists(atPath: main) { return main }
+        }
+        // Only a directory that is still that same Git directory.
+        guard let own = GitCheckoutLayout.commonDirectory(ofGitDirectory: common),
+              WorkspacePathPresentation.resolvedPath(own) == WorkspacePathPresentation.resolvedPath(common)
+        else { return discard.repositoryPath }
+        return common
     }
 
     static func discardOutcome(

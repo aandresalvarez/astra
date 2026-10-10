@@ -3,7 +3,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
+@testable import ASTRAPersistence
 @testable import ASTRA
 
 @MainActor
@@ -599,6 +599,114 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
         #expect(!FileManager.default.fileExists(atPath: mirror))
         #expect(store.pending().isEmpty)
+    }
+
+    @Test("A saved deletion's cleanup is still owed after the same workspace is reimported at the same path")
+    func committedDeletionSurvivesSamePathReimport() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Reused", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        // A saved deletion whose cleanup failed is marked committed.
+        let workspace = Workspace(name: "Reused", primaryPath: folder.path)
+        context.insert(workspace)
+        try context.save()
+        let id = workspace.id
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        let mirrorFolder = (mirror as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: mirrorFolder, withIntermediateDirectories: true)
+        try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: mirrorFolder)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mirrorFolder) }
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            workspaceDeletionCleanupStore: store
+        )
+        #expect(coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
+        #expect(store.pending().map(\.committed) == [true])
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mirrorFolder)
+
+        // The same workspace comes back at the same path before the retry;
+        // the credentials only the deleted copy had are still removed.
+        let skill = Skill(name: "Dropped")
+        let tempKeychain = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        let keychainAvailable = AstraSecureKeychainTestSupport.isAvailable
+        if keychainAvailable { AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap) }
+        defer {
+            if keychainAvailable {
+                AstraSecureKeychainTestSupport.cleanup(
+                    keychainPath: tempKeychain, bootstrapService: bootstrap,
+                    services: [KeychainSecretStore.skillEntityID(for: skill.id)]
+                )
+            }
+        }
+        try AstraSecureKeychainStore.$keychainPathOverride.withValue(tempKeychain) {
+            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                skill.environmentVariables = ["TOKEN": "secret"]
+                let owed = try #require(store.pending().first)
+                store.remove(owed)
+                try store.write(WorkspaceDeletionCleanupRecord(
+                    workspaceID: id, primaryPath: folder.path, connectors: owed.connectors,
+                    skills: owed.skills + [skill.keychainCleanup], committed: true
+                ))
+                let reimported = Workspace(name: "Reused", primaryPath: folder.path)
+                reimported.id = id
+                context.insert(reimported)
+                try context.save()
+                try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+                let pending = try #require(store.pending().first)
+                #expect(WorkspaceDeletionCleanupService.deletionWasSaved(pending, workspaces: [reimported]))
+                // Uncommitted, the same stored workspace means it was never deleted.
+                let unsaved = WorkspaceDeletionCleanupRecord(
+                    workspaceID: id, primaryPath: folder.path, connectors: [], skills: []
+                )
+                #expect(!WorkspaceDeletionCleanupService.deletionWasSaved(unsaved, workspaces: [reimported]))
+
+                #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+                #expect(store.pending().isEmpty)
+                // The reimport's own mirror is spared.
+                #expect(FileManager.default.fileExists(atPath: mirror))
+                if keychainAvailable {
+                    #expect(!SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
+                }
+            }
+        }
+    }
+
+    @Test("A deletion retry that isn't saved puts back the cleanup an earlier saved deletion still owes")
+    func unsavedRetryRestoresEarlierRecord() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Retried", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Retried", primaryPath: folder.path)
+        workspace.connectors.append(Connector(name: "Current", serviceType: "jira"))
+        context.insert(workspace)
+        try context.save()
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            workspaceDeletionCleanupStore: store, persistWorkspaceChange: { _, _ in false }
+        )
+
+        // With nothing pending, the unsaved attempt leaves nothing behind.
+        #expect(!coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
+        #expect(store.pending().isEmpty)
+
+        let earlier = WorkspaceDeletionCleanupRecord(
+            workspaceID: workspace.id, primaryPath: folder.path,
+            connectors: [Connector(name: "Earlier", serviceType: "jira").keychainCleanup], skills: [], committed: true
+        )
+        try store.write(earlier)
+        #expect(!coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
+        #expect(store.pending() == [earlier])
     }
 
     @Test("Branch deletion and the Repository card's branch operations exclude each other")
