@@ -1182,19 +1182,9 @@ struct ChatPanelView: View {
     }
 
     private func scopedSelectedSkills(forTaskText taskText: String, inputs: [String] = []) -> [Skill] {
-        let trimmed = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !selectedSkills.isEmpty else { return selectedSkills }
-
-        let probe = AgentTask(
-            title: String(trimmed.prefix(60)),
-            goal: trimmed,
-            workspace: workspace
+        ComposerTaskProjection.scopedSkills(
+            selectedSkills, forTaskText: taskText, inputs: inputs, workspace: workspace
         )
-        probe.inputs = inputs
-        probe.skills = selectedSkills
-        return TaskCapabilityResolver(task: probe)
-            .activationScope(contextText: trimmed)
-            .behaviorSkills
     }
 
     private func submitComposer() {

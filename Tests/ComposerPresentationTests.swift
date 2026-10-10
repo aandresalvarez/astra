@@ -188,8 +188,23 @@ struct ComposerPresentationTests {
     @Test("composer keeps Auto separate from execution sandbox state")
     func composerSeparatesAutoFromExecutionSandbox() {
         #expect(ComposerToolbarPresentation.permissionModeLabel(for: .autonomous) == "Auto")
-        #expect(ComposerToolbarPresentation.permissionModeHelp(for: .autonomous).contains("independently controls OS isolation"))
+        #expect(ComposerToolbarPresentation.permissionModeHelp(for: .autonomous).contains("Sandbox and credential protections still apply"))
         #expect(ComposerToolbarPresentation.permissionModeLabel(for: .review) == "Ask")
+    }
+
+    // The picker is the only place a user learns what a level means, so each
+    // primary level carries its one-line meaning in the menu and the tooltip.
+    @Test("level picker says what each level means")
+    func levelPickerSaysWhatEachLevelMeans() throws {
+        #expect(AgentPolicyLevel.review.menuTitle == "Ask — asks before changes and before acting outside ASTRA")
+        #expect(AgentPolicyLevel.autonomous.menuTitle == "Auto — does everything without asking")
+        #expect(AgentPolicyLevel.custom.menuTitle == "Custom — your saved rules; asks before acting outside ASTRA")
+        #expect(ComposerToolbarPresentation.permissionModeHelp(for: .review).contains("acting outside ASTRA"))
+        #expect(ComposerToolbarPresentation.permissionModeHelp(for: .autonomous).hasPrefix("Does everything without asking"))
+        #expect(ComposerToolbarPresentation.permissionModeHelp(for: .build) == AgentPolicyLevel.custom.shortDescription)
+
+        let source = try sourceFile("Astra/Views/Components/ComposerToolbar.swift")
+        #expect(source.contains("Label(level.menuTitle, systemImage: level.symbolName)"))
     }
 
     @Test("chat transcript bubbles are shared across chat surfaces")

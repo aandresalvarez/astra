@@ -1030,6 +1030,7 @@ enum AgentPromptBuilder {
                 }
             }
 
+            ExternalActionPromptContext.appendRecords(for: task, to: &sections)
             let sortedRuns = followUpContextRuns(for: task)
             if !state.includedExactSessionTranscript, !sortedRuns.isEmpty {
                 var answersBlock = "Previous responses (your final answers from each turn):"

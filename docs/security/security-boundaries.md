@@ -179,6 +179,103 @@ and `~/Documents/Astra Dev/Workspaces`.
   labels, and MCP server IDs, but must not persist credential values or MCP
   environment values.
 
+## Permission Levels
+
+A level decides whether ASTRA asks; it never widens a sandbox or credential
+boundary. The full inventory is in
+`docs/specs/2026-10-07-permission-levels-harmonization.md`.
+
+- **Ask** asks before changing files, running commands, and acting outside
+  ASTRA. Reading files stays free; web reads still ask. Destructive and
+  publishing commands (`rm`, `chmod`, `chown`, `git push`, `deploy`,
+  `publish`) are asked about, not refused; `sudo` stays denied because it
+  cannot prompt in a non-interactive run. Local tools are never pre-granted,
+  on any runtime.
+- **Auto** asks nothing. Connector credentials are allowed for the task (the
+  launch stops if that grant cannot be saved; a connector the agent reached for
+  mid-run is allowed only after a clean finish and a durable save, and offered
+  otherwise; an Auto launch answers an offer still open). A staged Jira write
+  and a requested GitHub review are still reviewed in the sheet in Auto for
+  now: ASTRA learns of them only after the run, so sending them without asking
+  would mean sending after the turn; they will be sent when the agent asks
+  (spec decision 15). Every action outside ASTRA leaves a record in the chat,
+  derived from its receipt. A command the agent ran itself that
+  is not known local work — exactly what Ask would have asked about — is
+  recorded with an **Agent** pill as the command it ran; a call that is one
+  `git push` or `gh` write gets that action's title. The next turn's prompt
+  lists these records too.
+- **Custom** applies the saved per-item tool, shell, and network rules (an
+  enabled local tool becomes a grant only when those rules allow Bash, on
+  every runtime) to local work only. A shell command runs on a rule alone
+  only when every command in it is known local work
+  (`LocalShellCommands`); anything else asks as Ask does, unless the
+  approval its request yields was already given. ASTRA does not try to read
+  whether a command acts outside the machine — a variable, `eval`, an alias,
+  a runner or one more option changes what runs — so the list answers the
+  opposite question, and a command it cannot read is not local. Being wrong
+  costs a question, never an unasked action.
+- **Known local work** is a fixed list: file, text and process tools; Git's
+  local verbs (no push, no `-c`, no configuration writes, no `rebase -x`,
+  `submodule foreach` or `bisect run`); `gh` reads (`view`, `list`,
+  `status`, `checks`, `diff`, a `gh api` GET or a GraphQL query without
+  `mutation`); `curl`/`wget` with fetch-only options and a GET or HEAD;
+  `docker` with no global option, push, login, or `DOCKER_*` assignment;
+  package managers' install/run/test (never publish, login, `npx`, `exec`);
+  build, test and format tools; and an interpreter running a script file.
+  A shell's `-c` string, a runner's command (`env`, `xargs`, `timeout`,
+  `find -exec`), and each `$(…)`, backtick or `<(…)` body are judged the
+  same way; an assignment to a variable that steers a tool (`PATH`, `HOME`,
+  `GIT_*`, `DOCKER_*`, `NODE_OPTIONS`, proxies) is not local. The list judges
+  the command, not the program it runs: `make`, `swift test`, `npm run build`,
+  `python3 scripts/report.py` and `docker run` execute project code or an
+  image, and what that code does is the project's. So every operand that
+  chooses which code runs stays in the project: an interpreter's script,
+  `awk -f`, `make -f`, a loader, and every path a build, test, lint or
+  package tool is given (`--package-path`, `--manifest-path`, a test file,
+  `-project`, a toolchain file, a linter's config or formatter, `git -C`),
+  as well as the directory it runs in after a `cd`. A tool is "local with
+  any arguments" only when no argument can make it run code: `sed` is read
+  command by command (GNU `e`), and a header or cookie curl reads from a
+  file (`-H @file`) is not local. A variable set for a program, or exported, is that
+  program's environment and is local only when it is on the list of ones
+  that only tune a local program (`NODE_ENV`, `LC_*`). A user's own tool
+  configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context,
+  a provider home's Docker config, a capability's `DOCKER_HOST`) is the
+  user's: it decides where a command the list accepts goes, and the command
+  does not express it.
+- **What the list is not.** It decides whether a command *expresses* an
+  action outside ASTRA (`git push`, `gh pr create`, `curl -d`, `npm
+  publish`, `ssh`), so that the action asks in Ask and Custom and is recorded
+  in Auto. It is not a boundary against code that hides an action: running
+  the project's code is local by design, so `printf 'curl -d …' > x.sh &&
+  bash x.sh` is two local commands, and an option, variable or setting that
+  names a program to run (`rg --pre`, `make --eval`, `cargo --config
+  build.rustc-wrapper`, `npm --script-shell`, `GOFLAGS=-toolexec`) is the same
+  capability as that script. The list rejects such forms it knows about,
+  because doing so costs nothing, but a new one is a known limit rather than a
+  hole. Code that hides an action is contained by the operating-system
+  boundary (the Seatbelt sandbox, its network policy, and the credentials a
+  launch is given), never by reading shell text.
+- **An approval** of a shell command is the set of grants its request yields,
+  one per command in it (the program and its first words, as the prompt
+  shows). The command runs unasked once all of them were granted, so a
+  host-scoped read does not approve a write to that host and a push does not
+  approve a force. Anything but a read also yields a grant naming its whole
+  content (`content-sha256-…`, ASTRA's gate only; providers replay by the
+  pattern), so approving one comment or body does not approve another, and a
+  `curl`/`wget` write keeps its method, so a POST does not approve a DELETE.
+  A command one of whose parts yields no grant (inline code,
+  `$CMD`) cannot be approved for replay, and the run stops with that reason.
+  The browser MCP tool is judged and approved as the `astra-browser` command
+  it runs, and the Docker workspace's shell tools are gated like Bash.
+- `ExternalActionPolicy` is the only owner of "does this level ask before an
+  external action". It reads the user-facing level of the run that produced
+  the action, so a proposal composed under Ask is still reviewed after the task
+  switches to Auto.
+- Prompts that are not action approvals stay in every level: widening the
+  Seatbelt sandbox after a denial and the sensitive-data runtime-switch
+  acknowledgement.
+
 ## Repeatable Checks
 
 Run the security hunt script for a focused pass:

@@ -10,8 +10,10 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
     var permissionRequest: PermissionRequest?
     var approvalGrants: [PermissionGrant] = []
 
+    /// The grant a person reads: the pattern, not the digest that binds it
+    /// to this command's content.
     var approvalGrant: String? {
-        approvalGrants.first?.displayName
+        approvalGrants.first { !ShellCommandRiskClassifier.isContentGrant($0) }?.displayName
     }
 
     var userMessage: String {
@@ -207,10 +209,14 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
         let request = adapter.permissionRequest(from: parsed)
             ?? PermissionBroker.permissionRequest(from: observed)
+        var browserCommand: String?
+        if case .toolUse(let name, _, let input) = parsed, Self.isBrowserBridgeTool(name) {
+            browserCommand = Self.browserCommand(fromInput: input)
+        }
 
         switch observed.kind {
         case .toolUse, .fileChange, .networkAccess:
-            return validateObservedAction(observed, request: request)
+            return validateObservedAction(observed, request: request, browserCommand: browserCommand)
         case .toolResult, .deniedAction:
             return nil
         }
@@ -237,7 +243,8 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func validateObservedAction(
         _ observed: PolicyObservedEvent,
-        request: PermissionRequest?
+        request: PermissionRequest?,
+        browserCommand: String? = nil
     ) -> AgentRuntimePolicyViolation? {
         guard let toolName = observed.toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
               !toolName.isEmpty else {
@@ -245,7 +252,14 @@ struct AgentRuntimePolicyGuard: Sendable {
         }
 
         if let supportTool = runtimeSupportToolDescriptor(for: toolName) {
-            return validateRuntimeSupportTool(supportTool, observed: observed, toolName: toolName)
+            if let violation = validateRuntimeSupportTool(supportTool, observed: observed, toolName: toolName) {
+                return violation
+            }
+            if let command = observed.command,
+               DockerWorkspaceMCPProjection.canonicalToolName(fromObservedToolName: toolName, runtime: manifest.providerID) != nil {
+                return validateWorkspaceShellCommand(command, toolName: toolName)
+            }
+            return nil
         }
 
         if isShellTool(toolName),
@@ -363,7 +377,178 @@ struct AgentRuntimePolicyGuard: Sendable {
             return violation
         }
 
+        // Last, so every deny above still wins: this only turns an otherwise
+        // allowed command that acts outside ASTRA into a question.
+        if isShellTool(toolName),
+           let command = observed.command,
+           let violation = externalCommandApprovalViolation(command: command, toolName: toolName, request: request) {
+            return violation
+        }
+        if Self.isBrowserBridgeTool(toolName),
+           let violation = externalBrowserActionApprovalViolation(
+               equivalent: browserCommand ?? Self.browserCommand(fromInput: observed.command.map { ["command": $0] }),
+               toolName: toolName
+           ) {
+            return violation
+        }
+
         return nil
+    }
+
+    /// Ask and Custom ask before acting outside ASTRA (`ExternalActionPolicy`).
+    /// A Custom rule that allows Bash or `git:*` governs local work only: a
+    /// command that is not known local work (`LocalShellCommands`) asks
+    /// whatever the per-item rules say, and its approval lets it run, so an
+    /// approved command is not asked about twice.
+    private func externalCommandApprovalViolation(
+        command: String,
+        toolName: String,
+        request: PermissionRequest?
+    ) -> AgentRuntimePolicyViolation? {
+        guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
+              let pending = unapprovedExternalCommand(command) else {
+            return nil
+        }
+        let request = request ?? PermissionRequest.shell(command: pending, toolName: toolName)
+        return AgentRuntimePolicyViolation(
+            reason: "The command is not on ASTRA's list of local work, so it asks first at this permission level",
+            toolName: toolName,
+            detail: command,
+            violationCategory: "external_command_requires_approval",
+            requiresApproval: true,
+            permissionRequest: request,
+            approvalGrants: PermissionBroker.approvalGrants(for: request)
+        )
+    }
+
+    /// The Docker workspace's shell and job tools run a shell command, so the
+    /// run's shell rules apply as they do to Bash: a denied pattern refuses it,
+    /// and below Auto a command Bash's rules, patterns and approvals do not
+    /// allow is asked about — not refused, since in a Docker run this is the
+    /// shell — before the external-action gate, approved as a shell command.
+    private func validateWorkspaceShellCommand(_ command: String, toolName: String) -> AgentRuntimePolicyViolation? {
+        if let denied = validateDeniedShellCommand(command: command, toolName: toolName) { return denied }
+        if manifest.policyLevel != .autonomous {
+            // As `validateShell`: an allow-list of patterns decides when there
+            // is one; otherwise the Bash tool rule (and approvals) does.
+            let patterns = manifest.providerRender.allowedShellPatterns
+            let allowed = !patterns.isEmpty && !patterns.contains("*")
+                ? shellCommandAllowedByPatterns(command, patterns: patterns) || toolPatternAllowsShellCommand(command)
+                : toolMatches("Bash", command: command, candidates: effectiveAllowedToolCandidates,
+                              shellMatchMode: .allActionableSegments)
+            if !allowed {
+                let request = PermissionRequest.shell(command: command, toolName: toolName)
+                return AgentRuntimePolicyViolation(
+                    reason: "The workspace command asks first at this permission level, as Bash would",
+                    toolName: toolName,
+                    detail: command,
+                    requiresApproval: true,
+                    permissionRequest: request,
+                    approvalGrants: PermissionBroker.approvalGrants(for: request)
+                )
+            }
+        }
+        return externalCommandApprovalViolation(command: command, toolName: toolName, request: nil)
+    }
+
+    /// The browser MCP tool runs the same bridge commands as `astra-browser`,
+    /// so a page change asks at Ask and Custom even when a rule allows the
+    /// tool. It is judged, asked about, and approved as that CLI command, its
+    /// arguments included, so the card shows what will be changed and one
+    /// approved click is not every later click: MCP tools carry no grant of
+    /// their own, and one approval then covers both transports.
+    private func externalBrowserActionApprovalViolation(
+        equivalent: String,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        guard ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel),
+              let pending = unapprovedExternalCommand(equivalent) else {
+            return nil
+        }
+        let request = PermissionRequest.shell(command: pending, toolName: toolName)
+        return AgentRuntimePolicyViolation(
+            reason: "The browser action changes a page, which asks first at this permission level",
+            toolName: toolName,
+            detail: equivalent,
+            violationCategory: "external_command_requires_approval",
+            requiresApproval: true,
+            permissionRequest: request,
+            approvalGrants: PermissionBroker.approvalGrants(for: request)
+        )
+    }
+
+    /// The `astra-browser` command a browser MCP call runs. Read from its
+    /// structured `command` and `arguments`, or from the summary the event
+    /// recorder made of them (`astra-browser click --selector '…'`), which is
+    /// all a provider callback carries. A call whose command cannot be read is
+    /// judged as an unregistered command, which counts as a page change.
+    static func browserCommand(fromInput input: [String: Any]?) -> String {
+        let tool = BrowserBridgeMCPProjection.toolCommand
+        if let command = (input?["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty {
+            return ([tool, command] + [browserArgumentWords(input?["arguments"])].compactMap { $0 }).joined(separator: " ")
+        }
+        if let summary = (input?["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           summary.hasPrefix(tool + " ") {
+            return summary
+        }
+        return tool + " unreadable-call"
+    }
+
+    /// The MCP tool's `arguments` as the CLI's words, keys sorted:
+    /// `--selector 'button.primary'`; a nested value is its JSON.
+    static func browserArgumentWords(_ value: Any?) -> String? {
+        func quoted(_ text: String) -> String {
+            "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        // The browser MCP server takes CLI-style words, in order
+        // (`["--selector", "#delete"]`).
+        if let words = value as? [Any], !words.isEmpty {
+            return words.map { quoted(($0 as? String) ?? String(describing: $0)) }.joined(separator: " ")
+        }
+        guard let arguments = value as? [String: Any], !arguments.isEmpty else { return nil }
+        return arguments.keys.sorted().map { key -> String in
+            let raw = arguments[key]
+            let text: String
+            switch raw {
+            case let string as String:
+                text = string
+            case let number as NSNumber:
+                text = number.stringValue
+            default:
+                let data = raw.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys, .fragmentsAllowed]) }
+                text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            }
+            return "--\(key) \(quoted(text))"
+        }.joined(separator: " ")
+    }
+
+    static func isBrowserBridgeTool(_ tool: String) -> Bool {
+        let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let name = BrowserBridgeMCPProjection.toolName
+        return lower.contains(BrowserBridgeMCPProjection.serverID) && (lower.hasSuffix(name) || lower.hasSuffix("\(name))"))
+    }
+
+    /// The command when it is not known local work and no approval covers
+    /// it, or nil. Whether a shell string acts outside this machine cannot be
+    /// read in general, so this asks the opposite question
+    /// (`LocalShellCommands`): only a command made of listed local tools runs
+    /// on a Custom rule alone, and anything else is asked about as written.
+    private func unapprovedExternalCommand(_ command: String) -> String? {
+        if LocalShellCommands.isLocal(command) || commandApprovedByGrant(command) {
+            return nil
+        }
+        return command
+    }
+
+    /// The approval a command is asked for is the set of grants its request
+    /// yields, one per command in it (`PermissionBroker`): it runs unasked once
+    /// all of them were granted. Comparing grants, not matching patterns,
+    /// keeps one approval from standing in for another — a host-scoped read
+    /// does not approve a write to that host, a push does not approve a force
+    /// — and the same command always finds the approval it was given.
+    private func commandApprovedByGrant(_ command: String) -> Bool {
+        guard let needed = PermissionBroker.completeShellApprovalGrants(command: command) else { return false }
+        return Set(needed).isSubset(of: Set(manifest.approvalGrants))
     }
 
     private func runtimeSupportToolDescriptor(for toolName: String) -> ProviderRuntimeSupportToolDescriptor? {

@@ -180,10 +180,18 @@ public enum ConnectorMutationStaging {
         // the same run can both see a name free and the second overwrite a
         // proposal the user is already reviewing; `O_EXCL` cannot do anything
         // between deciding the name is free and owning it.
-        let key = "\(configuration.runID)#\(serviceType)#\(operation)"
+        //
+        // The number is the run's, across services and operations, so it is
+        // also the order the agent proposed in: an update staged before a
+        // transition is sent first. A broker that starts mid-run continues
+        // after the highest number the run's files already carry.
+        let runID = configuration.runID
         var claimed: String?
         for _ in 0..<maximumStagedNameAttempts {
-            let name = "\(serviceType)-\(operation)-\(configuration.runID)-\(sequence.next(for: key)).json"
+            let number = sequence.next(for: runID) {
+                Self.highestStagedNumber(forRun: runID, in: directory.path)
+            }
+            let name = "\(serviceType)-\(operation)-\(runID)-\(number).json"
             do {
                 try directory.writeExclusively(data, named: name)
                 claimed = name
@@ -218,6 +226,27 @@ public enum ConnectorMutationStaging {
             requestPath: requestPath,
             requestBody: try canonicalJSON(body, prettyPrinted: false)
         )
+    }
+
+    static let maximumStagedNumber = 1_000_000
+
+    /// The highest number a staged file of `runID` carries in `directory`, or 0.
+    static func highestStagedNumber(forRun runID: String, in directory: String) -> Int {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
+        return names.compactMap { stagedNumber(fileName: $0, runID: runID) }.max() ?? 0
+    }
+
+    /// The run-wide number a staged file name ends with
+    /// (`<service>-<operation>-<run>-<n>.json`), or nil.
+    public static func stagedNumber(fileName: String, runID: String? = nil) -> Int? {
+        guard fileName.hasSuffix(".json") else { return nil }
+        let stem = fileName.dropLast(".json".count)
+        // Bounded: the folder is agent-writable, and a name at `Int.max` must
+        // not overflow the next number.
+        guard let dash = stem.lastIndex(of: "-"), let number = Int(stem[stem.index(after: dash)...]),
+              (0...maximumStagedNumber).contains(number) else { return nil }
+        if let runID, !stem[..<dash].hasSuffix("-\(runID)") { return nil }
+        return number
     }
 
     // MARK: - Reading
@@ -378,10 +407,11 @@ final class ConnectorMutationSequence: @unchecked Sendable {
     private let lock = NSLock()
     private var counters: [String: Int] = [:]
 
-    func next(for key: String) -> Int {
+    /// The next number for `key`; the first call starts after `floor()`.
+    func next(for key: String, floor: () -> Int = { 0 }) -> Int {
         lock.lock()
         defer { lock.unlock() }
-        let value = (counters[key] ?? 0) + 1
+        let value = (counters[key] ?? floor()) + 1
         counters[key] = value
         return value
     }

@@ -420,6 +420,29 @@ enum ShelfBrowserBridgeCommandRouter {
         )
     ]
 
+    /// Whether a bridge command, by the name the `astra-browser` CLI and the
+    /// browser MCP tool take (`read-page`, `double-click`), changes the page
+    /// rather than reading or navigating it, by the bridge's own risk levels.
+    /// A name the bridge does not register counts as a change.
+    static func commandChangesPage(_ name: String) -> Bool {
+        !readOrNavigationCommandNames.contains(normalizedCommandName(name))
+    }
+
+    private static let readOrNavigationCommandNames: Set<String> = {
+        // CLI-only spellings of read commands (`astra-browser page`, `help`).
+        var names: Set<String> = ["help", "h", "page", "read", "analyse", "pageread"]
+        for spec in registeredCommands
+        where ["read-only", "navigation"].contains(BrowserBridgeActionMetadata.riskLevel(for: spec.path)) {
+            names.insert(normalizedCommandName(String(spec.path.dropFirst())))
+            names.formUnion(spec.batchAliases.map(normalizedCommandName))
+        }
+        return names
+    }()
+
+    private static func normalizedCommandName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().filter { $0 != "-" && $0 != "_" }
+    }
+
     static func route(method: String, path: String) -> ShelfBrowserBridgeRoute? {
         registeredCommands.first { $0.matches(method: method, path: path) }?.route
     }

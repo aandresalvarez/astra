@@ -122,6 +122,9 @@ struct ConnectorMutationReceipt: Codable, Sendable, Equatable {
     /// did not name one.
     let createdKey: String?
     let createdURL: String?
+    /// Who let ASTRA send it. Absent on receipts written before levels were
+    /// harmonized, every one of which the user reviewed in the sheet.
+    let authorization: ExternalActionAuthorization?
 
     init(
         stagedPayloadPath: String,
@@ -132,7 +135,8 @@ struct ConnectorMutationReceipt: Codable, Sendable, Equatable {
         destinationURL: String,
         statusCode: Int,
         createdKey: String?,
-        createdURL: String?
+        createdURL: String?,
+        authorization: ExternalActionAuthorization? = nil
     ) {
         version = 2
         self.stagedPayloadPath = stagedPayloadPath
@@ -144,6 +148,7 @@ struct ConnectorMutationReceipt: Codable, Sendable, Equatable {
         self.statusCode = statusCode
         self.createdKey = createdKey
         self.createdURL = createdURL
+        self.authorization = authorization
     }
 }
 
@@ -445,7 +450,14 @@ final class ConnectorMutationCoordinator {
     /// agent-writable, so the bytes that go out have to be proven to be the
     /// bytes that were read — anything else makes the review advisory.
     @discardableResult
-    func send(task: AgentTask, proposal: ConnectorMutationProposal) async throws -> ConnectorMutationReceipt {
+    /// `authorization` says who let ASTRA send it: the user in the review sheet,
+    /// or Auto without asking. It is recorded on the receipt and changes nothing
+    /// about the checks below, which hold the same for both.
+    func send(
+        task: AgentTask,
+        proposal: ConnectorMutationProposal,
+        authorization: ExternalActionAuthorization = .userReviewed
+    ) async throws -> ConnectorMutationReceipt {
         guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
             throw ConnectorMutationCoordinatorError.alreadySent(proposal.target)
         }
@@ -562,7 +574,7 @@ final class ConnectorMutationCoordinator {
 
         // The write has happened. From here the only question is how well ASTRA
         // can describe it — never whether to try again.
-        let receipt = Self.receipt(for: current, response: response, baseURL: request.url)
+        let receipt = Self.receipt(for: current, response: response, baseURL: request.url, authorization: authorization)
         do {
             try record(
                 receipt,
@@ -726,7 +738,8 @@ final class ConnectorMutationCoordinator {
     private static func receipt(
         for proposal: ConnectorMutationProposal,
         response: ConnectorMutationHTTPResponse,
-        baseURL: URL
+        baseURL: URL,
+        authorization: ExternalActionAuthorization
     ) -> ConnectorMutationReceipt {
         let object = (try? JSONSerialization.jsonObject(with: Data(response.body.utf8))) as? [String: Any]
         // A created issue names itself in the response. A comment, an update and
@@ -759,7 +772,8 @@ final class ConnectorMutationCoordinator {
             destinationURL: proposal.destinationURL,
             statusCode: response.statusCode,
             createdKey: createdKey,
-            createdURL: browseURL ?? (object?["self"] as? String)
+            createdURL: browseURL ?? (object?["self"] as? String),
+            authorization: authorization
         )
     }
 
@@ -910,6 +924,12 @@ final class ConnectorMutationCoordinator {
     /// a new file and therefore a new review, which is the point: the user said
     /// no to that request, not to the sentence it contained.
     func decline(task: AgentTask, proposal: ConnectorMutationProposal) throws {
+        // A send that claimed this proposal may already have gone out — the
+        // review can be open in more than one place — so a decline recorded
+        // now would sit beside the write it claims to refuse.
+        guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
+            throw ConnectorMutationCoordinatorError.alreadySent(proposal.target)
+        }
         try record(
             ConnectorMutationDecision(
                 stagedPayloadPath: proposal.stagedPayloadPath,

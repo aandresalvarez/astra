@@ -53,6 +53,9 @@ struct GitHubReviewPublicationRecord: Codable {
     let pullRequestURL: String
     let reviewURL: String?
     let reviewID: Int?
+    /// Who let ASTRA post it. Absent on receipts written before levels were
+    /// harmonized, every one of which the user reviewed in the sheet.
+    var authorization: ExternalActionAuthorization? = nil
 }
 
 private struct GitHubReviewUnusableArtifactRecord: Codable {
@@ -358,6 +361,7 @@ enum GitHubReviewPublicationError: LocalizedError {
     case staleHead
     case uncertain
     case receiptPersistenceFailed(String)
+    case requestWithdrawn
 
     var errorDescription: String? {
         switch self {
@@ -371,6 +375,8 @@ enum GitHubReviewPublicationError: LocalizedError {
             "ASTRA sent the review request but could not confirm the result. Check the pull request on GitHub before trying again."
         case .receiptPersistenceFailed(let reviewURL):
             "GitHub confirmed the review at \(reviewURL), but ASTRA could not save its receipt. Check GitHub before continuing; ASTRA will not resend this file."
+        case .requestWithdrawn:
+            "The request to post this review was withdrawn before it was sent."
         }
     }
 }
@@ -571,7 +577,14 @@ final class GitHubReviewPublicationService {
     /// The dispatch event is durably saved before the network call. If ASTRA
     /// exits or the response is lost, this file cannot be submitted again by a
     /// later click without first checking GitHub and creating a new proposal.
-    func publish(task: AgentTask, proposal: GitHubReviewProposal) async throws -> GitHubReviewPublicationRecord {
+    /// `authorization` says who let ASTRA post it: the user in the sheet, or
+    /// Auto without asking. It is recorded on the receipt and changes none of
+    /// the checks below.
+    func publish(
+        task: AgentTask,
+        proposal: GitHubReviewProposal,
+        authorization: ExternalActionAuthorization = .userReviewed
+    ) async throws -> GitHubReviewPublicationRecord {
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
@@ -581,6 +594,12 @@ final class GitHubReviewPublicationService {
         }
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
+        }
+        // Auto posts because the user asked; a "don't post it" recorded while
+        // the checks above awaited withdraws that, so it is read again here,
+        // with no suspension before dispatch is recorded.
+        if authorization == .autoPolicy, !GitHubReviewPublicationRequirement.isPending(task: task) {
+            throw GitHubReviewPublicationError.requestWithdrawn
         }
         let inputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-github-review-\(UUID().uuidString).json")
@@ -658,7 +677,8 @@ final class GitHubReviewPublicationService {
             filePath: proposal.filePath,
             pullRequestURL: proposal.pullRequestURL,
             reviewURL: response.htmlUrl,
-            reviewID: response.id
+            reviewID: response.id,
+            authorization: authorization
         )
         let persistedEventIDs = Set(task.events.map(\.id))
         let priorState = TaskStateMachine.ExternalOutcomeReceiptSnapshot(task: task, run: run)

@@ -84,6 +84,22 @@ struct ProviderMessageIdentityTests {
         ])
     }
 
+    @Test("A Codex command that exits nonzero or is declined is a failed result")
+    func codexCommandFailureIsTyped() {
+        func result(_ fields: String) -> [AgentEvent] {
+            CodexStreamEventParser.parseIdentifiedAgentEvents(
+                line: #"{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"git push","#
+                    + fields + "}}"
+            )
+        }
+        #expect(result(#""aggregated_output":"rejected","exit_code":1,"status":"failed""#)
+            == [.toolResult(id: "c1", content: "rejected\nexit_code=1\nstatus=failed", isError: true)])
+        #expect(result(#""aggregated_output":"","status":"declined""#)
+            == [.toolResult(id: "c1", content: "status=declined", isError: true)])
+        #expect(result(#""aggregated_output":"ok","exit_code":0,"status":"completed""#)
+            == [.toolResult(id: "c1", content: "ok\nexit_code=0\nstatus=completed", isError: false)])
+    }
+
     // MARK: - Antigravity and OpenCode
 
     @Test("Antigravity response deltas are keyed by their step")
