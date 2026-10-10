@@ -1225,21 +1225,38 @@ final class ConnectorMutationCoordinator {
     private static var returnedStagedPaths: Set<String> = []
     private static let returnedMarkerExtension = "returned"
 
+    /// Any entry at the marker's name counts, read without following it: a
+    /// link the agent planted there can only keep its own proposal off the
+    /// dock, never point ASTRA's check somewhere else.
     static func wasReturnedToAgent(stagedPath: String, fileManager: FileManager = .default) -> Bool {
         returnedStagedPaths.contains(stagedPath)
-            || fileManager.fileExists(atPath: stagedPath + "." + returnedMarkerExtension)
+            || (try? fileManager.attributesOfItem(atPath: stagedPath + "." + returnedMarkerExtension)) != nil
     }
 
     /// Best effort on disk, always in memory: a mark that cannot be written
     /// still holds for this launch, and the audit line says it was needed.
+    ///
+    /// The folder is agent-writable and staged names are predictable, so the
+    /// marker is never opened by a path ASTRA would follow: the staging
+    /// directory is opened without following a link, and the marker is
+    /// created inside it, exclusively and without following one. A link
+    /// planted at either name makes the write fail; nothing outside is opened.
     private static func markReturnedToAgent(stagedPath: String) {
         returnedStagedPaths.insert(stagedPath)
-        let markerPath = stagedPath + "." + returnedMarkerExtension
-        let descriptor = markerPath.withCString { open($0, O_CREAT | O_WRONLY, 0o600) }
+        let url = URL(fileURLWithPath: stagedPath)
+        let directory = url.deletingLastPathComponent().path
+        let markerName = url.lastPathComponent + "." + returnedMarkerExtension
+        let directoryDescriptor = directory.withCString { open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+        guard directoryDescriptor >= 0 else { return }
+        defer { close(directoryDescriptor) }
+        let descriptor = markerName.withCString {
+            openat(directoryDescriptor, $0, O_CREAT | O_EXCL | O_NOFOLLOW | O_WRONLY | O_CLOEXEC, 0o600)
+        }
         guard descriptor >= 0 else { return }
         try? writeAll(descriptor: descriptor, bytes: Array("returned\n".utf8))
         fsync(descriptor)
         close(descriptor)
+        fsync(directoryDescriptor)
     }
 
     /// Claims the send on disk, before it happens, and refuses to proceed if the

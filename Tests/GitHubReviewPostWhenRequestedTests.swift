@@ -266,6 +266,28 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(await cli.postCount() == 1)
     }
 
+    /// A post that outlives the broker's wait must not go out under a request
+    /// the user made after it began: the newer request is for whatever the
+    /// agent writes next, not for the file this call already named.
+    @Test("A post in flight does not go out under a request made after it began")
+    func inFlightPostIsBoundToItsRequest() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI(duringGet: { @Sendable in
+            await MainActor.run {
+                fixture.context.insert(TaskEvent(
+                    task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage,
+                    payload: "Post the review on https://github.com/example/repo/pull/12"
+                ))
+            }
+        })
+
+        let outcome = await fixture.handler(level: .autonomous, cli: cli).postGitHubReview(fixture.request(for: fixture.file))
+
+        #expect(outcome == .refused(message: GitHubReviewPublicationError.notRequested.localizedDescription))
+        #expect(await cli.postCount() == 0)
+        #expect(!GitHubReviewPublicationService.hasDispatched(task: fixture.task, filePath: fixture.file.path))
+    }
+
     /// GitHub may have accepted a review whose answer was lost, so the
     /// request it was posted under is answered: a second file must not
     /// become a second review on the strength of it.
@@ -407,15 +429,23 @@ struct GitHubReviewPostWhenRequestedTests {
 
     private actor FakeCLI: GitHubReviewCLI {
         private let failsPost: Bool
+        private var duringGet: (@Sendable () async -> Void)?
         private var payloads: [Data] = []
         private var calls = 0
 
-        init(failsPost: Bool = false) {
+        /// `duringGet` runs once, inside the first GitHub read: what the user
+        /// does while a post is still being prepared.
+        init(failsPost: Bool = false, duringGet: (@Sendable () async -> Void)? = nil) {
             self.failsPost = failsPost
+            self.duringGet = duringGet
         }
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             calls += 1
+            if !arguments.contains("POST"), let hook = duringGet {
+                duringGet = nil
+                await hook()
+            }
             if arguments.contains("POST") {
                 let inputIndex = try #require(arguments.firstIndex(of: "--input"))
                 payloads.append(try Data(contentsOf: URL(fileURLWithPath: arguments[inputIndex + 1])))

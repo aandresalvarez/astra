@@ -168,6 +168,29 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(sender.requests.count == 1)
     }
 
+    /// Staged names are predictable and the folder is the agent's, so a link
+    /// planted where the marker goes must not lead ASTRA's write outside it.
+    @Test("A link planted at the returned marker is never followed")
+    func plantedMarkerLinkIsNotFollowed() async throws {
+        let fixture = try Fixture(baseURL: "http://jira.auto.test")
+        let staged = try fixture.stage()
+        let outside = fixture.workspaceRoot.appendingPathComponent("outside.txt")
+        try Data("original".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            atPath: staged.staged.path + ".returned", withDestinationPath: outside.path
+        )
+
+        let outcome = await fixture.handler(level: .autonomous, sender: Sender()).sendStagedConnectorMutation(staged.request)
+
+        guard case .refused = outcome else {
+            Issue.record("Expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(try String(contentsOf: outside, encoding: .utf8) == "original")
+        ConnectorMutationCoordinator.resetSentStagedPathsForTesting()
+        #expect(ConnectorMutationCoordinator.wasReturnedToAgent(stagedPath: staged.staged.path))
+    }
+
     @Test("A refusal before dispatch retires the Auto proposal too")
     func preDispatchRefusalRetires() async throws {
         let fixture = try Fixture(baseURL: "http://jira.auto.test")

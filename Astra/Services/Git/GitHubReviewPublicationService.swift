@@ -208,6 +208,9 @@ enum GitHubReviewPublicationRequirement {
         let text: String
         let timestamp: Date?
         let eventID: UUID?
+
+        /// Which request this is: the message it came from, or the goal.
+        var identity: String { "\(eventID?.uuidString ?? "goal"):\(text)" }
     }
 
     static func isPending(task: AgentTask) -> Bool {
@@ -723,10 +726,14 @@ final class GitHubReviewPublicationService {
     /// `authorization` says who let ASTRA post it: the user in the sheet, or
     /// Auto without asking. It is recorded on the receipt and changes none of
     /// the checks below.
+    /// `postingRequest` is, for Auto, the identity of the request the post was
+    /// asked under: a post that outlives the broker's wait must not go out on
+    /// the strength of a request the user made after it began.
     func publish(
         task: AgentTask,
         proposal: GitHubReviewProposal,
-        authorization: ExternalActionAuthorization = .userReviewed
+        authorization: ExternalActionAuthorization = .userReviewed,
+        postingRequest: String? = nil
     ) async throws -> GitHubReviewPublicationRecord {
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
@@ -744,7 +751,9 @@ final class GitHubReviewPublicationService {
         // dispatch is recorded.
         if authorization == .autoPolicy,
            !(GitHubReviewPublicationRequirement.isOpenForUnreviewedPost(task: task)
-               && GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task)) {
+               && GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task)
+               && postingRequest != nil
+               && GitHubReviewPublicationRequirement.postingRequest(task: task)?.identity == postingRequest) {
             throw GitHubReviewPublicationError.notRequested
         }
         let inputURL = FileManager.default.temporaryDirectory
@@ -941,7 +950,8 @@ final class GitHubReviewPublicationService {
         // open is read by `publish`, after `prepare` has bound a shorthand
         // target ("post a review on PR 12") to the workspace's origin — before
         // that binding a shorthand request does not yet read as pending.
-        guard GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task) else {
+        guard GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task),
+              let request = GitHubReviewPublicationRequirement.postingRequest(task: task) else {
             throw GitHubReviewPublicationError.notRequested
         }
         let filePath = URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path
@@ -952,7 +962,7 @@ final class GitHubReviewPublicationService {
                     + "file name and ask again."
             )
         }
-        return try await publish(task: task, proposal: proposal, authorization: .autoPolicy)
+        return try await publish(task: task, proposal: proposal, authorization: .autoPolicy, postingRequest: request.identity)
     }
 
     private func readPayload(task: AgentTask, filePath: String) throws -> (Data, GitHubReviewPayload) {
