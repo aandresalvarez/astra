@@ -152,6 +152,47 @@ extension GitService {
         }
     }
 
+    /// `git status` and a non-forced `git worktree remove` both trust the
+    /// index for entries marked assume-unchanged or skip-worktree, so an edit
+    /// to one is invisible yet deleted. Each such file is hashed and compared
+    /// with its index blob. A skip-worktree file that is absent, as a sparse
+    /// checkout leaves it, is unchanged; an absent assume-unchanged file was
+    /// deleted. Any failure to read counts as changed.
+    func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool {
+        do {
+            let listing = try await runGit(at: worktreePath, arguments: ["ls-files", "-v", "-z"], failureLogLevel: .warning)
+            for entry in listing.split(separator: "\0") {
+                guard let tag = entry.first, entry.count > 2 else { continue }
+                let assumeUnchanged = tag.isLowercase
+                let skipWorktree = tag == "S" || tag == "s"
+                guard assumeUnchanged || skipWorktree else { continue }
+                let file = String(entry.dropFirst(2))
+                guard FileManager.default.fileExists(atPath: (worktreePath as NSString).appendingPathComponent(file)) else {
+                    if skipWorktree { continue }
+                    return true
+                }
+                let indexed = try await runGit(at: worktreePath, arguments: ["rev-parse", ":" + file], failureLogLevel: .warning)
+                let current = try await runGit(at: worktreePath, arguments: ["hash-object", "--", file], failureLogLevel: .warning)
+                if indexed.trimmingCharacters(in: .whitespacesAndNewlines) != current.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    return true
+                }
+            }
+            return false
+        } catch {
+            return true
+        }
+    }
+
+    func pathIsHiddenFromStatus(_ path: String, in checkout: String) async -> Bool {
+        if let mode = try? await runGit(at: checkout, arguments: ["config", "--get", "status.showUntrackedFiles"]),
+           mode.trimmingCharacters(in: .whitespacesAndNewlines) == "no" {
+            return true
+        }
+        // `check-ignore` exits nonzero for a path that isn't ignored, which
+        // `runGit` reports as an error: either way, not hidden.
+        return (try? await runGit(at: checkout, arguments: ["check-ignore", "-q", "--", path])) != nil
+    }
+
     /// `for-each-ref` exits cleanly with no output for a missing ref and fails
     /// when the repository can't be read, so absence is positively verified.
     /// Its patterns match by prefix, so only the exact ref name counts.

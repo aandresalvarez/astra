@@ -533,6 +533,33 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pendingMirrorPaths() == nil)
     }
 
+    @Test("Deletion records are keyed by workspace and path, and a same-path record merges instead of replacing")
+    func deletionRecordsAreKeyedByWorkspaceAndPath() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let id = UUID()
+        let first = Connector(name: "First", serviceType: "jira").keychainCleanup
+        let second = Connector(name: "Second", serviceType: "jira").keychainCleanup
+        func record(_ path: String, _ connectors: [ConnectorKeychainCleanup]) -> WorkspaceDeletionCleanupRecord {
+            WorkspaceDeletionCleanupRecord(workspaceID: id, primaryPath: path, connectors: connectors, skills: [])
+        }
+        // Imports reuse workspace IDs, so one ID can be pending at two paths.
+        try store.record(record(fixture.root.appendingPathComponent("A").path, [first]))
+        try store.record(record(fixture.root.appendingPathComponent("B").path, []))
+        #expect(store.pending().count == 2)
+
+        let merged = try store.record(record(fixture.root.appendingPathComponent("A").path, [second]))
+        #expect(Set(merged.connectors.map(\.connectorID)) == [first.connectorID, second.connectorID])
+        #expect(store.pending().count == 2)
+
+        // A pending record that can't be read is never overwritten.
+        let url = store.recordURL(for: merged)
+        try Data("not json".utf8).write(to: url)
+        #expect(throws: (any Error).self) { try store.record(record(fixture.root.appendingPathComponent("A").path, [])) }
+        #expect(try Data(contentsOf: url) == Data("not json".utf8))
+    }
+
     @Test("A mirror that can't be removed keeps the deletion record for a retry")
     func unremovableMirrorKeepsRecord() throws {
         let fixture = try Fixture()

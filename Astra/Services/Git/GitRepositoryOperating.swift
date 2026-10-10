@@ -111,6 +111,12 @@ protocol GitRepositoryOperating: AnyObject {
     /// True when a gitlink folder whose submodule isn't populated holds files,
     /// which no status reports; also true when that can't be read.
     func unpopulatedGitlinksHoldFiles(at worktreePath: String) async -> Bool
+    /// True when a file marked assume-unchanged or skip-worktree differs from
+    /// the index, which `git status` hides; also true when that can't be read.
+    func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool
+    /// True when `checkout`'s `git status` would not show `path`: it is
+    /// ignored there, or untracked files are hidden. False when unsure.
+    func pathIsHiddenFromStatus(_ path: String, in checkout: String) async -> Bool
     /// Where `refs/heads/<branch>` points, or that it positively doesn't exist.
     func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult
     /// Whether the checkout has no tracked or untracked changes; nil when
@@ -217,6 +223,8 @@ extension GitRepositoryOperating {
     }
     func unlockWorktree(repoPath: String, worktreePath: String) async throws {}
     func unpopulatedGitlinksHoldFiles(at worktreePath: String) async -> Bool { true }
+    func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool { true }
+    func pathIsHiddenFromStatus(_ path: String, in checkout: String) async -> Bool { false }
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
     func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
 

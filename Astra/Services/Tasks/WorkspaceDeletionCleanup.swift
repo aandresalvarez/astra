@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 import ASTRACore
@@ -14,6 +15,26 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     let primaryPath: String
     let connectors: [ConnectorKeychainCleanup]
     let skills: [SkillKeychainCleanup]
+
+    init(
+        workspaceID id: UUID, primaryPath path: String,
+        connectors connectorCleanups: [ConnectorKeychainCleanup], skills skillCleanups: [SkillKeychainCleanup]
+    ) {
+        workspaceID = id
+        primaryPath = path
+        connectors = connectorCleanups
+        skills = skillCleanups
+    }
+
+    /// Both records' credentials, so a cleanup still pending for the same
+    /// deletion is never dropped by a later one.
+    func merging(_ other: WorkspaceDeletionCleanupRecord) -> WorkspaceDeletionCleanupRecord {
+        WorkspaceDeletionCleanupRecord(
+            workspaceID: workspaceID, primaryPath: primaryPath,
+            connectors: connectors + other.connectors.filter { new in !connectors.contains { $0.connectorID == new.connectorID } },
+            skills: skills + other.skills.filter { new in !skills.contains { $0.skillID == new.skillID } }
+        )
+    }
 
     @MainActor
     init(_ workspace: Workspace) {
@@ -35,19 +56,30 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         self.directory = directory.standardizedFileURL
     }
 
-    func record(_ record: WorkspaceDeletionCleanupRecord) throws {
+    /// Records `record` and returns what is now stored. Records are keyed by
+    /// workspace and primary path, since imports reuse workspace IDs, and a
+    /// pending record with the same key is merged rather than replaced. One
+    /// that can't be read stops the deletion instead of being overwritten.
+    @discardableResult
+    func record(_ record: WorkspaceDeletionCleanupRecord) throws -> WorkspaceDeletionCleanupRecord {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
         )
-        let url = recordURL(for: record.workspaceID)
+        let url = recordURL(for: record)
+        var stored = record
+        if FileManager.default.fileExists(atPath: url.path) {
+            let existing = try JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
+            stored = existing.merging(record)
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(record).write(to: url, options: .atomic)
+        try encoder.encode(stored).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return stored
     }
 
     func remove(_ record: WorkspaceDeletionCleanupRecord) {
-        try? FileManager.default.removeItem(at: recordURL(for: record.workspaceID))
+        try? FileManager.default.removeItem(at: recordURL(for: record))
     }
 
     /// Readable records; an unreadable one stays on disk and is skipped.
@@ -78,8 +110,10 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         return mirrors
     }
 
-    func recordURL(for workspaceID: UUID) -> URL {
-        directory.appendingPathComponent(workspaceID.uuidString.lowercased() + ".json")
+    func recordURL(for record: WorkspaceDeletionCleanupRecord) -> URL {
+        let path = WorkspacePathPresentation.resolvedPath(record.primaryPath)
+        let digest = SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(record.workspaceID.uuidString.lowercased() + "-" + digest + ".json")
     }
 }
 

@@ -761,9 +761,11 @@ final class TaskLifecycleCoordinator {
         // Mirrors and Keychain items can't be rolled back, so they are removed
         // only once the deletion is saved. What to remove is recorded first,
         // so a quit after the save is finished at the next launch.
-        let cleanupRecord = WorkspaceDeletionCleanupRecord(ws)
+        // What is stored may include a cleanup still pending for this same
+        // deletion; settling uses all of it.
+        let cleanupRecord: WorkspaceDeletionCleanupRecord
         do {
-            try workspaceDeletionCleanupStore.record(cleanupRecord)
+            cleanupRecord = try workspaceDeletionCleanupStore.record(WorkspaceDeletionCleanupRecord(ws))
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",

@@ -1234,6 +1234,35 @@ struct NewTaskWorktreeBaseTests {
         #expect(try fixture.git(["status", "--porcelain"], at: main).isEmpty)
     }
 
+    @Test("A worktrees folder inside an unrelated repository is refused unless that repository ignores it")
+    func destinationInsideUnrelatedRepository() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try fixture.repository("Container")
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let task = AgentTask(title: "Explore", goal: "Explore", workspace: workspace)
+        let inside = container.appendingPathComponent("Worktrees", isDirectory: true)
+        func create() async throws {
+            try await TaskWorktreeService.prepare(
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+                modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
+                worktreesRoot: inside.path, ownership: fixture.ownership
+            )
+        }
+        await #expect(throws: TaskWorktreeCreationError.self) { try await create() }
+        #expect(task.executionRootPath == nil)
+        #expect(try fixture.git(["status", "--porcelain"], at: container).isEmpty)
+
+        // Once that repository ignores the folder, its worktrees stay out of
+        // its status, so creation goes ahead.
+        try fixture.commit(".gitignore", contents: "Worktrees/\n", message: "Ignore worktrees", at: container)
+        try await create()
+        #expect(task.executionRootPath != nil)
+        #expect(try fixture.git(["status", "--porcelain"], at: container).isEmpty)
+    }
+
     @Test("A recorded repository that disappears stays selected and cannot submit")
     func missingRecordedRepositoryIsNotReplaced() async {
         let app = GitRepositoryInfo(name: "App", path: "/repos/app")

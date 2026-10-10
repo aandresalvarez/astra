@@ -334,6 +334,41 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("An edit hidden by assume-unchanged keeps the worktree; an absent skip-worktree file does not")
+    func indexHiddenEditsKeepWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        let file = checkout.appendingPathComponent("Sources/file.txt")
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        // As a sparse checkout leaves it: marked skip-worktree and absent.
+        try fixture.git(["update-index", "--skip-worktree", "Sources/file.txt"], at: checkout)
+        try FileManager.default.removeItem(at: file)
+        #expect(await GitService.shared.worktreeIsClean(at: checkout.path) == true)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        // An edit Git is told not to look at is still an edit.
+        try fixture.git(["update-index", "--no-skip-worktree", "Sources/file.txt"], at: checkout)
+        try fixture.git(["checkout", "--", "Sources/file.txt"], at: checkout)
+        try fixture.git(["update-index", "--assume-unchanged", "Sources/file.txt"], at: checkout)
+        try "edited".write(to: file, atomically: true, encoding: .utf8)
+        #expect(await GitService.shared.worktreeIsClean(at: checkout.path) == true)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+        context.delete(draft)
+        try context.save()
+
+        let outcome = await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        )
+        #expect(outcome == .kept("index_hidden_changes"))
+        #expect(try String(contentsOf: file, encoding: .utf8) == "edited")
+    }
+
     @Test("A removal Git refuses takes back the removal mark")
     func refusedRemovalClearsMark() async throws {
         let fixture = try Fixture()

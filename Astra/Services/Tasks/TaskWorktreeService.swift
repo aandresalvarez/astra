@@ -455,10 +455,18 @@ enum TaskWorktreeService {
         let resolvedRoot = WorkspacePathPresentation.resolvedPath(worktreesRoot)
         let checkouts = [GitCheckoutLayout.worktreeRoot(containing: path) ?? path]
             + (await git.listWorktrees(at: path)).map(\.path)
-        if let containing = checkouts.first(where: {
+        var containing = checkouts.first(where: {
             let checkout = WorkspacePathPresentation.resolvedPath($0)
             return resolvedRoot == checkout || resolvedRoot.hasPrefix(checkout + "/")
-        }) {
+        })
+        // An unrelated repository around the worktrees folder, such as a
+        // home folder kept in Git, would list the worktrees too, unless it
+        // ignores that folder or hides untracked files.
+        if containing == nil, let outer = GitCheckoutLayout.worktreeRoot(containing: worktreesRoot) {
+            try? FileManager.default.createDirectory(atPath: worktreesRoot, withIntermediateDirectories: true)
+            if !(await git.pathIsHiddenFromStatus(worktreesRoot, in: outer)) { containing = outer }
+        }
+        if let containing {
             throw TaskWorktreeCreationError.destinationInsideRepository(repository: containing, worktreesRoot: worktreesRoot)
         }
         // One creation per repository: linked checkouts of one repository
@@ -792,9 +800,14 @@ enum TaskWorktreeService {
         // removal below deletes tracked and untracked edits.
         func uncleanOutcome() async -> TaskWorktreeCleanupOutcome? {
             switch await git.worktreeIsClean(at: path) {
-            case true?: nil
-            case false?: kept("uncommitted_changes")
-            case nil: kept("status_unavailable", retry: true)
+            case true?:
+                // Status trusts the index for assume-unchanged and
+                // skip-worktree files, so their contents are compared too.
+                return await git.indexHiddenEntriesChanged(at: path) ? kept("index_hidden_changes") : nil
+            case false?:
+                return kept("uncommitted_changes")
+            case nil:
+                return kept("status_unavailable", retry: true)
             }
         }
         // A worktree that recorded an identity is removed only while the
