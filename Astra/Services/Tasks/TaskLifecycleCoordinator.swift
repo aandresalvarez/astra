@@ -646,6 +646,29 @@ final class TaskLifecycleCoordinator {
         return allRequests
     }
 
+    /// Workers are stopped once their cancellation is saved, before the
+    /// deletion itself. When the deletion then isn't saved, the surviving
+    /// tasks are settled rather than left looking like they still run with
+    /// no worker or request behind them: a running task is cancelled the way
+    /// Cancel does it, and a queued one goes back to draft.
+    private func settleAfterUnsavedDeletion(_ tasks: [AgentTask]) {
+        for task in tasks where !task.isDeleted {
+            switch task.status {
+            case .running, .pendingUser:
+                let summary = TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+                TaskRunLifecycleService.persist(summary: summary, modelContext: modelContext)
+            case .queued:
+                TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
+                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                    workspace: task.workspace, modelContext: modelContext, taskID: task.id,
+                    auditFields: ["operation": "unsaved_deletion_settled"]
+                )
+            default:
+                break
+            }
+        }
+    }
+
     /// Deletes `task` and returns whether the deletion was saved. `willDelete`
     /// runs only once any worktree cleanup intent is durable, just before the
     /// task is deleted. A false result means the task is still stored and back
@@ -661,7 +684,7 @@ final class TaskLifecycleCoordinator {
             ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
             : []
         guard let requests = cancelDurably([task]) else { return false }
-        return TaskWorktreeService.saveDeletionThenDiscard(
+        let persisted = TaskWorktreeService.saveDeletionThenDiscard(
             unusedWorktrees, workspace: workspace, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
@@ -671,6 +694,8 @@ final class TaskLifecycleCoordinator {
                 modelContext.delete(task)
             }
         ).persisted
+        if !persisted { settleAfterUnsavedDeletion([task]) }
+        return persisted
     }
 
     func setDoneState(_ task: AgentTask, to isDone: Bool) {
@@ -764,6 +789,7 @@ final class TaskLifecycleCoordinator {
         if !result.persisted || WorkspaceDeletionCleanupService.settle(cleanupRecord, modelContext: modelContext) {
             workspaceDeletionCleanupStore.remove(cleanupRecord)
         }
+        if !result.persisted { settleAfterUnsavedDeletion(ws.tasks) }
         return (result.persisted, result.persisted ? next : nil, result.cleanup)
     }
 
@@ -808,6 +834,7 @@ final class TaskLifecycleCoordinator {
             }
         )
         guard result.persisted else {
+            settleAfterUnsavedDeletion(existing.tasks)
             for snapshot in sshSnapshots {
                 do {
                     try SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path)

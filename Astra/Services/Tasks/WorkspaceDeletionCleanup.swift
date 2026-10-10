@@ -70,8 +70,10 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         for url in urls where url.pathExtension == "json" {
             guard let record = try? JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
             else { return nil }
-            mirrors.insert(WorkspacePathPresentation.standardizedPath(WorkspaceFileLayout.workspaceConfigFile(for: record.primaryPath)))
-            mirrors.insert(WorkspacePathPresentation.standardizedPath(WorkspaceFileLayout.legacyWorkspaceConfigFile(for: record.primaryPath)))
+            // Resolved, so the same mirror reached through a symlink or an
+            // alias such as /tmp and /private/tmp still matches.
+            mirrors.insert(WorkspacePathPresentation.resolvedPath(WorkspaceFileLayout.workspaceConfigFile(for: record.primaryPath)))
+            mirrors.insert(WorkspacePathPresentation.resolvedPath(WorkspaceFileLayout.legacyWorkspaceConfigFile(for: record.primaryPath)))
         }
         return mirrors
     }

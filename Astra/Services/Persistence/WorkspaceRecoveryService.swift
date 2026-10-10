@@ -539,7 +539,7 @@ public enum WorkspaceRecoveryService {
             }
             // Mirrors of workspaces whose deletion is still being cleaned up.
             let loadedConfigs = await loadWorkspaceConfigs(configs.filter {
-                !excluded.contains(WorkspacePathPresentation.standardizedPath($0.path))
+                !excluded.contains(WorkspacePathPresentation.resolvedPath($0.path))
             })
             guard !Task.isCancelled else { return }
             if recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs) > 0 {

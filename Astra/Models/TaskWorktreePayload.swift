@@ -206,6 +206,27 @@ public enum TaskWorktreeBinding {
         "astra-task-worktree \(identity)"
     }
 
+    public enum RegisteredHeadReflog: Equatable {
+        case notRegistered
+        case unreadable
+        case commits([String])
+    }
+
+    /// The commits in the registered worktree's own HEAD reflog, which Git
+    /// keeps in its registry entry even after the worktree folder is gone.
+    public static func registeredHeadReflog(repositoryPath: String, worktreePath: String) -> RegisteredHeadReflog {
+        guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else {
+            return .notRegistered
+        }
+        guard let log = try? String(
+            contentsOf: registered.entry.appendingPathComponent("logs/HEAD"), encoding: .utf8
+        ) else { return .unreadable }
+        let zero = String(repeating: "0", count: 40)
+        return .commits(log.split(whereSeparator: \.isNewline).flatMap { line in
+            line.split(separator: " ").prefix(2).map(String.init)
+        }.filter { $0 != zero })
+    }
+
     /// The identity token and the lock reason in `worktreePath`'s registry
     /// entry, or nil when the repository doesn't register that path.
     public static func registeredMarkers(
@@ -284,11 +305,13 @@ public enum TaskWorktreeBinding {
         return (commonDirectory, entry)
     }
 
+    /// Resolved through the deepest existing folder, so a path whose worktree
+    /// folder is gone still matches the spelling Git recorded, such as
+    /// `/private/var` for `/var`.
     private static func resolvedPath(_ rawValue: String) -> String? {
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
-        return URL(fileURLWithPath: (value as NSString).expandingTildeInPath)
-            .resolvingSymlinksInPath().standardizedFileURL.path
+        return WorkspacePathPresentation.resolvedPath((value as NSString).expandingTildeInPath)
     }
 
     private static func resolvedGitPath(_ rawValue: String, relativeTo base: String) -> String? {

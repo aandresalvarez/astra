@@ -502,7 +502,11 @@ struct NewTaskWorktreeLifecycleTests {
         let source = try Fixture.container()
         let folder = fixture.root.appendingPathComponent("Deleted", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let workspace = Workspace(name: "Deleted", primaryPath: folder.path)
+        // The deleted workspace was configured through an alias; recovery
+        // discovers the same mirror through the real path.
+        let alias = fixture.root.appendingPathComponent("Alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
+        let workspace = Workspace(name: "Deleted", primaryPath: alias.path)
         source.mainContext.insert(workspace)
         try source.mainContext.save()
         let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
@@ -512,7 +516,7 @@ struct NewTaskWorktreeLifecycleTests {
         try store.record(WorkspaceDeletionCleanupRecord(workspace))
 
         let excluded = try #require(store.pendingMirrorPaths())
-        #expect(excluded.contains(WorkspacePathPresentation.standardizedPath(mirror.path)))
+        #expect(excluded.contains(WorkspacePathPresentation.resolvedPath(mirror.path)))
         let empty = try Fixture.container()
         await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
             modelContext: empty.mainContext, excludingConfigFiles: excluded,
@@ -585,6 +589,40 @@ struct NewTaskWorktreeLifecycleTests {
         try await prepare(task, repository: repository, context: context, fixture: fixture)
         #expect(task.executionRootPath != nil)
         #expect(fixture.resourceQueue.activeResourceLocks.isEmpty)
+    }
+
+    @Test("A workspace deletion saved only up to the cancellation settles its queued task back to draft")
+    func unsavedDeletionAfterCancellationSettlesTask() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "Queued", goal: "Explore", workspace: workspace)
+        context.insert(task)
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceClaims: [])
+        context.insert(request)
+        try context.save()
+        #expect(task.status == .queued)
+        // The cancellation is saved; the deletion's own save then fails.
+        var saves = 0
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup")),
+            persistWorkspaceChange: { _, context in
+                saves += 1
+                return saves == 1 && (try? context.save()) != nil
+            }
+        )
+
+        #expect(!coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
+        #expect(saves == 2)
+        #expect(!task.isDeleted)
+        #expect(request.state == .cancelled)
+        #expect(task.status == .draft)
     }
 
     @Test("Config and folder replacement save imported bindings before cleaning omitted drafts",

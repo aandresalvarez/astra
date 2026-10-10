@@ -309,6 +309,31 @@ struct NewTaskWorktreeCleanupTests {
         ))
     }
 
+    @Test("A detached commit kept only in a vanished worktree's HEAD reflog keeps it")
+    func detachedCommitInRegisteredHeadReflogIsKept() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        try fixture.git(["checkout", "--quiet", "--detach"], at: checkout)
+        try fixture.commit("detached.txt", contents: "work", message: "Detached work", at: checkout)
+        try fixture.git(["checkout", "--quiet", discard.branch], at: checkout)
+        // Only the folder is removed; Git's registry entry and its HEAD
+        // reflog, which alone still reach that commit, remain.
+        try FileManager.default.removeItem(at: checkout)
+        context.delete(draft)
+        try context.save()
+
+        let outcome = await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        )
+        #expect(outcome == .kept("reflog_changes"))
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
     @Test("A removal Git refuses takes back the removal mark")
     func refusedRemovalClearsMark() async throws {
         let fixture = try Fixture()
@@ -928,7 +953,9 @@ struct NewTaskWorktreeCleanupTests {
         context.delete(workspace)
         try context.save()
         try fixture.git(["worktree", "remove", linked.path], at: main)
-        #expect(!FileManager.default.fileExists(atPath: linked.path))
+        // Something else now sits at the old source path; it isn't trusted
+        // just because it exists.
+        try FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true)
 
         #expect(await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue) == .removed)
         #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))

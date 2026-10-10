@@ -20,10 +20,14 @@ extension ChatPanelView {
     var worktreeBinding: TaskWorktreePayload? { cachedWorktreeBinding }
 
     /// Everything the binding depends on, read from the model only.
+    /// The configured folders matter because the binding is valid only while
+    /// its source repository is one of them. Changes on disk, such as a
+    /// replaced worktree, aren't observable here, so submission refreshes too.
     struct WorktreeBindingSignature: Equatable {
         var draftID: UUID?
         var pin: String?
         var preparedEventID: UUID?
+        var configuredPaths: [String]
     }
 
     var worktreeBindingSignature: WorktreeBindingSignature {
@@ -31,7 +35,8 @@ extension ChatPanelView {
         return WorktreeBindingSignature(
             draftID: draft?.id,
             pin: draft?.executionRootPath,
-            preparedEventID: draft.flatMap(TaskWorktreeBinding.eventForInheritance(from:))?.id
+            preparedEventID: draft.flatMap(TaskWorktreeBinding.eventForInheritance(from:))?.id,
+            configuredPaths: draft?.workspace.map { [$0.primaryPath] + $0.additionalPaths } ?? []
         )
     }
 
@@ -70,6 +75,7 @@ extension ChatPanelView {
 
     func performTaskCreation(_ action: @escaping @MainActor () async throws -> Void) {
         guard !isPreparingWorktree, !isThinking else { return }
+        refreshWorktreeBinding()
         guard canSubmitWorktreeSelection else {
             return taskCreationError = worktreeSelection.submitError.localizedDescription
         }

@@ -37,6 +37,11 @@ struct ComposerPresentationTests {
         // prepared event changes, never per keystroke.
         #expect(creation.contains("var worktreeBinding: TaskWorktreePayload? { cachedWorktreeBinding }"))
         #expect(composer.contains(".onChange(of: worktreeBindingSignature, initial: true) { refreshWorktreeBinding() }"))
+        // The binding is valid only while its repository is configured, and
+        // the disk can change behind the cache, so submission refreshes it.
+        #expect(creation.contains("configuredPaths: draft?.workspace.map"))
+        #expect(creation.contains("guard !isPreparingWorktree, !isThinking else { return }\n        refreshWorktreeBinding()"))
+        #expect(composer.contains("refreshWorktreeBinding()\n        guard !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }"))
         #expect(!composer.contains(".disabled(isPreparingWorktree)"))
         #expect(composer.contains("onCancel: cancelTaskCreation"))
         #expect(strip.contains("accessibilityIdentifier(\"NewTaskWorktreeCancel\")"))

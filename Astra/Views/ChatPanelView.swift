@@ -1188,6 +1188,8 @@ struct ChatPanelView: View {
     }
 
     private func submitComposer() {
+        // The worktree on disk may have changed since the binding was cached.
+        refreshWorktreeBinding()
         guard !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
         if showSlashMenu && !slashOptions.isEmpty {
             selectSlashOption(slashOptions[slashSelectedIndex])

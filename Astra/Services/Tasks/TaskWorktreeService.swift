@@ -450,12 +450,20 @@ enum TaskWorktreeService {
         }
         // A worktree inside its own source checkout would appear there as
         // untracked files, polluting the checkout the option leaves alone.
-        let sourceCheckout = WorkspacePathPresentation.resolvedPath(GitCheckoutLayout.worktreeRoot(containing: path) ?? path)
+        // That holds for every checkout of the repository, not just the
+        // selected one: a sibling checkout would see the same pollution.
         let resolvedRoot = WorkspacePathPresentation.resolvedPath(worktreesRoot)
-        if resolvedRoot == sourceCheckout || resolvedRoot.hasPrefix(sourceCheckout + "/") {
-            throw TaskWorktreeCreationError.destinationInsideRepository(repository: path, worktreesRoot: worktreesRoot)
+        let checkouts = [GitCheckoutLayout.worktreeRoot(containing: path) ?? path]
+            + (await git.listWorktrees(at: path)).map(\.path)
+        if let containing = checkouts.first(where: {
+            let checkout = WorkspacePathPresentation.resolvedPath($0)
+            return resolvedRoot == checkout || resolvedRoot.hasPrefix(checkout + "/")
+        }) {
+            throw TaskWorktreeCreationError.destinationInsideRepository(repository: containing, worktreesRoot: worktreesRoot)
         }
-        let repositoryKey = WorkspacePathPresentation.resolvedPath(path)
+        // One creation per repository: linked checkouts of one repository
+        // share its Git directory, so they share this key too.
+        let repositoryKey = WorkspacePathPresentation.resolvedPath(GitCheckoutLayout.commonDirectory(for: path) ?? path)
         guard activeCreationRepositories.insert(repositoryKey).inserted else {
             throw TaskWorktreeCreationError.repositoryBusy(path)
         }
@@ -714,9 +722,15 @@ enum TaskWorktreeService {
     /// Git itself loses the worktree, so that case keeps retrying.
     static func cleanupRepository(for discard: TaskWorktreeDiscard) -> String {
         let fileManager = FileManager.default
-        guard !fileManager.fileExists(atPath: discard.repositoryPath),
-              let common = discard.commonDirectory,
-              URL(fileURLWithPath: common).lastPathComponent == ".git" else { return discard.repositoryPath }
+        guard let common = discard.commonDirectory else { return discard.repositoryPath }
+        // The recorded source is used while it still shares the recorded Git
+        // directory; a folder or another repository now at that path isn't
+        // trusted just because it exists.
+        if let current = GitCheckoutLayout.commonDirectory(for: discard.repositoryPath),
+           WorkspacePathPresentation.resolvedPath(current) == WorkspacePathPresentation.resolvedPath(common) {
+            return discard.repositoryPath
+        }
+        guard URL(fileURLWithPath: common).lastPathComponent == ".git" else { return discard.repositoryPath }
         let main = URL(fileURLWithPath: common).deletingLastPathComponent().path
         return fileManager.fileExists(atPath: common) && fileManager.fileExists(atPath: main) ? main : discard.repositoryPath
     }
@@ -830,6 +844,19 @@ enum TaskWorktreeService {
             worktreePath: exists ? path : nil, repoPath: repository
         ) {
             return kept("reflog_changes")
+        }
+        // With the folder gone, Git still keeps the worktree's HEAD reflog in
+        // its registry entry until the removal below deletes it; a detached
+        // commit there is work too.
+        if !exists {
+            switch TaskWorktreeBinding.registeredHeadReflog(repositoryPath: repository, worktreePath: path) {
+            case .notRegistered:
+                break
+            case .unreadable:
+                return kept("reflog_changes")
+            case .commits(let commits):
+                if commits.isEmpty || commits.contains(where: { $0 != discard.baseCommit }) { return kept("reflog_changes") }
+            }
         }
         let registered = await git.listWorktrees(at: repository)
         guard !registered.isEmpty else { return kept("registry_unavailable", retry: true) }
