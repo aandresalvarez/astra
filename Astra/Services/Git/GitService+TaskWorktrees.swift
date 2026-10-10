@@ -167,9 +167,19 @@ extension GitService {
                 let skipWorktree = tag == "S" || tag == "s"
                 guard assumeUnchanged || skipWorktree else { continue }
                 let file = String(entry.dropFirst(2))
-                guard FileManager.default.fileExists(atPath: (worktreePath as NSString).appendingPathComponent(file)) else {
+                let full = (worktreePath as NSString).appendingPathComponent(file)
+                // Not following links: a symlink retargeted to a missing path
+                // is still there, and is a change.
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: full) else {
                     if skipWorktree { continue }
                     return true
+                }
+                if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+                    // A link's blob is its target path.
+                    let indexed = try await runGit(at: worktreePath, arguments: ["cat-file", "-p", ":" + file], failureLogLevel: .warning)
+                    let target = try FileManager.default.destinationOfSymbolicLink(atPath: full)
+                    if indexed.trimmingCharacters(in: .newlines) != target { return true }
+                    continue
                 }
                 let indexed = try await runGit(at: worktreePath, arguments: ["rev-parse", ":" + file], failureLogLevel: .warning)
                 let current = try await runGit(at: worktreePath, arguments: ["hash-object", "--", file], failureLogLevel: .warning)

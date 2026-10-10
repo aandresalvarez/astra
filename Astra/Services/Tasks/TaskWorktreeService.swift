@@ -925,6 +925,10 @@ enum TaskWorktreeService {
             }
             if let problem = referenceProblem() { return kept(problem, retry: true) }
         }
+        // From this check to the deletion, the Repository card can't check
+        // the branch out; it waits for any branch operation it started.
+        guard TaskBranchDeletionGate.beginDeletion(at: repository) else { return kept("repository_busy", retry: true) }
+        defer { TaskBranchDeletionGate.endDeletion(at: repository) }
         let remaining = await git.listWorktrees(at: repository)
         guard !remaining.isEmpty else { return kept("registry_unavailable", retry: true) }
         guard !remaining.contains(where: { $0.branch == discard.branch }) else { return kept("branch_in_use") }

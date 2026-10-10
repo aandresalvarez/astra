@@ -303,7 +303,10 @@ public enum KeychainService {
     }
 
     /// Facts-based twin of `deleteAll(connector:)` — see `connectorServices(facts:)`.
-    public static func deleteAll(facts: ConnectorSecretFacts) {
+    /// True when every namespace was cleared; a missing item counts as
+    /// cleared, so a retry is idempotent.
+    @discardableResult
+    public static func deleteAll(facts: ConnectorSecretFacts) -> Bool {
         let services = connectorServices(facts: facts)
         let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
         if !deleted.contains(true) {
@@ -312,16 +315,19 @@ public enum KeychainService {
                 "namespace_count": String(services.count)
             ], level: .warning)
         }
+        return !deleted.contains(false)
     }
 
     /// Delete all credentials for a skill.
-    public static func deleteAll(skillID: UUID) {
+    @discardableResult
+    public static func deleteAll(skillID: UUID) -> Bool {
         let ok = AstraSecureKeychainStore.deleteAll(service: skillService(for: skillID))
         if !ok {
             AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "skill_all"
             ], level: .warning)
         }
+        return ok
     }
 
     // MARK: - Bulk Save

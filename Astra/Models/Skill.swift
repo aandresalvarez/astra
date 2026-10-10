@@ -353,10 +353,12 @@ public final class Skill {
 public struct SkillKeychainCleanup: Codable, Equatable, Sendable {
     public let skillID: UUID
 
-    public func run() {
-        SkillSecretSeam.required.deleteAllSecrets(skillID: skillID)
+    @discardableResult
+    public func run() -> Bool {
+        let cleared = SkillSecretSeam.required.deleteAllSecretsReportingResult(skillID: skillID)
         AuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
             "skill_id": skillID.uuidString
         ])
+        return cleared
     }
 }

@@ -979,11 +979,16 @@ final class WorkspaceGitViewModel: ObservableObject {
             errorMessage = "Enter a branch name for the new worktree."
             return
         }
+        guard let gate = TaskBranchDeletionGate.beginCardOperation(at: rootPath) else {
+            errorMessage = TaskBranchDeletionGate.busyMessage
+            return
+        }
         AppLogger.audit(.gitBranchCreated, category: "Git", fields: [
             "branch": cleanBranch, "kind": "worktree"
         ])
         isSyncing = true
         Task {
+            defer { TaskBranchDeletionGate.endCardOperation(gate) }
             do {
                 let exists = await git.localBranchExists(cleanBranch, at: rootPath)
                 let createdPath = try await git.addWorktree(
@@ -1152,8 +1157,13 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func checkout(branch: String) {
         guard let path = workingPath else { return }
+        guard let gate = TaskBranchDeletionGate.beginCardOperation(at: path) else {
+            errorMessage = TaskBranchDeletionGate.busyMessage
+            return
+        }
         AppLogger.audit(.gitCheckout, category: "Git", fields: ["branch": branch])
         Task {
+            defer { TaskBranchDeletionGate.endCardOperation(gate) }
             do {
                 try await git.checkoutBranch(branch, at: path)
                 self.errorMessage = nil

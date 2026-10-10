@@ -369,6 +369,32 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try String(contentsOf: file, encoding: .utf8) == "edited")
     }
 
+    @Test("A skip-worktree symlink retargeted to a missing path counts as changed")
+    func retargetedSkipWorktreeSymlinkIsChanged() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try FileManager.default.createSymbolicLink(
+            atPath: repository.appendingPathComponent("link").path, withDestinationPath: "Sources/file.txt"
+        )
+        try fixture.git(["add", "link"], at: repository)
+        try fixture.git([
+            "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Add link"
+        ], at: repository)
+        let store = try Fixture.container()
+        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        let link = checkout.appendingPathComponent("link")
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        try fixture.git(["update-index", "--skip-worktree", "link"], at: checkout)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "nowhere")
+        #expect(!FileManager.default.fileExists(atPath: link.path))
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+    }
+
     @Test("A removal Git refuses takes back the removal mark")
     func refusedRemovalClearsMark() async throws {
         let fixture = try Fixture()

@@ -814,11 +814,14 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
     public let originComponentID: String?
     public let isStanfordOutlookMail: Bool
 
-    public func run() {
+    /// True when every credential namespace was cleared, so a caller with a
+    /// durable record can keep it for a retry otherwise.
+    @discardableResult
+    public func run() -> Bool {
         if isStanfordOutlookMail {
             OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: connectorID)
         }
-        ConnectorSecretSeam.required.deleteAllCredentials(facts: ConnectorSecretFacts(
+        let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts(
             id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
             originPackageID: originPackageID, originComponentID: originComponentID
         ))
@@ -826,5 +829,6 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
             "connector_id": connectorID.uuidString,
             "service_type": serviceType
         ])
+        return cleared
     }
 }

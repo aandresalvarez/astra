@@ -553,11 +553,67 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(Set(merged.connectors.map(\.connectorID)) == [first.connectorID, second.connectorID])
         #expect(store.pending().count == 2)
 
+        // A reimported connector can keep its ID under another base URL, a
+        // separate credential namespace; both snapshots are kept.
+        let reused = Connector(name: "Reused", serviceType: "jira", baseURL: "https://old.example")
+        let before = reused.keychainCleanup
+        reused.baseURL = "https://new.example"
+        let after = try store.record(record(fixture.root.appendingPathComponent("A").path, [before]))
+            .merging(record(fixture.root.appendingPathComponent("A").path, [reused.keychainCleanup]))
+        #expect(after.connectors.filter { $0.connectorID == reused.id }.map(\.baseURL).sorted()
+            == ["https://new.example", "https://old.example"])
+
         // A pending record that can't be read is never overwritten.
         let url = store.recordURL(for: merged)
         try Data("not json".utf8).write(to: url)
         #expect(throws: (any Error).self) { try store.record(record(fixture.root.appendingPathComponent("A").path, [])) }
         #expect(try Data(contentsOf: url) == Data("not json".utf8))
+    }
+
+    @Test("A deletion stays pending when a workspace reusing its ID lives at another path")
+    func sameIDElsewhereKeepsDeletionPending() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let original = fixture.root.appendingPathComponent("Original", isDirectory: true)
+        let elsewhere = fixture.root.appendingPathComponent("Elsewhere", isDirectory: true)
+        for folder in [original, elsewhere] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        let deleted = Workspace(name: "Deleted", primaryPath: original.path)
+        context.insert(deleted)
+        try context.save()
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: original.path)
+        try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        try store.record(WorkspaceDeletionCleanupRecord(deleted))
+        let id = deleted.id
+        context.delete(deleted)
+        try context.save()
+        // An import elsewhere reused the ID before the cleanup was retried.
+        let reimported = Workspace(name: "Reimported", primaryPath: elsewhere.path)
+        reimported.id = id
+        context.insert(reimported)
+        try context.save()
+
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(!FileManager.default.fileExists(atPath: mirror))
+        #expect(store.pending().isEmpty)
+    }
+
+    @Test("Branch deletion and the Repository card's branch operations exclude each other")
+    func branchDeletionGateExcludesCardOperations() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App").path
+        let card = try #require(TaskBranchDeletionGate.beginCardOperation(at: repository))
+        #expect(!TaskBranchDeletionGate.beginDeletion(at: repository))
+        TaskBranchDeletionGate.endCardOperation(card)
+        #expect(TaskBranchDeletionGate.beginDeletion(at: repository))
+        #expect(TaskBranchDeletionGate.beginCardOperation(at: repository) == nil)
+        TaskBranchDeletionGate.endDeletion(at: repository)
+        let again = try #require(TaskBranchDeletionGate.beginCardOperation(at: repository))
+        TaskBranchDeletionGate.endCardOperation(again)
     }
 
     @Test("A mirror that can't be removed keeps the deletion record for a retry")

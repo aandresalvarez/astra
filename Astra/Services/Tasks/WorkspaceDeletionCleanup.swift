@@ -31,7 +31,9 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     func merging(_ other: WorkspaceDeletionCleanupRecord) -> WorkspaceDeletionCleanupRecord {
         WorkspaceDeletionCleanupRecord(
             workspaceID: workspaceID, primaryPath: primaryPath,
-            connectors: connectors + other.connectors.filter { new in !connectors.contains { $0.connectorID == new.connectorID } },
+            // By every namespace-defining fact, not only the connector ID: a
+            // reimported connector can keep its ID under a new base URL.
+            connectors: connectors + other.connectors.filter { !connectors.contains($0) },
             skills: skills + other.skills.filter { new in !skills.contains { $0.skillID == new.skillID } }
         )
     }
@@ -130,9 +132,14 @@ enum WorkspaceDeletionCleanupService {
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
               let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return false }
-        // The deletion was never saved: there is nothing to clean up.
-        guard !workspaces.contains(where: { $0.id == record.workspaceID }) else { return true }
+        // The deletion was never saved only when that same workspace, by ID
+        // and path, is still stored; an import that reused the ID elsewhere
+        // doesn't make this deletion's cleanup unnecessary.
         let path = WorkspacePathPresentation.standardizedPath(record.primaryPath)
+        let resolvedRecordPath = WorkspacePathPresentation.resolvedPath(record.primaryPath)
+        guard !workspaces.contains(where: {
+            $0.id == record.workspaceID && WorkspacePathPresentation.resolvedPath($0.primaryPath) == resolvedRecordPath
+        }) else { return true }
         // A mirror left behind would let recovery reimport the workspace, so
         // the record, and the credentials it needs, are kept for a retry.
         if !workspaces.contains(where: { WorkspacePathPresentation.standardizedPath($0.primaryPath) == path }),
@@ -144,9 +151,21 @@ enum WorkspaceDeletionCleanupService {
         }
         let liveConnectors = Set(connectors.map(\.id))
         let liveSkills = Set(skills.map(\.id))
-        for connector in record.connectors where !liveConnectors.contains(connector.connectorID) { connector.run() }
-        for skill in record.skills where !liveSkills.contains(skill.skillID) { skill.run() }
-        return true
+        // Every credential is attempted; any that couldn't be cleared keeps
+        // the record for an idempotent retry.
+        var cleared = true
+        for connector in record.connectors where !liveConnectors.contains(connector.connectorID) {
+            cleared = connector.run() && cleared
+        }
+        for skill in record.skills where !liveSkills.contains(skill.skillID) {
+            cleared = skill.run() && cleared
+        }
+        if !cleared {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "credential_cleanup_failed"
+            ], level: .error)
+        }
+        return cleared
     }
 
     /// Settles deletions a quit interrupted, reading committed state through
