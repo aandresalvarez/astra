@@ -66,6 +66,30 @@ struct TaskWorktreeOwnershipStore: Sendable {
     func forget(_ discard: TaskWorktreeDiscard) {
         guard owns(discard) else { return }
         try? FileManager.default.removeItem(at: recordURL(forWorktree: discard.worktreePath))
+        try? FileManager.default.removeItem(at: removalMarkerURL(forWorktree: discard.worktreePath))
+    }
+
+    /// Marks that cleanup verified this worktree's identity and is removing
+    /// it. Once it's gone, nothing ties the branch to it any more, so a
+    /// resumed cleanup finishes the branch only after this mark; without it,
+    /// a branch someone may have recreated at the same commit is kept.
+    func markRemoving(_ discard: TaskWorktreeDiscard) throws {
+        guard let identity = discard.identity else { return }
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+        )
+        try Data((identity + "\n").utf8).write(to: removalMarkerURL(forWorktree: discard.worktreePath), options: .atomic)
+    }
+
+    func isRemoving(_ discard: TaskWorktreeDiscard) -> Bool {
+        guard let identity = discard.identity,
+              let raw = try? String(contentsOf: removalMarkerURL(forWorktree: discard.worktreePath), encoding: .utf8)
+        else { return false }
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines) == identity
+    }
+
+    private func removalMarkerURL(forWorktree path: String) -> URL {
+        recordURL(forWorktree: path).deletingPathExtension().appendingPathExtension("removing")
     }
 
     func recordURL(forWorktree path: String) -> URL {

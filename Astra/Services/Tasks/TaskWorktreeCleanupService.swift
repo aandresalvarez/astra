@@ -174,6 +174,7 @@ enum TaskWorktreeCleanupService {
             }
             let outcome = await TaskWorktreeService.discardOutcome(
                 discard, modelContext: modelContext, resourceQueue: resourceQueue, git: git,
+                ownership: store.ownership,
                 checkoutPins: { context in
                     // A fresh context reads committed deletion/reference state,
                     // not a caller's unsaved deletion after a failed save.

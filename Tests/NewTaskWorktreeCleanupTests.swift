@@ -272,11 +272,38 @@ struct NewTaskWorktreeCleanupTests {
         try fixture.cleanupStore.record(discard)
         context.delete(draft)
         try context.save()
+        // What an interrupted cleanup leaves: it verified the worktree and
+        // marked the removal before removing it.
+        try fixture.ownership.markRemoving(discard)
         try fixture.git(["worktree", "remove", discard.worktreePath], at: repository)
         if branchAlreadyRemoved { try fixture.git(["branch", "--delete", discard.branch], at: repository) }
 
         #expect(await TaskWorktreeCleanupService.resumePending(modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, store: fixture.cleanupStore) == 1)
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+        #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
+    }
+
+    @Test("A branch recreated after its worktree vanished outside cleanup is kept")
+    func branchWithoutVerifiableWorktreeIsKept() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        try fixture.cleanupStore.record(discard)
+        context.delete(draft)
+        try context.save()
+        // Removed outside ASTRA, then the branch was deleted and recreated
+        // at the recorded base commit: nothing ties it to this worktree.
+        try fixture.git(["worktree", "remove", discard.worktreePath], at: repository)
+        try fixture.git(["branch", "-D", discard.branch], at: repository)
+        try fixture.git(["branch", discard.branch, discard.baseCommit], at: repository)
+
+        #expect(await TaskWorktreeCleanupService.resumePending(
+            modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, store: fixture.cleanupStore
+        ) == 0)
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
         #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
     }
 

@@ -221,8 +221,10 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!TaskWorktreeCheckoutReservation.isReserved(discard.worktreePath))
         fixture.resourceQueue.releaseResourceLocks(held, task: nil)
 
+        // Passes ownership as `process` does, so the removal mark a resumed
+        // cleanup needs is recorded.
         let outcome = await TaskWorktreeService.discardOutcome(
-            discard, modelContext: context, resourceQueue: fixture.resourceQueue,
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership,
             duringReservation: {
                 #expect(!fixture.resourceQueue.canAcquireResourceLocks(runtimeClaims))
                 #expect(!fixture.resourceQueue.canAcquireResourceLocks(claims(kind: .workspace, path: discard.worktreePath)))
@@ -401,6 +403,40 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: mirrors[1]))
         #expect(FileManager.default.fileExists(atPath: mirrors[2]))
         #expect(store.pending().isEmpty)
+    }
+
+    @Test("A replacement that isn't saved puts the workspace's SSH connections back")
+    func failedReplacementRestoresSSHConnections() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        try context.save()
+        let original = SSHConnection(name: "original", host: "original-host", user: "me", keyPath: "", configAlias: "original")
+        SSHConnectionManager.save([original], workspacePath: fixture.storage.path)
+        let sshFile = URL(fileURLWithPath: SSHConnectionManager.connectionsFilePath(for: fixture.storage.path))
+        let originalData = try Data(contentsOf: sshFile)
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        config.sshConnections = [
+            SSHConnection(name: "replacement", host: "replacement-host", user: "me", keyPath: "", configAlias: "replacement")
+        ]
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: fixture.storage.path))
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(config).write(to: configURL, options: .atomic)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            persistWorkspaceChange: { _, _ in false }
+        )
+
+        #expect(coordinator.importFromConfig(
+            at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .replace }
+        ) == nil)
+        #expect(try Data(contentsOf: sshFile) == originalData)
+        #expect(SSHConnectionManager.load(workspacePath: fixture.storage.path).map(\.name) == ["original"])
     }
 
     @Test("A mirror that can't be removed keeps the deletion record for a retry")

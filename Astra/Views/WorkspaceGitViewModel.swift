@@ -420,7 +420,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     var workingPath: String? {
         // The draft's durable binding names its worktree; the source checkout
         // is never a stand-in for it.
-        guard unavailableWorktreeBinding == nil else { return nil }
+        guard unavailableWorktreePath == nil else { return nil }
         if let active = activeWorkingPath,
            !active.isEmpty,
            FileManager.default.fileExists(atPath: active) {
@@ -429,22 +429,21 @@ final class WorkspaceGitViewModel: ObservableObject {
         return selectedRepository?.path
     }
 
-    /// The selected task's prepared worktree while its pin no longer holds
-    /// that worktree: the folder is gone, or something else now sits at the
-    /// path, such as a plain folder or another repository. Status, commit,
-    /// push, and pull-request actions stay off until the worktree is restored
-    /// or the draft is deleted. This reads the prepared event that names the
-    /// pin rather than the verified binding: once the folder is gone,
-    /// symlinked prefixes such as `/var` no longer resolve, so verification
-    /// can report the binding invalid instead of bound.
-    var unavailableWorktreeBinding: TaskWorktreePayload? {
-        guard let task = selectedTask,
-              let pin = task.executionRootPath, !pin.isEmpty,
-              let event = TaskWorktreeBinding.eventForInheritance(from: task),
-              case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self),
-              WorkspacePathPresentation.standardizedPath(payload.worktreePath)
-                == WorkspacePathPresentation.standardizedPath(pin) else { return nil }
-        return Self.holdsWorktree(pin, of: payload) ? nil : payload
+    /// The selected task's worktree path while it can't be used: the binding
+    /// is unreadable or names an unconfigured repository, the folder is gone,
+    /// or something else now sits at the path, such as a plain folder or
+    /// another repository. Status, commit, push, and pull-request actions stay
+    /// off until the worktree is restored or the draft is deleted.
+    var unavailableWorktreePath: String? {
+        guard let task = selectedTask, let pin = task.executionRootPath, !pin.isEmpty else { return nil }
+        switch TaskWorktreeBinding.state(of: task) {
+        case .invalid:
+            return pin
+        case .bound(let payload, _, _):
+            return Self.holdsWorktree(pin, of: payload) ? nil : pin
+        case .none, .retargeted:
+            return nil
+        }
     }
 
     /// Whether `pin` is still the worktree `payload` recorded: a checkout
@@ -461,8 +460,8 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     var unavailableWorktreeMessage: String? {
-        unavailableWorktreeBinding.map {
-            "This draft's worktree at \(WorkspacePathPresentation.abbreviatePath($0.worktreePath)) is missing or has been replaced. Restore it, or delete the draft, before using repository actions."
+        unavailableWorktreePath.map {
+            "This draft's worktree at \(WorkspacePathPresentation.abbreviatePath($0)) is missing, replaced, or no longer verifiable. Restore it, or delete the draft, before using repository actions."
         }
     }
 
@@ -491,7 +490,7 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     var activeSelectionScopeLabel: String {
         guard let task = selectedTask else { return "Workspace default" }
-        if unavailableWorktreeBinding != nil { return "Worktree unavailable" }
+        if unavailableWorktreePath != nil { return "Worktree unavailable" }
         if task.status == .draft { return "Draft task" }
         // Only claim a durable pin when the pinned path still exists on disk:
         // `TaskWorkspaceAccess` falls back to the workspace default when the
@@ -509,7 +508,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     var canChangeActiveCodePath: Bool {
         guard let task = selectedTask else { return true }
         return task.status == .draft && TaskWorktreeService.activeWorktreeBinding(for: task) == nil
-            && unavailableWorktreeBinding == nil
+            && unavailableWorktreePath == nil
     }
 
     var activeCodePathChangeBlockedMessage: String {
@@ -1314,7 +1313,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     var canOpenCommitSheet: Bool {
-        unavailableWorktreeBinding == nil && (hasChanges || canPush)
+        unavailableWorktreePath == nil && (hasChanges || canPush)
     }
 
     /// Pushes the current branch, publishing it with `--set-upstream` when no

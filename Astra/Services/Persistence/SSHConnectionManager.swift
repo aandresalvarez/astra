@@ -114,6 +114,29 @@ public enum SSHConnectionManager {
         try fileWriter.writeAtomically(data, to: URL(fileURLWithPath: path))
     }
 
+    /// The connections file as it is now, so a caller whose change may be
+    /// rolled back can put it back. Nil when there is no file.
+    public static func snapshot(workspacePath: String) -> Data? {
+        guard !workspacePath.isEmpty else { return nil }
+        return try? HostFileAccessBroker().readData(
+            at: URL(fileURLWithPath: connectionsFilePath(for: workspacePath)),
+            intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
+        )
+    }
+
+    /// Puts back a `snapshot`, removing a file that didn't exist then.
+    public static func restore(
+        _ snapshot: Data?, workspacePath: String, fileWriter: any SSHConnectionFileWriting = defaultFileWriter
+    ) {
+        guard !workspacePath.isEmpty else { return }
+        let url = URL(fileURLWithPath: connectionsFilePath(for: workspacePath))
+        if let snapshot {
+            try? fileWriter.writeAtomically(snapshot, to: url)
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     private static func migrateLegacyConnectionsIfNeeded(workspacePath: String) {
         let canonical = WorkspaceFileLayout.sshConnectionsFile(for: workspacePath)
         let legacy = WorkspaceFileLayout.legacySSHConnectionsFile(for: workspacePath)

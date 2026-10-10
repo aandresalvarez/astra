@@ -960,7 +960,7 @@ struct NewTaskWorktreeBaseTests {
         panel.setWorkspaceForTesting(workspace, selectedTask: draft)
         panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
         // The live worktree is usable.
-        #expect(panel.unavailableWorktreeBinding == nil)
+        #expect(panel.unavailableWorktreePath == nil)
         #expect(panel.workingPath == path)
 
         try FileManager.default.removeItem(atPath: path)
@@ -971,12 +971,38 @@ struct NewTaskWorktreeBaseTests {
             _ = try fixture.repository(String(path.dropFirst(fixture.root.path.count + 1)))
         default: break
         }
-        #expect(panel.unavailableWorktreeBinding?.worktreePath == path)
+        #expect(panel.unavailableWorktreePath == path)
         #expect(panel.workingPath == nil)
         #expect(!panel.canOpenCommitSheet)
         #expect(!panel.canChangeActiveCodePath)
         #expect(panel.activeSelectionScopeLabel == "Worktree unavailable")
         #expect(panel.createPullRequestCommentTask(modelContext: store.mainContext) == nil)
+    }
+
+    @Test("Repository actions stay off for a binding that names a repository no longer configured")
+    func unconfiguredRepositoryDisablesRepositoryActions() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let path = try #require(draft.executionRootPath)
+        // The worktree is still on disk, but its repository is no longer one
+        // of the workspace's folders, so the binding can't be verified.
+        workspace.primaryPath = fixture.storage.path
+        guard case .invalid = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A binding whose repository isn't configured must be invalid")
+            return
+        }
+        #expect(FileManager.default.fileExists(atPath: path))
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace, selectedTask: draft)
+        panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
+        #expect(panel.unavailableWorktreePath == path)
+        #expect(panel.workingPath == nil)
+        #expect(!panel.canOpenCommitSheet)
     }
 
     @Test("A binding survives a branch switch inside its worktree but not a same-repository replacement")
@@ -1004,7 +1030,7 @@ struct NewTaskWorktreeBaseTests {
         let panel = WorkspaceGitViewModel()
         panel.setWorkspaceForTesting(workspace, selectedTask: draft)
         panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
-        #expect(panel.unavailableWorktreeBinding?.worktreePath == path)
+        #expect(panel.unavailableWorktreePath == path)
         #expect(panel.workingPath == nil)
     }
 

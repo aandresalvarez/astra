@@ -770,6 +770,10 @@ final class TaskLifecycleCoordinator {
     private func replaceWorkspace(_ existing: Workspace, create: () -> Workspace) -> Workspace? {
         var replacement: Workspace?
         guard cancelDurably(existing.tasks) else { return nil }
+        // The import writes the replacement's SSH connections to disk before
+        // the save; a replacement that isn't saved puts the old file back.
+        let sshPath = existing.primaryPath
+        let sshSnapshot = SSHConnectionManager.snapshot(workspacePath: sshPath)
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
@@ -782,7 +786,11 @@ final class TaskLifecycleCoordinator {
                 persistWorkspaceChange(replacement, context)
             }
         )
-        return result.persisted ? replacement : nil
+        guard result.persisted else {
+            SSHConnectionManager.restore(sshSnapshot, workspacePath: sshPath)
+            return nil
+        }
+        return replacement
     }
 
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],

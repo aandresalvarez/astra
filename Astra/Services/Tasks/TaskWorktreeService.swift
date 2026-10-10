@@ -716,6 +716,7 @@ enum TaskWorktreeService {
         modelContext: ModelContext,
         resourceQueue: TaskQueue?,
         git: any GitRepositoryOperating = GitService.shared,
+        ownership: TaskWorktreeOwnershipStore? = nil,
         checkoutPins: @MainActor (ModelContext) throws -> Set<String> = { try durableCheckoutPins(modelContext: $0) },
         duringReservation: @MainActor () async -> Void = {}
     ) async -> TaskWorktreeCleanupOutcome {
@@ -773,16 +774,21 @@ enum TaskWorktreeService {
         // registered checkout is still that incarnation, never one recreated
         // at the same path on the same branch. A lock this creation took is
         // released first, or Git refuses the removal.
-        if let identity = discard.identity,
-           let markers = TaskWorktreeBinding.registeredMarkers(repositoryPath: repository, worktreePath: path) {
-            let reason = TaskWorktreeBinding.lockReason(forIdentity: identity)
-            guard markers.identity == identity || markers.lockReason == reason else { return kept("replaced") }
-            if markers.lockReason == reason {
-                do {
-                    try await git.unlockWorktree(repoPath: repository, worktreePath: path)
-                } catch {
-                    return kept("unlock_failed", retry: true)
+        if let identity = discard.identity {
+            if let markers = TaskWorktreeBinding.registeredMarkers(repositoryPath: repository, worktreePath: path) {
+                let reason = TaskWorktreeBinding.lockReason(forIdentity: identity)
+                guard markers.identity == identity || markers.lockReason == reason else { return kept("replaced") }
+                if markers.lockReason == reason {
+                    do {
+                        try await git.unlockWorktree(repoPath: repository, worktreePath: path)
+                    } catch {
+                        return kept("unlock_failed", retry: true)
+                    }
                 }
+            } else if ownership?.isRemoving(discard) != true {
+                // Gone without this cleanup having removed it: nothing ties
+                // the branch to this worktree any more, so it is kept.
+                return kept("identity_unverifiable")
             }
         }
         let exists = FileManager.default.fileExists(atPath: path)
@@ -822,6 +828,11 @@ enum TaskWorktreeService {
         await duringReservation()
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
         if exists || isRegistered {
+            do {
+                try ownership?.markRemoving(discard)
+            } catch {
+                return kept("removal_mark_failed", retry: true)
+            }
             do {
                 try await git.removeWorktree(repoPath: repository, worktreePath: path, force: false)
             } catch {

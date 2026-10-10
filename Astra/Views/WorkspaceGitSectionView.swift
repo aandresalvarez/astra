@@ -440,7 +440,7 @@ struct WorkspaceGitSectionView: View {
             return viewModel.selectedRepositorySubtitle
         }
         if let preview = newWorktreePreview { return preview.summary }
-        if viewModel.unavailableWorktreeBinding != nil { return "Worktree unavailable · repository actions off" }
+        if viewModel.unavailableWorktreePath != nil { return "Worktree unavailable · repository actions off" }
 
         var parts: [String] = []
         let branch = viewModel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -693,7 +693,7 @@ struct WorkspaceGitSectionView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(viewModel.isSuggestingPR || viewModel.unavailableWorktreeBinding != nil)
+        .disabled(viewModel.isSuggestingPR || viewModel.unavailableWorktreePath != nil)
         .help(viewModel.unavailableWorktreeMessage ?? viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
         .contextMenu {
             Button("Open GitHub without draft") {
