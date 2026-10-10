@@ -214,16 +214,18 @@ enum GitHubReviewPublicationRequirement {
     private static let deferringRegex = try? NSRegularExpression(
         pattern: #"\b(?:after|once|when|whenever|until|till|if|unless|before|only|later|tomorrow)\b"#
     )
-    /// Phrases that hold the posting back wherever they are in the message.
-    /// Only these: "first" or "prepare" elsewhere ("First, post the review,
-    /// then summarize it") is about other work, not the post.
+    /// Phrases that hold the posting back wherever they are in the message —
+    /// and exceptions ("…, but not the summary", "except the summary"): the
+    /// file is posted whole, so a request for part of it is not consent to
+    /// post it. Only these: "first" or "prepare" elsewhere ("First, post the
+    /// review, then summarize it") is about other work, not the post.
     private static let messagePausingRegex = try? NSRegularExpression(
-        pattern: #"\b(?:ask me|check with me|wait|hold off|hold on|hold it|not yet|let me|(?:don't|do not|dont|never)\s+(?:post|publish|submit|send)|(?:i|we)\s*(?:will|'ll|am going to|'m going to|are going to)\s+(?:post|publish|submit))\b"#
+        pattern: #"\b(?:ask me|check with me|wait|hold off|hold on|hold it|not yet|let me|(?:don't|do not|dont|never)\s+(?:post|publish|submit|send)|(?:i|we)\s*(?:will|'ll|am going to|'m going to|are going to)\s+(?:post|publish|submit)|except|excluding|exclude|but not|other than|apart from|save for|leave out|leaving out|omit|omitting|without)\b"#
     )
     /// Words that, inside the command itself — from its verb to the end of its
     /// clause — make it something other than a post now.
     private static let commandPausingRegex = try? NSRegularExpression(
-        pattern: #"\b(?:first|approve|approval|confirm|draft|prepare|myself|ourselves|i will|i'll|we will|we'll)\b"#
+        pattern: #"\b(?:first|approve|approval|confirm|draft|prepare|myself|ourselves|i will|i'll|we will|we'll|only|except|excluding|without|minus)\b"#
     )
     /// A message that closes an open request without restating it: "don't post
     /// it", "cancel that", and the noun forms — "cancel the review", "stop the

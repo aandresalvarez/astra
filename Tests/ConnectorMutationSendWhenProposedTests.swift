@@ -253,6 +253,38 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(BrokeredExternalActionHandler.longestSendSeconds < BrokeredExternalActionBridge.defaultTimeoutSeconds)
     }
 
+    /// A success body can reflect the credential as an error body can, and the
+    /// receipt goes to the store, the chat and back to the agent. Only an issue
+    /// key, and a link on the connector's own host, survive.
+    @Test("A receipt keeps only an issue key and a link on the connector's host")
+    func receiptFieldsAreScrubbedAndShaped() async throws {
+        let fixture = try Fixture()
+        let sender = Sender(responses: [
+            // The credential reflected in both fields, the link on the right host.
+            .init(statusCode: 201, body: #"{"key":"token-value","self":"https://jira.auto.test/rest/token-value"}"#),
+            // A link to somewhere else.
+            .init(statusCode: 201, body: #"{"self":"https://elsewhere.test/rest/api/2/issue/1"}"#),
+            .init(statusCode: 201, body: #"{"key":"STAR-9","self":"https://jira.auto.test/rest/api/2/issue/10009"}"#)
+        ])
+        let handler = fixture.handler(level: .autonomous, sender: sender)
+        var outcomes: [BrokeredExternalActionOutcome] = []
+        for summary in ["Reflected", "Elsewhere", "Honest"] {
+            outcomes.append(await handler.sendStagedConnectorMutation(try fixture.stage(summary: summary).request))
+        }
+
+        guard case let .performed(reflected) = outcomes[0] else {
+            Issue.record("Expected a send, got \(outcomes[0])")
+            return
+        }
+        #expect(reflected.identifier == nil, "a reflected credential is not an issue key")
+        #expect(reflected.url?.contains("token-value") == false, "the link is scrubbed before it is kept")
+        #expect(outcomes[1] == .performed(BrokeredExternalActionReceipt(identifier: nil, url: nil)))
+        #expect(outcomes[2] == .performed(BrokeredExternalActionReceipt(
+            identifier: "STAR-9", url: "https://jira.auto.test/browse/STAR-9"
+        )))
+        #expect(fixture.receipts().allSatisfy { !(($0.createdKey ?? "") + ($0.createdURL ?? "")).contains("token-value") })
+    }
+
     @Test("An epic's key comes back before the story under it is proposed")
     func dependentProposalsBuildOnTheReceipt() async throws {
         let fixture = try Fixture()

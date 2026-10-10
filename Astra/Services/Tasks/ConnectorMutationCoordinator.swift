@@ -593,7 +593,10 @@ final class ConnectorMutationCoordinator {
 
         // The write has happened. From here the only question is how well ASTRA
         // can describe it — never whether to try again.
-        let receipt = Self.receipt(for: current, response: response, baseURL: request.url, authorization: authorization)
+        let receipt = Self.receipt(
+            for: current, response: response, baseURL: request.url, authorization: authorization,
+            authorizationHeader: request.authorizationHeader
+        )
         do {
             try record(
                 receipt,
@@ -905,24 +908,32 @@ final class ConnectorMutationCoordinator {
         return url
     }
 
+    /// What the write's answer may put on a receipt — which is stored, shown,
+    /// and returned to the agent through the broker. A success body can reflect
+    /// the credential as surely as an error body (`ConnectorMutationSecretRedaction`),
+    /// so it is scrubbed before it is read, and only values of the shape each
+    /// field must have are kept: an issue key, a numeric comment id, a link on
+    /// the connector's own host.
     private static func receipt(
         for proposal: ConnectorMutationProposal,
         response: ConnectorMutationHTTPResponse,
         baseURL: URL,
-        authorization: ExternalActionAuthorization
+        authorization: ExternalActionAuthorization,
+        authorizationHeader: String
     ) -> ConnectorMutationReceipt {
-        let object = (try? JSONSerialization.jsonObject(with: Data(response.body.utf8))) as? [String: Any]
+        let body = ConnectorMutationSecretRedaction.redacted(response.body, authorizationHeader: authorizationHeader)
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
         // A created issue names itself in the response. A comment, an update and
         // a transition act on a ticket the proposal already addressed, and their
         // answers are a comment record or an empty `204` — so the ticket comes
         // from the route, which ASTRA derived and the user read, rather than
         // from a body that may not exist.
-        let createdKey = (object?["key"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let createdKey = (object?["key"] as? String).flatMap { JiraHostControlOperations.isValidIssueKey($0) ? $0 : nil }
         let routeKey = ConnectorMutationOperations
             .definition(serviceType: proposal.serviceType, operation: proposal.operation)?
             .issueKey(inResolvedPath: proposal.requestPath)
         let commentID = proposal.operation == "add_comment"
-            ? (object?["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ? (object?["id"] as? String).flatMap { !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) ? $0 : nil }
             : nil
         let browseURL = (createdKey ?? routeKey).flatMap { key -> String? in
             var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
@@ -942,7 +953,9 @@ final class ConnectorMutationCoordinator {
             destinationURL: proposal.destinationURL,
             statusCode: response.statusCode,
             createdKey: createdKey,
-            createdURL: browseURL ?? (object?["self"] as? String),
+            createdURL: browseURL ?? (object?["self"] as? String).flatMap { link in
+                URL(string: link).flatMap { $0.host?.lowercased() } == baseURL.host?.lowercased() ? link : nil
+            },
             authorization: authorization
         )
     }
