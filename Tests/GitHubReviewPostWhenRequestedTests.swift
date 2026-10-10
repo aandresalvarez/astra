@@ -246,6 +246,26 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(GitHubReviewPublicationRequirement.isPending(task: fixture.task))
     }
 
+    /// "Review PR #12" in the goal and a later "Post the review" name one pull
+    /// request between them; the binding has to read the goal's number, or the
+    /// request never reads as open and Auto refuses what the user asked for.
+    @Test("A follow-up post request is bound to the goal's pull request")
+    func followUpRequestUsesTheGoalsNumber() async throws {
+        let fixture = try Fixture(goal: "Review PR #12")
+        fixture.context.insert(TaskEvent(
+            task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage, payload: "Post the review"
+        ))
+        let cli = FakeCLI()
+
+        let outcome = await fixture.handler(level: .autonomous, cli: cli, origin: "https://github.com/example/repo.git")
+            .postGitHubReview(fixture.request(for: fixture.file))
+
+        #expect(outcome == .performed(BrokeredExternalActionReceipt(
+            identifier: "review 42", url: "https://github.com/example/repo/pull/12#pullrequestreview-42"
+        )))
+        #expect(await cli.postCount() == 1)
+    }
+
     /// GitHub may have accepted a review whose answer was lost, so the
     /// request it was posted under is answered: a second file must not
     /// become a second review on the strength of it.

@@ -210,6 +210,26 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(sender.requests.count == 1)
     }
 
+    /// The caller's timeout reaches the send, kept inside the broker's wait so
+    /// a finished write is never reported as "not known yet".
+    @Test("Auto sends with the caller's timeout, bounded by the broker's wait")
+    func autoSendUsesTheCallersTimeout() async throws {
+        let fixture = try Fixture()
+        let sender = Sender()
+        let handler = fixture.handler(level: .autonomous, sender: sender)
+        for timeout in [nil, 90, 100_000] as [TimeInterval?] {
+            let staged = try fixture.stage(summary: "Timeout \(String(describing: timeout))")
+            _ = await handler.sendStagedConnectorMutation(StagedConnectorMutationRequest(
+                stagedPath: staged.staged.path, requestDigest: staged.staged.digest, timeoutSeconds: timeout
+            ))
+        }
+
+        #expect(sender.requests.map(\.timeoutSeconds) == [
+            URLSessionConnectorMutationSender.timeoutSeconds, 90, BrokeredExternalActionHandler.longestSendSeconds
+        ])
+        #expect(BrokeredExternalActionHandler.longestSendSeconds < BrokeredExternalActionBridge.defaultTimeoutSeconds)
+    }
+
     @Test("An epic's key comes back before the story under it is proposed")
     func dependentProposalsBuildOnTheReceipt() async throws {
         let fixture = try Fixture()

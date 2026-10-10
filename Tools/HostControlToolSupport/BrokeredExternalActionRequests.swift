@@ -27,10 +27,15 @@ public struct StagedConnectorMutationRequest: Equatable, Sendable {
     public let stagedPath: String
     /// SHA-256 of the bytes the broker wrote. ASTRA sends only those bytes.
     public let requestDigest: String
+    /// The `timeout_seconds` the call carried, already bounded by the broker,
+    /// or nil for ASTRA's default. The send happens now, so the timeout the
+    /// tool advertises is the one it gets.
+    public let timeoutSeconds: TimeInterval?
 
-    public init(stagedPath: String, requestDigest: String) {
+    public init(stagedPath: String, requestDigest: String, timeoutSeconds: TimeInterval? = nil) {
         self.stagedPath = stagedPath
         self.requestDigest = requestDigest
+        self.timeoutSeconds = timeoutSeconds
     }
 }
 

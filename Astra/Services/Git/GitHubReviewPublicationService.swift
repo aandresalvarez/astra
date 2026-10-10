@@ -151,11 +151,17 @@ private enum GitHubReviewTargetResolver {
             }
             return nil
         }
-        if let request, let number = shorthandNumber(in: request),
+        if let number = requestedNumber(task: task, request: request),
            let repository = repository(in: task.goal) {
             return Target(repository: repository, number: number)
         }
         return pullRequest(in: task.goal)
+    }
+
+    /// The pull request a shorthand request means: the number it names, or —
+    /// for "post the review" after a goal of "review PR #12" — the goal's.
+    static func requestedNumber(task: AgentTask, request: String?) -> Int? {
+        request.flatMap(shorthandNumber(in:)) ?? shorthandNumber(in: task.goal)
     }
 }
 
@@ -300,7 +306,7 @@ enum GitHubReviewPublicationRequirement {
         return GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) == nil
             && boundTarget(task: task, request: request) == nil
             && request.text.range(of: "github.com/", options: .caseInsensitive) == nil
-            && GitHubReviewTargetResolver.shorthandNumber(in: request.text) != nil
+            && GitHubReviewTargetResolver.requestedNumber(task: task, request: request.text) != nil
     }
 
     @MainActor
@@ -314,7 +320,7 @@ enum GitHubReviewPublicationRequirement {
     ) async -> Bool {
         guard needsOriginTargetBinding(task: task),
               let request = postingRequest(task: task),
-              let number = GitHubReviewTargetResolver.shorthandNumber(in: request.text) else { return false }
+              let number = GitHubReviewTargetResolver.requestedNumber(task: task, request: request.text) else { return false }
         let path = task.executionRootPath ?? task.workspace?.primaryPath
         let origin: String?
         if let path {

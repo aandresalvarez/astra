@@ -467,10 +467,12 @@ final class ConnectorMutationCoordinator {
     /// `authorization` says who let ASTRA send it: the user in the review sheet,
     /// or Auto without asking. It is recorded on the receipt and changes nothing
     /// about the checks below, which hold the same for both.
+    /// `timeoutSeconds` bounds the exchange; nil is the sender's default.
     func send(
         task: AgentTask,
         proposal: ConnectorMutationProposal,
-        authorization: ExternalActionAuthorization = .userReviewed
+        authorization: ExternalActionAuthorization = .userReviewed,
+        timeoutSeconds: TimeInterval? = nil
     ) async throws -> ConnectorMutationReceipt {
         guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
             throw ConnectorMutationCoordinatorError.alreadySent(proposal.target)
@@ -515,7 +517,7 @@ final class ConnectorMutationCoordinator {
                     now: "\(current.connectorAlias) (\(current.destinationURL))"
                 )
             }
-            request = try buildRequest(current)
+            request = try buildRequest(current, timeoutSeconds: timeoutSeconds)
             try Self.reserveSend(stagedPath: staged.path, target: proposal.target)
         } catch {
             // Recorded, then rethrown. The sheet shows the error and the row
@@ -645,7 +647,8 @@ final class ConnectorMutationCoordinator {
         task: AgentTask,
         run: TaskRun,
         stagedPath: String,
-        requestDigest: String
+        requestDigest: String,
+        timeoutSeconds: TimeInterval? = nil
     ) async throws -> ConnectorMutationReceipt {
         let staged = try readStaged(task: task, path: stagedPath, digest: requestDigest)
         guard !ConnectorMutationRequirementResolver.recordedStagedPaths(task: task).contains(staged.path) else {
@@ -680,7 +683,7 @@ final class ConnectorMutationCoordinator {
         do {
             let prepared = try prepare(task: task, pending: pending)
             proposal = prepared
-            return try await send(task: task, proposal: prepared, authorization: .autoPolicy)
+            return try await send(task: task, proposal: prepared, authorization: .autoPolicy, timeoutSeconds: timeoutSeconds)
         } catch {
             retireIfStillPending(task: task, pending: pending, proposal: proposal, error: error)
             throw error
@@ -773,7 +776,10 @@ final class ConnectorMutationCoordinator {
         pending.filter { !sendingWhenProposed.contains($0.stagedPayloadPath) }
     }
 
-    private func buildRequest(_ proposal: ConnectorMutationProposal) throws -> ConnectorMutationHTTPRequest {
+    private func buildRequest(
+        _ proposal: ConnectorMutationProposal,
+        timeoutSeconds: TimeInterval? = nil
+    ) throws -> ConnectorMutationHTTPRequest {
         let connector = try resolveConnector(proposal)
         guard let url = URL(string: proposal.destinationURL) else {
             throw ConnectorMutationCoordinatorError.invalidBaseURL(connector.baseURL)
@@ -789,7 +795,8 @@ final class ConnectorMutationCoordinator {
             url: url,
             method: proposal.requestMethod,
             body: proposal.requestBody,
-            authorizationHeader: try authorizationHeader(for: connector, alias: proposal.connectorAlias)
+            authorizationHeader: try authorizationHeader(for: connector, alias: proposal.connectorAlias),
+            timeoutSeconds: timeoutSeconds ?? URLSessionConnectorMutationSender.timeoutSeconds
         )
     }
 

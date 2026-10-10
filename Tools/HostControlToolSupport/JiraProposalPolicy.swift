@@ -330,7 +330,8 @@ enum JiraProposalPolicy {
         connector: HostControlConnector,
         configuration: HostControlToolConfiguration,
         diagnostics: HostControlToolDiagnosticsRecorder?,
-        requester: (any BrokeredExternalActionRequesting)? = nil
+        requester: (any BrokeredExternalActionRequesting)? = nil,
+        timeoutSeconds: TimeInterval? = nil
     ) -> MCPServerReply {
         let proposal: any JiraStagedProposal
         do {
@@ -369,7 +370,9 @@ enum JiraProposalPolicy {
         // wrote — never a path the agent named. ASTRA decides from the run's
         // level whether to send now or leave it for the user's review.
         let outcome = requester?.sendStagedConnectorMutation(
-            StagedConnectorMutationRequest(stagedPath: staged.path, requestDigest: staged.digest)
+            StagedConnectorMutationRequest(
+                stagedPath: staged.path, requestDigest: staged.digest, timeoutSeconds: timeoutSeconds
+            )
         ) ?? .awaitingReview
         diagnostics?.record(
             toolName: "jira",

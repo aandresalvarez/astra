@@ -31,6 +31,23 @@ struct BrokeredExternalActionRequestTests {
         #expect(requester.reviewRequests.isEmpty)
     }
 
+    /// The send happens now, so the timeout the tool advertises is passed on —
+    /// bounded like every other call's — and only when the call named one.
+    @Test("A proposal's timeout_seconds travels with the request")
+    func proposalTimeoutTravels() throws {
+        let folder = try temporaryTaskFolder()
+        defer { try? FileManager.default.removeItem(atPath: folder) }
+        let requester = RecordingRequester(outcome: .awaitingReview)
+        var arguments = commentArguments
+        _ = try call(server(folder, requester: requester), tool: "jira", arguments: arguments)
+        arguments["timeout_seconds"] = 90
+        _ = try call(server(folder, requester: requester), tool: "jira", arguments: arguments)
+        arguments["timeout_seconds"] = 100_000
+        _ = try call(server(folder, requester: requester), tool: "jira", arguments: arguments)
+
+        #expect(requester.connectorRequests.map(\.timeoutSeconds) == [nil, 90, 300])
+    }
+
     @Test("Awaiting review reads exactly as it did before ASTRA could send")
     func awaitingReviewIsTheReviewReply() throws {
         let folder = try temporaryTaskFolder()

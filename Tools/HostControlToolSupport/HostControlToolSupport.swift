@@ -1094,7 +1094,10 @@ public final class HostControlMCPServer {
             connector: connector,
             configuration: configuration,
             diagnostics: diagnosticsRecorder,
-            requester: externalActionRequester
+            requester: externalActionRequester,
+            // Bounded the way every other call's is, and only when the call
+            // named one: ASTRA's own default otherwise.
+            timeoutSeconds: arguments["timeout_seconds"].map { timeoutSeconds(from: $0) }
         )
     }
 

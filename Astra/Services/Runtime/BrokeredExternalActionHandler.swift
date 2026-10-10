@@ -56,7 +56,8 @@ final class BrokeredExternalActionHandler {
                 task: task,
                 run: run,
                 stagedPath: request.stagedPath,
-                requestDigest: request.requestDigest
+                requestDigest: request.requestDigest,
+                timeoutSeconds: request.timeoutSeconds.map(Self.sendTimeout)
             )
             return .performed(BrokeredExternalActionReceipt(identifier: receipt.createdKey, url: receipt.createdURL))
         } catch let error as ConnectorMutationCoordinatorError {
@@ -106,6 +107,14 @@ final class BrokeredExternalActionHandler {
             audit("github_review_auto_post_refused", error: error, uncertain: false)
             return .refused(message: error.localizedDescription)
         }
+    }
+
+    /// The caller's timeout, kept inside the broker's wait: a send that
+    /// outlived it would answer "not known yet" for a write that finished.
+    static let longestSendSeconds = BrokeredExternalActionBridge.defaultTimeoutSeconds - 30
+
+    nonisolated static func sendTimeout(_ requested: TimeInterval) -> TimeInterval {
+        min(max(requested, 5), longestSendSeconds)
     }
 
     private func task() -> AgentTask? {
