@@ -84,8 +84,9 @@ struct AgentPolicyTests {
         #expect(policy.allowedTools.contains("Grep"))
         #expect(policy.askFirstTools.contains("Write"))
         #expect(policy.askFirstTools.contains("Bash"))
-        #expect(policy.deniedShellPatterns.contains("rm:*"))
-        #expect(policy.deniedShellPatterns.contains("sudo:*"))
+        // Ask asks rather than refuses; `sudo` cannot prompt, so it stays denied.
+        #expect(Set(policy.askFirstShellPatterns).isSuperset(of: ["rm:*", "git push:*", "chmod:*"]))
+        #expect(policy.deniedShellPatterns == ["sudo:*"])
     }
 
     @Test("Deny rules win over requested allowed tools")
@@ -803,7 +804,8 @@ struct AgentPolicyTests {
 
         #expect(search == [.shellCommand(executable: "gh", pattern: "search prs *")])
         #expect(view == [.shellCommand(executable: "gh", pattern: "pr view *")])
-        #expect(merge == [.shellCommand(executable: "gh", pattern: "pr merge 123 *")])
+        #expect(merge.filter { !ShellCommandRiskClassifier.isContentGrant($0) } == [.shellCommand(executable: "gh", pattern: "pr merge 123 *")])
+        #expect(merge.filter(ShellCommandRiskClassifier.isContentGrant).count == 1)
         #expect(PermissionBroker.providerGrantStrings(for: view, runtime: .copilotCLI) == ["shell(gh:pr view *)"])
         #expect(PermissionBroker.providerGrantStrings(for: merge, runtime: .copilotCLI) == ["shell(gh:pr merge 123 *)"])
         #expect(view != merge)
@@ -878,8 +880,10 @@ struct AgentPolicyTests {
             ("docker run alpine", .mutation, false, .shellCommand(executable: "docker", pattern: "run alpine *")),
             ("curl https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
             ("curl -f https://example.com/api", .networkRead, true, .shellCommand(executable: "curl", pattern: "*example.com*")),
-            ("curl -F file=@report.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "*example.com*")),
-            ("curl -X POST https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "*example.com*")),
+            ("curl -F file=@report.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "-F *example.com*")),
+            ("curl -X POST https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "-X POST *example.com*")),
+            ("curl --data=x https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "--data=* *example.com*")),
+            ("curl --json @body.json https://example.com/api", .mutation, false, .shellCommand(executable: "curl", pattern: "--json *example.com*")),
             ("ls -la", .fileRead, false, .shellCommand(executable: "ls", pattern: "*")),
             ("cat ~/.zsh_history", .credential, false, .shellCommand(executable: "cat", pattern: "~/.zsh_history *")),
             ("python3 script.py", .scriptExecution, false, .shellCommand(executable: "python3", pattern: "script.py *"))

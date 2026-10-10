@@ -125,10 +125,12 @@ struct TaskDecisionDockPresentation: Equatable {
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
 
-        /// Auto never dismisses a connector's credential prompt (a test pins
-        /// that), so the most it can do is not repeat it. "Allow once" lives only
-        /// in the run it resumes, so it asks again on every turn and every Retry;
-        /// the task-scoped approval leads instead. Without one there is nothing
+        /// Auto allows a connector's credentials for the task without asking, so
+        /// a credential card reaches an Auto task only when that grant could not
+        /// be applied or the request predates the switch to Auto. There the most
+        /// the card can do is not repeat itself. "Allow once" lives only in the
+        /// run it resumes, so it asks again on every turn and every Retry; the
+        /// task-scoped approval leads instead. Without one there is nothing
         /// to lead with. An offer leads with it in every mode, because "Allow once"
         /// has no run to resume there: it approved the task and granted nothing.
         var prefersTaskScopedRuntimePermission: Bool {

@@ -125,8 +125,10 @@ enum TaskLaunchResourceResolver {
         // Native credentials are suppressed only for the operation ASTRA owns.
         // Other Ask-mode network Git commands still execute through the normal
         // approval path and must retain the credentials needed by private repos.
-        let brokersNetworkGitThroughAstra = permissionPolicy != .autonomous
-            && astraOwnsAskPublication
+        let brokersNetworkGitThroughAstra = ExternalActionPolicy.asksUser(
+            for: .gitPullRequestPublication,
+            level: permissionPolicy.agentPolicyLevel
+        ) && astraOwnsAskPublication
         let gitCredentialContext = routesGitHubMetadataThroughHostControl || brokersNetworkGitThroughAstra
             ? .empty
             : restrictingGitWrites(

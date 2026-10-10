@@ -51,6 +51,27 @@ extension PermissionApprovalContinuationTests {
         #expect(request.state == .completed)
     }
 
+    // Auto asks nothing: the sealed connector the run reached for is allowed for
+    // the task at the run boundary, nothing pauses, and the chat says so.
+    @Test("Auto allows a sealed connector the run reached for without pausing")
+    func autoAllowsSealedConnectorWithoutPausing() async throws {
+        let fixture = try Fixture(runtime: .claudeCode)
+        defer { fixture.cleanup() }
+        let runner = CredentialBlockedRunner(connectorID: fixture.connectorID)
+        let queue = reviewQueue(runner: runner, policyLevel: .autonomous)
+        defer { queue.cancelAll() }
+        _ = TaskStateMachine.enqueueFromUITestSeed(fixture.task, modelContext: fixture.context)
+        guard case .success(let initial) = ExecutionRequestSubmissionService.submitInitial(for: fixture.task,
+            into: fixture.context) else { Issue.record("Initial request not submitted"); return }
+        await queue.signalExecutionRequest(id: initial.requestID, task: fixture.task, modelContext: fixture.context).value
+        #expect(fixture.task.status != .pendingUser)
+        #expect(fixture.task.runs.first?.typedStopReason != .permissionApprovalRequired)
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: fixture.task))
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: fixture.task, runtime: .claudeCode) == [fixture.label])
+        #expect(fixture.task.events.contains { $0.payload.hasPrefix("Auto allowed Jira to use its saved credentials") })
+        #expect(runner.launchCount == 1)
+    }
+
     @Test("A failed live delivery is recovered and dispatched in the current session")
     func failedLiveDeliveryRecoversWithoutRestart() async throws {
         let fixture = try Fixture(runtime: .claudeCode)
@@ -81,7 +102,7 @@ extension PermissionApprovalContinuationTests {
         #expect(LivePermissionApprovalRecovery.recover(modelContext: fixture.context, autoExportWorkspaces: false) == 0)
     }
 
-    private func reviewQueue(runner: CredentialBlockedRunner, policyLevel: AgentPolicyLevel = .autonomous) -> TaskQueue {
+    private func reviewQueue(runner: CredentialBlockedRunner, policyLevel: AgentPolicyLevel = .review) -> TaskQueue {
         let queue = TaskQueue(poolSize: 1, workerFactory: {
             let worker = AgentRuntimeWorker(processRunner: runner, providerSettingsSnapshotProvider: { .headlessScenario })
             worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
@@ -143,7 +164,7 @@ extension PermissionApprovalContinuationTests {
         }, sandboxEnforcementProvider: { .off })
         defer { queue.cancelAll() }
         queue.applySettings(claudePath: "/bin/sh", defaultRuntimeID: .claudeCode, timeoutSeconds: 10,
-            validationModel: "claude-sonnet-4-6", defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue)
+            validationModel: "claude-sonnet-4-6", defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue)
         _ = TaskStateMachine.enqueueFromUITestSeed(fixture.task, modelContext: fixture.context)
         guard case .success(let initial) = ExecutionRequestSubmissionService.submitInitial(for: fixture.task,
             into: fixture.context) else { Issue.record("Initial request not submitted"); return }

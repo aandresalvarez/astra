@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRALogging
 import ASTRAModels
 import ASTRAPersistence
@@ -20,10 +21,19 @@ import ASTRAPersistence
 /// another branch in the outcome path.
 @MainActor
 enum RunBoundaryDiscovery {
+    /// `policyLevel` is the user-facing level the run launched with: it decides
+    /// whether what the run left behind is asked about or done (see
+    /// `ExternalActionPolicy`), so switching the task's level afterwards
+    /// changes nothing the run already produced. Nothing here leaves the
+    /// machine: staged writes wait in the dock for the user's review.
+    /// `runFinishedCleanly` decides whether Auto may allow a connector the run
+    /// reached for; it defaults to false, so a caller that cannot say offers.
     static func recordWhatTheRunLeftForTheUser(
         task: AgentTask,
         run: TaskRun,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        policyLevel: AgentPolicyLevel = .review,
+        runFinishedCleanly: Bool = false
     ) {
         let discovered = ConnectorMutationDiscovery.recordStagedMutations(
             task: task,
@@ -56,12 +66,29 @@ enum RunBoundaryDiscovery {
                 ], level: .error)
             }
         }
+        // What the agent did outside the machine with its own tools, read from
+        // its tool calls. Auto only: in Ask the run guard asked before each one.
+        if !AgentExternalActionObserver.recordObservedActions(
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            policyLevel: policyLevel
+        ).isEmpty {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "agent_external_action_observed"]
+            )
+        }
         // Persists itself, for the same reason: an approval offer the user never
         // sees is a connector that stays sealed with no way to unseal it.
         BrokeredCredentialApprovalDiscovery.recordWithheldCredentialRequests(
             task: task,
             run: run,
-            modelContext: modelContext
+            modelContext: modelContext,
+            policyLevel: policyLevel,
+            runFinishedCleanly: runFinishedCleanly
         )
     }
 }
