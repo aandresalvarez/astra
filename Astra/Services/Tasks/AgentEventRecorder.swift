@@ -7,6 +7,10 @@ import ASTRAPersistence
 @MainActor
 final class AgentEventRecordingState {
     private let maxCoalescedPayloadLength: Int
+    /// Set for a run whose level performs and records actions outside ASTRA
+    /// (Auto). Its calls' result markers are the durable record of what the
+    /// agent did; at other levels the run guard asked first, so none is kept.
+    var recordsExternalActions = false
     private var lastConversationEventByKey: [String: TaskEvent] = [:]
     /// Runs whose `run.output` was last written by a `.completed` summary.
     /// Providers like Codex emit several `agent_message` items per turn (progress
@@ -728,7 +732,8 @@ enum AgentEventRecorder {
             // An external action keeps its own call's evidence, even when it
             // printed nothing or failed partway: a batch answers its calls in
             // any order, and successful results otherwise carry no call id.
-            if let evidence = recordingState?.toolUseEvidence(id: toolID, run: run),
+            if recordingState?.recordsExternalActions == true,
+               let evidence = recordingState?.toolUseEvidence(id: toolID, run: run),
                let marker = AgentExternalActionObserver.resultMarker(
                    evidence: evidence,
                    fullEvidence: recordingState?.toolUseFullEvidence(id: toolID, run: run),

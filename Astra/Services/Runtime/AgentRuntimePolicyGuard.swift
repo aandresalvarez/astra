@@ -10,8 +10,10 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
     var permissionRequest: PermissionRequest?
     var approvalGrants: [PermissionGrant] = []
 
+    /// The grant a person reads: the pattern, not the digest that binds it
+    /// to this command's content.
     var approvalGrant: String? {
-        approvalGrants.first?.displayName
+        approvalGrants.first { !ShellCommandRiskClassifier.isContentGrant($0) }?.displayName
     }
 
     var userMessage: String {
@@ -495,10 +497,15 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// The MCP tool's `arguments` as the CLI's words, keys sorted:
     /// `--selector 'button.primary'`; a nested value is its JSON.
     static func browserArgumentWords(_ value: Any?) -> String? {
-        guard let arguments = value as? [String: Any], !arguments.isEmpty else { return nil }
         func quoted(_ text: String) -> String {
             "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
+        // The browser MCP server takes CLI-style words, in order
+        // (`["--selector", "#delete"]`).
+        if let words = value as? [Any], !words.isEmpty {
+            return words.map { quoted(($0 as? String) ?? String(describing: $0)) }.joined(separator: " ")
+        }
+        guard let arguments = value as? [String: Any], !arguments.isEmpty else { return nil }
         return arguments.keys.sorted().map { key -> String in
             let raw = arguments[key]
             let text: String
@@ -527,8 +534,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     /// (`LocalShellCommands`): only a command made of listed local tools runs
     /// on a Custom rule alone, and anything else is asked about as written.
     private func unapprovedExternalCommand(_ command: String) -> String? {
-        if LocalShellCommands.isLocal(command, environmentKeyNames: Set(manifest.environmentKeyNames))
-            || commandApprovedByGrant(command) {
+        if LocalShellCommands.isLocal(command) || commandApprovedByGrant(command) {
             return nil
         }
         return command

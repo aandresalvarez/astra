@@ -47,7 +47,8 @@ struct AgentExternalActionObserverTests {
             #"echo "pushed: $(git push origin main)""#, "git push --dry-run origin main", "bash -c 'git push origin main'",
             "curl -d x https://hooks.example.test/build", "gh gist create notes.md",
             "node --eval='require(\"child_process\").execSync(\"git push origin main\")'", "npm --scope @foo publish",
-            "DOCKER_HOST=ssh://deploy@prod docker create alpine", "python3 -c 'print(1)'"
+            "DOCKER_HOST=ssh://deploy@prod docker create alpine", "python3 -c 'print(1)'",
+            "git push -vn origin main", "gh pr create --dry-run --fill", "gh pr create --help"
         ]
     )
     func otherCommandsAreRecordedAsRun(command: String) {
@@ -163,11 +164,14 @@ struct AgentExternalActionObserverTests {
 
     // Successful results carry no call id, so the recorder keeps a marker
     // naming the call; a batch answered out of order, and a write that printed
-    // nothing, are each recorded against their own call.
-    @Test("Recorded results pair with their own calls, out of order and silent")
+    // nothing, are each recorded against their own call. The marker is the
+    // record: it shows without the run-boundary pass, so a run interrupted
+    // before its boundary keeps it.
+    @Test("Recorded results pair with their own calls, out of order and silent, without the boundary")
     func recordedResultsPairWithTheirCalls() throws {
         let fixture = try ObserverFixture()
         let state = AgentEventRecordingState()
+        state.recordsExternalActions = true
         func record(_ event: AgentEvent) {
             AgentEventRecorder.recordClaudeEvent(event, to: fixture.task, run: fixture.run,
                                                  modelContext: fixture.context, recordingState: state)
@@ -179,13 +183,29 @@ struct AgentExternalActionObserverTests {
         record(.toolResult(id: "issue", content: "https://github.com/acme/widgets/issues/7\n", isError: false))
         record(.toolResult(id: "delete", content: "", isError: false))
 
-        let observed = AgentExternalActionObserver.recordObservedActions(
+        let records = projectedRecords(fixture.task)
+        #expect(Set(records.map(\.title)) == ["Opened issue #7", "Opened pull request #34", "Sent a GitHub API DELETE request"])
+        #expect(records.first { $0.title == "Opened issue #7" }?.url?.absoluteString == "https://github.com/acme/widgets/issues/7")
+        #expect(records.first { $0.title == "Opened pull request #34" }?.url?.absoluteString == "https://github.com/acme/widgets/pull/34")
+        #expect(AgentExternalActionObserver.recordObservedActions(
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
-        )
-        #expect(observed.map(\.title) == ["Opened issue #7", "Opened pull request #34", "Sent a GitHub API DELETE request"])
-        #expect(observed.map(\.url) == [
-            "https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/34", nil
-        ])
+        ).isEmpty, "the boundary pass writes nothing more for a marked call")
+        #expect(projectedRecords(fixture.task).count == 3)
+
+        // At a level that asks, the recorder keeps no marker.
+        let asked = try ObserverFixture()
+        let askState = AgentEventRecordingState()
+        AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "pr", inputSummary: "gh pr create --fill"),
+            to: asked.task, run: asked.run, modelContext: asked.context, recordingState: askState)
+        AgentEventRecorder.recordClaudeEvent(.toolResult(id: "pr", content: "https://github.com/a/b/pull/1", isError: false),
+            to: asked.task, run: asked.run, modelContext: asked.context, recordingState: askState)
+        #expect(projectedRecords(asked.task).isEmpty)
+    }
+
+    private func projectedRecords(_ task: AgentTask) -> [ExternalActionRecord] {
+        task.events.compactMap {
+            ExternalActionRecordProjection.record(type: $0.type, payload: $0.payload, eventID: $0.id, timestamp: $0.timestamp)
+        }
     }
 
     // The event keeps 300 characters; the record reads the whole call.
@@ -193,25 +213,60 @@ struct AgentExternalActionObserverTests {
     func longCommandsAreRecordedWhole() throws {
         let fixture = try ObserverFixture()
         let state = AgentEventRecordingState()
+        state.recordsExternalActions = true
         let long = "echo \(String(repeating: "x ", count: 200)) && git push origin main"
         AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "long", inputSummary: long),
                                              to: fixture.task, run: fixture.run, modelContext: fixture.context, recordingState: state)
         AgentEventRecorder.recordClaudeEvent(.toolResult(id: "long", content: "To github.com:acme/widgets.git", isError: false),
                                              to: fixture.task, run: fixture.run, modelContext: fixture.context, recordingState: state)
 
-        let observed = AgentExternalActionObserver.recordObservedActions(
-            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
-        )
-        #expect(observed.count == 1)
-        #expect(observed.first?.title == "Ran `git push`")
+        let records = projectedRecords(fixture.task)
+        #expect(records.count == 1)
+        #expect(records.first?.title == "Ran `git push`")
     }
 
-    @Test("Docker the run's environment routes elsewhere is recorded")
-    func dockerRoutedByTheRunIsRecorded() {
-        #expect(AgentExternalActionObserver.recordedAction(in: "docker run alpine", environmentKeyNames: ["DOCKER_HOST"])
-            == .command("docker run alpine"))
-        #expect(AgentExternalActionObserver.resultMarker(evidence: "Using tool: Bash: docker ps", output: "") != nil,
-                "a Docker call keeps a marker, judged at the boundary with the run's environment")
+    // The tool-use event keeps 300 characters; what follows (a header, a
+    // token) must not be stored elsewhere either. The marker keeps the
+    // verdict, never the command.
+    @Test("A result marker stores the verdict, not the command")
+    func markersStoreNoCommandText() throws {
+        let long = "curl -d \(String(repeating: "x", count: 320)) -H 'Authorization: Bearer SECRET' https://hooks.example.test/services/TOKEN"
+        let marker = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: \(long.prefix(300))", fullEvidence: "Using tool: Bash: \(long)", output: "ok"
+        ))
+        let stored = String(data: try JSONEncoder().encode(marker), encoding: .utf8) ?? ""
+        #expect(!stored.contains("SECRET") && !stored.contains("TOKEN"))
+        #expect(marker.verdict?.names == "`curl`")
+        let comment = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: gh pr comment 'https://github.com/acme/repo/pull/1?token=ADHOC#x' --body hi", output: ""
+        ))
+        #expect(comment.verdict?.gitHubURL == "https://github.com/acme/repo/pull/1", "a GitHub link keeps only the resource")
+        #expect(marker.verdict?.webHost == "https://hooks.example.test")
+    }
+
+    // A pre-push hook can print any amount before git's `To` line; the
+    // receipt is read from the whole result, not from a prefix of it.
+    @Test("A receipt printed after a long output keeps its link")
+    func receiptAfterLongOutputKeepsItsLink() throws {
+        let hookLog = String(repeating: "lint: checked a file\n", count: 400)
+        let push = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: git push origin main",
+            output: hookLog + "To https://github.com/acme/widgets.git\n   1a..2b  main -> main"
+        ))
+        let pushVerdict = try #require(push.verdict)
+        let pushed = try #require(AgentExternalActionObserver.observation(
+            of: pushVerdict, sourceEventID: UUID(), output: push.output, failed: false
+        ))
+        #expect(pushed.url == "https://github.com/acme/widgets")
+        #expect(pushed.destination == "acme/widgets")
+        let opened = try #require(AgentExternalActionObserver.resultMarker(
+            evidence: "Using tool: Bash: gh pr create --fill", output: hookLog + "https://github.com/acme/widgets/pull/7\n"
+        ))
+        let openedVerdict = try #require(opened.verdict)
+        #expect(AgentExternalActionObserver.observation(
+            of: openedVerdict, sourceEventID: UUID(), output: opened.output, failed: false
+        )?.url == "https://github.com/acme/widgets/pull/7")
+        #expect(push.output.count < 200, "only the receipt is stored")
     }
 
     @Test("An SSH push links its GitHub repository")
@@ -337,6 +392,7 @@ struct AgentExternalActionObserverTests {
         // failure needs one too, next to a success that has one.
         let marked = try ObserverFixture()
         let state = AgentEventRecordingState()
+        state.recordsExternalActions = true
         AgentEventRecorder.recordClaudeEvent(.toolUse(name: "Bash", id: "pr", inputSummary: "gh pr create --fill"),
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
         AgentEventRecorder.recordClaudeEvent(.toolResult(id: "pr", content: "https://github.com/acme/widgets/pull/9\n", isError: false),
@@ -346,9 +402,7 @@ struct AgentExternalActionObserverTests {
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
         AgentEventRecorder.recordClaudeEvent(.toolResult(id: "hook", content: "exit 1", isError: true),
             to: marked.task, run: marked.run, modelContext: marked.context, recordingState: state)
-        #expect(AgentExternalActionObserver.recordObservedActions(
-            task: marked.task, run: marked.run, modelContext: marked.context, policyLevel: .autonomous
-        ).map(\.title) == ["Opened pull request #9", "Ran `curl`, which exited with an error"])
+        #expect(Set(projectedRecords(marked.task).map(\.title)) == ["Opened pull request #9", "Ran `curl`, which exited with an error"])
     }
 
     @Test("Ask and Custom record nothing")

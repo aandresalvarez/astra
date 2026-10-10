@@ -24,19 +24,8 @@ import Foundation
 /// same capability. Forms of that it knows are rejected because it is free
 /// to, but containing hidden actions is the sandbox's job (spec decision 14).
 enum LocalShellCommands {
-    /// `environmentKeyNames`: the variables the run's provider is given
-    /// beyond ASTRA's own (a skill's `DOCKER_HOST`). One that routes Docker
-    /// elsewhere means this process cannot tell which daemon a `docker`
-    /// command reaches, so a command that mentions Docker is not local.
-    static func isLocal(_ command: String, environmentKeyNames: Set<String> = []) -> Bool {
-        if environmentKeyNames.contains(where: { $0.uppercased().hasPrefix("DOCKER_") }), mentionsDocker(command) {
-            return false
-        }
-        return isLocal(command, depth: 0)
-    }
-
-    static func mentionsDocker(_ command: String) -> Bool {
-        command.range(of: #"(^|[^A-Za-z0-9_-])docker([^A-Za-z0-9_]|$)"#, options: .regularExpression) != nil
+    static func isLocal(_ command: String) -> Bool {
+        isLocal(command, depth: 0)
     }
 
     /// The simple commands of a shell string, each as its words with quotes
@@ -363,14 +352,21 @@ enum LocalShellCommands {
     private static func isLocal(_ command: String, depth: Int) -> Bool {
         guard depth < maximumDepth, let parsed = parse(command) else { return false }
         // After a `cd` out of the working directory, a relative program path
-        // no longer names a project file.
+        // no longer names a project file. The root of the working
+        // directory's own repository is still the project.
+        let toRepositoryRoot = parsed.substitutions.allSatisfy {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines) == "git rev-parse --show-toplevel"
+        }
         let leavesWorkingDirectory = parsed.commands.contains { words in
             ["cd", "pushd", "popd"].contains(words.first ?? "")
                 && (words.count == 1 || words.dropFirst().contains { word in
-                    word.hasPrefix("/") || word.hasPrefix("~") || word.contains("..") || word.contains("$") || word == "-"
+                    !(word == "$(…)" && toRepositoryRoot)
+                        && (word.hasPrefix("/") || word.hasPrefix("~") || word.contains("..") || word.contains("$") || word == "-")
                 })
         }
-        if leavesWorkingDirectory, parsed.commands.contains(where: runsRelativeProgramFile) { return false }
+        if leavesWorkingDirectory, parsed.commands.contains(where: { runsRelativeProgramFile($0) || runsDirectorysCode($0) }) {
+            return false
+        }
         return parsed.commands.allSatisfy { isLocalCommand($0, depth: depth) }
             && parsed.substitutions.allSatisfy { isLocal($0, depth: depth + 1) }
     }
@@ -387,6 +383,16 @@ enum LocalShellCommands {
         return command.dropFirst().first { !$0.hasPrefix("-") }.map(relative) ?? false
     }
 
+    /// A tool that runs the code of the directory it is in: a build, test or
+    /// package tool, `python -m`, or `git`, whose repository configuration
+    /// names programs (`core.fsmonitor`, hooks).
+    private static func runsDirectorysCode(_ words: [String]) -> Bool {
+        let command = words.drop(while: isAssignment)
+        guard let program = command.first.map({ ($0 as NSString).lastPathComponent }) else { return false }
+        return projectCodeRunners.contains(program) || program == "git"
+            || (["python", "python3"].contains(program) && command.contains("-m"))
+    }
+
     /// One simple command: shell grammar and assignments first, then the
     /// program and its arguments.
     private static func isLocalCommand(_ words: [String], depth: Int) -> Bool {
@@ -399,7 +405,13 @@ enum LocalShellCommands {
                 words = words.dropFirst()
                 if words.first == "-p" { words = words.dropFirst() }
             } else if isAssignment(first) {
-                guard isLocalAssignment(first) else { return false }
+                // A variable set for the command that follows is that
+                // program's environment, so only a listed name is local; a
+                // standalone assignment only steers the shell.
+                let setsAProgramsEnvironment = words.dropFirst().contains { !isAssignment($0) }
+                guard setsAProgramsEnvironment ? isListedEnvironmentAssignment(first) : isLocalAssignment(first) else {
+                    return false
+                }
                 words = words.dropFirst()
             } else {
                 break
@@ -413,8 +425,15 @@ enum LocalShellCommands {
             return true
         case "export", "readonly", "declare", "typeset", "local":
             // `-n` makes a name a reference to another variable (`PATH`).
+            // A name exported (`export`, `declare -x`), whether assigned here
+            // or before, is every later program's environment.
+            let exports = program == "export" || args.contains { $0.hasPrefix("-") && $0.contains("x") }
+            let names = args.filter { !$0.hasPrefix("-") && !$0.hasPrefix("+") }
             return !args.contains { $0.hasPrefix("-") && $0.contains("n") }
-                && args.filter(isAssignment).allSatisfy(isLocalAssignment)
+                && (exports ? names.allSatisfy(isListedEnvironmentAssignment) : names.filter(isAssignment).allSatisfy(isLocalAssignment))
+        case "set":
+            // `-a`/`allexport` exports every assignment after it.
+            return !args.contains { ($0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("a")) || $0 == "allexport" }
         case "read", "getopts", "printf", "let":
             // Builtins that assign to the variables they name (`read PATH`,
             // `printf -v PATH`, `let PATH=…`): each name is judged as an
@@ -446,6 +465,33 @@ enum LocalShellCommands {
         return !toolSteeringNames.contains(name) && !toolSteeringPrefixes.contains(where: name.hasPrefix)
     }
 
+    /// A variable on the list of ones that only tune a local program; any
+    /// other can be a tool's configuration (`RIPGREP_CONFIG_PATH`).
+    private static func isListedEnvironmentAssignment(_ word: String) -> Bool {
+        let name = String(word.prefix { $0 != "=" && $0 != "+" }).uppercased()
+        return localEnvironmentNames.contains(name) || name.hasPrefix("LC_")
+    }
+
+    /// The values of the named options, in either spelling (`-f FILE`,
+    /// `-fFILE`, `--file=FILE`).
+    private static func optionOperands(_ args: [String], names: Set<String>) -> [String] {
+        var values: [String] = []
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            index += 1
+            if names.contains(arg) {
+                values.append(index < args.count ? args[index] : "-")
+                index += 1
+            } else if let name = names.first(where: { $0.hasPrefix("--") && arg.hasPrefix($0 + "=") }) {
+                values.append(String(arg.dropFirst(name.count + 1)))
+            } else if let name = names.first(where: { !$0.hasPrefix("--") && arg.hasPrefix($0) && arg.count > $0.count && !arg.hasPrefix("--") }) {
+                values.append(String(arg.dropFirst(name.count)))
+            }
+        }
+        return values
+    }
+
     private static let toolSteeringNames: Set<String> = [
         "PATH", "HOME", "IFS", "CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "PS4", "PROMPT_COMMAND",
         "ZDOTDIR", "SHELL", "EDITOR", "VISUAL", "PAGER", "MANPAGER", "LESSOPEN", "LESSCLOSE", "BROWSER", "HTTP_PROXY", "HTTPS_PROXY",
@@ -462,7 +508,7 @@ enum LocalShellCommands {
     private static let localEnvironmentNames: Set<String> = [
         "CI", "DEBUG", "VERBOSE", "NODE_ENV", "RUST_LOG", "RUST_BACKTRACE", "PYTHONUNBUFFERED",
         "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED", "LANG", "LANGUAGE", "TZ", "TERM", "NO_COLOR", "FORCE_COLOR",
-        "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "CGO_ENABLED", "GOOS", "GOARCH", "DEVELOPER_DIR",
+        "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS", "LINES", "CGO_ENABLED", "GOOS", "GOARCH",
         "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "TMPDIR", "GIT_TERMINAL_PROMPT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
         "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE", "HOMEBREW_NO_AUTO_UPDATE",
         "HOMEBREW_NO_INSTALL_CLEANUP", "HOMEBREW_NO_ENV_HINTS", "PIP_DISABLE_PIP_VERSION_CHECK"
@@ -490,24 +536,51 @@ enum LocalShellCommands {
         // `OPT=--pre=…`), so a program whose options are judged is not local
         // with one where an option could stand, only as an option's value.
         if hasExpansionWhereAnOptionCouldBe(args) { return false }
+        if projectCodeRunners.contains(name), !pathsStayInTheProject(args) { return false }
         switch name {
         case "awk":
             return awkIsLocal(args)
+        case "codesign":
+            // `--timestamp` asks a timestamp service on the network; only
+            // `--timestamp=none` keeps the signature on this machine.
+            return !args.contains { $0.hasPrefix("--timestamp") && $0 != "--timestamp=none" }
         case "make", "gmake":
             // `--eval` adds a rule, recipe included, from the command line, and
             // a variable set there can name what a recipe runs.
+            // `-f FILE` and `-C DIR` pick the recipes that run, so they are
+            // judged as an interpreter's script is.
             return !args.contains { $0 == "-E" || $0.hasPrefix("--eval") || ($0.hasPrefix("-E") && !$0.hasPrefix("--")) }
                 && args.filter(isAssignment).allSatisfy { localEnvironmentNames.contains(String($0.prefix { $0 != "=" })) }
+                && optionOperands(args, names: ["-f", "--file", "--makefile", "-C", "--directory"]).allSatisfy(isProjectScript)
         case "cmake":
-            // `cmake -E env …` runs a program, and in `cmake --build` the words
-            // after `--` go to the native tool (`make --eval=…`).
+            // `cmake -E env …` runs a program, in `cmake --build` the words
+            // after `--` go to the native tool (`make --eval=…`), and `-P FILE`
+            // runs a script, judged as an interpreter's is.
+            if let script = args.firstIndex(of: "-P"), !(script + 1 < args.count && isProjectScript(args[script + 1])) {
+                return false
+            }
             return !args.contains("-E") && !(args.contains("--build") && args.contains("--"))
         case "ctest":
             return ctestIsLocal(args)
-        case "swiftc", "clang", "clang++", "cc", "gcc", "g++", "rustc":
+        case "swiftc", "clang", "clang++", "cc", "gcc", "g++", "rustc", "ld":
             return !loadsCompilerPlugin(args)
         case "pytest":
             return pytestIsLocal(args)
+        case "ninja", "xcodegen", "eslint", "prettier", "jest", "vitest", "mypy", "flake8", "pylint":
+            // Their paths stay in the project (above); a configuration given
+            // inline (`jest --config '{…}'`) or pylint's `--init-hook` is code
+            // on the command line.
+            return !args.contains { $0.hasPrefix("{") || $0.contains("={") || $0.hasPrefix("--init-hook") }
+        case "sed":
+            return sedIsLocal(args)
+        case "split":
+            // GNU `--filter` writes each piece through a shell command.
+            return !args.contains { $0.hasPrefix("--filter") }
+        case "ag":
+            return !args.contains { $0.hasPrefix("--pager") }
+        case "nm":
+            // GNU nm's `--plugin` loads a library.
+            return !args.contains { $0.hasPrefix("--plugin") }
         case "rg":
             // `--pre` runs a program on every file searched, `--hostname-bin`
             // one for hyperlinks.
@@ -584,36 +657,178 @@ enum LocalShellCommands {
     private static let plainLocalPrograms: Set<String> = [
         // Shell builtins and keywords.
         ":", "true", "false", "test", "[", "[[", "]]", "echo", "pwd", "cd", "pushd", "popd", "dirs",
-        "wait", "sleep", "exit", "return", "break", "continue", "shift", "set", "shopt", "unset", "type",
+        "wait", "sleep", "exit", "return", "break", "continue", "shift", "shopt", "unset", "type",
         "which", "whereis", "jobs", "umask",
         // Files and text.
-        "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "ag", "tree", "cut", "tr",
+        "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "tree", "cut", "tr",
         "uniq", "diff", "cmp", "comm", "jq", "yq", "xxd", "od", "hexdump", "file", "stat", "du", "df", "basename",
         "dirname", "realpath", "readlink", "mkdir", "rmdir", "touch", "cp", "mv", "rm", "ln", "chmod", "chown",
         "chflags", "xattr", "unzip", "gzip", "gunzip", "zcat", "bzip2", "bunzip2", "xz", "unxz",
         "shasum", "sha1sum", "sha256sum", "md5", "md5sum", "cksum", "base64", "column", "paste", "nl", "fold",
-        "expand", "unexpand", "seq", "tee", "sed", "ditto", "mktemp", "patch", "iconv", "strings", "split", "rev",
+        "expand", "unexpand", "seq", "tee", "ditto", "mktemp", "patch", "iconv", "strings", "rev",
         "tput", "clear",
         // This machine.
         "date", "cal", "whoami", "id", "uname", "hostname", "printenv", "ps", "pgrep", "pkill", "kill", "lsof",
         "sw_vers", "plutil", "defaults", "mdfind", "mdls", "pbcopy", "pbpaste", "uptime", "vm_stat", "sysctl",
-        // Build, test and format tools, which run the project's own code.
-        "ninja", "swift-format", "swiftlint", "xcodegen",
-        "ld", "lipo", "otool", "nm", "dwarfdump", "atos", "codesign", "dsymutil",
-        "rustfmt", "gofmt", "tsc", "eslint", "prettier", "jest", "vitest", "ruff", "black",
-        "mypy", "flake8", "pylint", "isort"
+        // Formatters and binary tools no argument can make load code; a tool
+        // one can (a config, plugin, formatter or test file) is a code runner.
+        "swift-format", "swiftlint", "lipo", "otool", "dwarfdump", "atos", "dsymutil",
+        "rustfmt", "gofmt", "tsc", "ruff", "black", "isort"
     ]
 
     /// A program in `awk` runs commands through `system()` and pipes.
+    /// `sed` whose scripts are read command by command: GNU sed's `e`
+    /// command and `s///e` flag run a shell command, and a command this does
+    /// not know is not local. A script file is the project's code.
+    private static func sedIsLocal(_ args: [String]) -> Bool {
+        var scripts: [String] = []
+        var hasScript = false
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            index += 1
+            if arg.hasPrefix("--") {
+                let name = String(arg.prefix { $0 != "=" })
+                if name == "--expression" || name == "--file" {
+                    let value = arg.contains("=") ? String(arg.drop { $0 != "=" }.dropFirst()) : (index < args.count ? args[index] : "")
+                    if !arg.contains("=") { index += 1 }
+                    if name == "--file" { guard isProjectScript(value) else { return false } } else { scripts.append(value) }
+                    hasScript = true
+                } else if ["--version", "--help"].contains(arg) {
+                    return true
+                } else if !([
+                    "--quiet", "--silent", "--regexp-extended", "--separate", "--unbuffered", "--null-data",
+                    "--zero-terminated", "--posix", "--sandbox", "--debug", "--follow-symlinks"
+                ].contains(arg) || name == "--in-place" || name == "--line-length") {
+                    return false
+                }
+            } else if arg.hasPrefix("-"), arg.count > 1 {
+                for (offset, letter) in arg.dropFirst().enumerated() {
+                    if "nErsuz".contains(letter) { continue }
+                    let rest = String(arg.dropFirst(offset + 2))
+                    if letter == "i" {
+                        // GNU attaches the backup suffix; BSD sed takes the
+                        // next word (`-i ''`, `-i .bak`).
+                        if rest.isEmpty, index < args.count, args[index].isEmpty || args[index].hasPrefix(".") { index += 1 }
+                        break
+                    }
+                    guard "efl".contains(letter) else { return false }
+                    let value = rest.isEmpty ? (index < args.count ? args[index] : "") : rest
+                    if rest.isEmpty { index += 1 }
+                    if letter == "e" { scripts.append(value); hasScript = true }
+                    if letter == "f" { guard isProjectScript(value) else { return false }; hasScript = true }
+                    break
+                }
+            } else if !hasScript {
+                scripts.append(arg)
+                hasScript = true
+            }
+        }
+        return hasScript && scripts.allSatisfy(sedScriptIsLocal)
+    }
+
+    /// Every command of a sed script is one that edits text or reads and
+    /// writes a file; `e`, the `s///e` flag and an unknown command are not.
+    private static func sedScriptIsLocal(_ script: String) -> Bool {
+        let characters = Array(script)
+        var index = 0
+        // Past the next unescaped `delimiter`; false when there is none.
+        func skip(to delimiter: Character) -> Bool {
+            while index < characters.count {
+                if characters[index] == "\\" {
+                    index += 2
+                } else {
+                    index += 1
+                    if characters[index - 1] == delimiter { return true }
+                }
+            }
+            return false
+        }
+        func skip(while matches: (Character) -> Bool) {
+            while index < characters.count, matches(characters[index]) { index += 1 }
+        }
+        while index < characters.count {
+            if " \t\n;}".contains(characters[index]) {
+                index += 1
+                continue
+            }
+            // Addresses: a line, `$`, a step, `/re/` or `\cREc`, a range,
+            // GNU's `I`/`M` modifiers, then `!`.
+            while index < characters.count {
+                let character = characters[index]
+                if character.isNumber || "$~+, \tIM!".contains(character) {
+                    index += 1
+                } else if character == "/" {
+                    index += 1
+                    guard skip(to: "/") else { return false }
+                } else if character == "\\", index + 1 < characters.count {
+                    index += 2
+                    guard skip(to: characters[index - 1]) else { return false }
+                } else {
+                    break
+                }
+            }
+            guard index < characters.count else { return true }
+            let command = characters[index]
+            index += 1
+            switch command {
+            case "{", "=", "d", "D", "g", "G", "h", "H", "n", "N", "p", "P", "x", "z", "F":
+                continue
+            case "q", "Q", "l", "L":
+                skip { $0.isNumber || $0 == " " }
+            case "a", "i", "c", "r", "R", "w", "W", "#":
+                // Text or a file name, to the end of the line.
+                skip { $0 != "\n" }
+            case ":", "b", "t", "T", "v":
+                // A label, which GNU sed ends at `;` as well.
+                skip { $0 != "\n" && $0 != ";" }
+            case "s", "y":
+                guard index < characters.count else { return false }
+                let delimiter = characters[index]
+                index += 1
+                guard skip(to: delimiter), skip(to: delimiter) else { return false }
+                guard command == "s" else { continue }
+                while index < characters.count, "gpiImM0123456789ew".contains(characters[index]) {
+                    if characters[index] == "e" { return false }
+                    if characters[index] == "w" {
+                        skip { $0 != "\n" }
+                        break
+                    }
+                    index += 1
+                }
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
+    /// `awk` with listed options only: GNU awk's `-l`/`--load` and `-E`
+    /// load code, as `@load` and `@include` in a program do. Every program
+    /// file is judged as an interpreter's script is.
     private static func awkIsLocal(_ args: [String]) -> Bool {
         var index = 0
+        var sawProgramFile = false
         while index < args.count, args[index].hasPrefix("-") {
-            if args[index] == "-f" { return true }
-            index += ["-F", "-v"].contains(args[index]) ? 2 : 1
+            let option = args[index]
+            if option == "--" {
+                index += 1
+                break
+            }
+            guard let letter = option.dropFirst().first, "Fvf".contains(letter), !option.hasPrefix("--") else { return false }
+            let attached = String(option.dropFirst(2))
+            let value = attached.isEmpty ? (index + 1 < args.count ? args[index + 1] : "") : attached
+            if letter == "f" {
+                guard isProjectScript(value) else { return false }
+                sawProgramFile = true
+            }
+            index += attached.isEmpty ? 2 : 1
         }
+        if sawProgramFile { return true }
         guard index < args.count else { return false }
         let program = args[index]
         return !program.contains("system") && !program.contains("|")
+            && !program.contains("@load") && !program.contains("@include")
     }
 
     /// `tar` with the options that create, list and extract. One that names a
@@ -654,6 +869,10 @@ enum LocalShellCommands {
 
     /// `fd` is local when the command its `-x`/`-X` runs is.
     private static func fdIsLocal(_ args: [String], depth: Int) -> Bool {
+        // `-xcurl` or a cluster `-Hx` hides the command from the reading below.
+        if args.contains(where: { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.count > 2 && ($0.contains("x") || $0.contains("X")) }) {
+            return false
+        }
         guard let flag = args.firstIndex(where: { ["-x", "--exec", "-X", "--exec-batch"].contains($0) }) else {
             return !args.contains { $0.hasPrefix("--exec") }
         }
@@ -676,6 +895,12 @@ enum LocalShellCommands {
             }
             guard let end = args[(index + 1)...].firstIndex(where: { $0 == ";" || $0 == "+" }),
                   isLocalCommand(Array(args[(index + 1)..<end]), depth: depth + 1) else {
+                return false
+            }
+            // `-execdir` and `-okdir` run in each match's directory, where a
+            // relative program path is no longer a project file.
+            if ["-execdir", "-okdir"].contains(args[index]),
+               runsRelativeProgramFile(Array(args[(index + 1)..<end])) {
                 return false
             }
             index = end + 1
@@ -729,8 +954,9 @@ enum LocalShellCommands {
         if index < args.count, args[index] == "--" { index += 1 }
         var rest = Array(args.dropFirst(index))
         if runner == "env" {
+            // The program's environment, as a prefix assignment is.
             while let first = rest.first, isAssignment(first) {
-                guard isLocalAssignment(first) else { return false }
+                guard isListedEnvironmentAssignment(first) else { return false }
                 rest.removeFirst()
             }
         }
@@ -752,11 +978,16 @@ enum LocalShellCommands {
         var index = 0
         while index < args.count, args[index].hasPrefix("-") {
             let option = args[index]
+            // The repository chosen (`-C`, `--git-dir`, `--work-tree`) brings
+            // its configuration, which names programs git runs.
             if ["-C", "--git-dir", "--work-tree", "--namespace"].contains(option) {
+                guard option == "--namespace" || (index + 1 < args.count && !leavesTheProject(args[index + 1])) else {
+                    return false
+                }
                 index += 2
             } else if ["--no-pager", "-P", "--paginate", "-p", "--bare", "--no-optional-locks", "--literal-pathspecs",
                        "--no-replace-objects", "--version", "--help"].contains(option)
-                        || ["--git-dir=", "--work-tree=", "--namespace="].contains(where: option.hasPrefix) {
+                        || ["--git-dir=", "--work-tree=", "--namespace="].contains(where: option.hasPrefix) && !leavesTheProject(option) {
                 index += 1
             } else {
                 // `-c`, `--exec-path`, `--config-env`: they change what runs.
@@ -783,7 +1014,9 @@ enum LocalShellCommands {
             // `--upload-pack`, `--exec` and `-u` name a program to run;
             // `-c`/`--config` set configuration that can name one.
             return !rest.contains { arg in
-                ["-u", "-c", "--config"].contains(arg) || ["--upload-pack", "--receive-pack", "--exec", "--config="].contains(where: arg.hasPrefix)
+                // In any spelling: `-u/tmp/x`, a cluster `-qu/tmp/x`.
+                (arg.hasPrefix("-") && !arg.hasPrefix("--") && arg.dropFirst().contains { "uc".contains($0) })
+                    || ["--upload-pack", "--receive-pack", "--exec", "--config"].contains(where: arg.hasPrefix)
             }
         default:
             return localGitVerbs.contains(verb)
@@ -874,6 +1107,7 @@ enum LocalShellCommands {
     /// `gh api` reads without fields, with GET, or with a GraphQL query that
     /// holds no `mutation`; fields alone make it a POST.
     private static func gitHubAPIReads(_ args: [String]) -> Bool {
+        if args.contains(where: overridesMethod) { return false }
         let flags: Set<String> = ["--paginate", "--slurp", "--include", "-i", "--silent", "--verbose"]
         let valued: Set<String> = ["--jq", "-q", "--template", "-t", "--cache", "--hostname", "--preview", "-p", "--header", "-H"]
         let fields: Set<String> = ["-f", "--raw-field", "-F", "--field"]
@@ -924,7 +1158,16 @@ enum LocalShellCommands {
 
     /// `curl` with only the options that fetch: no body, no upload, no
     /// config file, and a GET or HEAD method. (`~/.curlrc` is the user's own.)
+    /// A header that names another method (`X-HTTP-Method-Override: DELETE`)
+    /// turns a GET into whatever the server honours, so a request carrying
+    /// one is not a fetch.
+    private static func overridesMethod(_ word: String) -> Bool {
+        guard let colon = word.firstIndex(of: ":") else { return false }
+        return word[..<colon].lowercased().contains("method")
+    }
+
     private static func curlIsLocal(_ args: [String]) -> Bool {
+        if args.contains(where: overridesMethod) { return false }
         let flags: Set<Character> = ["s", "S", "L", "f", "I", "i", "v", "k", "O", "J", "q", "N", "g", "4", "6"]
         let valued: Set<Character> = ["o", "w", "A", "H", "m", "X", "u", "e", "r", "C", "x", "b", "c", "y", "Y"]
         let longFlags: Set<String> = [
@@ -952,6 +1195,7 @@ enum LocalShellCommands {
                 let value = attached ?? (index < args.count ? args[index] : "")
                 if attached == nil { index += 1 }
                 if name == "--request", !["GET", "HEAD"].contains(value.uppercased()) { return false }
+                if sendsAFile(option: name, value: value) { return false }
                 if name == "--url", !isWebURL(value) { return false }
             } else if arg.hasPrefix("-"), arg.count > 1 {
                 for (offset, letter) in arg.dropFirst().enumerated() {
@@ -961,6 +1205,7 @@ enum LocalShellCommands {
                     let value = remainder.isEmpty ? (index < args.count ? args[index] : "") : remainder
                     if remainder.isEmpty { index += 1 }
                     if letter == "X", !["GET", "HEAD"].contains(value.uppercased()) { return false }
+                    if sendsAFile(option: letter == "H" ? "--header" : letter == "b" ? "--cookie" : "", value: value) { return false }
                     break
                 }
             } else if !isWebURL(arg) {
@@ -972,12 +1217,19 @@ enum LocalShellCommands {
         return true
     }
 
+    /// A header or cookie curl reads from a file (`-H @file`, `-b file`)
+    /// sends what the command does not show.
+    private static func sendsAFile(option: String, value: String) -> Bool {
+        (option == "--header" && value.hasPrefix("@")) || (option == "--cookie" && !value.contains("="))
+    }
+
     private static func isWebURL(_ word: String) -> Bool {
         let lower = word.lowercased()
         return lower.hasPrefix("https://") || lower.hasPrefix("http://")
     }
 
     private static func wgetIsLocal(_ args: [String]) -> Bool {
+        if args.contains(where: overridesMethod) { return false }
         let flags: Set<String> = [
             "-q", "--quiet", "-nv", "--no-verbose", "-c", "--continue", "-S", "--server-response", "--spider",
             "--no-check-certificate", "-N", "--timestamping", "-r", "--recursive", "-np", "--no-parent"
@@ -1006,14 +1258,16 @@ enum LocalShellCommands {
 
     // MARK: Containers and packages
 
-    /// `docker` against this machine's daemon, without a push, a login, or a
-    /// global option that picks another daemon or configuration.
+    /// `docker` without a push, a login, or a global option that picks a
+    /// daemon or configuration on the command line. Which daemon it reaches
+    /// otherwise is the user's Docker configuration — a context, a provider
+    /// home, a capability's `DOCKER_HOST` — which the command does not
+    /// express (spec decision 14), as `~/.curlrc` is curl's.
     private static func dockerIsLocal(_ args: [String]) -> Bool {
         guard let verb = args.first else { return true }
         if ["--version", "-v", "--help"].contains(verb) { return true }
         guard !verb.hasPrefix("-"),
-              !args.contains(where: { $0.lowercased().contains("push") || $0.lowercased().contains("registry") }),
-              DockerDaemonLocality.isLocal() else {
+              !args.contains(where: { $0.lowercased().contains("push") || $0.lowercased().contains("registry") }) else {
             return false
         }
         let rest = Array(args.dropFirst())
@@ -1193,6 +1447,7 @@ enum LocalShellCommands {
                 guard index + 1 < args.count else { return false }
                 let module = args[index + 1]
                 if module == "pip" { return pipIsLocal(Array(args.dropFirst(index + 2))) }
+                guard pathsStayInTheProject(Array(args.dropFirst(index + 2))) else { return false }
                 if module == "pytest" { return pytestIsLocal(Array(args.dropFirst(index + 2))) }
                 return [
                     "pytest", "unittest", "venv", "py_compile", "compileall", "json.tool", "doctest", "mypy", "black",
@@ -1213,10 +1468,38 @@ enum LocalShellCommands {
     /// A script file of the project: not a standard-input stand-in (`-`,
     /// `/dev/stdin`, `/dev/fd/0`), and not a substitution's output (`<(…)`),
     /// which are code the command itself supplies.
+    /// A file under the working directory: not absolute, not in a home, no
+    /// `..` step, no expansion. Every operand that names code to run — an
+    /// interpreter's script, `awk -f`, `cmake -P` — is judged by this.
     private static func isProjectScript(_ word: String) -> Bool {
-        // An absolute or home path names a file outside the project, as for a
-        // program path (`isLocalProgram`).
         !word.hasPrefix("-") && !word.hasPrefix("/") && !word.hasPrefix("~") && !word.contains("$")
+            && !word.split(separator: "/").contains("..")
+    }
+
+    /// A path that leaves the project: absolute, in a home, or with a `..`
+    /// step; an option's attached value (`--package-path=/tmp/x`) counts.
+    private static func leavesTheProject(_ word: String) -> Bool {
+        // A short option's attached value (`-f/tmp/x`, `-C..`, `-C~/x`).
+        if word.hasPrefix("-"), !word.hasPrefix("--"), !word.contains("="),
+           word.range(of: #"^-[A-Za-z]+(\.\.(/|$)|[/~])"#, options: .regularExpression) != nil {
+            return true
+        }
+        let value = word.hasPrefix("-") ? String(word.drop { $0 != "=" }.dropFirst()) : word
+        return value.hasPrefix("/") || value.hasPrefix("~") || value.split(separator: "/").contains("..")
+    }
+
+    /// Tools that build, test or run the project's code. Any path one is
+    /// given can choose which code that is (`--package-path`,
+    /// `--manifest-path`, a test file, `-project`, a toolchain file), so every
+    /// path stays in the project, as does the directory it runs in.
+    private static let projectCodeRunners: Set<String> = [
+        "swift", "cargo", "go", "pytest", "xcodebuild", "ctest", "cmake", "make", "gmake", "npm", "pnpm", "yarn", "bun", "uv",
+        "ninja", "xcodegen", "eslint", "prettier", "jest", "vitest", "mypy", "flake8", "pylint"
+    ]
+
+    /// Words after `--` are the program's own arguments, its data.
+    private static func pathsStayInTheProject(_ args: [String]) -> Bool {
+        !args.prefix { $0 != "--" }.contains(where: leavesTheProject)
     }
 
     private static func nodeIsLocal(_ args: [String]) -> Bool {
@@ -1225,6 +1508,14 @@ enum LocalShellCommands {
             let option = args[index]
             if ["--version", "-v"].contains(option) { return true }
             if option == "--test" {
+                index += 1
+                continue
+            }
+            // An option that loads a module (`--experimental-loader=…`,
+            // `--import`) names code to run, judged as the script is.
+            let name = String(option.prefix { $0 != "=" })
+            if name.contains("loader") || name.contains("import") || name.contains("require") {
+                guard option.contains("="), isProjectScript(String(option.drop { $0 != "=" }.dropFirst())) else { return false }
                 index += 1
                 continue
             }
@@ -1355,7 +1646,10 @@ enum LocalShellCommands {
             let lower = arg.lowercased()
             // Also a linker or helper named on the command line (`rustc -C
             // linker=…`, `-fuse-ld=…`, `gcc -B dir`, `-wrapper`).
-            return lower.contains("plugin") || lower.hasPrefix("-load") || lower.contains("linker")
+            // A configuration or response file (`--config=…`, `@args`)
+            // holds options this cannot read.
+            return lower.contains("plugin") || lower.hasPrefix("-load") || lower.contains("linker") || lower.contains("lto_library")
+                || lower.hasPrefix("--config") || lower.hasPrefix("@")
                 || lower.contains("link-arg") || lower.hasPrefix("-fuse-ld") || lower.hasPrefix("--ld-path")
                 || lower.hasPrefix("-b") || lower == "-wrapper" || lower.hasPrefix("-z")
                 || ["-xfrontend", "-xclang", "-xllvm", "-xswiftc", "-xcc", "-xlinker"].contains(lower)
@@ -1364,8 +1658,12 @@ enum LocalShellCommands {
 
     /// `pytest` runs the project's tests; `--pastebin` sends the session to
     /// bpaste.net.
+    /// `-o`/`--override-ini` can set `addopts`, options this does not read.
     private static func pytestIsLocal(_ args: [String]) -> Bool {
-        !args.contains { $0.hasPrefix("--pastebin") }
+        !args.contains { arg in
+            arg.hasPrefix("--pastebin") || arg.hasPrefix("--override-ini") || arg.contains("addopts")
+                || (arg.hasPrefix("-") && !arg.hasPrefix("--") && arg.contains("o"))
+        }
     }
 
     private static func cargoIsLocal(_ args: [String]) -> Bool {
@@ -1379,7 +1677,7 @@ enum LocalShellCommands {
         guard let command = rest.first else { return true }
         // `--config` after the verb can name a program Cargo runs
         // (`build.rustc-wrapper`, `target.*.runner`).
-        guard !rest.contains(where: { $0 == "--config" || $0.hasPrefix("--config=") || $0 == "-Z" }) else { return false }
+        guard !rest.contains(where: { $0 == "--config" || $0.hasPrefix("--config=") || $0.hasPrefix("-Z") }) else { return false }
         return [
             "build", "b", "check", "c", "test", "t", "run", "r", "clippy", "fmt", "doc", "d", "clean", "tree", "metadata",
             "fetch", "update", "add", "remove", "rm", "bench", "init", "new", "generate-lockfile", "vendor", "version",
@@ -1391,15 +1689,20 @@ enum LocalShellCommands {
         guard let command = args.first else { return true }
         // `go env -w`/`-u` change the defaults every later `go` reads
         // (`GOFLAGS=-toolexec=…`).
-        if command == "env" { return !args.contains { $0 == "-w" || $0 == "-u" } }
+        // Go reads `-w`, `--w` and `-w=true` alike.
+        let flagNames = args.filter { $0.hasPrefix("-") }.map { String($0.drop { $0 == "-" }.prefix { $0 != "=" }) }
+        if command == "env" { return !flagNames.contains { $0 == "w" || $0 == "u" } }
         if command == "mod" {
             return args.count > 1 && ["tidy", "download", "graph", "verify", "why", "edit", "init", "vendor"].contains(args[1])
         }
         // `go generate` runs the commands its directives name, and `-exec` and
         // `-toolexec` name a program to run.
-        guard !args.contains(where: { $0.hasPrefix("-exec") || $0.hasPrefix("-toolexec") || $0.hasPrefix("--exec") }) else {
+        guard !flagNames.contains(where: { ["exec", "toolexec", "vettool"].contains($0) }) else {
             return false
         }
+        // `go run module@version` downloads and runs a module that is not
+        // the project's, as `npx` would.
+        if command == "run", args.dropFirst().contains(where: { !$0.hasPrefix("-") && $0.contains("@") }) { return false }
         return ["build", "test", "vet", "fmt", "run", "list", "env", "version", "doc", "clean", "install", "get", "work", "help"]
             .contains(command)
     }
@@ -1424,8 +1727,21 @@ enum LocalShellCommands {
         guard index < args.count else { return false }
         let tool = args[index]
         // `simctl` drives this Mac's simulators; `devicectl` changes a
-        // connected device, which is not this machine.
-        if tool == "simctl" { return true }
+        // connected device, which is not this machine. `simctl spawn DEVICE
+        // COMMAND …` runs a command, which is judged as one.
+        if tool == "simctl" {
+            // A global option (`--set`, `--noxpc`) before the subcommand is
+            // not read, so it is not local.
+            guard let subcommand = args.dropFirst(index + 1).first, !subcommand.hasPrefix("-") else { return false }
+            guard subcommand == "spawn" else { return true }
+            var rest = Array(args.dropFirst(index + 2))
+            while let first = rest.first, first.hasPrefix("-") {
+                guard ["-w", "--wait-for-debugger", "-s", "--standalone"].contains(first) else { return false }
+                rest.removeFirst()
+            }
+            guard rest.count >= 2 else { return false }
+            return isLocalCommand(Array(rest.dropFirst()), depth: depth + 1)
+        }
         return isLocalCommand(Array(args.dropFirst(index)), depth: depth + 1)
     }
 }

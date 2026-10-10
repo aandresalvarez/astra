@@ -17,33 +17,98 @@ import ASTRAModels
 /// that one command and succeeded, and says when a call failed. Nothing about whether the command was allowed depends on it.
 @MainActor
 enum AgentExternalActionObserver {
-    static let eventType = "external.action.observed"
+    nonisolated static let eventType = "external.action.observed"
     /// The successful result of a call that ran a recognised external action,
     /// named by that call's evidence (the `tool.use` payload). Not shown in
     /// the thread; it is what pairs a result with its own call.
-    static let resultEventType = "external.action.result"
+    nonisolated static let resultEventType = "external.action.result"
 
     struct ResultMarker: Codable, Equatable, Sendable {
         var version = 1
         /// The `tool.use` payload, truncated as the event is: what pairs it.
         let toolUseEvidence: String
+        /// The receipt the record reads (`receipt(in:host:)`); older markers
+        /// hold the result's first 4,000 characters.
         let output: String
-        /// The whole command, which is what is classified; nil in older markers.
+        /// The whole command; only in markers written before `verdict`, which
+        /// replaced it so that the part of a command past the event's cut —
+        /// where a header or token can sit — is never stored.
         var command: String?
         /// The call came back as an error; nil in older markers, which were
         /// written only for successes.
         var failed: Bool?
+        /// What the whole command was judged to be when the call was recorded.
+        var verdict: Verdict?
+    }
+
+    /// The judgment of a call's whole command, kept instead of the command:
+    /// only the action, the names of the programs it ran, and the scheme and
+    /// host it named.
+    struct Verdict: Codable, Equatable, Sendable {
+        /// `push`, `pullRequest:<verb>`, `issue:<verb>`, `release`,
+        /// `api:<METHOD>`, or `command`.
+        var action: String
+        var names: String
+        var webHost: String?
+        var gitHubURL: String?
+        var enterpriseHost: String?
+        var enterpriseRepository: String?
     }
 
     nonisolated static func resultMarker(
         evidence: String, fullEvidence: String? = nil, output: String, failed: Bool = false
     ) -> ResultMarker? {
-        // A command that mentions Docker keeps a marker too: whether it acted
-        // outside depends on the run's environment, read at the boundary.
         guard let command = shellCommandText(fromToolUsePayload: fullEvidence ?? evidence),
-              recordedAction(in: command) != nil || LocalShellCommands.mentionsDocker(command) else { return nil }
-        return ResultMarker(toolUseEvidence: evidence, output: String(output.prefix(4_000)), command: command,
-                            failed: failed ? true : nil)
+              let verdict = verdict(for: command) else { return nil }
+        return ResultMarker(toolUseEvidence: evidence, output: receipt(in: output, host: verdict.enterpriseHost),
+                            failed: failed ? true : nil, verdict: verdict)
+    }
+
+    /// What the record reads from a result, taken from all of it: the first
+    /// GitHub link and the first `To <remote>` line `git push` prints, which
+    /// can follow any amount of hook output.
+    nonisolated static func receipt(in output: String, host: String?) -> String {
+        var lines: [String] = []
+        if let url = firstGitHubURL(in: output, host: host) { lines.append(url) }
+        if let remote = output.range(of: #"(?m)^To\s+\S+"#, options: .regularExpression) {
+            lines.append(String(output[remote].prefix(1_000)))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    nonisolated static func verdict(for command: String) -> Verdict? {
+        let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
+        let enterprise = enterpriseGitHub(in: command)
+        if let action = recordedAction(in: command) {
+            return Verdict(action: encode(action), names: commandNames(text), webHost: firstWebURL(in: text),
+                           gitHubURL: firstGitHubURL(in: text, host: enterprise?.host),
+                           enterpriseHost: enterprise?.host, enterpriseRepository: enterprise?.repository)
+        }
+        return nil
+    }
+
+    nonisolated static func encode(_ action: Action) -> String {
+        switch action {
+        case .push: return "push"
+        case .pullRequest(let verb): return "pullRequest:\(verb)"
+        case .issue(let verb): return "issue:\(verb)"
+        case .release: return "release"
+        case .api(let method): return "api:\(method)"
+        case .command: return "command"
+        }
+    }
+
+    /// The recognised action a verdict names; nil for a plain command.
+    nonisolated static func decodeAction(_ value: String) -> Action? {
+        let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+        switch parts.first {
+        case "push": return .push
+        case "release": return .release
+        case "pullRequest" where parts.count == 2: return .pullRequest(verb: parts[1])
+        case "issue" where parts.count == 2: return .issue(verb: parts[1])
+        case "api" where parts.count == 2: return .api(method: parts[1])
+        default: return nil
+        }
     }
 
     struct Observation: Codable, Equatable, Sendable {
@@ -57,14 +122,11 @@ enum AgentExternalActionObserver {
     }
 
     @discardableResult
-    /// `environmentKeyNames`: the variables the run's provider was given
-    /// (`RunPermissionManifest.environmentKeyNames`), judged as the guard does.
     static func recordObservedActions(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        policyLevel: AgentPolicyLevel,
-        environmentKeyNames: [String] = []
+        policyLevel: AgentPolicyLevel
     ) -> [Observation] {
         guard !ExternalActionPolicy.asksUser(for: .agentCommand, level: policyLevel) else { return [] }
         let runEvents = task.events
@@ -92,6 +154,10 @@ enum AgentExternalActionObserver {
             if pairsByMarker {
                 guard let position = markers.firstIndex(where: { $0.toolUseEvidence == event.payload }) else { continue }
                 let marker = markers.remove(at: position)
+                // A marker with a verdict is itself the record
+                // (`ObservedExternalActionRecordSource`), durable from the
+                // moment the result arrived; nothing is written here for it.
+                if marker.verdict != nil { continue }
                 command = marker.command ?? truncated
                 output = marker.output
                 failed = marker.failed == true
@@ -101,7 +167,7 @@ enum AgentExternalActionObserver {
                 output = fallback.output
                 failed = fallback.failed
             }
-            guard let recognised = recordedAction(in: command, environmentKeyNames: Set(environmentKeyNames)) else { continue }
+            guard let recognised = recordedAction(in: command) else { continue }
             // A call that came back as an error may still have acted partway
             // (`curl -d … ; false`), so it is recorded too, as the command it
             // ran and that it failed, never as the action it was trying.
@@ -130,6 +196,43 @@ enum AgentExternalActionObserver {
             }
         }
         return observations
+    }
+
+    /// The record of a call judged when it was recorded (`Verdict`).
+    static func observation(
+        of verdict: Verdict, event: TaskEvent, output: String, failed: Bool
+    ) -> Observation? {
+        observation(of: verdict, sourceEventID: event.id, output: output, failed: failed)
+    }
+
+    nonisolated static func observation(
+        of verdict: Verdict, sourceEventID: UUID, output: String, failed: Bool
+    ) -> Observation? {
+        // A failed call is recorded as the programs it ran, never as the
+        // action it was trying.
+        let action = failed ? nil : decodeAction(verdict.action)
+        let enterprise = verdict.enterpriseHost.map { (host: $0, repository: verdict.enterpriseRepository) }
+        var url = firstGitHubURL(in: output, host: enterprise?.host) ?? verdict.gitHubURL
+        if action == .push, url == nil, let repository = pushGitHubRepository(in: output) {
+            url = "https://github.com/\(repository)"
+        }
+        guard let action else {
+            let link = url ?? verdict.webHost
+            return Observation(
+                sourceEventID: sourceEventID,
+                title: "Ran \(verdict.names)" + (failed ? ", which exited with an error" : ""),
+                destination: link.flatMap { URLComponents(string: $0)?.host }
+                    ?? verdict.names.split(separator: "`").first.map { String($0.split(separator: " ").first ?? $0) }
+                    ?? "Command",
+                url: link
+            )
+        }
+        return Observation(
+            sourceEventID: sourceEventID,
+            title: title(for: action, url: url),
+            destination: destination(for: action, url: url, result: output, enterprise: enterprise),
+            url: url
+        )
     }
 
     /// One link per action. A single action takes the first link printed; in
@@ -239,10 +342,10 @@ enum AgentExternalActionObserver {
     /// exactly what Ask would have asked about. A call that is one recognised
     /// `git push` or `gh` write gets that action's title; any other is
     /// recorded as the command it ran, never as what it may have done.
-    nonisolated static func recordedAction(in command: String, environmentKeyNames: Set<String> = []) -> Action? {
+    nonisolated static func recordedAction(in command: String) -> Action? {
         let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !LocalShellCommands.isLocal(text, environmentKeyNames: environmentKeyNames) else { return nil }
+        guard !text.isEmpty, !LocalShellCommands.isLocal(text) else { return nil }
         // One command whose own status is the call's: no separator, and not
         // sent to the background.
         if let commands = LocalShellCommands.simpleCommands(text), commands.count == 1, !text.hasSuffix("&"),
@@ -258,9 +361,16 @@ enum AgentExternalActionObserver {
         switch program {
         case "git":
             let operands = operands(args, optionsWithValues: ["-C", "--git-dir", "--work-tree", "--namespace"])
-            guard operands.first == "push", !args.contains("--dry-run"), !args.contains("-n") else { return nil }
+            // A dry run, alone or in a short-option cluster (`-vn`), pushes
+            // nothing, so it is not titled as a push.
+            let dryRun = args.contains("--dry-run")
+                || args.contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.contains("n") }
+            guard operands.first == "push", !dryRun else { return nil }
             return .push
         case "gh":
+            // Help and a dry run create nothing, so they are not titled as
+            // the action.
+            guard !args.contains(where: { ["--help", "-h", "--dry-run"].contains($0) }) else { return nil }
             let operands = operands(args, optionsWithValues: ["-R", "--repo", "--hostname"])
             guard let area = operands.first else { return nil }
             let verb = operands.dropFirst().first ?? ""
@@ -354,7 +464,7 @@ enum AgentExternalActionObserver {
         return value
     }
 
-    static func title(for action: Action, url: String?) -> String {
+    nonisolated static func title(for action: Action, url: String?) -> String {
         let number = url.flatMap(numberedItem)
         switch action {
         case .push:
@@ -391,7 +501,7 @@ enum AgentExternalActionObserver {
     /// The programs a command ran outside the local list, by name and
     /// subcommand only (`curl`, `gh gist create`): its arguments can carry a
     /// token, a header or a body, and the title is kept and shown.
-    static func commandNames(_ text: String) -> String {
+    nonisolated static func commandNames(_ text: String) -> String {
         let outside = LocalShellCommands.commandsOutsideTheList(text) ?? []
         var names: [String] = []
         for words in outside {
@@ -409,7 +519,7 @@ enum AgentExternalActionObserver {
         return names.count > 3 ? shown + " and \(names.count - 3) more" : shown
     }
 
-    private static func numberedItem(in url: String) -> String? {
+    nonisolated private static func numberedItem(in url: String) -> String? {
         guard let match = url.range(of: #"/(?:pull|issues)/[0-9]+"#, options: .regularExpression) else { return nil }
         return url[match].split(separator: "/").last.map(String.init)
     }
@@ -419,7 +529,7 @@ enum AgentExternalActionObserver {
     /// but `git push` goes to whatever remote it names, so a push without a
     /// GitHub link reads its destination from Git's own `To <remote>` line, and
     /// says only "Git remote" when that is missing rather than guess GitHub.
-    static func destination(
+    nonisolated static func destination(
         for action: Action,
         url: String?,
         result: String,
@@ -468,7 +578,7 @@ enum AgentExternalActionObserver {
 
     /// `owner/repo` when the first `To <remote>` line `git push` prints is a
     /// github.com remote, in any of its spellings; nil otherwise.
-    static func pushGitHubRepository(in result: String) -> String? {
+    nonisolated static func pushGitHubRepository(in result: String) -> String? {
         guard let match = result.range(of: #"(?m)^To\s+(\S+)"#, options: .regularExpression) else { return nil }
         var remote = String(result[match].dropFirst(2)).trimmingCharacters(in: .whitespaces)
         if remote.lowercased().hasSuffix(".git") { remote.removeLast(4) }
@@ -489,7 +599,7 @@ enum AgentExternalActionObserver {
 
     /// `owner/repo` for GitHub, otherwise `host/path`, read from the first
     /// `To <remote>` line `git push` prints.
-    static func pushRemote(in result: String) -> String? {
+    nonisolated static func pushRemote(in result: String) -> String? {
         guard let match = result.range(of: #"(?m)^To\s+(\S+)"#, options: .regularExpression) else { return nil }
         var remote = String(result[match].dropFirst(2)).trimmingCharacters(in: .whitespaces)
         if remote.lowercased().hasSuffix(".git") { remote.removeLast(4) }
@@ -512,7 +622,7 @@ enum AgentExternalActionObserver {
     /// The first http(s) address in `text`, reduced to scheme and host: a
     /// user, password, path or query string can carry a secret (a webhook
     /// token is often the path) the record must not show.
-    static func firstWebURL(in text: String) -> String? {
+    nonisolated static func firstWebURL(in text: String) -> String? {
         guard let match = text.range(of: #"https?://[^\s"'\)<>\]\\,]+"#, options: .regularExpression),
               var components = URLComponents(string: String(text[match])),
               components.host?.isEmpty == false else {
@@ -528,24 +638,54 @@ enum AgentExternalActionObserver {
         return url.isEmpty ? nil : url
     }
 
-    static func firstGitHubURL(in text: String, host: String? = nil) -> String? {
+    nonisolated static func firstGitHubURL(in text: String, host: String? = nil) -> String? {
         let escapedHost = NSRegularExpression.escapedPattern(for: host ?? "github.com")
         guard let match = text.range(of: #"https://"# + escapedHost + #"/[^\s"'\)<>\]\\,]+"#, options: .regularExpression) else {
             return nil
         }
         var url = String(text[match])
         while let last = url.last, ".;:".contains(last) { url.removeLast() }
-        return url
+        return canonicalGitHubURL(url)
+    }
+
+    /// A GitHub link reduced to the resource it names — the repository, a
+    /// pull request or issue by number, or a release tag — without a user,
+    /// query or fragment, which can carry a token the record must not keep.
+    nonisolated static func canonicalGitHubURL(_ url: String) -> String? {
+        guard let components = URLComponents(string: url), let scheme = components.scheme,
+              let host = components.host, !host.isEmpty else { return nil }
+        let parts = components.path.split(separator: "/").map(String.init)
+        var kept = Array(parts.prefix(2))
+        if parts.count >= 4, ["pull", "issues"].contains(parts[2]), Int(parts[3]) != nil {
+            kept = Array(parts.prefix(4))
+        } else if parts.count >= 5, parts[2] == "releases", parts[3] == "tag" {
+            kept = Array(parts.prefix(5))
+        }
+        // An HTTPS remote (`To https://github.com/o/r.git`) names the repository.
+        if kept.count == 2, kept[1].lowercased().hasSuffix(".git") { kept[1].removeLast(4) }
+        return "\(scheme)://\(host)" + (kept.isEmpty ? "" : "/" + kept.joined(separator: "/"))
     }
 }
 
 /// The record row for an action the agent took with its own tools.
 enum ObservedExternalActionRecordSource: ExternalActionRecordSource {
-    static let eventTypes: Set<String> = [AgentExternalActionObserver.eventType]
+    /// An Auto run's result markers carry the verdict and are the record
+    /// themselves, so a run interrupted before its boundary keeps it; older
+    /// runs were recorded at the boundary as observations.
+    static let eventTypes: Set<String> = [AgentExternalActionObserver.eventType, AgentExternalActionObserver.resultEventType]
 
     static func record(payload: Data, eventID: UUID, timestamp: Date) -> ExternalActionRecord? {
-        guard let observation = try? TaskEventPayloadCodec.makeDecoder()
-            .decode(AgentExternalActionObserver.Observation.self, from: payload) else {
+        let decoder = TaskEventPayloadCodec.makeDecoder()
+        let observation: AgentExternalActionObserver.Observation
+        if let marker = try? decoder.decode(AgentExternalActionObserver.ResultMarker.self, from: payload) {
+            guard let verdict = marker.verdict,
+                  let derived = AgentExternalActionObserver.observation(
+                      of: verdict, sourceEventID: eventID, output: marker.output, failed: marker.failed == true
+                  ) else { return nil }
+            observation = derived
+        } else if let stored = try? decoder.decode(AgentExternalActionObserver.Observation.self, from: payload) {
+            observation = stored
+        } else {
             return nil
         }
         return ExternalActionRecord(

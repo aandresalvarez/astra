@@ -54,6 +54,9 @@ struct ConnectorMutationReviewTests {
         let named = try FileManager.default.contentsOfDirectory(atPath: staging.path)
             .compactMap { ConnectorMutationStaging.stagedNumber(fileName: $0, runID: runID) }
         #expect(Set(named) == [1, 2], "update 1, transition 2: \(named) \(numbers)")
+        fixture.crossBoundary(policyLevel: .review)
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).map(\.summary)
+            == ["Set the priority", "Move it"], "the dock shows them in the order they were proposed")
         #expect(ConnectorMutationStaging.stagedNumber(fileName: "jira-create_issue-RUN-7.json", runID: "RUN") == 7)
         #expect(ConnectorMutationStaging.stagedNumber(fileName: "jira-create_issue-RUN-\(Int.max).json", runID: "RUN") == nil)
         #expect(ConnectorMutationStaging.stagedNumber(fileName: "jira-create_issue-OTHER-7.json", runID: "RUN") == nil)

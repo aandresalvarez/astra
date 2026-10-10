@@ -329,13 +329,6 @@ struct AgentPolicyRuntimeMatrixTests {
             #expect(approved.disposition(toolName: "Bash", command: written) == .allowed, "\(written) approved once")
         }
 
-        // A skill that hands the provider DOCKER_HOST routes Docker where this
-        // process cannot see, so a rule allowing docker still asks.
-        var routed = Self.manifest(runtime: .claudeCode, policy: wider)
-        routed.environmentKeyNames = ["DOCKER_HOST"]
-        #expect(AgentRuntimePolicyGuard(manifest: routed).disposition(toolName: "Bash", command: "docker ps") == .ask)
-        #expect(AgentRuntimePolicyGuard(manifest: routed).disposition(toolName: "Bash", command: "git status") == .allowed)
-
         // Approving a push is not approving a force: that needs its own yes.
         let plainPushAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
             .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": "git push origin main"]))
@@ -345,6 +338,21 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main") == .allowed)
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main --force") == .ask)
         #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin +main") == .ask)
+        #expect(plainPushApproved.disposition(toolName: "Bash", command: "git push origin main :release") == .ask,
+                "a deleting refspec is a delete")
+        // The content grant names the command as written: case is content.
+        let bodyAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
+            .violation(for: .toolUse(name: "Bash", id: "tool-c", input: ["command": "curl -d role=user https://api.example.test/account"]))
+        let bodyApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: wider, approvalGrants: bodyAsk?.approvalGrants ?? []
+        ))
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "curl -d role=user https://api.example.test/account") == .allowed)
+        // Setup that changes what the command does (`cd`, `export`) is part
+        // of what was approved.
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "cd alternate; curl -d role=user https://api.example.test/account") == .ask)
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "export CURL_HOME=x && curl -d role=user https://api.example.test/account") == .ask)
+        #expect(bodyApproved.disposition(toolName: "Bash", command: "curl -d role=USER https://api.example.test/account") == .ask,
+                "a deleting refspec is a delete")
         let forceAsk = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: wider))
             .violation(for: .toolUse(name: "Bash", id: "tool-2", input: ["command": "git push origin main --force"]))
         let forceApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
@@ -404,40 +412,74 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(approved.disposition(toolName: "Bash", command: "git push origin main") == .allowed, "approved once, not asked twice")
     }
 
-    /// `docker context use` points every later command at another daemon, so
-    /// a plain `docker run` is local only when the daemon it reaches is.
-    @Test("A docker command is local only when the daemon it reaches is")
-    func dockerDaemonLocalityFollowsTheCLI() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("astra-docker-config-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        func context(_ name: String, host: String) throws {
-            let meta = directory.appendingPathComponent("contexts/meta/\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: meta, withIntermediateDirectories: true)
-            try JSONSerialization.data(withJSONObject: ["Name": name, "Endpoints": ["docker": ["Host": host]]])
-                .write(to: meta.appendingPathComponent("meta.json"))
-        }
-        func current(_ name: String) throws {
-            try JSONSerialization.data(withJSONObject: ["currentContext": name])
-                .write(to: directory.appendingPathComponent("config.json"))
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try context("desktop-linux", host: "unix:///Users/me/.docker/run/docker.sock")
-        try context("production", host: "ssh://deploy@prod.example")
-        func local(_ environment: [String: String] = [:], context explicit: String? = nil) -> Bool {
-            DockerDaemonLocality.isLocal(context: explicit, environment: environment, configDirectory: directory)
+    /// An approval is of the command the user read. A grant's pattern stops
+    /// after a few words (`gh pr comment 12 *`), so a content grant is what
+    /// keeps approving one comment from approving another; and a write to a
+    /// host keeps its method, so approving a POST is not approving a DELETE.
+    @Test("An approved write does not approve another body or another method")
+    func approvalIsBoundToContentAndMethod() {
+        let policy = AgentPolicy(
+            level: .custom,
+            allowedTools: ["Read", "Glob", "Grep", "Bash"],
+            allowedShellPatterns: ["gh:*", "curl:*", "wget:*"]
+        )
+        func approved(_ command: String) -> AgentRuntimePolicyGuard {
+            let ask = AgentRuntimePolicyGuard(manifest: Self.manifest(runtime: .claudeCode, policy: policy))
+                .violation(for: .toolUse(name: "Bash", id: "tool-1", input: ["command": command]))
+            #expect(ask?.requiresApproval == true, "\(command) asks first")
+            return AgentRuntimePolicyGuard(manifest: Self.manifest(
+                runtime: .claudeCode, policy: policy, approvalGrants: ask?.approvalGrants ?? []
+            ))
         }
 
-        #expect(local(), "no current context: the default local socket")
-        try current("desktop-linux")
-        #expect(local())
-        try current("production")
-        #expect(!local(), "the CLI's current context is a remote daemon")
-        #expect(local(context: "desktop-linux"), "an explicit local context")
-        #expect(!local(["DOCKER_CONTEXT": "production"]))
-        #expect(!local(["DOCKER_HOST": "tcp://build.example:2376"]))
-        #expect(local(["DOCKER_HOST": "unix:///var/run/docker.sock"]))
-        #expect(!local(context: "unknown"), "a context that cannot be read is not called local")
+        let comment = approved("gh pr comment 12 --body 'first text'")
+        #expect(comment.disposition(toolName: "Bash", command: "gh pr comment 12 --body 'first text'") == .allowed)
+        #expect(comment.disposition(toolName: "Bash", command: #"gh pr comment 12 --body "first text""#) == .allowed,
+                "quoting is not content")
+        #expect(comment.disposition(toolName: "Bash", command: "gh pr comment 12 --body 'different text'") == .ask)
+        #expect(comment.disposition(toolName: "Bash", command: "gh pr comment 13 --body 'first text'") == .ask)
+
+        let post = approved("curl -X POST https://example.com/hooks")
+        #expect(post.disposition(toolName: "Bash", command: "curl -X POST https://example.com/hooks") == .allowed)
+        for other in [
+            "curl -X DELETE https://example.com/hooks",
+            "curl --request=DELETE https://example.com/hooks",
+            "curl -XDELETE https://example.com/hooks",
+            "curl -sX PUT https://example.com/hooks"
+        ] {
+            #expect(post.disposition(toolName: "Bash", command: other) == .ask, "\(other)")
+        }
+        let body = approved("curl -d x https://example.com/hooks")
+        #expect(body.disposition(toolName: "Bash", command: "curl -d x -X DELETE https://example.com/hooks") == .ask)
+        let wget = approved("wget --method=POST https://example.com/hooks")
+        #expect(wget.disposition(toolName: "Bash", command: "wget --method=DELETE https://example.com/hooks") == .ask)
+
+        // The pattern a provider replays the approved command by is unchanged,
+        // and the content grant never reaches a provider.
+        let grants = PermissionBroker.approvalGrants(for: .shell(command: "curl -X POST https://example.com/hooks", toolName: "Bash"))
+        #expect(grants.contains(.shellCommand(executable: "curl", pattern: "-X POST *example.com*")))
+        #expect(grants.contains(where: ShellCommandRiskClassifier.isContentGrant))
+        #expect(PermissionBroker.providerGrantStrings(for: grants, runtime: .copilotCLI) == ["shell(curl:-X POST *example.com*)"])
+    }
+
+    @Test("Every spelling of a request method names it in the grant")
+    func requestMethodSpellings() {
+        for command in [
+            "curl -X POST https://example.com/hooks", "curl -XPOST https://example.com/hooks",
+            "curl --request POST https://example.com/hooks", "curl --request=post https://example.com/hooks",
+            "curl -sXPOST https://example.com/hooks", "curl -sX POST https://example.com/hooks"
+        ] {
+            #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: command)
+                == .shellCommand(executable: "curl", pattern: "-X POST *example.com*"), "\(command)")
+        }
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "curl -d x -X PUT https://example.com/hooks")
+            == .shellCommand(executable: "curl", pattern: "-d -X PUT *example.com*"))
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "curl -X POST -X DELETE https://example.com/hooks")
+            == .shellCommand(executable: "curl", pattern: "-X DELETE *example.com*"), "the last method is the one curl sends")
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "wget --method POST https://example.com/hooks")
+            == .shellCommand(executable: "wget", pattern: "--method POST *example.com*"))
+        #expect(ShellCommandRiskClassifier.approvalGrant(forShellSegment: "curl -X P0ST https://example.com/hooks") == nil,
+                "a method that cannot be read yields no grant")
     }
 
     /// Custom's own rules decide whether enabled local tools become grants:
@@ -543,6 +585,18 @@ struct AgentPolicyRuntimeMatrixTests {
         #expect(approved.violation(for: otherClick)?.requiresApproval == true, "a click on another control asks again")
         #expect(approved.disposition(toolName: "Bash", command: "astra-browser fill --label Email --text a") == .ask,
                 "another page change needs its own approval")
+
+        // The MCP server takes CLI-style words in order, which are what is
+        // approved: another control is another approval.
+        let arrayClick = ParsedEvent.toolUse(name: tool, id: "tool-arr", input: ["command": "click", "arguments": ["--selector", "#save"]])
+        let arrayAsk = guardrail.violation(for: arrayClick)
+        #expect(arrayAsk?.permissionRequest == .shell(command: "astra-browser click '--selector' '#save'", toolName: tool))
+        let arrayApproved = AgentRuntimePolicyGuard(manifest: Self.manifest(
+            runtime: .claudeCode, policy: mcp, approvalGrants: arrayAsk?.approvalGrants ?? []
+        ))
+        #expect(arrayApproved.violation(for: arrayClick) == nil)
+        #expect(arrayApproved.violation(for: .toolUse(name: tool, id: "tool-arr2",
+            input: ["command": "click", "arguments": ["--selector", "#delete"]]))?.requiresApproval == true)
 
         // A provider callback carries only the recorder's summary of the call.
         for (input, expectAsk) in [

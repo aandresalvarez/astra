@@ -153,7 +153,7 @@ boundary. The full inventory is in
   `submodule foreach` or `bisect run`); `gh` reads (`view`, `list`,
   `status`, `checks`, `diff`, a `gh api` GET or a GraphQL query without
   `mutation`); `curl`/`wget` with fetch-only options and a GET or HEAD;
-  `docker` against the local daemon with no global option, push, or login;
+  `docker` with no global option, push, login, or `DOCKER_*` assignment;
   package managers' install/run/test (never publish, login, `npx`, `exec`);
   build, test and format tools; and an interpreter running a script file.
   A shell's `-c` string, a runner's command (`env`, `xargs`, `timeout`,
@@ -162,9 +162,21 @@ boundary. The full inventory is in
   `GIT_*`, `DOCKER_*`, `NODE_OPTIONS`, proxies) is not local. The list judges
   the command, not the program it runs: `make`, `swift test`, `npm run build`,
   `python3 scripts/report.py` and `docker run` execute project code or an
-  image, and what that code does is the project's. A user's own tool
-  configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context)
-  is the user's.
+  image, and what that code does is the project's. So every operand that
+  chooses which code runs stays in the project: an interpreter's script,
+  `awk -f`, `make -f`, a loader, and every path a build, test, lint or
+  package tool is given (`--package-path`, `--manifest-path`, a test file,
+  `-project`, a toolchain file, a linter's config or formatter, `git -C`),
+  as well as the directory it runs in after a `cd`. A tool is "local with
+  any arguments" only when no argument can make it run code: `sed` is read
+  command by command (GNU `e`), and a header or cookie curl reads from a
+  file (`-H @file`) is not local. A variable set for a program, or exported, is that
+  program's environment and is local only when it is on the list of ones
+  that only tune a local program (`NODE_ENV`, `LC_*`). A user's own tool
+  configuration (`~/.curlrc`, Git hooks, the Docker CLI's current context,
+  a provider home's Docker config, a capability's `DOCKER_HOST`) is the
+  user's: it decides where a command the list accepts goes, and the command
+  does not express it.
 - **What the list is not.** It decides whether a command *expresses* an
   action outside ASTRA (`git push`, `gh pr create`, `curl -d`, `npm
   publish`, `ssh`), so that the action asks in Ask and Custom and is recorded
@@ -182,7 +194,11 @@ boundary. The full inventory is in
   one per command in it (the program and its first words, as the prompt
   shows). The command runs unasked once all of them were granted, so a
   host-scoped read does not approve a write to that host and a push does not
-  approve a force. A command one of whose parts yields no grant (inline code,
+  approve a force. Anything but a read also yields a grant naming its whole
+  content (`content-sha256-…`, ASTRA's gate only; providers replay by the
+  pattern), so approving one comment or body does not approve another, and a
+  `curl`/`wget` write keeps its method, so a POST does not approve a DELETE.
+  A command one of whose parts yields no grant (inline code,
   `$CMD`) cannot be approved for replay, and the run stops with that reason.
   The browser MCP tool is judged and approved as the `astra-browser` command
   it runs, and the Docker workspace's shell tools are gated like Bash.

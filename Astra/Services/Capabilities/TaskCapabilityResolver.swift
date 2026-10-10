@@ -77,10 +77,10 @@ struct TaskCapabilityResolutionSnapshot {
         _ labels: [String],
         secretStore: SecretStore = KeychainSecretStore()
     ) -> TaskCapabilityResolutionSnapshot {
-        let added = Set(labels).subtracting(connectorCredentialExposurePolicy.approvedCredentialLabels)
-        guard !added.isEmpty else { return self }
+        // Re-projected even when no label is new: a secret rotated or deleted
+        // between admission and launch must not reach the process as it was.
         var policy = connectorCredentialExposurePolicy
-        policy.approvedCredentialLabels.formUnion(added)
+        policy.approvedCredentialLabels.formUnion(labels)
         return TaskCapabilityResolutionSnapshot(
             fullInventory: fullInventory.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),
             providerLaunch: providerLaunch.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),
@@ -313,8 +313,15 @@ struct TaskCapabilityResolver {
         task.workspace?.localTools.filter { !$0.isGlobal } ?? []
     }
 
+    /// A composer projection is never inserted (see `ComposerTaskProjection`),
+    /// but its workspace is, and that store holds the same global catalog the
+    /// submitted task will resolve against.
+    private var globalCatalogContext: ModelContext? {
+        task.modelContext ?? task.workspace?.modelContext
+    }
+
     private func globalSkills() -> [Skill] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.skills.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
@@ -331,7 +338,7 @@ struct TaskCapabilityResolver {
     }
 
     private func globalConnectors() -> [Connector] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.connectors.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
@@ -348,7 +355,7 @@ struct TaskCapabilityResolver {
     }
 
     private func globalLocalTools() -> [LocalTool] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.localTools.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })

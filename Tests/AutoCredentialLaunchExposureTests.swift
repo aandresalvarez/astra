@@ -77,6 +77,13 @@ struct AutoCredentialLaunchExposureTests {
         // itself has to be there, not only the label.
         #expect(!admitted.providerLaunch.resolver.resolvedEnvironmentVariables.values.contains("secret-token"))
         #expect(refreshed.providerLaunch.resolver.resolvedEnvironmentVariables.values.contains("secret-token"))
+        // A secret rotated or deleted before launch is read again, even with
+        // no new label.
+        store.save(key: "API_TOKEN", value: "rotated-token",
+                   entityID: KeychainSecretStore.connectorEntityID(for: connector.id), label: nil)
+        let rotated = refreshed.addingApprovedCredentialLabels([label], secretStore: store)
+        #expect(rotated.providerLaunch.resolver.resolvedEnvironmentVariables.values.contains("rotated-token"))
+        #expect(!rotated.providerLaunch.resolver.resolvedEnvironmentVariables.values.contains("secret-token"))
         #expect(refreshed.providerLaunch.connectors.map(\.id) == admitted.providerLaunch.connectors.map(\.id))
 
         func plan(_ snapshot: TaskCapabilityResolutionSnapshot) -> TaskLaunchResourcePlan {

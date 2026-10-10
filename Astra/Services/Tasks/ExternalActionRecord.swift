@@ -82,6 +82,7 @@ enum ConnectorMutationRecordSource: ExternalActionRecordSource {
         let target: String
         let createdKey: String?
         let createdURL: String?
+        let destinationURL: String?
         let authorization: ExternalActionAuthorization?
     }
 
@@ -108,11 +109,29 @@ enum ConnectorMutationRecordSource: ExternalActionRecordSource {
             kind: .connectorMutation,
             title: title,
             destination: destination,
-            url: fields.createdURL.flatMap(URL.init(string:)),
+            url: fields.createdURL.flatMap { linkOnTheConnector($0, destination: fields.destinationURL) },
             authorization: fields.authorization ?? .userReviewed,
             timestamp: timestamp,
             legacyNotices: []
         )
+    }
+
+    /// The created item's link comes from the connector's response, so it is
+    /// shown only as an http(s) link on the host the request went to.
+    private static func linkOnTheConnector(_ value: String, destination: String?) -> URL? {
+        guard let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
+              let host = url.host?.lowercased(),
+              let expected = destination.flatMap(URL.init(string:))?.host?.lowercased(),
+              host == expected,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        // A user, query or fragment from the response can carry a token.
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
 
     private static func serviceName(_ serviceType: String) -> String {
@@ -176,7 +195,10 @@ enum GitPullRequestRecordSource: ExternalActionRecordSource {
             kind: .gitPullRequestPublication,
             title: title,
             destination: ExternalActionRecordProjection.repository(fromGitHubURL: fields.pullRequestURL) ?? "GitHub",
-            url: URL(string: fields.pullRequestURL),
+            // The link comes from `gh`'s output: only an https link, reduced
+            // to the pull request it names, is clickable.
+            url: AgentExternalActionObserver.canonicalGitHubURL(fields.pullRequestURL)
+                .flatMap { $0.hasPrefix("https://") ? URL(string: $0) : nil },
             authorization: fields.authorization ?? .userReviewed,
             timestamp: timestamp,
             legacyNotices: ["Published draft pull request #\(fields.pullRequestNumber): \(fields.pullRequestURL)"]

@@ -851,6 +851,7 @@ final class AgentRuntimeWorker {
             supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol
         )
         let recordingState = AgentEventRecordingState()
+        recordingState.recordsExternalActions = !ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel)
         let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
         let semanticProgressTimeout = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
@@ -1145,8 +1146,7 @@ final class AgentRuntimeWorker {
             modelContext: modelContext,
             policyLevel: manifest.policyLevel,
             runFinishedCleanly: RuntimeTurnSettlementService.finishedCleanly(
-                checkpoint: resultCheckpoint, taskStatus: task.status),
-            environmentKeyNames: manifest.environmentKeyNames
+                checkpoint: resultCheckpoint, taskStatus: task.status)
         )
 
         do {
