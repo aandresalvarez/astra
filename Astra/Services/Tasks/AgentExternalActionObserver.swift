@@ -346,6 +346,14 @@ enum AgentExternalActionObserver {
         let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !LocalShellCommands.isLocal(text) else { return nil }
+        // A page change in the browser is not recorded (spec decision 12): its
+        // tool row already shows each click, and a row per click would bury the
+        // actions the record exists for. Only a call made of nothing else —
+        // anything beside it still records the call.
+        if let commands = LocalShellCommands.simpleCommands(text), !commands.isEmpty,
+           commands.allSatisfy({ $0.first == BrowserBridgeMCPProjection.toolCommand }) {
+            return nil
+        }
         // One command whose own status is the call's: no separator, and not
         // sent to the background.
         if let commands = LocalShellCommands.simpleCommands(text), commands.count == 1, !text.hasSuffix("&"),

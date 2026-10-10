@@ -136,8 +136,10 @@ boundary. The full inventory is in
   command the agent ran itself that
   is not known local work — exactly what Ask would have asked about — is
   recorded with an **Agent** pill as the command it ran; a call that is one
-  `git push` or `gh` write gets that action's title. The next turn's prompt
-  lists these records too.
+  `git push` or `gh` write gets that action's title. A call made only of
+  `astra-browser` page changes is not recorded (spec decision 12): its tool
+  row already shows each click. The next turn's prompt lists these records
+  too.
 - **Custom** applies the saved per-item tool, shell, and network rules (an
   enabled local tool becomes a grant only when those rules allow Bash, on
   every runtime) to local work only. A shell command runs on a rule alone

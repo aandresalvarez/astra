@@ -53,11 +53,10 @@ struct GitHubReviewPostWhenRequestedTests {
 
             #expect(outcome == .awaitingReview, "\(level.rawValue)")
             #expect(await cli.callCount() == 0)
-            #expect(fixture.task.events.isEmpty)
-            // The sheet's path is unchanged: the file is still offered.
-            #expect(GitHubReviewPublicationService.pendingCandidatePath(
-                task: fixture.task, filePaths: [fixture.file.path]
-            ) == fixture.file.path)
+            // Only the request is recorded, so the sheet offers this file —
+            // even when it was never registered as an artifact.
+            #expect(fixture.task.events.map(\.type) == [GitHubReviewPublicationEventTypes.requested])
+            #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: []) == fixture.file.path)
         }
     }
 
@@ -215,6 +214,80 @@ struct GitHubReviewPostWhenRequestedTests {
         guard case .performed = outcome else {
             Issue.record("Expected the restated command to post, got \(outcome)")
             return
+        }
+    }
+
+    /// "…, then post it" names the review first and posts it by pronoun. The
+    /// review must come first, and for Auto nothing may follow but a GitHub
+    /// destination: "post it to the channel" is never a pull-request review.
+    @Test("A request that posts the review by pronoun is a request, and for Auto only toward GitHub")
+    func referentialPostingRequests() async throws {
+        let url = "https://github.com/example/repo/pull/12"
+        for command in ["Review PR #12, then post it.", "Review \(url) and post it on GitHub",
+                        "Please review \(url) and then submit it"] {
+            #expect(GitHubReviewPublicationRequirement.requestsPublication(in: command), "\(command)")
+            #expect(GitHubReviewPublicationRequirement.commandsPosting(command), "\(command)")
+        }
+        for notConsent in ["Review \(url) and post it to the team channel", "Post it", "Fix the bug and post it",
+                           "Review PR #12. Don't post it yet", "Review \(url) and I'll post it"] {
+            #expect(!GitHubReviewPublicationRequirement.commandsPosting(notConsent), "\(notConsent)")
+        }
+        #expect(!GitHubReviewPublicationRequirement.requestsPublication(in: "Fix the bug and post it"),
+                "a pronoun with no review before it is not a review request")
+
+        let fixture = try Fixture(goal: "Review PR #12, then post it.")
+        let cli = FakeCLI()
+        let outcome = await fixture.handler(level: .autonomous, cli: cli, origin: "https://github.com/example/repo.git")
+            .postGitHubReview(fixture.request(for: fixture.file))
+        guard case .performed = outcome else {
+            Issue.record("Expected the referential request to post, got \(outcome)")
+            return
+        }
+        #expect(await cli.postCount() == 1)
+    }
+
+    /// The broker told the agent the user would see this exact review, so the
+    /// sheet must open on it, not on an older review file that sorts first.
+    @Test("Below Auto the sheet offers the file the agent asked to post, ahead of older reviews")
+    func askOffersTheRequestedFile() async throws {
+        let fixture = try Fixture()
+        let older = fixture.file
+        let requested = older.deletingLastPathComponent().appendingPathComponent("pr12_review_2.json")
+        let requestedData = Data("""
+            {"event":"COMMENT","commit_id":"\(Self.head)","body":"The review the agent asked to post"}
+            """.utf8)
+        try requestedData.write(to: requested)
+
+        _ = await fixture.handler(level: .review, cli: FakeCLI()).postGitHubReview(fixture.request(for: requested))
+
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: [older.path]) == requested.path)
+        let proposal = try await GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI(), originURL: { _ in nil })
+            .prepareFirstAvailable(task: fixture.task, filePaths: [older.path])
+        #expect(proposal.filePath == requested.path)
+        #expect(proposal.validatedData == requestedData)
+    }
+
+    /// The broker was bound to a run; a post that outlives the wait must not
+    /// put its dispatch and receipt on a run that started after it.
+    @Test("A post records on the run the broker was bound to, not the latest one")
+    func postRecordsOnTheBoundRun() async throws {
+        let fixture = try Fixture()
+        let later = TaskRun(task: fixture.task)
+        later.startedAt = fixture.run.startedAt.addingTimeInterval(60)
+        fixture.context.insert(later)
+        try fixture.context.save()
+        // The premise: without the binding, "the latest run" is the other one.
+        try #require(fixture.task.runs.max(by: { $0.startedAt < $1.startedAt })?.id == later.id)
+
+        let outcome = await fixture.handler(level: .autonomous, cli: FakeCLI()).postGitHubReview(fixture.request(for: fixture.file))
+
+        guard case .performed = outcome else {
+            Issue.record("Expected a post, got \(outcome)")
+            return
+        }
+        for type in [GitHubReviewPublicationEventTypes.dispatched, GitHubReviewPublicationEventTypes.receipt] {
+            let event = try #require(fixture.task.events.first { $0.type == type })
+            #expect(event.run?.id == fixture.run.id, "\(type)")
         }
     }
 

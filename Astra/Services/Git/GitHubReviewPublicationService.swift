@@ -59,6 +59,14 @@ struct GitHubReviewPublicationRecord: Codable {
     var authorization: ExternalActionAuthorization? = nil
 }
 
+/// The review file an agent asked ASTRA to post where the level asks first:
+/// the one the sheet must offer, because the broker told the agent the user
+/// would see exactly that review.
+struct GitHubReviewRequestRecord: Codable, Equatable {
+    let filePath: String
+    let contentDigest: String
+}
+
 private struct GitHubReviewUnusableArtifactRecord: Codable {
     let filePath: String
     let reason: String
@@ -85,6 +93,7 @@ enum GitHubReviewPublicationEventTypes {
     static let targetBound = "github.review.target-bound"
     static let targetUnresolved = "github.review.target-unresolved"
     static let receiptRecovery = "github.review.receipt-recovery"
+    static let requested = "github.review.requested"
 }
 
 private enum GitHubReviewTargetResolver {
@@ -182,6 +191,17 @@ enum GitHubReviewPublicationRequirement {
     /// command. Being wrong costs a review left for the sheet, never a post.
     private static let imperativePublicationRegex = try? NSRegularExpression(
         pattern: #"\b(?:post|publish|submit)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
+    )
+    /// "Review PR #12, then post it": the object is a pronoun for a review
+    /// the same message named first. Read only when it did; Auto also needs
+    /// nothing after it but a GitHub destination, so "post it to the channel"
+    /// is never a review posted to a pull request.
+    private static let referentialPublicationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:post|posting|publish|publishing|submit|submitting)\s+(?:it|them)\b"#
+    )
+    private static let reviewMentionRegex = try? NSRegularExpression(pattern: #"\b(?:reviews?|comments?)\b"#)
+    private static let gitHubDestinationRegex = try? NSRegularExpression(
+        pattern: #"^\s*(?:(?:on|to)\s+(?:github|the\s+pr|the\s+pull\s+request|pr\s*#?\d+|pull\s+request\s*#?\d+))?\s*(?:now|please)?\s*$"#
     )
     private static let imperativeLeadWords: Set<String> = [
         "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
@@ -415,15 +435,36 @@ enum GitHubReviewPublicationRequirement {
             .replacingOccurrences(of: #"[.!?;,](?=\s|$)|\n"#, with: "\u{1E}", options: .regularExpression)
             .components(separatedBy: "\u{1E}")
         let joiners: Set<String> = ["and", "then"]
+        func isCommand(_ clause: String, _ matched: Range<String.Index>) -> Bool {
+            let words = clause[..<matched.lowerBound].split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
+            let lead = words.lastIndex(where: joiners.contains).map { Array(words[($0 + 1)...]) } ?? words
+            return lead.allSatisfy(imperativeLeadWords.contains)
+        }
+        var mentionedReview = false
         return clauses.contains { clause in
+            defer {
+                if !mentionedReview, let mention = reviewMentionRegex {
+                    mentionedReview = mention.firstMatch(in: clause, range: NSRange(clause.startIndex..<clause.endIndex, in: clause)) != nil
+                }
+            }
             let range = NSRange(clause.startIndex..<clause.endIndex, in: clause)
-            return imperative.matches(in: clause, range: range).contains { match in
+            let named = imperative.matches(in: clause, range: range).contains { match in
                 guard let matched = Range(match.range, in: clause) else { return false }
-                let words = clause[..<matched.lowerBound].split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
-                let lead = words.lastIndex(where: joiners.contains).map { Array(words[($0 + 1)...]) } ?? words
                 let rest = String(clause[matched.upperBound...])
-                return lead.allSatisfy(imperativeLeadWords.contains)
+                return isCommand(clause, matched)
                     && deferring.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) == nil
+            }
+            guard !named, let referential = referentialPublicationRegex, let destination = gitHubDestinationRegex else {
+                return named
+            }
+            return referential.matches(in: clause, range: range).contains { match in
+                guard let matched = Range(match.range, in: clause) else { return false }
+                let before = String(clause[..<matched.lowerBound])
+                let rest = String(clause[matched.upperBound...])
+                let reviewNamedFirst = mentionedReview
+                    || reviewMentionRegex?.firstMatch(in: before, range: NSRange(before.startIndex..<before.endIndex, in: before)) != nil
+                return reviewNamedFirst && isCommand(clause, matched)
+                    && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
             }
         }
     }
@@ -437,16 +478,31 @@ enum GitHubReviewPublicationRequirement {
     }
 
     private static func publicationIntent(in request: String) -> Intent? {
-        publicationIntent(in: request, using: publicationRegex)
+        publicationIntent(in: request, using: publicationRegex, referential: true)
     }
 
-    private static func publicationIntent(in request: String, using regex: NSRegularExpression?) -> Intent? {
+    /// Referential matches ("…, then post it") whose text before them names
+    /// the review they refer to.
+    private static func referentialMatches(in lower: String) -> [NSTextCheckingResult] {
+        guard let referential = referentialPublicationRegex, let mention = reviewMentionRegex else { return [] }
+        let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
+        return referential.matches(in: lower, range: range).filter { match in
+            mention.firstMatch(in: lower, range: NSRange(location: 0, length: match.range.location)) != nil
+        }
+    }
+
+    private static func publicationIntent(
+        in request: String,
+        using regex: NSRegularExpression?,
+        referential: Bool = false
+    ) -> Intent? {
         let lower = request.lowercased()
         // Bind the publishing verb to the review object. A request to add
         // tests while reviewing a PR must not become permission to post.
         guard let regex else { return nil }
         let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
-        return regex.matches(in: lower, range: range).last.flatMap { match in
+        let matches = regex.matches(in: lower, range: range) + (referential ? referentialMatches(in: lower) : [])
+        return matches.max(by: { $0.range.location < $1.range.location }).flatMap { match in
             guard let matchRange = Range(match.range, in: lower) else { return nil }
         let prefix = lower[..<matchRange.lowerBound]
         let clause = String(prefix.suffix(64))
@@ -601,10 +657,57 @@ final class GitHubReviewPublicationService {
     }
 
     static func pendingCandidatePath(task: AgentTask, filePaths: [String]) -> String? {
-        filePaths.first { path in
+        candidatePaths(task: task, filePaths: filePaths).first { path in
             GitHubReviewArtifactPolicy.isReviewFile(path)
                 && !hasDispatched(task: task, filePath: path)
                 && !hasDismissed(task: task, filePath: path)
+        }
+    }
+
+    /// The files the agent asked to post, latest first, ahead of every other
+    /// review artifact: the sheet offers the one the agent was told the user
+    /// would see, not whichever review file sorts first — or none, when the
+    /// requested file was never registered as an artifact.
+    static func candidatePaths(task: AgentTask, filePaths: [String]) -> [String] {
+        let requested = task.events
+            .filter { $0.type == GitHubReviewPublicationEventTypes.requested }
+            .sorted { $0.timestamp > $1.timestamp }
+            .compactMap { event -> String? in
+                (try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data(event.payload.utf8)))?.filePath
+            }
+        var seen = Set<String>()
+        return (requested + filePaths).filter { seen.insert($0).inserted }
+    }
+
+    /// Records the file an agent asked to post where the level asks first, so
+    /// the sheet offers that file. Nothing is posted.
+    func recordReviewRequest(task: AgentTask, fileName: String, contentDigest: String, run: TaskRun?) throws {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard GitHubReviewHostControlOperations.isReviewFileName(fileName), !fileName.contains("/"),
+              !taskFolder.isEmpty else {
+            throw GitHubReviewPublicationError.invalid("Choose a PR review JSON file from this task’s folder.")
+        }
+        let event = TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: GitHubReviewPublicationEventTypes.requested,
+            payload: GitHubReviewRequestRecord(
+                filePath: URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path,
+                contentDigest: contentDigest.lowercased()
+            ),
+            run: run
+        )
+        modelContext.insert(event)
+        do {
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "github_review_requested"]
+            )
+        } catch {
+            task.events.removeAll { $0.id == event.id }
+            modelContext.delete(event)
+            throw error
         }
     }
 
@@ -619,7 +722,7 @@ final class GitHubReviewPublicationService {
     func prepareFirstAvailable(task: AgentTask, filePaths: [String]) async throws -> GitHubReviewProposal {
         var lastUnusable: Error?
         var dismissals: [GitHubReviewUnusableArtifactRecord] = []
-        for path in filePaths where GitHubReviewArtifactPolicy.isReviewFile(path)
+        for path in Self.candidatePaths(task: task, filePaths: filePaths) where GitHubReviewArtifactPolicy.isReviewFile(path)
             && !Self.hasDispatched(task: task, filePath: path)
             && !Self.hasDismissed(task: task, filePath: path) {
             do {
@@ -660,7 +763,10 @@ final class GitHubReviewPublicationService {
         }
     }
 
-    func prepare(task: AgentTask, filePath: String) async throws -> GitHubReviewProposal {
+    /// `run` is the run the post belongs to — Auto's bound run, whose records
+    /// must not land on a run that started while the post was in flight — and
+    /// nil for the sheet, which belongs to the latest run.
+    func prepare(task: AgentTask, filePath: String, run boundRun: TaskRun? = nil) async throws -> GitHubReviewProposal {
         guard !Self.hasDispatched(task: task, filePath: filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
@@ -678,7 +784,7 @@ final class GitHubReviewPublicationService {
         }
         let targetBindingChanged = await GitHubReviewPublicationRequirement.bindOriginTargetIfNeeded(
             task: task,
-            run: task.runs.max(by: { $0.startedAt < $1.startedAt }),
+            run: boundRun ?? task.runs.max(by: { $0.startedAt < $1.startedAt }),
             modelContext: modelContext,
             originURL: originURL
         )
@@ -733,12 +839,13 @@ final class GitHubReviewPublicationService {
         task: AgentTask,
         proposal: GitHubReviewProposal,
         authorization: ExternalActionAuthorization = .userReviewed,
-        postingRequest: String? = nil
+        postingRequest: String? = nil,
+        run boundRun: TaskRun? = nil
     ) async throws -> GitHubReviewPublicationRecord {
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
-        let current = try await prepare(task: task, filePath: proposal.filePath)
+        let current = try await prepare(task: task, filePath: proposal.filePath, run: boundRun)
         guard current.id == proposal.id, current.digest == proposal.digest else {
             throw GitHubReviewPublicationError.invalid("The review file changed after you opened it. Review the new content before posting.")
         }
@@ -760,7 +867,7 @@ final class GitHubReviewPublicationService {
             .appendingPathComponent("astra-github-review-\(UUID().uuidString).json")
         try current.validatedData.write(to: inputURL, options: [.atomic])
         defer { try? FileManager.default.removeItem(at: inputURL) }
-        let run = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        let run = boundRun ?? task.runs.max(by: { $0.startedAt < $1.startedAt })
         let dispatched = GitHubReviewPublicationRecord(
             proposalID: proposal.id,
             filePath: proposal.filePath,
@@ -938,7 +1045,8 @@ final class GitHubReviewPublicationService {
     func publishWhenRequested(
         task: AgentTask,
         fileName: String,
-        contentDigest: String
+        contentDigest: String,
+        run: TaskRun? = nil
     ) async throws -> GitHubReviewPublicationRecord {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         guard GitHubReviewHostControlOperations.isReviewFileName(fileName), !fileName.contains("/"),
@@ -955,14 +1063,16 @@ final class GitHubReviewPublicationService {
             throw GitHubReviewPublicationError.notRequested
         }
         let filePath = URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path
-        let proposal = try await prepare(task: task, filePath: filePath)
+        let proposal = try await prepare(task: task, filePath: filePath, run: run)
         guard proposal.digest == contentDigest.lowercased() else {
             throw GitHubReviewPublicationError.invalid(
                 "The review file changed after you asked to post it. Write the review you want posted to a new "
                     + "file name and ask again."
             )
         }
-        return try await publish(task: task, proposal: proposal, authorization: .autoPolicy, postingRequest: request.identity)
+        return try await publish(
+            task: task, proposal: proposal, authorization: .autoPolicy, postingRequest: request.identity, run: run
+        )
     }
 
     private func readPayload(task: AgentTask, filePath: String) throws -> (Data, GitHubReviewPayload) {

@@ -79,15 +79,32 @@ final class BrokeredExternalActionHandler {
     }
 
     func postGitHubReview(_ request: GitHubReviewPostRequest) async -> BrokeredExternalActionOutcome {
+        guard let task = task() else { return .awaitingReview }
         guard !ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: policyLevel) else {
+            // The reply tells the agent the user will see this exact review,
+            // so the sheet is pointed at it. Nothing is posted; a record that
+            // cannot be saved leaves the sheet offering the review files it
+            // would have offered anyway.
+            do {
+                try makeReviewService(modelContext).recordReviewRequest(
+                    task: task,
+                    fileName: request.fileName,
+                    contentDigest: request.contentDigest,
+                    run: task.runs.first { $0.id == runID }
+                )
+            } catch {
+                audit("github_review_request_unrecorded", error: error, uncertain: false)
+            }
             return .awaitingReview
         }
-        guard let task = task() else { return .awaitingReview }
         do {
+            // The run the broker was bound to, as the connector path does: a
+            // post outliving the wait must not record onto a later run.
             let record = try await makeReviewService(modelContext).publishWhenRequested(
                 task: task,
                 fileName: request.fileName,
-                contentDigest: request.contentDigest
+                contentDigest: request.contentDigest,
+                run: task.runs.first { $0.id == runID }
             )
             return .performed(BrokeredExternalActionReceipt(
                 identifier: record.reviewID.map { "review \($0)" },
