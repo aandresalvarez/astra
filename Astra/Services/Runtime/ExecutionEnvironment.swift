@@ -560,12 +560,24 @@ enum DockerExecutionPlanner {
             let writableNestedRepositories = Set(taskAccess.runtimeWritablePaths.map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
             })
+            // The worktree is mounted at the working directory below, so an
+            // unrelated saved mount there moves aside rather than giving Docker
+            // two mounts at one path; it keeps its access and stays mapped.
+            var relocatedWorkdir = "/mnt/astra/workspace-primary"
+            var suffix = 1
+            while mounts.contains(where: { $0.containerPath == relocatedWorkdir }) {
+                suffix += 1
+                relocatedWorkdir = "/mnt/astra/workspace-primary-\(suffix)"
+            }
             mounts = mounts.compactMap { mount in
                 guard mount.role != .credential && mount.role != .taskFolder else { return mount }
                 let host = ExecutionSandbox.canonicalize(mount.hostPath)
                     ?? WorkspacePathPresentation.standardizedPath(mount.hostPath)
                 guard host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/") else {
-                    return mount
+                    guard mount.containerPath == environment.containerWorkingDirectory else { return mount }
+                    return ExecutionEnvironmentMount(
+                        hostPath: mount.hostPath, containerPath: relocatedWorkdir, access: mount.access, role: mount.role
+                    )
                 }
                 if host.hasPrefix(source + "/"), writableNestedRepositories.contains(host) {
                     return mount

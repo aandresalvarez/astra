@@ -406,6 +406,40 @@ struct NewTaskWorktreeIsolationTests {
         #expect(!plan.hostWritablePaths.contains(repository.path))
     }
 
+    @Test("An unrelated saved mount at the container's working directory moves aside for the worktree")
+    func dockerRelocatesUnrelatedWorkdirMount() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try fixture.repository("App")
+        let primary = fixture.root.appendingPathComponent("Notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: primary, withIntermediateDirectories: true)
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "Notes", primaryPath: primary.path, additionalPaths: [source.path])
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        let path = try await prepare(task, source, context: store.mainContext, fixture: fixture)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest",
+            mounts: [
+                ExecutionEnvironmentMount(hostPath: primary.path, containerPath: "/workspace", access: .readWrite, role: .workspace)
+            ]
+        )
+        #expect(environment.containerWorkingDirectory == "/workspace")
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
+
+        let containerPaths = mounts.map(\.containerPath)
+        #expect(Set(containerPaths).count == containerPaths.count)
+        #expect(mounts.first { $0.containerPath == "/workspace" }?.hostPath == path)
+        let moved = try #require(mounts.first { WorkspacePathPresentation.standardizedPath($0.hostPath) == primary.path })
+        #expect(moved.containerPath == "/mnt/astra/workspace-primary")
+        // The primary folder isn't this task's code root, so the run only
+        // reads it, as its host grants do.
+        #expect(moved.access == .readOnly)
+    }
+
     @Test("Docker mounts a task worktree and its Git metadata without writable source checkout aliases")
     func dockerWorktreeMountsPreserveIsolation() async throws {
         let fixture = try Fixture()

@@ -62,7 +62,10 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// must not reimport. Nil when a record can't be read, since then which
     /// mirror it guards is unknown.
     func pendingMirrorPaths() -> Set<String>? {
-        let urls = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        // No outbox means nothing pending; one that can't be listed is unknown.
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else { return nil }
         var mirrors = Set<String>()
         for url in urls where url.pathExtension == "json" {
             guard let record = try? JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
