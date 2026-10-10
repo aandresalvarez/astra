@@ -185,7 +185,10 @@ struct GitHubReviewPostWhenRequestedTests {
             "Review \(url); I'll post the review later",
             // The file is posted whole, so asking for part of it is not consent.
             "Publish the comments on \(url) except the review summary", "Post the review on \(url), but not the summary",
-            "Post only the inline comments on \(url)", "Post the review on \(url) without the summary"
+            "Post only the inline comments on \(url)", "Post the review on \(url) without the summary",
+            // A condition stated first is still a condition.
+            "When I approve, post the review on \(url)", "If the tests pass, post the review on \(url)",
+            "Once CI is green, then post the review on \(url)"
         ] {
             #expect(!GitHubReviewPublicationRequirement.commandsPosting(notYet), "\(notYet)")
         }

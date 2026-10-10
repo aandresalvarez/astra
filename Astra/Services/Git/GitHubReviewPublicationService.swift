@@ -207,10 +207,13 @@ enum GitHubReviewPublicationRequirement {
         "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
         "finally", "lastly", "next", "can", "could", "would", "will", "you", "yes", "sure", "alright"
     ]
-    /// A condition after the command ("post the review once I approve"), a
-    /// pause in the command itself ("post the draft myself"), or a message
-    /// that holds the posting back ("…, but ask me first") makes it not yet a
-    /// command to post now.
+    /// A condition anywhere in the message ("post the review once I approve",
+    /// "When I approve, post the review"), a pause in the command itself
+    /// ("post the draft myself"), or a message that holds the posting back
+    /// ("…, but ask me first") makes it not yet a command to post now. A
+    /// condition is read across the whole message because clauses are split
+    /// at commas, and a leading "When I approve," would otherwise be its own
+    /// clause and leave the command looking unconditional.
     private static let deferringRegex = try? NSRegularExpression(
         pattern: #"\b(?:after|once|when|whenever|until|till|if|unless|before|only|later|tomorrow)\b"#
     )
@@ -436,7 +439,8 @@ enum GitHubReviewPublicationRequirement {
         let lower = text.lowercased()
         guard let imperative = imperativePublicationRegex, let deferring = deferringRegex,
               let messagePausing = messagePausingRegex, let commandPausing = commandPausingRegex,
-              messagePausing.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil else {
+              messagePausing.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil,
+              deferring.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil else {
             return false
         }
         func pausesCommand(_ clause: String, _ matched: Range<String.Index>) -> Bool {
