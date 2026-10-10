@@ -267,6 +267,25 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(proposal.validatedData == requestedData)
     }
 
+    /// The request recorded a digest: different bytes under that name later
+    /// are not the review the agent asked about, under any spelling of the
+    /// path, so the sheet never shows them as that review.
+    @Test("Below Auto a requested file that changed afterwards is not offered as the requested review")
+    func askRefusesARequestedFileThatChanged() async throws {
+        let fixture = try Fixture(throughSymlink: true)
+        _ = await fixture.handler(level: .review, cli: FakeCLI()).postGitHubReview(fixture.request(for: fixture.file))
+        try Data("""
+            {"event":"REQUEST_CHANGES","commit_id":"\(Self.head)","body":"Something the agent wrote afterwards"}
+            """.utf8).write(to: fixture.file)
+        let service = GitHubReviewPublicationService(modelContext: fixture.context, cli: FakeCLI(), originURL: { _ in nil })
+
+        await #expect(throws: GitHubReviewPublicationError.self) {
+            _ = try await service.prepareFirstAvailable(task: fixture.task, filePaths: [fixture.file.resolvingSymlinksInPath().path])
+        }
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: [fixture.file.path]) == nil)
+    }
+
     /// The broker was bound to a run; a post that outlives the wait must not
     /// put its dispatch and receipt on a run that started after it.
     @Test("A post records on the run the broker was bound to, not the latest one")

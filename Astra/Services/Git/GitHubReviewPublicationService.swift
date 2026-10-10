@@ -679,6 +679,19 @@ final class GitHubReviewPublicationService {
         return (requested + filePaths).filter { seen.insert($0).inserted }
     }
 
+    /// The digest the latest request for this file recorded, matched by the
+    /// file's place in the task folder; nil when the agent never named it.
+    static func requestedDigest(task: AgentTask, filePath: String) -> String? {
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
+        return task.events
+            .filter { $0.type == GitHubReviewPublicationEventTypes.requested }
+            .sorted { $0.timestamp > $1.timestamp }
+            .lazy
+            .compactMap { try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data($0.payload.utf8)) }
+            .first { GitHubReviewArtifactPolicy.sameFile($0.filePath, filePath, root: root) }?
+            .contentDigest
+    }
+
     /// Records the file an agent asked to post where the level asks first, so
     /// the sheet offers that file. Nothing is posted.
     func recordReviewRequest(task: AgentTask, fileName: String, contentDigest: String, run: TaskRun?) throws {
@@ -727,6 +740,16 @@ final class GitHubReviewPublicationService {
             && !Self.hasDismissed(task: task, filePath: path) {
             do {
                 let proposal = try await prepare(task: task, filePath: path)
+                // The agent was told the user would see exactly the review it
+                // named. Different bytes there now are not that review, under
+                // this name or any spelling of it, so the file is retired like
+                // any review that cannot be posted as it stands.
+                if let requested = Self.requestedDigest(task: task, filePath: path), requested != proposal.digest {
+                    throw GitHubReviewPublicationError.unusableArtifact(
+                        "This review file changed after the agent asked to post it, so it is not the review it asked "
+                            + "about. Ask the agent to write the review it wants posted to a new file name."
+                    )
+                }
                 try persistDismissals(dismissals, task: task)
                 return proposal
             } catch let error as GitHubReviewPublicationError {
