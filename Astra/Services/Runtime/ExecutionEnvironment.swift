@@ -211,6 +211,8 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
     case unsupportedEnvironment(String)
     case missingImage(String)
     case missingRuntimeExecutable
+    case worktreeUnavailable(String)
+    case invalidWorktreeBinding
     case forbiddenMount(String)
     case privilegedDenied
     case hostNetworkDenied
@@ -225,6 +227,10 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
             return "Docker environment \(id) has no image configured."
         case .missingRuntimeExecutable:
             return "Docker environment must declare the provider executable path inside the image."
+        case .worktreeUnavailable(let path):
+            return "The task worktree is missing at \(path). Restore it or select another checkout before running."
+        case .invalidWorktreeBinding:
+            return "The task's worktree binding is unreadable; restore it before running Docker commands."
         case .forbiddenMount(let path):
             return "Docker environment tried to mount a forbidden host path: \(path)."
         case .privilegedDenied:
@@ -287,6 +293,19 @@ enum DockerExecutionPlanner {
         dockerRuntime: DockerRuntimeResolution = .environmentLookup
     ) -> Result<AgentRuntimeProcessLaunchPlan, DockerExecutionPlanningError> {
         guard environment.isContainerized else { return .success(base) }
+        if TaskWorktreeBinding.eventForInheritance(from: task) != nil {
+            var isDirectory = ObjCBool(false)
+            guard FileManager.default.fileExists(atPath: base.currentDirectory, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return .failure(.worktreeUnavailable(base.currentDirectory))
+            }
+        }
+        switch TaskWorktreeBinding.state(of: task) {
+        case .none, .bound, .retargeted:
+            break
+        case .invalid:
+            return .failure(.invalidWorktreeBinding)
+        }
         guard environment.kind == .dockerImage || environment.kind == .dockerfile else {
             return .failure(.unsupportedEnvironment(environment.kind.rawValue))
         }
@@ -534,6 +553,46 @@ enum DockerExecutionPlanner {
         additionalReadOnlyInputPaths: [String] = []
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
+        let taskAccess = TaskWorkspaceAccess(task: task)
+        if let binding = taskAccess.worktreeBinding {
+            let source = ExecutionSandbox.canonicalize(binding.repositoryPath)
+                ?? WorkspacePathPresentation.standardizedPath(binding.repositoryPath)
+            let writableNestedRepositories = Set(taskAccess.runtimeWritablePaths.map {
+                ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
+            })
+            // The worktree is mounted at the working directory below, so an
+            // unrelated saved mount there moves aside rather than giving Docker
+            // two mounts at one path; it keeps its access and stays mapped.
+            var relocatedWorkdir = "/mnt/astra/workspace-primary"
+            var suffix = 1
+            while mounts.contains(where: { $0.containerPath == relocatedWorkdir }) {
+                suffix += 1
+                relocatedWorkdir = "/mnt/astra/workspace-primary-\(suffix)"
+            }
+            mounts = mounts.compactMap { mount in
+                guard mount.role != .credential && mount.role != .taskFolder else { return mount }
+                let host = ExecutionSandbox.canonicalize(mount.hostPath)
+                    ?? WorkspacePathPresentation.standardizedPath(mount.hostPath)
+                guard host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/") else {
+                    guard mount.containerPath == environment.containerWorkingDirectory else { return mount }
+                    return ExecutionEnvironmentMount(
+                        hostPath: mount.hostPath, containerPath: relocatedWorkdir, access: mount.access, role: mount.role
+                    )
+                }
+                if host.hasPrefix(source + "/"), writableNestedRepositories.contains(host) {
+                    return mount
+                }
+                // A saved workspace mount cannot compete with the worktree
+                // for the container's working directory or restore source writes.
+                if mount.containerPath == environment.containerWorkingDirectory { return nil }
+                return ExecutionEnvironmentMount(
+                    hostPath: mount.hostPath,
+                    containerPath: mount.containerPath,
+                    access: .readOnly,
+                    role: mount.role
+                )
+            }
+        }
         if workspaceAccess == .shared {
             // Environment snapshots are durable and may have been produced by
             // an earlier exclusive run.  Do not let a stale rw mount survive
@@ -579,7 +638,16 @@ enum DockerExecutionPlanner {
                 role: role
             ))
         }
-        func appendReadOnlyInput(_ rawHostPath: String, fallbackContainerPath: String) {
+        func unusedContainerPath(_ preferred: String) -> String {
+            var path = preferred
+            var suffix = 1
+            while mounts.contains(where: { $0.containerPath == path }) {
+                suffix += 1
+                path = "\(preferred)-\(suffix)"
+            }
+            return path
+        }
+        func appendReadOnlyPath(_ rawHostPath: String, fallbackContainerPath: String) {
             let hostPath = WorkspacePathPresentation.standardizedPath(rawHostPath)
             guard !hostPath.isEmpty else { return }
             let canonicalHostPath = ExecutionSandbox.canonicalize(hostPath) ?? hostPath
@@ -599,7 +667,7 @@ enum DockerExecutionPlanner {
                 return
             }
 
-            // If the input lives under a writable mount, overlay it read-only at
+            // If the path lives under a writable mount, overlay it read-only at
             // the same container path. Mounting it only at /mnt/astra/input-N
             // would leave the writable parent spelling as a bypass.
             let parentMount = mounts
@@ -622,7 +690,7 @@ enum DockerExecutionPlanner {
                 let suffix = String(canonicalHostPath.dropFirst(root.count + 1))
                 containerPath = (parentMount.containerPath as NSString).appendingPathComponent(suffix)
             } else {
-                containerPath = fallbackContainerPath
+                containerPath = unusedContainerPath(fallbackContainerPath)
             }
             appendMount(ExecutionEnvironmentMount(
                 hostPath: hostPath,
@@ -638,7 +706,6 @@ enum DockerExecutionPlanner {
             .workspace,
             access: workspaceAccess == .shared ? .readOnly : .readWrite
         )
-        let taskAccess = TaskWorkspaceAccess(task: task)
         append(taskAccess.taskFolder, "/astra/task", .taskFolder)
         var index = 1
         for path in AgentRuntimeProcessRunner.runtimeWritablePaths(for: task, workspaceAccess: workspaceAccess) {
@@ -651,12 +718,24 @@ enum DockerExecutionPlanner {
             index += 1
         }
         // Folders the run may read but not write, such as a source checkout
-        // replaced by the task's worktree, stay visible read-only.
-        for path in taskAccess.runtimeReadOnlyWorkspacePaths {
+        // replaced by the task's worktree, stay visible read-only. A saved
+        // writable mount of one of them is downgraded rather than kept.
+        for (offset, path) in taskAccess.runtimeReadOnlyWorkspacePaths.enumerated() {
             let standardized = WorkspacePathPresentation.standardizedPath(path)
             guard standardized != WorkspacePathPresentation.standardizedPath(currentDirectory) else { continue }
-            append(standardized, "/mnt/astra/path-\(index)", .additionalPath, access: .readOnly)
-            index += 1
+            appendReadOnlyPath(standardized, fallbackContainerPath: "/mnt/astra/read-only-workspace-\(offset + 1)")
+        }
+        for metadata in taskAccess.runtimeWorktreeGitMetadataPaths {
+            let path = WorkspacePathPresentation.standardizedPath(metadata)
+            guard !mounts.contains(where: { $0.hostPath == path && $0.containerPath == path }) else { continue }
+            // A linked worktree's .git file holds an absolute host path.
+            // Mount only its verified common directory at that same path.
+            mounts.append(ExecutionEnvironmentMount(
+                hostPath: path,
+                containerPath: path,
+                access: workspaceAccess == .shared ? .readOnly : .readWrite,
+                role: .additionalPath
+            ))
         }
         var inputIndex = 1
         var seenInputs: Set<String> = []
@@ -665,7 +744,7 @@ enum DockerExecutionPlanner {
             guard !standardized.isEmpty else { continue }
             let identity = ExecutionSandbox.canonicalize(standardized) ?? standardized
             guard seenInputs.insert(identity).inserted else { continue }
-            appendReadOnlyInput(standardized, fallbackContainerPath: "/mnt/astra/input-\(inputIndex)")
+            appendReadOnlyPath(standardized, fallbackContainerPath: "/mnt/astra/input-\(inputIndex)")
             inputIndex += 1
         }
         for projection in environment.effectiveCredentialProjections {
@@ -1026,6 +1105,7 @@ enum DockerWorkspaceMCPProjection {
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
         runID: UUID?,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         dockerRuntime: DockerRuntimeResolution = DockerRuntimeResolver.resolve() ?? .environmentLookup
     ) -> [String: String] {
         guard isEnabled(for: environment),
@@ -1036,7 +1116,8 @@ enum DockerWorkspaceMCPProjection {
         let mounts = DockerExecutionPlanner.mountPlan(
             currentDirectory: currentDirectory,
             environment: environment,
-            task: task
+            task: task,
+            workspaceAccess: workspaceAccess
         )
         let mapper = ExecutionEnvironmentPathMapper(mounts: mounts)
         let workdir = mapper.containerPath(forHostPath: currentDirectory) ?? environment.containerWorkingDirectory

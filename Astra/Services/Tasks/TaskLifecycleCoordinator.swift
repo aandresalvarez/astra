@@ -9,17 +9,28 @@ final class TaskLifecycleCoordinator {
     let modelContext: ModelContext
     let taskQueue: TaskQueue
     private let reviewOriginURL: (String) async -> String?
+    private let worktreeCleanupStore: TaskWorktreeCleanupStore
+    private let workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore
+    private let persistWorkspaceChange: @MainActor (Workspace?, ModelContext) -> Bool
 
     init(
         modelContext: ModelContext,
         taskQueue: TaskQueue,
         reviewOriginURL: @escaping (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
+        },
+        worktreeCleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
+        workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore = WorkspaceDeletionCleanupStore(),
+        persistWorkspaceChange: @escaping @MainActor (Workspace?, ModelContext) -> Bool = { workspace, context in
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context)
         }
     ) {
         self.modelContext = modelContext
         self.taskQueue = taskQueue
         self.reviewOriginURL = reviewOriginURL
+        self.worktreeCleanupStore = worktreeCleanupStore
+        self.workspaceDeletionCleanupStore = workspaceDeletionCleanupStore
+        self.persistWorkspaceChange = persistWorkspaceChange
     }
 
     /// Canonical follow-up message sent when the user resumes a previously
@@ -578,22 +589,88 @@ final class TaskLifecycleCoordinator {
     /// exit instead of resuming provider work for a task that no longer
     /// exists — then remove the rows so terminal history doesn't accumulate
     /// as permanent orphans.
-    private func cancelAndRemoveTurnRequests(for task: AgentTask) {
-        taskQueue.cancel(task: task, modelContext: modelContext)
-        if let requests = try? TaskTurnRequestRepository.requests(for: task, in: modelContext) {
-            for request in requests {
-                modelContext.delete(request)
+    ///
+    /// Stopping a worker is not reversible, so a deletion first saves its
+    /// tasks' requests as cancelled and stops their workers only once that
+    /// save succeeds. When it fails, the requests get their previous values
+    /// back, nothing is stopped, and the deletion does not proceed. The
+    /// fields are restored explicitly rather than by `rollback()`, which
+    /// would leave stale model properties and discard unrelated edits.
+    ///
+    /// Returns every request row of the tasks, for the deletion to remove,
+    /// or nil when they can't be read: a failed lookup would otherwise stop
+    /// workers with nothing cancelled and leave rows orphaned.
+    private func cancelDurably(_ tasks: [AgentTask]) -> [TaskTurnRequest]? {
+        typealias Snapshot = (
+            request: TaskTurnRequest, state: TaskTurnRequestState, blockingTaskID: UUID?,
+            blockerSummary: String?, terminalAt: Date?, terminalReason: String?
+        )
+        var active: [TaskTurnRequest] = []
+        var allRequests: [TaskTurnRequest] = []
+        do {
+            for task in tasks {
+                active += try TaskTurnRequestRepository.activeRequests(for: task, in: modelContext)
+                allRequests += try TaskTurnRequestRepository.requests(for: task, in: modelContext)
             }
+        } catch {
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: tasks.first?.id, fields: [
+                "reason": "deletion_request_lookup_failed", "error": error.localizedDescription
+            ], level: .error)
+            return nil
         }
+        var snapshots: [Snapshot] = []
+        for request in active {
+            snapshots.append((
+                request, request.state, request.blockingTaskID,
+                request.blockerSummary, request.terminalAt, request.terminalReason
+            ))
+            _ = TaskTurnRequestStateMachine.transition(request, to: .cancelled, terminalReason: "cancelled_by_user")
+        }
+        if !snapshots.isEmpty, !persistWorkspaceChange(tasks.first?.workspace, modelContext) {
+            for snapshot in snapshots {
+                snapshot.request.state = snapshot.state
+                snapshot.request.blockingTaskID = snapshot.blockingTaskID
+                snapshot.request.blockerSummary = snapshot.blockerSummary
+                snapshot.request.terminalAt = snapshot.terminalAt
+                snapshot.request.terminalReason = snapshot.terminalReason
+            }
+            AppLogger.audit(.taskFailed, category: "Persistence", taskID: tasks.first?.id, fields: [
+                "reason": "deletion_cancellation_save_failed",
+                "request_count": String(snapshots.count)
+            ], level: .error)
+            return nil
+        }
+        // The requests are durably cancelled; without a context, `cancel`
+        // only stops the worker and wakes waiters.
+        for task in tasks { taskQueue.cancel(task: task) }
+        return allRequests
     }
 
-    func deleteTask(_ task: AgentTask) -> Workspace? {
+    /// Deletes `task` and returns whether the deletion was saved. `willDelete`
+    /// runs only once any worktree cleanup intent is durable, just before the
+    /// task is deleted. A false result means the task is still stored and back
+    /// in the context, so the UI must keep showing it.
+    @discardableResult
+    func deleteTask(_ task: AgentTask, willDelete: () -> Void = {}) -> Bool {
         AppLogger.audit(.taskDeleted, category: "UI", taskID: task.id)
         let workspace = task.workspace
-        cancelAndRemoveTurnRequests(for: task)
-        modelContext.delete(task)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        return workspace
+        // A draft that never ran gives back its untouched worktrees, including
+        // one it was retargeted away from; any other task's worktree holds the
+        // user's work and is kept.
+        let unusedWorktrees = task.status == .draft && task.runs.isEmpty
+            ? TaskWorktreeService.discardSnapshots(for: task, ownership: worktreeCleanupStore.ownership)
+            : []
+        guard let requests = cancelDurably([task]) else { return false }
+        return TaskWorktreeService.saveDeletionThenDiscard(
+            unusedWorktrees, workspace: workspace, modelContext: modelContext, resourceQueue: taskQueue,
+            cleanupStore: worktreeCleanupStore,
+            delete: {
+                willDelete()
+                // Removed inside the deletion, so a failed save rolls it back.
+                for request in requests { modelContext.delete(request) }
+                modelContext.delete(task)
+            }
+        ).persisted
     }
 
     func setDoneState(_ task: AgentTask, to isDone: Bool) {
@@ -652,41 +729,101 @@ final class TaskLifecycleCoordinator {
         return ws
     }
 
-    func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
-        // The workspace→task cascade never reaches scalar turn-request rows,
-        // and cascaded task deletion would leave their admission coroutines
-        // parked; cancel and remove them per task before deleting. This runs
-        // BEFORE mirror removal: cancelling live requests saves-and-exports,
-        // which must not resurrect the mirrors removed below.
-        for task in ws.tasks {
-            cancelAndRemoveTurnRequests(for: task)
-        }
-        removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
-
-        for connector in ws.connectors {
-            connector.cleanupKeychain()
-        }
-        for skill in ws.skills {
-            skill.cleanupKeychain()
-            for connector in skill.connectors {
-                connector.cleanupKeychain()
-            }
-        }
-        modelContext.delete(ws)
-
+    func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> (
+        persisted: Bool, nextWorkspace: Workspace?, cleanup: Task<Bool, Never>?
+    ) {
         let next = existingWorkspaces.first(where: { $0.id != ws.id })
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: next, modelContext: modelContext)
-        return next
+        // Mirrors and Keychain items can't be rolled back, so they are removed
+        // only once the deletion is saved. What to remove is recorded first,
+        // so a quit after the save is finished at the next launch.
+        let cleanupRecord = WorkspaceDeletionCleanupRecord(ws)
+        do {
+            try workspaceDeletionCleanupStore.record(cleanupRecord)
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",
+                "error": error.localizedDescription
+            ], level: .error)
+            return (false, nil, nil)
+        }
+        guard let requests = cancelDurably(ws.tasks) else {
+            workspaceDeletionCleanupStore.remove(cleanupRecord)
+            return (false, nil, nil)
+        }
+        let result = TaskWorktreeService.saveDeletionThenDiscard(
+            unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
+            cleanupStore: worktreeCleanupStore,
+            delete: {
+                for request in requests { modelContext.delete(request) }
+                modelContext.delete(ws)
+            },
+            persist: persistWorkspaceChange
+        )
+        // Cancellation exports mirrors, so they are removed only after it and
+        // the deletion are saved. An unsaved deletion needs no cleanup.
+        if !result.persisted || WorkspaceDeletionCleanupService.settle(cleanupRecord, modelContext: modelContext) {
+            workspaceDeletionCleanupStore.remove(cleanupRecord)
+        }
+        return (result.persisted, result.persisted ? next : nil, result.cleanup)
     }
 
-    private func removeGeneratedWorkspaceMirrors(for workspacePath: String) {
-        let mirrorPaths = Set([
-            WorkspaceFileLayout.workspaceConfigFile(for: workspacePath),
-            WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspacePath)
-        ])
-        for path in mirrorPaths {
-            try? FileManager.default.removeItem(atPath: path)
+    private func unusedDraftWorktrees(in workspace: Workspace) -> [TaskWorktreeDiscard] {
+        workspace.tasks.filter { $0.status == .draft && $0.runs.isEmpty }.flatMap {
+            TaskWorktreeService.discardSnapshots(for: $0, ownership: worktreeCleanupStore.ownership)
         }
+    }
+
+    /// Replacements save the new reference graph before any checkout is
+    /// removed, so imported tasks keep worktrees they take over.
+    private func replaceWorkspace(
+        _ existing: Workspace, replacementPath: String, create: () -> Workspace
+    ) -> Workspace? {
+        var replacement: Workspace?
+        // The import writes the replacement's SSH connections, at its own
+        // path, before the save. Both files are captured first and put back
+        // if the replacement isn't saved; one that can't be read stops it.
+        var sshSnapshots: [(path: String, data: Data?)] = []
+        for path in Set([existing.primaryPath, replacementPath]) {
+            do {
+                sshSnapshots.append((path, try SSHConnectionManager.snapshot(workspacePath: path)))
+            } catch {
+                AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                    "operation": "replace_workspace", "reason": "ssh_snapshot_failed",
+                    "error": error.localizedDescription
+                ], level: .error)
+                return nil
+            }
+        }
+        guard let requests = cancelDurably(existing.tasks) else { return nil }
+        let result = TaskWorktreeService.saveDeletionThenDiscard(
+            unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
+            cleanupStore: worktreeCleanupStore,
+            delete: {
+                for request in requests { modelContext.delete(request) }
+                modelContext.delete(existing)
+                replacement = create()
+            },
+            persist: { _, context in
+                persistWorkspaceChange(replacement, context)
+            }
+        )
+        guard result.persisted else {
+            for snapshot in sshSnapshots {
+                do {
+                    try SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path)
+                } catch {
+                    // Not retried later: replaying an old file at the next
+                    // launch could overwrite edits made in between.
+                    AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                        "operation": "replace_workspace", "reason": "ssh_restore_failed",
+                        "path": SSHConnectionManager.connectionsFilePath(for: snapshot.path),
+                        "error": error.localizedDescription
+                    ], level: .error)
+                }
+            }
+            return nil
+        }
+        return replacement
     }
 
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
@@ -694,11 +831,18 @@ final class TaskLifecycleCoordinator {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
             config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: url).path
+            if refusesRoot(WorkspaceConfigManager.reservedRoot(of: config), operation: "import_config") { return nil }
             let configID = config.id
             if let existing = existingWorkspaces.first(where: { workspace in
                 (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath
             }) {
                 let action = askDuplicateAction(config.name, existing.tasks.count)
+                // Cleanup can start while the prompt is open; check again
+                // before replacing anything.
+                if action != .skip,
+                   refusesRoot(WorkspaceConfigManager.reservedRoot(of: config), operation: "import_config") {
+                    return nil
+                }
                 switch action {
                 case .skip:
                     return nil
@@ -709,12 +853,11 @@ final class TaskLifecycleCoordinator {
                         }
                     }
                     let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
-                    modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(
-                        from: config,
-                        modelContext: modelContext,
-                        scheduleTrustPolicy: scheduleTrustPolicy
-                    )
+                    return replaceWorkspace(existing, replacementPath: config.primaryPath) {
+                        WorkspaceConfigManager.importWorkspace(
+                            from: config, modelContext: modelContext, scheduleTrustPolicy: scheduleTrustPolicy
+                        )
+                    }
                 case .duplicate:
                     var dupConfig = config
                     dupConfig.name = config.name + " (Imported)"
@@ -749,6 +892,19 @@ final class TaskLifecycleCoordinator {
         }
     }
 
+    /// A checkout that worktree cleanup is removing can't become a workspace
+    /// root. The import is refused before anything is replaced and can be
+    /// retried once cleanup finishes.
+    private func refusesRoot(_ reserved: String?, operation: String) -> Bool {
+        guard let reserved else { return false }
+        AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+            "operation": operation,
+            "reason": "workspace_root_being_removed",
+            "path": reserved
+        ], level: .warning)
+        return true
+    }
+
     private func scheduleTrustPolicyForConfigReplace(
         existing: Workspace,
         configURL: URL
@@ -764,8 +920,13 @@ final class TaskLifecycleCoordinator {
             .replacingOccurrences(of: "-", with: " ")
             .replacingOccurrences(of: "_", with: " ")
             .capitalized
+        if refusesRoot(WorkspaceConfigManager.reservedRoot(among: [url.path]), operation: "import_folder") { return nil }
         if let existing = existingWorkspaces.first(where: { $0.name == name || $0.primaryPath == url.path }) {
             let action = askDuplicateAction(name, existing.tasks.count)
+            if action != .skip,
+               refusesRoot(WorkspaceConfigManager.reservedRoot(among: [url.path]), operation: "import_folder") {
+                return nil
+            }
             switch action {
             case .skip:
                 return nil
@@ -773,16 +934,14 @@ final class TaskLifecycleCoordinator {
                 if var exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path
-                    modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(
-                        from: exportedConfig,
-                        modelContext: modelContext,
-                        scheduleTrustPolicy: .preserveEnabledState,
-                        taskRecoveryTrustPolicy: .trustedLocalRecovery
-                    )
+                    return replaceWorkspace(existing, replacementPath: exportedConfig.primaryPath) {
+                        WorkspaceConfigManager.importWorkspace(
+                            from: exportedConfig, modelContext: modelContext,
+                            scheduleTrustPolicy: .preserveEnabledState, taskRecoveryTrustPolicy: .trustedLocalRecovery
+                        )
+                    }
                 }
-                modelContext.delete(existing)
-                return insertWorkspaceFromFolder(name: name, path: url.path)
+                return replaceWorkspace(existing, replacementPath: url.path) { insertWorkspaceFromFolder(name: name, path: url.path) }
             case .duplicate:
                 return insertWorkspaceFromFolder(name: name + " (Imported)", path: url.path)
             }

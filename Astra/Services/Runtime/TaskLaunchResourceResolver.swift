@@ -83,6 +83,14 @@ enum TaskLaunchResourceResolver {
             || DockerWorkspaceMCPProjection.isEnabled(for: environment)
         let hostControlTools = deliversHostControlPlane ? offeredHostControlTools : []
 
+        if case .invalid(let reason) = TaskWorktreeBinding.state(of: task) {
+            diagnostics.append(RuntimeResourceDiagnostic(
+                severity: .error,
+                code: "worktree_binding_invalid",
+                message: TaskWorktreeBinding.ValidationError.invalid(reason).localizedDescription,
+                repairAction: "Choose a registered checkout or create a new task worktree."
+            ))
+        }
         appendWorkspacePathGrants(
             task: task,
             workspaceAccess: workspaceAccess,
@@ -306,12 +314,13 @@ enum TaskLaunchResourceResolver {
         // Write access follows the same roots admission claims: the code root
         // and the additional folders `TaskWorkspaceAccess` keeps writable.
         // Other workspace folders, such as a source checkout replaced by the
-        // task's worktree, stay readable.
+        // task's worktree, stay readable. A worktree binding that cannot be
+        // verified grants no code root.
         let access = TaskWorkspaceAccess(task: task)
-        let codeRoot = existingPath(access.codeWorkingDirectory, fileManager: fileManager)
-        let writable = Set(([access.codeWorkingDirectory] + access.runtimeWritablePaths).compactMap {
+        let codeRoot = access.runtimeWritableCodeRoot.flatMap { existingPath($0, fileManager: fileManager) }
+        let writable = Set(access.runtimeWritablePaths.compactMap {
             existingPath($0, fileManager: fileManager)
-        })
+        } + [codeRoot].compactMap { $0 })
         var granted = Set<String>()
         for path in [workspace.primaryPath] + workspace.additionalPaths {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
@@ -338,6 +347,18 @@ enum TaskLaunchResourceResolver {
                 reason: "Active code root for this task.",
                 sensitivity: .normal,
                 lifetime: .workspace,
+                exists: true
+            ))
+        }
+        for path in access.runtimeWorktreeGitMetadataPaths {
+            guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
+            grants.append(RuntimePathGrant(
+                path: normalized,
+                access: workspaceAccess == .shared ? .read : .readWrite,
+                source: .workspace,
+                reason: "Git metadata shared by this task's worktree and its source repository.",
+                sensitivity: .normal,
+                lifetime: .task,
                 exists: true
             ))
         }

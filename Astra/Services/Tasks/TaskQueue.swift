@@ -404,8 +404,8 @@ final class TaskQueue {
             "pool_size": String(poolSize)
         ])
 
-        // Inject template hooks if present
-        let hooksBackup = injectTemplateHooks(for: task)
+        let hooksWorkspacePath = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        let hooksBackup = injectTemplateHooks(for: task, workspacePath: hooksWorkspacePath)
 
         await worker.execute(
             task: task,
@@ -419,8 +419,7 @@ final class TaskQueue {
             onEvent: onEvent
         )
 
-        // Restore hooks
-        restoreTemplateHooks(for: task, backup: hooksBackup)
+        restoreTemplateHooks(for: task, workspacePath: hooksWorkspacePath, backup: hooksBackup)
 
         taskWorkerMap.removeValue(forKey: task.id)
         activeTasks.remove(task.id)
@@ -1302,6 +1301,7 @@ final class TaskQueue {
     @MainActor
     private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
         do {
+            try TaskWorktreeBinding.validate(task)
             let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
             if TaskInputMaterializer.materialize(task: task, taskFolder: folder).didChange {
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext, taskID: task.id, auditFields: ["operation": "task_inputs_materialized"])
@@ -1313,8 +1313,9 @@ final class TaskQueue {
             ], level: .debug)
             return true
         } catch {
+            let reason = error is TaskWorktreeBinding.ValidationError ? "worktree_binding_invalid" : "task_folder_create_failed"
             AppLogger.audit(.taskFailed, category: "Queue", taskID: task.id, fields: [
-                "reason": "task_folder_create_failed",
+                "reason": reason,
                 "mode": mode,
                 "error_type": String(describing: type(of: error))
             ], level: .error)
@@ -1323,13 +1324,13 @@ final class TaskQueue {
             modelContext.insert(TaskEvent(
                 task: task,
                 type: "error",
-                payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
+                payload: "ASTRA could not prepare this task for launch: \(error.localizedDescription)"
             ))
             WorkspacePersistenceCoordinator.saveAndAutoExport(
                 workspace: task.workspace,
                 modelContext: modelContext,
                 taskID: task.id,
-                auditFields: ["operation": "task_folder_create_failed"]
+                auditFields: ["operation": reason]
             )
             return false
         }
@@ -1816,7 +1817,7 @@ final class TaskQueue {
         for requestID in waitingRequestIDs where !completedRequestIDs.contains(requestID) {
             requestTaskRegistry.complete(requestID: requestID)
         }
-        activeResourceLocks.removeAll()
+        activeResourceLocks.removeAll { $0.runMode != TaskWorktreeResourceLease.runMode }
         waitingResourceLocks.removeAll()
         isProcessingScheduled = false
         processingScheduleGeneration += 1
@@ -1896,11 +1897,12 @@ final class TaskQueue {
     @discardableResult
     func acquireResourceLocksIfAvailable(
         _ claims: [TaskResourceLockClaim],
-        task: AgentTask,
+        task: AgentTask?,
         modelContext: ModelContext? = nil
     ) -> [TaskResourceLockClaim]? {
         guard canAcquireResourceLocks(claims) else { return nil }
         activeResourceLocks.append(contentsOf: claims)
+        guard let task else { return claims }
         waitingResourceLocks.removeValue(forKey: task.id)
         for claim in claims {
             recordResourceLockEvent(
@@ -1937,11 +1939,13 @@ final class TaskQueue {
     @MainActor
     func releaseResourceLocks(
         _ claims: [TaskResourceLockClaim],
-        task: AgentTask,
+        task: AgentTask?,
         modelContext: ModelContext? = nil
     ) {
         let released = Set(claims)
         activeResourceLocks.removeAll { released.contains($0) }
+        defer { wakeAllTurnAdmissionWaiters(); wakeDispatchWaiters() }
+        guard let task else { return }
         waitingResourceLocks.removeValue(forKey: task.id)
         for (index, claim) in claims.enumerated() {
             recordResourceLockEvent(
@@ -1954,8 +1958,6 @@ final class TaskQueue {
                 autoExport: index == claims.count - 1
             )
         }
-        wakeAllTurnAdmissionWaiters()
-        wakeDispatchWaiters()
     }
 
     @MainActor
@@ -2088,10 +2090,10 @@ final class TaskQueue {
 
     /// Injects template hooks into .claude/settings.local.json before task execution.
     /// Returns the original file data for restoration, or nil if no hooks to inject.
-    private func injectTemplateHooks(for task: AgentTask) -> Data? {
+    private func injectTemplateHooks(for task: AgentTask, workspacePath: String) -> Data? {
         let backup = ClaudeSettingsStore.injectTemplateHooks(
             hooksJSON: task.templateHooksJSON,
-            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+            workspacePath: workspacePath
         )
         if backup != nil || (!task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}") {
             AppLogger.audit(.taskStats, category: "Queue", taskID: task.id, fields: [
@@ -2102,10 +2104,10 @@ final class TaskQueue {
     }
 
     /// Restores .claude/settings.local.json after task execution.
-    private func restoreTemplateHooks(for task: AgentTask, backup: Data?) {
+    private func restoreTemplateHooks(for task: AgentTask, workspacePath: String, backup: Data?) {
         ClaudeSettingsStore.restoreTemplateHooks(
             hooksJSON: task.templateHooksJSON,
-            workspacePath: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            workspacePath: workspacePath,
             backup: backup
         )
         if backup != nil {

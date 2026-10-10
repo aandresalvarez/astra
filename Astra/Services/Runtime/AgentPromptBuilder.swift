@@ -364,10 +364,10 @@ enum AgentPromptBuilder {
         }
     }
     private static func appendWorkspacePaths(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        let codeDir = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        let access = TaskWorkspaceAccess(task: task)
+        let codeDir = access.codeWorkingDirectory
         if let section = AgentPromptExecutionEnvironmentSection.section(for: task, codeDir: codeDir) { sections.append(section) }
-        guard let ws = task.workspace, !ws.additionalPaths.isEmpty else { return }
-        if codeDir != TaskWorkspaceAccess(task: task).effectiveWorkspacePath {
+        if codeDir != access.effectiveWorkspacePath {
             appendSection(
                 "WORKING DIRECTORY: Your process is running in \(codeDir). This is the primary code directory for this workspace. All relative paths resolve from here.",
                 kind: .supportingContext,
@@ -375,10 +375,9 @@ enum AgentPromptBuilder {
                 sourcePointers: pathSourcePointers([codeDir])
             )
         }
-        let folders = WorkspacePathPresentation.descriptors(
-            primaryPath: ws.primaryPath,
-            additionalPaths: ws.additionalPaths
-        )
+        guard let ws = task.workspace,
+              !ws.additionalPaths.isEmpty || codeDir != access.effectiveWorkspacePath else { return }
+        let folders = access.runtimeWorkspaceFolders
         let labels = AgentPromptWorkspaceFolderLabels(task: task, codeDir: codeDir)
         let folderList = folders.map { descriptor in
             "- \(descriptor.roleLabel) \(descriptor.title)\(labels.label(for: descriptor.path)): \(descriptor.path)"
@@ -1462,12 +1461,11 @@ enum AgentPromptBuilder {
                 contextParts.append("Remote server: ssh \(conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias) — remote path: \(conn.remotePath)")
             }
 
-            if !ws.additionalPaths.isEmpty {
-                let paths = WorkspacePathPresentation.descriptors(
-                    primaryPath: ws.primaryPath,
-                    additionalPaths: ws.additionalPaths
-                )
-                .map { "\($0.roleLabel) \($0.title): \($0.path)" }
+            let access = TaskWorkspaceAccess(task: task)
+            if !ws.additionalPaths.isEmpty || access.codeWorkingDirectory != access.effectiveWorkspacePath {
+                let labels = AgentPromptWorkspaceFolderLabels(task: task, codeDir: access.codeWorkingDirectory)
+                let paths = access.runtimeWorkspaceFolders
+                .map { "\($0.roleLabel) \($0.title)\(labels.label(for: $0.path)): \($0.path)" }
                 .joined(separator: ", ")
                 contextParts.append("Workspace folders: \(paths)")
             }

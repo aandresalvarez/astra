@@ -1325,10 +1325,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             mcpServers.append(browserServer)
         }
         let workspaceExecutorEnvironment = DockerWorkspaceMCPProjection.environmentVariables(
-            task: context.task,
-            environment: executionEnvironment,
-            currentDirectory: context.workspacePath,
-            runID: context.runID
+            task: context.task, environment: executionEnvironment,
+            currentDirectory: context.workspacePath, runID: context.runID,
+            workspaceAccess: context.launchResourcePlan?.workspaceAccess ?? .exclusive
         )
         let explicitMCPEnvironment = taskEnv
             .merging(workspaceExecutorEnvironment) { current, _ in current }
@@ -1953,6 +1952,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             contextText: context.contextText,
             taskEnvironment: taskEnv,
             capabilities: capabilities,
+            workspaceAccess: context.launchResourcePlan?.workspaceAccess ?? .exclusive,
             runtimeRequirements: context.runtimeRequirements
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)

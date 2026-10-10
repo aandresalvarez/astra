@@ -299,6 +299,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             executionEnvironment: executionEnvironment,
             contextText: context.contextText,
             taskEnvironment: taskEnv,
+            workspaceAccess: context.launchResourcePlan?.workspaceAccess ?? .exclusive,
             runtimeRequirements: context.runtimeRequirements
         )
         let launchTaskEnv = taskEnv

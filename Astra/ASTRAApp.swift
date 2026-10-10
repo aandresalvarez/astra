@@ -887,12 +887,25 @@ public struct ASTRAApp: App {
             )
         }
 
-        if !skipWorkspaceRecovery {
+        // A workspace deletion a quit interrupted is finished before mirror
+        // recovery below, which would otherwise reimport the workspace.
+        WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
+        // A deletion still unsettled, for example a mirror that couldn't be
+        // removed, keeps its mirror out of recovery; an unreadable record
+        // stops recovery for this launch, since its mirror is unknown.
+        let unsettledDeletionMirrors = WorkspaceDeletionCleanupStore().pendingMirrorPaths()
+        if unsettledDeletionMirrors == nil {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
+            ], level: .error)
+        }
+        if !skipWorkspaceRecovery, let unsettledDeletionMirrors {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
             workspaceRecoveryAfterLaunch = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
+                excludingConfigFiles: unsettledDeletionMirrors,
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
         }
@@ -930,12 +943,28 @@ public struct ASTRAApp: App {
 
     @MainActor private static var runtimeSettlementRecovery: Task<Void, Never>?
     @MainActor private static var runtimeSettlementAutoExportWorkspaces = true
+    @MainActor private static var worktreeCleanupRecovery: Task<Void, Never>?
 
     @MainActor
     static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
         runDeferredStartupWork(modelContext: modelContext)
         await recoverTaskFolderSnapshots(modelContext: modelContext)
+        await recoverPendingWorktreeCleanup(modelContext: modelContext, taskQueue: taskQueue)
         await recoverRuntimeSettlements(modelContext: modelContext, taskQueue: taskQueue)
+    }
+
+    @MainActor
+    private static func recoverPendingWorktreeCleanup(modelContext: ModelContext, taskQueue: TaskQueue) async {
+        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
+        if let recovery = worktreeCleanupRecovery { await recovery.value; return }
+        let recovery = Task { @MainActor in
+            // Interrupted creations settle first, so a worktree whose binding
+            // was never saved is removed rather than left unowned.
+            _ = await TaskWorktreeCleanupService.resumeInterruptedCreations(modelContext: modelContext, resourceQueue: taskQueue)
+            _ = await TaskWorktreeCleanupService.resumePending(modelContext: modelContext, resourceQueue: taskQueue)
+        }
+        worktreeCleanupRecovery = recovery
+        await recovery.value
     }
 
     @MainActor

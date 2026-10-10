@@ -16,17 +16,22 @@ enum TaskExecutionResourceAdmissionPolicy {
         var claims = TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: task)
         if request == nil,
            !TaskExecutionResourceClaimResolver.requiresExclusiveWorkflowAccess(for: request, task: task),
-           let fallbackAccess,
-           let index = claims.firstIndex(where: { $0.kind == .workspace }) {
-            let workspace = claims[index]
-            claims[index] = TaskExecutionResourceClaim(
-                kind: workspace.kind,
-                key: workspace.key,
-                access: fallbackAccess == .readOnly ? .shared : .exclusive
-            )
+           let fallbackAccess {
+            // The read-only keys include a prepared worktree's Git directory,
+            // whose `.gitCommonDirectory` claim is always shared.
+            let readOnlyKeys = Set(TaskExecutionResourceClaimResolver.readOnlyWorkspaceKeys(for: task))
+            claims = claims.map { claim in
+                guard claim.kind == .workspace || claim.kind == .gitCommonDirectory else { return claim }
+                if readOnlyKeys.contains(claim.key) { return claim }
+                return TaskExecutionResourceClaim(
+                    kind: claim.kind, key: claim.key,
+                    access: fallbackAccess == .readOnly ? .shared : .exclusive
+                )
+            }
         }
         claims = effectiveClaims(claims, sandboxEnforcement: sandboxEnforcement)
             + unenforcedReadOnlyClaims(for: task, existing: claims, sandboxEnforcement: sandboxEnforcement)
+        claims += unenforcedGitMetadataClaims(existing: claims, sandboxEnforcement: sandboxEnforcement)
         return TaskExecutionResourceBroker.lockClaims(
             for: claims,
             taskID: task.id,
@@ -125,6 +130,27 @@ enum TaskExecutionResourceAdmissionPolicy {
             .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
             .filter { !claimed.contains($0) }
             .map { TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .exclusive) }
+    }
+
+    /// With sandboxing Off nothing keeps a writer away from the Git directory
+    /// of the checkout containing its root, whether that root is the main
+    /// checkout, a folder inside it, or a linked worktree that submission
+    /// claimed only on Git intent. Every exclusive workspace root therefore
+    /// claims that directory exclusively, as a writable main checkout does, so
+    /// worktree creation and cleanup and sibling worktree tasks wait for it.
+    private static func unenforcedGitMetadataClaims(
+        existing: [TaskExecutionResourceClaim],
+        sandboxEnforcement: ExecutionSandboxEnforcement
+    ) -> [TaskExecutionResourceClaim] {
+        guard sandboxEnforcement == .off else { return [] }
+        var seen = Set(existing.filter { $0.kind == .gitCommonDirectory }.map(\.key))
+        return existing.compactMap { claim in
+            guard claim.kind == .workspace, claim.access == .exclusive,
+                  let commonDirectory = GitCheckoutLayout.commonDirectory(for: claim.key) else { return nil }
+            let key = URL(fileURLWithPath: commonDirectory).standardizedFileURL.path
+            guard seen.insert(key).inserted else { return nil }
+            return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: .exclusive)
+        }
     }
 
     private static func effectiveClaims(

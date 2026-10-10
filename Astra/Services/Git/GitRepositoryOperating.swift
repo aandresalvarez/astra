@@ -10,6 +10,23 @@ enum GitRemoteCommitLookupResult: Equatable, Sendable {
     case unavailable(String)
 }
 
+/// The branch a remote's own HEAD names. `refs/remotes/<remote>/HEAD` is only
+/// a local copy recorded at clone time, so it can be missing or stale.
+enum GitRemoteHeadLookupResult: Equatable, Sendable {
+    case branch(String)
+    /// The remote answered without naming a branch, e.g. an empty repository.
+    case unnamed
+    case unavailable
+}
+
+/// A local branch's tip, distinguishing a branch that is gone from one that
+/// couldn't be read. `getCommitSHA` returns nil for both.
+enum GitBranchLookupResult: Equatable, Sendable {
+    case commit(String)
+    case absent
+    case unavailable
+}
+
 protocol GitRepositoryOperating: AnyObject {
     func acquireIndexGuard() -> Bool
     func releaseIndexGuard()
@@ -79,6 +96,37 @@ protocol GitRepositoryOperating: AnyObject {
         worktreesRoot: String
     ) async throws -> String
     func removeWorktree(repoPath: String, worktreePath: String, force: Bool) async throws
+    /// Asks `remote` which branch its HEAD names.
+    func lookupRemoteHead(remote: String, at repoPath: String) async -> GitRemoteHeadLookupResult
+    /// Refreshes `refs/remotes/<remote>/<branch>`; false when the fetch failed.
+    func fetchRemoteBranch(remote: String, branch: String, at repoPath: String) async -> Bool
+    /// Deletes `refs/heads/<branch>` only while it still points at `expectedCommit`.
+    func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws
+    /// `git worktree add -b` with `--lock --reason`, so Git records who
+    /// created the worktree in the same command that creates it.
+    func addLockedTaskWorktree(
+        repoPath: String, branch: String, base: String, worktreesRoot: String, lockReason: String
+    ) async throws -> String
+    func unlockWorktree(repoPath: String, worktreePath: String) async throws
+    /// True when a gitlink folder whose submodule isn't populated holds files,
+    /// which no status reports; also true when that can't be read.
+    func unpopulatedGitlinksHoldFiles(at worktreePath: String) async -> Bool
+    /// Where `refs/heads/<branch>` points, or that it positively doesn't exist.
+    func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult
+    /// Whether the checkout has no tracked or untracked changes; nil when
+    /// `git status` fails. `getStatusFiles` reads a failure as clean, which
+    /// is safe for display but not before deleting a worktree.
+    func worktreeIsClean(at repoPath: String) async -> Bool?
+    /// True when the checkout holds ignored files, which a non-forced
+    /// `git worktree remove` deletes without asking; also true on error.
+    func hasIgnoredFiles(at repoPath: String) async -> Bool
+    /// True when either reflog remembers work beyond the creation commit, or
+    /// when the reflogs cannot be read safely.
+    func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool
+    /// Populates a new worktree's submodules the way the repository has them.
+    func initializeSubmodules(at worktreePath: String) async throws
+    /// What a forced removal of the worktree would destroy in its submodules.
+    func submoduleCheckoutState(at worktreePath: String) async -> GitSubmoduleCheckoutState
     func getRemoteURL(at repoPath: String, remote: String?) async -> String?
     func createPullRequest(
         repoPath: String,
@@ -145,6 +193,38 @@ extension GitRepositoryOperating {
     ) async -> GitRemoteCommitLookupResult {
         .unavailable("Authoritative remote commit lookup is not supported.")
     }
+
+    /// Alternate operators never touch the network for task worktrees; the
+    /// caller falls back to the existing remote-tracking ref.
+    func lookupRemoteHead(remote: String, at repoPath: String) async -> GitRemoteHeadLookupResult { .unavailable }
+    func fetchRemoteBranch(remote: String, branch: String, at repoPath: String) async -> Bool { false }
+
+    /// Alternate operators fail closed: an unused task branch is kept.
+    func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws {
+        throw GitWorktreeError.invalidBranchName(branch)
+    }
+
+    /// Alternate operators fail closed: a checkout whose status or ignored
+    /// files can't be read is kept.
+    func worktreeIsClean(at repoPath: String) async -> Bool? { nil }
+    func localBranchTip(_ branch: String, at repoPath: String) async -> GitBranchLookupResult { .unavailable }
+    /// Alternate operators add without a lock: with no provenance from Git,
+    /// recovery keeps an interrupted creation's worktree rather than removing it.
+    func addLockedTaskWorktree(
+        repoPath: String, branch: String, base: String, worktreesRoot: String, lockReason: String
+    ) async throws -> String {
+        try await addWorktree(repoPath: repoPath, branch: branch, createBranch: true, base: base, worktreesRoot: worktreesRoot)
+    }
+    func unlockWorktree(repoPath: String, worktreePath: String) async throws {}
+    func unpopulatedGitlinksHoldFiles(at worktreePath: String) async -> Bool { true }
+    func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
+    func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
+
+    /// Alternate operators fail closed: a new worktree whose submodules they
+    /// can't populate is discarded before any agent runs in it, and one whose
+    /// submodules they can't read is kept.
+    func initializeSubmodules(at worktreePath: String) async throws { throw GitSubmoduleSetupUnsupported() }
+    func submoduleCheckoutState(at worktreePath: String) async -> GitSubmoduleCheckoutState { .unknown }
 
     func normalizeBaseBranch(_ raw: String, remote: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

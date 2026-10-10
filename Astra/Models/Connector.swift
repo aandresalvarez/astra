@@ -374,14 +374,17 @@ public final class Connector {
 
     /// Delete all Keychain entries when connector is deleted.
     public func cleanupKeychain() {
-        if isStanfordOutlookMail {
-            OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
-        }
-        ConnectorSecretSeam.required.deleteAllCredentials(facts: secretFacts)
-        AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType
-        ])
+        keychainCleanup.run()
+    }
+
+    /// `cleanupKeychain()` as a value, so a deletion can record it durably
+    /// and run it once the connector's row is gone.
+    public var keychainCleanup: ConnectorKeychainCleanup {
+        ConnectorKeychainCleanup(
+            connectorID: id, name: name, serviceType: serviceType, baseURL: baseURL,
+            originPackageID: originPackageID, originComponentID: originComponentID,
+            isStanfordOutlookMail: isStanfordOutlookMail
+        )
     }
 
     // MARK: - Stanford Outlook Mail (pure members)
@@ -798,4 +801,30 @@ extension CharacterSet {
         cs.remove(charactersIn: "&=+")
         return cs
     }()
+}
+
+/// Everything deleting a connector's Keychain items needs, with no secret in
+/// it: the fields its stable credential namespace is derived from.
+public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
+    public let connectorID: UUID
+    public let name: String
+    public let serviceType: String
+    public let baseURL: String
+    public let originPackageID: String?
+    public let originComponentID: String?
+    public let isStanfordOutlookMail: Bool
+
+    public func run() {
+        if isStanfordOutlookMail {
+            OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: connectorID)
+        }
+        ConnectorSecretSeam.required.deleteAllCredentials(facts: ConnectorSecretFacts(
+            id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
+            originPackageID: originPackageID, originComponentID: originComponentID
+        ))
+        AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
+            "connector_id": connectorID.uuidString,
+            "service_type": serviceType
+        ])
+    }
 }

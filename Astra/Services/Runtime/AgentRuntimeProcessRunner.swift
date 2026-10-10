@@ -226,6 +226,20 @@ final class AgentRuntimeProcessRunner {
             precomputedRuntimeRequirements: context.runtimeRequirements,
             runtimeCapabilityProfile: context.executionPolicy.runtimeCapabilityProfile
         )
+        if let diagnostic = launchResourcePlan.diagnostics.first(where: { $0.severity == .error }) {
+            let message = "ASTRA could not prepare a required launch dependency: \(diagnostic.message)"
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": adapter.id.rawValue,
+                "reason": "launch_resource_unresolved",
+                "diagnostic_code": diagnostic.code
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "launch_resource_unresolved",
+                runtimeStopMessage: message
+            ))
+        }
         let resolvedContext = context.replacingLaunchResourcePlan(launchResourcePlan)
         var plan = adapter.makeProcessLaunchPlan(context: resolvedContext)
         // Immediately, before anything else reads `plan.environment`. Each
@@ -266,20 +280,6 @@ final class AgentRuntimeProcessRunner {
         plan = plan.addingSandboxProtectedWriteDenyPaths(launchResourcePlan.hostProtectedWriteDenyPaths)
         if !gitCredentialContext.isEmpty {
             plan = plan.addingGitCredentialContext(gitCredentialContext)
-        }
-        if let diagnostic = launchResourcePlan.diagnostics.first(where: { $0.severity == .error }) {
-            let message = "ASTRA could not prepare a required launch dependency: \(diagnostic.message)"
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
-                "runtime": plan.runtime.rawValue,
-                "reason": "launch_resource_unresolved",
-                "diagnostic_code": diagnostic.code
-            ], level: .error)
-            return .blocked(AgentProcessResult(
-                exitCode: -1,
-                error: message,
-                runtimeStopReason: "launch_resource_unresolved",
-                runtimeStopMessage: message
-            ))
         }
         if let block = plan.unsupportedProviderNativeCredentialReadBlock(
             for: launchResourcePlan,

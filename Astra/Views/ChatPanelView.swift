@@ -12,7 +12,7 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
 }
 
-private struct DraftChatMessagePayload: Codable {
+struct DraftChatMessagePayload: Codable {
     let role: String
     let content: String
 }
@@ -45,14 +45,14 @@ struct ChatPanelView: View {
     var onStartWorkspaceAppStudio: ((String?) -> Void)?
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelContext) var modelContext
     @Environment(\.newTaskWorkspaceSwitcher) private var workspaceSwitcher
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State var messageText = ""
-    @State private var messages: [ChatMessage] = []
+    @State var messages: [ChatMessage] = []
     @State private var isChatAtBottom = true
     @State private var hasUnseenChatActivity = false
-    @State private var isThinking = false
+    @State var isThinking = false
     @State private var extractedSpec: TaskSpec?
     @State private var showSpecCard = false
     // Read by `runtimeEligibilityPreviewRequest` in RuntimeEligibilityPreviewModifier.swift.
@@ -100,8 +100,15 @@ struct ChatPanelView: View {
     // In-flight planning chat round-trips. Cancelled in `.onDisappear` so a dismissed composer
     // tears down the utility LLM subprocess instead of running it to completion for an assistant
     // reply / pending plan that only lives in this view's @State and is discarded on recreate.
-    @State private var chatReplyTask: Task<Void, Never>?
-    @State private var planGenerationTask: Task<Void, Never>?
+    @State var chatReplyTask: Task<Void, Never>?
+    @State var planGenerationTask: Task<Void, Never>?
+    @State var taskCreation = NewTaskCreationRun()
+    @State var worktreeSelection = NewTaskWorktreeSelection()
+    @State var taskCreationError: String?
+    /// The composer draft's worktree binding. Resolving it probes the
+    /// repository's worktree registry on disk, so it is refreshed only when
+    /// `worktreeBindingSignature` changes, never per keystroke.
+    @State var cachedWorktreeBinding: TaskWorktreePayload?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
     @State var capabilitySnapshot = ComposerCapabilitySnapshot.empty
@@ -478,18 +485,26 @@ struct ChatPanelView: View {
             removePasteMonitor()
             chatReplyTask?.cancel()
             planGenerationTask?.cancel()
+            taskCreation.detach()
         }
+        .onChange(of: worktreeBindingSignature, initial: true) { refreshWorktreeBinding() }
         .onChange(of: sshReloadTrigger) { loadSSHConnections() }
         .onChange(of: defaultRuntimeID) { alignDefaultModelWithRuntime() }
         .onChange(of: claudeAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: copilotAvailableModels) { alignDefaultModelWithRuntime() }
         .onChange(of: runtimeModelCacheRevision) { alignDefaultModelWithRuntime() }
         .onChange(of: workspace?.persistentModelID) {
-            // The policy defaults are global, so an in-place workspace switch
-            // keeps whatever level the user picked for this composer.
+            chatReplyTask?.cancel()
+            planGenerationTask?.cancel()
+            isThinking = false
+            activeSlashContext = nil
+            if draftTask?.workspace?.id != workspace?.id { draftTask = nil }
             loadSSHConnections()
             excludedSkillIDs = []
             if !isCapabilitySnapshotCurrent { capabilitySnapshot = .empty }
+            taskCreation.detach()
+            worktreeSelection = NewTaskWorktreeSelection()
+            taskCreationError = nil
         }
     }
 
@@ -788,10 +803,10 @@ struct ChatPanelView: View {
             }
 
             Button {
-                if let draft = draftTask {
+                guard NewTaskWorktreeComposerFlow.discardDraft(draftTask, modelContext: modelContext, resourceQueue: taskQueue, delete: { draft in
                     modelContext.delete(draft)
-                    draftTask = nil
-                }
+                }) else { return }
+                draftTask = nil
                 messages = []
                 attachedFiles = []
                 extractedSpec = nil
@@ -801,6 +816,8 @@ struct ChatPanelView: View {
                 activeSlashContext = nil
                 isPlanMode = false
                 composerRuntimeExplicitlySelected = false
+                worktreeSelection.resetTaskChoice()
+                taskCreationError = nil
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.counterclockwise")
@@ -813,6 +830,7 @@ struct ChatPanelView: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
+            .disabled(isThinking || isPreparingWorktree)
 
             Spacer()
         }
@@ -876,6 +894,18 @@ struct ChatPanelView: View {
     private var composerView: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
+                NewTaskWorktreeDockView(
+                    workspace: workspace,
+                    draft: composerDraft,
+                    pinOwner: NewTaskWorktreeComposerFlow.liveDraft(draftToLoad, in: workspace),
+                    allowsChoice: allowsWorktreeChoice,
+                    binding: worktreeBinding,
+                    isPreparing: isPreparingWorktree,
+                    problem: taskCreationError,
+                    selection: $worktreeSelection,
+                    onCancel: cancelTaskCreation
+                )
+
                 if !attachedFiles.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
@@ -938,8 +968,8 @@ struct ChatPanelView: View {
                     workspace: workspace,
                     runtimeReadinessStates: runtimeReadinessStates,
                     runtimeEligibilityPreviewState: runtimeEligibilityPreviewState, runtimeEligibilityPreviewSignature: runtimeEligibilityPreviewRequest.signature,
-                    isRunning: isThinking,
-                    hasInput: hasInput,
+                    isRunning: isThinking || isPreparingWorktree,
+                    hasInput: hasInput && canSubmitWorktreeSelection,
                     onAttachFile: { attachFile() },
                     onPasteClipboard: { smartPaste() },
                     onSend: { submitComposer() },
@@ -1111,7 +1141,7 @@ struct ChatPanelView: View {
         return fields
     }
 
-    private func baseNewTaskSkillContext() -> String {
+    private func baseNewTaskSkillContext(for task: AgentTask?) -> String {
         var skillCtx = scopedSelectedSkills(forTaskText: messageText, inputs: attachedFiles).map { skill in
             var desc = "## Skill: \(skill.name)\nInstructions:\n\(skill.behaviorInstructions)"
             if !skill.connectors.isEmpty {
@@ -1129,12 +1159,16 @@ struct ChatPanelView: View {
             return desc
         }.joined(separator: "\n\n")
 
-        if let wsObj = workspace, !wsObj.additionalPaths.isEmpty {
-            let pathList = WorkspacePathPresentation.descriptors(
+        if let wsObj = task?.workspace ?? workspace, !wsObj.additionalPaths.isEmpty {
+            let folders = task.map { TaskWorkspaceAccess(task: $0).runtimeWorkspaceFolders }
+                ?? WorkspacePathPresentation.descriptors(
                 primaryPath: wsObj.primaryPath,
                 additionalPaths: wsObj.additionalPaths
-            ).map { descriptor -> String in
-                "- \(descriptor.roleLabel) \(descriptor.title): \(descriptor.path)"
+            )
+            let readOnlyPaths = Set(task.map { TaskWorkspaceAccess(task: $0).runtimeReadOnlyWorkspaceFolders.map(\.path) } ?? [])
+            let pathList = folders.map { descriptor -> String in
+                let readOnly = readOnlyPaths.contains(descriptor.path) ? " (read-only)" : ""
+                return "- \(descriptor.roleLabel) \(descriptor.title)\(readOnly): \(descriptor.path)"
             }.joined(separator: "\n")
             skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "Workspace folders (configured by user):\n\(pathList)\n\nThese folders are part of this workspace. When the user refers to any of these folder names, they mean these paths. You can browse and read files in them."
         }
@@ -1154,6 +1188,7 @@ struct ChatPanelView: View {
     }
 
     private func submitComposer() {
+        guard !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
         if showSlashMenu && !slashOptions.isEmpty {
             selectSlashOption(slashOptions[slashSelectedIndex])
         } else if isPlanModeActive {
@@ -1166,7 +1201,9 @@ struct ChatPanelView: View {
     /// Send message → start or continue the provider-assisted conversation
     private func sendMessage() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty, isCapabilitySnapshotCurrent else { return }
+        guard !input.isEmpty, isCapabilitySnapshotCurrent,
+              !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
+        taskCreationError = nil
 
         // Check for slash commands — route through the provider conversation with context
         let lower = input.lowercased()
@@ -1185,7 +1222,13 @@ struct ChatPanelView: View {
             } else {
                 messages.append(ChatMessage(role: "assistant", content: "No workspace selected — memories are workspace-scoped."))
             }
-            saveDraft()
+            chatReplyTask = Task { @MainActor in
+                do {
+                    _ = try await saveDraft()
+                } catch {
+                    reportTaskCreationError(error)
+                }
+            }
             return
         }
 
@@ -1229,41 +1272,12 @@ struct ChatPanelView: View {
 
         messages.append(ChatMessage(role: "user", content: input))
         messageText = ""
-        let planningDraft = saveDraft()
         isThinking = true
         let traceID = AuditTrace.make(shouldUseGoalMode ? "new-task-plan-chat" : "new-task-chat")
 
         let conversationHistory = messages.map { (role: $0.role, content: $0.content) }
         let ws = resolvedWorkspace
-        var skillCtx = baseNewTaskSkillContext()
-
-        // Inject slash command context if active
-        if let slashCtx = activeSlashContext {
-            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "SLASH COMMAND CONTEXT:\n" + slashCtx
-        }
-
-        // Inject /recap instructions for this message only
-        if let recapCtx = recapContext {
-            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "RECAP COMMAND:\n" + recapCtx
-        }
-
-        if shouldUseGoalMode {
-            skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
-        }
-        if shouldUseGoalMode, let planningDraft {
-            let selection = TaskRoleProfileStore.selection(
-                for: .planner,
-                task: planningDraft,
-                defaultRuntimeID: defaultRuntime.rawValue,
-                defaultModel: normalizedDefaultModel,
-                defaultBudget: defaultBudget,
-                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-                providerSettings: providerSettingsSnapshot.providerSettings,
-                cache: runtimeModelCache
-            )
-            TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
-        }
-
+        let slashContext = activeSlashContext
         AppLogger.breadcrumb(action: "new_task_chat_sent", category: "UI", traceID: traceID, fields: [
             "source": shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat",
             "runtime": defaultRuntimeID,
@@ -1275,15 +1289,42 @@ struct ChatPanelView: View {
         logChatCapabilityContext(source: shouldUseGoalMode ? "new_task_plan_chat" : "new_task_chat", traceID: traceID)
 
         chatReplyTask?.cancel()
-        chatReplyTask = Task {
-            let result = await SpecEngine.chat(
-                messages: conversationHistory,
-                workspacePath: ws,
-                skillContext: skillCtx,
-                utilityRuntime: planningUtilityRuntime
-            )
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
+        chatReplyTask = Task { @MainActor in
+            defer { if !Task.isCancelled { isThinking = false } }
+            do {
+                let planningDraft = try await saveDraft()
+                try Task.checkCancellation()
+                if shouldUseGoalMode, let planningDraft {
+                    try await ensurePlanningWorktree(for: planningDraft)
+                    let selection = TaskRoleProfileStore.selection(
+                        for: .planner,
+                        task: planningDraft,
+                        defaultRuntimeID: defaultRuntime.rawValue,
+                        defaultModel: normalizedDefaultModel,
+                        defaultBudget: defaultBudget,
+                        defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                        providerSettings: providerSettingsSnapshot.providerSettings,
+                        cache: runtimeModelCache
+                    )
+                    TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
+                }
+                var skillCtx = baseNewTaskSkillContext(for: planningDraft)
+                if let slashContext {
+                    skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "SLASH COMMAND CONTEXT:\n" + slashContext
+                }
+                if let recapContext {
+                    skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + "RECAP COMMAND:\n" + recapContext
+                }
+                if shouldUseGoalMode {
+                    skillCtx += (skillCtx.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
+                }
+                let result = await SpecEngine.chat(
+                    messages: conversationHistory,
+                    workspacePath: planningDraft.map { TaskWorkspaceAccess(task: $0).codeWorkingDirectory } ?? ws,
+                    skillContext: skillCtx,
+                    utilityRuntime: planningUtilityRuntime
+                )
+                try Task.checkCancellation()
                 isThinking = false
                 switch result {
                 case .success(let response):
@@ -1299,14 +1340,17 @@ struct ChatPanelView: View {
                 case .failure(let error):
                     messages.append(ChatMessage(role: "assistant", content: "Sorry, I encountered an error: \(error.localizedDescription)"))
                 }
-                saveDraft()
+                _ = try await saveDraft()
+            } catch {
+                reportTaskCreationError(error)
             }
         }
     }
     /// Quick run: create task directly from input text and run immediately
     private func quickRun() {
         let input = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty, selectedComposerRuntimeCanExecuteRequest else { return }
+        guard !input.isEmpty, selectedComposerRuntimeCanExecuteRequest,
+              !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
         let traceID = AuditTrace.make("quick-run")
         let workerSelection = composerWorkerSelection
         let runtime = workerSelection.profile.runtime
@@ -1329,7 +1373,6 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = attachedFiles
         task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
@@ -1338,35 +1381,44 @@ struct ChatPanelView: View {
         task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
-        modelContext.insert(task)
-        TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-        recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
-        saveConversationAsEvents(on: task)
-        promoteDraft(to: task)
-        guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-            modelContext.delete(task)
-            return
-        }
-        messageText = ""
-        messages = []
-        attachedFiles = []
-        pendingPlan = nil
-        isApprovedPlanHistoryExpanded = false
-        isPlanMode = false
-        var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
-        auditFields["trace_id"] = traceID
-        auditFields["use_agent_team"] = String(useAgentTeam)
-        auditFields["team_size"] = String(teamSize)
-        AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+        performTaskCreation {
+            try await prepareTaskCheckout(task)
+            TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
+            modelContext.insert(task)
+            TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+            recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
+            saveConversationAsEvents(on: task)
+            guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+                draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                    task: task, existingDraft: composerDraft, modelContext: modelContext
+                )
+                taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
+                return
+            }
+            var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
+            auditFields["trace_id"] = traceID
+            auditFields["use_agent_team"] = String(useAgentTeam)
+            auditFields["team_size"] = String(teamSize)
+            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+            try promoteDraft(to: task)
+            messageText = ""
+            messages = []
+            attachedFiles = []
+            pendingPlan = nil
+            isApprovedPlanHistoryExpanded = false
+            isPlanMode = false
+            worktreeSelection.resetTaskChoice()
 
-        onQuickRun?(task)
+            onQuickRun?(task)
+        }
     }
 
     /// Generate a concrete plan candidate from the full planning conversation.
     private func generatePlanFromConversation() {
-        guard !messages.isEmpty else { return }
+        guard !messages.isEmpty, !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
 
         isThinking = true
+        taskCreationError = nil
         let traceID = AuditTrace.make("new-task-plan-generation")
         AppLogger.breadcrumb(action: "new_task_plan_generation_clicked", category: "UI", traceID: traceID, fields: [
             "source": "new_task_plan_generation",
@@ -1383,68 +1435,75 @@ struct ChatPanelView: View {
             )
         ]
         let ws = resolvedWorkspace
-        var skillContext = baseNewTaskSkillContext()
-        skillContext += (skillContext.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
         logChatCapabilityContext(source: "new_task_plan_generation", traceID: traceID)
-        if let planningDraft = draftTask ?? saveDraft() {
-            let selection = TaskRoleProfileStore.selection(
-                for: .planner,
-                task: planningDraft,
-                defaultRuntimeID: defaultRuntime.rawValue,
-                defaultModel: normalizedDefaultModel,
-                defaultBudget: defaultBudget,
-                defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
-                providerSettings: providerSettingsSnapshot.providerSettings,
-                cache: runtimeModelCache
-            )
-            TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
-        }
-
         planGenerationTask?.cancel()
-        planGenerationTask = Task {
-            let result = await SpecEngine.chat(
-                messages: conversationHistory,
-                workspacePath: ws,
-                skillContext: skillContext,
-                utilityRuntime: planningUtilityRuntime
-            )
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
+        planGenerationTask = Task { @MainActor in
+            defer { if !Task.isCancelled { isThinking = false } }
+            do {
+                let planningDraft = try await saveDraft()
+                try Task.checkCancellation()
+                if let planningDraft {
+                    try await ensurePlanningWorktree(for: planningDraft)
+                    let selection = TaskRoleProfileStore.selection(
+                        for: .planner,
+                        task: planningDraft,
+                        defaultRuntimeID: defaultRuntime.rawValue,
+                        defaultModel: normalizedDefaultModel,
+                        defaultBudget: defaultBudget,
+                        defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
+                        providerSettings: providerSettingsSnapshot.providerSettings,
+                        cache: runtimeModelCache
+                    )
+                    TaskRoleProfileStore.recordSelected(selection, task: planningDraft, modelContext: modelContext)
+                }
+                var skillContext = baseNewTaskSkillContext(for: planningDraft)
+                skillContext += (skillContext.isEmpty ? "" : "\n\n") + newTaskPlanInstructions()
+                let result = await SpecEngine.chat(
+                    messages: conversationHistory,
+                    workspacePath: planningDraft.map { TaskWorkspaceAccess(task: $0).codeWorkingDirectory } ?? ws,
+                    skillContext: skillContext,
+                    utilityRuntime: planningUtilityRuntime
+                )
+                try Task.checkCancellation()
                 isThinking = false
                 switch result {
                 case .success(let response):
                     messages.append(ChatMessage(role: "assistant", content: TaskPlanService.userVisiblePlanningText(from: response)))
-                    if let draft = draftTask ?? saveDraft() {
+                    if let draft = try await saveDraft() {
                         preparePendingPlan(from: response, fallbackGoal: draft.goal, on: draft, allowFallback: true)
                     }
                 case .failure(let error):
                     messages.append(ChatMessage(role: "assistant", content: "Failed to generate a plan: \(error.localizedDescription). Try describing the task differently."))
                 }
-                saveDraft()
+                _ = try await saveDraft()
+            } catch {
+                reportTaskCreationError(error)
             }
         }
     }
 
     private func approvePendingPlan() {
         guard var plan = pendingPlan else { return }
-        guard let task = draftTask ?? saveDraft() else { return }
-        task.inputs = ComposerAttachments.inputs(task.inputs, replacingPathsWith: attachedFiles)
+        performTaskCreation {
+            guard let task = try await saveDraft() else { return }
+            task.inputs = ComposerAttachments.inputs(task.inputs, replacingPathsWith: attachedFiles)
 
-        if let existingPlan = TaskPlanService.reconstruct(for: task).plan {
-            plan.planID = existingPlan.planID
+            if let existingPlan = TaskPlanService.reconstruct(for: task).plan {
+                plan.planID = existingPlan.planID
+            }
+
+            recordPlanConversationEvents(on: task)
+            TaskPlanService.recordCreated(plan, task: task, modelContext: modelContext)
+            TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
+            task.title = plan.title
+            task.goal = plan.goal.isEmpty ? task.goal : plan.goal
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: task.workspace, modelContext: modelContext)
+            pendingPlan = nil
+            isApprovedPlanHistoryExpanded = false
+            isPlanMode = false
+            onTaskCreated?(task)
+            showPlanCanvasIfNeeded(for: task)
         }
-
-        recordPlanConversationEvents(on: task)
-        TaskPlanService.recordCreated(plan, task: task, modelContext: modelContext)
-        TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
-        task.title = plan.title
-        task.goal = plan.goal.isEmpty ? task.goal : plan.goal
-        pendingPlan = nil
-        isApprovedPlanHistoryExpanded = false
-        isPlanMode = false
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        onTaskCreated?(task)
-        showPlanCanvasIfNeeded(for: task)
     }
 
     private func disableGoalModeFromUserToggle() {
@@ -1459,9 +1518,9 @@ struct ChatPanelView: View {
         }
     }
 
-    private func runApprovedPlan(_ plan: TaskPlanPayload) {
+    private func runApprovedPlan(_ plan: TaskPlanPayload, worktreeReady: Bool = false) {
         guard let task = draftTask,
-              task.status != .running else { return }
+              task.status != .running, worktreeReady || !isPreparingWorktree else { return }
 
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
             TaskForkPolicyService.recordReadOnlyBlock(
@@ -1469,6 +1528,14 @@ struct ChatPanelView: View {
                 for: task,
                 modelContext: modelContext
             )
+            return
+        }
+        // The draft itself becomes the task, so it gets its worktree first.
+        if !worktreeReady, requestedWorktree != nil {
+            performTaskCreation {
+                try await ensurePlanningWorktree(for: task)
+                runApprovedPlan(plan, worktreeReady: true)
+            }
             return
         }
 
@@ -1527,7 +1594,6 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
@@ -1539,36 +1605,44 @@ struct ChatPanelView: View {
         task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
-        modelContext.insert(task)
-        TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-        recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
+        performTaskCreation {
+            try await prepareTaskCheckout(task)
+            TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
+            modelContext.insert(task)
+            TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+            recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
 
-        // Persist conversation history as events so it survives draft→queued→draft transitions
-        saveConversationAsEvents(on: task)
+            // Persist conversation history as events so it survives draft→queued→draft transitions
+            saveConversationAsEvents(on: task)
 
-        promoteDraft(to: task)
-        guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-            modelContext.delete(task)
-            return
+            guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+                draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                    task: task, existingDraft: composerDraft, modelContext: modelContext
+                )
+                taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
+                return
+            }
+            var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
+            auditFields["trace_id"] = traceID
+            auditFields["inputs_count"] = String(task.inputs.count)
+            auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
+            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+            try promoteDraft(to: task)
+
+            // Reset state
+            messageText = ""
+            messages = []
+            extractedSpec = nil
+            showSpecCard = false
+            pendingPlan = nil
+            isApprovedPlanHistoryExpanded = false
+            attachedFiles = []
+            chainedGoal = ""
+            isPlanMode = false
+            worktreeSelection.resetTaskChoice()
+
+            onTaskCreated?(task)
         }
-
-        // Reset state
-        messageText = ""
-        messages = []
-        extractedSpec = nil
-        showSpecCard = false
-        pendingPlan = nil
-        isApprovedPlanHistoryExpanded = false
-        attachedFiles = []
-        chainedGoal = ""
-        isPlanMode = false
-        var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
-        auditFields["trace_id"] = traceID
-        auditFields["inputs_count"] = String(task.inputs.count)
-        auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
-        AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
-
-        onTaskCreated?(task)
     }
 
     // MARK: - Slash Menu
@@ -1933,20 +2007,24 @@ struct ChatPanelView: View {
             let taskTitle = json["taskTitle"] as? String ?? tmpl.name
             let variables = json["variables"] as? [String: String] ?? [:]
 
-            let creation = WorkspaceCommandService.createTemplateTasks(
-                template: tmpl,
-                taskTitle: taskTitle,
-                variables: variables,
-                selectedSkills: selectedSkills,
-                defaultModel: normalizedDefaultModel,
-                defaultRuntimeID: defaultRuntime.rawValue,
-                workspace: ws,
-                modelContext: modelContext,
-                source: "template"
-            )
-            activeSlashContext = nil
-            if !creation.initialRequestSubmitted { messages.append(ChatMessage(role: "assistant", content: "The template task was saved as a draft because ASTRA could not queue its initial run. Open the task and retry when ready.")) }
-            onTaskCreated?(creation.mainTask)
+            performTaskCreation {
+                let checkoutSource = try await templateCheckoutSource(branchTitle: taskTitle)
+                let creation = WorkspaceCommandService.createTemplateTasks(
+                    template: tmpl,
+                    taskTitle: taskTitle,
+                    variables: variables,
+                    selectedSkills: selectedSkills,
+                    defaultModel: normalizedDefaultModel,
+                    defaultRuntimeID: defaultRuntime.rawValue,
+                    workspace: ws,
+                    modelContext: modelContext,
+                    source: "template",
+                    checkoutSource: checkoutSource
+                )
+                activeSlashContext = nil
+                if !creation.initialRequestSubmitted { messages.append(ChatMessage(role: "assistant", content: "The template task was saved as a draft because ASTRA could not queue its initial run. Open the task and retry when ready.")) }
+                onTaskCreated?(creation.mainTask)
+            }
 
         case "create_schedule":
             let name = json["name"] as? String ?? "New Routine"
@@ -2028,14 +2106,13 @@ struct ChatPanelView: View {
     // MARK: - Draft Management
 
     @discardableResult
-    private func saveDraft() -> AgentTask? {
-        guard !messages.isEmpty else { return draftTask }
+    func saveDraft() async throws -> AgentTask? {
+        guard !messages.isEmpty else { return composerDraft }
 
         let draftMessages = messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
-        guard let data = try? JSONEncoder().encode(draftMessages),
-              let json = String(data: data, encoding: .utf8) else { return draftTask }
+        let json = String(decoding: try JSONEncoder().encode(draftMessages), as: UTF8.self)
 
-        if let draft = draftTask {
+        if let draft = composerDraft {
             let workerSelection = composerWorkerSelection
             let runtime = workerSelection.profile.runtime
             let model = workerSelection.profile.model
@@ -2056,11 +2133,16 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
+            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
+            if draftToLoad == nil {
+                NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
+            }
             if TaskPolicyStore.latestSelectedLevel(for: draft) != currentAgentPolicyLevel {
                 recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_updated")
             }
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             draft.updatedAt = Date()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: draft.workspace, modelContext: modelContext)
             return draft
         } else {
             // Gate creation at the source: don't persist a brand-new draft for a
@@ -2102,7 +2184,10 @@ struct ChatPanelView: View {
             modelContext.insert(draft)
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_created")
+            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
+            NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
             draftTask = draft
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: draft.workspace, modelContext: modelContext)
             return draft
         }
     }
@@ -2180,6 +2265,7 @@ struct ChatPanelView: View {
         // Adopt this draft's own persisted runtime pick and chips, not whatever this view held before.
         composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
         attachedFiles = ComposerAttachments.paths(in: task.inputs)
+        NewTaskWorktreeComposerFlow.restoreChoice(&worktreeSelection, from: task)
         // First try loading from draftMessages JSON
         if !task.draftMessages.isEmpty,
            let data = task.draftMessages.data(using: .utf8),
@@ -2219,10 +2305,12 @@ struct ChatPanelView: View {
         }
     }
 
-    private func promoteDraft(to finalTask: AgentTask) {
-        if let draft = draftTask {
-            // Delete the draft since we're creating the real task
-            modelContext.delete(draft)
+    /// The real task replaces the draft; worktrees it didn't take over are
+    /// given back. Throws, leaving the composer as it is, while the draft's
+    /// deletion isn't saved.
+    private func promoteDraft(to finalTask: AgentTask) throws {
+        if let draft = draftTask, draft !== finalTask {
+            try NewTaskWorktreeComposerFlow.promote(draft, to: finalTask, modelContext: modelContext, resourceQueue: taskQueue)
             draftTask = nil
         }
         // finalTask already captured the flag; reset it so a later, unrelated
@@ -2232,7 +2320,7 @@ struct ChatPanelView: View {
 
 }
 
-// MARK: - Spec Card (editable review of extracted spec)
+// MARK: - Plan Review Cards
 
 private struct ApprovedPlanReadyCard: View {
     let plan: TaskPlanPayload
@@ -2407,184 +2495,5 @@ private struct DraftPlanPreviewCard: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Stanford.lagunita.opacity(Stanford.strokeActive), lineWidth: 1)
         )
-    }
-}
-
-struct SpecCardView: View {
-    @Binding var spec: TaskSpec?
-    @Binding var chainedGoal: String
-    let onCreateTask: () -> Void
-    let onDismiss: () -> Void
-
-    var body: some View {
-        if var spec = spec {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Task Spec")
-                        .font(Stanford.ui(15, weight: .semibold))
-                    Spacer()
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if let clarifications = spec.clarifications, !clarifications.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("Clarifications needed:", systemImage: "questionmark.circle")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(Stanford.poppy)
-                        ForEach(clarifications, id: \.self) { q in
-                            Text("• \(q)")
-                                .font(Stanford.caption(12))
-                                .foregroundStyle(.primary)
-                        }
-                    }
-                    .padding(8)
-                    .background(Stanford.poppy.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-
-                Group {
-                    EditableField(label: "Title", text: Binding(
-                        get: { spec.title },
-                        set: { spec.title = $0; self.spec = spec }
-                    ))
-
-                    EditableField(label: "Goal", text: Binding(
-                        get: { spec.goal },
-                        set: { spec.goal = $0; self.spec = spec }
-                    ), axis: .vertical)
-
-                    HStack {
-                        Label("Complexity", systemImage: "gauge.medium")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.secondary)
-                        Text(spec.estimatedComplexity)
-                            .font(Stanford.caption(12))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.fill.tertiary)
-                            .clipShape(Capsule())
-                    }
-
-                    EditableListField(label: "Constraints", items: Binding(
-                        get: { spec.constraints },
-                        set: { spec.constraints = $0; self.spec = spec }
-                    ))
-
-                    EditableListField(label: "Acceptance Criteria", items: Binding(
-                        get: { spec.acceptanceCriteria },
-                        set: { spec.acceptanceCriteria = $0; self.spec = spec }
-                    ))
-                }
-
-                // Chain: follow-up task
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "link")
-                            .font(Stanford.ui(12))
-                            .foregroundStyle(.secondary)
-                        Text("Then do... (optional)")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.secondary)
-                    }
-                    TextField("Describe what should happen after this task completes", text: $chainedGoal, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .font(Stanford.caption(12))
-                        .lineLimit(1...3)
-                }
-
-                HStack {
-                    Spacer()
-                    Button("Create Task", action: onCreateTask)
-                        .buttonStyle(StanfordButtonStyle())
-                        .disabled(spec.title.isEmpty || spec.goal.isEmpty)
-                }
-            }
-            .padding()
-            .background(Stanford.fog)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Stanford.cardinalRed.opacity(Stanford.strokeActive), lineWidth: 1)
-            )
-        }
-    }
-}
-
-struct EditableField: View {
-    let label: String
-    @Binding var text: String
-    var axis: Axis = .horizontal
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-            TextField(label, text: $text, axis: axis == .vertical ? .vertical : .horizontal)
-                .textFieldStyle(.roundedBorder)
-                .font(Stanford.body(15))
-                .lineLimit(axis == .vertical ? 2...4 : 1...1)
-        }
-    }
-}
-
-struct EditableListField: View {
-    let label: String
-    @Binding var items: [String]
-    @State private var newItem = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(Stanford.caption(12))
-                .foregroundStyle(.secondary)
-            ForEach(items.indices, id: \.self) { index in
-                HStack(spacing: 4) {
-                    TextField(label, text: Binding(
-                        get: { index < items.count ? items[index] : "" },
-                        set: { if index < items.count { items[index] = $0 } }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .font(Stanford.caption(12))
-                    Button {
-                        if index < items.count { items.remove(at: index) }
-                    } label: {
-                        Image(systemName: "minus.circle.fill")
-                            .foregroundStyle(.secondary)
-                            .font(Stanford.caption(12))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            HStack(spacing: 4) {
-                TextField("Add \(label.lowercased())...", text: $newItem)
-                    .textFieldStyle(.roundedBorder)
-                    .font(Stanford.caption(12))
-                    .onSubmit {
-                        let trimmed = newItem.trimmingCharacters(in: .whitespaces)
-                        if !trimmed.isEmpty {
-                            items.append(trimmed)
-                            newItem = ""
-                        }
-                    }
-                Button {
-                    let trimmed = newItem.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty {
-                        items.append(trimmed)
-                        newItem = ""
-                    }
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundStyle(Stanford.interactive)
-                        .font(Stanford.caption(12))
-                }
-                .buttonStyle(.plain)
-                .disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
     }
 }

@@ -52,6 +52,7 @@ struct WorkspaceGitSectionView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.newTaskWorktreeIntents) private var worktreeIntents
     @StateObject var viewModel = WorkspaceGitViewModel()
     let workspace: Workspace
     var selectedTask: AgentTask?
@@ -177,11 +178,31 @@ struct WorkspaceGitSectionView: View {
         }
     }
 
+    /// The new-task composer's live worktree choice for this card's context.
+    private var worktreeIntent: NewTaskWorktreeIntentStore.Entry? {
+        worktreeIntents?.entry(workspaceID: workspace.id, selectedTaskID: selectedTask?.id)
+    }
+
+    /// The task the card describes: the selected task, or the new-task
+    /// composer's draft once it has its own worktree.
+    private var contextTask: AgentTask? {
+        if let selectedTask { return selectedTask }
+        guard let draft = worktreeIntent?.preparedDraft, draft.modelContext != nil, !draft.isDeleted else { return nil }
+        return draft
+    }
+
+    /// Set while the next task will get a new worktree instead of running in
+    /// the checkout this card shows.
+    private var newWorktreePreview: WorkspaceGitNewWorktreePreview? {
+        WorkspaceGitNewWorktreePreview(entry: worktreeIntent, contextTask: contextTask)
+    }
+
     private var repositorySetupSignature: String {
         [
             workspace.id.uuidString,
-            selectedTask?.id.uuidString ?? "none",
-            selectedTask?.executionRootPath ?? "none"
+            workspace.activeWorkingPath ?? "none",
+            contextTask?.id.uuidString ?? "none",
+            contextTask?.executionRootPath ?? "none"
         ].joined(separator: "\u{1E}")
     }
 
@@ -193,7 +214,7 @@ struct WorkspaceGitSectionView: View {
             return
         }
         guard !Task.isCancelled else { return }
-        viewModel.setup(for: workspace, selectedTask: selectedTask)
+        viewModel.setup(for: workspace, selectedTask: contextTask)
         clearTransientRepositoryPresentation()
     }
 
@@ -418,6 +439,8 @@ struct WorkspaceGitSectionView: View {
         guard viewModel.selectedRepository != nil else {
             return viewModel.selectedRepositorySubtitle
         }
+        if let preview = newWorktreePreview { return preview.summary }
+        if viewModel.unavailableWorktreePath != nil { return "Worktree unavailable · repository actions off" }
 
         var parts: [String] = []
         let branch = viewModel.currentBranch.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -468,7 +491,7 @@ struct WorkspaceGitSectionView: View {
                 rowIcon("folder")
                 VStack(alignment: .leading, spacing: 1) {
                     rowTitle("Repository")
-                    Text(viewModel.activeSelectionScopeLabel)
+                    Text(newWorktreePreview == nil ? viewModel.activeSelectionScopeLabel : WorkspaceGitNewWorktreePreview.scopeLabel)
                         .font(Stanford.caption(10).weight(.medium))
                         .foregroundStyle(Stanford.textTertiary)
                         .lineLimit(1)
@@ -518,9 +541,9 @@ struct WorkspaceGitSectionView: View {
 
                 Spacer(minLength: 8)
 
-                Text(viewModel.currentBranch.isEmpty ? "Select…" : viewModel.currentBranch)
+                Text(newWorktreePreview?.branchValue ?? (viewModel.currentBranch.isEmpty ? "Select…" : viewModel.currentBranch))
                     .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(newWorktreePreview == nil ? Color.secondary : Stanford.lagunita)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
@@ -530,9 +553,11 @@ struct WorkspaceGitSectionView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
+        .disabled(newWorktreePreview != nil)
         .popover(isPresented: $viewModel.showBranchPickerPopover, arrowEdge: .trailing) {
             BranchPickerPopoverView(viewModel: viewModel)
         }
+        .help(newWorktreePreview?.branchHelp ?? "Switch branch")
     }
 
     // MARK: - Working location row
@@ -546,14 +571,14 @@ struct WorkspaceGitSectionView: View {
             showLocationPopover = true
         } label: {
             HStack(spacing: Self.rowIconSpacing) {
-                rowIcon(viewModel.isUsingWorktree ? "square.split.2x1" : "house")
+                rowIcon(viewModel.isUsingWorktree || newWorktreePreview != nil ? "square.split.2x1" : "house")
                 rowTitle("Checkout")
 
                 Spacer(minLength: 8)
 
-                Text(workingLocationLabel)
+                Text(newWorktreePreview == nil ? workingLocationLabel : WorkspaceGitNewWorktreePreview.checkoutValue)
                     .font(Stanford.caption(CapabilityRailLayout.rowSubtitleFontSize).weight(.medium))
-                    .foregroundStyle(viewModel.isUsingWorktree ? Stanford.lagunita : .secondary)
+                    .foregroundStyle(viewModel.isUsingWorktree || newWorktreePreview != nil ? Stanford.lagunita : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
 
@@ -563,12 +588,13 @@ struct WorkspaceGitSectionView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
+        .disabled(newWorktreePreview != nil)
         .popover(isPresented: $showLocationPopover, arrowEdge: .trailing) {
             WorktreeLocationPopoverView(viewModel: viewModel) {
                 showLocationPopover = false
             }
         }
-        .help("Choose the checkout new chats run in")
+        .help(newWorktreePreview == nil ? "Choose the checkout new chats run in" : WorkspaceGitNewWorktreePreview.checkoutHelp)
     }
 
     private var workingLocationLabel: String {
@@ -589,6 +615,12 @@ struct WorkspaceGitSectionView: View {
         let prExists = viewModel.openPullRequest != nil
 
         return VStack(alignment: .leading, spacing: 7) {
+            if newWorktreePreview != nil {
+                Text(WorkspaceGitNewWorktreePreview.footerCaption)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
             if let sync = repositorySyncStatusText {
                 HStack(spacing: 6) {
                     Image(systemName: repositorySyncStatusIcon)
@@ -661,8 +693,8 @@ struct WorkspaceGitSectionView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(viewModel.isSuggestingPR)
-        .help(viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
+        .disabled(viewModel.isSuggestingPR || viewModel.unavailableWorktreePath != nil)
+        .help(viewModel.unavailableWorktreeMessage ?? viewModel.pullRequestReadinessIssue ?? "Draft and create a pull request")
         .contextMenu {
             Button("Open GitHub without draft") {
                 viewModel.openPullRequestURL(with: nil)
@@ -746,7 +778,15 @@ struct WorkspaceGitSectionView: View {
         } label: {
             HStack(spacing: Self.rowIconSpacing) {
                 rowIcon("plus.forwardslash.minus")
-                rowTitle("Changes")
+                VStack(alignment: .leading, spacing: 1) {
+                    rowTitle("Changes")
+                    if newWorktreePreview != nil {
+                        Text(WorkspaceGitNewWorktreePreview.changesCaption)
+                            .font(Stanford.caption(10).weight(.medium))
+                            .foregroundStyle(Stanford.textTertiary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer(minLength: 8)
 

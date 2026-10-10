@@ -246,10 +246,13 @@ public final class Skill {
     }
 
     public func cleanupKeychain() {
-        SkillSecretSeam.required.deleteAllSecrets(skillID: id)
-        AuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
-            "skill_id": id.uuidString
-        ])
+        keychainCleanup.run()
+    }
+
+    /// `cleanupKeychain()` as a value, so a deletion can record it durably
+    /// and run it once the skill's row is gone.
+    public var keychainCleanup: SkillKeychainCleanup {
+        SkillKeychainCleanup(skillID: id)
     }
 
     public func normalizedEnvironmentValue(at index: Int) -> String {
@@ -344,4 +347,16 @@ public final class Skill {
         "NotebookEdit": "Edit Jupyter notebooks",
         "TodoWrite": "Manage todo lists"
     ]
+}
+
+/// Deleting a skill's Keychain secrets needs only its ID.
+public struct SkillKeychainCleanup: Codable, Equatable, Sendable {
+    public let skillID: UUID
+
+    public func run() {
+        SkillSecretSeam.required.deleteAllSecrets(skillID: skillID)
+        AuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
+            "skill_id": skillID.uuidString
+        ])
+    }
 }

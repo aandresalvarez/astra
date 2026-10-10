@@ -144,7 +144,7 @@ public enum WorkspaceConfigManager {
     }
 
     public struct WorkspaceConfigImportResult {
-        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int) {
+        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int, droppedAdditionalPaths: [String] = []) {
             self.status = status
             self.workspace = workspace
             self.workspaceID = workspaceID
@@ -155,6 +155,7 @@ public enum WorkspaceConfigManager {
             self.quarantinedScheduleCount = quarantinedScheduleCount
             self.skippedConnectorCount = skippedConnectorCount
             self.skippedLocalToolCount = skippedLocalToolCount
+            self.droppedAdditionalPaths = droppedAdditionalPaths
         }
 
         public enum Status: String {
@@ -171,6 +172,9 @@ public enum WorkspaceConfigManager {
         public var quarantinedScheduleCount: Int
         public var skippedConnectorCount: Int
         public var skippedLocalToolCount: Int
+        /// Configured additional folders left out because worktree cleanup
+        /// was removing them when the import ran. Callers tell the user.
+        public var droppedAdditionalPaths: [String]
 
         public var didImport: Bool {
             status == .imported
@@ -186,7 +190,8 @@ public enum WorkspaceConfigManager {
                 "task_count": String(taskCount),
                 "quarantined_schedule_count": String(quarantinedScheduleCount),
                 "skipped_connector_count": String(skippedConnectorCount),
-                "skipped_local_tool_count": String(skippedLocalToolCount)
+                "skipped_local_tool_count": String(skippedLocalToolCount),
+                "dropped_additional_path_count": String(droppedAdditionalPaths.count)
             ]
         }
     }
@@ -1179,6 +1184,18 @@ public enum WorkspaceConfigManager {
         return decoder
     }
 
+    /// The first configured root at, inside, or above a checkout that worktree
+    /// cleanup is removing. Importing it would persist a root that is about to
+    /// vanish or that still reaches the checkout, so callers refuse the import
+    /// and the user can retry once cleanup ends.
+    public static func reservedRoot(of config: WorkspaceConfig) -> String? {
+        reservedRoot(among: [config.primaryPath] + config.additionalPaths + (config.tasks ?? []).compactMap(\.executionRootPath))
+    }
+
+    public static func reservedRoot(among roots: [String]) -> String? {
+        roots.first { TaskWorktreeCheckoutReservation.isReserved($0) }
+    }
+
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
     @MainActor
     public static func importWorkspace(
@@ -1196,6 +1213,11 @@ public enum WorkspaceConfigManager {
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
+    /// Callers refuse a config whose `reservedRoot(of:)` is set before any
+    /// destructive step. An additional root that cleanup starts removing
+    /// between that check and this import is dropped and reported in
+    /// `droppedAdditionalPaths`, never persisted silently as part of the
+    /// workspace.
     @MainActor
     public static func importWorkspaceResult(
         from config: WorkspaceConfig,
@@ -1203,10 +1225,20 @@ public enum WorkspaceConfigManager {
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
     ) -> WorkspaceConfigImportResult {
+        let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
+        let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
+        if !droppedAdditionalPaths.isEmpty {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "import_additional_root",
+                "reason": "workspace_root_being_removed",
+                "dropped_root_count": String(droppedAdditionalPaths.count),
+                "dropped_roots": droppedAdditionalPaths.joined(separator: ", ")
+            ], level: .warning)
+        }
         let workspace = Workspace(
             name: config.name,
             primaryPath: config.primaryPath,
-            additionalPaths: config.additionalPaths,
+            additionalPaths: additionalPaths,
             icon: config.icon,
             instructions: config.instructions
         )
@@ -1366,7 +1398,8 @@ public enum WorkspaceConfigManager {
             taskCount: workspace.tasks.count,
             quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
-            skippedLocalToolCount: skippedLocalToolCount
+            skippedLocalToolCount: skippedLocalToolCount,
+            droppedAdditionalPaths: droppedAdditionalPaths
         )
         AuditLoggingSeam.required.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
         return result
@@ -2380,6 +2413,11 @@ public enum WorkspaceConfigManager {
         toolsByID: inout [String: LocalTool],
         toolsByName: inout [String: LocalTool]
     ) {
+        // Unpinned, a task bound to a worktree cleanup is removing would run in
+        // the workspace's default checkout, so it is not imported. Importers
+        // refuse such configs first; this runs before the task can be adopted.
+        if TaskWorktreeCheckoutReservation.isReserved(config.executionRootPath),
+           config.events.contains(where: { $0.type == TaskEventTypes.Task.worktreePrepared.rawValue }) { return }
         let importedRuntime = config.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) ?? .claudeCode
         let task = AgentTask(
             title: config.title,
@@ -2437,7 +2475,10 @@ public enum WorkspaceConfigManager {
         task.forkedFromID = config.forkedFromID.flatMap(UUID.init(uuidString:))
         task.forkedAtRunIndex = config.forkedAtRunIndex ?? 0
         task.originScheduleID = config.originScheduleID.flatMap(UUID.init(uuidString:))
-        task.executionRootPath = config.executionRootPath
+        // An imported pin must not land on a checkout cleanup is removing.
+        if !TaskWorktreeCheckoutReservation.commit(config.executionRootPath, to: task) {
+            task.executionRootPath = nil
+        }
         task.useAgentTeam = config.useAgentTeam ?? false
         task.teamSize = config.teamSize ?? 3
         task.teamInstructions = config.teamInstructions ?? ""
@@ -2937,6 +2978,7 @@ public enum WorkspaceConfigManager {
 
         let activePath = WorkspacePathPresentation.standardizedPath(active)
         guard !activePath.isEmpty,
+              !TaskWorktreeCheckoutReservation.isReserved(activePath),
               isExistingDirectory(activePath, fileManager: fileManager),
               let canonicalActive = canonicalPath(activePath) else {
             return nil

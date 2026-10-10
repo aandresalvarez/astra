@@ -285,31 +285,40 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func scanRepositories() async {
         guard let workspace = workspace else { return }
+        let taskID = selectedTask?.id
+        let activePath = activeWorkingPath
         let repos = await git.scanForGitRepositories(
             primaryPath: workspace.primaryPath,
             additionalPaths: workspace.additionalPaths
         )
+        let preferred = await preferredRepository(in: repos)
+        guard self.workspace?.id == workspace.id,
+              selectedTask?.id == taskID,
+              activeWorkingPath == activePath else { return }
         self.repositories = repos
-        if let preferred = preferredRepository(in: repos) {
-            self.selectedRepository = preferred
+        if let preferred {
+            self.selectedRepository = preferred.repository
         } else if self.selectedRepository == nil {
             self.selectedRepository = repos.first
         } else if !repos.contains(where: { $0.path == self.selectedRepository?.path }) {
             self.selectedRepository = repos.first
         }
-        persistScannedRepositorySelectionIfNeeded()
+        persistScannedRepositorySelectionIfNeeded(activePathInRepository: preferred?.containsActivePath == true)
         scheduleRefresh()
         await waitForPendingRefresh()
     }
 
-    private func persistScannedRepositorySelectionIfNeeded() {
+    private func persistScannedRepositorySelectionIfNeeded(activePathInRepository: Bool) {
         // A scan is read-only with respect to task pinning: only adopt the
         // scanned selection as the workspace code default when no task is
         // selected. A selected task (including a draft) must be pinned only by an
         // explicit user selection in `selectRepository`, never as a side effect
         // of a background scan. `setActiveWorkingPath` skips no-op writes, so this
         // never churns `workspace.updatedAt` when the default already matches.
+        // A default that is already the repository or one of its worktrees is
+        // kept: resetting it to the root would undo a chosen worktree checkout.
         guard selectedTask == nil,
+              !activePathInRepository,
               let selectedRepository
         else { return }
         _ = setActiveWorkingPath(selectedRepository.path)
@@ -347,7 +356,12 @@ final class WorkspaceGitViewModel: ObservableObject {
         return nil
     }
 
-    private func preferredRepository(in repos: [GitRepositoryInfo]) -> GitRepositoryInfo? {
+    /// The repository to select, and whether it contains the active path (as
+    /// its root or one of its worktrees).
+    private func preferredRepository(
+        in repos: [GitRepositoryInfo]
+    ) async -> (repository: GitRepositoryInfo, containsActivePath: Bool)? {
+        let active = activeWorkingPath.map(WorkspacePathPresentation.standardizedPath)
         let candidates = [
             activeWorkingPath,
             selectedTask?.executionRootPath,
@@ -358,9 +372,38 @@ final class WorkspaceGitViewModel: ObservableObject {
         .compactMap { $0 }
         .map(WorkspacePathPresentation.standardizedPath)
 
+        // A checkout root is matched to its repository through the Git
+        // directory it shares, read from disk; `git worktree list` runs only
+        // for a checkout whose folder is gone and may still be registered.
+        let repositoriesByCommonDirectory = Dictionary(
+            repos.compactMap { repository in
+                GitCheckoutLayout.commonDirectory(for: repository.path)
+                    .map { (URL(fileURLWithPath: $0).resolvingSymlinksInPath().path, repository) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         for candidate in candidates {
             if let exact = repos.first(where: { $0.path == candidate }) {
-                return exact
+                return (exact, candidate == active)
+            }
+            if FileManager.default.fileExists(atPath: candidate) {
+                if GitCheckoutLayout.worktreeRoot(containing: candidate) == candidate,
+                   let commonDirectory = GitCheckoutLayout.commonDirectory(for: candidate),
+                   let repository = repositoriesByCommonDirectory[
+                    URL(fileURLWithPath: commonDirectory).resolvingSymlinksInPath().path
+                   ] {
+                    return (repository, candidate == active)
+                }
+                continue
+            }
+            let resolved = URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path
+            for repository in repos {
+                let worktrees = await git.listWorktrees(at: repository.path)
+                if worktrees.contains(where: {
+                    URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == resolved
+                }) {
+                    return (repository, candidate == active)
+                }
             }
         }
         return nil
@@ -375,12 +418,51 @@ final class WorkspaceGitViewModel: ObservableObject {
     /// status, staging, commit, and push actions resolve through here so the
     /// panel always reflects the working location the user picked.
     var workingPath: String? {
+        // The draft's durable binding names its worktree; the source checkout
+        // is never a stand-in for it.
+        guard unavailableWorktreePath == nil else { return nil }
         if let active = activeWorkingPath,
            !active.isEmpty,
            FileManager.default.fileExists(atPath: active) {
             return active
         }
         return selectedRepository?.path
+    }
+
+    /// The selected task's worktree path while it can't be used: the binding
+    /// is unreadable or names an unconfigured repository, the folder is gone,
+    /// or something else now sits at the path, such as a plain folder or
+    /// another repository. Status, commit, push, and pull-request actions stay
+    /// off until the worktree is restored or the draft is deleted.
+    var unavailableWorktreePath: String? {
+        guard let task = selectedTask, let pin = task.executionRootPath, !pin.isEmpty else { return nil }
+        switch TaskWorktreeBinding.state(of: task) {
+        case .invalid:
+            return pin
+        case .bound(let payload, _, _):
+            return Self.holdsWorktree(pin, of: payload) ? nil : pin
+        case .none, .retargeted:
+            return nil
+        }
+    }
+
+    /// Whether `pin` is still the worktree `payload` recorded: a checkout
+    /// root whose own Git directory is the one the source repository
+    /// registers for it. This only ever denies actions, so reading the
+    /// checkout's `.git` file here is safe.
+    private static func holdsWorktree(_ pin: String, of payload: TaskWorktreePayload) -> Bool {
+        guard FileManager.default.fileExists(atPath: pin),
+              let root = GitCheckoutLayout.worktreeRoot(containing: pin),
+              WorkspacePathPresentation.resolvedPath(root) == WorkspacePathPresentation.resolvedPath(pin),
+              let own = GitCheckoutLayout.commonDirectory(for: pin),
+              let registered = TaskWorktreeBinding.gitCommonDirectory(for: payload) else { return false }
+        return WorkspacePathPresentation.resolvedPath(own) == WorkspacePathPresentation.resolvedPath(registered)
+    }
+
+    var unavailableWorktreeMessage: String? {
+        unavailableWorktreePath.map {
+            "This draft's worktree at \(WorkspacePathPresentation.abbreviatePath($0)) is missing, replaced, or no longer verifiable. Restore it, or delete the draft, before using repository actions."
+        }
     }
 
     /// True when the panel is focused on a worktree rather than the root.
@@ -408,6 +490,7 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     var activeSelectionScopeLabel: String {
         guard let task = selectedTask else { return "Workspace default" }
+        if unavailableWorktreePath != nil { return "Worktree unavailable" }
         if task.status == .draft { return "Draft task" }
         // Only claim a durable pin when the pinned path still exists on disk:
         // `TaskWorkspaceAccess` falls back to the workspace default when the
@@ -424,11 +507,15 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     var canChangeActiveCodePath: Bool {
         guard let task = selectedTask else { return true }
-        return task.status == .draft
+        return task.status == .draft && TaskWorktreeService.activeWorktreeBinding(for: task) == nil
+            && unavailableWorktreePath == nil
     }
 
     var activeCodePathChangeBlockedMessage: String {
-        "This task already has execution history, so its repository is pinned. Fork or start a new task to use another repository."
+        if selectedTask?.status == .draft {
+            return "This draft already has its own worktree. Start over or delete the draft to choose another checkout."
+        }
+        return "This task already has execution history, so its repository is pinned. Fork or start a new task to use another repository."
     }
 
     func selectRepository(_ repo: GitRepositoryInfo) {
@@ -737,6 +824,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     func createPullRequestCommentTask(modelContext: ModelContext) -> AgentTask? {
         guard let workspace,
               let path = workingPath,
+              !TaskWorktreeCheckoutReservation.isReserved(path),
               let pr = openPullRequest,
               let summary = pullRequestComments,
               summary.hasComments else {
@@ -766,9 +854,20 @@ final class WorkspaceGitViewModel: ObservableObject {
             model: model,
             runtime: runtime
         )
-        task.executionRootPath = path
+        // Cleanup may be removing this checkout; never pin a new draft to it.
+        guard TaskWorktreeCheckoutReservation.commit(path, to: task) else { return nil }
         task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: goal)
         modelContext.insert(task)
+        // On the selected task's own checkout the draft keeps that task's
+        // worktree binding; a bare pin would read as a legacy checkout and
+        // leave configured source folders writable.
+        if let owner = selectedTask, owner.workspace?.id == workspace.id,
+           owner.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
+            == WorkspacePathPresentation.standardizedPath(path),
+           let binding = TaskWorktreeBinding.eventForInheritance(from: owner) {
+            TaskWorktreeBinding.applyIsolation(to: task, for: binding)
+            modelContext.insert(TaskWorktreeBinding.copy(binding, to: task))
+        }
         TaskCapabilitySnapshotter.capture(for: task)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.gitPullRequestAddressTask, category: "Git", taskID: task.id, fields: [
@@ -839,28 +938,14 @@ final class WorkspaceGitViewModel: ObservableObject {
             errorMessage = activeCodePathChangeBlockedMessage
             return false
         }
-
-        let normalized = path
-            .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
-            .map(WorkspacePathPresentation.standardizedPath)
-
-        activeWorkingPath = normalized
-        guard let workspace else { return true }
-        let persistedOverride = normalized == WorkspacePathPresentation.standardizedPath(workspace.primaryPath)
-            ? nil
-            : normalized
-
-        if let selectedTask {
-            // Skip no-op writes so reselecting the same repo (or a scan) never
-            // bumps updatedAt or marks the model dirty.
-            guard selectedTask.executionRootPath != persistedOverride else { return true }
-            selectedTask.executionRootPath = persistedOverride
-            selectedTask.updatedAt = Date()
-        } else {
-            guard workspace.activeWorkingPath != persistedOverride else { return true }
-            workspace.activeWorkingPath = persistedOverride
-            workspace.updatedAt = Date()
+        if TaskWorktreeCheckoutReservation.isReserved(path) {
+            errorMessage = TaskCodeLocationPin.reservedCheckoutMessage
+            return false
         }
+
+        activeWorkingPath = TaskCodeLocationPin.normalize(path)
+        guard let workspace else { return true }
+        TaskCodeLocationPin.set(path, workspace: workspace, task: selectedTask)
         return true
     }
 
@@ -1228,7 +1313,7 @@ final class WorkspaceGitViewModel: ObservableObject {
     }
 
     var canOpenCommitSheet: Bool {
-        hasChanges || canPush
+        unavailableWorktreePath == nil && (hasChanges || canPush)
     }
 
     /// Pushes the current branch, publishing it with `--set-upstream` when no

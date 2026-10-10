@@ -11,17 +11,34 @@ public struct TaskWorkspaceAccess {
         self.fileSystem = fileSystem
     }
 
+    /// Resolving the binding probes the repository's worktree registry on
+    /// disk and most derived properties need it, so an instance reads it
+    /// once. Instances are short-lived; a binding change needs a new one.
+    private final class BindingStateCache {
+        var state: TaskWorktreeBinding.State?
+    }
+
+    private let bindingStateCache = BindingStateCache()
+
+    private var worktreeBindingState: TaskWorktreeBinding.State {
+        if let state = bindingStateCache.state { return state }
+        let state = TaskWorktreeBinding.state(of: task)
+        bindingStateCache.state = state
+        return state
+    }
+
     public var effectiveWorkspacePath: String {
         task.workspace?.primaryPath ?? ""
     }
 
     public var codeWorkingDirectory: String {
         // A thread pinned to a repository/worktree always runs in that code root,
-        // as long as it still exists. If the pin was removed, fall through to the
-        // workspace default instead of failing on a missing directory.
+        // as long as it still exists. Legacy pins degrade to the workspace
+        // default; an explicitly created task worktree must instead fail launch
+        // if removed, never silently send work to the original checkout.
         if let pinned = task.executionRootPath,
            !pinned.isEmpty,
-           fileSystem.fileExists(atPath: pinned) {
+           fileSystem.fileExists(atPath: pinned) || hasWorktreeEvent {
             return pinned
         }
         if let workspace = task.workspace {
@@ -42,32 +59,65 @@ public struct TaskWorkspaceAccess {
     /// derive from this list, so narrowing it narrows every projection at once.
     public var runtimeWritablePaths: [String] {
         let replaced = Set(replacedSourceCheckoutPaths)
-        return normalizedUniquePaths(task.workspace?.additionalPaths ?? []).filter { !replaced.contains($0) }
+        return runtimePathProjection(task.workspace?.additionalPaths ?? []).writable.filter { !replaced.contains($0) }
     }
 
-    /// Workspace folders (primary or additional) that are the root of another
-    /// checkout of the same repository as the code working directory. Running
-    /// in a linked worktree replaces that source checkout: sibling worktrees
-    /// must not each hold it writable, or they serialize on a folder neither
-    /// one edits. Subfolders, unrelated repositories, and non-Git folders keep
+    /// The code root a write-capable run may modify. Nil while the task's
+    /// worktree binding cannot be verified, so an unverified checkout is never
+    /// granted.
+    public var runtimeWritableCodeRoot: String? {
+        let codeRoot = codeWorkingDirectory
+        guard !codeRoot.isEmpty else { return nil }
+        if case .invalid = worktreeBindingState { return nil }
+        return codeRoot
+    }
+
+    /// Every configured folder as this task sees it: a prepared worktree takes
+    /// the place of its source checkout and of the folders inside it. This is
+    /// presentation only; writable roots come from `runtimeWritablePaths` and
+    /// `runtimeWritableCodeRoot`.
+    public var runtimeWorkspacePaths: [String] {
+        guard let workspace = task.workspace else { return [] }
+        return runtimePathProjection([workspace.primaryPath] + workspace.additionalPaths).writable
+    }
+
+    /// Workspace folders (primary or additional) whose writable place the
+    /// task's worktree takes: the root of another checkout of the code root's
+    /// repository and, for a worktree ASTRA prepared, the source folders it
+    /// projects into that worktree. Sibling worktrees must not each hold them
+    /// writable, or they serialize on folders neither one edits. Unrelated
+    /// repositories, non-Git folders, and an unbound task's subfolders keep
     /// their access. Identities are compared after resolving symlinks, so an
     /// aliased checkout path still matches Git's real admin path.
     public var replacedSourceCheckoutPaths: [String] {
+        let state = worktreeBindingState
+        let additionalPaths = task.workspace?.additionalPaths ?? []
+        let folders = normalizedUniquePaths([task.workspace?.primaryPath ?? ""] + additionalPaths)
+        let projected = Set(runtimePathProjection(folders, state: state).projected)
         let codeRoot = codeWorkingDirectory
-        guard !codeRoot.isEmpty,
-              let commonDirectory = GitCheckoutLayout.commonDirectory(for: codeRoot).map(Self.resolvedIdentity)
-        else { return [] }
+        let commonDirectory: String?
+        if case .bound(let binding, _, _) = state {
+            // Read the verified binding, never the worktree's own `.git` file.
+            commonDirectory = TaskWorktreeBinding.gitCommonDirectory(for: binding)
+        } else {
+            commonDirectory = codeRoot.isEmpty
+                ? nil
+                : GitCheckoutLayout.commonDirectory(for: codeRoot).map(Self.resolvedIdentity)
+        }
         let codeCheckout = GitCheckoutLayout.worktreeRoot(containing: codeRoot).map(Self.resolvedIdentity)
-        let folders = [task.workspace?.primaryPath ?? ""] + (task.workspace?.additionalPaths ?? [])
-        let candidates = normalizedUniquePaths(folders).filter { path in
-            guard let checkout = GitCheckoutLayout.worktreeRoot(containing: path) else { return false }
+        let candidates = folders.filter { path in
+            if projected.contains(path) { return true }
+            guard let commonDirectory,
+                  let checkout = GitCheckoutLayout.worktreeRoot(containing: path) else { return false }
             return checkout == URL(fileURLWithPath: path).standardizedFileURL.path
                 && Self.resolvedIdentity(checkout) != codeCheckout
                 && GitCheckoutLayout.commonDirectory(for: path).map(Self.resolvedIdentity) == commonDirectory
         }
         // A checkout beneath an additional folder that stays writable is still
-        // writable through that parent, so it is not treated as replaced.
-        let writableParents = normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+        // writable through that parent, so it is not treated as replaced. A
+        // folder containing a prepared worktree's source is read-only, so it
+        // never counts as such a parent.
+        let writableParents = runtimePathProjection(additionalPaths, state: state).writable
             .filter { !candidates.contains($0) }
             .map(Self.resolvedIdentity)
         return candidates.filter { candidate in
@@ -77,8 +127,11 @@ public struct TaskWorkspaceAccess {
     }
 
     /// Workspace folders the run can read but not write: a replaced source
-    /// checkout, or a workspace folder that is not the code root. Docker
-    /// mounts them read-only so they stay visible inside the container.
+    /// checkout, a folder containing a prepared worktree's source, or a
+    /// workspace folder that is not the code root. Docker mounts them
+    /// read-only so they stay visible inside the container. A prepared
+    /// worktree's admission holds each of them shared, so a writer of the
+    /// folder waits for the task.
     public var runtimeReadOnlyWorkspacePaths: [String] {
         let writable = Set(runtimeWritablePaths + normalizedUniquePaths([codeWorkingDirectory]))
         let folders = [task.workspace?.primaryPath ?? ""] + (task.workspace?.additionalPaths ?? [])
@@ -87,12 +140,166 @@ public struct TaskWorkspaceAccess {
         }
     }
 
+    /// Configured folders that contain the source checkout of the task's
+    /// prepared worktree. Writing to them would reach that checkout, so they
+    /// stay read-only, and admission holds them shared so a writer to the
+    /// folder waits for the task.
+    public var runtimeWorktreeSourceAncestorPaths: [String] {
+        guard let workspace = task.workspace else { return [] }
+        return runtimePathProjection([workspace.primaryPath] + workspace.additionalPaths).readOnly
+    }
+
+    /// The Git directory the task's worktree shares with its source checkout.
+    /// The worktree's index, refs, and objects live there, so Git commands in
+    /// the worktree need it even though the source working tree is not
+    /// granted. It is derived from the recorded source repository, never from
+    /// the worktree's own `.git` file, which the task can rewrite.
+    public var runtimeWorktreeGitMetadataPaths: [String] {
+        guard let binding = worktreeBinding,
+              let commonDirectory = TaskWorktreeBinding.gitCommonDirectory(for: binding) else {
+            return []
+        }
+        return [commonDirectory]
+    }
+
+    /// The `task.worktree.prepared` event that binds the task to its pinned
+    /// worktree. Nil for legacy pins, retargeted drafts, and unreadable
+    /// bindings.
+    public var worktreeBindingEvent: TaskEvent? {
+        guard case .bound(_, let event, _) = worktreeBindingState else { return nil }
+        return event
+    }
+
+    public var worktreeBinding: TaskWorktreePayload? {
+        guard case .bound(let payload, _, _) = worktreeBindingState else { return nil }
+        return payload
+    }
+
+    /// The task's folders for prompts and context: `runtimeWorkspacePaths`,
+    /// then each configured folder the task can only read.
+    public var runtimeWorkspaceFolders: [WorkspacePathDescriptor] {
+        let paths = runtimeWorkspacePaths
+        let folders = WorkspacePathPresentation.descriptors(
+            primaryPath: paths.first ?? codeWorkingDirectory,
+            additionalPaths: Array(paths.dropFirst())
+        )
+        let listed = Set(folders.map(\.path))
+        return folders + runtimeReadOnlyWorkspaceFolders.filter { !listed.contains($0.path) }
+    }
+
+    public var runtimeReadOnlyWorkspaceFolders: [WorkspacePathDescriptor] {
+        guard let workspace = task.workspace else { return [] }
+        let paths = Set(runtimeReadOnlyWorkspacePaths.map(WorkspacePathPresentation.standardizedPath))
+        return WorkspacePathPresentation.descriptors(
+            primaryPath: workspace.primaryPath, additionalPaths: workspace.additionalPaths
+        ).filter { paths.contains($0.path) }
+    }
+
     private static func resolvedIdentity(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     public var runtimeReadOnlyInputPaths: [String] {
         normalizedUniquePaths(inputPaths)
+    }
+
+    private var hasWorktreeEvent: Bool {
+        task.events.contains { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
+    }
+
+    private struct RuntimePathProjection {
+        var writable: [String]
+        var readOnly: [String] = []
+        /// Input folders a prepared worktree replaced with its own copy.
+        var projected: [String] = []
+    }
+
+    /// An invalid binding is reported once, at the launch gates
+    /// (`TaskQueue.prepareTaskFolder`, `TaskLaunchResourceResolver`), not by
+    /// every projection that reads it.
+    private func runtimePathProjection(_ paths: [String]) -> RuntimePathProjection {
+        runtimePathProjection(paths, state: worktreeBindingState)
+    }
+
+    private func runtimePathProjection(_ paths: [String], state: TaskWorktreeBinding.State) -> RuntimePathProjection {
+        switch state {
+        case .none:
+            return RuntimePathProjection(writable: normalizedUniquePaths(paths))
+        case .invalid:
+            return RuntimePathProjection(writable: [])
+        case .retargeted(let pinned):
+            // The pin is still the checkout this task runs in.
+            return RuntimePathProjection(writable: normalizedUniquePaths(paths + [pinned]))
+        case .bound(let binding, _, let pinned):
+            let repository = Self.resolvedPath(binding.repositoryPath)
+            var writable: [String] = []
+            var readOnly: [String] = []
+            var projected: [String] = []
+            for path in paths {
+                let resolved = Self.resolvedPath(path)
+                if resolved == repository {
+                    writable.append(pinned)
+                    projected.append(path)
+                } else if resolved.hasPrefix(repository + "/") {
+                    // A nested repository or submodule is its own checkout,
+                    // not a source folder of the worktree.
+                    if crossesGitRoot(resolved, below: repository) {
+                        writable.append(path)
+                    } else {
+                        writable.append(pinned + resolved.dropFirst(repository.count))
+                        projected.append(path)
+                    }
+                } else if repository.hasPrefix(resolved + "/") {
+                    // A folder containing the source checkout stays readable;
+                    // the worktree takes its writable place.
+                    readOnly.append(path)
+                    writable.append(pinned)
+                } else if isInSiblingCheckout(resolved, of: binding, pinned: pinned) {
+                    // Another checkout of the same repository, or a folder in
+                    // one, is a copy of the source too: readable, not
+                    // writable, so the task changes only its own worktree.
+                    continue
+                } else {
+                    writable.append(path)
+                }
+            }
+            if !writable.contains(pinned) {
+                writable.append(pinned)
+            }
+            return RuntimePathProjection(
+                writable: normalizedUniquePaths(writable),
+                readOnly: normalizedUniquePaths(readOnly),
+                projected: normalizedUniquePaths(projected)
+            )
+        }
+    }
+
+    private static func resolvedPath(_ path: String) -> String {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// Whether `path` lies in a checkout, other than the task's worktree,
+    /// that shares the bound repository's Git directory.
+    private func isInSiblingCheckout(_ path: String, of binding: TaskWorktreePayload, pinned: String) -> Bool {
+        guard let checkout = GitCheckoutLayout.worktreeRoot(containing: path),
+              Self.resolvedPath(checkout) != Self.resolvedPath(pinned),
+              let common = GitCheckoutLayout.commonDirectory(for: path),
+              let bound = TaskWorktreeBinding.gitCommonDirectory(for: binding) else { return false }
+        return Self.resolvedPath(common) == Self.resolvedPath(bound)
+    }
+
+    /// Whether a folder between `repository` (exclusive) and `path`
+    /// (inclusive) is the root of another Git checkout.
+    private func crossesGitRoot(_ path: String, below repository: String) -> Bool {
+        var current = path
+        while current.count > repository.count {
+            if fileSystem.fileExists(atPath: (current as NSString).appendingPathComponent(".git")) {
+                return true
+            }
+            current = (current as NSString).deletingLastPathComponent
+        }
+        return false
     }
 
     private func normalizedUniquePaths(_ paths: [String]) -> [String] {

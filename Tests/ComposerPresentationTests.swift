@@ -16,6 +16,127 @@ struct ComposerPresentationTests {
         #expect(TaskComposerPresentation.inputBottomPadding == 9)
     }
 
+    @Test("new task worktree choice sits in the composer dock strip with trailing controls")
+    func newTaskWorktreeControlsAreWiredIntoComposer() throws {
+        let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
+        // The creation flow and the cached binding live in the composer's companion.
+        let creation = try sourceFile("Astra/Views/ChatPanelViewWorktreeCreation.swift")
+        let strip = try sourceFile("Astra/Views/NewTaskWorktreeDockView.swift")
+        let decisionDock = try sourceFile("Astra/Views/TaskDecisionDockView.swift")
+
+        // The strip opens the composer card, where an open task shows its
+        // decision dock, and owns the setup progress and creation problems.
+        let stripCall = try #require(composer.range(of: "NewTaskWorktreeDockView("))
+        let input = try #require(composer.range(of: "TextField(\"Describe a task or ask a question...\""))
+        #expect(stripCall.lowerBound < input.lowerBound)
+        // A draft that already has its worktree keeps it; any other may opt in.
+        #expect(composer.contains("allowsChoice: allowsWorktreeChoice"))
+        #expect(composer.contains("binding: worktreeBinding"))
+        #expect(creation.contains("var allowsWorktreeChoice: Bool { worktreeBinding == nil }"))
+        // The binding is read from disk only when the draft, its pin, or its
+        // prepared event changes, never per keystroke.
+        #expect(creation.contains("var worktreeBinding: TaskWorktreePayload? { cachedWorktreeBinding }"))
+        #expect(composer.contains(".onChange(of: worktreeBindingSignature, initial: true) { refreshWorktreeBinding() }"))
+        #expect(!composer.contains(".disabled(isPreparingWorktree)"))
+        #expect(composer.contains("onCancel: cancelTaskCreation"))
+        #expect(strip.contains("accessibilityIdentifier(\"NewTaskWorktreeCancel\")"))
+        #expect(composer.contains("isPreparing: isPreparingWorktree"))
+        #expect(composer.contains("problem: taskCreationError"))
+        #expect(composer.contains("selection: $worktreeSelection"))
+        #expect(composer.contains("hasInput: hasInput && canSubmitWorktreeSelection"))
+        // A refused submission names why: a gone checkout, not a missing repository.
+        #expect(creation.contains("worktreeSelection.submitError"))
+        #expect(!composer.contains("TaskWorktreeCreationError.repositoryUnavailable"))
+        #expect(!creation.contains("TaskWorktreeCreationError.repositoryUnavailable"))
+        #expect(!composer.contains("NewTaskWorktreeOptionsView"))
+        #expect(!composer.contains("ProgressView(\"Preparing task checkout...\")"))
+
+        // Both strips share the dock row chrome.
+        #expect(strip.contains(".composerDockRowChrome(tone: presentation.tone)"))
+        #expect(decisionDock.contains(".composerDockRowChrome(tone: presentation.tone)"))
+        #expect(strip.contains("SubtleDivider()"))
+
+        // Status leads; controls trail after a spacer in both layouts.
+        let row = try #require(strip.range(of: "private func dockRow("))
+        let status = try #require(strip.range(of: "statusCluster(presentation)", range: row.upperBound..<strip.endIndex))
+        let spacer = try #require(strip.range(of: "Spacer(minLength: 12)", range: status.upperBound..<strip.endIndex))
+        let trailing = try #require(strip.range(of: "controls(presentation)", range: spacer.upperBound..<strip.endIndex))
+        let compactSpacer = try #require(strip.range(of: "Spacer(minLength: 0)", range: trailing.upperBound..<strip.endIndex))
+        #expect(strip.range(of: "controls(presentation)", range: compactSpacer.upperBound..<strip.endIndex) != nil)
+
+        // The checkbox is rightmost; the repository menu appears to its left.
+        let controls = try #require(strip.range(of: "private func controls("))
+        let menu = try #require(strip.range(of: "repositoryMenu", range: controls.upperBound..<strip.endIndex))
+        let toggle = try #require(strip.range(
+            of: "Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: enabledBinding)",
+            range: controls.upperBound..<strip.endIndex
+        ))
+        #expect(menu.lowerBound < toggle.lowerBound)
+        #expect(strip.contains(".toggleStyle(.checkbox)"))
+        // One menu holds the repository (the shared code location) and the base.
+        let repositorySection = try #require(strip.range(of: "Section(NewTaskWorktreeDockPresentation.repositorySectionTitle)"))
+        let baseSection = try #require(strip.range(of: "Section(NewTaskWorktreeDockPresentation.baseSectionTitle)"))
+        #expect(repositorySection.lowerBound < baseSection.lowerBound)
+        #expect(strip.contains("selectRepository(repository)"))
+        #expect(strip.contains("TaskCodeLocationPin.set(repository.path"))
+        // Picking the selected repository again replaces a gone checkout.
+        #expect(strip.contains("selection.isNewChoice(repository)"))
+        #expect(strip.contains("selection.choose(repository)"))
+        #expect(strip.contains("selection: baseBinding"))
+        #expect(strip.contains("updateChoice { $0.isEnabled = value }"))
+        #expect(strip.contains("updateChoice { $0.base = value }"))
+        #expect(strip.contains("NewTaskWorktreeComposerFlow.persistChoice(selection, on: draft, modelContext: modelContext)"))
+        #expect(strip.contains("choiceProblem = error.localizedDescription"))
+        #expect(strip.contains(".pickerStyle(.inline)"))
+        #expect(strip.contains(".menuStyle(.button)"))
+        #expect(NewTaskWorktreeDockPresentation.toggleTitle == "Start in a new worktree")
+    }
+
+    @Test("composer dock strips share one tone palette")
+    func composerDockStripsShareTonePalette() {
+        #expect(TaskDecisionDockTone.neutral.dockColor == Stanford.coolGrey)
+        #expect(TaskDecisionDockTone.running.dockColor == Stanford.lagunita)
+        #expect(TaskDecisionDockTone.attention.dockColor == Stanford.poppy)
+        #expect(TaskDecisionDockTone.failed.dockColor == Stanford.failed)
+        for tone in [TaskDecisionDockTone.success, .verified, .closed] {
+            #expect(tone.dockColor == Stanford.statusHealthy)
+        }
+        #expect(TaskDecisionDockTone.running.dockStatusIconColor == Stanford.statusInfo)
+        #expect(TaskDecisionDockTone.failed.dockStatusIconColor == Stanford.failed)
+    }
+
+    @Test("planning context uses the prepared checkout before either provider call")
+    func planningContextUsesPreparedWorktree() throws {
+        let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
+        for method in ["private func sendMessage()", "private func generatePlanFromConversation()"] {
+            let start = try #require(composer.range(of: method))
+            let call = try #require(composer.range(
+                of: "let result = await SpecEngine.chat(",
+                range: start.upperBound..<composer.endIndex
+            ))
+            let preparation = String(composer[start.upperBound..<call.lowerBound])
+            let save = try #require(preparation.range(of: "let planningDraft = try await saveDraft()"))
+            let context = try #require(preparation.range(of: "baseNewTaskSkillContext(for: planningDraft)"))
+            #expect(save.lowerBound < context.lowerBound)
+        }
+        #expect(composer.contains("task.map { TaskWorkspaceAccess(task: $0).runtimeWorkspaceFolders }"))
+        #expect(composer.contains("TaskWorkspaceAccess(task: $0).runtimeReadOnlyWorkspaceFolders.map(\\.path)"))
+        #expect(composer.contains("readOnlyPaths.contains(descriptor.path) ? \" (read-only)\" : \"\""))
+    }
+
+    @Test("switching workspaces detaches creation and stops old chat and planning work")
+    func composerSwitchCancelsOldWorkspaceOperations() throws {
+        let composer = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let start = try #require(composer.range(of: ".onChange(of: workspace?.persistentModelID)"))
+        let end = try #require(composer.range(of: "// MARK: - Scroll behavior", range: start.upperBound..<composer.endIndex))
+        let handler = composer[start.upperBound..<end.lowerBound]
+        #expect(handler.contains("chatReplyTask?.cancel()"))
+        #expect(handler.contains("planGenerationTask?.cancel()"))
+        #expect(handler.contains("taskCreation.detach()"))
+        #expect(handler.contains("if draftTask?.workspace?.id != workspace?.id { draftTask = nil }"))
+        #expect(composer.contains("defer { if !Task.isCancelled { isThinking = false } }"))
+    }
+
     @Test("task decision dock stays compact")
     func taskDecisionDockStaysCompact() {
         #expect(TaskComposerPresentation.decisionRowUsesNestedChrome == false)

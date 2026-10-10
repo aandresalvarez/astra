@@ -99,6 +99,74 @@ and `~/Documents/Astra Dev/Workspaces`.
 - A workspace's `activeWorkingPath` controls where new chats run. Existing
   tasks may keep an `executionRootPath` snapshot so later workspace focus
   changes do not move the thread into a different checkout.
+- A task started in a new worktree is bound to it by its newest
+  `task.worktree.prepared` event whose worktree is still the task's pin
+  (`TaskWorktreeBinding`). The binding is accepted only when its source
+  repository belongs to the configured workspace and registers the pinned
+  checkout; matching paths in an imported event are not authority. Retargeted
+  pins must name that repository or one of its registered worktrees. Invalid
+  bindings block launch before template hooks or provider setup can write.
+  Launch grants the worktree as the only writable
+  copy of its repository: configured folders that contain the source checkout
+  are granted read-only, nested Git checkouts keep their own paths, and an
+  unreadable binding grants no workspace paths at all. The shared Git
+  directory is granted (read-only for shared-access runs) only when it is
+  derived from the recorded source repository, is a real Git directory, and
+  lists the worktree as a linked worktree. It is never derived from the
+  worktree's own `.git` file, which the task can rewrite. ASTRA's Seatbelt
+  receives it for both the agent and validation commands, so Git works in the
+  worktree as in a normal checkout, hooks and config included. Docker workspace
+  commands mount the verified Git directory at its original absolute path,
+  while saved source-checkout mounts become read-only or are replaced by the
+  task worktree. Read-only workspace ancestors remain mounted at noncolliding
+  container paths and participate in host-to-container path mapping. Execution
+  and planning prompts retain their original workspace labels and mark them
+  read-only; shared workspace admission claims serialize writers against these
+  reads, including for legacy requests. Every
+  worktree Git grant has a matching admission claim, independent of Git prompt
+  intent, including legacy requests. That claim is shared, whatever the run's
+  workspace access: Git locks refs, the index, and config per operation, so
+  sibling worktree tasks of one repository run together, while a writer of the
+  main checkout holds the directory exclusively and waits for them. Template
+  hooks are injected and restored at the same captured code checkout that
+  admission claims. Provider-native sandboxes do not receive the Git directory:
+  Codex keeps `.git` read-only by design, and a writable
+  root over the shared Git directory would undo that. Derived tasks
+  (chained, corrective, fork, and template) and recovery-mirror imports copy
+  the binding, so they never fall back to the source checkout. A prepared
+  worktree supersedes legacy branch/copy isolation, and runtime cleanup never
+  treats the bound checkout as a disposable copy. Failed initial
+  submissions save and export draft adoption and temporary-task deletion
+  together; recovery save failures are surfaced rather than reported as success.
+  Automatic cleanup records an atomic intent in the channel's App Support
+  `WorktreeCleanup/` outbox before deleting the draft, outside provider-writable
+  workspace paths. Workspace deletion and replacement record the same intents
+  for unexecuted drafts. Removal runs only after deletion and any replacement
+  bindings are saved. Failed saves preserve the workspace and UI selection. Startup retries
+  interrupted cleanup and reads committed task references through a fresh
+  context, so a failed deletion save cannot authorize removal. An interrupted
+  branch deletion can finish even after its worktree was removed. Intent write,
+  reference-read, and Git failures are logged; retryable failures retain the
+  intent until removal or a terminal preservation decision. Every cleanup
+  attempt rechecks local ownership; a missing, unreadable, or changed creation
+  record keeps the checkout. Exclusive cleanup reservations compare resolved
+  paths, including symlink aliases and overlapping ancestors or descendants,
+  and a competing removal retries without replacing the first reservation.
+  Fetch, creation, and submodule setup acquire shared Git-common-directory
+  and metadata workspace claims from the runtime queue's existing lease
+  owner, so they run beside sibling worktree tasks but never beside a
+  main-checkout writer; creation also claims its destination exclusively,
+  and concurrent creations on one repository are serialized in-process.
+  Removal and branch deletion hold those claims exclusively, so no sibling
+  can check out a branch between cleanup's check and its deletion; cleanup
+  also claims the checkout exclusively. Busy creation fails visibly before mutation, while
+  busy cleanup retains its intent. Leases release on success or failure and survive queue cancellation
+  until the lifecycle operation finishes.
+  Cleanup keeps any
+  worktree that has changes, ignored files, or new
+  commits, including commits retained only in its branch or HEAD reflog;
+  that another task or workspace default references; or whose
+  references cannot be read.
 - `current_state.json`, `current_state.md`, `session_history.md`, diagnostics,
   turn outputs, and runtime-bin folders are ASTRA-owned task state. Agents may
   read them for context when prompted, but they must not be treated as

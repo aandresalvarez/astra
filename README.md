@@ -50,6 +50,105 @@ agent -> delegated work -> supervision
 
 Tasks may begin as a simple request, but ASTRA keeps the surrounding context: workspace memory, access, schedules, tools, policies, artifacts, and trust signals.
 
+### Starting a Task in a Worktree
+
+When a workspace has Git repositories in its primary or additional folders, the
+new-task composer shows a strip at the top of the input card, in the same
+place an open task shows **Result ready** or problem messages. The strip's
+left side names the current checkouts. On its right, check **Start in a new
+worktree**; the menu beside it shows the repository and where the new branch
+starts:
+
+- **Repository** is the same setting as the Repository card's repository and
+  checkout pickers, so changing either one changes both.
+- **Start from › Default branch** (the default) asks the remote which branch
+  is its default, usually `main`, then fetches that branch and starts there.
+  This works even if your clone's `origin/HEAD` is missing or out of date, for
+  example after the remote renamed its default branch. If the remote can't be
+  reached, the last fetched remote branch or the local `main`/`master` is used.
+  Commits on the branch you have checked out are not included.
+- **Start from › Current branch** starts from the selected checkout's current
+  commit instead, including commits not yet on `main`.
+
+Uncommitted changes are never copied, and the repository needs at least one
+commit. While the box is checked, the Repository card previews the new
+worktree: the repository is marked *Worktree source*, Branch reads *New · from
+main*, Checkout reads *New worktree*, and Changes and Commit & push are
+labelled as acting on the base checkout.
+
+The branch is named `astra/<title words>-<task id>`, for example
+`astra/fix-login-button-alignment-25e8279e`: up to 32 characters of whole
+words from the task title, with accents removed and filler words such as
+"the" dropped, then the first 8 characters of the task ID, which match the
+task's `.astra/tasks/` folder. A taken name gets `-2`, `-3`, and so on. The
+folder is the branch name with `/` replaced by `-`, under the app's
+`Worktrees/<repository>/` folder.
+
+The worktree is created only when it is needed: when the task starts, or
+when Goal Mode planning first reads the code. Plain chat messages don't create
+one. The strip shows the worktree being created and, if the task cannot start,
+the reason. Changes to a saved draft's checkbox or starting branch are saved
+immediately, so navigating away and reopening keeps the latest choice. A template started with the
+box checked creates one worktree, named after the template's task title, and
+all of the template's tasks run in it. Template hooks are injected and restored
+in that checkout, not in the source repository. Switching workspaces cancels in-flight
+creation or planning; anything already saved stays in the workspace where it
+started.
+
+The task stays pinned to that worktree, including when its draft becomes a
+queued task; the draft's strip shows the pinned folder and its base. Chained
+follow-up tasks, corrective work, and forks of the task run in the same
+worktree, and a task restored from the workspace's recovery file keeps it.
+The binding is verified against a configured repository's linked-worktree
+registry, including after an import; an invalid binding blocks launch. If an
+initial submission fails, adopting its worktree into the open draft and
+deleting the temporary task are saved together before recovery returns.
+Other tasks and the workspace's default checkout are unchanged. Task history
+and outputs remain in the workspace's task folder. A prepared worktree replaces
+legacy branch or disposable-copy isolation, including for recovered drafts.
+
+While the task runs, the worktree is the only writable copy of its
+repository. A workspace folder that contains the original checkout, such as a
+parent folder of several repositories, is readable but not writable; a
+separate repository nested inside the checkout keeps its own path. ASTRA-confined
+commands and validation can also use the repository's shared Git folder,
+which holds the worktree's branches and history, once ASTRA confirms the
+worktree is registered there; provider-native sandboxes retain their own
+Git-metadata restrictions. Write-capable tasks in sibling worktrees share a
+Git admission lock even when their prompts don't mention Git; read-only tasks
+use a shared lock. Docker also mounts read-only workspace ancestors so files
+outside the selected repository remain readable through mapped container paths.
+Those folders remain in execution and planning prompts under their original
+workspace labels, marked read-only, and hold shared admission claims so another
+task cannot write them while they are being read.
+Worktree creation and cleanup reserve the same Git resources as running tasks.
+If a repository is busy, creation asks you to retry after the other operation
+finishes; cleanup keeps its pending intent for a later retry.
+
+Worktrees are kept after execution and can be managed from the Repository
+panel. **Start Over** or deleting a draft that never ran removes its worktree
+and branch once the deletion is saved, but only if nothing happened in them.
+Deleting or replacing a workspace follows the same rule for its drafts;
+replacement tasks keep any worktrees their imported bindings still use.
+ASTRA keeps a worktree that has edits, commits, or ignored files such as build
+output or `.env`, including commits retained only in branch or checkout reflogs
+after a reset. It also keeps a worktree that another task or the workspace
+default uses, or that it can't confirm is unused. Configured folders and task pins protect checkouts they
+reach through symbolic links, including folders above or inside the checkout.
+A configured folder at or above the app-managed `Worktrees` folder itself,
+such as `~/Documents`, does not count: it is not a checkout, and treating it
+as one would keep every discarded worktree forever.
+Tasks copied by **Duplicate** import still protect their
+shared checkout, even when they retain the original task ID. Leave the checkbox
+off to use the existing checkout behavior. If a task's new worktree is removed,
+launch fails rather than falling back to the original repository.
+Pending draft cleanup is recorded in the channel's App Support
+`WorktreeCleanup/` outbox before the draft is deleted. If ASTRA quits during
+cleanup, startup retries it, including a branch left after its worktree was
+removed. Cleanup rechecks the local creation record before touching Git and
+serializes overlapping removals. Failed deletion saves or reference checks
+never authorize removal.
+
 ## Requirements
 
 - macOS 14 or newer
