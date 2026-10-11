@@ -59,6 +59,17 @@ public enum GitCheckoutLayout {
         return standardizedPath(common)
     }
 
+    /// The file identity, device and inode, of the folder at `path`,
+    /// resolved. A repository replaced by a new clone at the same path has a
+    /// new Git directory and so another identity.
+    public static func fileIdentity(of path: String) -> String? {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: resolved),
+              let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else { return nil }
+        return "\(device.uint64Value):\(inode.uint64Value)"
+    }
+
     private static func commonDirectory(ofWorktreeRoot worktreeRoot: String) -> String? {
         let dotGit = (worktreeRoot as NSString).appendingPathComponent(".git")
         var isDirectory: ObjCBool = false

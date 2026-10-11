@@ -160,8 +160,12 @@ enum TaskWorktreeCleanupService {
         defer { activeRecords.remove(key) }
         do {
             guard try store.read(url) == discard else { throw TaskWorktreeCleanupStore.StoreError.invalidRecord }
-            if !store.ownership.owns(discard), createdByThisIntent(discard) {
-                try store.ownership.record(.init(discard))
+            if !store.ownership.owns(discard) {
+                switch creationMarker(discard) {
+                case .ours: try store.ownership.record(.init(discard))
+                case .unreadable: return false
+                case .notOurs: break
+                }
             }
             guard store.ownership.owns(discard) else {
                 AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
@@ -328,8 +332,11 @@ enum TaskWorktreeCleanupService {
             do {
                 let discard = try journal.read(url)
                 guard !activeRecords.contains(activeKey(journal.recordURL(for: discard))) else { continue }
-                if try bindingIsSaved(discard, modelContext: modelContext)
-                    || !(journal.ownership.owns(discard) || createdByThisIntent(discard)) {
+                let owned = journal.ownership.owns(discard)
+                let marker = owned ? .ours : creationMarker(discard)
+                // A marker that can't be read is retried, never taken as foreign.
+                if !owned, marker == .unreadable { continue }
+                if try bindingIsSaved(discard, modelContext: modelContext) || marker == .notOurs {
                     try journal.remove(discard)
                     continue
                 }
@@ -365,15 +372,24 @@ enum TaskWorktreeCleanupService {
         }
     }
 
-    /// A creation that stopped after `git worktree add` but before recording
-    /// ownership is still recognized: Git recorded this intent's lock reason
-    /// in the same command, which a competing worktree never carries.
-    private static func createdByThisIntent(_ discard: TaskWorktreeDiscard) -> Bool {
-        guard let identity = discard.identity,
-              let markers = TaskWorktreeBinding.registeredMarkers(
-                  repositoryPath: TaskWorktreeService.cleanupRepository(for: discard), worktreePath: discard.worktreePath
-              ) else { return false }
-        return markers.lockReason == TaskWorktreeBinding.lockReason(forIdentity: identity)
+    enum CreationMarker { case ours, notOurs, unreadable }
+
+    /// Whether Git recorded this intent's lock reason, which a creation that
+    /// stopped after `git worktree add` but before recording ownership still
+    /// carries and a competing worktree never does. A registry or marker
+    /// that can't be read is `.unreadable`, never a mismatch, so its journal
+    /// is kept for a retry rather than dropped with the checkout orphaned.
+    static func creationMarker(_ discard: TaskWorktreeDiscard) -> CreationMarker {
+        guard let identity = discard.identity else { return .notOurs }
+        let repository = TaskWorktreeService.cleanupRepository(for: discard)
+        guard let markers = TaskWorktreeBinding.registeredMarkers(repositoryPath: repository, worktreePath: discard.worktreePath)
+        else {
+            // A checkout Git made whose entry can't be found or read.
+            let dotGit = (discard.worktreePath as NSString).appendingPathComponent(".git")
+            return (try? FileManager.default.attributesOfItem(atPath: dotGit)) != nil ? .unreadable : .notOurs
+        }
+        if markers.lockReason == TaskWorktreeBinding.lockReason(forIdentity: identity) { return .ours }
+        return markers.unreadable ? .unreadable : .notOurs
     }
 
     private static func activeKey(_ url: URL) -> String {

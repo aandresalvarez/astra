@@ -62,6 +62,10 @@ public struct TaskWorktreePayload: Codable, Equatable, Sendable {
     /// the same path, even of the same repository, lacks it, while switching
     /// branches inside the worktree keeps it. Absent on older bindings.
     public let identity: String?
+    /// `commonDirectory`'s file identity at creation, so a cleanup resumed
+    /// after the worktree is gone never acts on a replacement repository at
+    /// the same path. Absent on older bindings.
+    public let commonDirectoryID: String?
 
     public init(
         repositoryPath: String,
@@ -72,7 +76,8 @@ public struct TaskWorktreePayload: Codable, Equatable, Sendable {
         baseSource: TaskWorktreeBaseChoice? = nil,
         baseFetched: Bool? = nil,
         commonDirectory: String? = nil,
-        identity: String? = nil
+        identity: String? = nil,
+        commonDirectoryID: String? = nil
     ) {
         self.repositoryPath = repositoryPath
         self.worktreePath = worktreePath
@@ -83,6 +88,7 @@ public struct TaskWorktreePayload: Codable, Equatable, Sendable {
         self.baseFetched = baseFetched
         self.commonDirectory = commonDirectory
         self.identity = identity
+        self.commonDirectoryID = commonDirectoryID
     }
 }
 
@@ -293,15 +299,24 @@ public enum TaskWorktreeBinding {
 
     /// The identity token and the lock reason in `worktreePath`'s registry
     /// entry, or nil when the repository doesn't register that path.
+    /// `unreadable` is set when a marker file exists but couldn't be read,
+    /// which is never the same as its absence.
     public static func registeredMarkers(
         repositoryPath: String, worktreePath: String
-    ) -> (identity: String?, lockReason: String?)? {
+    ) -> (identity: String?, lockReason: String?, unreadable: Bool)? {
         guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
+        var unreadable = false
         func read(_ name: String) -> String? {
-            (try? String(contentsOf: registered.entry.appendingPathComponent(name), encoding: .utf8))?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = registered.entry.appendingPathComponent(name)
+            guard let value = try? String(contentsOf: url, encoding: .utf8) else {
+                if (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil { unreadable = true }
+                return nil
+            }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return (read(identityFileName), read("locked"))
+        let identity = read(identityFileName)
+        let lockReason = read("locked")
+        return (identity, lockReason, unreadable)
     }
 
     /// Marks the worktree `payload` names, just created, with its identity.

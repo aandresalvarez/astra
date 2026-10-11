@@ -97,6 +97,9 @@ struct TaskWorktreeDiscard: Codable, Equatable, Sendable {
     /// The worktree's identity token, so cleanup never removes a worktree
     /// recreated at the same path. Absent on older records.
     var identity: String? = nil
+    /// The shared Git directory's file identity at creation; absent on older
+    /// records.
+    var commonDirectoryID: String? = nil
 }
 
 /// Populates a new worktree's submodules once Git has checked it out.
@@ -510,12 +513,13 @@ enum TaskWorktreeService {
             baseSource: base.source,
             baseFetched: base.fetched,
             commonDirectory: commonDirectory,
-            identity: UUID().uuidString.lowercased()
+            identity: UUID().uuidString.lowercased(),
+            commonDirectoryID: commonDirectory.flatMap(GitCheckoutLayout.fileIdentity(of:))
         )
         let payload = try TaskEvent.encodePayload(binding).get()
         let intent = TaskWorktreeDiscard(
             taskID: task.id, repositoryPath: path, worktreePath: destination, branch: branch, baseCommit: base.commit,
-            commonDirectory: commonDirectory, identity: binding.identity
+            commonDirectory: commonDirectory, identity: binding.identity, commonDirectoryID: binding.commonDirectoryID
         )
         try Task.checkCancellation()
         do {
@@ -701,7 +705,8 @@ enum TaskWorktreeService {
                     branch: binding.branch,
                     baseCommit: baseCommit,
                     commonDirectory: binding.commonDirectory ?? GitCheckoutLayout.commonDirectory(for: binding.repositoryPath),
-                    identity: binding.identity
+                    identity: binding.identity,
+                    commonDirectoryID: binding.commonDirectoryID
                 )
                 guard ownership.owns(discard) else {
                     AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
@@ -850,6 +855,15 @@ enum TaskWorktreeService {
                 // Gone without this cleanup having removed it: nothing ties
                 // the branch to this worktree any more, so it is kept.
                 return kept("identity_unverifiable")
+            } else {
+                // Resuming the branch phase of a removal this cleanup made.
+                // With the worktree gone, only the Git directory's identity
+                // shows this is still the repository it created the branch
+                // in, not a new clone at the same path.
+                guard let recorded = discard.commonDirectoryID,
+                      let current = GitCheckoutLayout.commonDirectory(for: repository),
+                      GitCheckoutLayout.fileIdentity(of: current) == recorded
+                else { return kept("repository_unverifiable") }
             }
         }
         let exists = FileManager.default.fileExists(atPath: path)

@@ -283,6 +283,75 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
     }
 
+    @Test("A resumed branch phase never deletes the branch of a new clone at the source's path")
+    func resumedBranchCleanupRequiresOriginalRepository() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        #expect(discard.commonDirectoryID != nil)
+        try fixture.cleanupStore.record(discard)
+        context.delete(draft)
+        try context.save()
+        try fixture.ownership.markRemoving(discard)
+        try fixture.git(["worktree", "remove", discard.worktreePath], at: repository)
+        // The source is replaced by a new clone with the same branch at the base.
+        let moved = fixture.root.appendingPathComponent("App-original", isDirectory: true)
+        try FileManager.default.moveItem(at: repository, to: moved)
+        try fixture.git(["clone", "--quiet", moved.path, repository.path], at: fixture.root)
+        try fixture.git(["branch", discard.branch, discard.baseCommit], at: repository)
+
+        #expect(await TaskWorktreeCleanupService.resumePending(
+            modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, store: fixture.cleanupStore
+        ) == 0)
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
+    @Test("A creation journal whose lock marker can't be read is kept for a retry")
+    func unreadableCreationMarkerKeepsJournal() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let branch = "astra/unreadable-0badc0de"
+        var intent = TaskWorktreeDiscard(
+            taskID: UUID(), repositoryPath: repository.path,
+            worktreePath: GitService.worktreeLocation(repoPath: repository.path, branch: branch, worktreesRoot: fixture.worktrees.path),
+            branch: branch, baseCommit: try fixture.git(["rev-parse", "HEAD"], at: repository)
+        )
+        intent.identity = UUID().uuidString
+        let journal = fixture.ownership.creationJournal
+        // Git created the locked worktree; ASTRA stopped before recording ownership.
+        try journal.record(intent)
+        _ = try await GitService.shared.addLockedTaskWorktree(
+            repoPath: repository.path, branch: branch, base: intent.baseCommit, worktreesRoot: fixture.worktrees.path,
+            lockReason: TaskWorktreeBinding.lockReason(forIdentity: try #require(intent.identity))
+        )
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: repository.appendingPathComponent(".git/worktrees"), includingPropertiesForKeys: nil
+        )
+        let lock = try #require(entries.first).appendingPathComponent("locked")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: lock.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: lock.path) }
+        #expect(TaskWorktreeCleanupService.creationMarker(intent) == .unreadable)
+        let store = try Fixture.container()
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 0)
+        #expect(try journal.pendingURLs().count == 1)
+        #expect(FileManager.default.fileExists(atPath: intent.worktreePath))
+
+        // Once readable, the retry recognizes and removes it.
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: lock.path)
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 1)
+        #expect(!FileManager.default.fileExists(atPath: intent.worktreePath))
+        #expect(try fixture.git(["branch", "--list", branch], at: repository).isEmpty)
+    }
+
     @Test("With reflogs off, a commit reset away still keeps the worktree, and a missing reflog proves nothing")
     func reflogsOffStillKeepResetCommits() async throws {
         let fixture = try Fixture()
