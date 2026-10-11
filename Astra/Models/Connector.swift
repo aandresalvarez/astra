@@ -820,8 +820,11 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
     /// is the Outlook registry entry when `keepRegistryEntry` is set.
     @discardableResult
     public func run(sparing: Set<String> = [], keepRegistryEntry: Bool = false) -> Bool {
+        // The registry entry is cleanup too: a stale one is still handed to
+        // approved runs, so a failure to remove it keeps the cleanup owed.
+        var registryCleared = true
         if isStanfordOutlookMail, !keepRegistryEntry {
-            OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: connectorID)
+            registryCleared = OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: connectorID)
         }
         let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts(
             id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
@@ -831,6 +834,6 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
             "connector_id": connectorID.uuidString,
             "service_type": serviceType
         ])
-        return cleared
+        return cleared && registryCleared
     }
 }

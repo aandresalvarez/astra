@@ -155,12 +155,15 @@ extension GitService {
     /// `git status` and a non-forced `git worktree remove` both trust the
     /// index for entries marked assume-unchanged or skip-worktree, so an edit
     /// to one is invisible yet deleted. Each such file is hashed and compared
-    /// with its index blob. A skip-worktree file that is absent, as a sparse
-    /// checkout leaves it, is unchanged; an absent assume-unchanged file was
-    /// deleted. Any failure to read counts as changed.
+    /// with its index blob. A skip-worktree file that is absent is unchanged
+    /// only while the checkout's sparse rules exclude it, as a sparse checkout
+    /// leaves it; otherwise its absence is a hidden deletion. An absent
+    /// assume-unchanged file was deleted. Any failure to read counts as
+    /// changed.
     func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool {
         do {
             let listing = try await runGit(at: worktreePath, arguments: ["ls-files", "-v", "-z"], failureLogLevel: .warning)
+            var absentSkipWorktree: [String] = []
             for entry in listing.split(separator: "\0") {
                 guard let tag = entry.first, entry.count > 2 else { continue }
                 let assumeUnchanged = tag.isLowercase
@@ -171,7 +174,10 @@ extension GitService {
                 // Not following links: a symlink retargeted to a missing path
                 // is still there, and is a change.
                 guard let attributes = try? FileManager.default.attributesOfItem(atPath: full) else {
-                    if skipWorktree { continue }
+                    if skipWorktree {
+                        absentSkipWorktree.append(file)
+                        continue
+                    }
                     return true
                 }
                 if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
@@ -187,9 +193,30 @@ extension GitService {
                     return true
                 }
             }
-            return false
+            return !(await sparseRulesExclude(absentSkipWorktree, at: worktreePath))
         } catch {
             return true
+        }
+    }
+
+    /// Whether this checkout's sparse-checkout rules leave out every one of
+    /// `files`. False when sparse checkout is off, since nothing then
+    /// explains a skip-worktree file being absent, and on any failure.
+    private func sparseRulesExclude(_ files: [String], at worktreePath: String) async -> Bool {
+        guard !files.isEmpty else { return true }
+        do {
+            let enabled = try await runGit(
+                at: worktreePath, arguments: ["config", "--bool", "--get", "core.sparseCheckout"], failureLogLevel: .debug
+            )
+            guard enabled.trimmingCharacters(in: .whitespacesAndNewlines) == "true" else { return false }
+            // Prints the paths the rules include.
+            let included = try await runGit(
+                at: worktreePath, arguments: ["sparse-checkout", "check-rules", "-z"], failureLogLevel: .warning,
+                standardInput: Data(files.joined(separator: "\0").appending("\0").utf8)
+            )
+            return included.split(separator: "\0").isEmpty
+        } catch {
+            return false
         }
     }
 
