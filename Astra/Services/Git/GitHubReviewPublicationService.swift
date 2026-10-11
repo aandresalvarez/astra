@@ -149,6 +149,21 @@ private enum GitHubReviewTargetResolver {
         return "\(text[ownerRange])/\(repository)"
     }
 
+    /// Every pull request number the text names, by link or as "PR 12".
+    static func namedNumbers(in text: String) -> Set<Int> {
+        let shorthand = matches(shorthandPattern, in: text).compactMap { match in
+            Range(match.range(at: 1), in: text).flatMap { Int(text[$0]) }
+        }
+        return Set(pullRequests(in: text).map(\.number) + shorthand)
+    }
+
+    /// Whether the text names more than one pull request ("Review <link to
+    /// 12>, then post the review to PR 13"): it has no single target, whichever
+    /// of them is linked, numbered first, or matched by a file name.
+    static func namesConflictingPullRequests(_ text: String?) -> Bool {
+        text.map { namedNumbers(in: $0).count > 1 } ?? false
+    }
+
     static func shorthandNumber(in text: String) -> Int? {
         let found = matches(shorthandPattern, in: text)
         guard found.count == 1, let numberRange = Range(found[0].range(at: 1), in: text) else { return nil }
@@ -163,6 +178,7 @@ private enum GitHubReviewTargetResolver {
     }
 
     static func durableTarget(task: AgentTask, request: String?) -> Target? {
+        guard !namesConflictingPullRequests(request) else { return nil }
         if let request, request.range(of: "github.com/", options: .caseInsensitive) != nil {
             if let target = pullRequest(in: request) { return target }
             if let number = shorthandNumber(in: request),
@@ -189,7 +205,8 @@ private enum GitHubReviewTargetResolver {
     /// The pull request a shorthand request means: the number it names, or —
     /// for "post the review" after a goal of "review PR #12" — the goal's.
     static func requestedNumber(task: AgentTask, request: String?) -> Int? {
-        request.flatMap(shorthandNumber(in:)) ?? shorthandNumber(in: task.goal)
+        guard !namesConflictingPullRequests(request) else { return nil }
+        return request.flatMap(shorthandNumber(in:)) ?? shorthandNumber(in: task.goal)
     }
 }
 
@@ -210,15 +227,17 @@ enum GitHubReviewPublicationRequirement {
     /// the review or its comments, and nothing after it but a GitHub
     /// destination. Being wrong costs a review left for the sheet, never a post.
     private static let imperativePublicationRegex = try? NSRegularExpression(
-        pattern: #"\b(?:post|publish|submit)\b((?:\s+\S+){0,4}?)\s+\b(?:review\s+comments?|comments?|review)\b"#
+        pattern: #"\b(?:post|publish|submit)\b((?:\s+\S+){0,4}?)\s+\b(?:review\s+comments?|code\s+review|comments?|review)\b"#
     )
     /// The words that may stand between the verb and the review: which review,
     /// never when, whether, by whom or how much of it — "post the draft
-    /// review", "post later the review" and "post only the comments" are not
-    /// commands to post the file now.
+    /// review", "post later the review", "post only the comments" and "post
+    /// the inline comments" are not commands to post the whole file now. The
+    /// file always carries a summary and a verdict, so a kind of comment is
+    /// part of it, and "code review" is read whole as the object instead.
     private static let reviewWords: Set<String> = [
         "the", "a", "an", "my", "your", "our", "this", "that", "its", "pr", "pr's", "github", "pull", "request",
-        "full", "whole", "complete", "completed", "finished", "final", "inline", "code"
+        "full", "whole", "complete", "completed", "finished", "final"
     ]
     /// "Review PR #12, then post it": the object is a pronoun for a review
     /// the same message named first. Read only when it did; Auto also needs
@@ -1264,6 +1283,11 @@ final class GitHubReviewPublicationService {
         if let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request)
             ?? postingRequest.flatMap({ GitHubReviewPublicationRequirement.boundTarget(task: task, request: $0) }) {
             return target
+        }
+        if GitHubReviewTargetResolver.namesConflictingPullRequests(request) {
+            throw GitHubReviewPublicationError.invalid(
+                "The posting request names more than one pull request. Name the one pull request to post the review to."
+            )
         }
         if let postingRequest,
            GitHubReviewPublicationRequirement.hasUnresolvedTarget(task: task, request: postingRequest) {

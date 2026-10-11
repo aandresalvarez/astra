@@ -160,6 +160,32 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(!GitHubReviewPublicationRequirement.needsOriginTargetBinding(task: ambiguous.task))
     }
 
+    /// A request that names two pull requests has no single target: neither
+    /// the linked one, nor the numbered one, nor the file's number is chosen.
+    @Test("A request naming two pull requests is not posted to either")
+    func conflictingPullRequestsAreNotPosted() async throws {
+        for message in [
+            "Review https://github.com/example/repo/pull/12, then post the review to PR 13",
+            "Review PR 12, then post the review to PR 13"
+        ] {
+            let fixture = try Fixture()
+            fixture.context.insert(TaskEvent(
+                task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage, payload: message
+            ))
+            let cli = FakeCLI()
+
+            let outcome = await fixture.handler(level: .autonomous, cli: cli, origin: "https://github.com/example/repo.git")
+                .postGitHubReview(fixture.request(for: fixture.file))
+
+            guard case .refused = outcome else {
+                Issue.record("\(message): expected a refusal, got \(outcome)")
+                continue
+            }
+            #expect(await cli.postCount() == 0, "\(message)")
+            #expect(!GitHubReviewPublicationRequirement.needsOriginTargetBinding(task: fixture.task), "\(message)")
+        }
+    }
+
     /// One request, one review: a second file asked for after the first was
     /// posted is not posted on the strength of a request already answered.
     @Test("A request that was already answered does not post a second review")
@@ -243,6 +269,8 @@ struct GitHubReviewPostWhenRequestedTests {
             // Between the verb and the review, where only the whole-message reading sees it.
             "Post later the review on \(url)", "Post when ready the review on \(url)", "Post not yet the review on \(url)",
             "Post the draft review on \(url)", "Post the review on \(url). Don\u{2019}t.",
+            // A kind of comment is part of the file, which also carries a summary and a verdict.
+            "Post the inline comments on \(url)", "Post the code comments", "Post the inline review comments on \(url)",
             // A link is exactly a pull request's URL: nothing rides along on it.
             "Post the review on \(url),later", "Post the review on \(url)/files", "Review \(url),later and post the review",
             // A retraction in the same message, which the latest-message rule cannot see.
