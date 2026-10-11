@@ -489,7 +489,6 @@ enum GitHubReviewPublicationRequirement {
                 guard let matched = Range(match.range, in: clause) else { return false }
                 let rest = String(clause[matched.upperBound...])
                 return isCommand(clause, matched) && !pausesCommand(clause, matched)
-                    && deferring.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) == nil
                     && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
             }
             guard !named, let referential = referentialPublicationRegex else {
