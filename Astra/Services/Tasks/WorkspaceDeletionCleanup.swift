@@ -223,7 +223,9 @@ enum WorkspaceDeletionCleanupService {
             ], level: .error)
             return false
         }
-        let liveConnectors = Set(connectors.map(\.id))
+        // Only a live Outlook connector keeps the mail-registry entry its ID
+        // names; an import that reused the ID for another service doesn't.
+        let liveOutlookConnectors = Set(connectors.filter(\.isStanfordOutlookMail).map(\.id))
         // A recreated connector can share a stable endpoint or package
         // namespace under a new ID, so ownership is per namespace.
         let liveNamespaces = Set(connectors.flatMap { KeychainSecretStore.connectorEntityIDs(for: $0) })
@@ -231,10 +233,14 @@ enum WorkspaceDeletionCleanupService {
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry.
         var cleared = true
-        for connector in record.connectors where !unownedNamespaces(of: connector, liveNamespaces: liveNamespaces).isEmpty {
-            cleared = connector.run(
-                sparing: liveNamespaces, keepRegistryEntry: liveConnectors.contains(connector.connectorID)
-            ) && cleared
+        for connector in record.connectors {
+            let keepRegistryEntry = liveOutlookConnectors.contains(connector.connectorID)
+            // Owed when a namespace has no live owner, or a mail-registry
+            // entry no live Outlook connector claims.
+            let ownsRegistryEntry = connector.isStanfordOutlookMail && !keepRegistryEntry
+            guard ownsRegistryEntry || !unownedNamespaces(of: connector, liveNamespaces: liveNamespaces).isEmpty
+            else { continue }
+            cleared = connector.run(sparing: liveNamespaces, keepRegistryEntry: keepRegistryEntry) && cleared
         }
         for skill in record.skills where !liveSkills.contains(skill.skillID) {
             cleared = skill.run() && cleared

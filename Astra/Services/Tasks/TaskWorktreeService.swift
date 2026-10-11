@@ -889,9 +889,11 @@ enum TaskWorktreeService {
         guard !registered.isEmpty else { return kept("registry_unavailable", retry: true) }
         if Task.isCancelled { return kept("cancelled", retry: true) }
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }
+        // Resolved through the deepest existing folder: Foundation can't
+        // resolve a vanished path, so `/var` would never match Git's
+        // `/private/var` and a gone worktree would never be removed.
         let isRegistered = registered.contains {
-            URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path
-                == URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            WorkspacePathPresentation.resolvedPath($0.path) == WorkspacePathPresentation.resolvedPath(path)
         }
         await duringReservation()
         if let problem = referenceProblem() { return kept(problem, retry: problem == "reference_check_failed") }

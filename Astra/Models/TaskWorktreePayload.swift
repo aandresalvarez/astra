@@ -109,9 +109,9 @@ public enum TaskWorktreeBinding {
         case invalid(String)
         /// The pin no longer names a worktree ASTRA prepared for this task.
         /// `commonDirectory` is the shared Git directory the pinned checkout
-        /// was verified against, nil only when the pin is the configured
-        /// repository folder itself and that folder isn't a checkout.
-        case retargeted(pinned: String, commonDirectory: String?)
+        /// was verified against; a pin that can't be verified, even the
+        /// configured repository folder itself, is invalid instead.
+        case retargeted(pinned: String, commonDirectory: String)
         case bound(TaskWorktreePayload, event: TaskEvent, pinned: String)
     }
 
@@ -169,9 +169,10 @@ public enum TaskWorktreeBinding {
                 return .invalid(error.description)
             }
         }
+        // Repository evidence, never a matching path: the configured
+        // repository folder replaced by a plain folder is not its checkout.
         for repository in repositories {
-            let common = verifiedCommonDirectory(checkout: pinned, repository: repository)
-            if common != nil || resolvedPath(repository) == resolvedPath(pinned) {
+            if let common = verifiedCommonDirectory(checkout: pinned, repository: repository) {
                 return .retargeted(pinned: pinned, commonDirectory: common)
             }
         }
@@ -179,20 +180,35 @@ public enum TaskWorktreeBinding {
     }
 
     /// The shared Git directory `checkout` uses while it is still a checkout
-    /// of `repository`: the repository's primary checkout, whose own `.git`
+    /// of `repository`: the repository's primary checkout, whose own Git
     /// directory is that common directory, or a linked checkout whose own
-    /// `.git` file points back to its registry entry. A folder that merely
-    /// sits where Git once registered a checkout, such as a replacement
-    /// clone, a plain folder, or a symlink, is nil.
+    /// `.git` file points back to its registry entry. The primary checkout's
+    /// `.git` is a directory, or a `gitdir:` file as a submodule or a
+    /// separate Git directory has. A folder that merely sits where Git once
+    /// registered a checkout, such as a replacement clone, a plain folder,
+    /// or a symlink, is nil.
     public static func verifiedCommonDirectory(checkout: String, repository: String) -> String? {
         if let linked = registeredCommonDirectory(repositoryPath: repository, worktreePath: checkout) { return linked }
         guard let checkoutPath = resolvedPath(checkout),
               let common = checkoutCommonDirectory(repository) else { return nil }
         let fileManager = FileManager.default
         let dotGit = (checkoutPath as NSString).appendingPathComponent(".git")
-        guard (try? fileManager.attributesOfItem(atPath: checkoutPath)[.type] as? FileAttributeType) == .typeDirectory,
-              (try? fileManager.attributesOfItem(atPath: dotGit)[.type] as? FileAttributeType) == .typeDirectory,
-              resolvedPath(dotGit) == resolvedPath(common) else { return nil }
+        guard (try? fileManager.attributesOfItem(atPath: checkoutPath)[.type] as? FileAttributeType) == .typeDirectory
+        else { return nil }
+        let ownGitDirectory: String?
+        switch try? fileManager.attributesOfItem(atPath: dotGit)[.type] as? FileAttributeType {
+        case .typeDirectory?:
+            ownGitDirectory = resolvedPath(dotGit)
+        case .typeRegular?:
+            guard let raw = try? String(contentsOfFile: dotGit, encoding: .utf8),
+                  raw.lowercased().hasPrefix("gitdir:") else { return nil }
+            ownGitDirectory = resolvedGitPath(String(raw.dropFirst("gitdir:".count)), relativeTo: checkoutPath)
+        default:
+            return nil
+        }
+        // Its own Git directory is the common directory, never a linked
+        // worktree's admin entry inside it.
+        guard let ownGitDirectory, ownGitDirectory == resolvedPath(common) else { return nil }
         return common
     }
 
@@ -267,10 +283,12 @@ public enum TaskWorktreeBinding {
         guard let log = try? String(
             contentsOf: registered.entry.appendingPathComponent("logs/HEAD"), encoding: .utf8
         ) else { return .unreadable }
-        let zero = String(repeating: "0", count: 40)
+        // The null object ID marks the entry that created HEAD. It is all
+        // zeros at the repository's own hash length: 40 for SHA-1, 64 for
+        // SHA-256.
         return .commits(log.split(whereSeparator: \.isNewline).flatMap { line in
             line.split(separator: " ").prefix(2).map(String.init)
-        }.filter { $0 != zero })
+        }.filter { !$0.allSatisfy { $0 == "0" } })
     }
 
     /// The identity token and the lock reason in `worktreePath`'s registry

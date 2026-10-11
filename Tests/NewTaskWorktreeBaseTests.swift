@@ -1222,7 +1222,7 @@ struct NewTaskWorktreeBaseTests {
             Issue.record("The repository's primary checkout shares the source's Git directory")
             return
         }
-        #expect(common.map(WorkspacePathPresentation.resolvedPath)
+        #expect(WorkspacePathPresentation.resolvedPath(common)
             == WorkspacePathPresentation.resolvedPath(main.appendingPathComponent(".git").path))
         // Its Git directory is inside the checkout, so nothing extra is mounted.
         #expect(TaskWorkspaceAccess(task: draft).runtimeWorktreeGitMetadataPaths.isEmpty)
@@ -1238,6 +1238,56 @@ struct NewTaskWorktreeBaseTests {
         try FileManager.default.moveItem(at: main, to: elsewhere)
         try fixture.git(["clone", "--quiet", elsewhere.path, main.path], at: fixture.root)
         #expect(TaskWorktreeBinding.verifiedCommonDirectory(checkout: main.path, repository: linked.path) == nil)
+    }
+
+    @Test("A retarget to the configured repository's path counts only while that folder is still its checkout")
+    func sameRepositoryRetargetNeedsRepositoryEvidence() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        #expect(TaskCodeLocationPin.set(repository.path, workspace: workspace, task: draft))
+        guard case .retargeted = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("Expected the draft to be retargeted to its repository")
+            return
+        }
+
+        // The repository is moved away and a plain folder takes its path.
+        try FileManager.default.moveItem(at: repository, to: fixture.root.appendingPathComponent("App-moved"))
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+        guard case .invalid = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A plain folder at the repository's path must not stay writable")
+            return
+        }
+    }
+
+    @Test("A submodule checkout, whose .git is a file, is its own repository's checkout when retargeted to")
+    func submoduleRetargetIsVerified() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let library = try fixture.repository("Library")
+        let parent = try fixture.repository("Parent")
+        try fixture.git(["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", library.path, "Library"], at: parent)
+        let submodule = parent.appendingPathComponent("Library", isDirectory: true)
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "Library", primaryPath: submodule.path)
+        store.mainContext.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await TaskWorktreeService.prepare(
+            task: draft, request: TaskWorktreeRequest(repositoryPath: submodule.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        #expect(TaskCodeLocationPin.set(submodule.path, workspace: workspace, task: draft))
+        guard case .retargeted(_, let common) = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A submodule's own checkout must verify through its gitdir file")
+            return
+        }
+        #expect(WorkspacePathPresentation.resolvedPath(common)
+            == WorkspacePathPresentation.resolvedPath(parent.appendingPathComponent(".git/modules/Library").path))
     }
 
     @Test("Current branch refuses a clone standing where Git still lists the selected linked checkout")
