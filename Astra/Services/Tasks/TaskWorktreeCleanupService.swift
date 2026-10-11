@@ -181,8 +181,19 @@ enum TaskWorktreeCleanupService {
                     let durable = ModelContext(context.container)
                     let taskID = discard.taskID
                     let descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-                    var pins = try TaskWorktreeService.durableCheckoutPins(modelContext: durable, worktreesRoot: worktreesRoot)
-                    pins.formUnion(try TaskWorktreeService.durableCheckoutPins(modelContext: context, worktreesRoot: worktreesRoot))
+                    // An interrupted creation's own task may still be pinned
+                    // here by an older worktree it prepared at this path, one
+                    // that was removed since; that pin vouches for the old
+                    // creation, never for this one.
+                    let stale: (AgentTask) -> Bool = { task in
+                        !pinsOwnTask && Self.pinNamesOlderCreation(task, discard: discard)
+                    }
+                    var pins = try TaskWorktreeService.durableCheckoutPins(
+                        modelContext: durable, worktreesRoot: worktreesRoot, ignoring: stale
+                    )
+                    pins.formUnion(try TaskWorktreeService.durableCheckoutPins(
+                        modelContext: context, worktreesRoot: worktreesRoot, ignoring: stale
+                    ))
                     // A saved task keeps a worktree it was deleted from or
                     // retargeted away from, but only one it prepared: an
                     // import that reused the task's ID for another checkout
@@ -206,6 +217,23 @@ enum TaskWorktreeCleanupService {
             logFailure("worktree_cleanup_failed", taskID: discard.taskID, error: error)
             return false
         }
+    }
+
+    /// Whether `task` is `discard`'s task, pinned to its path only because an
+    /// older creation with another recorded identity prepared a worktree
+    /// there. Without an identity to compare, nothing is stale.
+    static func pinNamesOlderCreation(_ task: AgentTask, discard: TaskWorktreeDiscard) -> Bool {
+        let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
+        guard task.id == discard.taskID, let identity = discard.identity,
+              task.executionRootPath.map(WorkspacePathPresentation.standardizedPath) == path else { return false }
+        var older = false
+        for event in task.events where !event.isDeleted && event.hasType(TaskEventTypes.Task.worktreePrepared) {
+            guard case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return false }
+            guard WorkspacePathPresentation.standardizedPath(payload.worktreePath) == path else { continue }
+            if payload.identity == identity { return false }
+            if payload.identity != nil { older = true }
+        }
+        return older
     }
 
     /// Whether `task` prepared `discard`'s worktree: a prepared event names
@@ -318,7 +346,8 @@ enum TaskWorktreeCleanupService {
     }
 
     /// True when a saved task, of any that share the ID, records preparing
-    /// this worktree.
+    /// this worktree: this same creation when the journal recorded its
+    /// identity, never an older prepared event at the same path.
     private static func bindingIsSaved(_ discard: TaskWorktreeDiscard, modelContext: ModelContext) throws -> Bool {
         let taskID = discard.taskID
         let worktree = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
@@ -329,7 +358,9 @@ enum TaskWorktreeCleanupService {
             task.events.contains { event in
                 guard !event.isDeleted, event.hasType(TaskEventTypes.Task.worktreePrepared),
                       case .success(let binding) = event.decodePayload(as: TaskWorktreePayload.self) else { return false }
-                return WorkspacePathPresentation.standardizedPath(binding.worktreePath) == worktree
+                guard WorkspacePathPresentation.standardizedPath(binding.worktreePath) == worktree else { return false }
+                if let identity = discard.identity { return binding.identity == identity }
+                return true
             }
         }
     }

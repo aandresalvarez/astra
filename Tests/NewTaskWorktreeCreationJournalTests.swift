@@ -304,6 +304,41 @@ struct NewTaskWorktreeCreationJournalTests {
         #expect(try !fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
     }
 
+    @Test("A creation is never settled by an older prepared event at the same path")
+    func olderPreparedEventDoesNotSettleNewCreation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let task = draft(in: repository, context: store.mainContext)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        var intent = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        #expect(intent.identity != nil)
+        // The old checkout and branch are removed outside ASTRA; the saved
+        // prepared event still names the path.
+        try fixture.git(["worktree", "remove", "--force", intent.worktreePath], at: repository)
+        try fixture.git(["branch", "-D", intent.branch], at: repository)
+        // A new creation at the same path crashes before saving its event.
+        intent.identity = UUID().uuidString
+        let journal = fixture.ownership.creationJournal
+        try journal.record(intent)
+        try journal.ownership.record(.init(intent))
+        _ = try await GitService.shared.addLockedTaskWorktree(
+            repoPath: repository.path, branch: intent.branch, base: intent.baseCommit,
+            worktreesRoot: fixture.worktrees.path, lockReason: TaskWorktreeBinding.lockReason(forIdentity: try #require(intent.identity))
+        )
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 1)
+        #expect(!FileManager.default.fileExists(atPath: intent.worktreePath))
+        #expect(try fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
+        #expect(try journal.pendingURLs().isEmpty)
+    }
+
     @Test("A creation whose task binding was saved keeps its worktree and settles the journal")
     func savedBindingSettlesJournal() async throws {
         let fixture = try Fixture()
