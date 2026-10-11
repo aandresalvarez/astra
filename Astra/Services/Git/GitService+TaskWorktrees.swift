@@ -339,7 +339,9 @@ extension GitService {
     /// remote-tracking branch holds, a checkout away from the commit the
     /// superproject's index records (`$sha1`), which `git submodule status`
     /// hides when that gitlink is marked assume-unchanged or skip-worktree,
-    /// and a local branch that isn't exactly its upstream. Tags are compared
+    /// a local branch that isn't exactly its upstream, and another linked
+    /// worktree registered on it, whose `.git` file would point into the
+    /// deleted repository. Tags are compared
     /// with the snapshot taken at creation instead, since a tag the user made
     /// at a remote-reachable commit looks like a fetched one once packed.
     static let submoduleLocalWorkScript = [
@@ -349,20 +351,24 @@ extension GitService {
         "{ test \"$sha1\" = \"$(git rev-parse HEAD)\" || echo \"moved $displaypath\"; }",
         "{ git for-each-ref --format='%(refname:short)' refs/heads | while read -r ref; do "
             + "test \"$(git rev-parse \"refs/heads/$ref\")\" = \"$(git rev-parse --verify -q \"$ref@{upstream}\")\" "
-            + "|| echo \"branch $displaypath $ref\"; done; }"
+            + "|| echo \"branch $displaypath $ref\"; done; }",
+        "{ test \"$(git worktree list --porcelain | grep -c '^worktree ')\" = 1 || echo \"worktrees $displaypath\"; }"
     ].joined(separator: " && ")
 
     /// Every populated submodule's tags, through Git, packed or loose, its
     /// repository configuration, such as a remote added since, and its
     /// repository-local files, hooks and `info/`, by content: local state a
-    /// forced removal deletes that no status or ref check shows. Sample
-    /// hooks from the template are left out.
+    /// forced removal deletes that no status or ref check shows, with each
+    /// symbolic link by its target. Sample hooks from the template are left
+    /// out.
     static let submoduleTagListing = [
         "submodule", "foreach", "--quiet", "--recursive",
         "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' refs/tags; "
             + "echo \"-- config\"; git config --local --list; "
             + "echo \"-- files\"; (cd \"$(git rev-parse --absolute-git-dir)\" && "
-            + "find hooks info -type f ! -name '*.sample' -exec shasum {} + 2>/dev/null | sort)"
+            + "{ find hooks info -type f ! -name '*.sample' -exec shasum {} +; "
+            + "find hooks info -type l -exec sh -c 'for p; do echo \"link $p $(readlink \"$p\")\"; done' sh {} +; "
+            + "} 2>/dev/null | sort)"
     ]
     static let submoduleTagSnapshotFileName = "astra-submodule-tags"
 

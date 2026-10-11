@@ -50,6 +50,14 @@ enum NewTaskWorktreeComposerFlow {
         TaskCodeLocationPin.set(workspace.activeWorkingPath, workspace: workspace, task: draft)
     }
 
+    /// A draft that prepared a worktree may move only to a checkout of that
+    /// repository, with or without a second worktree requested: unchecking
+    /// the request would otherwise keep a pin its binding can't verify.
+    static func acceptsRepository(_ path: String, for draft: AgentTask?) -> Bool {
+        guard let draft else { return true }
+        return TaskWorktreeBinding.accepts(TaskCodeLocationPin.normalize(path), for: draft)
+    }
+
     /// Records the worktree choice on the draft so reopening it restores the
     /// checkbox and base. A draft that has its worktree no longer has a choice.
     @discardableResult

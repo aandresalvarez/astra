@@ -193,6 +193,12 @@ struct NewTaskWorktreeCreationJournalTests {
         case addedRemote
         /// Only a local hook in the submodule repository.
         case addedHook
+        /// Only a hook linked to a script elsewhere, which a listing of
+        /// regular files misses.
+        case addedHookLink
+        /// Another detached linked worktree registered on the submodule,
+        /// whose `.git` file would point into the deleted repository.
+        case linkedWorktree
     }
 
     @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
@@ -284,6 +290,15 @@ struct NewTaskWorktreeCreationJournalTests {
             let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
             try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
             try "#!/bin/sh\nexit 0\n".write(to: hook, atomically: true, encoding: .utf8)
+        case .addedHookLink:
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: worktree.appendingPathComponent("libs/a"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
+            try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(atPath: hook.path, withDestinationPath: "/usr/bin/true")
+        case .linkedWorktree:
+            let linked = fixture.root.appendingPathComponent("LibA-linked")
+            try fixture.git(["worktree", "add", "--quiet", "--detach", linked.path, "HEAD"], at: worktree.appendingPathComponent("libs/a"))
         case .addedRemote:
             try fixture.git(["remote", "add", "backup", "https://example.invalid/backup.git"], at: worktree.appendingPathComponent("libs/a"))
         case .packedTag:
