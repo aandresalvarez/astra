@@ -19,6 +19,8 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     /// Auto: the connector points somewhere other than it did when the run
     /// launched, so this run's proposal is not sent there.
     case connectorChangedSinceLaunch(launched: String, now: String)
+    /// Auto: the connector's credential is not the one the run launched with.
+    case credentialChangedSinceLaunch(alias: String)
     case missingCredential(String)
     case invalidBaseURL(String)
     case insecureTransport(alias: String, url: String)
@@ -59,6 +61,9 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
         case let .connectorChangedSinceLaunch(launched, now):
             "This run composed the proposal for \(launched), but the connector now sends to \(now). "
                 + "ASTRA did not send it; start a new run to use the connector as it is now."
+        case let .credentialChangedSinceLaunch(alias):
+            "The \(alias) connector's credential changed after this run started, so ASTRA did not send the "
+                + "proposal under a different account. Start a new run to use the connector as it is now."
         case let .missingCredential(alias):
             "The \(alias) connector has no usable credential in the Keychain, so ASTRA cannot send this."
         case let .invalidBaseURL(url):
@@ -478,6 +483,7 @@ final class ConnectorMutationCoordinator {
         task: AgentTask,
         proposal: ConnectorMutationProposal,
         authorization: ExternalActionAuthorization = .userReviewed,
+        launchCredential: String? = nil,
         timeoutSeconds: TimeInterval? = nil
     ) async throws -> ConnectorMutationReceipt {
         guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
@@ -523,7 +529,7 @@ final class ConnectorMutationCoordinator {
                     now: "\(current.connectorAlias) (\(current.destinationURL))"
                 )
             }
-            request = try buildRequest(current, timeoutSeconds: timeoutSeconds)
+            request = try buildRequest(current, timeoutSeconds: timeoutSeconds, launchCredential: launchCredential)
             try Self.reserveSend(stagedPath: staged.path, target: proposal.target)
         } catch {
             // Recorded, then rethrown. The sheet shows the error and the row
@@ -658,6 +664,7 @@ final class ConnectorMutationCoordinator {
         stagedPath: String,
         requestDigest: String,
         launchBaseURL: String,
+        launchCredential: String,
         timeoutSeconds: TimeInterval? = nil
     ) async throws -> ConnectorMutationReceipt {
         let staged = try readStaged(task: task, path: stagedPath, digest: requestDigest)
@@ -703,7 +710,10 @@ final class ConnectorMutationCoordinator {
                     launched: launched ?? launchBaseURL, now: prepared.destinationURL
                 )
             }
-            return try await send(task: task, proposal: prepared, authorization: .autoPolicy, timeoutSeconds: timeoutSeconds)
+            return try await send(
+                task: task, proposal: prepared, authorization: .autoPolicy,
+                launchCredential: launchCredential, timeoutSeconds: timeoutSeconds
+            )
         } catch {
             retireIfStillPending(task: task, pending: pending, proposal: proposal, error: error)
             throw error
@@ -798,7 +808,8 @@ final class ConnectorMutationCoordinator {
 
     private func buildRequest(
         _ proposal: ConnectorMutationProposal,
-        timeoutSeconds: TimeInterval? = nil
+        timeoutSeconds: TimeInterval? = nil,
+        launchCredential: String? = nil
     ) throws -> ConnectorMutationHTTPRequest {
         let connector = try resolveConnector(proposal)
         guard let url = URL(string: proposal.destinationURL) else {
@@ -811,11 +822,18 @@ final class ConnectorMutationCoordinator {
         // expected — which is exactly why it is worth stating: the gate must
         // hold even if a future caller builds a request by another route.
         try Self.requireProtectedTransport(connector)
+        let credential = try credential(for: connector, alias: proposal.connectorAlias)
+        // Auto: under the account the run launched with, read here where the
+        // header is built, so a credential replaced at any point since launch
+        // is refused rather than sent under.
+        if let launchCredential, credential.fingerprint != launchCredential {
+            throw ConnectorMutationCoordinatorError.credentialChangedSinceLaunch(alias: proposal.connectorAlias)
+        }
         return ConnectorMutationHTTPRequest(
             url: url,
             method: proposal.requestMethod,
             body: proposal.requestBody,
-            authorizationHeader: try authorizationHeader(for: connector, alias: proposal.connectorAlias),
+            authorizationHeader: credential.header,
             timeoutSeconds: timeoutSeconds ?? URLSessionConnectorMutationSender.timeoutSeconds
         )
     }
@@ -888,7 +906,7 @@ final class ConnectorMutationCoordinator {
     /// `authMethod` would be a scheme no one reviewed. A service without an
     /// entry here cannot be committed, which is the same default-deny the read
     /// gates use.
-    private func authorizationHeader(for connector: Connector, alias: String) throws -> String {
+    private func credential(for connector: Connector, alias: String) throws -> (header: String, fingerprint: String) {
         let credentials = connector.credentials(store: secretStore)
         func value(_ names: [String]) -> String? {
             for name in names {
@@ -905,7 +923,10 @@ final class ConnectorMutationCoordinator {
                   let token = value(["JIRA_API_TOKEN", "API_TOKEN", "TOKEN"]) else {
                 throw ConnectorMutationCoordinatorError.missingCredential(alias)
             }
-            return "Basic \(Data("\(email):\(token)".utf8).base64EncodedString())"
+            return (
+                header: "Basic \(Data("\(email):\(token)".utf8).base64EncodedString())",
+                fingerprint: ConnectorCredentialFingerprint.jira(email: email, token: token)
+            )
         default:
             throw ConnectorMutationCoordinatorError.unsupportedOperation(
                 serviceType: connector.serviceType,

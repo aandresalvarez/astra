@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// How the broker asks ASTRA to act outside the machine for the run it serves.
@@ -31,16 +32,51 @@ public struct StagedConnectorMutationRequest: Equatable, Sendable {
     /// one the run's launch projected. Auto has no sheet to show where a write
     /// goes, so it sends only while the connector still points there.
     public let connectorBaseURL: String
+    /// `ConnectorCredentialFingerprint` of the credential the run's launch
+    /// projected for that connector, or empty when none was. Auto sends only
+    /// under that same account, never one swapped in after the run started.
+    public let credentialFingerprint: String
     /// The `timeout_seconds` the call carried, already bounded by the broker,
     /// or nil for ASTRA's default. The send happens now, so the timeout the
     /// tool advertises is the one it gets.
     public let timeoutSeconds: TimeInterval?
 
-    public init(stagedPath: String, requestDigest: String, connectorBaseURL: String, timeoutSeconds: TimeInterval? = nil) {
+    public init(
+        stagedPath: String,
+        requestDigest: String,
+        connectorBaseURL: String,
+        credentialFingerprint: String,
+        timeoutSeconds: TimeInterval? = nil
+    ) {
         self.stagedPath = stagedPath
         self.requestDigest = requestDigest
         self.connectorBaseURL = connectorBaseURL
+        self.credentialFingerprint = credentialFingerprint
         self.timeoutSeconds = timeoutSeconds
+    }
+}
+
+/// A non-secret name for the account a connector write goes out under: a
+/// SHA-256 over the credential, never the credential. The broker computes it
+/// from what the run's launch projected and ASTRA from the Keychain right
+/// where it builds the header, so Auto can tell they are still the same.
+public enum ConnectorCredentialFingerprint {
+    /// Jira's: the email and API token its Basic header is built from.
+    public static func jira(email: String, token: String) -> String {
+        SHA256.hash(data: Data("jira\u{0}\(email)\u{0}\(token)".utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+extension HostControlConnector {
+    /// A credential's value as the run's launch projected it into the broker's
+    /// environment, or nil when it is missing or blank.
+    func projectedCredential(named logicalName: String, environment: [String: String]) -> String? {
+        guard let key = environmentKey(forLogicalName: logicalName),
+              let value = environment[key],
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 

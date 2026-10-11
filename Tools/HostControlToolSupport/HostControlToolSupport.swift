@@ -1833,12 +1833,7 @@ private final class JiraHTTPClient {
     }
 
     private func credential(named logicalName: String, connector: HostControlConnector) -> String? {
-        guard let envKey = connector.environmentKey(forLogicalName: logicalName),
-              let value = configuration.environment[envKey],
-              !value.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return value
+        connector.projectedCredential(named: logicalName, environment: configuration.environment)
     }
 }
 

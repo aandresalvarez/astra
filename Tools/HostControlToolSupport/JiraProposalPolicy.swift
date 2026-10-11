@@ -372,7 +372,9 @@ enum JiraProposalPolicy {
         let outcome = requester?.sendStagedConnectorMutation(
             StagedConnectorMutationRequest(
                 stagedPath: staged.path, requestDigest: staged.digest,
-                connectorBaseURL: connector.baseURL, timeoutSeconds: timeoutSeconds
+                connectorBaseURL: connector.baseURL,
+                credentialFingerprint: credentialFingerprint(connector: connector, environment: configuration.environment),
+                timeoutSeconds: timeoutSeconds
             )
         ) ?? .awaitingReview
         diagnostics?.record(
@@ -390,6 +392,17 @@ enum JiraProposalPolicy {
             ]],
             "isError": isError
         ])
+    }
+
+    /// The account the broker's own Jira requests use, read the same way.
+    static func credentialFingerprint(connector: HostControlConnector, environment: [String: String]) -> String {
+        guard let email = connector.projectedCredential(named: "JIRA_EMAIL", environment: environment)
+                ?? connector.projectedCredential(named: "EMAIL", environment: environment),
+              let token = connector.projectedCredential(named: "JIRA_API_TOKEN", environment: environment)
+                ?? connector.projectedCredential(named: "API_TOKEN", environment: environment) else {
+            return ""
+        }
+        return ConnectorCredentialFingerprint.jira(email: email, token: token)
     }
 
     private static func compose(

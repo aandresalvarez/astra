@@ -257,6 +257,32 @@ struct ConnectorMutationSendWhenProposedTests {
                 "returned to the agent, never left for a send from the dock")
     }
 
+    /// The broker reads with the credential the run launched with. A token
+    /// replaced since then is another account, and Auto does not send this
+    /// run's proposal under it; nor when the run projected no credential.
+    @Test("Auto does not send under a credential replaced after the run launched")
+    func autoRefusesACredentialReplacedSinceLaunch() async throws {
+        for launched in [ConnectorCredentialFingerprint.jira(email: "user@example.com", token: "old-token"), ""] {
+            let fixture = try Fixture()
+            let sender = Sender()
+            let staged = try fixture.stage()
+            let request = StagedConnectorMutationRequest(
+                stagedPath: staged.request.stagedPath, requestDigest: staged.request.requestDigest,
+                connectorBaseURL: staged.request.connectorBaseURL, credentialFingerprint: launched
+            )
+
+            let outcome = await fixture.handler(level: .autonomous, sender: sender).sendStagedConnectorMutation(request)
+
+            guard case let .refused(message) = outcome else {
+                Issue.record("Expected a refusal, got \(outcome)")
+                continue
+            }
+            #expect(message.contains("credential changed"), "\(message)")
+            #expect(sender.requests.isEmpty)
+            #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
+        }
+    }
+
     @Test("Auto sends with the caller's timeout, bounded by the broker's wait")
     func autoSendUsesTheCallersTimeout() async throws {
         let fixture = try Fixture()
@@ -266,7 +292,8 @@ struct ConnectorMutationSendWhenProposedTests {
             let staged = try fixture.stage(summary: "Timeout \(String(describing: timeout))")
             _ = await handler.sendStagedConnectorMutation(StagedConnectorMutationRequest(
                 stagedPath: staged.staged.path, requestDigest: staged.staged.digest,
-                connectorBaseURL: staged.request.connectorBaseURL, timeoutSeconds: timeout
+                connectorBaseURL: staged.request.connectorBaseURL,
+                credentialFingerprint: staged.request.credentialFingerprint, timeoutSeconds: timeout
             ))
         }
 
@@ -653,7 +680,8 @@ struct ConnectorMutationSendWhenProposedTests {
                 configuration: HostControlToolConfiguration(taskFolder: taskFolder, runID: run.id.uuidString)
             )
             return (staged, StagedConnectorMutationRequest(
-                stagedPath: staged.path, requestDigest: staged.digest, connectorBaseURL: connector.baseURL
+                stagedPath: staged.path, requestDigest: staged.digest, connectorBaseURL: connector.baseURL,
+                credentialFingerprint: ConnectorCredentialFingerprint.jira(email: "user@example.com", token: "token-value")
             ))
         }
 

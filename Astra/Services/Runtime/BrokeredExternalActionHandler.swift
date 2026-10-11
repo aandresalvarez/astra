@@ -58,6 +58,7 @@ final class BrokeredExternalActionHandler {
                 stagedPath: request.stagedPath,
                 requestDigest: request.requestDigest,
                 launchBaseURL: request.connectorBaseURL,
+                launchCredential: request.credentialFingerprint,
                 timeoutSeconds: request.timeoutSeconds.map(Self.sendTimeout)
             )
             return .performed(BrokeredExternalActionReceipt(identifier: receipt.createdKey, url: receipt.createdURL))
