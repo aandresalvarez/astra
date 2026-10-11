@@ -302,6 +302,32 @@ public struct TaskWorkspaceAccess {
         }
     }
 
+    /// Whether the task runs in a checkout tied to a worktree prepared for
+    /// it: that worktree, or a verified checkout it was retargeted to. Its
+    /// source folders are read-only either way, so admission and Docker
+    /// treat both alike.
+    public var runsInPreparedCheckout: Bool {
+        switch worktreeBindingState {
+        case .bound, .retargeted: return true
+        case .none, .invalid: return false
+        }
+    }
+
+    /// The source checkouts the task must not write through: a bound
+    /// worktree's source, or a retargeted draft's prepared sources other
+    /// than the checkout it now runs in.
+    public var protectedSourceCheckouts: [String] {
+        switch worktreeBindingState {
+        case .bound(let binding, _, _):
+            return [binding.repositoryPath]
+        case .retargeted(let pinned, _):
+            let pin = Self.resolvedPath(pinned)
+            return normalizedUniquePaths(preparedSourceRepositories.filter { Self.resolvedPath($0) != pin })
+        case .none, .invalid:
+            return []
+        }
+    }
+
     /// The source checkout of every worktree prepared for the task.
     private var preparedSourceRepositories: [String] {
         task.events.compactMap { event -> String? in

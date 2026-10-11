@@ -79,6 +79,14 @@ struct StanfordOutlookMailTests {
             }
             #expect(StanfordOutlookMailRegistry.entries().isEmpty)
 
+            // A dangling link is a registry that can't be verified.
+            try FileManager.default.removeItem(at: registry)
+            try FileManager.default.createSymbolicLink(
+                at: registry, withDestinationURL: root.appendingPathComponent("gone.json")
+            )
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            try FileManager.default.removeItem(at: registry)
+
             // An unreadable registry is left as it is, not emptied.
             try Data("not json".utf8).write(to: registry)
             #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))

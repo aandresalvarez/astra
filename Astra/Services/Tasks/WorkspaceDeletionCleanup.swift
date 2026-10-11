@@ -26,9 +26,10 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     let mirrorFiles: [String]
     let connectors: [ConnectorKeychainCleanup]
     let skills: [SkillKeychainCleanup]
-    /// True for a record written before `physicalFolder` existed, whose
-    /// folder was resolved again on reading. The store accepts one only
-    /// while that resolution still matches the digest its file is named by.
+    /// True for a record written before `physicalFolder` or `mirrorFiles`
+    /// existed. What it would clean can only be derived from the folder and
+    /// `.astra` link as they are now, which may lead elsewhere, so the store
+    /// treats it as unreadable: it is kept and settles nothing.
     let folderWasResolvedOnRead: Bool
 
     private enum CodingKeys: String, CodingKey {
@@ -80,9 +81,9 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         // the store verifies that against the record's file name.
         let recorded = try container.decodeIfPresent(String.self, forKey: .physicalFolder)
         physicalFolder = recorded ?? WorkspacePathPresentation.resolvedPath(primaryPath)
-        folderWasResolvedOnRead = recorded == nil
-        mirrorFiles = try container.decodeIfPresent([String].self, forKey: .mirrorFiles)
-            ?? Self.pinnedMirrorFiles(for: physicalFolder)
+        let pinned = try container.decodeIfPresent([String].self, forKey: .mirrorFiles)
+        mirrorFiles = pinned ?? Self.pinnedMirrorFiles(for: physicalFolder)
+        folderWasResolvedOnRead = recorded == nil || pinned == nil
         connectors = try container.decode([ConnectorKeychainCleanup].self, forKey: .connectors)
         skills = try container.decode([SkillKeychainCleanup].self, forKey: .skills)
     }
@@ -145,15 +146,12 @@ struct WorkspaceDeletionCleanupStore: Sendable {
 
     struct UnverifiableFolder: Error {}
 
-    /// Decodes the record at `url`. A record without its recorded folder is
-    /// trusted only while resolving its path still gives the folder its file
-    /// was named for; once a symlink in it points elsewhere, the folder that
-    /// was deleted is unknown, so it reads as unreadable and fails closed.
+    /// Decodes the record at `url`. One written before its folder and mirror
+    /// files were pinned reads as unreadable and fails closed: a symlink
+    /// retargeted since would aim its cleanup at another folder's mirror.
     private func read(_ url: URL) throws -> WorkspaceDeletionCleanupRecord {
         let record = try JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
-        guard !record.folderWasResolvedOnRead
-            || recordURL(for: record).standardizedFileURL.path == url.standardizedFileURL.path
-        else { throw UnverifiableFolder() }
+        guard !record.folderWasResolvedOnRead else { throw UnverifiableFolder() }
         return record
     }
 
@@ -307,9 +305,18 @@ enum WorkspaceDeletionCleanupService {
     /// checked without following links: a dangling symlink is still a
     /// mirror, since its target could come back and be reimported, so the
     /// link itself is removed.
+    ///
+    /// Each path's folder was resolved when it was pinned. One that resolves
+    /// elsewhere now had a folder replaced by a link since, so the file at
+    /// that spelling is someone else's; it is left alone, as the pinned file
+    /// went with the replaced folder.
     static func removeMirrors(_ mirrorPaths: [String]) -> Bool {
         var removedAll = true
-        for path in mirrorPaths where (try? FileManager.default.attributesOfItem(atPath: path)) != nil {
+        let unmoved = mirrorPaths.filter { path in
+            let folder = (path as NSString).deletingLastPathComponent
+            return WorkspacePathPresentation.resolvedPath(folder) == folder
+        }
+        for path in unmoved where (try? FileManager.default.attributesOfItem(atPath: path)) != nil {
             do {
                 try FileManager.default.removeItem(atPath: path)
             } catch {

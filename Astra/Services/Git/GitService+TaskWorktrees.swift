@@ -194,10 +194,11 @@ extension GitService {
                 }
                 switch (mode, attributes[.type] as? FileAttributeType) {
                 case ("120000", .typeSymbolicLink?):
-                    // A link's blob is its target path.
-                    let indexed = try await runGit(at: worktreePath, arguments: ["cat-file", "-p", object], failureLogLevel: .warning)
+                    // A link's blob is its target path, byte for byte: a
+                    // trailing newline is part of the target, never trimmed.
+                    let indexed = try await runGit(at: worktreePath, arguments: ["cat-file", "blob", object], failureLogLevel: .warning)
                     let target = try FileManager.default.destinationOfSymbolicLink(atPath: full)
-                    if indexed.trimmingCharacters(in: .newlines) != target { return true }
+                    if Data(indexed.utf8) != Data(target.utf8) { return true }
                 case ("100644", .typeRegular?), ("100755", .typeRegular?):
                     let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
                     let executable = permissions & 0o100 != 0
@@ -334,12 +335,15 @@ extension GitService {
     ]
 
     /// Run in each populated submodule; prints anything a forced removal
-    /// would destroy: changes, untracked or ignored files, and commits that
-    /// no remote-tracking branch holds.
+    /// would destroy: changes, untracked or ignored files, commits that no
+    /// remote-tracking branch holds, and a checkout away from the commit the
+    /// superproject's index records (`$sha1`), which `git submodule status`
+    /// hides when that gitlink is marked assume-unchanged or skip-worktree.
     static let submoduleLocalWorkScript = [
         "git status --porcelain --untracked-files=all --ignore-submodules=none",
         "git ls-files --others --ignored --exclude-standard --directory --no-empty-directory",
-        "git rev-list -n 1 --all --reflog --not --remotes"
+        "git rev-list -n 1 --all --reflog --not --remotes",
+        "{ test \"$sha1\" = \"$(git rev-parse HEAD)\" || echo \"moved $displaypath\"; }"
     ].joined(separator: " && ")
 
     func initializeSubmodules(at worktreePath: String) async throws {
@@ -352,11 +356,17 @@ extension GitService {
 
     func submoduleCheckoutState(at worktreePath: String) async -> GitSubmoduleCheckoutState {
         do {
-            // A leading `-` marks a submodule that isn't populated.
+            // A leading `-` marks a submodule that isn't populated, `+` one
+            // checked out at another commit than the index records, and `U`
+            // one with merge conflicts. The last two are changes even when
+            // the gitlink is marked assume-unchanged or skip-worktree and
+            // every status reads clean.
             let status = try await runGit(
                 at: worktreePath, arguments: ["submodule", "status", "--recursive"], failureLogLevel: .warning
             )
-            let populated = status.split(whereSeparator: \.isNewline).contains { !$0.hasPrefix("-") }
+            let lines = status.split(whereSeparator: \.isNewline)
+            if lines.contains(where: { $0.hasPrefix("+") || $0.hasPrefix("U") }) { return .changed }
+            let populated = lines.contains { !$0.hasPrefix("-") }
             let gitDirectory = try await runGit(
                 at: worktreePath, arguments: ["rev-parse", "--absolute-git-dir"], failureLogLevel: .warning
             ).trimmingCharacters(in: .whitespacesAndNewlines)
