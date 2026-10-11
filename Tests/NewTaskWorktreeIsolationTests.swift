@@ -440,6 +440,36 @@ struct NewTaskWorktreeIsolationTests {
         #expect(moved.access == .readOnly)
     }
 
+    @Test("A saved mount role never keeps the source checkout writable; only the real task folder keeps its access")
+    func savedMountRolesDoNotExemptSourceCheckout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: source.path)
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        let path = try await prepare(task, source, context: store.mainContext, fixture: fixture)
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        try FileManager.default.createDirectory(atPath: taskFolder, withIntermediateDirectories: true)
+        // Durable JSON can label any mount; these two claim the source.
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [
+                ExecutionEnvironmentMount(hostPath: source.path, containerPath: "/creds", access: .readWrite, role: .credential),
+                ExecutionEnvironmentMount(hostPath: source.path, containerPath: "/task", access: .readWrite, role: .taskFolder),
+                ExecutionEnvironmentMount(hostPath: taskFolder, containerPath: "/astra/task", access: .readWrite, role: .taskFolder)
+            ]
+        )
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
+        let canonicalSource = ExecutionSandbox.canonicalize(source.path)
+        let sourceMounts = mounts.filter { ExecutionSandbox.canonicalize($0.hostPath) == canonicalSource }
+        #expect(!sourceMounts.isEmpty)
+        #expect(sourceMounts.allSatisfy { $0.access == .readOnly })
+        let canonicalTaskFolder = ExecutionSandbox.canonicalize(taskFolder)
+        #expect(mounts.first { ExecutionSandbox.canonicalize($0.hostPath) == canonicalTaskFolder }?.access == .readWrite)
+    }
+
     @Test("A draft retargeted to a sibling checkout claims its source read-only and moves a saved workdir mount aside")
     func retargetedDraftClaimsSourceAndRelocatesWorkdirMount() async throws {
         let fixture = try Fixture()

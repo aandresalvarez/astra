@@ -137,14 +137,7 @@ public enum SSHConnectionManager {
         do {
             attributes = try FileManager.default.attributesOfItem(atPath: path)
         } catch {
-            let nsError = error as NSError
-            let missing = (nsError.domain == NSCocoaErrorDomain
-                && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code))
-                || (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOENT))
-                || (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map {
-                    $0.domain == NSPOSIXErrorDomain && $0.code == Int(ENOENT)
-                } == true
-            if missing { return .absent }
+            if WorkspaceFileLayout.isMissingFile(error) { return .absent }
             throw error
         }
         if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
@@ -157,7 +150,9 @@ public enum SSHConnectionManager {
     }
 
     /// Puts back a `snapshot`: its file, its link, or no file at all.
-    /// Throws when it couldn't be put back.
+    /// Throws when it couldn't be put back. No file is put back by removing
+    /// whatever is there, never by a stat that may fail for another reason
+    /// than a missing file.
     public static func restore(
         _ snapshot: Snapshot, workspacePath: String, fileWriter: any SSHConnectionFileWriting = defaultFileWriter
     ) throws {
@@ -168,7 +163,9 @@ public enum SSHConnectionManager {
         case .file(let data):
             try fileWriter.writeAtomically(data, to: url)
         case .absent:
-            if current != nil { try FileManager.default.removeItem(at: url) }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch where WorkspaceFileLayout.isMissingFile(error) {}
         case .link(let destination):
             if current?[.type] as? FileAttributeType == .typeSymbolicLink,
                (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) == destination { return }
