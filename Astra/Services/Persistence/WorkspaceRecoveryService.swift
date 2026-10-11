@@ -519,12 +519,16 @@ public enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         afterImport: @escaping @MainActor () -> Void = {}
-    ) -> Task<Void, Never> {
+    ) -> Task<Bool, Never> {
+        // True when the store reflects every mirror recovery could find:
+        // nothing needed recovering, or each discovered mirror loaded. A
+        // mirror that couldn't be loaded may hold pins and credential owners
+        // the store now lacks, so destructive cleanup waits on false.
         Task { @MainActor in
             if extraRoots.isEmpty,
                includeDefaultRoots,
                !fetchExistingWorkspaces(modelContext: modelContext).isEmpty {
-                return
+                return true
             }
             let configs = await withTaskGroup(of: [URL].self, returning: [URL].self) { group in
                 group.addTask(priority: .utility) {
@@ -538,13 +542,15 @@ public enum WorkspaceRecoveryService {
                 return await group.next() ?? []
             }
             // Mirrors of workspaces whose deletion is still being cleaned up.
-            let loadedConfigs = await loadWorkspaceConfigs(configs.filter {
+            let candidates = configs.filter {
                 !excluded.contains(WorkspacePathPresentation.resolvedPath($0.path))
-            })
-            guard !Task.isCancelled else { return }
+            }
+            let loadedConfigs = await loadWorkspaceConfigs(candidates)
+            guard !Task.isCancelled else { return false }
             if recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs) > 0 {
                 afterImport()
             }
+            return loadedConfigs.count == candidates.count
         }
     }
 

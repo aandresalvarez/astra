@@ -1354,6 +1354,70 @@ struct NewTaskWorktreeBaseTests {
         #expect(branches.count == 1)
     }
 
+    @Test("A retargeted task passes on the prepared event that verifies its pin")
+    func inheritanceFollowsTheVerifyingEvent() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let first = try fixture.repository("First")
+        let second = try fixture.repository("Second")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Both", primaryPath: first.path, additionalPaths: [second.path])
+        context.insert(workspace)
+        let draftA = AgentTask(title: "A", goal: "A", workspace: workspace)
+        try await prepare(draftA, first, context: context, fixture: fixture)
+        let draftB = AgentTask(title: "B", goal: "B", workspace: workspace)
+        try await prepare(draftB, second, context: context, fixture: fixture)
+        // A task holding both prepared events, B's the newest, retargeted to A.
+        let task = AgentTask(title: "Both", goal: "Both", workspace: workspace)
+        context.insert(task)
+        for draft in [draftA, draftB] {
+            context.insert(TaskWorktreeBinding.copy(try #require(TaskWorktreeBinding.event(for: draft)), to: task))
+        }
+        #expect(TaskCodeLocationPin.set(first.path, workspace: workspace, task: task))
+        guard case .retargeted = TaskWorktreeBinding.state(of: task) else {
+            Issue.record("Expected the task to be retargeted to the first repository")
+            return
+        }
+
+        let inherited = try #require(TaskWorktreeBinding.eventForInheritance(from: task))
+        let payload = try inherited.decodePayload(as: TaskWorktreePayload.self).get()
+        #expect(WorkspacePathPresentation.resolvedPath(payload.repositoryPath) == WorkspacePathPresentation.resolvedPath(first.path))
+        let derived = AgentTask(title: "Derived", goal: "Derived", workspace: workspace)
+        context.insert(derived)
+        if let copy = TaskWorktreeBinding.inheritPin(from: task, into: derived) { context.insert(copy) }
+        guard case .retargeted = TaskWorktreeBinding.state(of: derived) else {
+            Issue.record("The derived task's binding must verify too")
+            return
+        }
+    }
+
+    @Test("Creation abandons a worktree whose source the workspace stopped configuring while Git ran")
+    func creationRechecksConfiguredSource() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try fixture.commit(".gitmodules", contents: "", message: "Add submodule list", at: repository)
+        let other = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: other.path, additionalPaths: [repository.path])
+        store.mainContext.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        // Another window removes the repository while Git is working.
+        await #expect(throws: TaskWorktreeCreationError.self) {
+            try await TaskWorktreeService.prepare(
+                task: draft, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+                modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
+                worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+                setUpSubmodules: { _, _ in workspace.additionalPaths = [] }
+            )
+        }
+        #expect(draft.executionRootPath == nil)
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+        #expect(try fixture.git(["branch", "--list", "astra/*"], at: repository).isEmpty)
+    }
+
     @Test("Current branch refuses a clone standing where Git still lists the selected linked checkout")
     func replacedLinkedCheckoutIsNotCurrentBranch() async throws {
         let fixture = try Fixture()

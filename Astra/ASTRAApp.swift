@@ -909,7 +909,16 @@ public struct ASTRAApp: App {
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
-                await recovery.value
+                // Only a recovery that loaded every mirror it found vouches
+                // for the store's owners and pins; otherwise destructive
+                // cleanup waits for a launch whose recovery does.
+                guard await recovery.value else {
+                    AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                        "operation": "recover_workspaces", "reason": "mirror_unloadable_cleanup_deferred"
+                    ], level: .error)
+                    return
+                }
+                workspaceRecoveryTrusted = true
                 WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
             }
         }
@@ -960,10 +969,12 @@ public struct ASTRAApp: App {
     @MainActor
     private static func recoverPendingWorktreeCleanup(modelContext: ModelContext, taskQueue: TaskQueue) async {
         guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
-        // Pins that keep a worktree may live only in mirrors a skipped or
-        // blocked recovery didn't import, so cleanup waits for a launch that
-        // recovers, as workspace deletion settlement does.
-        guard workspaceRecoveryAfterLaunch != nil else {
+        // Pins that keep a worktree may live only in mirrors a skipped,
+        // blocked, or partly failed recovery didn't import, so cleanup waits
+        // for a launch whose recovery loaded every mirror, as workspace
+        // deletion settlement does.
+        await workspaceRecoveryAfterLaunch?.value
+        guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "worktree_cleanup", "reason": "deferred_until_workspace_recovery"
             ], level: .warning)
@@ -998,6 +1009,8 @@ public struct ASTRAApp: App {
     /// Rebuilding workspaces from their mirrors, when the store has none; the
     /// tasks it imports may hold baselines to recover.
     @MainActor private static var workspaceRecoveryAfterLaunch: Task<Void, Never>?
+    /// Set once this launch's recovery loaded every mirror it found.
+    @MainActor private static var workspaceRecoveryTrusted = false
 
     /// Compares every task-folder baseline a run left behind — interrupted by
     /// a crash, or cancelled by a quit before its worker compared — after

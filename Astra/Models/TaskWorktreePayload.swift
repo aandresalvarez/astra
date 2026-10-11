@@ -317,7 +317,7 @@ public enum TaskWorktreeBinding {
     /// The source repository must itself be a configured folder, the same rule
     /// worktree creation applies. A configured subfolder or parent never
     /// vouches for a repository, so a binding cannot widen grants beyond it.
-    private static func repositoryIsConfigured(_ path: String, for task: AgentTask) -> Bool {
+    public static func repositoryIsConfigured(_ path: String, for task: AgentTask) -> Bool {
         guard let workspace = task.workspace, let repository = resolvedPath(path) else { return false }
         return ([workspace.primaryPath] + workspace.additionalPaths).contains { resolvedPath($0) == repository }
     }
@@ -409,10 +409,23 @@ public enum TaskWorktreeBinding {
 
     /// Even an invalid or retargeted binding must follow its pin into a
     /// derived task, or a missing checkout would become a legacy fallback.
+    /// A retargeted task passes on the event whose repository verifies its
+    /// current pin, so the derived task's binding verifies too; otherwise the
+    /// newest event.
     public static func eventForInheritance(from task: AgentTask) -> TaskEvent? {
-        event(for: task) ?? task.events
+        if let bound = event(for: task) { return bound }
+        let prepared = task.events
             .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
-            .max { $0.timestamp < $1.timestamp }
+            .sorted { $0.timestamp > $1.timestamp }
+        if case .retargeted(let pinned, _) = state(of: task),
+           let verifying = prepared.first(where: { event in
+               guard case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return false }
+               return repositoryIsConfigured(payload.repositoryPath, for: task)
+                   && verifiedCommonDirectory(checkout: pinned, repository: payload.repositoryPath) != nil
+           }) {
+            return verifying
+        }
+        return prepared.first
     }
 
     /// Pins `target` to `source`'s checkout. Any prepared event travels with
