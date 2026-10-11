@@ -326,6 +326,12 @@ struct NewTaskWorktreeDockView: View {
             choiceProblem = TaskCodeLocationPin.reservedCheckoutMessage
             return
         }
+        guard NewTaskWorktreeComposerFlow.acceptsRepository(
+            repository.path, for: NewTaskWorktreeComposerFlow.liveDraft(draft, in: workspace)
+        ) else {
+            choiceProblem = WorkspaceGitViewModel.foreignRepositoryMessage
+            return
+        }
         TaskCodeLocationPin.set(repository.path, workspace: workspace, task: pinOwner)
         selection.choose(repository)
         guard allowsChoice,

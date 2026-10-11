@@ -1086,6 +1086,36 @@ struct NewTaskWorktreeBaseTests {
         #expect(panel.activeCodePathChangeBlockedMessage.contains("own worktree"))
     }
 
+    @Test("The dock refuses a foreign repository for a draft that prepared a worktree, even for a second one")
+    func dockRefusesForeignRepositoryForPreparedDraft() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let other = try fixture.repository("Other")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        workspace.additionalPaths.append(other.path)
+        let fresh = AgentTask(title: "Fresh", goal: "Explore", workspace: workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        #expect(TaskCodeLocationPin.set(repository.path, workspace: workspace, task: draft))
+        guard case .retargeted = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("Expected the draft to be retargeted")
+            return
+        }
+        // Choice is open again, but picking the other repository and then
+        // unchecking the request would leave a pin the prepared worktree's
+        // binding can't verify, which the queue refuses to launch.
+        #expect(NewTaskWorktreeComposerFlow.acceptsRepository(repository.path, for: draft))
+        #expect(!NewTaskWorktreeComposerFlow.acceptsRepository(other.path, for: draft))
+        #expect(NewTaskWorktreeComposerFlow.acceptsRepository(other.path, for: fresh))
+        #expect(NewTaskWorktreeComposerFlow.acceptsRepository(other.path, for: nil))
+        let dockSource = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/NewTaskWorktreeDockView.swift")
+        let dock = try String(contentsOf: dockSource, encoding: .utf8)
+        #expect(dock.contains("NewTaskWorktreeComposerFlow.acceptsRepository("))
+    }
+
     @Test("A retargeted draft can't be moved to a foreign repository, and an invalid one can be moved back")
     func retargetedDraftStaysOnItsRepository() async throws {
         let fixture = try Fixture()
