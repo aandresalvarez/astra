@@ -614,6 +614,29 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(app.contains("guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {"))
     }
 
+    @Test("A mirror whose folder can't be traversed keeps the deletion pending")
+    func untraversableMirrorFolderKeepsRecord() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Locked", isDirectory: true)
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        try store.record(WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: []))
+        // The mirror is still there; only its folder can't be entered.
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 0)
+        #expect(store.pending().count == 1)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(!FileManager.default.fileExists(atPath: mirror))
+    }
+
     @Test("A workspace deletion pins its mirror identities before the deletion is saved")
     func deletionPinsMirrorIdentitiesBeforeSaving() throws {
         let fixture = try Fixture()

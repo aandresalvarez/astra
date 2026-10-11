@@ -189,6 +189,8 @@ struct NewTaskWorktreeCreationJournalTests {
         case localTag
         /// The same tag after `git pack-refs`, with no loose file left.
         case packedTag
+        /// Only the submodule repository's configuration: a remote added.
+        case addedRemote
     }
 
     @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
@@ -222,9 +224,11 @@ struct NewTaskWorktreeCreationJournalTests {
         )
         let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
         let worktree = URL(fileURLWithPath: discard.worktreePath)
-        // `libs/b` was never initialized, so its folder is empty.
-        try fixture.git(["update-index", "--assume-unchanged", "libs/b"], at: worktree)
+        // `libs/b` was never initialized, so its folder is empty. Flagging
+        // its gitlink is already local work.
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: worktree.path) == false)
+        try fixture.git(["update-index", "--assume-unchanged", "libs/b"], at: worktree)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: worktree.path))
 
         let gitlink = worktree.appendingPathComponent("libs/b")
         try FileManager.default.removeItem(at: gitlink)
@@ -272,6 +276,8 @@ struct NewTaskWorktreeCreationJournalTests {
             try fixture.git(["branch", "keep", "HEAD"], at: worktree.appendingPathComponent("libs/a"))
         case .localTag:
             try fixture.git(["tag", "keep"], at: worktree.appendingPathComponent("libs/a"))
+        case .addedRemote:
+            try fixture.git(["remote", "add", "backup", "https://example.invalid/backup.git"], at: worktree.appendingPathComponent("libs/a"))
         case .packedTag:
             let submodule = worktree.appendingPathComponent("libs/a")
             try fixture.git(["tag", "keep"], at: submodule)
@@ -293,7 +299,9 @@ struct NewTaskWorktreeCreationJournalTests {
         let outcome = await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue)
 
         let removed = work == .none
-        #expect(outcome == (removed ? .removed : .kept("submodule_changes")))
+        // A flagged gitlink is local index state in the worktree itself.
+        let reason = work == .hiddenGitlinkMove ? "index_hidden_changes" : "submodule_changes"
+        #expect(outcome == (removed ? .removed : .kept(reason)))
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath) == !removed)
         #expect(try fixture.git(["branch", "--list", discard.branch], at: app).isEmpty == removed)
     }

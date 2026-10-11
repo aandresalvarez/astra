@@ -486,6 +486,29 @@ struct NewTaskWorktreeIsolationTests {
         #expect(workdir.access == .readWrite)
     }
 
+    @Test("A saved read-only mount of the Git metadata itself takes the run's access")
+    func dockerMetadataMountTakesRunAccess() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: source.path)
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        let path = try await prepare(task, source, context: store.mainContext, fixture: fixture)
+        let metadata = WorkspacePathPresentation.standardizedPath(
+            try #require(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths.first)
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [ExecutionEnvironmentMount(hostPath: metadata, containerPath: metadata, access: .readOnly, role: .additionalPath)]
+        )
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
+        let containerPaths = mounts.map(\.containerPath)
+        #expect(Set(containerPaths).count == containerPaths.count)
+        #expect(mounts.first { $0.containerPath == metadata }?.access == .readWrite)
+    }
+
     @Test("A saved mount at the Git metadata's own path moves aside for it")
     func dockerRelocatesMountAtMetadataPath() async throws {
         let fixture = try Fixture()

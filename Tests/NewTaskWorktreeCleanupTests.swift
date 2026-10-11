@@ -527,51 +527,52 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
-    @Test("A hidden symlink whose target only lost a trailing newline counts as changed")
-    func hiddenLinkNewlineChangeCounts() async throws {
+    @Test("An assume-unchanged flag alone is local work, and keeps the worktree")
+    func assumeUnchangedFlagIsLocalWork() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
-        try FileManager.default.createSymbolicLink(
-            atPath: repository.appendingPathComponent("link").path, withDestinationPath: "Sources/file.txt\n"
-        )
-        try fixture.git(["add", "link"], at: repository)
-        try fixture.git([
-            "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
-            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Add link"
-        ], at: repository)
         let store = try Fixture.container()
-        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
         let checkout = URL(fileURLWithPath: discard.worktreePath)
-        let link = checkout.appendingPathComponent("link")
-        try fixture.git(["update-index", "--assume-unchanged", "link"], at: checkout)
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
-
-        try FileManager.default.removeItem(at: link)
-        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "Sources/file.txt")
-        #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
+        // Nothing in the file changes; the flag is the per-worktree state.
+        try fixture.git(["update-index", "--assume-unchanged", "Sources/file.txt"], at: checkout)
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("index_hidden_changes"))
     }
 
-    @Test("A hidden entry whose executable bit or type changed counts as changed")
-    func hiddenModeAndTypeChangesCount() async throws {
+    @Test("A sparse-excluded file put back must still match the index in content, mode, and type")
+    func sparseExcludedFileMustMatchIndex() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
+        try fixture.commit("Docs/readme.txt", contents: "docs", message: "Add docs", at: repository)
         let store = try Fixture.container()
         let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
         let checkout = URL(fileURLWithPath: discard.worktreePath)
-        let file = checkout.appendingPathComponent("Sources/file.txt")
-        try fixture.git(["update-index", "--assume-unchanged", "Sources/file.txt"], at: checkout)
+        try fixture.git(["sparse-checkout", "set", "Sources"], at: checkout)
+        // Otherwise Git clears the flag on a file that reappears, and status
+        // sees it as an ordinary tracked file.
+        try fixture.git(["config", "sparse.expectFilesOutsideOfPatterns", "true"], at: checkout)
+        let file = checkout.appendingPathComponent("Docs/readme.txt")
+        #expect(!FileManager.default.fileExists(atPath: file.path))
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
 
-        // Only the executable bit: the content hash is unchanged.
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
-        #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
-        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+        // Put back exactly as indexed: still unchanged.
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "docs".write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
-
+        // Only the executable bit: the content hash is unchanged.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
         // A file replaced by a folder.
         try FileManager.default.removeItem(at: file)
         try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)

@@ -23,6 +23,16 @@ public struct TaskWorktreeRequestPayload: Codable, Equatable, Sendable {
     /// so reopening a draft must not fall back to the root. Nil in requests
     /// recorded before this field existed.
     public let checkoutPath: String?
+    /// Position among the draft's requests, one more than the latest when
+    /// recorded. Timestamps alone can tie once a recovery mirror stores them
+    /// to the second. Not part of equality, which compares the choice.
+    /// Absent on requests recorded before it existed.
+    public var sequence: Int?
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.enabled == rhs.enabled && lhs.base == rhs.base
+            && lhs.repositoryPath == rhs.repositoryPath && lhs.checkoutPath == rhs.checkoutPath
+    }
 
     public init(
         enabled: Bool,

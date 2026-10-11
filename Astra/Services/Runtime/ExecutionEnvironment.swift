@@ -741,7 +741,16 @@ enum DockerExecutionPlanner {
         }
         for metadata in taskAccess.runtimeWorktreeGitMetadataPaths {
             let path = WorkspacePathPresentation.standardizedPath(metadata)
-            guard !mounts.contains(where: { $0.hostPath == path && $0.containerPath == path }) else { continue }
+            let access: ExecutionEnvironmentMountAccess = workspaceAccess == .shared ? .readOnly : .readWrite
+            // A saved mount of exactly this path takes the run's access: Git
+            // writes its index and refs here, so a read-only copy would make
+            // a writable worktree fail to commit.
+            if let index = mounts.firstIndex(where: { $0.hostPath == path && $0.containerPath == path }) {
+                mounts[index] = ExecutionEnvironmentMount(
+                    hostPath: path, containerPath: path, access: access, role: mounts[index].role
+                )
+                continue
+            }
             // The .git file names this exact path, so a saved mount of
             // something else there moves aside rather than giving Docker two
             // mounts at one destination.
@@ -754,12 +763,7 @@ enum DockerExecutionPlanner {
             }
             // A linked worktree's .git file holds an absolute host path.
             // Mount only its verified common directory at that same path.
-            mounts.append(ExecutionEnvironmentMount(
-                hostPath: path,
-                containerPath: path,
-                access: workspaceAccess == .shared ? .readOnly : .readWrite,
-                role: .additionalPath
-            ))
+            mounts.append(ExecutionEnvironmentMount(hostPath: path, containerPath: path, access: access, role: .additionalPath))
         }
         var inputIndex = 1
         var seenInputs: Set<String> = []
