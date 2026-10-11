@@ -685,15 +685,13 @@ struct NewTaskWorktreeLifecycleTests {
         let live = Set(KeychainSecretStore.connectorEntityIDs(for: recreated))
         let stable = KeychainSecretStore.stableConnectorEntityID(for: deleted)
         #expect(stable.map(live.contains) == true)
-        #expect(WorkspaceDeletionCleanupService.unownedNamespaces(of: deleted.keychainCleanup, liveNamespaces: live)
+        #expect(ConnectorCredentialCleanup.unownedNamespaces(of: deleted.keychainCleanup, ownership: .init([recreated]))
             == [KeychainSecretStore.connectorEntityID(for: deleted.id)])
         // With no live owner every namespace goes; with the same connector
         // live, nothing does.
-        #expect(WorkspaceDeletionCleanupService.unownedNamespaces(of: deleted.keychainCleanup, liveNamespaces: [])
+        #expect(ConnectorCredentialCleanup.unownedNamespaces(of: deleted.keychainCleanup, ownership: .init([]))
             == Set(KeychainSecretStore.connectorEntityIDs(for: deleted)))
-        #expect(WorkspaceDeletionCleanupService.unownedNamespaces(
-            of: deleted.keychainCleanup, liveNamespaces: Set(KeychainSecretStore.connectorEntityIDs(for: deleted))
-        ).isEmpty)
+        #expect(ConnectorCredentialCleanup.unownedNamespaces(of: deleted.keychainCleanup, ownership: .init([deleted])).isEmpty)
     }
 
     @Test("A deletion retry that isn't saved puts back the cleanup an earlier saved deletion still owes")

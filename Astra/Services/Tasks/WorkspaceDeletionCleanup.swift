@@ -170,19 +170,14 @@ enum WorkspaceDeletionCleanupService {
             ], level: .error)
             return false
         }
-        let liveConnectors = Set(connectors.map(\.id))
-        // A recreated connector can share a stable endpoint or package
-        // namespace under a new ID, so ownership is per namespace.
-        let liveNamespaces = Set(connectors.flatMap { KeychainSecretStore.connectorEntityIDs(for: $0) })
         let liveSkills = Set(skills.map(\.id))
         // Every credential is attempted; any that couldn't be cleared keeps
-        // the record for an idempotent retry.
-        var cleared = true
-        for connector in record.connectors where !unownedNamespaces(of: connector, liveNamespaces: liveNamespaces).isEmpty {
-            cleared = connector.run(
-                sparing: liveNamespaces, keepRegistryEntry: liveConnectors.contains(connector.connectorID)
-            ) && cleared
-        }
+        // the record for an idempotent retry. A recreated connector can share
+        // a stable endpoint or package namespace under a new ID, so
+        // connector ownership is per namespace.
+        var cleared = ConnectorCredentialCleanup.run(
+            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors)
+        )
         for skill in record.skills where !liveSkills.contains(skill.skillID) {
             cleared = skill.run() && cleared
         }
@@ -192,15 +187,6 @@ enum WorkspaceDeletionCleanupService {
             ], level: .error)
         }
         return cleared
-    }
-
-    /// The Keychain namespaces `connector` resolves to that no live
-    /// connector uses, which are the only ones its cleanup removes.
-    static func unownedNamespaces(of connector: ConnectorKeychainCleanup, liveNamespaces: Set<String>) -> Set<String> {
-        Set(KeychainSecretStore.connectorEntityIDs(
-            id: connector.connectorID, serviceType: connector.serviceType, baseURL: connector.baseURL,
-            originPackageID: connector.originPackageID, originComponentID: connector.originComponentID
-        )).subtracting(liveNamespaces)
     }
 
     /// Settles deletions a quit interrupted, reading committed state through

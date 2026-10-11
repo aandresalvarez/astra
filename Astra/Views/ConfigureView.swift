@@ -1427,11 +1427,15 @@ struct ConnectorsTabContent: View {
             selectedConnector = nil
         }
         workspace.enabledGlobalConnectorIDs.removeAll { $0 == connector.id.uuidString }
-        connector.cleanupKeychain()
+        let cleanup = connector.keychainCleanup
         let wasGlobal = connector.isGlobal
         modelContext.delete(connector)
-        CapabilityPersistence.saveResourceMutation(
-            workspace: workspace, isGlobal: wasGlobal, modelContext: modelContext)
+        // Credentials go only once the deletion is saved, and never a
+        // namespace another stored connector still reads.
+        if CapabilityPersistence.saveResourceMutation(
+            workspace: workspace, isGlobal: wasGlobal, modelContext: modelContext) {
+            ConnectorCredentialCleanup.run([cleanup], modelContext: modelContext)
+        }
     }
 }
 

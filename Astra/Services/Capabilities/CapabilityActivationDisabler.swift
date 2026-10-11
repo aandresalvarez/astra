@@ -73,10 +73,13 @@ struct CapabilityActivationDisabler {
         // saved; otherwise a failed save would leave connector/skill records
         // that look configured but whose credentials are gone.
         var pendingKeychainCleanups: [() -> Void] = []
+        // Snapshotted before the delete; run after the save, against the
+        // connectors that remain.
+        var pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
 
         for connector in state.linkedConnectors where !connector.isGlobal {
             guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
-            pendingKeychainCleanups.append { connector.cleanupKeychain() }
+            pendingConnectorCleanups.append(connector.keychainCleanup)
             result.removedWorkspaceConnectorIDs.append(connector.id)
             modelContext.delete(connector)
         }
@@ -99,6 +102,7 @@ struct CapabilityActivationDisabler {
         // exported config. Keychain cleanup stays gated on a successful save.
         if persist(workspace, modelContext) {
             pendingKeychainCleanups.forEach { $0() }
+            ConnectorCredentialCleanup.run(pendingConnectorCleanups, modelContext: modelContext)
         } else {
             // Failed save: revert the pending deletes and the workspace
             // membership arrays (which rollback does not restore) so the
@@ -110,7 +114,7 @@ struct CapabilityActivationDisabler {
                 "source": "package_disable",
                 "package_id": package.id,
                 "result": "save_failed_disable_rolled_back",
-                "deferred_cleanup_count": String(pendingKeychainCleanups.count)
+                "deferred_cleanup_count": String(pendingKeychainCleanups.count + pendingConnectorCleanups.count)
             ], level: .error)
             return Result(packageID: package.id)
         }

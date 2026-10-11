@@ -100,6 +100,9 @@ struct CapabilityUninstaller {
         let membershipSnapshots = workspaces.map { ($0, WorkspaceCapabilityMembershipSnapshot($0)) }
         // Wiped only after the SwiftData deletes are saved — see below.
         var pendingKeychainCleanups: [() -> Void] = []
+        // Snapshotted before the delete; run after the save, against the
+        // connectors that remain.
+        var pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
 
         for workspace in workspaces {
             let remainingWorkspacePackages = remainingPackages.filter {
@@ -140,7 +143,7 @@ struct CapabilityUninstaller {
                 !remainingWorkspacePackages.contains(where: { claims(connector, package: $0) })
             }
             for connector in workspaceConnectors {
-                pendingKeychainCleanups.append { connector.cleanupKeychain() }
+                pendingConnectorCleanups.append(connector.keychainCleanup)
                 result.removedConnectorIDs.append(connector.id)
                 modelContext.delete(connector)
             }
@@ -167,7 +170,7 @@ struct CapabilityUninstaller {
         }
 
         for connector in matchedGlobalConnectors where !remainingPackages.contains(where: { claims(connector, package: $0) }) {
-            pendingKeychainCleanups.append { connector.cleanupKeychain() }
+            pendingConnectorCleanups.append(connector.keychainCleanup)
             result.removedConnectorIDs.append(connector.id)
             modelContext.delete(connector)
         }
@@ -192,6 +195,9 @@ struct CapabilityUninstaller {
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
+        // Read after the save, so a connector sharing a namespace with one
+        // removed here keeps its credentials.
+        ConnectorCredentialCleanup.run(pendingConnectorCleanups, modelContext: modelContext)
         for workspace in workspaces where result.disabledWorkspaceIDs.contains(workspace.id) {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         }
