@@ -309,6 +309,33 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(FileManager.default.fileExists(atPath: marker.path), "nothing is removed through the link")
     }
 
+    /// A swap between opening the staging directory and creating the marker
+    /// cannot be staged deterministically, so the shape is pinned: markers are
+    /// created and removed through the directory's descriptor, never by a path
+    /// that would be resolved again.
+    @Test("Send claims are made and given back only through the staging directory's descriptor")
+    func sendClaimsUseTheDirectoryDescriptor() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Tasks/ConnectorMutationCoordinator.swift"), encoding: .utf8
+        )
+        func body(_ signature: String) throws -> String {
+            let start = try #require(source.range(of: signature)).lowerBound
+            let rest = source[start...]
+            let end = rest.range(of: "\n    }\n")?.upperBound ?? rest.endIndex
+            return String(rest[..<end])
+        }
+        let reserve = try body("static func reserveSend(")
+        #expect(reserve.contains("openStagingDirectory(") && reserve.contains("openat(directoryDescriptor"))
+        #expect(reserve.contains("unlinkat(directoryDescriptor"))
+        for byPath in ["open($0, O_CREAT", "unlink(", "removeItem("] {
+            #expect(!reserve.contains(byPath), "\(byPath)")
+        }
+        let release = try body("static func releaseSendReservation(")
+        #expect(release.contains("openStagingDirectory(") && release.contains("unlinkat(directoryDescriptor"))
+        #expect(!release.contains("removeItem(") && !release.contains("unlink("))
+    }
+
     @Test("Auto sends with the caller's timeout, bounded by the broker's wait")
     func autoSendUsesTheCallersTimeout() async throws {
         let fixture = try Fixture()
