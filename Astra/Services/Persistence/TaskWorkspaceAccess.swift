@@ -248,7 +248,12 @@ public struct TaskWorkspaceAccess {
                 let resolved = Self.resolvedPath(path)
                 let containsSource = sources.contains { $0.hasPrefix(resolved + "/") }
                 let isOtherSource = resolved != pin && sources.contains(resolved)
-                if containsSource || isOtherSource {
+                // A folder inside another source checkout is part of it, as
+                // for a bound worktree, unless a nested repository's own.
+                let isInOtherSource = sources.contains { source in
+                    source != pin && resolved.hasPrefix(source + "/") && !crossesGitRoot(resolved, below: source)
+                }
+                if containsSource || isOtherSource || isInOtherSource {
                     readOnly.append(path)
                 } else {
                     writable.append(path)

@@ -419,17 +419,29 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pending().isEmpty)
     }
 
-    @Test("A dangling SSH connections link fails the snapshot instead of reading as absent")
-    func danglingSSHConnectionsLinkFailsSnapshot() throws {
+    @Test("An SSH connections link, dangling or not, is snapshotted and restored as a link", arguments: [false, true])
+    func sshConnectionsLinkIsRestoredAsLink(dangling: Bool) throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let folder = fixture.root.appendingPathComponent("Workspace", isDirectory: true)
         let file = SSHConnectionManager.connectionsFilePath(for: folder.path)
         try FileManager.default.createDirectory(atPath: (file as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        #expect(try SSHConnectionManager.snapshot(workspacePath: folder.path) == nil)
-        try FileManager.default.createSymbolicLink(atPath: file, withDestinationPath: fixture.root.appendingPathComponent("gone.json").path)
-        #expect(!FileManager.default.fileExists(atPath: file))
-        #expect(throws: (any Error).self) { try SSHConnectionManager.snapshot(workspacePath: folder.path) }
+        #expect(try SSHConnectionManager.snapshot(workspacePath: folder.path) == .absent)
+        let target = fixture.root.appendingPathComponent("managed-ssh.json")
+        if !dangling { try Data("[]".utf8).write(to: target) }
+        try FileManager.default.createSymbolicLink(atPath: file, withDestinationPath: target.path)
+        let snapshot = try SSHConnectionManager.snapshot(workspacePath: folder.path)
+        #expect(snapshot == .link(destination: target.path))
+
+        // A replacement's write turns the link into a file; rollback puts the
+        // link back without writing through it.
+        SSHConnectionManager.save(
+            [SSHConnection(name: "new", host: "new-host", user: "me", keyPath: "", configAlias: "new")], workspacePath: folder.path
+        )
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: file)) == nil)
+        try SSHConnectionManager.restore(snapshot, workspacePath: folder.path)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: file) == target.path)
+        if !dangling { #expect(try Data(contentsOf: target) == Data("[]".utf8)) }
     }
 
     @Test("Startup settles pending workspace deletions only after mirror recovery has run")
@@ -445,6 +457,15 @@ struct NewTaskWorktreeLifecycleTests {
         // That is the only settlement: none before recovery runs, and none on
         // a launch that skips it.
         #expect(source.components(separatedBy: "WorkspaceDeletionCleanupService.resumePending").count == 2)
+        // Worktree cleanup, whose pins mirrors may hold, waits for recovery too.
+        let worktreeCleanup = try #require(source.range(of: "private static func recoverPendingWorktreeCleanup("))
+        let gate = try #require(source.range(
+            of: "guard workspaceRecoveryAfterLaunch != nil else {", range: worktreeCleanup.upperBound..<source.endIndex
+        ))
+        let creations = try #require(source.range(
+            of: "TaskWorktreeCleanupService.resumeInterruptedCreations(", range: worktreeCleanup.upperBound..<source.endIndex
+        ))
+        #expect(gate.lowerBound < creations.lowerBound)
     }
 
     @Test("A replacement that isn't saved puts the workspace's SSH connections back")
@@ -822,6 +843,61 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 0)
         #expect(FileManager.default.fileExists(atPath: otherMirror))
         #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test("A deleted workspace's mirror that a survivor's mirror links to is kept")
+    func mirrorLinkedFromSurvivorIsKept() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let deletedFolder = fixture.root.appendingPathComponent("Deleted", isDirectory: true)
+        let survivorFolder = fixture.root.appendingPathComponent("Survivor", isDirectory: true)
+        let deletedMirror = WorkspaceFileLayout.workspaceConfigFile(for: deletedFolder.path)
+        let survivorMirror = WorkspaceFileLayout.workspaceConfigFile(for: survivorFolder.path)
+        for mirror in [deletedMirror, survivorMirror] {
+            try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        }
+        try "{}".write(toFile: deletedMirror, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: survivorMirror, withDestinationPath: deletedMirror)
+        let deleted = Workspace(name: "Deleted", primaryPath: deletedFolder.path)
+        context.insert(deleted)
+        context.insert(Workspace(name: "Survivor", primaryPath: survivorFolder.path))
+        try context.save()
+        try store.record(WorkspaceDeletionCleanupRecord(deleted))
+        context.delete(deleted)
+        try context.save()
+
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(FileManager.default.fileExists(atPath: survivorMirror))
+    }
+
+    @Test("A replacement drops mirror writes queued for the workspace it replaces")
+    func replacementRetiresQueuedExports() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        try context.save()
+        let id = workspace.id.uuidString
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: fixture.storage.path))
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(config).write(to: configURL, options: .atomic)
+        // An export of the old workspace, snapshotted and queued.
+        let queued = WorkspaceAutoExportGate.shared.ticket(for: id)
+
+        let replaced = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            persistWorkspaceChange: { _, context in (try? context.save()) != nil }
+        ).importFromConfig(at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .replace })
+        #expect(replaced != nil)
+        #expect(queued.generation != WorkspaceAutoExportGate.shared.ticket(for: id).generation)
     }
 
     @Test("A pinned mirror whose folder was replaced by a link to another workspace's is left alone")

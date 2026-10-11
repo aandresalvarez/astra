@@ -245,8 +245,15 @@ enum WorkspaceDeletionCleanupService {
         // stored workspace resolves to now, so an alias such as /tmp for
         // /private/tmp or a symlinked folder still names the same live
         // mirror, and a symlink retargeted since never redirects the removal.
+        // A live mirror that is itself a link counts by its target too,
+        // while its folder is unchanged, so a survivor whose mirror links to
+        // the deleted workspace's keeps it.
         let liveMirrors = Set(workspaces.flatMap {
             WorkspaceDeletionCleanupRecord.pinnedMirrorFiles(for: WorkspacePathPresentation.resolvedPath($0.primaryPath))
+        }.flatMap { file -> [String] in
+            let folder = (file as NSString).deletingLastPathComponent
+            return WorkspacePathPresentation.resolvedPath(folder) == folder
+                ? [file, WorkspacePathPresentation.resolvedPath(file)] : [file]
         })
         // A mirror left behind would let recovery reimport the workspace, so
         // the record, and the credentials it needs, are kept for a retry.

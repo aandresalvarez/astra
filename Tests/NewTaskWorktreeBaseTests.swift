@@ -1298,7 +1298,8 @@ struct NewTaskWorktreeBaseTests {
         try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
         let repository = try fixture.repository("Projects/App")
         let store = try Fixture.container()
-        let workspace = Workspace(name: "App", primaryPath: repository.path, additionalPaths: [projects.path])
+        let sources = repository.appendingPathComponent("Sources", isDirectory: true)
+        let workspace = Workspace(name: "App", primaryPath: repository.path, additionalPaths: [projects.path, sources.path])
         store.mainContext.insert(workspace)
         let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
         try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
@@ -1316,8 +1317,10 @@ struct NewTaskWorktreeBaseTests {
         // Neither the original checkout nor a folder containing it.
         #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(projects.path)))
         #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(repository.path)))
+        // Nor a folder inside the original checkout.
+        #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(sources.path)))
         #expect(Set(access.runtimeReadOnlyWorkspacePaths.map(WorkspacePathPresentation.resolvedPath))
-            .isSuperset(of: [projects.path, repository.path].map(WorkspacePathPresentation.resolvedPath)))
+            .isSuperset(of: [projects.path, repository.path, sources.path].map(WorkspacePathPresentation.resolvedPath)))
     }
 
     @Test("A dangling link at a worktree destination is skipped, so no branch is orphaned")

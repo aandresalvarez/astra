@@ -960,6 +960,15 @@ public struct ASTRAApp: App {
     @MainActor
     private static func recoverPendingWorktreeCleanup(modelContext: ModelContext, taskQueue: TaskQueue) async {
         guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
+        // Pins that keep a worktree may live only in mirrors a skipped or
+        // blocked recovery didn't import, so cleanup waits for a launch that
+        // recovers, as workspace deletion settlement does.
+        guard workspaceRecoveryAfterLaunch != nil else {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "worktree_cleanup", "reason": "deferred_until_workspace_recovery"
+            ], level: .warning)
+            return
+        }
         if let recovery = worktreeCleanupRecovery { await recovery.value; return }
         let recovery = Task { @MainActor in
             // Interrupted creations settle first, so a worktree whose binding

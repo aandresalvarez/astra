@@ -831,7 +831,7 @@ final class TaskLifecycleCoordinator {
         // The import writes the replacement's SSH connections, at its own
         // path, before the save. Both files are captured first and put back
         // if the replacement isn't saved; one that can't be read stops it.
-        var sshSnapshots: [(path: String, data: Data?)] = []
+        var sshSnapshots: [(path: String, data: SSHConnectionManager.Snapshot)] = []
         for path in Set([existing.primaryPath, replacementPath]) {
             do {
                 sshSnapshots.append((path, try SSHConnectionManager.snapshot(workspacePath: path)))
@@ -844,11 +844,16 @@ final class TaskLifecycleCoordinator {
             }
         }
         guard let requests = cancelDurably(existing.tasks) else { return nil }
+        let existingID = existing.id.uuidString
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
             delete: {
                 for request in requests { modelContext.delete(request) }
+                // Mirror writes queued for the old workspace, the
+                // cancellation's included, must not land after the
+                // replacement's own export.
+                WorkspaceAutoExportGate.shared.retire(workspaceID: existingID)
                 modelContext.delete(existing)
                 replacement = create()
             },
@@ -858,6 +863,8 @@ final class TaskLifecycleCoordinator {
         )
         guard result.persisted else {
             settleAfterUnsavedDeletion(existing.tasks)
+            // The writes it retired are replaced by one current export.
+            WorkspaceConfigManager.autoExport(workspace: existing, modelContext: modelContext)
             for snapshot in sshSnapshots {
                 do {
                     try SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path)

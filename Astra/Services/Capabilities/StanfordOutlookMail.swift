@@ -501,11 +501,14 @@ enum StanfordOutlookMailRegistry {
     static func remove(connectorID: UUID) -> Bool {
         // Without following links: a dangling one is still a registry, whose
         // target could come back with the entry in it, so it is unverified.
-        guard (try? FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)) != nil
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)
         else { return true }
         guard let current = readEntries() else { return false }
         let remaining = current.filter { $0.connectorID != connectorID.uuidString }
         guard remaining.count != current.count else { return true }
+        // A registry that is a link would be replaced by the atomic write
+        // below while its target keeps the entry, so it stays uncleared.
+        guard attributes[.type] as? FileAttributeType != .typeSymbolicLink else { return false }
         return save(remaining)
     }
 

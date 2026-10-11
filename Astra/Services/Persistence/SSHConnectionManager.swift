@@ -114,34 +114,52 @@ public enum SSHConnectionManager {
         try fileWriter.writeAtomically(data, to: URL(fileURLWithPath: path))
     }
 
-    /// The connections file as it is now, so a caller whose change may be
-    /// rolled back can put it back. Nil only when there is no file; a file
-    /// that exists but can't be read throws, since restoring "no file" would
-    /// delete it.
-    public static func snapshot(workspacePath: String) throws -> Data? {
-        guard !workspacePath.isEmpty else { return nil }
-        let path = connectionsFilePath(for: workspacePath)
-        // Without following links: a dangling link is still there, and one
-        // that can't be read fails the snapshot rather than reading as absent,
-        // which a restore would then delete.
-        guard (try? FileManager.default.attributesOfItem(atPath: path)) != nil else { return nil }
-        return try HostFileAccessBroker().readData(
-            at: URL(fileURLWithPath: path),
-            intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
-        )
+    /// What the connections file was before a change that may be rolled back.
+    public enum Snapshot: Equatable, Sendable {
+        case absent
+        case file(Data)
+        /// A link, as an externally managed connections file can be. Writing
+        /// replaces the link with a file, so a rollback recreates the link to
+        /// the same destination, dangling or not, and never writes through it.
+        case link(destination: String)
     }
 
-    /// Puts back a `snapshot`, removing a file that didn't exist then.
-    /// Throws when the file couldn't be put back.
+    /// The connections file as it is now, so a caller whose change may be
+    /// rolled back can put it back. A file that exists but can't be read
+    /// throws, since restoring "no file" would delete it.
+    public static func snapshot(workspacePath: String) throws -> Snapshot {
+        guard !workspacePath.isEmpty else { return .absent }
+        let path = connectionsFilePath(for: workspacePath)
+        // Without following links: a link, even a dangling one, is recorded
+        // as itself.
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return .absent }
+        if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+            return .link(destination: try FileManager.default.destinationOfSymbolicLink(atPath: path))
+        }
+        return .file(try HostFileAccessBroker().readData(
+            at: URL(fileURLWithPath: path),
+            intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
+        ))
+    }
+
+    /// Puts back a `snapshot`: its file, its link, or no file at all.
+    /// Throws when it couldn't be put back.
     public static func restore(
-        _ snapshot: Data?, workspacePath: String, fileWriter: any SSHConnectionFileWriting = defaultFileWriter
+        _ snapshot: Snapshot, workspacePath: String, fileWriter: any SSHConnectionFileWriting = defaultFileWriter
     ) throws {
         guard !workspacePath.isEmpty else { return }
         let url = URL(fileURLWithPath: connectionsFilePath(for: workspacePath))
-        if let snapshot {
-            try fileWriter.writeAtomically(snapshot, to: url)
-        } else if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        let current = try? FileManager.default.attributesOfItem(atPath: url.path)
+        switch snapshot {
+        case .file(let data):
+            try fileWriter.writeAtomically(data, to: url)
+        case .absent:
+            if current != nil { try FileManager.default.removeItem(at: url) }
+        case .link(let destination):
+            if current?[.type] as? FileAttributeType == .typeSymbolicLink,
+               (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) == destination { return }
+            if current != nil { try FileManager.default.removeItem(at: url) }
+            try FileManager.default.createSymbolicLink(atPath: url.path, withDestinationPath: destination)
         }
     }
 
