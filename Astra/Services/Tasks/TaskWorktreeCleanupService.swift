@@ -184,9 +184,11 @@ enum TaskWorktreeCleanupService {
                     var pins = try TaskWorktreeService.durableCheckoutPins(modelContext: durable, worktreesRoot: worktreesRoot)
                     pins.formUnion(try TaskWorktreeService.durableCheckoutPins(modelContext: context, worktreesRoot: worktreesRoot))
                     // A saved task keeps a worktree it was deleted from or
-                    // retargeted away from. An interrupted creation never
-                    // bound its worktree, so only real pins keep that one.
-                    if pinsOwnTask, try durable.fetchCount(descriptor) > 0 {
+                    // retargeted away from, but only one it prepared: an
+                    // import that reused the task's ID for another checkout
+                    // doesn't. An interrupted creation never bound its
+                    // worktree, so only real pins keep that one.
+                    if pinsOwnTask, try durable.fetch(descriptor).contains(where: { Self.task($0, prepared: discard) }) {
                         pins.insert(WorkspacePathPresentation.standardizedPath(discard.worktreePath))
                     }
                     return pins
@@ -203,6 +205,20 @@ enum TaskWorktreeCleanupService {
         } catch {
             logFailure("worktree_cleanup_failed", taskID: discard.taskID, error: error)
             return false
+        }
+    }
+
+    /// Whether `task` prepared `discard`'s worktree: a prepared event names
+    /// the same worktree, and the same creation when an identity was
+    /// recorded. An event that can't be read counts, so it is kept.
+    static func task(_ task: AgentTask, prepared discard: TaskWorktreeDiscard) -> Bool {
+        let path = WorkspacePathPresentation.standardizedPath(discard.worktreePath)
+        return task.events.contains { event in
+            guard !event.isDeleted, event.hasType(TaskEventTypes.Task.worktreePrepared) else { return false }
+            guard case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return true }
+            guard WorkspacePathPresentation.standardizedPath(payload.worktreePath) == path else { return false }
+            if let identity = discard.identity { return payload.identity == identity }
+            return payload.branch == discard.branch
         }
     }
 

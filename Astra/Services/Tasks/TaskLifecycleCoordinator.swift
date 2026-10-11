@@ -803,6 +803,9 @@ final class TaskLifecycleCoordinator {
         // Cancellation exports mirrors, so they are removed only after it and
         // the deletion are saved. An unsaved deletion owes nothing new.
         if result.persisted {
+            // A mirror write queued before the deletion must not land after
+            // the mirror is removed.
+            WorkspaceAutoExportGate.shared.retire(workspaceID: cleanupRecord.workspaceID.uuidString)
             if WorkspaceDeletionCleanupService.settle(cleanupRecord, modelContext: modelContext) {
                 store.remove(cleanupRecord)
             }

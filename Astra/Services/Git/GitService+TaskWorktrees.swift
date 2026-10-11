@@ -153,23 +153,35 @@ extension GitService {
     }
 
     /// `git status` and a non-forced `git worktree remove` both trust the
-    /// index for entries marked assume-unchanged or skip-worktree, so an edit
-    /// to one is invisible yet deleted. Each such file is hashed and compared
-    /// with its index blob. A skip-worktree file that is absent is unchanged
-    /// only while the checkout's sparse rules exclude it, as a sparse checkout
+    /// index for entries marked assume-unchanged or skip-worktree, so a
+    /// change to one is invisible yet deleted. Each such entry's type and
+    /// mode are compared with the index, so an executable bit flipped or a
+    /// file swapped for a link counts, and its content is hashed against the
+    /// index blob. A skip-worktree file that is absent is unchanged only
+    /// while the checkout's sparse rules exclude it, as a sparse checkout
     /// leaves it; otherwise its absence is a hidden deletion. An absent
     /// assume-unchanged file was deleted. Any failure to read counts as
     /// changed.
     func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool {
         do {
-            let listing = try await runGit(at: worktreePath, arguments: ["ls-files", "-v", "-z"], failureLogLevel: .warning)
+            // `<tag> <mode> <object> <stage>\t<path>` per entry.
+            let listing = try await runGit(
+                at: worktreePath, arguments: ["ls-files", "-v", "-s", "-z"], failureLogLevel: .warning
+            )
             var absentSkipWorktree: [String] = []
             for entry in listing.split(separator: "\0") {
-                guard let tag = entry.first, entry.count > 2 else { continue }
+                guard let tag = entry.first else { continue }
                 let assumeUnchanged = tag.isLowercase
                 let skipWorktree = tag == "S" || tag == "s"
                 guard assumeUnchanged || skipWorktree else { continue }
-                let file = String(entry.dropFirst(2))
+                guard let tab = entry.firstIndex(of: "\t") else { return true }
+                let fields = entry[entry.startIndex..<tab].split(separator: " ")
+                guard fields.count == 4 else { return true }
+                let mode = String(fields[1])
+                let object = String(fields[2])
+                let file = String(entry[entry.index(after: tab)...])
+                // A gitlink's own work is checked with its submodule.
+                if mode == "160000" { continue }
                 let full = (worktreePath as NSString).appendingPathComponent(file)
                 // Not following links: a symlink retargeted to a missing path
                 // is still there, and is a change.
@@ -180,16 +192,21 @@ extension GitService {
                     }
                     return true
                 }
-                if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+                switch (mode, attributes[.type] as? FileAttributeType) {
+                case ("120000", .typeSymbolicLink?):
                     // A link's blob is its target path.
-                    let indexed = try await runGit(at: worktreePath, arguments: ["cat-file", "-p", ":" + file], failureLogLevel: .warning)
+                    let indexed = try await runGit(at: worktreePath, arguments: ["cat-file", "-p", object], failureLogLevel: .warning)
                     let target = try FileManager.default.destinationOfSymbolicLink(atPath: full)
                     if indexed.trimmingCharacters(in: .newlines) != target { return true }
-                    continue
-                }
-                let indexed = try await runGit(at: worktreePath, arguments: ["rev-parse", ":" + file], failureLogLevel: .warning)
-                let current = try await runGit(at: worktreePath, arguments: ["hash-object", "--", file], failureLogLevel: .warning)
-                if indexed.trimmingCharacters(in: .whitespacesAndNewlines) != current.trimmingCharacters(in: .whitespacesAndNewlines) {
+                case ("100644", .typeRegular?), ("100755", .typeRegular?):
+                    let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+                    let executable = permissions & 0o100 != 0
+                    if executable != (mode == "100755") { return true }
+                    let current = try await runGit(at: worktreePath, arguments: ["hash-object", "--", file], failureLogLevel: .warning)
+                    if current.trimmingCharacters(in: .whitespacesAndNewlines) != object { return true }
+                default:
+                    // Another type than the index records, such as a file
+                    // replaced by a folder or a link by a file.
                     return true
                 }
             }
