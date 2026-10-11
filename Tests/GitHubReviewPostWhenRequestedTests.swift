@@ -169,7 +169,8 @@ struct GitHubReviewPostWhenRequestedTests {
             // Pause words that are about other work, not the post.
             "First, post the review on \(url), then summarize it",
             "Post the review on \(url); I will prepare the follow-up",
-            "Draft the review for \(url) and then post the review"
+            "Draft the review for \(url) and then post the review",
+            "Post the review to PR 12"
         ] {
             #expect(GitHubReviewPublicationRequirement.commandsPosting(command), "\(command)")
         }
@@ -191,7 +192,10 @@ struct GitHubReviewPostWhenRequestedTests {
             "Once CI is green, then post the review on \(url)",
             // A retraction in the same message, which the latest-message rule cannot see.
             "Post the review on \(url). Actually, don't.", "Post the review on \(url). Never mind.",
-            "Post the review on \(url) — no, scratch that", "Post the review on \(url); stop, leave it"
+            "Post the review on \(url) — no, scratch that", "Post the review on \(url); stop, leave it",
+            // Somewhere other than the pull request.
+            "Post the review to Slack", "Publish the review in the team channel",
+            "Post the review on \(url) and in Slack"
         ] {
             #expect(!GitHubReviewPublicationRequirement.commandsPosting(notYet), "\(notYet)")
         }
@@ -299,6 +303,65 @@ struct GitHubReviewPostWhenRequestedTests {
         }
         #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
         #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: [fixture.file.path]) == nil)
+    }
+
+    /// The review file is agent-writable: what is checked must be what is read,
+    /// and neither a FIFO nor an oversized file may block or flood the app.
+    @Test("A review file swapped for a FIFO or an oversized file is refused, not read")
+    func reviewFileIsReadThroughOneBoundedDescriptor() async throws {
+        let fixture = try Fixture()
+        try FileManager.default.removeItem(at: fixture.file)
+        #expect(mkfifo(fixture.file.path, 0o600) == 0)
+        // A reader that opened the FIFO blocking would wait for a writer
+        // forever; this one arrives late and never blocks, so such a read
+        // fails the time check below instead of hanging the suite.
+        let fifoPath = fixture.file.path
+        Thread {
+            Thread.sleep(forTimeInterval: 5)
+            let writer = open(fifoPath, O_WRONLY | O_NONBLOCK)
+            if writer >= 0 { close(writer) }
+        }.start()
+
+        let started = Date()
+        let fifo = await fixture.handler(level: .autonomous, cli: FakeCLI()).postGitHubReview(
+            GitHubReviewPostRequest(fileName: "pr12_review.json", contentDigest: String(repeating: "0", count: 64))
+        )
+        #expect(Date().timeIntervalSince(started) < 4, "opening the FIFO waited for a writer")
+        guard case .refused = fifo else {
+            Issue.record("Expected a refusal for a FIFO, got \(fifo)")
+            return
+        }
+
+        try FileManager.default.removeItem(at: fixture.file)
+        try Data(repeating: 0x20, count: 300 * 1024).write(to: fixture.file)
+        let large = await fixture.handler(level: .autonomous, cli: FakeCLI()).postGitHubReview(fixture.request(for: fixture.file))
+        guard case .refused = large else {
+            Issue.record("Expected a refusal for an oversized file, got \(large)")
+            return
+        }
+    }
+
+    /// A swap between checking the file and reading it cannot be staged
+    /// deterministically, so the shape of the read is pinned instead: one
+    /// descriptor, opened without following a link or blocking, checked with
+    /// `fstat`, and nothing that reopens the path.
+    @Test("The review file is read through one bounded descriptor")
+    func reviewReadUsesOneDescriptor() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Git/GitHubReviewPublicationService.swift"), encoding: .utf8
+        )
+        let readPayload = try #require(source.range(of: "private func readPayload(")).lowerBound
+        let body = String(source[readPayload...].prefix(1_500))
+        #expect(body.contains("readBoundedRegularFile("))
+        for reopening in ["Data(contentsOf:", "attributesOfItem", "FileHandle("] {
+            #expect(!body.contains(reopening), "\(reopening)")
+        }
+        let helper = try #require(source.range(of: "private static func readBoundedRegularFile(")).lowerBound
+        let helperBody = String(source[helper...].prefix(1_500))
+        for required in ["O_NOFOLLOW", "O_NONBLOCK", "fstat(", "S_IFREG"] {
+            #expect(helperBody.contains(required), "\(required)")
+        }
     }
 
     /// The broker was bound to a run; a post that outlives the wait must not

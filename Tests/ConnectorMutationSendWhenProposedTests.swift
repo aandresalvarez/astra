@@ -264,11 +264,13 @@ struct ConnectorMutationSendWhenProposedTests {
             .init(statusCode: 201, body: #"{"key":"token-value","self":"https://jira.auto.test/rest/token-value"}"#),
             // A link to somewhere else.
             .init(statusCode: 201, body: #"{"self":"https://elsewhere.test/rest/api/2/issue/1"}"#),
-            .init(statusCode: 201, body: #"{"key":"STAR-9","self":"https://jira.auto.test/rest/api/2/issue/10009"}"#)
+            .init(statusCode: 201, body: #"{"key":"STAR-9","self":"https://jira.auto.test/rest/api/2/issue/10009"}"#),
+            // On the right host, carrying user info, a session and a fragment.
+            .init(statusCode: 201, body: #"{"self":"https://user:pw@jira.auto.test/rest/api/2/issue/1?session=S3CRET#tok"}"#)
         ])
         let handler = fixture.handler(level: .autonomous, sender: sender)
         var outcomes: [BrokeredExternalActionOutcome] = []
-        for summary in ["Reflected", "Elsewhere", "Honest"] {
+        for summary in ["Reflected", "Elsewhere", "Honest", "Decorated"] {
             outcomes.append(await handler.sendStagedConnectorMutation(try fixture.stage(summary: summary).request))
         }
 
@@ -282,6 +284,9 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(outcomes[2] == .performed(BrokeredExternalActionReceipt(
             identifier: "STAR-9", url: "https://jira.auto.test/browse/STAR-9"
         )))
+        #expect(outcomes[3] == .performed(BrokeredExternalActionReceipt(
+            identifier: nil, url: "https://jira.auto.test/rest/api/2/issue/1"
+        )), "user info, query and fragment are dropped")
         #expect(fixture.receipts().allSatisfy { !(($0.createdKey ?? "") + ($0.createdURL ?? "")).contains("token-value") })
     }
 

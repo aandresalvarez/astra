@@ -937,6 +937,9 @@ final class ConnectorMutationCoordinator {
             : nil
         let browseURL = (createdKey ?? routeKey).flatMap { key -> String? in
             var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+            components?.user = nil
+            components?.password = nil
+            components?.fragment = nil
             components?.path = "/browse/\(key)"
             components?.query = nil
             if let commentID {
@@ -953,8 +956,17 @@ final class ConnectorMutationCoordinator {
             destinationURL: proposal.destinationURL,
             statusCode: response.statusCode,
             createdKey: createdKey,
-            createdURL: browseURL ?? (object?["self"] as? String).flatMap { link in
-                URL(string: link).flatMap { $0.host?.lowercased() } == baseURL.host?.lowercased() ? link : nil
+            createdURL: browseURL ?? (object?["self"] as? String).flatMap { link -> String? in
+                // On the connector's own host, and only as scheme, host and
+                // path: user info, a query or a fragment can carry a session
+                // or a credential, and the receipt reaches the agent.
+                guard var components = URLComponents(string: link),
+                      components.host?.lowercased() == baseURL.host?.lowercased() else { return nil }
+                components.user = nil
+                components.password = nil
+                components.query = nil
+                components.fragment = nil
+                return components.url?.absoluteString
             },
             authorization: authorization
         )

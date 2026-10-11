@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SwiftData
 import ASTRAModels
@@ -190,7 +191,7 @@ enum GitHubReviewPublicationRequirement {
     /// with nothing ahead of it in its clause but words that keep it a
     /// command. Being wrong costs a review left for the sheet, never a post.
     private static let imperativePublicationRegex = try? NSRegularExpression(
-        pattern: #"\b(?:post|publish|submit)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
+        pattern: #"\b(?:post|publish|submit)\b(?:\s+\S+){0,4}?\s+\b(?:review\s+comments?|comments?|review)\b"#
     )
     /// "Review PR #12, then post it": the object is a pronoun for a review
     /// the same message named first. Read only when it did; Auto also needs
@@ -201,7 +202,7 @@ enum GitHubReviewPublicationRequirement {
     )
     private static let reviewMentionRegex = try? NSRegularExpression(pattern: #"\b(?:reviews?|comments?)\b"#)
     private static let gitHubDestinationRegex = try? NSRegularExpression(
-        pattern: #"^\s*(?:(?:on|to)\s+(?:github|the\s+pr|the\s+pull\s+request|pr\s*#?\d+|pull\s+request\s*#?\d+))?\s*(?:now|please)?\s*$"#
+        pattern: #"^\s*(?:(?:on|to|for)\s+(?:github|the\s+pr|the\s+pull\s+request|pr\s*#?\d+|pull\s+request\s*#?\d+|https://github\.com/\S+))?\s*(?:now|please|again)?\s*$"#
     )
     private static let imperativeLeadWords: Set<String> = [
         "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
@@ -470,13 +471,18 @@ enum GitHubReviewPublicationRequirement {
                 }
             }
             let range = NSRange(clause.startIndex..<clause.endIndex, in: clause)
+            guard let destination = gitHubDestinationRegex else { return false }
+            // What follows the command is where it goes: nothing, or GitHub.
+            // "Post the review to Slack" is a post somewhere else, and the
+            // file only ever goes to the pull request.
             let named = imperative.matches(in: clause, range: range).contains { match in
                 guard let matched = Range(match.range, in: clause) else { return false }
                 let rest = String(clause[matched.upperBound...])
                 return isCommand(clause, matched) && !pausesCommand(clause, matched)
                     && deferring.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) == nil
+                    && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
             }
-            guard !named, let referential = referentialPublicationRegex, let destination = gitHubDestinationRegex else {
+            guard !named, let referential = referentialPublicationRegex else {
                 return named
             }
             return referential.matches(in: clause, range: range).contains { match in
@@ -1128,22 +1134,44 @@ final class GitHubReviewPublicationService {
               GitHubReviewArtifactPolicy.isReviewFile(url.path) else {
             throw GitHubReviewPublicationError.invalid("Choose a PR review JSON file from this task’s folder.")
         }
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard attributes[.type] as? FileAttributeType == .typeRegular,
-              let size = attributes[.size] as? Int,
-              size > 0, size <= Self.maximumPayloadBytes else {
-            throw GitHubReviewPublicationError.invalid("The review file must be a regular JSON file under 256 KB.")
-        }
-        let data = try Data(contentsOf: url)
-        guard data.count <= Self.maximumPayloadBytes else {
-            throw GitHubReviewPublicationError.invalid("The review file is too large.")
-        }
+        let data = try Self.readBoundedRegularFile(atPath: url.path, limit: Self.maximumPayloadBytes)
         try Self.rejectUnreviewedFields(in: data)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let payload = try decoder.decode(GitHubReviewPayload.self, from: data)
         try Self.validate(payload)
         return (data, payload)
+    }
+
+    /// Reads the review file once, through one descriptor: opened without
+    /// following a link and without blocking, checked to be a regular file by
+    /// `fstat` on that descriptor, and read to at most the limit. The folder is
+    /// agent-writable, so a check by path followed by a read by path could be
+    /// answered by two different files — a FIFO that blocks the main actor, or
+    /// a file large enough to be allocated whole before any size check.
+    private static func readBoundedRegularFile(atPath path: String, limit: Int) throws -> Data {
+        let tooLarge = GitHubReviewPublicationError.invalid("The review file must be a regular JSON file under 256 KB.")
+        let descriptor = path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
+        guard descriptor >= 0 else { throw tooLarge }
+        defer { close(descriptor) }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_size > 0, status.st_size <= off_t(limit) else {
+            throw tooLarge
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while data.count <= limit {
+            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw tooLarge
+            }
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        guard !data.isEmpty, data.count <= limit else { throw tooLarge }
+        return data
     }
 
     /// The app sends the reviewed file bytes to GitHub. Refuse fields the sheet
