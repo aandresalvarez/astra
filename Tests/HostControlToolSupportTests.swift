@@ -1393,12 +1393,16 @@ struct HostControlToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
+        // The inherited child would outlive the script by a minute. No
+        // wall-clock budget: it must be gone when run() returns, without having
+        // finished its sleep (the marker) - waiting for it on its own fails too.
         let marker = root.appendingPathComponent("child-survived", isDirectory: false)
+        let childPIDFile = root.appendingPathComponent("child-pid", isDirectory: false)
         let executable = try customExecutable(named: "detached-noisy-child", root: root, body: """
-        (sleep 1; touch "\(marker.path)") &
+        (sleep 60; touch "\(marker.path)") &
+        echo "$!" > "\(childPIDFile.path)"
         exit 0
         """)
-        let started = Date()
 
         let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 32)).run(
             executablePath: executable.path,
@@ -1407,13 +1411,17 @@ struct HostControlToolSupportTests {
             environment: [:]
         )
 
-        Thread.sleep(forTimeInterval: 1.2)
+        let childPIDText = try String(contentsOf: childPIDFile, encoding: .utf8)
+        let childPID = try #require(pid_t(childPIDText.trimmingCharacters(in: .whitespacesAndNewlines)))
+        let childRunning = processIsRunning(childPID)
+        let childGroup = getpgid(childPID)
+        if childRunning, childGroup > 0, childGroup != getpgrp() { kill(-childGroup, SIGKILL) }
+        #expect(!childRunning, "inherited child \(childPID) outlived run()")
         #expect(result.exitCode == 0 || result.exitCode == 125)
         if result.exitCode == 125 {
             #expect(result.stdoutTruncated || result.stderrTruncated)
         }
         #expect(!FileManager.default.fileExists(atPath: marker.path))
-        #expect(Date().timeIntervalSince(started) < 2)
     }
 
     @Test("Host control tool schemas describe the configured timeout cap")
@@ -1930,6 +1938,15 @@ struct HostControlToolSupportTests {
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
+    }
+
+    /// Whether `pid` is still a live process. `kill(pid, 0)` can't tell: on
+    /// macOS it succeeds for a child that exited but nobody has reaped yet.
+    private func processIsRunning(_ pid: pid_t) -> Bool {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return false }
+        return info.pbi_status != UInt32(SZOMB) && info.pbi_flags & UInt32(PROC_FLAG_INEXIT) == 0
     }
 
     /// A Jira server whose requests are answered by `JiraCaptureURLProtocol`
