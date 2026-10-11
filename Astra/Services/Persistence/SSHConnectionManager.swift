@@ -131,8 +131,22 @@ public enum SSHConnectionManager {
         guard !workspacePath.isEmpty else { return .absent }
         let path = connectionsFilePath(for: workspacePath)
         // Without following links: a link, even a dangling one, is recorded
-        // as itself.
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return .absent }
+        // as itself. Only a confirmed missing file is absent; any other stat
+        // failure stops the change, since restoring "absent" would delete it.
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: path)
+        } catch {
+            let nsError = error as NSError
+            let missing = (nsError.domain == NSCocoaErrorDomain
+                && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code))
+                || (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOENT))
+                || (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map {
+                    $0.domain == NSPOSIXErrorDomain && $0.code == Int(ENOENT)
+                } == true
+            if missing { return .absent }
+            throw error
+        }
         if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
             return .link(destination: try FileManager.default.destinationOfSymbolicLink(atPath: path))
         }

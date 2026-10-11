@@ -386,7 +386,9 @@ enum TaskWorktreeService {
     ) -> Bool {
         let latest = latestRequest(for: task)
         var request = request
-        request.sequence = (latest?.sequence ?? -1) + 1
+        // Saturating: an imported sequence can be any value, even Int.max.
+        let previous = latest?.sequence ?? -1
+        request.sequence = previous == .max ? .max : max(previous, -1) + 1
         guard latest != request, latest != nil || request.enabled,
               case .success(let payload) = TaskEvent.encodePayload(request) else { return false }
         modelContext.insert(TaskEvent(
@@ -643,7 +645,14 @@ enum TaskWorktreeService {
         let adoptingDraft = existingDraft?.workspace?.id == workspace?.id ? existingDraft : nil
         let recovered: AgentTask?
         var undoAdoption: (() -> Void)?
-        if existingDraft === task || (adoptingDraft == nil && prepared != nil) {
+        // A draft that already has its own worktree can't take this task's
+        // other one, so the task stays, as a draft, to keep owning it.
+        let draftHoldsAnotherWorktree = adoptingDraft.map { draft in
+            prepared != nil && activeWorktreeEvent(for: draft) != nil
+                && draft.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
+                    != task.executionRootPath.map(WorkspacePathPresentation.standardizedPath)
+        } ?? false
+        if existingDraft === task || (adoptingDraft == nil && prepared != nil) || draftHoldsAnotherWorktree {
             if task.status == .queued {
                 TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             }

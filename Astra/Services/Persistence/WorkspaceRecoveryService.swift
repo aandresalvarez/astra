@@ -1122,10 +1122,15 @@ public enum WorkspaceRecoveryService {
             guard !hostFileAccess.shouldSkip(child, intent: intent) else {
                 continue
             }
-            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey])
-            guard values?.isDirectory == true,
-                  values?.isHidden != true,
-                  values?.isPackage != true else {
+            // An entry whose kind can't be read may be a folder holding a
+            // mirror, so the scan is incomplete rather than skipping it.
+            guard let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey]) else {
+                complete = false
+                continue
+            }
+            guard values.isDirectory == true,
+                  values.isHidden != true,
+                  values.isPackage != true else {
                 continue
             }
             results.append(

@@ -352,13 +352,17 @@ extension GitService {
             + "|| echo \"branch $displaypath $ref\"; done; }"
     ].joined(separator: " && ")
 
-    /// Every populated submodule's tags, through Git, packed or loose, and
-    /// its repository configuration, such as a remote added since: local
-    /// state a forced removal deletes that no status or ref check shows.
+    /// Every populated submodule's tags, through Git, packed or loose, its
+    /// repository configuration, such as a remote added since, and its
+    /// repository-local files, hooks and `info/`, by content: local state a
+    /// forced removal deletes that no status or ref check shows. Sample
+    /// hooks from the template are left out.
     static let submoduleTagListing = [
         "submodule", "foreach", "--quiet", "--recursive",
         "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' refs/tags; "
-            + "echo \"-- config\"; git config --local --list"
+            + "echo \"-- config\"; git config --local --list; "
+            + "echo \"-- files\"; (cd \"$(git rev-parse --absolute-git-dir)\" && "
+            + "find hooks info -type f ! -name '*.sample' -exec shasum {} + 2>/dev/null | sort)"
     ]
     static let submoduleTagSnapshotFileName = "astra-submodule-tags"
 

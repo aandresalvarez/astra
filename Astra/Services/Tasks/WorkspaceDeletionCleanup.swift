@@ -306,7 +306,15 @@ enum WorkspaceDeletionCleanupService {
             WorkspaceFileLayout.itemIdentity(at: path).map(record.mirrorFileIDs.contains) == true
                 && !liveMirrors.contains(path) && !liveMirrors.contains(WorkspacePathPresentation.resolvedPath(path))
         }
-        if !removeMirrors(record.mirrorFiles.filter { !liveMirrors.contains($0) }) || !removeMovedMirrors(moved) {
+        // A pinned path whose file has another identity than the one pinned
+        // is a mirror created there since, such as a new workspace's after
+        // the folder was replaced, and is left alone.
+        let pinnedFiles = record.mirrorFiles.filter { path in
+            guard !liveMirrors.contains(path) else { return false }
+            guard !record.mirrorFileIDs.isEmpty, let current = WorkspaceFileLayout.itemIdentity(at: path) else { return true }
+            return record.mirrorFileIDs.contains(current)
+        }
+        if !removeMirrors(pinnedFiles) || !removeMovedMirrors(moved) {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "delete_workspace", "reason": "mirror_removal_failed"
             ], level: .error)
