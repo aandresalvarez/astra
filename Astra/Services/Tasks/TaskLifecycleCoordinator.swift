@@ -863,8 +863,6 @@ final class TaskLifecycleCoordinator {
         )
         guard result.persisted else {
             settleAfterUnsavedDeletion(existing.tasks)
-            // The writes it retired are replaced by one current export.
-            WorkspaceConfigManager.autoExport(workspace: existing, modelContext: modelContext)
             for snapshot in sshSnapshots {
                 do {
                     try SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path)
@@ -878,6 +876,9 @@ final class TaskLifecycleCoordinator {
                     ], level: .error)
                 }
             }
+            // The writes it retired are replaced by one current export, taken
+            // after the SSH files are back, since the export reads them.
+            WorkspaceConfigManager.autoExport(workspace: existing, modelContext: modelContext)
             return nil
         }
         return replacement

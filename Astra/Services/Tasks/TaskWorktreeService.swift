@@ -543,6 +543,11 @@ enum TaskWorktreeService {
                     throw TaskWorktreeCreationError.submodulesUnavailable(path: path, reason: error.localizedDescription)
                 }
             }
+            // The workspace can drop the repository while Git runs; a binding
+            // to a source it no longer configures would be invalid at once.
+            guard TaskWorktreeBinding.repositoryIsConfigured(path, for: task) else {
+                throw TaskWorktreeCreationError.repositoryUnavailable
+            }
             guard TaskWorktreeCheckoutReservation.commit(createdPath, to: task) else {
                 throw TaskWorktreeCreationError.checkoutUnavailable(createdPath)
             }

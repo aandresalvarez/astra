@@ -742,6 +742,16 @@ enum DockerExecutionPlanner {
         for metadata in taskAccess.runtimeWorktreeGitMetadataPaths {
             let path = WorkspacePathPresentation.standardizedPath(metadata)
             guard !mounts.contains(where: { $0.hostPath == path && $0.containerPath == path }) else { continue }
+            // The .git file names this exact path, so a saved mount of
+            // something else there moves aside rather than giving Docker two
+            // mounts at one destination.
+            if let index = mounts.firstIndex(where: { $0.containerPath == path }) {
+                let other = mounts[index]
+                mounts[index] = ExecutionEnvironmentMount(
+                    hostPath: other.hostPath, containerPath: unusedContainerPath("/mnt/astra/relocated-mount"),
+                    access: other.access, role: other.role
+                )
+            }
             // A linked worktree's .git file holds an absolute host path.
             // Mount only its verified common directory at that same path.
             mounts.append(ExecutionEnvironmentMount(

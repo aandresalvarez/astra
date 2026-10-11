@@ -460,7 +460,7 @@ struct NewTaskWorktreeLifecycleTests {
         // Worktree cleanup, whose pins mirrors may hold, waits for recovery too.
         let worktreeCleanup = try #require(source.range(of: "private static func recoverPendingWorktreeCleanup("))
         let gate = try #require(source.range(
-            of: "guard workspaceRecoveryAfterLaunch != nil else {", range: worktreeCleanup.upperBound..<source.endIndex
+            of: "guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {", range: worktreeCleanup.upperBound..<source.endIndex
         ))
         let creations = try #require(source.range(
             of: "TaskWorktreeCleanupService.resumeInterruptedCreations(", range: worktreeCleanup.upperBound..<source.endIndex
@@ -547,6 +547,78 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!workspace.isDeleted)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: files[1].path)
         #expect(try Data(contentsOf: files[1]) == before[1])
+    }
+
+    @Test("Launch recovery vouches for the store only when every mirror it found loaded")
+    func recoveryReportsUnloadableMirrors() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try Fixture.container()
+        let folder = fixture.root.appendingPathComponent("Good", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Good", primaryPath: folder.path)
+        source.mainContext.insert(workspace)
+        try source.mainContext.save()
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
+
+        let empty = try Fixture.container()
+        #expect(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: empty.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false
+        ).value)
+
+        // A second mirror that can't be loaded may hold pins and owners.
+        let broken = fixture.root.appendingPathComponent("Broken", isDirectory: true)
+        let brokenMirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: broken.path))
+        try FileManager.default.createDirectory(at: brokenMirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{ not a workspace".utf8).write(to: brokenMirror)
+        let rebuilt = try Fixture.container()
+        #expect(!(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: rebuilt.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false
+        ).value))
+
+        // Startup gates destructive cleanup on that answer.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: root.appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8)
+        #expect(app.contains("guard await recovery.value else {"))
+        #expect(app.contains("guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {"))
+    }
+
+    @Test("A failed same-path replacement exports the workspace only after its SSH file is restored")
+    func failedReplacementExportsRestoredSSH() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        try context.save()
+        func connection(_ name: String) -> SSHConnection {
+            SSHConnection(name: name, host: name + "-host", user: "me", keyPath: "", configAlias: name)
+        }
+        SSHConnectionManager.save([connection("original")], workspacePath: fixture.storage.path)
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        config.sshConnections = [connection("replacement")]
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: fixture.storage.path))
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(config).write(to: configURL, options: .atomic)
+
+        #expect(TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            persistWorkspaceChange: { _, _ in false }
+        ).importFromConfig(at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .replace }) == nil)
+
+        // The rollback's export is written in the background.
+        var names: [String] = []
+        for _ in 0..<200 {
+            names = ((try? WorkspaceConfigManager.loadConfig(from: configURL))?.sshConnections ?? []).map(\.name)
+            if names == ["original"] { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(names == ["original"])
     }
 
     @Test("Startup recovery leaves out the mirror of an unsettled deletion, and waits when a record is unreadable")
