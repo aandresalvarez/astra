@@ -161,14 +161,17 @@ struct GitHubReviewPostWhenRequestedTests {
     }
 
     /// A request that names two pull requests has no single target: neither
-    /// the linked one, nor the numbered one, nor the file's number is chosen.
+    /// the linked one, nor the numbered one, nor the goal's or the file's
+    /// number is chosen — not by Auto, and not as the sheet's proposal.
     @Test("A request naming two pull requests is not posted to either")
     func conflictingPullRequestsAreNotPosted() async throws {
-        for message in [
-            "Review https://github.com/example/repo/pull/12, then post the review to PR 13",
-            "Review PR 12, then post the review to PR 13"
+        let linkedGoal = "Post a review on https://github.com/example/repo/pull/12"
+        for (goal, message) in [
+            (linkedGoal, "Review https://github.com/example/repo/pull/12, then post the review to PR 13"),
+            (linkedGoal, "Review PR 12, then post the review to PR 13"),
+            ("Review PR 12", "Review PR 12, then post the review to PR 13")
         ] {
-            let fixture = try Fixture()
+            let fixture = try Fixture(goal: goal)
             fixture.context.insert(TaskEvent(
                 task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage, payload: message
             ))
@@ -183,6 +186,12 @@ struct GitHubReviewPostWhenRequestedTests {
             }
             #expect(await cli.postCount() == 0, "\(message)")
             #expect(!GitHubReviewPublicationRequirement.needsOriginTargetBinding(task: fixture.task), "\(message)")
+            let sheet = GitHubReviewPublicationService(
+                modelContext: fixture.context, cli: FakeCLI(), originURL: { _ in "https://github.com/example/repo.git" }
+            )
+            await #expect(throws: GitHubReviewPublicationError.self, "\(message)") {
+                try await sheet.prepare(task: fixture.task, filePath: fixture.file.path)
+            }
         }
     }
 
