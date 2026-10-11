@@ -178,6 +178,9 @@ struct NewTaskWorktreeCreationJournalTests {
         /// A deinitialized submodule keeps its repository in the worktree's
         /// Git folder, where a forced removal would delete it.
         case deinitialized
+        /// An edit to a nested submodule's file marked assume-unchanged, which
+        /// every status and the local-work script trust the index for.
+        case indexHiddenEdit
     }
 
     @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
@@ -224,6 +227,12 @@ struct NewTaskWorktreeCreationJournalTests {
             try fixture.git(["checkout", "--quiet", "--detach", recorded], at: nested)
         case .deinitialized:
             try fixture.git(["submodule", "deinit", "--quiet", "libs/a"], at: worktree)
+        case .indexHiddenEdit:
+            let nested = worktree.appendingPathComponent("libs/a/deps/nested")
+            let file = try #require(try fixture.git(["ls-files"], at: nested).split(whereSeparator: \.isNewline).first.map(String.init))
+            try fixture.git(["update-index", "--assume-unchanged", file], at: nested)
+            try "hidden edit".write(to: nested.appendingPathComponent(file), atomically: true, encoding: .utf8)
+            #expect(try fixture.git(["status", "--porcelain"], at: nested).isEmpty)
         }
         #expect(try fixture.git(["status", "--porcelain"], at: worktree).isEmpty)
         context.delete(task)
