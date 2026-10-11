@@ -280,7 +280,9 @@ struct NewTaskWorktreeCleanupTests {
         #expect(failed.cleanup == nil)
         #expect(!failed.persisted)
         #expect(!draft.isDeleted)
-        #expect(try fixture.cleanupStore.pendingURLs().count == 1)
+        // The intent goes with the unsaved deletion, so it can't later remove
+        // the checkout once the surviving task no longer pins it.
+        #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
 
         let durable = ModelContext(store)
         #expect(try durable.fetchCount(FetchDescriptor<AgentTask>()) == 1)
@@ -653,6 +655,28 @@ struct NewTaskWorktreeCleanupTests {
             discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
         ) == .kept("worktree_config"))
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("Per-worktree configuration that can't be checked counts; only a missing file is absent")
+    func unreadableWorktreeConfigCounts() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        func check(_ error: (any Error)?) -> Bool? {
+            TaskWorktreeBinding.registeredWorktreeHasLocalConfig(
+                repositoryPath: repository.path, worktreePath: discard.worktreePath,
+                attributes: { path in
+                    if let error { throw error }
+                    return try FileManager.default.attributesOfItem(atPath: path)
+                }
+            )
+        }
+        #expect(check(nil) == false)
+        #expect(check(CocoaError(.fileReadNoSuchFile)) == false)
+        #expect(check(CocoaError(.fileReadNoPermission)) == true)
+        #expect(check(NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))) == true)
     }
 
     @Test("A per-worktree ref keeps an otherwise untouched worktree")

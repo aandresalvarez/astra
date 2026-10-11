@@ -355,7 +355,9 @@ extension GitService {
         "{ test \"$(git worktree list --porcelain | grep -c '^worktree ')\" = 1 || echo \"worktrees $displaypath\"; }"
     ].joined(separator: " && ")
 
-    /// Every populated submodule's tags, through Git, packed or loose, its
+    /// Every populated submodule's refs other than remote-tracking ones,
+    /// through Git, packed or loose: tags, and any custom ref such as
+    /// `refs/keep/*`, even at a commit a remote holds. Then its
     /// repository configuration, such as a remote added since, and its
     /// repository-local files, hooks and `info/`, by content: local state a
     /// forced removal deletes that no status or ref check shows, with each
@@ -365,7 +367,7 @@ extension GitService {
     /// history the reachability check subtracts.
     static let submoduleTagListing = [
         "submodule", "foreach", "--quiet", "--recursive",
-        "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' refs/tags; "
+        "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' | grep -v '^refs/remotes/'; "
             + "echo \"-- reflog\"; git log -g --format='%gd %H %gs' HEAD --branches; "
             + "echo \"-- config\"; git config --local --list; "
             + "echo \"-- files\"; (cd \"$(git rev-parse --absolute-git-dir)\" && "

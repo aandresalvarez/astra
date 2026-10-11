@@ -320,7 +320,8 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(try context.fetchCount(FetchDescriptor<Workspace>()) == 1)
         #expect(try context.fetchCount(FetchDescriptor<Connector>()) == 1)
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
-        #expect(try fixture.cleanupStore.pendingURLs().count == 1)
+        // The unsaved deletion's cleanup intent goes with it.
+        #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
     }
 
     @Test("A deletion whose cancellation can't be saved stops nothing and keeps the task's requests", arguments: [false, true])
@@ -858,6 +859,19 @@ struct NewTaskWorktreeLifecycleTests {
         let renamed = scanned.appendingPathComponent("Renamed", isDirectory: true)
         try FileManager.default.moveItem(at: folder, to: renamed)
         let movedMirror = WorkspaceFileLayout.workspaceConfigFile(for: renamed.path)
+        // A mirror whose identity can't be read may be the moved one: it is
+        // neither imported nor reported, and recovery isn't trusted.
+        let unread = try Fixture.container()
+        var reported: [URL] = []
+        struct Unreadable: Error {}
+        #expect(!(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: unread.mainContext, excludingConfigFiles: try #require(store.pendingMirrorPaths()),
+            extraRoots: [scanned.path], includeDefaultRoots: false,
+            excludingItemIdentities: try #require(store.pendingMirrorIdentities()),
+            excludedByIdentity: { reported = $0 }, itemIdentity: { _ in throw Unreadable() }
+        ).value))
+        #expect(try unread.mainContext.fetchCount(FetchDescriptor<Workspace>()) == 0)
+        #expect(reported.isEmpty)
         let empty = try Fixture.container()
         var found: [URL] = []
         _ = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
