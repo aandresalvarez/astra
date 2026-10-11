@@ -1198,8 +1198,15 @@ final class WorkspaceGitViewModel: ObservableObject {
 
     func createAndCheckoutBranch() {
         guard let path = workingPath, !newBranchName.isEmpty else { return }
+        // `checkout -b` can land on a branch cleanup is deleting, so it takes
+        // the same gate as a plain checkout.
+        guard let gate = TaskBranchDeletionGate.beginCardOperation(at: path) else {
+            errorMessage = TaskBranchDeletionGate.busyMessage
+            return
+        }
         AppLogger.audit(.gitBranchCreated, category: "Git", fields: ["branch": newBranchName, "from": currentBranch])
         Task {
+            defer { TaskBranchDeletionGate.endCardOperation(gate) }
             do {
                 try await git.createBranch(newBranchName, from: currentBranch, at: path)
                 self.newBranchName = ""

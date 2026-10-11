@@ -191,6 +191,8 @@ struct NewTaskWorktreeCreationJournalTests {
         case packedTag
         /// Only the submodule repository's configuration: a remote added.
         case addedRemote
+        /// Only a local hook in the submodule repository.
+        case addedHook
     }
 
     @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
@@ -276,6 +278,12 @@ struct NewTaskWorktreeCreationJournalTests {
             try fixture.git(["branch", "keep", "HEAD"], at: worktree.appendingPathComponent("libs/a"))
         case .localTag:
             try fixture.git(["tag", "keep"], at: worktree.appendingPathComponent("libs/a"))
+        case .addedHook:
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: worktree.appendingPathComponent("libs/a"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
+            try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "#!/bin/sh\nexit 0\n".write(to: hook, atomically: true, encoding: .utf8)
         case .addedRemote:
             try fixture.git(["remote", "add", "backup", "https://example.invalid/backup.git"], at: worktree.appendingPathComponent("libs/a"))
         case .packedTag:

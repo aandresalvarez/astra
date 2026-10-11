@@ -584,6 +584,17 @@ struct NewTaskWorktreeLifecycleTests {
             modelContext: rebuilt.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false
         ).value))
 
+        // A folder whose entries can be listed but not inspected may hold
+        // mirrors too.
+        let unsearchable = fixture.root.appendingPathComponent("Unsearchable", isDirectory: true)
+        try FileManager.default.createDirectory(at: unsearchable.appendingPathComponent("Inner"), withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: unsearchable.path)
+        let partialChildren = try Fixture.container()
+        #expect(!(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: partialChildren.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false
+        ).value))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unsearchable.path)
+
         // A folder the scan can't list may hold mirrors too.
         try FileManager.default.removeItem(at: broken)
         let locked = fixture.root.appendingPathComponent("Locked", isDirectory: true)
@@ -612,6 +623,45 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(app.contains("incompleteMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker"))
         #expect(app.contains("guard await recovery.value else {"))
         #expect(app.contains("guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {"))
+    }
+
+    @Test("A pinned mirror path now holding a different file is left alone")
+    func pinnedPathWithNewMirrorIsSpared() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Reused", isDirectory: true)
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        let record = WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: [])
+        try store.write(record)
+        try store.pinMirrorIdentities(for: record)
+        #expect(store.pending().first?.mirrorFileIDs.isEmpty == false)
+
+        // The folder is replaced by an ordinary one where another workspace
+        // writes its own mirror, with a new identity.
+        try FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{\"new\":true}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(FileManager.default.fileExists(atPath: mirror))
+    }
+
+    @Test("A connections file whose folder can't be read stops the SSH snapshot")
+    func unreadableSSHFolderFailsSnapshot() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let folder = fixture.root.appendingPathComponent("Workspace", isDirectory: true)
+        let file = SSHConnectionManager.connectionsFilePath(for: folder.path)
+        let support = (file as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: support, withIntermediateDirectories: true)
+        try Data("[]".utf8).write(to: URL(fileURLWithPath: file))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: support)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support) }
+        #expect(throws: (any Error).self) { try SSHConnectionManager.snapshot(workspacePath: folder.path) }
     }
 
     @Test("A mirror whose folder can't be traversed keeps the deletion pending")

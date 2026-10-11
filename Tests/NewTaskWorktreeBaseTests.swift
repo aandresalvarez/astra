@@ -1434,6 +1434,68 @@ struct NewTaskWorktreeBaseTests {
         #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(sources.path)))
     }
 
+    @Test("A failed task keeps its worktree as a draft when the draft already holds another one")
+    func failedTaskKeepsWorktreeWhenDraftHasOne() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        // Another window prepared the draft's own worktree meanwhile.
+        let draft = AgentTask(title: "Chat", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: context, fixture: fixture)
+        let task = AgentTask(title: "Run", goal: "Explore", workspace: workspace)
+        try await prepare(task, repository, context: context, fixture: fixture)
+        #expect(draft.executionRootPath != task.executionRootPath)
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
+
+        let recovered = try TaskWorktreeService.recoverFailedSubmission(task: task, existingDraft: draft, modelContext: context)
+        #expect(recovered === task)
+        #expect(!task.isDeleted)
+        #expect(task.status == .draft)
+        #expect(TaskWorktreeService.activeWorktreeBinding(for: task)?.worktreePath == task.executionRootPath)
+        #expect(try ModelContext(store).fetchCount(FetchDescriptor<AgentTask>()) == 2)
+    }
+
+    @Test("An imported request sequence at the maximum doesn't overflow the next choice")
+    func requestSequenceSaturates() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        var imported = TaskWorktreeRequestPayload(enabled: true, base: .defaultBranch, repositoryPath: repository.path)
+        imported.sequence = .max
+        context.insert(TaskEvent(
+            task: draft, eventType: TaskEventTypes.Task.worktreeRequested,
+            payload: try TaskEvent.encodePayload(imported).get()
+        ))
+        let next = TaskWorktreeRequestPayload(enabled: true, base: .currentBranch, repositoryPath: repository.path)
+        #expect(TaskWorktreeService.recordRequestIfChanged(next, on: draft, modelContext: context))
+    }
+
+    @Test("Creating and checking out a branch from the Repository card waits for branch cleanup")
+    func createBranchWaitsForBranchCleanup() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let panel = WorkspaceGitViewModel()
+        panel.setWorkspaceForTesting(workspace)
+        panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
+        #expect(TaskBranchDeletionGate.beginDeletion(at: repository.path))
+        defer { TaskBranchDeletionGate.endDeletion(at: repository.path) }
+        panel.newBranchName = "feature"
+        panel.createAndCheckoutBranch()
+        #expect(panel.errorMessage == TaskBranchDeletionGate.busyMessage)
+        #expect(try fixture.git(["branch", "--list", "feature"], at: repository).isEmpty)
+    }
+
     @Test("The latest worktree choice wins even when two were recorded within the same second")
     func latestRequestSurvivesTiedTimestamps() throws {
         let fixture = try Fixture()
