@@ -174,10 +174,12 @@ enum TaskWorktreeService {
                 repoPath: repositoryPath, branch: branch, worktreesRoot: worktreesRoot
             )
             // A journaled name may belong to an interrupted creation that
-            // hasn't been settled yet.
+            // hasn't been settled yet. Neither check follows links: a
+            // dangling symlink at the destination makes `git worktree add -b`
+            // create the branch and then fail, orphaning that branch.
             let journaled = journal.recordURL(taskID: task.id, worktreePath: destination)
-            guard !FileManager.default.fileExists(atPath: destination),
-                  !FileManager.default.fileExists(atPath: journaled.path),
+            guard (try? FileManager.default.attributesOfItem(atPath: destination)) == nil,
+                  (try? FileManager.default.attributesOfItem(atPath: journaled.path)) == nil,
                   !(await git.localBranchExists(branch, at: repositoryPath)) else { continue }
             return (branch, destination)
         }
