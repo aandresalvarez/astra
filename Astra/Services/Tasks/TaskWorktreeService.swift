@@ -320,14 +320,18 @@ enum TaskWorktreeService {
     }
 
     /// A folder that merely exists at a recorded checkout path is not the
-    /// recorded checkout: it must still be the repository's root or a
-    /// checkout its worktree registry names, or Current branch would start
-    /// from whatever replaced it.
+    /// recorded checkout: it must still be the repository's root, or a
+    /// checkout of the repository whose own `.git` reaches it. A replacement
+    /// clone at a path Git still lists would otherwise have Current branch
+    /// start from whatever it checked out.
     private static func isRegisteredCheckout(
         _ checkout: String, of repository: String, git: any GitRepositoryOperating
     ) async -> Bool {
         let resolved = WorkspacePathPresentation.resolvedPath(checkout)
         if resolved == WorkspacePathPresentation.resolvedPath(repository) { return true }
+        guard TaskWorktreeBinding.verifiedCommonDirectory(checkout: checkout, repository: repository) != nil else {
+            return false
+        }
         return await git.listWorktrees(at: repository).contains {
             WorkspacePathPresentation.resolvedPath($0.path) == resolved
         }

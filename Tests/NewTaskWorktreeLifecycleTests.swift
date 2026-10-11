@@ -761,6 +761,40 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pending().isEmpty)
     }
 
+    @Test("A deletion record without its recorded folder is trusted only while its path still resolves to that folder")
+    func legacyDeletionRecordFailsClosedAfterRetarget() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let original = fixture.root.appendingPathComponent("Original", isDirectory: true)
+        let other = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        let otherMirror = WorkspaceFileLayout.workspaceConfigFile(for: other.path)
+        try FileManager.default.createDirectory(atPath: (otherMirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{}".write(toFile: otherMirror, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let link = fixture.root.appendingPathComponent("Link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: original)
+        // As an earlier build wrote it: no recorded folder.
+        let record = WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: link.path, connectors: [], skills: [])
+        try store.write(record)
+        let url = store.recordURL(for: record)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        json.removeValue(forKey: "physicalFolder")
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+        #expect(store.pending().map(\.folderWasResolvedOnRead) == [true])
+
+        // Retargeted before the first read: the deleted folder is unknown.
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
+        #expect(store.pending().isEmpty)
+        #expect(store.pendingMirrorPaths() == nil)
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 0)
+        #expect(FileManager.default.fileExists(atPath: otherMirror))
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
     @Test("Branch deletion and the Repository card's branch operations exclude each other")
     func branchDeletionGateExcludesCardOperations() throws {
         let fixture = try Fixture()

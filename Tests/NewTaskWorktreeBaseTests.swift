@@ -1185,6 +1185,10 @@ struct NewTaskWorktreeBaseTests {
             Issue.record("Expected the draft to be retargeted to the sibling checkout")
             return
         }
+        // A sibling linked checkout needs its shared Git directory, as Docker
+        // mounts it at its host path.
+        #expect(TaskWorkspaceAccess(task: draft).runtimeWorktreeGitMetadataPaths.map(WorkspacePathPresentation.resolvedPath)
+            == [WorkspacePathPresentation.resolvedPath(repository.appendingPathComponent(".git").path)])
 
         // Git keeps the registry entry after the folder is replaced.
         try FileManager.default.removeItem(at: sibling)
@@ -1193,6 +1197,66 @@ struct NewTaskWorktreeBaseTests {
         guard case .invalid = TaskWorktreeBinding.state(of: draft) else {
             Issue.record("A replaced sibling checkout must not stay writable")
             return
+        }
+    }
+
+    @Test("A draft prepared from a linked checkout can be retargeted to the repository's primary checkout")
+    func linkedSourceDraftRetargetsToPrimaryCheckout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let main = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-linked", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "linked-source", linked.path], at: main)
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "Linked", primaryPath: linked.path)
+        store.mainContext.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await TaskWorktreeService.prepare(
+            task: draft, request: TaskWorktreeRequest(repositoryPath: linked.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+
+        #expect(TaskCodeLocationPin.set(main.path, workspace: workspace, task: draft))
+        guard case .retargeted(_, let common) = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("The repository's primary checkout shares the source's Git directory")
+            return
+        }
+        #expect(common.map(WorkspacePathPresentation.resolvedPath)
+            == WorkspacePathPresentation.resolvedPath(main.appendingPathComponent(".git").path))
+        // Its Git directory is inside the checkout, so nothing extra is mounted.
+        #expect(TaskWorkspaceAccess(task: draft).runtimeWorktreeGitMetadataPaths.isEmpty)
+
+        // Retargeted back to the linked source, the shared directory lies
+        // outside the checkout and is named.
+        #expect(TaskCodeLocationPin.set(linked.path, workspace: workspace, task: draft))
+        #expect(TaskWorkspaceAccess(task: draft).runtimeWorktreeGitMetadataPaths.map(WorkspacePathPresentation.resolvedPath)
+            == [WorkspacePathPresentation.resolvedPath(main.appendingPathComponent(".git").path)])
+
+        // A clone standing at the primary checkout's path is not it.
+        let elsewhere = fixture.root.appendingPathComponent("Elsewhere", isDirectory: true)
+        try FileManager.default.moveItem(at: main, to: elsewhere)
+        try fixture.git(["clone", "--quiet", elsewhere.path, main.path], at: fixture.root)
+        #expect(TaskWorktreeBinding.verifiedCommonDirectory(checkout: main.path, repository: linked.path) == nil)
+    }
+
+    @Test("Current branch refuses a clone standing where Git still lists the selected linked checkout")
+    func replacedLinkedCheckoutIsNotCurrentBranch() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-linked", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "linked", linked.path], at: repository)
+        let request = TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: linked.path, base: .currentBranch)
+        #expect(await TaskWorktreeService.baseLabel(for: request, git: GitService.shared) != nil)
+
+        // Replaced by a clone whose commit the repository also holds; Git's
+        // worktree list still names the path.
+        try FileManager.default.removeItem(at: linked)
+        try fixture.git(["clone", "--quiet", repository.path, linked.path], at: fixture.root)
+        #expect(try fixture.git(["worktree", "list", "--porcelain"], at: repository).contains(linked.lastPathComponent))
+        await #expect(throws: TaskWorktreeCreationError.checkoutUnavailable(linked.path)) {
+            try await TaskWorktreeService.resolveBase(for: request, git: GitService.shared)
         }
     }
 

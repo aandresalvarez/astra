@@ -20,6 +20,14 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     let physicalFolder: String
     let connectors: [ConnectorKeychainCleanup]
     let skills: [SkillKeychainCleanup]
+    /// True for a record written before `physicalFolder` existed, whose
+    /// folder was resolved again on reading. The store accepts one only
+    /// while that resolution still matches the digest its file is named by.
+    let folderWasResolvedOnRead: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case workspaceID, primaryPath, physicalFolder, connectors, skills
+    }
 
     init(
         workspaceID id: UUID, primaryPath path: String,
@@ -40,15 +48,18 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         physicalFolder = folder
         connectors = connectorCleanups
         skills = skillCleanups
+        folderWasResolvedOnRead = false
     }
 
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
         primaryPath = try container.decode(String.self, forKey: .primaryPath)
-        // Records written before the folder was snapshotted resolve it once.
-        physicalFolder = try container.decodeIfPresent(String.self, forKey: .physicalFolder)
-            ?? WorkspacePathPresentation.resolvedPath(primaryPath)
+        // Records written before the folder was snapshotted resolve it here;
+        // the store verifies that against the record's file name.
+        let recorded = try container.decodeIfPresent(String.self, forKey: .physicalFolder)
+        physicalFolder = recorded ?? WorkspacePathPresentation.resolvedPath(primaryPath)
+        folderWasResolvedOnRead = recorded == nil
         connectors = try container.decode([ConnectorKeychainCleanup].self, forKey: .connectors)
         skills = try container.decode([SkillKeychainCleanup].self, forKey: .skills)
     }
@@ -73,6 +84,7 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         connectors = workspace.connectors.map(\.keychainCleanup)
             + workspace.skills.flatMap { $0.connectors.map(\.keychainCleanup) }
         skills = workspace.skills.map(\.keychainCleanup)
+        folderWasResolvedOnRead = false
     }
 }
 
@@ -102,7 +114,21 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     func existing(matching record: WorkspaceDeletionCleanupRecord) throws -> WorkspaceDeletionCleanupRecord? {
         let url = recordURL(for: record)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
+        return try read(url)
+    }
+
+    struct UnverifiableFolder: Error {}
+
+    /// Decodes the record at `url`. A record without its recorded folder is
+    /// trusted only while resolving its path still gives the folder its file
+    /// was named for; once a symlink in it points elsewhere, the folder that
+    /// was deleted is unknown, so it reads as unreadable and fails closed.
+    private func read(_ url: URL) throws -> WorkspaceDeletionCleanupRecord {
+        let record = try JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
+        guard !record.folderWasResolvedOnRead
+            || recordURL(for: record).standardizedFileURL.path == url.standardizedFileURL.path
+        else { throw UnverifiableFolder() }
+        return record
     }
 
     /// Replaces whatever is stored under the record's key.
@@ -137,9 +163,7 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// Readable records; an unreadable one stays on disk and is skipped.
     func pending() -> [WorkspaceDeletionCleanupRecord] {
         let urls = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        return urls.filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }.compactMap {
-            try? JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: $0))
-        }
+        return urls.filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }.compactMap { try? read($0) }
     }
 
     /// The mirror files of every unsettled deletion, which startup recovery
@@ -152,8 +176,7 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         else { return nil }
         var mirrors = Set<String>()
         for url in urls where url.pathExtension == "json" {
-            guard let record = try? JSONDecoder().decode(WorkspaceDeletionCleanupRecord.self, from: Data(contentsOf: url))
-            else { return nil }
+            guard let record = try? read(url) else { return nil }
             // Resolved, so the same mirror reached through a symlink or an
             // alias such as /tmp and /private/tmp still matches.
             mirrors.insert(WorkspacePathPresentation.resolvedPath(WorkspaceFileLayout.workspaceConfigFile(for: record.physicalFolder)))
