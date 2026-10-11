@@ -1032,7 +1032,8 @@ final class TaskQueue {
     /// per-request 100 ms poll, so N waiting turns no longer generate N
     /// repeating main-actor fetches. A 500 ms fallback tick bounds staleness
     /// for changes with no signal (e.g. pool resize) and honors cancellation.
-    private func waitForTurnAdmissionSignal(taskID: UUID) async {
+    /// On the actor, or this async function would insert off it while the actor removes.
+    @MainActor private func waitForTurnAdmissionSignal(taskID: UUID) async {
         let waiterID = UUID()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             turnAdmissionWaiters[taskID, default: [:]][waiterID] = continuation
@@ -1043,7 +1044,7 @@ final class TaskQueue {
         }
     }
 
-    private func resumeTurnAdmissionWaiter(taskID: UUID, waiterID: UUID) {
+    @MainActor private func resumeTurnAdmissionWaiter(taskID: UUID, waiterID: UUID) {
         guard let continuation = turnAdmissionWaiters[taskID]?.removeValue(forKey: waiterID) else { return }
         if turnAdmissionWaiters[taskID]?.isEmpty == true {
             turnAdmissionWaiters.removeValue(forKey: taskID)
@@ -1058,14 +1059,14 @@ final class TaskQueue {
     /// file has no room for.
     var dispatchWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
-    private func wakeTurnAdmissionWaiters(taskID: UUID) {
+    @MainActor private func wakeTurnAdmissionWaiters(taskID: UUID) {
         guard let waiters = turnAdmissionWaiters.removeValue(forKey: taskID) else { return }
         for continuation in waiters.values { continuation.resume() }
     }
 
     /// Worker and resource-lock availability are queue-global, so releases
     /// wake every parked admission loop, not just the releasing task's.
-    private func wakeAllTurnAdmissionWaiters() {
+    @MainActor private func wakeAllTurnAdmissionWaiters() {
         let all = turnAdmissionWaiters
         turnAdmissionWaiters.removeAll()
         for waiters in all.values {
