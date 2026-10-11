@@ -578,9 +578,32 @@ struct NewTaskWorktreeLifecycleTests {
             modelContext: rebuilt.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false
         ).value))
 
+        // A folder the scan can't list may hold mirrors too.
+        try FileManager.default.removeItem(at: broken)
+        let locked = fixture.root.appendingPathComponent("Locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked.appendingPathComponent("Inner"), withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        let marker = fixture.root.appendingPathComponent("RecoveryIncomplete")
+        let partial = try Fixture.container()
+        #expect(!(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: partial.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false,
+            incompleteMarker: marker
+        ).value))
+        // The next launch rescans instead of trusting a nonempty store.
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+        let complete = try Fixture.container()
+        #expect(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: complete.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false,
+            incompleteMarker: marker
+        ).value)
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+
         // Startup gates destructive cleanup on that answer.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let app = try String(contentsOf: root.appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8)
+        #expect(app.contains("incompleteMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker"))
         #expect(app.contains("guard await recovery.value else {"))
         #expect(app.contains("guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {"))
     }

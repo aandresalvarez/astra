@@ -518,29 +518,37 @@ public enum WorkspaceRecoveryService {
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        incompleteMarker: URL? = nil,
         afterImport: @escaping @MainActor () -> Void = {}
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
-        // nothing needed recovering, or each discovered mirror loaded. A
-        // mirror that couldn't be loaded may hold pins and credential owners
-        // the store now lacks, so destructive cleanup waits on false.
+        // nothing needed recovering, or the scan finished and each discovered
+        // mirror loaded. Anything less may leave pins and credential owners
+        // only in mirrors, so destructive cleanup waits on false. A partial
+        // recovery leaves `incompleteMarker`, so the next launch rescans even
+        // though the store is no longer empty.
         Task { @MainActor in
+            let resumingPartialRecovery = incompleteMarker.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
             if extraRoots.isEmpty,
                includeDefaultRoots,
+               !resumingPartialRecovery,
                !fetchExistingWorkspaces(modelContext: modelContext).isEmpty {
                 return true
             }
-            let configs = await withTaskGroup(of: [URL].self, returning: [URL].self) { group in
+            let scan = await withTaskGroup(
+                of: (configs: [URL], complete: Bool).self, returning: (configs: [URL], complete: Bool).self
+            ) { group in
                 group.addTask(priority: .utility) {
-                    guard !Task.isCancelled else { return [] }
-                    return discoverWorkspaceConfigFiles(
+                    guard !Task.isCancelled else { return ([], false) }
+                    return discoverWorkspaceConfigFilesReportingCompleteness(
                         extraRoots: extraRoots,
                         includeDefaultRoots: includeDefaultRoots,
                         privacyHomeDirectory: privacyHomeDirectory
                     )
                 }
-                return await group.next() ?? []
+                return await group.next() ?? ([], false)
             }
+            let configs = scan.configs
             // Mirrors of workspaces whose deletion is still being cleaned up.
             let candidates = configs.filter {
                 !excluded.contains(WorkspacePathPresentation.resolvedPath($0.path))
@@ -550,8 +558,25 @@ public enum WorkspaceRecoveryService {
             if recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs) > 0 {
                 afterImport()
             }
-            return loadedConfigs.count == candidates.count
+            let trusted = scan.complete && loadedConfigs.count == candidates.count
+            if let incompleteMarker {
+                if trusted {
+                    try? FileManager.default.removeItem(at: incompleteMarker)
+                } else {
+                    try? FileManager.default.createDirectory(
+                        at: incompleteMarker.deletingLastPathComponent(), withIntermediateDirectories: true
+                    )
+                    try? Data().write(to: incompleteMarker, options: .atomic)
+                }
+            }
+            return trusted
         }
+    }
+
+    /// Present while a launch's recovery left a mirror unloaded or a folder
+    /// unscanned. Startup passes it; other callers keep no marker.
+    public static var defaultIncompleteRecoveryMarker: URL {
+        AppChannelStoragePaths.applicationSupportDirectory().appendingPathComponent("WorkspaceRecoveryIncomplete")
     }
 
     private static func loadWorkspaceConfigs(_ configFiles: [URL]) async -> [LoadedWorkspaceConfig] {
@@ -720,6 +745,20 @@ public enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [URL] {
+        discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots, privacyHomeDirectory: privacyHomeDirectory
+        ).configs
+    }
+
+    /// The discovered mirrors, and whether the scan saw every folder it
+    /// meant to: false when a folder couldn't be listed, the directory
+    /// budget ran out, or the scan was cancelled.
+    public static func discoverWorkspaceConfigFilesReportingCompleteness(
+        extraRoots: [String] = [],
+        includeDefaultRoots: Bool = true,
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> (configs: [URL], complete: Bool) {
+        var complete = true
         var roots: [String] = []
         if includeDefaultRoots {
             if let configured = UserDefaults.standard.string(forKey: "workspacesRoot"), !configured.isEmpty {
@@ -732,12 +771,13 @@ public enum WorkspaceRecoveryService {
         var seen = Set<String>()
         var configs: [URL] = []
         for root in roots {
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled else { complete = false; break }
             let url = URL(fileURLWithPath: expandTilde(root))
             for config in scanForWorkspaceConfigs(
                 root: url,
                 maxDepth: 4,
-                privacyHomeDirectory: privacyHomeDirectory
+                privacyHomeDirectory: privacyHomeDirectory,
+                complete: &complete
             ) {
                 guard !Task.isCancelled else { break }
                 let path = normalizePath(config.path)
@@ -746,7 +786,8 @@ public enum WorkspaceRecoveryService {
                 configs.append(config)
             }
         }
-        return configs
+        if Task.isCancelled { complete = false }
+        return (configs, complete)
     }
 
     private struct ActiveStorePointer: Codable {
@@ -981,7 +1022,8 @@ public enum WorkspaceRecoveryService {
     private static func scanForWorkspaceConfigs(
         root: URL,
         maxDepth: Int,
-        privacyHomeDirectory: URL
+        privacyHomeDirectory: URL,
+        complete: inout Bool
     ) -> [URL] {
         var remainingBudget = maxRecoveryScanDirectories
         let hostFileAccess = HostFileAccessBroker(homeDirectory: privacyHomeDirectory)
@@ -989,7 +1031,8 @@ public enum WorkspaceRecoveryService {
             root: root,
             maxDepth: maxDepth,
             remainingBudget: &remainingBudget,
-            hostFileAccess: hostFileAccess
+            hostFileAccess: hostFileAccess,
+            complete: &complete
         )
     }
 
@@ -997,11 +1040,12 @@ public enum WorkspaceRecoveryService {
         root: URL,
         maxDepth: Int,
         remainingBudget: inout Int,
-        hostFileAccess: HostFileAccessBroker
+        hostFileAccess: HostFileAccessBroker,
+        complete: inout Bool
     ) -> [URL] {
-        guard !Task.isCancelled else { return [] }
+        guard !Task.isCancelled else { complete = false; return [] }
         guard maxDepth >= 0 else { return [] }
-        guard remainingBudget > 0 else { return [] }
+        guard remainingBudget > 0 else { complete = false; return [] }
         let intent = HostFileAccessIntent.implicitScan(root: nil)
         guard !hostFileAccess.shouldSkip(root, intent: intent) else {
             return []
@@ -1023,18 +1067,20 @@ public enum WorkspaceRecoveryService {
             results.append(legacyConfig)
         }
 
-        guard maxDepth > 0,
-              let children = try? hostFileAccess.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey],
-                intent: intent
-              ) else {
+        guard maxDepth > 0 else { return results }
+        guard let children = try? hostFileAccess.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey],
+            intent: intent
+        ) else {
+            // A folder that exists but can't be listed may hold mirrors.
+            complete = false
             return results
         }
 
         for child in children {
-            guard !Task.isCancelled else { break }
-            guard remainingBudget > 0 else { break }
+            guard !Task.isCancelled else { complete = false; break }
+            guard remainingBudget > 0 else { complete = false; break }
             guard !skippedRecoveryDirectoryNames.contains(child.lastPathComponent) else { continue }
             guard !hostFileAccess.shouldSkip(child, intent: intent) else {
                 continue
@@ -1050,7 +1096,8 @@ public enum WorkspaceRecoveryService {
                     root: child,
                     maxDepth: maxDepth - 1,
                     remainingBudget: &remainingBudget,
-                    hostFileAccess: hostFileAccess
+                    hostFileAccess: hostFileAccess,
+                    complete: &complete
                 )
             )
         }

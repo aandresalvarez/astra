@@ -343,14 +343,21 @@ extension GitService {
 
     /// Run in each populated submodule; prints anything a forced removal
     /// would destroy: changes, untracked or ignored files, commits that no
-    /// remote-tracking branch holds, and a checkout away from the commit the
+    /// remote-tracking branch holds, a checkout away from the commit the
     /// superproject's index records (`$sha1`), which `git submodule status`
-    /// hides when that gitlink is marked assume-unchanged or skip-worktree.
+    /// hides when that gitlink is marked assume-unchanged or skip-worktree,
+    /// and local refs: a branch that isn't exactly its upstream, and any
+    /// unpacked tag. A clone packs what it fetched, so a loose tag was made or
+    /// fetched since; even one at a remote-reachable commit is the user's.
     static let submoduleLocalWorkScript = [
         "git status --porcelain --untracked-files=all --ignore-submodules=none",
         "git ls-files --others --ignored --exclude-standard --directory --no-empty-directory",
         "git rev-list -n 1 --all --reflog --not --remotes",
-        "{ test \"$sha1\" = \"$(git rev-parse HEAD)\" || echo \"moved $displaypath\"; }"
+        "{ test \"$sha1\" = \"$(git rev-parse HEAD)\" || echo \"moved $displaypath\"; }",
+        "{ git for-each-ref --format='%(refname:short)' refs/heads | while read -r ref; do "
+            + "test \"$(git rev-parse \"refs/heads/$ref\")\" = \"$(git rev-parse --verify -q \"$ref@{upstream}\")\" "
+            + "|| echo \"branch $displaypath $ref\"; done; }",
+        "{ find \"$(git rev-parse --git-path refs/tags)\" -type f 2>/dev/null; }"
     ].joined(separator: " && ")
 
     func initializeSubmodules(at worktreePath: String) async throws {

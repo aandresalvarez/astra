@@ -906,6 +906,7 @@ public struct ASTRAApp: App {
             let recovery = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
                 excludingConfigFiles: unsettledDeletionMirrors,
+                incompleteMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker,
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
