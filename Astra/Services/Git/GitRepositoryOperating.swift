@@ -133,6 +133,10 @@ protocol GitRepositoryOperating: AnyObject {
     func initializeSubmodules(at worktreePath: String) async throws
     /// What a forced removal of the worktree would destroy in its submodules.
     func submoduleCheckoutState(at worktreePath: String) async -> GitSubmoduleCheckoutState
+    /// Records every populated submodule's tags in the worktree's own Git
+    /// folder right after they are set up, so cleanup can tell a tag added
+    /// since from one the clone fetched.
+    func recordSubmoduleTagSnapshot(at worktreePath: String) async throws
     func getRemoteURL(at repoPath: String, remote: String?) async -> String?
     func createPullRequest(
         repoPath: String,
@@ -233,6 +237,8 @@ extension GitRepositoryOperating {
     /// submodules they can't read is kept.
     func initializeSubmodules(at worktreePath: String) async throws { throw GitSubmoduleSetupUnsupported() }
     func submoduleCheckoutState(at worktreePath: String) async -> GitSubmoduleCheckoutState { .unknown }
+    /// Records nothing, so cleanup finds no snapshot and keeps the worktree.
+    func recordSubmoduleTagSnapshot(at worktreePath: String) async throws {}
 
     func normalizeBaseBranch(_ raw: String, remote: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

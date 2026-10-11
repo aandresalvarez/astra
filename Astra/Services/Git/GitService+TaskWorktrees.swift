@@ -346,9 +346,9 @@ extension GitService {
     /// remote-tracking branch holds, a checkout away from the commit the
     /// superproject's index records (`$sha1`), which `git submodule status`
     /// hides when that gitlink is marked assume-unchanged or skip-worktree,
-    /// and local refs: a branch that isn't exactly its upstream, and any
-    /// unpacked tag. A clone packs what it fetched, so a loose tag was made or
-    /// fetched since; even one at a remote-reachable commit is the user's.
+    /// and a local branch that isn't exactly its upstream. Tags are compared
+    /// with the snapshot taken at creation instead, since a tag the user made
+    /// at a remote-reachable commit looks like a fetched one once packed.
     static let submoduleLocalWorkScript = [
         "git status --porcelain --untracked-files=all --ignore-submodules=none",
         "git ls-files --others --ignored --exclude-standard --directory --no-empty-directory",
@@ -356,9 +356,25 @@ extension GitService {
         "{ test \"$sha1\" = \"$(git rev-parse HEAD)\" || echo \"moved $displaypath\"; }",
         "{ git for-each-ref --format='%(refname:short)' refs/heads | while read -r ref; do "
             + "test \"$(git rev-parse \"refs/heads/$ref\")\" = \"$(git rev-parse --verify -q \"$ref@{upstream}\")\" "
-            + "|| echo \"branch $displaypath $ref\"; done; }",
-        "{ find \"$(git rev-parse --git-path refs/tags)\" -type f 2>/dev/null; }"
+            + "|| echo \"branch $displaypath $ref\"; done; }"
     ].joined(separator: " && ")
+
+    /// Every populated submodule's tags, through Git, packed or loose.
+    static let submoduleTagListing = [
+        "submodule", "foreach", "--quiet", "--recursive",
+        "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' refs/tags"
+    ]
+    static let submoduleTagSnapshotFileName = "astra-submodule-tags"
+
+    func recordSubmoduleTagSnapshot(at worktreePath: String) async throws {
+        let tags = try await runGit(at: worktreePath, arguments: Self.submoduleTagListing, failureLogLevel: .warning)
+        let gitDirectory = try await runGit(
+            at: worktreePath, arguments: ["rev-parse", "--absolute-git-dir"], failureLogLevel: .warning
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        try Data(tags.utf8).write(
+            to: URL(fileURLWithPath: gitDirectory).appendingPathComponent(Self.submoduleTagSnapshotFileName), options: .atomic
+        )
+    }
 
     func initializeSubmodules(at worktreePath: String) async throws {
         for arguments in Self.taskWorktreeSubmoduleCommands {
@@ -418,6 +434,11 @@ extension GitService {
             for submodule in populatedSubmodules where await indexHiddenEntriesChanged(at: submodule) {
                 return .changed
             }
+            // Any tag added, moved, or removed since creation, or no snapshot
+            // to compare with, is kept.
+            let tags = try await runGit(at: worktreePath, arguments: Self.submoduleTagListing, failureLogLevel: .warning)
+            let snapshot = URL(fileURLWithPath: gitDirectory).appendingPathComponent(Self.submoduleTagSnapshotFileName)
+            guard let recorded = try? Data(contentsOf: snapshot), recorded == Data(tags.utf8) else { return .changed }
             return .unchanged
         } catch {
             return .unknown

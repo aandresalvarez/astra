@@ -187,6 +187,8 @@ struct NewTaskWorktreeCreationJournalTests {
         /// A local branch or tag at a commit the remote already holds.
         case localBranch
         case localTag
+        /// The same tag after `git pack-refs`, with no loose file left.
+        case packedTag
     }
 
     @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
@@ -270,6 +272,13 @@ struct NewTaskWorktreeCreationJournalTests {
             try fixture.git(["branch", "keep", "HEAD"], at: worktree.appendingPathComponent("libs/a"))
         case .localTag:
             try fixture.git(["tag", "keep"], at: worktree.appendingPathComponent("libs/a"))
+        case .packedTag:
+            let submodule = worktree.appendingPathComponent("libs/a")
+            try fixture.git(["tag", "keep"], at: submodule)
+            try fixture.git(["pack-refs", "--all"], at: submodule)
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: submodule)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(!FileManager.default.fileExists(atPath: gitDirectory + "/refs/tags/keep"))
         case .indexHiddenEdit:
             let nested = worktree.appendingPathComponent("libs/a/deps/nested")
             let file = try #require(try fixture.git(["ls-files"], at: nested).split(whereSeparator: \.isNewline).first.map(String.init))
