@@ -356,6 +356,12 @@ enum AgentExternalActionObserver {
            outside.allSatisfy({ $0.first == BrowserBridgeMCPProjection.toolCommand }) {
             return nil
         }
+        // A Jira proposal or a review post through the host-control relay is
+        // ASTRA's typed workflow, and its receipt or review is the record: a
+        // second row as a command the agent ran would show one write twice.
+        if HostControlCLIRelayPolicy.isTypedExternalAction(text) {
+            return nil
+        }
         // One command whose own status is the call's: no separator, and not
         // sent to the background.
         if let commands = LocalShellCommands.simpleCommands(text), commands.count == 1, !text.hasSuffix("&"),

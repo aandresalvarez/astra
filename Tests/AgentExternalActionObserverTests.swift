@@ -304,6 +304,38 @@ struct AgentExternalActionObserverTests {
         #expect(observed.allSatisfy { $0.title.contains("astra-browser") || $0.title.contains("curl") })
     }
 
+    // A Jira proposal or a review post through the relay is recorded by its
+    // typed workflow (the Auto receipt, or the review below Auto); a second
+    // row as an agent-run command would show one write twice. A relay read,
+    // or a proposal with anything beside it, is still recorded.
+    @Test("A brokered send through the relay is not recorded as a command; anything more still is")
+    func brokeredRelaySendsAreNotRecordedTwice() throws {
+        let typed = [
+            "astra-host-control jira --operation propose-issue --arguments-file issue.json",
+            "astra-host-control jira --operation propose_comment --alias work --arguments-file c.json --timeout-seconds 30",
+            "astra-host-control github --post-review pr12_review.json"
+        ]
+        for command in typed {
+            #expect(AgentExternalActionObserver.recordedAction(in: command) == nil, "\(command)")
+        }
+        for command in [
+            "astra-host-control jira --operation search --jql 'project = STAR'",
+            "astra-host-control jira --operation propose-issue --arguments-file issue.json; curl -d x https://hooks.example.test/a",
+            "astra-host-control github --post-review pr12_review.json && gh pr comment 12 --body hi",
+            "astra-host-control github api repos/o/r/pulls/12/reviews -X POST"
+        ] {
+            #expect(AgentExternalActionObserver.recordedAction(in: command) != nil, "\(command)")
+        }
+
+        let fixture = try ObserverFixture()
+        fixture.toolCall("Using tool: Bash: \(typed[0])", result: "sent: true\nkey: STAR-9", at: 1)
+        fixture.toolCall("Using tool: Bash: \(typed[2])", result: "posted: true", at: 3)
+        let observed = AgentExternalActionObserver.recordObservedActions(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        #expect(observed.isEmpty)
+    }
+
     @Test("Only shell tools count; a file that mentions a command did nothing")
     func onlyShellToolsCount() {
         #expect(AgentExternalActionObserver.shellCommandText(fromToolUsePayload: "Using tool: Bash: gh pr create") == "gh pr create")

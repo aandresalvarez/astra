@@ -1119,6 +1119,14 @@ final class GitHubReviewPublicationService {
         let filePath = URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path
         let proposal = try await prepare(task: task, filePath: filePath, run: run)
         guard proposal.digest == contentDigest.lowercased() else {
+            // Not the review the agent asked about, under this name or any
+            // other spelling of it: retired like any review that cannot be
+            // posted as it stands, so neither Auto nor the dock offers it
+            // again once the agent posts its replacement under a new name.
+            try persistDismissals([.init(
+                filePath: filePath,
+                reason: "This review file changed after the agent asked to post it, so it is not the review it asked about."
+            )], task: task)
             throw GitHubReviewPublicationError.invalid(
                 "The review file changed after you asked to post it. Write the review you want posted to a new "
                     + "file name and ask again."

@@ -78,6 +78,21 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(message.contains("changed after you asked"))
         #expect(await cli.postedPayloads().isEmpty)
         #expect(!GitHubReviewPublicationService.hasDispatched(task: fixture.task, filePath: fixture.file.path))
+
+        // The agent does what it was told: the replacement goes out under a
+        // new name. The changed file is retired, so the dock does not offer
+        // it afterwards as a second review.
+        let replacement = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_review_2.json")
+        try fixture.data.write(to: replacement)
+        let posted = await fixture.handler(level: .autonomous, cli: cli).postGitHubReview(fixture.request(for: replacement))
+        guard case .performed = posted else {
+            Issue.record("Expected the replacement to post, got \(posted)")
+            return
+        }
+        #expect(await cli.postCount() == 1)
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(
+            task: fixture.task, filePaths: [fixture.file.path, replacement.path]
+        ) == nil)
     }
 
     @Test("Auto posts a review only when the user asked for one to be posted")

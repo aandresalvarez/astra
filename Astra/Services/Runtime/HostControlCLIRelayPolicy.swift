@@ -52,21 +52,41 @@ enum HostControlCLIRelayPolicy {
         }
     }
 
+    /// A relay call whose outcome ASTRA's own typed workflow records: a Jira
+    /// proposal, sent and receipted in Auto and offered for review below it,
+    /// or a request to post a GitHub review file. Only a call `allows`
+    /// accepts, so it is that one command with nothing beside or inside it.
+    static func isTypedExternalAction(_ command: String) -> Bool {
+        guard allows(command), let tokens = shellTokens(command), tokens.count > 2 else { return false }
+        switch tokens[1].lowercased() {
+        case "jira":
+            return pairedOptions(Array(tokens.dropFirst(2)), allowed: jiraOptions)
+                .map { JiraHostControlOperations.proposalOperations.contains(jiraOperation($0)) } == true
+        case "github":
+            return tokens[2] == GitHubReviewHostControlOperations.postReviewOption
+        default:
+            return false
+        }
+    }
+
+    private static let jiraOptions: Set<String> = [
+        "--operation", "--alias", "--issue-key", "--jql",
+        "--max-results", "--start-at", "--next-page-token", "--timeout-seconds",
+        "--arguments-file"
+    ]
+
+    private static func jiraOperation(_ options: [String: String]) -> String {
+        (options["--operation"] ?? "status")
+            .replacingOccurrences(of: "-", with: "_")
+            .lowercased()
+    }
+
     private static func allowsJira(_ arguments: [String]) -> Bool {
-        guard let options = pairedOptions(
-            arguments,
-            allowed: [
-                "--operation", "--alias", "--issue-key", "--jql",
-                "--max-results", "--start-at", "--next-page-token", "--timeout-seconds",
-                "--arguments-file"
-            ]
-        ) else {
+        guard let options = pairedOptions(arguments, allowed: jiraOptions) else {
             return false
         }
 
-        let operation = (options["--operation"] ?? "status")
-            .replacingOccurrences(of: "-", with: "_")
-            .lowercased()
+        let operation = jiraOperation(options)
 
         // Both lists come from the broker, as REDCap's does below. This policy,
         // the broker, and the `astra-host-control` parser have to agree on which
