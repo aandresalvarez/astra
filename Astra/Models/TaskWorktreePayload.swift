@@ -331,12 +331,28 @@ public enum TaskWorktreeBinding {
 
     /// Whether `worktreePath`'s registry entry holds per-worktree Git
     /// configuration, which `git config --worktree` writes there and a
-    /// removal deletes. Nil when the repository doesn't register the path.
-    public static func registeredWorktreeHasLocalConfig(repositoryPath: String, worktreePath: String) -> Bool? {
+    /// removal deletes. A file that can't be checked counts, since only a
+    /// confirmed missing one is absent. Nil when the repository doesn't
+    /// register the path.
+    public static func registeredWorktreeHasLocalConfig(
+        repositoryPath: String, worktreePath: String,
+        attributes: (String) throws -> [FileAttributeKey: Any] = { try FileManager.default.attributesOfItem(atPath: $0) }
+    ) -> Bool? {
         guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
         let config = registered.entry.appendingPathComponent("config.worktree")
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: config.path) else { return false }
-        return ((attributes[.size] as? NSNumber)?.intValue ?? 1) > 0
+        do {
+            return ((try attributes(config.path)[.size] as? NSNumber)?.intValue ?? 1) > 0
+        } catch {
+            return !isMissingFileError(error)
+        }
+    }
+
+    private static func isMissingFileError(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) { return true }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) { return true }
+        return (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingFileError) ?? false
     }
 
     /// Whether the registered worktree has refs of its own, such as
@@ -354,10 +370,7 @@ public enum TaskWorktreeBinding {
         do {
             _ = try fileManager.attributesOfItem(atPath: refs.path)
         } catch {
-            let nsError = error as NSError
-            let missing = (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError)
-                || (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError)
-            return !missing
+            return !isMissingFileError(error)
         }
         var unreadable = false
         guard let items = fileManager.enumerator(

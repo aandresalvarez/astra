@@ -1085,8 +1085,9 @@ enum TaskWorktreeService {
                 return TaskWorktreeDeletionResult(persisted: false, cleanup: nil)
             }
         }
-        // Records this attempt adds, which a failure below takes back: the
-        // deletion never happened, so they must not outlive it. Ones an
+        // Records this attempt adds, which a failure below, writing a later
+        // one or saving the deletion, takes back: the deletion never
+        // happened, so they must not outlive it. Ones an
         // earlier deletion left stay, as `record` never rewrites them.
         var added: [TaskWorktreeDiscard] = []
         for discard in discards {
@@ -1111,6 +1112,7 @@ enum TaskWorktreeService {
         let saved = persist(workspace, modelContext)
         guard saved else {
             modelContext.rollback()
+            for record in added { try? cleanupStore.remove(record) }
             for discard in discards {
                 AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: discard.taskID, fields: [
                     "worktree": discard.worktreePath,

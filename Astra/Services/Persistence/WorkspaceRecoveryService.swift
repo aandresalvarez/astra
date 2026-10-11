@@ -521,6 +521,7 @@ public enum WorkspaceRecoveryService {
         incompleteMarker: URL? = nil,
         excludingItemIdentities excludedIdentities: Set<String> = [],
         excludedByIdentity: @escaping @MainActor ([URL]) -> Void = { _ in },
+        itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {}
     ) -> Task<Bool, Never> {
@@ -560,11 +561,25 @@ public enum WorkspaceRecoveryService {
             }
             // A pending deletion's mirror whose workspace folder was moved is
             // still that deletion's: matched by item identity, it is left out
-            // and reported for settlement to remove.
-            let moved = excludedIdentities.isEmpty ? [] : unexcluded.filter {
-                WorkspaceFileLayout.itemIdentity(at: $0.path).map(excludedIdentities.contains) == true
+            // and reported for settlement to remove. One whose identity can't
+            // be read may be that mirror: it isn't imported, and recovery
+            // isn't trusted, so settlement waits for a launch that can tell.
+            var unidentified: [URL] = []
+            let moved = excludedIdentities.isEmpty ? [] : unexcluded.filter { config in
+                do {
+                    return try itemIdentity(config.path).map(excludedIdentities.contains) == true
+                } catch {
+                    unidentified.append(config)
+                    return false
+                }
             }
-            let candidates = unexcluded.filter { !moved.contains($0) }
+            if !unidentified.isEmpty {
+                AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "recover_workspaces", "reason": "mirror_identity_unreadable",
+                    "count": String(unidentified.count)
+                ], level: .error)
+            }
+            let candidates = unexcluded.filter { !moved.contains($0) && !unidentified.contains($0) }
             if !moved.isEmpty { excludedByIdentity(moved) }
             let loadedConfigs = await loadWorkspaceConfigs(candidates)
             guard !Task.isCancelled else { return false }
@@ -591,7 +606,7 @@ public enum WorkspaceRecoveryService {
                 afterImport()
             }
             // Owners and pins count only once the store holds them durably.
-            let trusted = scan.complete && loadedConfigs.count == candidates.count && recovered.durable
+            let trusted = scan.complete && unidentified.isEmpty && loadedConfigs.count == candidates.count && recovered.durable
             // A marker that can't be removed only costs a rescan next launch.
             if trusted, let incompleteMarker { try? FileManager.default.removeItem(at: incompleteMarker) }
             return trusted

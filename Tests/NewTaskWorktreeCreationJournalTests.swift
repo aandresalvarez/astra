@@ -196,6 +196,8 @@ struct NewTaskWorktreeCreationJournalTests {
         /// Only a hook linked to a script elsewhere, which a listing of
         /// regular files misses.
         case addedHookLink
+        /// A custom ref at a commit the remote holds, outside any branch or tag.
+        case customRef
         /// A visit to a commit the remote holds and a return to the recorded
         /// one, leaving only reflog history.
         case reflogVisit
@@ -299,6 +301,8 @@ struct NewTaskWorktreeCreationJournalTests {
             let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
             try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createSymbolicLink(atPath: hook.path, withDestinationPath: "/usr/bin/true")
+        case .customRef:
+            try fixture.git(["update-ref", "refs/keep/check", "HEAD"], at: worktree.appendingPathComponent("libs/a"))
         case .reflogVisit:
             let submodule = worktree.appendingPathComponent("libs/a")
             let recorded = try fixture.git(["rev-parse", "HEAD"], at: submodule).trimmingCharacters(in: .whitespacesAndNewlines)
