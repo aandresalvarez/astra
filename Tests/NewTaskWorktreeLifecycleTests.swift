@@ -252,7 +252,7 @@ struct NewTaskWorktreeLifecycleTests {
     }
 
     @Test("Workspace cascade deletion cleans only unexecuted, untouched draft worktrees",
-          arguments: ["unused", "dirty", "committed", "executed"])
+          arguments: ["unused", "dirty", "hiddenUntracked", "committed", "executed"])
     func workspaceDeletionCleansDrafts(state: String) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -266,6 +266,11 @@ struct NewTaskWorktreeLifecycleTests {
         switch state {
         case "dirty":
             try "unsaved work".write(to: checkout.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+        case "hiddenUntracked":
+            // Plain `git status` hides it, yet a non-forced removal deletes it.
+            try fixture.git(["config", "status.showUntrackedFiles", "no"], at: repository)
+            try "unsaved work".write(to: checkout.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+            #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
         case "committed":
             try fixture.commit("new.txt", contents: "saved work", message: "Task work", at: checkout)
         case "executed":
@@ -391,8 +396,8 @@ struct NewTaskWorktreeLifecycleTests {
 
         // A quit after the deletion was saved leaves the record; the next
         // launch finishes it. A record for a workspace still in the store was
-        // never saved and is dropped, and a mirror another workspace uses at
-        // the same path is kept.
+        // never saved; it settles without touching anything that workspace
+        // owns, and a mirror another workspace uses at the same path is kept.
         let interrupted = Workspace(name: "Interrupted", primaryPath: try folder("Interrupted"))
         let survivor = Workspace(name: "Survivor", primaryPath: try folder("Survivor"))
         let shared = Workspace(name: "Shared", primaryPath: try folder("Shared"))
@@ -601,8 +606,8 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pending().isEmpty)
     }
 
-    @Test("A saved deletion's cleanup is still owed after the same workspace is reimported at the same path")
-    func committedDeletionSurvivesSamePathReimport() throws {
+    @Test("A saved deletion's cleanup survives a reimport at the same folder, sparing what the reimport owns")
+    func deletionCleanupSurvivesSameFolderReimport() throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let container = try Fixture.container()
@@ -611,7 +616,8 @@ struct NewTaskWorktreeLifecycleTests {
         let folder = fixture.root.appendingPathComponent("Reused", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
-        // A saved deletion whose cleanup failed is marked committed.
+        // A saved deletion whose cleanup failed stays pending; no second
+        // write after the save has to succeed for it to stay owed.
         let workspace = Workspace(name: "Reused", primaryPath: folder.path)
         context.insert(workspace)
         try context.save()
@@ -627,11 +633,14 @@ struct NewTaskWorktreeLifecycleTests {
             workspaceDeletionCleanupStore: store
         )
         #expect(coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
-        #expect(store.pending().map(\.committed) == [true])
+        #expect(store.pending().count == 1)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mirrorFolder)
 
-        // The same workspace comes back at the same path before the retry;
-        // the credentials only the deleted copy had are still removed.
+        // The same workspace comes back, through an alias of the same folder,
+        // before the retry. Its mirror is spared; the credentials only the
+        // deleted copy had are still removed.
+        let alias = fixture.root.appendingPathComponent("Alias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: folder)
         let skill = Skill(name: "Dropped")
         let tempKeychain = AstraSecureKeychainTestSupport.tempKeychainPath()
         let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
@@ -649,33 +658,42 @@ struct NewTaskWorktreeLifecycleTests {
             try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
                 skill.environmentVariables = ["TOKEN": "secret"]
                 let owed = try #require(store.pending().first)
-                store.remove(owed)
-                try store.write(WorkspaceDeletionCleanupRecord(
-                    workspaceID: id, primaryPath: folder.path, connectors: owed.connectors,
-                    skills: owed.skills + [skill.keychainCleanup], committed: true
-                ))
-                let reimported = Workspace(name: "Reused", primaryPath: folder.path)
+                try store.write(owed.merging(WorkspaceDeletionCleanupRecord(
+                    workspaceID: id, primaryPath: folder.path, connectors: [], skills: [skill.keychainCleanup]
+                )))
+                let reimported = Workspace(name: "Reused", primaryPath: alias.path)
                 reimported.id = id
                 context.insert(reimported)
                 try context.save()
-                try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
-                let pending = try #require(store.pending().first)
-                #expect(WorkspaceDeletionCleanupService.deletionWasSaved(pending, workspaces: [reimported]))
-                // Uncommitted, the same stored workspace means it was never deleted.
-                let unsaved = WorkspaceDeletionCleanupRecord(
-                    workspaceID: id, primaryPath: folder.path, connectors: [], skills: []
-                )
-                #expect(!WorkspaceDeletionCleanupService.deletionWasSaved(unsaved, workspaces: [reimported]))
 
                 #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
                 #expect(store.pending().isEmpty)
-                // The reimport's own mirror is spared.
                 #expect(FileManager.default.fileExists(atPath: mirror))
                 if keychainAvailable {
                     #expect(!SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
                 }
             }
         }
+    }
+
+    @Test("Deletion cleanup removes only connector namespaces no live connector resolves to")
+    func deletionCleanupSparesSharedConnectorNamespaces() {
+        // A recreated connector shares the deleted one's stable endpoint
+        // namespace under a new ID.
+        let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+        let recreated = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+        let live = Set(KeychainSecretStore.connectorEntityIDs(for: recreated))
+        let stable = KeychainSecretStore.stableConnectorEntityID(for: deleted)
+        #expect(stable.map(live.contains) == true)
+        #expect(WorkspaceDeletionCleanupService.unownedNamespaces(of: deleted.keychainCleanup, liveNamespaces: live)
+            == [KeychainSecretStore.connectorEntityID(for: deleted.id)])
+        // With no live owner every namespace goes; with the same connector
+        // live, nothing does.
+        #expect(WorkspaceDeletionCleanupService.unownedNamespaces(of: deleted.keychainCleanup, liveNamespaces: [])
+            == Set(KeychainSecretStore.connectorEntityIDs(for: deleted)))
+        #expect(WorkspaceDeletionCleanupService.unownedNamespaces(
+            of: deleted.keychainCleanup, liveNamespaces: Set(KeychainSecretStore.connectorEntityIDs(for: deleted))
+        ).isEmpty)
     }
 
     @Test("A deletion retry that isn't saved puts back the cleanup an earlier saved deletion still owes")
@@ -702,7 +720,7 @@ struct NewTaskWorktreeLifecycleTests {
 
         let earlier = WorkspaceDeletionCleanupRecord(
             workspaceID: workspace.id, primaryPath: folder.path,
-            connectors: [Connector(name: "Earlier", serviceType: "jira").keychainCleanup], skills: [], committed: true
+            connectors: [Connector(name: "Earlier", serviceType: "jira").keychainCleanup], skills: []
         )
         try store.write(earlier)
         #expect(!coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)

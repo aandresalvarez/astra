@@ -803,18 +803,9 @@ final class TaskLifecycleCoordinator {
         // Cancellation exports mirrors, so they are removed only after it and
         // the deletion are saved. An unsaved deletion owes nothing new.
         if result.persisted {
-            // Marked committed first, so a reimport at the same path before a
-            // failed cleanup is retried doesn't read as an unsaved deletion.
-            let committed = cleanupRecord.markedCommitted
-            do {
-                try store.write(committed)
-            } catch {
-                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
-                    "operation": "delete_workspace", "reason": "deletion_cleanup_commit_failed",
-                    "error": error.localizedDescription
-                ], level: .error)
+            if WorkspaceDeletionCleanupService.settle(cleanupRecord, modelContext: modelContext) {
+                store.remove(cleanupRecord)
             }
-            if WorkspaceDeletionCleanupService.settle(committed, modelContext: modelContext) { store.remove(committed) }
         } else {
             restoreRecord()
             settleAfterUnsavedDeletion(ws.tasks)

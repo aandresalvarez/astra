@@ -815,16 +815,18 @@ public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
     public let isStanfordOutlookMail: Bool
 
     /// True when every credential namespace was cleared, so a caller with a
-    /// durable record can keep it for a retry otherwise.
+    /// durable record can keep it for a retry otherwise. Namespaces in
+    /// `sparing` are still used by a live connector and are left alone, as
+    /// is the Outlook registry entry when `keepRegistryEntry` is set.
     @discardableResult
-    public func run() -> Bool {
-        if isStanfordOutlookMail {
+    public func run(sparing: Set<String> = [], keepRegistryEntry: Bool = false) -> Bool {
+        if isStanfordOutlookMail, !keepRegistryEntry {
             OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: connectorID)
         }
         let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts(
             id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
             originPackageID: originPackageID, originComponentID: originComponentID
-        ))
+        ), sparing: sparing)
         AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
             "connector_id": connectorID.uuidString,
             "service_type": serviceType

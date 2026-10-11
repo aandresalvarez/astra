@@ -306,8 +306,9 @@ public enum KeychainService {
     /// True when every namespace was cleared; a missing item counts as
     /// cleared, so a retry is idempotent.
     @discardableResult
-    public static func deleteAll(facts: ConnectorSecretFacts) -> Bool {
-        let services = connectorServices(facts: facts)
+    public static func deleteAll(facts: ConnectorSecretFacts, sparing: Set<String> = []) -> Bool {
+        let services = connectorServices(facts: facts).filter { !sparing.contains($0) }
+        guard !services.isEmpty else { return true }
         let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
         if !deleted.contains(true) {
             AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [

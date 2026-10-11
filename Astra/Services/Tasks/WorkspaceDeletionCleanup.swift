@@ -15,48 +15,26 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     let primaryPath: String
     let connectors: [ConnectorKeychainCleanup]
     let skills: [SkillKeychainCleanup]
-    /// True once a deletion of this workspace was saved. Its cleanup is owed
-    /// from then on, even after the same workspace is reimported at the same
-    /// path; until then a stored workspace means the deletion never happened.
-    let committed: Bool
 
     init(
         workspaceID id: UUID, primaryPath path: String,
-        connectors connectorCleanups: [ConnectorKeychainCleanup], skills skillCleanups: [SkillKeychainCleanup],
-        committed isCommitted: Bool = false
+        connectors connectorCleanups: [ConnectorKeychainCleanup], skills skillCleanups: [SkillKeychainCleanup]
     ) {
         workspaceID = id
         primaryPath = path
         connectors = connectorCleanups
         skills = skillCleanups
-        committed = isCommitted
-    }
-
-    init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
-        primaryPath = try container.decode(String.self, forKey: .primaryPath)
-        connectors = try container.decode([ConnectorKeychainCleanup].self, forKey: .connectors)
-        skills = try container.decode([SkillKeychainCleanup].self, forKey: .skills)
-        committed = try container.decodeIfPresent(Bool.self, forKey: .committed) ?? false
     }
 
     /// Both records' credentials, so a cleanup still pending for the same
-    /// deletion is never dropped by a later one. Committed if either was.
+    /// deletion is never dropped by a later one.
     func merging(_ other: WorkspaceDeletionCleanupRecord) -> WorkspaceDeletionCleanupRecord {
         WorkspaceDeletionCleanupRecord(
             workspaceID: workspaceID, primaryPath: primaryPath,
             // By every namespace-defining fact, not only the connector ID: a
             // reimported connector can keep its ID under a new base URL.
             connectors: connectors + other.connectors.filter { !connectors.contains($0) },
-            skills: skills + other.skills.filter { new in !skills.contains { $0.skillID == new.skillID } },
-            committed: committed || other.committed
-        )
-    }
-
-    var markedCommitted: WorkspaceDeletionCleanupRecord {
-        WorkspaceDeletionCleanupRecord(
-            workspaceID: workspaceID, primaryPath: primaryPath, connectors: connectors, skills: skills, committed: true
+            skills: skills + other.skills.filter { new in !skills.contains { $0.skillID == new.skillID } }
         )
     }
 
@@ -67,7 +45,6 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         connectors = workspace.connectors.map(\.keychainCleanup)
             + workspace.skills.flatMap { $0.connectors.map(\.keychainCleanup) }
         skills = workspace.skills.map(\.keychainCleanup)
-        committed = false
     }
 }
 
@@ -166,22 +143,27 @@ struct WorkspaceDeletionCleanupStore: Sendable {
 
 @MainActor
 enum WorkspaceDeletionCleanupService {
-    /// Removes what `record` names once its workspace is durably gone. Mirrors
-    /// go before credentials, so a quit between them leaves only unreachable
-    /// Keychain items. Anything a surviving workspace still uses is spared: a
-    /// mirror at a primary path another workspace has, and the Keychain items
-    /// of a connector or skill whose ID survives, as Duplicate imports keep
-    /// IDs. Returns false, keeping the record, when the store can't be read.
+    /// Removes what `record` names that nothing stored still owns. Mirrors go
+    /// before credentials, so a quit between them leaves only unreachable
+    /// Keychain items. Ownership is read from the committed store, never
+    /// from whether this deletion was saved: a mirror at a primary path a
+    /// stored workspace resolves to is spared, as is every Keychain
+    /// namespace a stored connector resolves to and the items of a skill
+    /// whose ID survives. So a deletion that was never saved, or a workspace
+    /// reimported at the same path before a retry, keeps everything it
+    /// uses, and only what no one owns is removed. Returns false, keeping
+    /// the record, when the store can't be read or anything owed remains.
     @discardableResult
     static func settle(_ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext) -> Bool {
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
               let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return false }
-        guard deletionWasSaved(record, workspaces: workspaces) else { return true }
-        let path = WorkspacePathPresentation.standardizedPath(record.primaryPath)
+        // Resolved, so an alias such as /tmp for /private/tmp or a symlinked
+        // folder still names the same live mirror.
+        let path = WorkspacePathPresentation.resolvedPath(record.primaryPath)
         // A mirror left behind would let recovery reimport the workspace, so
         // the record, and the credentials it needs, are kept for a retry.
-        if !workspaces.contains(where: { WorkspacePathPresentation.standardizedPath($0.primaryPath) == path }),
+        if !workspaces.contains(where: { WorkspacePathPresentation.resolvedPath($0.primaryPath) == path }),
            !removeMirrors(for: record.primaryPath) {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "delete_workspace", "reason": "mirror_removal_failed"
@@ -189,12 +171,17 @@ enum WorkspaceDeletionCleanupService {
             return false
         }
         let liveConnectors = Set(connectors.map(\.id))
+        // A recreated connector can share a stable endpoint or package
+        // namespace under a new ID, so ownership is per namespace.
+        let liveNamespaces = Set(connectors.flatMap { KeychainSecretStore.connectorEntityIDs(for: $0) })
         let liveSkills = Set(skills.map(\.id))
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry.
         var cleared = true
-        for connector in record.connectors where !liveConnectors.contains(connector.connectorID) {
-            cleared = connector.run() && cleared
+        for connector in record.connectors where !unownedNamespaces(of: connector, liveNamespaces: liveNamespaces).isEmpty {
+            cleared = connector.run(
+                sparing: liveNamespaces, keepRegistryEntry: liveConnectors.contains(connector.connectorID)
+            ) && cleared
         }
         for skill in record.skills where !liveSkills.contains(skill.skillID) {
             cleared = skill.run() && cleared
@@ -207,17 +194,13 @@ enum WorkspaceDeletionCleanupService {
         return cleared
     }
 
-    /// Whether `record`'s cleanup is owed. An uncommitted record's deletion
-    /// was never saved when that same workspace, by ID and path, is still
-    /// stored; an import that reused the ID elsewhere doesn't make its
-    /// cleanup unnecessary. A committed one is owed even then: the stored
-    /// workspace is a reimport, whose mirror and live connectors and skills
-    /// `settle` spares.
-    static func deletionWasSaved(_ record: WorkspaceDeletionCleanupRecord, workspaces: [Workspace]) -> Bool {
-        let resolvedRecordPath = WorkspacePathPresentation.resolvedPath(record.primaryPath)
-        return record.committed || !workspaces.contains {
-            $0.id == record.workspaceID && WorkspacePathPresentation.resolvedPath($0.primaryPath) == resolvedRecordPath
-        }
+    /// The Keychain namespaces `connector` resolves to that no live
+    /// connector uses, which are the only ones its cleanup removes.
+    static func unownedNamespaces(of connector: ConnectorKeychainCleanup, liveNamespaces: Set<String>) -> Set<String> {
+        Set(KeychainSecretStore.connectorEntityIDs(
+            id: connector.connectorID, serviceType: connector.serviceType, baseURL: connector.baseURL,
+            originPackageID: connector.originPackageID, originComponentID: connector.originComponentID
+        )).subtracting(liveNamespaces)
     }
 
     /// Settles deletions a quit interrupted, reading committed state through

@@ -95,7 +95,8 @@ public protocol ConnectorSecretPersisting: Sendable {
     static func loadCredential(key: String, facts: ConnectorSecretFacts) -> String?
     static func deleteAllCredentials(facts: ConnectorSecretFacts)
     /// A requirement, so the registered persistence's real result is used.
-    static func deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts) -> Bool
+    /// Namespaces in `sparing` are kept.
+    static func deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts, sparing: Set<String>) -> Bool
     /// Matches `KeychainService.synchronizeConnectorCredentialNamespaces(connector:)`:
     /// for every key with a non-empty value in one namespace, backfill it
     /// into every other namespace `facts` resolves to.
@@ -104,9 +105,10 @@ public protocol ConnectorSecretPersisting: Sendable {
 
 public extension ConnectorSecretPersisting {
     /// `deleteAllCredentials` reporting whether every namespace was cleared.
-    /// Defaulted to success so test fakes keep compiling.
-    static func deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts) -> Bool {
-        deleteAllCredentials(facts: facts)
+    /// Defaulted to success so test fakes keep compiling; a fake can't
+    /// delete selectively, so it deletes nothing while anything is spared.
+    static func deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts, sparing: Set<String>) -> Bool {
+        if sparing.isEmpty { deleteAllCredentials(facts: facts) }
         return true
     }
 

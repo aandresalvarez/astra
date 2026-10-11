@@ -225,11 +225,14 @@ extension GitService {
     }
 
     /// The same status `getStatusFiles` reads, but a failure is nil rather
-    /// than an empty, clean-looking list.
+    /// than an empty, clean-looking list. Untracked files are always listed:
+    /// `status.showUntrackedFiles=no` would hide them, yet a non-forced
+    /// `git worktree remove` deletes them.
     func worktreeIsClean(at repoPath: String) async -> Bool? {
         do {
             let output = try await runGit(
-                at: repoPath, arguments: ["--no-optional-locks", "status", "--porcelain=v1", "-z"],
+                at: repoPath,
+                arguments: ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all", "-z"],
                 failureLogLevel: .warning
             )
             return output.isEmpty
@@ -290,7 +293,7 @@ extension GitService {
     /// would destroy: changes, untracked or ignored files, and commits that
     /// no remote-tracking branch holds.
     static let submoduleLocalWorkScript = [
-        "git status --porcelain --ignore-submodules=none",
+        "git status --porcelain --untracked-files=all --ignore-submodules=none",
         "git ls-files --others --ignored --exclude-standard --directory --no-empty-directory",
         "git rev-list -n 1 --all --reflog --not --remotes"
     ].joined(separator: " && ")
@@ -327,7 +330,7 @@ extension GitService {
             ).split(whereSeparator: \.isNewline).map { Self.repositoryKey(String($0)) }
             guard (stored ?? []).isSubset(of: checkedOut) else { return .changed }
             let changes = try await runGit(
-                at: worktreePath, arguments: ["status", "--porcelain", "--ignore-submodules=none"],
+                at: worktreePath, arguments: ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"],
                 failureLogLevel: .warning
             )
             guard changes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .changed }

@@ -358,6 +358,17 @@ enum ValidationService {
         return env
     }
 
+    static let unverifiableWorktreeMessage =
+        "This task's worktree is missing, replaced, or no longer verifiable, so the validation command didn't run."
+
+    /// Whether the task's worktree binding still verifies. It is checked
+    /// again right before every validation command, since the worktree can
+    /// be replaced after the run launched while its pin stays in place.
+    static func worktreeIsVerifiable(for task: AgentTask) -> Bool {
+        if case .invalid = TaskWorktreeBinding.state(of: task) { return false }
+        return true
+    }
+
     /// Run tests in the task's workspace using the configured test command.
     static func runTests(
         task: AgentTask,
@@ -381,6 +392,12 @@ enum ValidationService {
             "command_length": String(command.count),
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
+        guard worktreeIsVerifiable(for: task) else {
+            AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id, fields: [
+                "reason": "worktree_unverifiable"
+            ], level: .error)
+            return .error(unverifiableWorktreeMessage)
+        }
 
         let result = await commandRunner.run(
             command: command,
@@ -787,6 +804,16 @@ enum ValidationService {
                 summary: "Command assertion is outside ASTRA's validation command allowlist.",
                 command: command,
                 reason: "command_not_allowed"
+            )
+        }
+        guard worktreeIsVerifiable(for: task) else {
+            return assertionPayload(
+                assertion: assertion,
+                planID: planID,
+                status: "failed",
+                summary: unverifiableWorktreeMessage,
+                command: command,
+                reason: "worktree_unverifiable"
             )
         }
 

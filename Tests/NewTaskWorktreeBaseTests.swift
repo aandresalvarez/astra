@@ -1128,6 +1128,47 @@ struct NewTaskWorktreeBaseTests {
         #expect(panel.unavailableWorktreePath == nil)
     }
 
+    @Test("Validation commands don't run in a worktree replaced after launch")
+    func validationRechecksWorktreeBinding() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        let task = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(task, repository, context: context, fixture: fixture)
+        let path = try #require(task.executionRootPath)
+        task.testCommand = "swift test --filter Focused"
+        let run = TaskRun(task: task)
+        context.insert(run)
+        let plan = TaskPlanPayload(
+            title: "Proof", goal: "Run a proof command",
+            steps: [TaskPlanPayloadStep(id: "verify", title: "Verify")],
+            validationContract: TaskValidationContract(assertions: [
+                TaskValidationAssertion(id: "command", description: "Command exits zero", method: .command,
+                                        command: "swift test --filter Focused")
+            ])
+        )
+        let runner = CountingValidationCommandRunner()
+        #expect(ValidationService.worktreeIsVerifiable(for: task))
+
+        // The folder is replaced while its pin stays in place.
+        try FileManager.default.removeItem(atPath: path)
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        #expect(!ValidationService.worktreeIsVerifiable(for: task))
+        guard case .error(let message) = await ValidationService.runTests(task: task, commandRunner: runner) else {
+            Issue.record("Expected runTests to refuse an unverifiable worktree")
+            return
+        }
+        #expect(message == ValidationService.unverifiableWorktreeMessage)
+        let contract = await ValidationService.runContract(
+            task: task, plan: plan, run: run, modelContext: context, commandRunner: runner
+        )
+        #expect(contract.outcome == .failed)
+        #expect(await runner.count() == 0)
+    }
+
     @Test("Addressing PR comments from a task's worktree keeps that task's binding")
     func pullRequestCommentDraftKeepsWorktreeBinding() async throws {
         let fixture = try Fixture()
@@ -1442,4 +1483,15 @@ struct NewTaskWorktreeBaseTests {
 @MainActor
 private enum PanelRefreshLifetime {
     static var retained: [Any] = []
+}
+
+private actor CountingValidationCommandRunner: ValidationCommandRunning {
+    private var calls = 0
+
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult {
+        calls += 1
+        return ValidationCommandResult(exitCode: 0, stdout: "", stderr: "")
+    }
+
+    func count() -> Int { calls }
 }
