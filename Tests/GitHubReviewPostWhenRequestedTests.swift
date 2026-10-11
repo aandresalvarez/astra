@@ -188,6 +188,8 @@ struct GitHubReviewPostWhenRequestedTests {
             // A condition stated first is still a condition.
             "When I approve, post the review on \(url)", "If the tests pass, post the review on \(url)",
             "Once CI is green, then post the review on \(url)",
+            // Between the verb and the review, where only the whole-message reading sees it.
+            "Post later the review on \(url)", "Post when ready the review on \(url)", "Post not yet the review on \(url)",
             // A retraction in the same message, which the latest-message rule cannot see.
             "Post the review on \(url). Actually, don't.", "Post the review on \(url). Never mind.",
             "Post the review on \(url) — no, scratch that", "Post the review on \(url); stop, leave it",
