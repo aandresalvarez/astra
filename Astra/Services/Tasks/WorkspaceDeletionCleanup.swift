@@ -201,9 +201,18 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         var mirrors = Set<String>()
         for url in urls where url.pathExtension == "json" {
             guard let record = try? read(url) else { return nil }
-            // Resolved, so the same mirror reached through a symlink or an
-            // alias such as /tmp and /private/tmp still matches.
-            for file in record.mirrorFiles { mirrors.insert(WorkspacePathPresentation.resolvedPath(file)) }
+            // The pinned path itself, never re-resolved through its folders:
+            // a folder replaced by a link since would turn it into another
+            // workspace's mirror and keep that survivor out of recovery. Only
+            // while its folder is unchanged is a link at the file itself,
+            // which is the deleted workspace's own, followed too.
+            for file in record.mirrorFiles {
+                mirrors.insert(file)
+                let folder = (file as NSString).deletingLastPathComponent
+                if WorkspacePathPresentation.resolvedPath(folder) == folder {
+                    mirrors.insert(WorkspacePathPresentation.resolvedPath(file))
+                }
+            }
         }
         return mirrors
     }

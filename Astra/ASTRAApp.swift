@@ -889,9 +889,10 @@ public struct ASTRAApp: App {
 
         // A workspace deletion a quit interrupted keeps its mirror out of the
         // recovery below and is settled once that recovery has run, so the
-        // workspaces it rebuilds count as owners of shared credentials. An
-        // unreadable record stops recovery, and settlement, for this launch,
-        // since what it guards is unknown.
+        // workspaces it rebuilds count as owners of shared credentials. A
+        // launch that skips recovery, or meets an unreadable record, settles
+        // nothing: the owners it would have rebuilt are unknown, so the
+        // records wait for a launch that recovers.
         let unsettledDeletionMirrors = WorkspaceDeletionCleanupStore().pendingMirrorPaths()
         if unsettledDeletionMirrors == nil {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -911,8 +912,6 @@ public struct ASTRAApp: App {
                 await recovery.value
                 WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
             }
-        } else if unsettledDeletionMirrors != nil {
-            WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
         // (runtime.loadPluginCatalog()), which runs synchronously in
