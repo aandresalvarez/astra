@@ -458,6 +458,32 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("A hidden symlink whose target only lost a trailing newline counts as changed")
+    func hiddenLinkNewlineChangeCounts() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try FileManager.default.createSymbolicLink(
+            atPath: repository.appendingPathComponent("link").path, withDestinationPath: "Sources/file.txt\n"
+        )
+        try fixture.git(["add", "link"], at: repository)
+        try fixture.git([
+            "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Add link"
+        ], at: repository)
+        let store = try Fixture.container()
+        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        let link = checkout.appendingPathComponent("link")
+        try fixture.git(["update-index", "--assume-unchanged", "link"], at: checkout)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "Sources/file.txt")
+        #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+    }
+
     @Test("A hidden entry whose executable bit or type changed counts as changed")
     func hiddenModeAndTypeChangesCount() async throws {
         let fixture = try Fixture()

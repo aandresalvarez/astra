@@ -440,6 +440,52 @@ struct NewTaskWorktreeIsolationTests {
         #expect(moved.access == .readOnly)
     }
 
+    @Test("A draft retargeted to a sibling checkout claims its source read-only and moves a saved workdir mount aside")
+    func retargetedDraftClaimsSourceAndRelocatesWorkdirMount() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: source.path)
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        _ = try await prepare(task, source, context: store.mainContext, fixture: fixture)
+        let sibling = fixture.root.appendingPathComponent("Sibling", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "sibling", sibling.path], at: source)
+        #expect(TaskCodeLocationPin.set(sibling.path, workspace: workspace, task: task))
+        guard case .retargeted = TaskWorktreeBinding.state(of: task) else {
+            Issue.record("Expected the draft to be retargeted")
+            return
+        }
+
+        // Admission: a writer of the source waits for this reader.
+        #expect(TaskExecutionResourceClaimResolver.readOnlyWorkspaceKeys(for: task).map(WorkspacePathPresentation.resolvedPath)
+            .contains(WorkspacePathPresentation.resolvedPath(source.path)))
+
+        // Docker: the saved mount of the source at the working directory
+        // gives way to the sibling, and stays readable only.
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [ExecutionEnvironmentMount(hostPath: source.path, containerPath: "/workspace", access: .readWrite, role: .workspace)]
+        )
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: sibling.path, environment: environment, task: task)
+        let containerPaths = mounts.map(\.containerPath)
+        #expect(Set(containerPaths).count == containerPaths.count)
+        #expect(mounts.first { $0.containerPath == "/workspace" }.map { WorkspacePathPresentation.standardizedPath($0.hostPath) }
+            == WorkspacePathPresentation.standardizedPath(sibling.path))
+        #expect(mounts.filter { WorkspacePathPresentation.standardizedPath($0.hostPath) == WorkspacePathPresentation.standardizedPath(source.path) }
+            .allSatisfy { $0.access == .readOnly })
+
+        // Retargeted back to the source, its saved mount isn't left aside.
+        #expect(TaskCodeLocationPin.set(source.path, workspace: workspace, task: task))
+        let back = DockerExecutionPlanner.mountPlan(currentDirectory: source.path, environment: environment, task: task)
+        let backPaths = back.map(\.containerPath)
+        #expect(Set(backPaths).count == backPaths.count)
+        let workdir = try #require(back.first { $0.containerPath == "/workspace" })
+        #expect(WorkspacePathPresentation.standardizedPath(workdir.hostPath) == WorkspacePathPresentation.standardizedPath(source.path))
+        #expect(workdir.access == .readWrite)
+    }
+
     @Test("Docker mounts a task worktree and its Git metadata without writable source checkout aliases")
     func dockerWorktreeMountsPreserveIsolation() async throws {
         let fixture = try Fixture()

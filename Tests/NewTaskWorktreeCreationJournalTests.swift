@@ -181,6 +181,9 @@ struct NewTaskWorktreeCreationJournalTests {
         /// An edit to a nested submodule's file marked assume-unchanged, which
         /// every status and the local-work script trust the index for.
         case indexHiddenEdit
+        /// A submodule checked out at another commit its remote holds, with
+        /// its gitlink marked assume-unchanged so no status shows it.
+        case hiddenGitlinkMove
     }
 
     @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
@@ -227,6 +230,13 @@ struct NewTaskWorktreeCreationJournalTests {
             try fixture.git(["checkout", "--quiet", "--detach", recorded], at: nested)
         case .deinitialized:
             try fixture.git(["submodule", "deinit", "--quiet", "libs/a"], at: worktree)
+        case .hiddenGitlinkMove:
+            let library = fixture.root.appendingPathComponent("LibA")
+            try fixture.commit("Sources/later.txt", contents: "later", message: "Later", at: library)
+            let submodule = worktree.appendingPathComponent("libs/a")
+            try fixture.git(["-c", "protocol.file.allow=always", "fetch", "--quiet", "origin"], at: submodule)
+            try fixture.git(["checkout", "--quiet", "--detach", "origin/main"], at: submodule)
+            try fixture.git(["update-index", "--assume-unchanged", "libs/a"], at: worktree)
         case .indexHiddenEdit:
             let nested = worktree.appendingPathComponent("libs/a/deps/nested")
             let file = try #require(try fixture.git(["ls-files"], at: nested).split(whereSeparator: \.isNewline).first.map(String.init))

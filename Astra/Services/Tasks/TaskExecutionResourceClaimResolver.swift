@@ -229,10 +229,11 @@ enum TaskExecutionResourceClaimResolver {
     ///
     /// Tasks without a prepared worktree keep their read-only folders
     /// unclaimed, so sibling linked worktrees inside a configured folder
-    /// still run together.
+    /// still run together. A draft retargeted off its prepared worktree
+    /// still reads its source folders, so it claims them too.
     static func readOnlyWorkspaceKeys(for task: AgentTask) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
-        guard access.worktreeBinding != nil else { return [] }
+        guard access.runsInPreparedCheckout else { return [] }
         let writable = Set(workspaceKeys(for: task))
         let paths = access.runtimeReadOnlyWorkspacePaths
             + access.runtimeWorktreeSourceAncestorPaths

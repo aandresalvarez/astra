@@ -554,9 +554,15 @@ enum DockerExecutionPlanner {
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
         let taskAccess = TaskWorkspaceAccess(task: task)
-        if let binding = taskAccess.worktreeBinding {
-            let source = ExecutionSandbox.canonicalize(binding.repositoryPath)
-                ?? WorkspacePathPresentation.standardizedPath(binding.repositoryPath)
+        // A bound worktree and a draft retargeted to another verified
+        // checkout both mount that checkout at the working directory, and
+        // both keep their source checkouts read-only.
+        if taskAccess.runsInPreparedCheckout {
+            let sources = taskAccess.protectedSourceCheckouts.map {
+                ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
+            }
+            let checkout = ExecutionSandbox.canonicalize(currentDirectory)
+                ?? WorkspacePathPresentation.standardizedPath(currentDirectory)
             let writableNestedRepositories = Set(taskAccess.runtimeWritablePaths.map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
             })
@@ -573,13 +579,21 @@ enum DockerExecutionPlanner {
                 guard mount.role != .credential && mount.role != .taskFolder else { return mount }
                 let host = ExecutionSandbox.canonicalize(mount.hostPath)
                     ?? WorkspacePathPresentation.standardizedPath(mount.hostPath)
-                guard host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/") else {
+                // A saved mount of the checkout itself, as a draft retargeted
+                // back to its configured repository has, is dropped: the
+                // checkout is mounted at the working directory below, and a
+                // relocated copy would take its host path's only slot.
+                if host == checkout { return nil }
+                let touchesSource = sources.contains { source in
+                    host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/")
+                }
+                guard touchesSource else {
                     guard mount.containerPath == environment.containerWorkingDirectory else { return mount }
                     return ExecutionEnvironmentMount(
                         hostPath: mount.hostPath, containerPath: relocatedWorkdir, access: mount.access, role: mount.role
                     )
                 }
-                if host.hasPrefix(source + "/"), writableNestedRepositories.contains(host) {
+                if sources.contains(where: { host.hasPrefix($0 + "/") }), writableNestedRepositories.contains(host) {
                     return mount
                 }
                 // A saved workspace mount cannot compete with the worktree
