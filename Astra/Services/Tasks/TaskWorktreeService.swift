@@ -904,6 +904,9 @@ enum TaskWorktreeService {
         if TaskWorktreeBinding.registeredWorktreeHasLocalConfig(repositoryPath: repository, worktreePath: path) == true {
             return kept("worktree_config")
         }
+        if TaskWorktreeBinding.registeredWorktreeHasOwnRefs(repositoryPath: repository, worktreePath: path) == true {
+            return kept("worktree_refs")
+        }
         // A tip that can't be read is retried, never taken as a missing branch.
         let commit: String?
         switch await git.localBranchTip(discard.branch, at: repository) {
@@ -1082,9 +1085,15 @@ enum TaskWorktreeService {
                 return TaskWorktreeDeletionResult(persisted: false, cleanup: nil)
             }
         }
+        // Records this attempt adds, which a failure below takes back: the
+        // deletion never happened, so they must not outlive it. Ones an
+        // earlier deletion left stay, as `record` never rewrites them.
+        var added: [TaskWorktreeDiscard] = []
         for discard in discards {
             do {
+                let existed = FileManager.default.fileExists(atPath: cleanupStore.recordURL(for: discard).path)
                 try cleanupStore.record(discard)
+                if !existed { added.append(discard) }
                 AppLogger.breadcrumb(action: "task_worktree_cleanup_requested", category: "Git", taskID: discard.taskID, fields: [
                     "worktree": discard.worktreePath,
                     "branch": discard.branch
@@ -1094,6 +1103,7 @@ enum TaskWorktreeService {
                     "reason": "worktree_cleanup_intent_save_failed",
                     "error": error.localizedDescription
                 ], level: .error)
+                for record in added { try? cleanupStore.remove(record) }
                 return TaskWorktreeDeletionResult(persisted: false, cleanup: nil)
             }
         }

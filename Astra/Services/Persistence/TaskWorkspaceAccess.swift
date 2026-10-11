@@ -170,6 +170,28 @@ public struct TaskWorkspaceAccess {
         }
     }
 
+    /// What Git in the task's checkout writes inside the shared Git
+    /// directory: objects, refs, reflogs, a reftable, and the checkout's own
+    /// registry entry, which holds its index and HEAD. The rest stays
+    /// read-only: the source checkout's index and HEAD, sibling worktrees'
+    /// entries, and the shared config and hooks, so a run can neither
+    /// restage the source checkout nor plant configuration Git runs there.
+    public var runtimeWorktreeGitWritableMetadataPaths: [String] {
+        let checkout: String
+        switch worktreeBindingState {
+        case .bound(let binding, _, _): checkout = binding.worktreePath
+        case .retargeted(let pinned, _): checkout = pinned
+        case .none, .invalid: return []
+        }
+        guard let common = runtimeWorktreeGitMetadataPaths.first,
+              let entry = TaskWorktreeBinding.registeredAdminEntry(checkout: checkout, commonDirectory: common)
+        else { return [] }
+        let shared = ["objects", "refs", "logs", "reftable"]
+            .map { (common as NSString).appendingPathComponent($0) }
+            .filter { fileSystem.directoryExists(atPath: $0) }
+        return shared + [entry]
+    }
+
     /// The `task.worktree.prepared` event that binds the task to its pinned
     /// worktree. Nil for legacy pins, retargeted drafts, and unreadable
     /// bindings.

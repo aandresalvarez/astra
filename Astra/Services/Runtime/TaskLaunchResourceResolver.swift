@@ -350,13 +350,27 @@ enum TaskLaunchResourceResolver {
                 exists: true
             ))
         }
+        // The shared Git directory is read; only what Git in this checkout
+        // writes there is writable, never the source checkout's index.
         for path in access.runtimeWorktreeGitMetadataPaths {
+            guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
+            grants.append(RuntimePathGrant(
+                path: normalized,
+                access: .read,
+                source: .workspace,
+                reason: "Git metadata shared by this task's worktree and its source repository.",
+                sensitivity: .normal,
+                lifetime: .task,
+                exists: true
+            ))
+        }
+        for path in access.runtimeWorktreeGitWritableMetadataPaths {
             guard let normalized = existingPath(path, fileManager: fileManager) else { continue }
             grants.append(RuntimePathGrant(
                 path: normalized,
                 access: workspaceAccess == .shared ? .read : .readWrite,
                 source: .workspace,
-                reason: "Git metadata shared by this task's worktree and its source repository.",
+                reason: "Git objects, refs, and this worktree's own index in its shared Git directory.",
                 sensitivity: .normal,
                 lifetime: .task,
                 exists: true

@@ -236,6 +236,35 @@ struct NewTaskWorktreeCleanupTests {
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
     }
 
+    @Test("A cleanup intent that can't be written takes back the ones this deletion already wrote")
+    func failedIntentRollsBackEarlierIntents() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        // A second worktree the draft owns, whose slot already holds a record
+        // `record` refuses to overwrite.
+        let second = TaskWorktreeDiscard(
+            taskID: discard.taskID, repositoryPath: discard.repositoryPath, worktreePath: discard.worktreePath + "-second",
+            branch: discard.branch + "-second", baseCommit: discard.baseCommit
+        )
+        let blocking = fixture.cleanupStore.recordURL(for: second)
+        try FileManager.default.createDirectory(at: blocking.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not a record".utf8).write(to: blocking)
+
+        let failed = TaskWorktreeService.saveDeletionThenDiscard(
+            [discard, second], workspace: draft.workspace, modelContext: context, resourceQueue: fixture.resourceQueue,
+            cleanupStore: fixture.cleanupStore, delete: { context.delete(draft) }, persist: { _, _ in true }
+        )
+        #expect(!failed.persisted)
+        #expect(!draft.isDeleted)
+        #expect(!FileManager.default.fileExists(atPath: fixture.cleanupStore.recordURL(for: discard).path))
+        // What was there before is left as it was.
+        #expect(try Data(contentsOf: blocking) == Data("not a record".utf8))
+    }
+
     @Test("An unsaved deletion never removes a surviving draft's checkout on restart")
     func failedDeletionSaveKeepsCheckoutOnRestart() async throws {
         let fixture = try Fixture()
@@ -624,6 +653,34 @@ struct NewTaskWorktreeCleanupTests {
             discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
         ) == .kept("worktree_config"))
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
+    @Test("A per-worktree ref keeps an otherwise untouched worktree")
+    func worktreeRefKeepsWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        // Git keeps it in the registry entry a removal deletes, and no status,
+        // branch tip, or checked reflog shows it.
+        try fixture.git(["update-ref", "refs/worktree/keep", "HEAD"], at: checkout)
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("worktree_refs"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+
+        // Deleted again, it leaves only empty folders, and the worktree goes.
+        try fixture.git(["update-ref", "-d", "refs/worktree/keep"], at: checkout)
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .removed)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
     }
 
     @Test("A removal Git refuses takes back the removal mark")
