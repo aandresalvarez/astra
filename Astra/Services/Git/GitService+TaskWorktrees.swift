@@ -366,7 +366,18 @@ extension GitService {
                 arguments: ["submodule", "foreach", "--quiet", "--recursive", Self.submoduleLocalWorkScript],
                 failureLogLevel: .warning
             )
-            return localWork.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .unchanged : .changed
+            guard localWork.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .changed }
+            // Status trusts the index in a submodule too, so an edit to a file
+            // marked assume-unchanged or skip-worktree there is invisible to
+            // all of the above, yet a forced removal deletes it.
+            let populatedSubmodules = try await runGit(
+                at: worktreePath, arguments: ["submodule", "foreach", "--quiet", "--recursive", "pwd"],
+                failureLogLevel: .warning
+            ).split(whereSeparator: \.isNewline).map(String.init)
+            for submodule in populatedSubmodules where await indexHiddenEntriesChanged(at: submodule) {
+                return .changed
+            }
+            return .unchanged
         } catch {
             return .unknown
         }
