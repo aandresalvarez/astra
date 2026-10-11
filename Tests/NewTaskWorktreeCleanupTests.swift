@@ -605,6 +605,26 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("Per-worktree Git configuration keeps an otherwise untouched worktree")
+    func worktreeConfigKeepsWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        try fixture.git(["config", "extensions.worktreeConfig", "true"], at: repository)
+        try fixture.git(["config", "--worktree", "user.name", "Worktree Only"], at: checkout)
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("worktree_config"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
     @Test("A removal Git refuses takes back the removal mark")
     func refusedRemovalClearsMark() async throws {
         let fixture = try Fixture()

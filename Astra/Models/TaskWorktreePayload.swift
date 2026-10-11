@@ -319,6 +319,16 @@ public enum TaskWorktreeBinding {
         return (identity, lockReason, unreadable)
     }
 
+    /// Whether `worktreePath`'s registry entry holds per-worktree Git
+    /// configuration, which `git config --worktree` writes there and a
+    /// removal deletes. Nil when the repository doesn't register the path.
+    public static func registeredWorktreeHasLocalConfig(repositoryPath: String, worktreePath: String) -> Bool? {
+        guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
+        let config = registered.entry.appendingPathComponent("config.worktree")
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: config.path) else { return false }
+        return ((attributes[.size] as? NSNumber)?.intValue ?? 1) > 0
+    }
+
     /// Marks the worktree `payload` names, just created, with its identity.
     public static func recordIdentity(of payload: TaskWorktreePayload) throws {
         guard let identity = payload.identity,

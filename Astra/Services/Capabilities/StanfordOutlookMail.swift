@@ -479,7 +479,21 @@ enum StanfordOutlookMailRegistry {
 
     static func upsert(connector: Connector) {
         guard connector.isStanfordOutlookMail else { return }
-        var current = entries().filter { $0.connectorID != connector.id.uuidString }
+        // A registry that exists but can't be read is never rewritten with
+        // only this account: the others it holds would be lost.
+        let existing: [Entry]
+        if (try? FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)) != nil {
+            guard let read = readEntries() else {
+                AppLogger.audit(.connectorTested, category: "Mail", fields: [
+                    "result": "registry_unreadable_upsert_skipped"
+                ], level: .warning)
+                return
+            }
+            existing = read
+        } else {
+            existing = []
+        }
+        var current = existing.filter { $0.connectorID != connector.id.uuidString }
         current.append(Entry(
             connectorID: connector.id.uuidString,
             name: connector.name,
@@ -513,14 +527,25 @@ enum StanfordOutlookMailRegistry {
     /// is a link, the file it resolves to. Writing the link's target keeps
     /// the link and updates what every reader of it sees, rather than
     /// replacing the link with a file while the old entries stay behind it.
-    private static var registryWriteURL: URL {
-        StanfordOutlookMail.registryURL.resolvingSymlinksInPath()
+    /// Nil when that file lies outside the registry's own managed folder,
+    /// the same boundary the broker reads within, so a link can never make
+    /// ASTRA overwrite an unrelated file.
+    private static var registryWriteURL: URL? {
+        let target = StanfordOutlookMail.registryURL.resolvingSymlinksInPath()
+        let root = StanfordOutlookMail.registryURL.deletingLastPathComponent().resolvingSymlinksInPath().path
+        let folder = target.deletingLastPathComponent().path
+        return folder == root || folder.hasPrefix(root + "/") ? target : nil
     }
 
     @discardableResult
     private static func save(_ entries: [Entry]) -> Bool {
+        guard let target = registryWriteURL else {
+            AppLogger.audit(.connectorTested, category: "Mail", fields: [
+                "result": "registry_target_outside_managed_folder"
+            ], level: .error)
+            return false
+        }
         do {
-            let target = registryWriteURL
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

@@ -614,6 +614,36 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(app.contains("guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {"))
     }
 
+    @Test("A workspace deletion pins its mirror identities before the deletion is saved")
+    func deletionPinsMirrorIdentitiesBeforeSaving() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Deleted", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Deleted", primaryPath: folder.path)
+        context.insert(workspace)
+        try context.save()
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: mirror)
+        let identity = try #require(WorkspaceFileLayout.itemIdentity(at: mirror.path))
+        // What a quit right after the save would leave on disk.
+        var pinnedAtSave: [String] = []
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            workspaceDeletionCleanupStore: store,
+            persistWorkspaceChange: { _, context in
+                pinnedAtSave = store.pending().flatMap(\.mirrorFileIDs)
+                return (try? context.save()) != nil
+            }
+        )
+        #expect(coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
+        #expect(pinnedAtSave == [identity])
+    }
+
     @Test("Recovery imports nothing when it can't first record that it may be incomplete")
     func recoveryNeedsItsIncompleteMarker() async throws {
         let fixture = try Fixture()

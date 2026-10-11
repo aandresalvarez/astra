@@ -791,6 +791,24 @@ final class TaskLifecycleCoordinator {
             restoreRecord()
             return (false, nil, nil)
         }
+        // The mirrors must stop changing before the deletion is saved, so
+        // their identities are durable in the same step a quit could follow:
+        // queued exports of this workspace, the cancellation's included, are
+        // retired, then the identities pinned. A rollback re-exports.
+        WorkspaceAutoExportGate.shared.retire(workspaceID: cleanupRecord.workspaceID.uuidString)
+        let pinned: WorkspaceDeletionCleanupRecord
+        do {
+            pinned = try store.pinMirrorIdentities(for: cleanupRecord)
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "mirror_identity_unpinned",
+                "error": error.localizedDescription
+            ], level: .error)
+            restoreRecord()
+            settleAfterUnsavedDeletion(ws.tasks)
+            WorkspaceConfigManager.autoExport(workspace: ws, modelContext: modelContext)
+            return (false, nil, nil)
+        }
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
@@ -803,28 +821,13 @@ final class TaskLifecycleCoordinator {
         // Cancellation exports mirrors, so they are removed only after it and
         // the deletion are saved. An unsaved deletion owes nothing new.
         if result.persisted {
-            // A mirror write queued before the deletion must not land after
-            // the mirror is removed.
-            WorkspaceAutoExportGate.shared.retire(workspaceID: cleanupRecord.workspaceID.uuidString)
-            // The mirrors no longer change, so their identities are pinned
-            // before anything else: a quit after this still recognizes them
-            // if the workspace folder is moved.
-            let pinned: WorkspaceDeletionCleanupRecord
-            do {
-                pinned = try store.pinMirrorIdentities(for: cleanupRecord)
-            } catch {
-                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
-                    "operation": "delete_workspace", "reason": "mirror_identity_unpinned",
-                    "error": error.localizedDescription
-                ], level: .error)
-                pinned = cleanupRecord
-            }
             if WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext) {
                 store.remove(pinned)
             }
         } else {
             restoreRecord()
             settleAfterUnsavedDeletion(ws.tasks)
+            WorkspaceConfigManager.autoExport(workspace: ws, modelContext: modelContext)
         }
         return (result.persisted, result.persisted ? next : nil, result.cleanup)
     }
