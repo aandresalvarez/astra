@@ -196,6 +196,9 @@ struct NewTaskWorktreeCreationJournalTests {
         /// Only a hook linked to a script elsewhere, which a listing of
         /// regular files misses.
         case addedHookLink
+        /// A visit to a commit the remote holds and a return to the recorded
+        /// one, leaving only reflog history.
+        case reflogVisit
         /// Another detached linked worktree registered on the submodule,
         /// whose `.git` file would point into the deleted repository.
         case linkedWorktree
@@ -296,6 +299,14 @@ struct NewTaskWorktreeCreationJournalTests {
             let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
             try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createSymbolicLink(atPath: hook.path, withDestinationPath: "/usr/bin/true")
+        case .reflogVisit:
+            let submodule = worktree.appendingPathComponent("libs/a")
+            let recorded = try fixture.git(["rev-parse", "HEAD"], at: submodule).trimmingCharacters(in: .whitespacesAndNewlines)
+            try fixture.git(["checkout", "--quiet", "--detach", "HEAD~1"], at: submodule)
+            try fixture.git(["checkout", "--quiet", "--detach", recorded], at: submodule)
+            #expect(try fixture.git(["for-each-ref", "--format=%(refname:short) %(upstream:track)", "refs/heads"], at: submodule)
+                .split(whereSeparator: \.isNewline).allSatisfy { !$0.contains("[") })
+            #expect(try fixture.git(["rev-list", "-n", "1", "--all", "--reflog", "--not", "--remotes"], at: submodule).isEmpty)
         case .linkedWorktree:
             let linked = fixture.root.appendingPathComponent("LibA-linked")
             try fixture.git(["worktree", "add", "--quiet", "--detach", linked.path, "HEAD"], at: worktree.appendingPathComponent("libs/a"))

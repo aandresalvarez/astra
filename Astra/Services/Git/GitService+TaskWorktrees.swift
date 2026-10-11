@@ -360,10 +360,13 @@ extension GitService {
     /// repository-local files, hooks and `info/`, by content: local state a
     /// forced removal deletes that no status or ref check shows, with each
     /// symbolic link by its target. Sample hooks from the template are left
-    /// out.
+    /// out. The reflogs of `HEAD` and local branches are listed too: a visit
+    /// to a commit a remote holds, then a return, leaves only navigation
+    /// history the reachability check subtracts.
     static let submoduleTagListing = [
         "submodule", "foreach", "--quiet", "--recursive",
         "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' refs/tags; "
+            + "echo \"-- reflog\"; git log -g --format='%gd %H %gs' HEAD --branches; "
             + "echo \"-- config\"; git config --local --list; "
             + "echo \"-- files\"; (cd \"$(git rev-parse --absolute-git-dir)\" && "
             + "{ find hooks info -type f ! -name '*.sample' -exec shasum {} +; "

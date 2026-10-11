@@ -575,10 +575,19 @@ enum DockerExecutionPlanner {
                 suffix += 1
                 relocatedWorkdir = "/mnt/astra/workspace-primary-\(suffix)"
             }
+            // A saved role is only a label from durable JSON: the exemption
+            // holds for the task's own folder and a credential this
+            // environment still projects, never for whatever claims the role.
+            let taskFolder = ExecutionSandbox.canonicalize(taskAccess.taskFolder)
+                ?? WorkspacePathPresentation.standardizedPath(taskAccess.taskFolder)
+            let projectedCredentials = Set(environment.effectiveCredentialProjections.map {
+                ExecutionSandbox.canonicalize($0.mount.hostPath) ?? WorkspacePathPresentation.standardizedPath($0.mount.hostPath)
+            })
             mounts = mounts.compactMap { mount in
-                guard mount.role != .credential && mount.role != .taskFolder else { return mount }
                 let host = ExecutionSandbox.canonicalize(mount.hostPath)
                     ?? WorkspacePathPresentation.standardizedPath(mount.hostPath)
+                if mount.role == .taskFolder, host == taskFolder { return mount }
+                if mount.role == .credential, projectedCredentials.contains(host) { return mount }
                 // A saved mount of the checkout itself, as a draft retargeted
                 // back to its configured repository has, is dropped: the
                 // checkout is mounted at the working directory below, and a

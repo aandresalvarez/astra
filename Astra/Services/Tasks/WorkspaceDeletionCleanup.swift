@@ -191,11 +191,17 @@ struct WorkspaceDeletionCleanupStore: Sendable {
 
     /// Pins the identities of `record`'s mirror files as they are now, merged
     /// into what is stored. Called once the deletion is saved and queued
-    /// exports are retired, so the files no longer change.
+    /// exports are retired, so the files no longer change. Only a mirror
+    /// confirmed missing is left out; one whose identity can't be read
+    /// throws, so the deletion isn't saved with a mirror recovery and
+    /// cleanup couldn't recognize.
     @discardableResult
-    func pinMirrorIdentities(for record: WorkspaceDeletionCleanupRecord) throws -> WorkspaceDeletionCleanupRecord {
+    func pinMirrorIdentities(
+        for record: WorkspaceDeletionCleanupRecord,
+        identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:)
+    ) throws -> WorkspaceDeletionCleanupRecord {
         let stored = try existing(matching: record) ?? record
-        let ids = stored.mirrorFiles.compactMap(WorkspaceFileLayout.itemIdentity(at:))
+        let ids = try stored.mirrorFiles.compactMap(identity)
         let pinned = stored.merging(WorkspaceDeletionCleanupRecord(
             workspaceID: stored.workspaceID, primaryPath: stored.primaryPath, physicalFolder: stored.physicalFolder,
             mirrorFiles: [], mirrorFileIDs: ids, connectors: [], skills: []
@@ -280,8 +286,12 @@ enum WorkspaceDeletionCleanupService {
     /// `movedMirrors` are mirrors startup recovery found elsewhere carrying
     /// one of the record's pinned identities; they are removed too, after
     /// their identity is checked again.
+    ///
+    /// A mirror whose identity can't be read keeps the record: it may be a
+    /// replacement at the pinned path, or the moved mirror itself.
     static func settle(
-        _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext, movedMirrors: [String] = []
+        _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext, movedMirrors: [String] = [],
+        identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:)
     ) -> Bool {
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
@@ -302,17 +312,36 @@ enum WorkspaceDeletionCleanupService {
         })
         // A mirror left behind would let recovery reimport the workspace, so
         // the record, and the credentials it needs, are kept for a retry.
+        var identityUnreadable = false
+        func currentIdentity(_ path: String) -> String?? {
+            do { return .some(try identity(path)) } catch {
+                identityUnreadable = true
+                return nil
+            }
+        }
         let moved = movedMirrors.filter { path in
-            WorkspaceFileLayout.itemIdentity(at: path).map(record.mirrorFileIDs.contains) == true
-                && !liveMirrors.contains(path) && !liveMirrors.contains(WorkspacePathPresentation.resolvedPath(path))
+            guard !liveMirrors.contains(path), !liveMirrors.contains(WorkspacePathPresentation.resolvedPath(path)),
+                  case .some(.some(let current)) = currentIdentity(path) else { return false }
+            return record.mirrorFileIDs.contains(current)
         }
         // A pinned path whose file has another identity than the one pinned
         // is a mirror created there since, such as a new workspace's after
-        // the folder was replaced, and is left alone.
+        // the folder was replaced, and is left alone. A missing one is
+        // confirmed absent by the removal.
         let pinnedFiles = record.mirrorFiles.filter { path in
             guard !liveMirrors.contains(path) else { return false }
-            guard !record.mirrorFileIDs.isEmpty, let current = WorkspaceFileLayout.itemIdentity(at: path) else { return true }
-            return record.mirrorFileIDs.contains(current)
+            guard !record.mirrorFileIDs.isEmpty else { return true }
+            switch currentIdentity(path) {
+            case .none: return false
+            case .some(.none): return true
+            case .some(.some(let current)): return record.mirrorFileIDs.contains(current)
+            }
+        }
+        if identityUnreadable {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "mirror_identity_unreadable"
+            ], level: .error)
+            return false
         }
         if !removeMirrors(pinnedFiles) || !removeMovedMirrors(moved) {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -416,13 +445,7 @@ enum WorkspaceDeletionCleanupService {
         }
     }
 
-    private static func isMissingFile(_ error: any Error) -> Bool {
-        let nsError = error as NSError
-        if nsError.domain == NSCocoaErrorDomain,
-           [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) { return true }
-        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) { return true }
-        return (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingFile) ?? false
-    }
+    private static func isMissingFile(_ error: any Error) -> Bool { WorkspaceFileLayout.isMissingFile(error) }
 
     enum PinnedFolder { case unchanged, replaced, unknown }
 

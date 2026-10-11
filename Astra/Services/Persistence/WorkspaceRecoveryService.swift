@@ -532,10 +532,12 @@ public enum WorkspaceRecoveryService {
         // though the store is no longer empty.
         Task { @MainActor in
             let resumingPartialRecovery = incompleteMarker.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-            if extraRoots.isEmpty,
-               includeDefaultRoots,
-               !resumingPartialRecovery,
-               !fetchExistingWorkspaces(modelContext: modelContext).isEmpty {
+            if storeVouchesWithoutScan(
+                extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots,
+                resumingPartialRecovery: resumingPartialRecovery,
+                pendingDeletion: !excluded.isEmpty || !excludedIdentities.isEmpty,
+                hasWorkspaces: !fetchExistingWorkspaces(modelContext: modelContext).isEmpty
+            ) {
                 return true
             }
             let scan = await withTaskGroup(
@@ -594,6 +596,17 @@ public enum WorkspaceRecoveryService {
             if trusted, let incompleteMarker { try? FileManager.default.removeItem(at: incompleteMarker) }
             return trusted
         }
+    }
+
+    /// Whether a launch may trust a store that already holds workspaces
+    /// without scanning for mirrors. Never while a deletion is pending: its
+    /// mirror may have moved with its folder, and only the scan finds it by
+    /// identity, so settlement would otherwise leave it to be reimported.
+    static func storeVouchesWithoutScan(
+        extraRoots: [String], includeDefaultRoots: Bool, resumingPartialRecovery: Bool,
+        pendingDeletion: Bool, hasWorkspaces: Bool
+    ) -> Bool {
+        extraRoots.isEmpty && includeDefaultRoots && !resumingPartialRecovery && !pendingDeletion && hasWorkspaces
     }
 
     /// Present while a launch's recovery left a mirror unloaded or a folder

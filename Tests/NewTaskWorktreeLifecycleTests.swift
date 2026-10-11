@@ -650,6 +650,91 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: mirror))
     }
 
+    @Test("Restoring an absent SSH file fails when the file there can't be checked or removed")
+    func unreadableSSHFolderFailsAbsentRestore() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let folder = fixture.root.appendingPathComponent("Workspace", isDirectory: true)
+        let file = SSHConnectionManager.connectionsFilePath(for: folder.path)
+        let support = (file as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: support, withIntermediateDirectories: true)
+        // Nothing there is already absent.
+        try SSHConnectionManager.restore(.absent, workspacePath: folder.path)
+        // A failed replacement wrote the file, and its folder can't be read.
+        try Data("[]".utf8).write(to: URL(fileURLWithPath: file))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: support)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support) }
+        #expect(throws: (any Error).self) { try SSHConnectionManager.restore(.absent, workspacePath: folder.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support)
+        #expect(FileManager.default.fileExists(atPath: file))
+        try SSHConnectionManager.restore(.absent, workspacePath: folder.path)
+        #expect(!FileManager.default.fileExists(atPath: file))
+    }
+
+    @Test("A mirror whose identity can't be read stops pinning; a missing one is left out")
+    func unreadableMirrorIdentityStopsPinning() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Locked", isDirectory: true)
+        let record = WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: [])
+        try store.write(record)
+        #expect(try store.pinMirrorIdentities(for: record).mirrorFileIDs.isEmpty)
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        let support = (mirror as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: support, withIntermediateDirectories: true)
+        try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: support)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support) }
+        #expect(throws: (any Error).self) { try store.pinMirrorIdentities(for: record) }
+        #expect(store.pending().first?.mirrorFileIDs.isEmpty == true)
+    }
+
+    @Test("A mirror whose identity can't be read at settlement keeps the deletion pending")
+    func unreadableMirrorIdentityKeepsDeletionPending() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Reused", isDirectory: true)
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        let record = WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: [])
+        try store.write(record)
+        let pinned = try store.pinMirrorIdentities(for: record)
+        struct Unreadable: Error {}
+        // The pinned path may now hold a replacement it can't tell apart.
+        #expect(!WorkspaceDeletionCleanupService.settle(pinned, modelContext: context, identity: { _ in throw Unreadable() }))
+        #expect(FileManager.default.fileExists(atPath: mirror))
+        // A moved mirror that can't be read is no different.
+        let moved = fixture.root.appendingPathComponent("Moved/.astra/.astra-workspace.json").path
+        #expect(!WorkspaceDeletionCleanupService.settle(pinned, modelContext: context, movedMirrors: [moved], identity: { path in
+            if path == moved { throw Unreadable() }
+            return try WorkspaceFileLayout.itemIdentityConfirmingAbsence(at: path)
+        }))
+        #expect(WorkspaceDeletionCleanupService.settle(pinned, modelContext: context))
+        #expect(!FileManager.default.fileExists(atPath: mirror))
+    }
+
+    @Test("Recovery trusts a nonempty store without scanning only while no deletion is pending")
+    func recoveryShortcutWaitsForPendingDeletions() {
+        #expect(WorkspaceRecoveryService.storeVouchesWithoutScan(
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingDeletion: false, hasWorkspaces: true
+        ))
+        // A pending deletion's mirror may have moved; only the scan finds it.
+        #expect(!WorkspaceRecoveryService.storeVouchesWithoutScan(
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingDeletion: true, hasWorkspaces: true
+        ))
+        #expect(!WorkspaceRecoveryService.storeVouchesWithoutScan(
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: true, pendingDeletion: false, hasWorkspaces: true
+        ))
+        #expect(!WorkspaceRecoveryService.storeVouchesWithoutScan(
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingDeletion: false, hasWorkspaces: false
+        ))
+    }
+
     @Test("A connections file whose folder can't be read stops the SSH snapshot")
     func unreadableSSHFolderFailsSnapshot() throws {
         let fixture = try Fixture()
