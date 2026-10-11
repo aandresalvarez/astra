@@ -165,12 +165,10 @@ struct GitHubReviewPostWhenRequestedTests {
         for command in [
             "Post a review on \(url)", "Please post the review on \(url)", "Review \(url) and post the review",
             "Review \(url), then submit the review", "Can you publish the review comments on \(url)?",
-            "Post a review on \(url) again",
-            // Pause words that are about other work, not the post.
-            "First, post the review on \(url), then summarize it",
-            "Post the review on \(url); I will prepare the follow-up",
-            "Draft the review for \(url) and then post the review",
-            "Post the review to PR 12"
+            "Post a review on \(url) again", "Post the review to PR 12",
+            // Review work and words that keep it a command, around the command.
+            "Draft the review for \(url) and then post the review", "First, post the review on \(url)",
+            "Thanks! Please post the review on \(url)", "Review PR #12. Post the review."
         ] {
             #expect(GitHubReviewPublicationRequirement.commandsPosting(command), "\(command)")
         }
@@ -195,7 +193,13 @@ struct GitHubReviewPostWhenRequestedTests {
             "Post the review on \(url) — no, scratch that", "Post the review on \(url); stop, leave it",
             // Somewhere other than the pull request.
             "Post the review to Slack", "Publish the review in the team channel",
-            "Post the review on \(url) and in Slack"
+            "Post the review on \(url) and in Slack",
+            // Any other sentence: Auto does not read it to decide it changes
+            // nothing about the post, so the review is left for the sheet.
+            "Post the review. The requested destination is Slack.", "Post the review on \(url). Slack is where it goes",
+            "First, post the review on \(url), then summarize it", "Post the review on \(url); I will prepare the follow-up",
+            "Review \(url) and summarize it, then post the review", "Post the review on \(url). Check: Slack gets it",
+            "Draft the review for Slack and post the review"
         ] {
             #expect(!GitHubReviewPublicationRequirement.commandsPosting(notYet), "\(notYet)")
         }

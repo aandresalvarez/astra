@@ -208,6 +208,16 @@ enum GitHubReviewPublicationRequirement {
         "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
         "finally", "lastly", "next", "can", "could", "would", "will", "you", "yes", "sure", "alright"
     ]
+    /// A part of a message that is only these words asks for nothing.
+    private static let fillerWords = imperativeLeadWords.union(["first", "thanks", "thank"])
+    /// The only other work a message that is consent may ask for: reviewing,
+    /// drafting or preparing the review, of the pull request or of nothing
+    /// named ("Review PR #12, then post it", "Draft the review for <link> and
+    /// then post the review"). A closed form: any other sentence, about where
+    /// the review goes or anything else, is not part of a command to post.
+    private static let reviewWorkRegex = try? NSRegularExpression(
+        pattern: #"^(?:re-?review|review|draft|write|prepare|finish)(?:\s+(?:the|a|your|this|that))?(?:\s+(?:review|pr|pull\s+request|changes|diff))?(?:\s+(?:of|for|on))?(?:\s+(?:https://github\.com/\S+|(?:pr|pull\s+request)\s*#?\d+|#\d+|it|them))?$"#
+    )
     /// A condition anywhere in the message ("post the review once I approve",
     /// "When I approve, post the review"), a pause in the command itself
     /// ("post the draft myself"), or a message that holds the posting back
@@ -438,11 +448,17 @@ enum GitHubReviewPublicationRequirement {
             }
     }
 
-    /// The positive list `imperativePublicationRegex` describes.
+    /// The positive list `imperativePublicationRegex` describes, read over the
+    /// whole message: every part of it is the command, review work in the
+    /// closed form `reviewWorkRegex` allows, or words that keep it a command.
+    /// Any other sentence — "The requested destination is Slack.", "then
+    /// summarize it" — leaves the review for the sheet, so no other sentence
+    /// has to be understood to know it does not redirect or hold back the post.
     static func commandsPosting(_ text: String) -> Bool {
         let lower = text.lowercased()
         guard let imperative = imperativePublicationRegex, let deferring = deferringRegex,
               let messagePausing = messagePausingRegex, let commandPausing = commandPausingRegex,
+              let reviewWork = reviewWorkRegex,
               messagePausing.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil,
               deferring.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil else {
             return false
@@ -452,24 +468,18 @@ enum GitHubReviewPublicationRequirement {
             return commandPausing.firstMatch(in: command, range: NSRange(command.startIndex..<command.endIndex, in: command)) != nil
         }
         // Clauses end at punctuation before a space or the end of the text, so
-        // a link's dots do not split one, and a joined command ("review it
-        // and post the review") starts after its `and` or `then`.
+        // a link's dots do not split one, and a clause's parts end at a
+        // free-standing `and` or `then` ("review it and post the review").
         let clauses = lower
-            .replacingOccurrences(of: #"[.!?;,](?=\s|$)|\n"#, with: "\u{1E}", options: .regularExpression)
+            .replacingOccurrences(of: #"[.!?;,](?=\s|$)|\n|(?<!\S)(?:and|then)(?!\S)"#, with: "\u{1E}", options: .regularExpression)
             .components(separatedBy: "\u{1E}")
-        let joiners: Set<String> = ["and", "then"]
+            .map { $0.trimmingCharacters(in: .whitespaces) }
         func isCommand(_ clause: String, _ matched: Range<String.Index>) -> Bool {
-            let words = clause[..<matched.lowerBound].split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
-            let lead = words.lastIndex(where: joiners.contains).map { Array(words[($0 + 1)...]) } ?? words
+            let lead = clause[..<matched.lowerBound].split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
             return lead.allSatisfy(imperativeLeadWords.contains)
         }
         var mentionedReview = false
-        return clauses.contains { clause in
-            defer {
-                if !mentionedReview, let mention = reviewMentionRegex {
-                    mentionedReview = mention.firstMatch(in: clause, range: NSRange(clause.startIndex..<clause.endIndex, in: clause)) != nil
-                }
-            }
+        func postsNow(_ clause: String) -> Bool {
             let range = NSRange(clause.startIndex..<clause.endIndex, in: clause)
             guard let destination = gitHubDestinationRegex else { return false }
             // What follows the command is where it goes: nothing, or GitHub.
@@ -495,6 +505,22 @@ enum GitHubReviewPublicationRequirement {
                     && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
             }
         }
+        var commanded = false
+        for clause in clauses {
+            defer {
+                if !mentionedReview, let mention = reviewMentionRegex {
+                    mentionedReview = mention.firstMatch(in: clause, range: NSRange(clause.startIndex..<clause.endIndex, in: clause)) != nil
+                }
+            }
+            let work = clause.split(whereSeparator: \.isWhitespace).map(String.init)
+                .drop(while: fillerWords.contains).joined(separator: " ")
+            if work.isEmpty || reviewWork.firstMatch(in: work, range: NSRange(work.startIndex..<work.endIndex, in: work)) != nil {
+                continue
+            }
+            guard postsNow(clause) else { return false }
+            commanded = true
+        }
+        return commanded
     }
 
     private enum Intent { case publish, cancel }

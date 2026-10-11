@@ -238,8 +238,12 @@ chooses none of them:
   read, and only while the user's request to post a review is open and is a
   command to post it now: a positive list — the base verb post, publish or
   submit before the review or its comments, nothing ahead of it but words
-  that keep it a command, no condition after it, and no pause anywhere in the
-  message ("ask me first", "hold off", "draft"), and it is the user's latest
+  that keep it a command, nothing after it but a GitHub destination, no
+  condition and no pause anywhere in the message ("ask me first", "hold
+  off", "draft"), and nothing else in the message but review work in a
+  closed form ("Review PR #12", "Draft the review for <link>") — any other
+  sentence, about where the review goes or anything else, leaves the review
+  for the sheet — and it is the user's latest
   word — anything said after it ("actually, no", "never mind", or any other
   message) leaves the review for the sheet. Wording that falls outside
   the list still offers the sheet, so a misreading leaves a review unposted,
