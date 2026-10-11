@@ -1418,6 +1418,22 @@ struct NewTaskWorktreeBaseTests {
         #expect(try fixture.git(["branch", "--list", "astra/*"], at: repository).isEmpty)
     }
 
+    @Test("A stale .git in a configured source subfolder doesn't make it a nested repository")
+    func staleNestedGitStaysProtected() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let sources = repository.appendingPathComponent("Sources", isDirectory: true)
+        try "gitdir: /nonexistent/astra".write(to: sources.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: repository.path, additionalPaths: [sources.path])
+        store.mainContext.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let writable = Set(TaskWorkspaceAccess(task: draft).runtimeWritablePaths.map(WorkspacePathPresentation.resolvedPath))
+        #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(sources.path)))
+    }
+
     @Test("Current branch refuses a clone standing where Git still lists the selected linked checkout")
     func replacedLinkedCheckoutIsNotCurrentBranch() async throws {
         let fixture = try Fixture()

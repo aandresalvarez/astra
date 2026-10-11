@@ -451,7 +451,7 @@ struct NewTaskWorktreeLifecycleTests {
         let recovery = try #require(source.range(of: "WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch("))
         let awaited = try #require(source.range(of: "await recovery.value", range: recovery.upperBound..<source.endIndex))
         let settle = try #require(source.range(
-            of: "WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)", range: awaited.upperBound..<source.endIndex
+            of: "WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext", range: awaited.upperBound..<source.endIndex
         ))
         #expect(awaited.lowerBound < settle.lowerBound)
         // That is the only settlement: none before recovery runs, and none on
@@ -612,6 +612,80 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(app.contains("incompleteMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker"))
         #expect(app.contains("guard await recovery.value else {"))
         #expect(app.contains("guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {"))
+    }
+
+    @Test("Recovery imports nothing when it can't first record that it may be incomplete")
+    func recoveryNeedsItsIncompleteMarker() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try Fixture.container()
+        let folder = fixture.root.appendingPathComponent("Good", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Good", primaryPath: folder.path)
+        source.mainContext.insert(workspace)
+        try source.mainContext.save()
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
+        let support = fixture.root.appendingPathComponent("Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: support.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support.path) }
+
+        let empty = try Fixture.container()
+        #expect(!(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: empty.mainContext, extraRoots: [folder.path], includeDefaultRoots: false,
+            incompleteMarker: support.appendingPathComponent("RecoveryIncomplete")
+        ).value))
+        #expect(try empty.mainContext.fetchCount(FetchDescriptor<Workspace>()) == 0)
+    }
+
+    @Test("A pending deletion's mirror moved with its workspace folder is still left out of recovery and removed")
+    func movedDeletionMirrorIsRecognizedByIdentity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let scanned = fixture.root.appendingPathComponent("Workspaces", isDirectory: true)
+        let folder = scanned.appendingPathComponent("Deleted", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Deleted", primaryPath: folder.path)
+        context.insert(workspace)
+        try context.save()
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: mirror)
+        // The deletion is saved but its mirror can't be removed yet.
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: mirror.deletingLastPathComponent().path)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            workspaceDeletionCleanupStore: store
+        )
+        #expect(coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mirror.deletingLastPathComponent().path)
+        #expect(store.pending().first?.mirrorFileIDs.isEmpty == false)
+
+        // The workspace folder is renamed before the next launch.
+        let renamed = scanned.appendingPathComponent("Renamed", isDirectory: true)
+        try FileManager.default.moveItem(at: folder, to: renamed)
+        let movedMirror = WorkspaceFileLayout.workspaceConfigFile(for: renamed.path)
+        let empty = try Fixture.container()
+        var found: [URL] = []
+        _ = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: empty.mainContext, excludingConfigFiles: try #require(store.pendingMirrorPaths()),
+            extraRoots: [scanned.path], includeDefaultRoots: false,
+            excludingItemIdentities: try #require(store.pendingMirrorIdentities()),
+            excludedByIdentity: { found = $0 }
+        ).value
+        #expect(try empty.mainContext.fetchCount(FetchDescriptor<Workspace>()) == 0)
+        #expect(found.map { WorkspacePathPresentation.resolvedPath($0.path) } == [WorkspacePathPresentation.resolvedPath(movedMirror)])
+
+        #expect(WorkspaceDeletionCleanupService.resumePending(
+            modelContext: empty.mainContext, store: store, movedMirrors: found.map(\.path)
+        ) == 1)
+        #expect(!FileManager.default.fileExists(atPath: movedMirror))
+        #expect(store.pending().isEmpty)
     }
 
     @Test("A failed same-path replacement exports the workspace only after its SSH file is restored")

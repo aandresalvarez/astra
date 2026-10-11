@@ -79,19 +79,17 @@ struct StanfordOutlookMailTests {
             }
             #expect(StanfordOutlookMailRegistry.entries().isEmpty)
 
-            // A link to a registry holding the entry: an atomic write would
-            // replace the link and leave the entry in its target.
+            // A link to a registry holding the entry: the entry is removed
+            // from the file behind the link, which stays a link.
             let target = root.appendingPathComponent("managed.json")
             StanfordOutlookMailRegistry.upsert(connector: connector)
             try FileManager.default.moveItem(at: registry, to: target)
             try FileManager.default.createSymbolicLink(at: registry, withDestinationURL: target)
-            let linked = try Data(contentsOf: target)
-            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
-            #expect(try Data(contentsOf: target) == linked)
-            #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: registry.path)) != nil)
+            #expect(StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            #expect(try FileManager.default.destinationOfSymbolicLink(atPath: registry.path) == target.path)
+            #expect(StanfordOutlookMailRegistry.entries().isEmpty)
             try FileManager.default.removeItem(at: registry)
             try FileManager.default.moveItem(at: target, to: registry)
-            #expect(StanfordOutlookMailRegistry.remove(connectorID: connector.id))
 
             // A dangling link is a registry that can't be verified.
             try FileManager.default.removeItem(at: registry)

@@ -2,6 +2,16 @@ import Foundation
 import ASTRACore
 
 public enum WorkspaceFileLayout {
+    /// The device and inode of the item at `path` itself, not following a
+    /// link. A rename within the same volume keeps it, so a mirror stays
+    /// recognizable after its workspace folder moves.
+    public static func itemIdentity(at path: String) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else { return nil }
+        return "\(device.uint64Value):\(inode.uint64Value)"
+    }
+
     public static let supportDirectoryName = ".astra"
     public static let workspaceConfigFileName = ".astra-workspace.json"
     public static let sshConnectionsFileName = "ssh-connections.json"

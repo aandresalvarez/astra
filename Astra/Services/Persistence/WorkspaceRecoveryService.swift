@@ -519,6 +519,8 @@ public enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         incompleteMarker: URL? = nil,
+        excludingItemIdentities excludedIdentities: Set<String> = [],
+        excludedByIdentity: @escaping @MainActor ([URL]) -> Void = { _ in },
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {}
     ) -> Task<Bool, Never> {
@@ -551,27 +553,45 @@ public enum WorkspaceRecoveryService {
             }
             let configs = scan.configs
             // Mirrors of workspaces whose deletion is still being cleaned up.
-            let candidates = configs.filter {
+            let unexcluded = configs.filter {
                 !excluded.contains(WorkspacePathPresentation.resolvedPath($0.path))
             }
+            // A pending deletion's mirror whose workspace folder was moved is
+            // still that deletion's: matched by item identity, it is left out
+            // and reported for settlement to remove.
+            let moved = excludedIdentities.isEmpty ? [] : unexcluded.filter {
+                WorkspaceFileLayout.itemIdentity(at: $0.path).map(excludedIdentities.contains) == true
+            }
+            let candidates = unexcluded.filter { !moved.contains($0) }
+            if !moved.isEmpty { excludedByIdentity(moved) }
             let loadedConfigs = await loadWorkspaceConfigs(candidates)
             guard !Task.isCancelled else { return false }
+            // The marker goes down before anything is imported and comes off
+            // only once recovery is trusted, so imports never become durable
+            // while the incomplete state isn't. If it can't be written,
+            // nothing is imported this launch.
+            if let incompleteMarker {
+                do {
+                    try FileManager.default.createDirectory(
+                        at: incompleteMarker.deletingLastPathComponent(), withIntermediateDirectories: true
+                    )
+                    try Data().write(to: incompleteMarker, options: .atomic)
+                } catch {
+                    AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                        "operation": "recover_workspaces", "reason": "incomplete_marker_unwritable",
+                        "error_type": String(describing: type(of: error))
+                    ], level: .error)
+                    return false
+                }
+            }
             let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs, save: saveImports)
             if recovered.imported > 0 {
                 afterImport()
             }
             // Owners and pins count only once the store holds them durably.
             let trusted = scan.complete && loadedConfigs.count == candidates.count && recovered.durable
-            if let incompleteMarker {
-                if trusted {
-                    try? FileManager.default.removeItem(at: incompleteMarker)
-                } else {
-                    try? FileManager.default.createDirectory(
-                        at: incompleteMarker.deletingLastPathComponent(), withIntermediateDirectories: true
-                    )
-                    try? Data().write(to: incompleteMarker, options: .atomic)
-                }
-            }
+            // A marker that can't be removed only costs a rescan next launch.
+            if trusted, let incompleteMarker { try? FileManager.default.removeItem(at: incompleteMarker) }
             return trusted
         }
     }
