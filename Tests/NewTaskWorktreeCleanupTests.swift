@@ -427,6 +427,37 @@ struct NewTaskWorktreeCleanupTests {
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
     }
 
+    @Test("A SHA-256 repository's null object ID is not a commit in a vanished worktree's reflog")
+    func sha256NullObjectIDIsNotReflogWork() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = fixture.root.appendingPathComponent("Sha256", isDirectory: true)
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+        try fixture.git(["init", "--quiet", "--object-format=sha256", "-b", "main"], at: repository)
+        try fixture.commit("Sources/file.txt", contents: "committed", message: "Initial commit", at: repository)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        #expect(discard.baseCommit.count == 64)
+        // Only the folder is removed; Git keeps its registry entry and reflog.
+        try FileManager.default.removeItem(atPath: discard.worktreePath)
+        guard case .commits(let commits) = TaskWorktreeBinding.registeredHeadReflog(
+            repositoryPath: repository.path, worktreePath: discard.worktreePath
+        ) else {
+            Issue.record("Expected the registry entry's reflog")
+            return
+        }
+        #expect(!commits.isEmpty && commits.allSatisfy { $0 == discard.baseCommit })
+        context.delete(draft)
+        try context.save()
+
+        let outcome = await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        )
+        #expect(outcome == .removed, "\(outcome)")
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
     @Test("A removal Git refuses takes back the removal mark")
     func refusedRemovalClearsMark() async throws {
         let fixture = try Fixture()

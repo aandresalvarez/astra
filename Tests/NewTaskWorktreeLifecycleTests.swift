@@ -795,6 +795,38 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: url.path))
     }
 
+    @Test("A deleted Outlook connector's mail-registry entry goes unless a live Outlook connector holds its ID")
+    func deletedOutlookRegistryEntryNeedsALiveOutlookOwner() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let registry = fixture.root.appendingPathComponent("mail-accounts.json")
+        try StanfordOutlookMail.$registryURLOverride.withValue(registry) {
+            let outlook = Connector(name: "Mail")
+            outlook.applyStanfordOutlookDefaults()
+            StanfordOutlookMailRegistry.upsert(connector: outlook)
+            let record = WorkspaceDeletionCleanupRecord(
+                workspaceID: UUID(), primaryPath: fixture.root.appendingPathComponent("Gone").path,
+                connectors: [outlook.keychainCleanup], skills: []
+            )
+            // An import reused the ID for another service: the entry goes.
+            let reused = Connector(name: "Jira", serviceType: "jira")
+            reused.id = outlook.id
+            context.insert(reused)
+            try context.save()
+            _ = WorkspaceDeletionCleanupService.settle(record, modelContext: context)
+            #expect(StanfordOutlookMailRegistry.entries().isEmpty)
+
+            // A live Outlook connector with that ID keeps it.
+            StanfordOutlookMailRegistry.upsert(connector: outlook)
+            reused.applyStanfordOutlookDefaults()
+            try context.save()
+            _ = WorkspaceDeletionCleanupService.settle(record, modelContext: context)
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [outlook.id.uuidString])
+        }
+    }
+
     @Test("Branch deletion and the Repository card's branch operations exclude each other")
     func branchDeletionGateExcludesCardOperations() throws {
         let fixture = try Fixture()

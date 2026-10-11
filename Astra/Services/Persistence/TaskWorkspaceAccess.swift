@@ -161,11 +161,11 @@ public struct TaskWorkspaceAccess {
         switch worktreeBindingState {
         case .bound(let binding, _, _):
             return TaskWorktreeBinding.gitCommonDirectory(for: binding).map { [$0] } ?? []
-        case .retargeted(let pinned, let commonDirectory?):
+        case .retargeted(let pinned, let commonDirectory):
             let checkout = Self.resolvedIdentity(pinned)
             let common = Self.resolvedIdentity(commonDirectory)
             return common == checkout || common.hasPrefix(checkout + "/") ? [] : [commonDirectory]
-        case .none, .invalid, .retargeted:
+        case .none, .invalid:
             return []
         }
     }

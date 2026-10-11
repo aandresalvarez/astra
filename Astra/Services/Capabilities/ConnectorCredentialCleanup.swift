@@ -10,14 +10,16 @@ import ASTRAPersistence
 /// namespace, so ownership is decided per namespace, never per connector ID.
 @MainActor
 enum ConnectorCredentialCleanup {
-    /// The namespaces and connector IDs that stored connectors own.
+    /// The namespaces stored connectors own, and the IDs of the stored
+    /// Outlook connectors, which alone keep a mail-registry entry: an import
+    /// that reused an Outlook connector's ID for another service doesn't.
     struct Ownership {
         let namespaces: Set<String>
-        let connectorIDs: Set<UUID>
+        let outlookConnectorIDs: Set<UUID>
 
         init(_ connectors: [Connector]) {
             namespaces = Set(connectors.flatMap { KeychainSecretStore.connectorEntityIDs(for: $0) })
-            connectorIDs = Set(connectors.map(\.id))
+            outlookConnectorIDs = Set(connectors.filter(\.isStanfordOutlookMail).map(\.id))
         }
     }
 
@@ -35,10 +37,13 @@ enum ConnectorCredentialCleanup {
     @discardableResult
     static func run(_ cleanups: [ConnectorKeychainCleanup], ownership: Ownership) -> Bool {
         var cleared = true
-        for cleanup in cleanups where !unownedNamespaces(of: cleanup, ownership: ownership).isEmpty {
-            cleared = cleanup.run(
-                sparing: ownership.namespaces, keepRegistryEntry: ownership.connectorIDs.contains(cleanup.connectorID)
-            ) && cleared
+        for cleanup in cleanups {
+            let keepRegistryEntry = ownership.outlookConnectorIDs.contains(cleanup.connectorID)
+            // Owed when a namespace has no live owner, or a mail-registry
+            // entry no live Outlook connector claims.
+            let ownsRegistryEntry = cleanup.isStanfordOutlookMail && !keepRegistryEntry
+            guard ownsRegistryEntry || !unownedNamespaces(of: cleanup, ownership: ownership).isEmpty else { continue }
+            cleared = cleanup.run(sparing: ownership.namespaces, keepRegistryEntry: keepRegistryEntry) && cleared
         }
         return cleared
     }
