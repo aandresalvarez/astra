@@ -881,6 +881,10 @@ enum TaskWorktreeService {
             guard branch != "unknown" else { return kept("branch_unavailable", retry: true) }
             guard branch == discard.branch else { return kept("branch_switched") }
         }
+        // Per-worktree Git configuration lives in the entry a removal deletes.
+        if TaskWorktreeBinding.registeredWorktreeHasLocalConfig(repositoryPath: repository, worktreePath: path) == true {
+            return kept("worktree_config")
+        }
         // A tip that can't be read is retried, never taken as a missing branch.
         let commit: String?
         switch await git.localBranchTip(discard.branch, at: repository) {

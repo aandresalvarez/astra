@@ -99,10 +99,24 @@ struct StanfordOutlookMailTests {
             #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
             try FileManager.default.removeItem(at: registry)
 
-            // An unreadable registry is left as it is, not emptied.
+            // An unreadable registry is left as it is, not emptied, by a
+            // removal or by an upsert that would keep only its own account.
             try Data("not json".utf8).write(to: registry)
             #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            StanfordOutlookMailRegistry.upsert(connector: connector)
             #expect(try Data(contentsOf: registry) == Data("not json".utf8))
+            try FileManager.default.removeItem(at: registry)
+
+            // A link to a file outside the registry's folder is never written.
+            let outside = FileManager.default.temporaryDirectory
+                .appendingPathComponent("astra-unrelated-\(UUID().uuidString).txt")
+            defer { try? FileManager.default.removeItem(at: outside) }
+            try Data("user file".utf8).write(to: outside)
+            try FileManager.default.createSymbolicLink(at: registry, withDestinationURL: outside)
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            #expect(try Data(contentsOf: outside) == Data("user file".utf8))
+            #expect(try FileManager.default.destinationOfSymbolicLink(atPath: registry.path) == outside.path)
         }
     }
 
