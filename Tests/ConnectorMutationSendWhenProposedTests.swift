@@ -235,6 +235,28 @@ struct ConnectorMutationSendWhenProposedTests {
 
     /// The caller's timeout reaches the send, kept inside the broker's wait so
     /// a finished write is never reported as "not known yet".
+    /// No sheet shows Auto where a write goes, so a connector pointed somewhere
+    /// else after the run launched does not carry this run's proposal there.
+    @Test("Auto does not send to a connector that moved after the run launched")
+    func autoRefusesAConnectorThatMovedSinceLaunch() async throws {
+        let fixture = try Fixture()
+        let sender = Sender()
+        let staged = try fixture.stage()
+        fixture.connector.baseURL = "https://jira.elsewhere.test"
+        try fixture.context.save()
+
+        let outcome = await fixture.handler(level: .autonomous, sender: sender).sendStagedConnectorMutation(staged.request)
+
+        guard case let .refused(message) = outcome else {
+            Issue.record("Expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(message.contains("jira.elsewhere.test") && message.contains("start a new run"), "\(message)")
+        #expect(sender.requests.isEmpty)
+        #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty,
+                "returned to the agent, never left for a send from the dock")
+    }
+
     @Test("Auto sends with the caller's timeout, bounded by the broker's wait")
     func autoSendUsesTheCallersTimeout() async throws {
         let fixture = try Fixture()
@@ -243,7 +265,8 @@ struct ConnectorMutationSendWhenProposedTests {
         for timeout in [nil, 90, 100_000] as [TimeInterval?] {
             let staged = try fixture.stage(summary: "Timeout \(String(describing: timeout))")
             _ = await handler.sendStagedConnectorMutation(StagedConnectorMutationRequest(
-                stagedPath: staged.staged.path, requestDigest: staged.staged.digest, timeoutSeconds: timeout
+                stagedPath: staged.staged.path, requestDigest: staged.staged.digest,
+                connectorBaseURL: staged.request.connectorBaseURL, timeoutSeconds: timeout
             ))
         }
 
@@ -629,7 +652,9 @@ struct ConnectorMutationSendWhenProposedTests {
                 body: ["fields": fields],
                 configuration: HostControlToolConfiguration(taskFolder: taskFolder, runID: run.id.uuidString)
             )
-            return (staged, StagedConnectorMutationRequest(stagedPath: staged.path, requestDigest: staged.digest))
+            return (staged, StagedConnectorMutationRequest(
+                stagedPath: staged.path, requestDigest: staged.digest, connectorBaseURL: connector.baseURL
+            ))
         }
 
         /// The broker's configuration for this run, with the connector the app

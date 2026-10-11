@@ -16,6 +16,9 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case connectorNotFound(String)
     case connectorServiceMismatch(expected: String, found: String)
     case connectorChangedSinceReview(reviewed: String, now: String)
+    /// Auto: the connector points somewhere other than it did when the run
+    /// launched, so this run's proposal is not sent there.
+    case connectorChangedSinceLaunch(launched: String, now: String)
     case missingCredential(String)
     case invalidBaseURL(String)
     case insecureTransport(alias: String, url: String)
@@ -53,6 +56,9 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
         case let .connectorChangedSinceReview(reviewed, now):
             "This proposal was reviewed as a request to \(reviewed), but it would now go to \(now). "
                 + "Refusing to send; reopen the review to approve the new destination."
+        case let .connectorChangedSinceLaunch(launched, now):
+            "This run composed the proposal for \(launched), but the connector now sends to \(now). "
+                + "ASTRA did not send it; start a new run to use the connector as it is now."
         case let .missingCredential(alias):
             "The \(alias) connector has no usable credential in the Keychain, so ASTRA cannot send this."
         case let .invalidBaseURL(url):
@@ -651,6 +657,7 @@ final class ConnectorMutationCoordinator {
         run: TaskRun,
         stagedPath: String,
         requestDigest: String,
+        launchBaseURL: String,
         timeoutSeconds: TimeInterval? = nil
     ) async throws -> ConnectorMutationReceipt {
         let staged = try readStaged(task: task, path: stagedPath, digest: requestDigest)
@@ -686,6 +693,16 @@ final class ConnectorMutationCoordinator {
         do {
             let prepared = try prepare(task: task, pending: pending)
             proposal = prepared
+            // No sheet shows Auto where a write goes, so it goes only where the
+            // run launched: a connector edited since then would carry this
+            // run's proposal, with the current credential, to another host.
+            // `send` re-resolves the connector against this same destination.
+            let launched = Self.url(baseURL: launchBaseURL, path: prepared.requestPath)?.absoluteString
+            guard launched == prepared.destinationURL else {
+                throw ConnectorMutationCoordinatorError.connectorChangedSinceLaunch(
+                    launched: launched ?? launchBaseURL, now: prepared.destinationURL
+                )
+            }
             return try await send(task: task, proposal: prepared, authorization: .autoPolicy, timeoutSeconds: timeoutSeconds)
         } catch {
             retireIfStillPending(task: task, pending: pending, proposal: proposal, error: error)

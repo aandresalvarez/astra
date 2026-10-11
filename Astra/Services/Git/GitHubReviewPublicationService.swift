@@ -114,6 +114,16 @@ private enum GitHubReviewTargetResolver {
         return regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
     }
 
+    /// Every pull request the text links, in order.
+    static func pullRequests(in text: String) -> [Target] {
+        matches(pullRequestPattern, in: text).compactMap { match in
+            guard let numberRange = Range(match.range(at: 3), in: text),
+                  let number = Int(text[numberRange]),
+                  let repository = repository(from: match, in: text) else { return nil }
+            return Target(repository: repository, number: number)
+        }
+    }
+
     static func pullRequest(in text: String) -> Target? {
         let found = matches(pullRequestPattern, in: text)
         guard found.count == 1, let match = found.first,
@@ -161,9 +171,17 @@ private enum GitHubReviewTargetResolver {
             }
             return nil
         }
-        if let number = requestedNumber(task: task, request: request),
-           let repository = repository(in: task.goal) {
-            return Target(repository: repository, number: number)
+        if let number = requestedNumber(task: task, request: request) {
+            // "PR 12" after a goal that links several pull requests means the
+            // one linked as 12, when exactly one repository has it there.
+            let linked = pullRequests(in: task.goal).filter { $0.number == number }
+            if let first = linked.first,
+               Set(linked.map { $0.repository.lowercased() }).count == 1 {
+                return first
+            }
+            if let repository = repository(in: task.goal) {
+                return Target(repository: repository, number: number)
+            }
         }
         return pullRequest(in: task.goal)
     }
@@ -210,8 +228,12 @@ enum GitHubReviewPublicationRequirement {
         pattern: #"\b(?:post|posting|publish|publishing|submit|submitting)\s+(?:it|them)\b"#
     )
     private static let reviewMentionRegex = try? NSRegularExpression(pattern: #"\b(?:reviews?|comments?)\b"#)
+    /// Where a command may send the review: GitHub or the pull request,
+    /// named or linked. A link is exactly a pull request's URL — never `\S+`,
+    /// which would read "<link>,later" as one link and the condition as part
+    /// of where it goes.
     private static let gitHubDestinationRegex = try? NSRegularExpression(
-        pattern: #"^\s*(?:(?:on|to|for)\s+(?:github|the\s+pr|the\s+pull\s+request|pr\s*#?\d+|pull\s+request\s*#?\d+|https://github\.com/\S+))?\s*(?:now|please|again)?\s*$"#
+        pattern: #"^\s*(?:(?:on|to|for)\s+(?:github|the\s+pr|the\s+pull\s+request|pr\s*#?\d+|pull\s+request\s*#?\d+|https://github\.com/[a-z0-9-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*/?))?\s*(?:now|please|again)?\s*$"#
     )
     private static let imperativeLeadWords: Set<String> = [
         "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
@@ -225,7 +247,7 @@ enum GitHubReviewPublicationRequirement {
     /// then post the review"). A closed form: any other sentence, about where
     /// the review goes or anything else, is not part of a command to post.
     private static let reviewWorkRegex = try? NSRegularExpression(
-        pattern: #"^(?:re-?review|review|draft|write|prepare|finish)(?:\s+(?:the|a|your|this|that))?(?:\s+(?:review|pr|pull\s+request|changes|diff))?(?:\s+(?:of|for|on))?(?:\s+(?:https://github\.com/\S+|(?:pr|pull\s+request)\s*#?\d+|#\d+|it|them))?$"#
+        pattern: #"^(?:re-?review|review|draft|write|prepare|finish)(?:\s+(?:the|a|your|this|that))?(?:\s+(?:review|pr|pull\s+request|changes|diff))?(?:\s+(?:of|for|on))?(?:\s+(?:https://github\.com/[a-z0-9-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*/?|(?:pr|pull\s+request)\s*#?\d+|#\d+|it|them))?$"#
     )
     /// A message that closes an open request without restating it: "don't post
     /// it", "cancel that", and the noun forms — "cancel the review", "stop the
@@ -335,11 +357,17 @@ enum GitHubReviewPublicationRequirement {
         return "ASTRA is waiting for a GitHub target. Add a full pull request URL or reconnect this workspace to its GitHub repository, then ask ASTRA to post the review again."
     }
 
+    /// Whether a shorthand request ("post the review to PR 12") may be bound
+    /// to the workspace's origin: only when neither the request nor the goal
+    /// names GitHub at all. A goal that links pull requests and still yields
+    /// no single target is ambiguous, and the origin's PR 12 could be a
+    /// different pull request from any the user named.
     static func needsOriginTargetBinding(task: AgentTask) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
         return GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) == nil
             && boundTarget(task: task, request: request) == nil
             && request.text.range(of: "github.com/", options: .caseInsensitive) == nil
+            && task.goal.range(of: "github.com/", options: .caseInsensitive) == nil
             && GitHubReviewTargetResolver.requestedNumber(task: task, request: request.text) != nil
     }
 

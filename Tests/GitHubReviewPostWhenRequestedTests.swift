@@ -123,6 +123,43 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(await cli.postedPayloads() == [fixture.data])
     }
 
+    /// "PR 12" after a goal that links pull requests in more than one
+    /// repository means the one linked as 12, never the workspace origin's
+    /// PR 12; when two repositories have a 12 there, nothing is posted.
+    @Test("A shorthand request resolves against the goal's links and never guesses the origin")
+    func shorthandRequestUsesTheGoalsLinks() async throws {
+        let goal = "Review https://github.com/acme/one/pull/12 against https://github.com/acme/two/pull/7"
+        let fixture = try Fixture(goal: goal)
+        fixture.context.insert(TaskEvent(
+            task: fixture.task, eventType: TaskEventTypes.Conversation.userMessage, payload: "Post the review to PR 12"
+        ))
+        let cli = FakeCLI()
+
+        let outcome = await fixture.handler(level: .autonomous, cli: cli, origin: "https://github.com/example/repo.git")
+            .postGitHubReview(fixture.request(for: fixture.file))
+
+        guard case .performed = outcome else {
+            Issue.record("Expected the goal's PR 12 to be posted, got \(outcome)")
+            return
+        }
+        let called = await cli.calledArguments()
+        #expect(!called.isEmpty && called.allSatisfy { $0.contains("acme/one") && !$0.contains("example/repo") }, "\(called)")
+
+        let ambiguous = try Fixture(goal: "Review https://github.com/acme/one/pull/12 and https://github.com/acme/two/pull/12")
+        ambiguous.context.insert(TaskEvent(
+            task: ambiguous.task, eventType: TaskEventTypes.Conversation.userMessage, payload: "Post the review to PR 12"
+        ))
+        let ambiguousCLI = FakeCLI()
+        let refused = await ambiguous.handler(level: .autonomous, cli: ambiguousCLI, origin: "https://github.com/example/repo.git")
+            .postGitHubReview(ambiguous.request(for: ambiguous.file))
+        guard case .refused = refused else {
+            Issue.record("Expected an ambiguous target to be refused, got \(refused)")
+            return
+        }
+        #expect(await ambiguousCLI.postCount() == 0)
+        #expect(!GitHubReviewPublicationRequirement.needsOriginTargetBinding(task: ambiguous.task))
+    }
+
     /// One request, one review: a second file asked for after the first was
     /// posted is not posted on the strength of a request already answered.
     @Test("A request that was already answered does not post a second review")
@@ -206,6 +243,8 @@ struct GitHubReviewPostWhenRequestedTests {
             // Between the verb and the review, where only the whole-message reading sees it.
             "Post later the review on \(url)", "Post when ready the review on \(url)", "Post not yet the review on \(url)",
             "Post the draft review on \(url)", "Post the review on \(url). Don\u{2019}t.",
+            // A link is exactly a pull request's URL: nothing rides along on it.
+            "Post the review on \(url),later", "Post the review on \(url)/files", "Review \(url),later and post the review",
             // A retraction in the same message, which the latest-message rule cannot see.
             "Post the review on \(url). Actually, don't.", "Post the review on \(url). Never mind.",
             "Post the review on \(url) — no, scratch that", "Post the review on \(url); stop, leave it",
@@ -636,6 +675,7 @@ struct GitHubReviewPostWhenRequestedTests {
         private var duringGet: (@Sendable () async -> Void)?
         private var payloads: [Data] = []
         private var calls = 0
+        private var argumentLists: [[String]] = []
 
         /// `duringGet` runs once, inside the first GitHub read: what the user
         /// does while a post is still being prepared.
@@ -646,6 +686,7 @@ struct GitHubReviewPostWhenRequestedTests {
 
         func run(at repositoryPath: String, arguments: [String], label: String) async throws -> String {
             calls += 1
+            argumentLists.append(arguments)
             if !arguments.contains("POST"), let hook = duringGet {
                 duringGet = nil
                 await hook()
@@ -654,7 +695,12 @@ struct GitHubReviewPostWhenRequestedTests {
                 let inputIndex = try #require(arguments.firstIndex(of: "--input"))
                 payloads.append(try Data(contentsOf: URL(fileURLWithPath: arguments[inputIndex + 1])))
                 if failsPost { throw URLError(.networkConnectionLost) }
-                return #"{"id":42,"html_url":"https://github.com/example/repo/pull/12#pullrequestreview-42","state":"COMMENTED","commit_id":"\#(GitHubReviewPostWhenRequestedTests.head)","submitted_at":"2026-10-09T00:00:00Z"}"#
+                // Answers for the pull request it was posted to, as GitHub does.
+                let endpoint = arguments.first { $0.hasPrefix("repos/") }?.split(separator: "/") ?? []
+                let page = endpoint.count >= 5
+                    ? "https://github.com/\(endpoint[1])/\(endpoint[2])/pull/\(endpoint[4])"
+                    : "https://github.com/example/repo/pull/12"
+                return #"{"id":42,"html_url":"\#(page)#pullrequestreview-42","state":"COMMENTED","commit_id":"\#(GitHubReviewPostWhenRequestedTests.head)","submitted_at":"2026-10-09T00:00:00Z"}"#
             }
             return #"{"state":"open","head":{"sha":"\#(GitHubReviewPostWhenRequestedTests.head)"}}"#
         }
@@ -662,6 +708,7 @@ struct GitHubReviewPostWhenRequestedTests {
         func postedPayloads() -> [Data] { payloads }
         func postCount() -> Int { payloads.count }
         func callCount() -> Int { calls }
+        func calledArguments() -> [String] { argumentLists.map { $0.joined(separator: " ") } }
     }
 
     @MainActor

@@ -371,7 +371,8 @@ enum JiraProposalPolicy {
         // level whether to send now or leave it for the user's review.
         let outcome = requester?.sendStagedConnectorMutation(
             StagedConnectorMutationRequest(
-                stagedPath: staged.path, requestDigest: staged.digest, timeoutSeconds: timeoutSeconds
+                stagedPath: staged.path, requestDigest: staged.digest,
+                connectorBaseURL: connector.baseURL, timeoutSeconds: timeoutSeconds
             )
         ) ?? .awaitingReview
         diagnostics?.record(
