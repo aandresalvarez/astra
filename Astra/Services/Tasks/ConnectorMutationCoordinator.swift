@@ -1306,10 +1306,8 @@ final class ConnectorMutationCoordinator {
     /// planted at either name makes the write fail; nothing outside is opened.
     private static func markReturnedToAgent(stagedPath: String) {
         returnedStagedPaths.insert(stagedPath)
-        let url = URL(fileURLWithPath: stagedPath)
-        let directory = url.deletingLastPathComponent().path
-        let markerName = url.lastPathComponent + "." + returnedMarkerExtension
-        let directoryDescriptor = directory.withCString { open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+        let markerName = URL(fileURLWithPath: stagedPath).lastPathComponent + "." + returnedMarkerExtension
+        let directoryDescriptor = openStagingDirectory(of: stagedPath)
         guard directoryDescriptor >= 0 else { return }
         defer { close(directoryDescriptor) }
         let descriptor = markerName.withCString {
@@ -1342,9 +1340,22 @@ final class ConnectorMutationCoordinator {
     /// marker, the other gets `EEXIST` and is told the proposal is already
     /// claimed. `fsync` before returning, because a claim still sitting in the
     /// page cache is not a claim that survives the crash it exists for.
-    private static func reserveSend(stagedPath: String, target: String) throws {
-        let markerPath = sentMarkerPath(stagedPath: stagedPath)
-        let descriptor = markerPath.withCString { open($0, O_CREAT | O_EXCL | O_WRONLY, 0o600) }
+    ///
+    /// Through the staging directory's own descriptor, never the marker's path:
+    /// the directory is agent-writable, and Auto reaches this with no one
+    /// watching, so a directory swapped for a link after the envelope was read
+    /// fails the claim — nothing sent — instead of creating a file wherever
+    /// the link points.
+    static func reserveSend(stagedPath: String, target: String) throws {
+        let markerName = URL(fileURLWithPath: stagedPath).lastPathComponent + "." + sentMarkerExtension
+        let directoryDescriptor = openStagingDirectory(of: stagedPath)
+        guard directoryDescriptor >= 0 else {
+            throw ConnectorMutationCoordinatorError.sendNotReserved(reason: Self.describe(errno: errno))
+        }
+        defer { close(directoryDescriptor) }
+        let descriptor = markerName.withCString {
+            openat(directoryDescriptor, $0, O_CREAT | O_EXCL | O_NOFOLLOW | O_WRONLY | O_CLOEXEC, 0o600)
+        }
         guard descriptor >= 0 else {
             let code = errno
             if code == EEXIST {
@@ -1361,7 +1372,7 @@ final class ConnectorMutationCoordinator {
             // The claim is not durable, so it must not be left behind either: a
             // marker this call did not commit would block a send that never
             // happened.
-            unlink(markerPath)
+            _ = markerName.withCString { unlinkat(directoryDescriptor, $0, 0) }
             throw ConnectorMutationCoordinatorError.sendNotReserved(reason: error.localizedDescription)
         }
         close(descriptor)
@@ -1369,20 +1380,31 @@ final class ConnectorMutationCoordinator {
         // Unchecked, unlike the two above: on APFS the directory entry lands
         // with the file, and there is no useful recovery from failing here
         // other than the in-memory set that already covers this launch.
-        let directoryPath = (markerPath as NSString).deletingLastPathComponent
-        let directoryDescriptor = directoryPath.withCString { open($0, O_RDONLY) }
-        if directoryDescriptor >= 0 {
-            fsync(directoryDescriptor)
-            close(directoryDescriptor)
-        }
+        fsync(directoryDescriptor)
         sentStagedPaths.insert(stagedPath)
     }
 
     /// Gives a claim back, for the one outcome that is not ambiguous: the
-    /// provider answered, on the record, that it did not act.
-    private static func releaseSendReservation(stagedPath: String) {
+    /// provider answered, on the record, that it did not act. Removed through
+    /// the staging directory's descriptor, so a swapped directory removes
+    /// nothing outside it.
+    static func releaseSendReservation(stagedPath: String) {
         sentStagedPaths.remove(stagedPath)
-        try? FileManager.default.removeItem(atPath: sentMarkerPath(stagedPath: stagedPath))
+        let markerName = URL(fileURLWithPath: stagedPath).lastPathComponent + "." + sentMarkerExtension
+        let directoryDescriptor = openStagingDirectory(of: stagedPath)
+        guard directoryDescriptor >= 0 else { return }
+        defer { close(directoryDescriptor) }
+        _ = markerName.withCString { unlinkat(directoryDescriptor, $0, 0) }
+    }
+
+    /// The directory a staged envelope sits in, opened without following a
+    /// link, or -1 with `errno` set. Markers are created and removed only
+    /// through it: the folder is agent-writable, and a path reopened by name
+    /// could have been swapped for a link to anywhere.
+    private static func openStagingDirectory(of stagedPath: String) -> Int32 {
+        URL(fileURLWithPath: stagedPath).deletingLastPathComponent().path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
     }
 
     /// A full write, or a thrown error. `write(2)` is allowed to be partial and

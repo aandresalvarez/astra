@@ -283,6 +283,32 @@ struct ConnectorMutationSendWhenProposedTests {
         }
     }
 
+    /// The staging folder is agent-writable and Auto claims a send with no one
+    /// watching. A staging directory swapped for a link after the envelope was
+    /// read fails the claim and creates nothing where the link points, and
+    /// giving a claim back removes nothing there either.
+    @Test("A send claim never follows a staging directory swapped for a link")
+    func sendClaimDoesNotFollowASwappedDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-send-claim-\(UUID().uuidString)", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        let staging = root.appendingPathComponent(ConnectorMutationStaging.directoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(at: staging, withDestinationURL: outside)
+        let stagedPath = staging.appendingPathComponent("proposal.json").path
+        let marker = outside.appendingPathComponent("proposal.json.sent")
+
+        #expect(throws: ConnectorMutationCoordinatorError.self) {
+            try ConnectorMutationCoordinator.reserveSend(stagedPath: stagedPath, target: "STAR / Bug")
+        }
+        #expect(!FileManager.default.fileExists(atPath: marker.path), "nothing is created through the link")
+
+        try Data("not ASTRA's".utf8).write(to: marker)
+        ConnectorMutationCoordinator.releaseSendReservation(stagedPath: stagedPath)
+        #expect(FileManager.default.fileExists(atPath: marker.path), "nothing is removed through the link")
+    }
+
     @Test("Auto sends with the caller's timeout, bounded by the broker's wait")
     func autoSendUsesTheCallersTimeout() async throws {
         let fixture = try Fixture()
