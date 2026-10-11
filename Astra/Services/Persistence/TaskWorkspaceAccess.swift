@@ -153,13 +153,21 @@ public struct TaskWorkspaceAccess {
     /// The worktree's index, refs, and objects live there, so Git commands in
     /// the worktree need it even though the source working tree is not
     /// granted. It is derived from the recorded source repository, never from
-    /// the worktree's own `.git` file, which the task can rewrite.
+    /// the worktree's own `.git` file, which the task can rewrite. A draft
+    /// retargeted to another linked checkout needs its shared Git directory
+    /// the same way; one already inside the pinned checkout, as a primary
+    /// checkout's `.git` is, comes with it.
     public var runtimeWorktreeGitMetadataPaths: [String] {
-        guard let binding = worktreeBinding,
-              let commonDirectory = TaskWorktreeBinding.gitCommonDirectory(for: binding) else {
+        switch worktreeBindingState {
+        case .bound(let binding, _, _):
+            return TaskWorktreeBinding.gitCommonDirectory(for: binding).map { [$0] } ?? []
+        case .retargeted(let pinned, let commonDirectory?):
+            let checkout = Self.resolvedIdentity(pinned)
+            let common = Self.resolvedIdentity(commonDirectory)
+            return common == checkout || common.hasPrefix(checkout + "/") ? [] : [commonDirectory]
+        case .none, .invalid, .retargeted:
             return []
         }
-        return [commonDirectory]
     }
 
     /// The `task.worktree.prepared` event that binds the task to its pinned
@@ -227,7 +235,7 @@ public struct TaskWorkspaceAccess {
             return RuntimePathProjection(writable: normalizedUniquePaths(paths))
         case .invalid:
             return RuntimePathProjection(writable: [])
-        case .retargeted(let pinned):
+        case .retargeted(let pinned, _):
             // The pin is still the checkout this task runs in.
             return RuntimePathProjection(writable: normalizedUniquePaths(paths + [pinned]))
         case .bound(let binding, _, let pinned):

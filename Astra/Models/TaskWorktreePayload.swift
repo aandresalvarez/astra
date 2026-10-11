@@ -108,7 +108,10 @@ public enum TaskWorktreeBinding {
         /// checkout.
         case invalid(String)
         /// The pin no longer names a worktree ASTRA prepared for this task.
-        case retargeted(pinned: String)
+        /// `commonDirectory` is the shared Git directory the pinned checkout
+        /// was verified against, nil only when the pin is the configured
+        /// repository folder itself and that folder isn't a checkout.
+        case retargeted(pinned: String, commonDirectory: String?)
         case bound(TaskWorktreePayload, event: TaskEvent, pinned: String)
     }
 
@@ -166,13 +169,31 @@ public enum TaskWorktreeBinding {
                 return .invalid(error.description)
             }
         }
-        guard repositories.contains(where: {
-            resolvedPath($0) == resolvedPath(pinned)
-                || registeredCommonDirectory(repositoryPath: $0, worktreePath: pinned) != nil
-        }) else {
-            return .invalid("The selected checkout is not registered by this task's configured repository.")
+        for repository in repositories {
+            let common = verifiedCommonDirectory(checkout: pinned, repository: repository)
+            if common != nil || resolvedPath(repository) == resolvedPath(pinned) {
+                return .retargeted(pinned: pinned, commonDirectory: common)
+            }
         }
-        return .retargeted(pinned: pinned)
+        return .invalid("The selected checkout is not registered by this task's configured repository.")
+    }
+
+    /// The shared Git directory `checkout` uses while it is still a checkout
+    /// of `repository`: the repository's primary checkout, whose own `.git`
+    /// directory is that common directory, or a linked checkout whose own
+    /// `.git` file points back to its registry entry. A folder that merely
+    /// sits where Git once registered a checkout, such as a replacement
+    /// clone, a plain folder, or a symlink, is nil.
+    public static func verifiedCommonDirectory(checkout: String, repository: String) -> String? {
+        if let linked = registeredCommonDirectory(repositoryPath: repository, worktreePath: checkout) { return linked }
+        guard let checkoutPath = resolvedPath(checkout),
+              let common = checkoutCommonDirectory(repository) else { return nil }
+        let fileManager = FileManager.default
+        let dotGit = (checkoutPath as NSString).appendingPathComponent(".git")
+        guard (try? fileManager.attributesOfItem(atPath: checkoutPath)[.type] as? FileAttributeType) == .typeDirectory,
+              (try? fileManager.attributesOfItem(atPath: dotGit)[.type] as? FileAttributeType) == .typeDirectory,
+              resolvedPath(dotGit) == resolvedPath(common) else { return nil }
+        return common
     }
 
     public static func validate(_ task: AgentTask) throws {
@@ -298,8 +319,24 @@ public enum TaskWorktreeBinding {
     private static func registeredEntry(
         repositoryPath: String, worktreePath: String
     ) -> (commonDirectory: String, entry: URL)? {
-        guard let repository = resolvedPath(repositoryPath),
-              let expected = resolvedPath((worktreePath as NSString).appendingPathComponent(".git")) else { return nil }
+        guard let expected = resolvedPath((worktreePath as NSString).appendingPathComponent(".git")),
+              let commonDirectory = checkoutCommonDirectory(repositoryPath) else { return nil }
+        let fileManager = FileManager.default
+        let registry = URL(fileURLWithPath: commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
+        guard let entries = try? fileManager.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil),
+              let entry = entries.first(where: { entry in
+                  guard let raw = try? String(contentsOf: entry.appendingPathComponent("gitdir"), encoding: .utf8) else {
+                      return false
+                  }
+                  return resolvedGitPath(raw, relativeTo: entry.path) == expected
+              }) else { return nil }
+        return (commonDirectory, entry)
+    }
+
+    /// The shared Git directory of the checkout at `repositoryPath`, read
+    /// from its own `.git` entry, with objects and refs present.
+    private static func checkoutCommonDirectory(_ repositoryPath: String) -> String? {
+        guard let repository = resolvedPath(repositoryPath) else { return nil }
         let fileManager = FileManager.default
         let dotGit = (repository as NSString).appendingPathComponent(".git")
         var isDirectory = ObjCBool(false)
@@ -334,15 +371,7 @@ public enum TaskWorktreeBinding {
                 atPath: (commonDirectory as NSString).appendingPathComponent(name), isDirectory: &isDirectory
             ), isDirectory.boolValue else { return nil }
         }
-        let registry = URL(fileURLWithPath: commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
-        guard let entries = try? fileManager.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil),
-              let entry = entries.first(where: { entry in
-                  guard let raw = try? String(contentsOf: entry.appendingPathComponent("gitdir"), encoding: .utf8) else {
-                      return false
-                  }
-                  return resolvedGitPath(raw, relativeTo: entry.path) == expected
-              }) else { return nil }
-        return (commonDirectory, entry)
+        return commonDirectory
     }
 
     /// Resolved through the deepest existing folder, so a path whose worktree
