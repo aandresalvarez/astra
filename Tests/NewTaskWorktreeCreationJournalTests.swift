@@ -202,6 +202,32 @@ struct NewTaskWorktreeCreationJournalTests {
         #expect(await GitService.shared.worktreeIsClean(at: notARepository.path) == nil)
     }
 
+    @Test("A file put in place of a hidden unpopulated gitlink counts as changed")
+    func fileAtHiddenGitlinkPathCounts() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let task = draft(in: app, context: context)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        let worktree = URL(fileURLWithPath: discard.worktreePath)
+        // `libs/b` was never initialized, so its folder is empty.
+        try fixture.git(["update-index", "--assume-unchanged", "libs/b"], at: worktree)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: worktree.path) == false)
+
+        let gitlink = worktree.appendingPathComponent("libs/b")
+        try FileManager.default.removeItem(at: gitlink)
+        try "replacement".write(to: gitlink, atomically: true, encoding: .utf8)
+        #expect(try fixture.git(["status", "--porcelain"], at: worktree).isEmpty)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: worktree.path))
+    }
+
     @Test("Discarding removes submodules only while they hold no local work", arguments: SubmoduleWork.allCases)
     func discardRespectsSubmoduleWork(work: SubmoduleWork) async throws {
         let fixture = try Fixture()

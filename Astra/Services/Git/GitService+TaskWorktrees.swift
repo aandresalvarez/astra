@@ -180,9 +180,16 @@ extension GitService {
                 let mode = String(fields[1])
                 let object = String(fields[2])
                 let file = String(entry[entry.index(after: tab)...])
-                // A gitlink's own work is checked with its submodule.
-                if mode == "160000" { continue }
                 let full = (worktreePath as NSString).appendingPathComponent(file)
+                if mode == "160000" {
+                    // A gitlink's own work is checked with its submodule, but
+                    // its path must still be a folder or absent: a file or
+                    // link put in its place is invisible to status and to the
+                    // submodule checks, yet a removal deletes it.
+                    if let type = (try? FileManager.default.attributesOfItem(atPath: full))?[.type] as? FileAttributeType,
+                       type != .typeDirectory { return true }
+                    continue
+                }
                 // Not following links: a symlink retargeted to a missing path
                 // is still there, and is a change.
                 guard let attributes = try? FileManager.default.attributesOfItem(atPath: full) else {

@@ -442,8 +442,9 @@ struct NewTaskWorktreeLifecycleTests {
             of: "WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)", range: awaited.upperBound..<source.endIndex
         ))
         #expect(awaited.lowerBound < settle.lowerBound)
-        // Nothing settles before recovery runs.
-        #expect(source.range(of: "WorkspaceDeletionCleanupService.resumePending", range: source.startIndex..<recovery.lowerBound) == nil)
+        // That is the only settlement: none before recovery runs, and none on
+        // a launch that skips it.
+        #expect(source.components(separatedBy: "WorkspaceDeletionCleanupService.resumePending").count == 2)
     }
 
     @Test("A replacement that isn't saved puts the workspace's SSH connections back")
@@ -855,6 +856,9 @@ struct NewTaskWorktreeLifecycleTests {
         try FileManager.default.createSymbolicLink(
             at: support, withDestinationURL: URL(fileURLWithPath: (survivor.mirror as NSString).deletingLastPathComponent)
         )
+        // Recovery still excludes only the pinned mirror, never the survivor's.
+        let excluded = try #require(store.pendingMirrorPaths())
+        #expect(!excluded.contains(WorkspacePathPresentation.resolvedPath(survivor.mirror)))
         #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
         #expect(FileManager.default.fileExists(atPath: survivor.mirror))
         #expect(store.pending().isEmpty)
