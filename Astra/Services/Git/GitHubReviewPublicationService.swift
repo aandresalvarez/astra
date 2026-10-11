@@ -218,12 +218,15 @@ enum GitHubReviewPublicationRequirement {
         pattern: #"\b(?:after|once|when|whenever|until|till|if|unless|before|only|later|tomorrow)\b"#
     )
     /// Phrases that hold the posting back wherever they are in the message —
-    /// and exceptions ("…, but not the summary", "except the summary"): the
-    /// file is posted whole, so a request for part of it is not consent to
-    /// post it. Only these: "first" or "prepare" elsewhere ("First, post the
-    /// review, then summarize it") is about other work, not the post.
+    /// exceptions ("…, but not the summary", "except the summary"): the file
+    /// is posted whole, so a request for part of it is not consent to post
+    /// it — and any negation or reversal ("Post the review. Actually, don't."):
+    /// the latest-message rule cannot see a retraction inside the same
+    /// message, so Auto does not act on a message that contains one. Only
+    /// these: "first" or "prepare" elsewhere ("First, post the review, then
+    /// summarize it") is about other work, not the post.
     private static let messagePausingRegex = try? NSRegularExpression(
-        pattern: #"\b(?:ask me|check with me|wait|hold off|hold on|hold it|not yet|let me|(?:don't|do not|dont|never)\s+(?:post|publish|submit|send)|(?:i|we)\s*(?:will|'ll|am going to|'m going to|are going to)\s+(?:post|publish|submit)|except|excluding|exclude|but not|other than|apart from|save for|leave out|leaving out|omit|omitting|without)\b"#
+        pattern: #"\b(?:ask me|check with me|wait|hold off|hold on|hold it|not yet|let me|(?:don't|do not|dont|never)\s+(?:post|publish|submit|send)|(?:i|we)\s*(?:will|'ll|am going to|'m going to|are going to)\s+(?:post|publish|submit)|except|excluding|exclude|but not|other than|apart from|save for|leave out|leaving out|omit|omitting|without|don't|dont|do not|doesn't|does not|never|not|no|nope|cancel|stop|actually|never mind|nevermind|scratch that|forget|ignore|instead|rather|undo|revert|withdraw|abort)\b"#
     )
     /// Words that, inside the command itself — from its verb to the end of its
     /// clause — make it something other than a post now.
