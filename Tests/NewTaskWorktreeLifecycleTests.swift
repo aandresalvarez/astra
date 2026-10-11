@@ -563,6 +563,12 @@ struct NewTaskWorktreeLifecycleTests {
         try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
         try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
 
+        // Imports that can't be saved leave the durable store without them.
+        let unsaved = try Fixture.container()
+        #expect(!(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: unsaved.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false,
+            saveImports: { _ in throw CocoaError(.fileWriteUnknown) }
+        ).value))
         let empty = try Fixture.container()
         #expect(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
             modelContext: empty.mainContext, extraRoots: [fixture.root.path], includeDefaultRoots: false

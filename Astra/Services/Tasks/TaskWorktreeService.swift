@@ -544,8 +544,14 @@ enum TaskWorktreeService {
                 do {
                     try await setUpSubmodules(git, createdPath)
                 } catch {
+                    // Taken on failure too: what setup populated came from the
+                    // clone, and abandoning the creation must still remove it.
+                    try? await git.recordSubmoduleTagSnapshot(at: createdPath)
                     throw TaskWorktreeCreationError.submodulesUnavailable(path: path, reason: error.localizedDescription)
                 }
+                // Without it cleanup can't tell a tag made later from a
+                // fetched one, so it keeps the worktree; never fatal here.
+                try? await git.recordSubmoduleTagSnapshot(at: createdPath)
             }
             // The workspace can drop the repository while Git runs; a binding
             // to a source it no longer configures would be invalid at once.

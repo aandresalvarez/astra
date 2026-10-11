@@ -519,6 +519,7 @@ public enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         incompleteMarker: URL? = nil,
+        saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {}
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
@@ -555,10 +556,12 @@ public enum WorkspaceRecoveryService {
             }
             let loadedConfigs = await loadWorkspaceConfigs(candidates)
             guard !Task.isCancelled else { return false }
-            if recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs) > 0 {
+            let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs, save: saveImports)
+            if recovered.imported > 0 {
                 afterImport()
             }
-            let trusted = scan.complete && loadedConfigs.count == candidates.count
+            // Owners and pins count only once the store holds them durably.
+            let trusted = scan.complete && loadedConfigs.count == candidates.count && recovered.durable
             if let incompleteMarker {
                 if trusted {
                     try? FileManager.default.removeItem(at: incompleteMarker)
@@ -673,13 +676,18 @@ public enum WorkspaceRecoveryService {
 
     @discardableResult
     @MainActor
+    /// What was imported, and whether the store now holds every loaded
+    /// mirror durably: false when the save failed or a mirror was skipped
+    /// for a later scan.
     private static func recoverMissingWorkspaces(
         modelContext: ModelContext,
-        loadedConfigs configs: [LoadedWorkspaceConfig]
-    ) -> Int {
-        guard !configs.isEmpty else { return 0 }
+        loadedConfigs configs: [LoadedWorkspaceConfig],
+        save: (ModelContext) throws -> Void
+    ) -> (imported: Int, durable: Bool) {
+        guard !configs.isEmpty else { return (0, true) }
 
         var imported = 0
+        var skippedForLater = false
         let existing = fetchExistingWorkspaces(modelContext: modelContext)
         var existingIDs = Set(existing.map { $0.id.uuidString })
         var existingPaths = Set(existing.map { normalizePath($0.primaryPath) })
@@ -694,7 +702,10 @@ public enum WorkspaceRecoveryService {
             if !configPath.isEmpty, existingPaths.contains(configPath) {
                 continue
             }
-            if refusesReservedRoot(of: config) { continue }
+            if refusesReservedRoot(of: config) {
+                skippedForLater = true
+                continue
+            }
             let workspace = WorkspaceConfigManager.importWorkspace(
                 from: config,
                 modelContext: modelContext,
@@ -706,8 +717,8 @@ public enum WorkspaceRecoveryService {
             imported += 1
         }
 
-        saveRecoveryImportCount(imported, modelContext: modelContext)
-        return imported
+        let saved = saveRecoveryImportCount(imported, modelContext: modelContext, save: save)
+        return (imported, saved && !skippedForLater)
     }
 
     /// A checkout that worktree cleanup is removing is skipped, not imported
@@ -722,22 +733,28 @@ public enum WorkspaceRecoveryService {
         return true
     }
 
-    private static func saveRecoveryImportCount(_ imported: Int, modelContext: ModelContext) {
-        guard imported > 0 else { return }
+    /// False when the imports couldn't be saved.
+    @discardableResult
+    private static func saveRecoveryImportCount(
+        _ imported: Int, modelContext: ModelContext, save: (ModelContext) throws -> Void = { try $0.save() }
+    ) -> Bool {
+        guard imported > 0 else { return true }
 
         do {
-            try modelContext.save()
+            try save(modelContext)
         } catch {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "save_recovered_workspaces",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
+            return false
         }
         let message = "Recovered \(imported) workspace\(imported == 1 ? "" : "s") from \(WorkspaceFileLayout.workspaceConfigFileName)."
         UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
         AuditLoggingSeam.required.audit(.workspaceRecovered, category: "Persistence", fields: [
             "imported_count": String(imported)
         ])
+        return true
     }
 
     public static func discoverWorkspaceConfigFiles(
