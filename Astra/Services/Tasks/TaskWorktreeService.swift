@@ -360,11 +360,19 @@ enum TaskWorktreeService {
 
     // MARK: - Intent
 
+    /// The newest request by its recorded sequence, then by timestamp, so
+    /// two choices made within a second stay ordered after a store is rebuilt
+    /// from a mirror that keeps whole seconds.
     static func latestRequest(for task: AgentTask) -> TaskWorktreeRequestPayload? {
         task.events
             .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreeRequested) }
-            .max { $0.timestamp < $1.timestamp }
-            .flatMap { try? $0.decodePayload(as: TaskWorktreeRequestPayload.self).get() }
+            .compactMap { event in
+                (try? event.decodePayload(as: TaskWorktreeRequestPayload.self).get()).map { (event.timestamp, $0) }
+            }
+            .max { lhs, rhs in
+                let left = lhs.1.sequence ?? -1, right = rhs.1.sequence ?? -1
+                return left != right ? left < right : lhs.0 < rhs.0
+            }?.1
     }
 
     /// Records the composer's worktree choice on a draft so reopening the draft
@@ -377,6 +385,8 @@ enum TaskWorktreeService {
         modelContext: ModelContext
     ) -> Bool {
         let latest = latestRequest(for: task)
+        var request = request
+        request.sequence = (latest?.sequence ?? -1) + 1
         guard latest != request, latest != nil || request.enabled,
               case .success(let payload) = TaskEvent.encodePayload(request) else { return false }
         modelContext.insert(TaskEvent(

@@ -1434,6 +1434,29 @@ struct NewTaskWorktreeBaseTests {
         #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(sources.path)))
     }
 
+    @Test("The latest worktree choice wins even when two were recorded within the same second")
+    func latestRequestSurvivesTiedTimestamps() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let other = try fixture.repository("Other")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "Both", primaryPath: repository.path, additionalPaths: [other.path])
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        let first = TaskWorktreeRequestPayload(enabled: true, base: .defaultBranch, repositoryPath: repository.path)
+        let second = TaskWorktreeRequestPayload(enabled: true, base: .currentBranch, repositoryPath: other.path)
+        #expect(TaskWorktreeService.recordRequestIfChanged(first, on: draft, modelContext: context))
+        #expect(TaskWorktreeService.recordRequestIfChanged(second, on: draft, modelContext: context))
+        // A mirror keeps whole seconds: both events come back with one time.
+        let tied = Date(timeIntervalSince1970: 1_800_000_000)
+        for event in draft.events where event.hasType(TaskEventTypes.Task.worktreeRequested) { event.timestamp = tied }
+        #expect(TaskWorktreeService.latestRequest(for: draft) == second)
+        #expect(TaskWorktreeService.latestRequest(for: draft)?.sequence == 1)
+    }
+
     @Test("Current branch refuses a clone standing where Git still lists the selected linked checkout")
     func replacedLinkedCheckoutIsNotCurrentBranch() async throws {
         let fixture = try Fixture()

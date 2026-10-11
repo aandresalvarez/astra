@@ -154,32 +154,31 @@ extension GitService {
 
     /// `git status` and a non-forced `git worktree remove` both trust the
     /// index for entries marked assume-unchanged or skip-worktree, so a
-    /// change to one is invisible yet deleted. Each such entry's type and
-    /// mode are compared with the index, so an executable bit flipped or a
-    /// file swapped for a link counts, and its content is hashed against the
-    /// index blob. A skip-worktree file that is absent is unchanged only
-    /// while the checkout's sparse rules exclude it, as a sparse checkout
-    /// leaves it; otherwise its absence is a hidden deletion. An absent
-    /// assume-unchanged file was deleted. Any failure to read counts as
-    /// changed.
+    /// change to one is invisible yet deleted, and so is the flag itself,
+    /// which lives in the per-worktree index. An assume-unchanged flag is
+    /// always the user's, so it counts as local work on its own. A
+    /// skip-worktree flag is ASTRA's to discard only while the checkout's
+    /// sparse rules explain it by leaving the path out; then an absent file
+    /// is expected, and a present one's type, mode, and content must still
+    /// match the index. Any failure to read counts as changed.
     func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool {
         do {
             // `<tag> <mode> <object> <stage>\t<path>` per entry.
             let listing = try await runGit(
                 at: worktreePath, arguments: ["ls-files", "-v", "-s", "-z"], failureLogLevel: .warning
             )
-            var absentSkipWorktree: [String] = []
+            var skipWorktreeFiles: [String] = []
             for entry in listing.split(separator: "\0") {
                 guard let tag = entry.first else { continue }
-                let assumeUnchanged = tag.isLowercase
-                let skipWorktree = tag == "S" || tag == "s"
-                guard assumeUnchanged || skipWorktree else { continue }
+                if tag.isLowercase { return true }
+                guard tag == "S" else { continue }
                 guard let tab = entry.firstIndex(of: "\t") else { return true }
                 let fields = entry[entry.startIndex..<tab].split(separator: " ")
                 guard fields.count == 4 else { return true }
                 let mode = String(fields[1])
                 let object = String(fields[2])
                 let file = String(entry[entry.index(after: tab)...])
+                skipWorktreeFiles.append(file)
                 let full = (worktreePath as NSString).appendingPathComponent(file)
                 if mode == "160000" {
                     // A gitlink's own work is checked with its submodule, but
@@ -192,13 +191,7 @@ extension GitService {
                 }
                 // Not following links: a symlink retargeted to a missing path
                 // is still there, and is a change.
-                guard let attributes = try? FileManager.default.attributesOfItem(atPath: full) else {
-                    if skipWorktree {
-                        absentSkipWorktree.append(file)
-                        continue
-                    }
-                    return true
-                }
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: full) else { continue }
                 switch (mode, attributes[.type] as? FileAttributeType) {
                 case ("120000", .typeSymbolicLink?):
                     // A link's blob is its target path, byte for byte: a
@@ -218,7 +211,7 @@ extension GitService {
                     return true
                 }
             }
-            return !(await sparseRulesExclude(absentSkipWorktree, at: worktreePath))
+            return !(await sparseRulesExclude(skipWorktreeFiles, at: worktreePath))
         } catch {
             return true
         }
@@ -359,10 +352,13 @@ extension GitService {
             + "|| echo \"branch $displaypath $ref\"; done; }"
     ].joined(separator: " && ")
 
-    /// Every populated submodule's tags, through Git, packed or loose.
+    /// Every populated submodule's tags, through Git, packed or loose, and
+    /// its repository configuration, such as a remote added since: local
+    /// state a forced removal deletes that no status or ref check shows.
     static let submoduleTagListing = [
         "submodule", "foreach", "--quiet", "--recursive",
-        "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' refs/tags"
+        "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' refs/tags; "
+            + "echo \"-- config\"; git config --local --list"
     ]
     static let submoduleTagSnapshotFileName = "astra-submodule-tags"
 

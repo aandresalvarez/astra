@@ -360,26 +360,59 @@ enum WorkspaceDeletionCleanupService {
     /// Removes mirrors found away from their pinned path, each already
     /// matched by identity; false when one couldn't be removed.
     static func removeMovedMirrors(_ paths: [String]) -> Bool {
-        var removedAll = true
-        for path in paths {
-            do { try FileManager.default.removeItem(atPath: path) } catch { removedAll = false }
-        }
-        return removedAll
+        paths.allSatisfy(removeConfirmingAbsence)
     }
 
     static func removeMirrors(_ mirrorPaths: [String]) -> Bool {
         var removedAll = true
-        let unmoved = mirrorPaths.filter { path in
-            let folder = (path as NSString).deletingLastPathComponent
-            return WorkspacePathPresentation.resolvedPath(folder) == folder
-        }
-        for path in unmoved where (try? FileManager.default.attributesOfItem(atPath: path)) != nil {
-            do {
-                try FileManager.default.removeItem(atPath: path)
-            } catch {
-                removedAll = false
+        for path in mirrorPaths {
+            switch pinnedFolderState((path as NSString).deletingLastPathComponent) {
+            case .replaced: continue
+            case .unknown: removedAll = false
+            case .unchanged: removedAll = removeConfirmingAbsence(path) && removedAll
             }
         }
         return removedAll
+    }
+
+    /// Removes `path` itself, never what a link points to. Only a confirmed
+    /// missing file counts as already removed: a stat or removal that fails
+    /// for another reason, such as a folder that can't be traversed, keeps
+    /// the record, since the mirror may still be there.
+    private static func removeConfirmingAbsence(_ path: String) -> Bool {
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            return true
+        } catch {
+            return isMissingFile(error)
+        }
+    }
+
+    private static func isMissingFile(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) { return true }
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) { return true }
+        return (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingFile) ?? false
+    }
+
+    enum PinnedFolder { case unchanged, replaced, unknown }
+
+    /// Whether a pinned mirror folder, resolved when it was pinned, is still
+    /// that folder: `.replaced` when it now resolves elsewhere, as after a
+    /// part of it was replaced by a link, and `.unknown` when a part of it
+    /// can't be read, so neither can be told. A missing part is unchanged,
+    /// as nothing beneath it is left to remove.
+    static func pinnedFolderState(_ folder: String) -> PinnedFolder {
+        var current = folder
+        while !current.isEmpty, current != "/" {
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: current)
+            } catch {
+                guard isMissingFile(error) else { return .unknown }
+            }
+            current = (current as NSString).deletingLastPathComponent
+        }
+        return WorkspacePathPresentation.resolvedPath(folder) == folder ? .unchanged : .replaced
     }
 }
