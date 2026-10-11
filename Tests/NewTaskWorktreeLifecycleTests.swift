@@ -827,6 +827,60 @@ struct NewTaskWorktreeLifecycleTests {
         }
     }
 
+    @Test("A mirror write queued before a workspace deletion never lands after it")
+    func queuedMirrorWriteIsDroppedByDeletion() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let folder = fixture.root.appendingPathComponent("Deleted", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Deleted", primaryPath: folder.path)
+        context.insert(workspace)
+        try context.save()
+        let id = workspace.id.uuidString
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // What `autoExport` snapshots and queues before the deletion runs.
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let queued = WorkspaceAutoExportGate.shared.ticket(for: id)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        )
+        #expect(coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace]).persisted)
+        try? FileManager.default.removeItem(at: mirror)
+
+        await WorkspaceAutoExportWriter.shared.write(config, to: mirror, workspaceID: id, ticket: queued)
+        #expect(!FileManager.default.fileExists(atPath: mirror.path))
+        // An export taken after the deletion, such as a reimport's, lands.
+        await WorkspaceAutoExportWriter.shared.write(
+            config, to: mirror, workspaceID: id, ticket: WorkspaceAutoExportGate.shared.ticket(for: id)
+        )
+        #expect(FileManager.default.fileExists(atPath: mirror.path))
+    }
+
+    @Test("A dangling mirror symlink is removed, not taken as already gone")
+    func danglingMirrorLinkIsRemoved() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Linked", isDirectory: true)
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: mirror, withDestinationPath: fixture.root.appendingPathComponent("not-there.json").path
+        )
+        #expect(!FileManager.default.fileExists(atPath: mirror))
+        try store.record(WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: []))
+
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect((try? FileManager.default.attributesOfItem(atPath: mirror)) == nil)
+        #expect(store.pending().isEmpty)
+    }
+
     @Test("Branch deletion and the Repository card's branch operations exclude each other")
     func branchDeletionGateExcludesCardOperations() throws {
         let fixture = try Fixture()

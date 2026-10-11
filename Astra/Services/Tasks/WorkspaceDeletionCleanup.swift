@@ -257,14 +257,17 @@ enum WorkspaceDeletionCleanupService {
         return settled
     }
 
-    /// False when a mirror that exists couldn't be removed.
+    /// False when a mirror that exists couldn't be removed. Existence is
+    /// checked without following links: a dangling symlink is still a
+    /// mirror, since its target could come back and be reimported, so the
+    /// link itself is removed.
     static func removeMirrors(for workspacePath: String) -> Bool {
         let mirrorPaths = Set([
             WorkspaceFileLayout.workspaceConfigFile(for: workspacePath),
             WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspacePath)
         ])
         var removedAll = true
-        for path in mirrorPaths where FileManager.default.fileExists(atPath: path) {
+        for path in mirrorPaths where (try? FileManager.default.attributesOfItem(atPath: path)) != nil {
             do {
                 try FileManager.default.removeItem(atPath: path)
             } catch {

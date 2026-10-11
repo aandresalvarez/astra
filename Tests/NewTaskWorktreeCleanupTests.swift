@@ -458,6 +458,58 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("A hidden entry whose executable bit or type changed counts as changed")
+    func hiddenModeAndTypeChangesCount() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        let file = checkout.appendingPathComponent("Sources/file.txt")
+        try fixture.git(["update-index", "--assume-unchanged", "Sources/file.txt"], at: checkout)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        // Only the executable bit: the content hash is unchanged.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        // A file replaced by a folder.
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+    }
+
+    @Test("A task that reuses a deleted draft's ID for another checkout doesn't keep its worktree")
+    func reusedTaskIDDoesNotKeepWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let workspace = try #require(draft.workspace)
+        try fixture.cleanupStore.record(discard)
+        let id = draft.id
+        context.delete(draft)
+        try context.save()
+        // An import before the retry reused the ID with no worktree of its own.
+        let imported = AgentTask(title: "Imported", goal: "Elsewhere", workspace: workspace)
+        imported.id = id
+        context.insert(imported)
+        try context.save()
+        #expect(!TaskWorktreeCleanupService.task(imported, prepared: discard))
+
+        #expect(await TaskWorktreeCleanupService.resumePending(
+            modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, store: fixture.cleanupStore
+        ) == 1)
+        #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
     @Test("A removal Git refuses takes back the removal mark")
     func refusedRemovalClearsMark() async throws {
         let fixture = try Fixture()

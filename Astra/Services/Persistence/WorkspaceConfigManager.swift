@@ -1058,8 +1058,10 @@ public enum WorkspaceConfigManager {
         }
         guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
         let workspaceID = workspace.id.uuidString
+        // Taken with the snapshot, so a deletion settled first drops it.
+        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspaceID)
         Task.detached(priority: .utility) {
-            await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID)
+            await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID, ticket: ticket)
         }
     }
 
@@ -3142,47 +3144,5 @@ public enum WorkspaceConfigManager {
             return path.hasPrefix("/")
         }
         return path == root || path.hasPrefix(root + "/")
-    }
-}
-
-/// Serializes workspace auto-export JSON encode + file writes off the main actor.
-///
-/// Actor isolation guarantees that two auto-exports never write the same file
-/// concurrently, and the `.atomic` write means `WorkspaceRecoveryService` /
-/// `loadConfig` can never observe a torn file. Auto-export drops `.prettyPrinted`
-/// (kept only for explicit user-facing exports via `WorkspaceConfigManager.write`)
-/// while preserving `.sortedKeys` so the on-disk recovery file stays deterministic.
-actor WorkspaceAutoExportWriter {
-    static let shared = WorkspaceAutoExportWriter()
-
-    private let encoder: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }()
-
-    func write(
-        _ config: WorkspaceConfigManager.WorkspaceConfig,
-        to url: URL,
-        workspaceID: String
-    ) {
-        do {
-            let data = try encoder.encode(config)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            let nsError = error as NSError
-            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
-                "result": "auto_export_failed",
-                "diagnostic_result": "writeFailed",
-                "workspace_id": workspaceID,
-                "config_file": url.lastPathComponent,
-                "path": url.path,
-                "error_type": String(describing: type(of: error)),
-                "error_domain": nsError.domain,
-                "error_code": String(nsError.code),
-                "error_description": nsError.localizedDescription
-            ], level: .error)
-        }
     }
 }
