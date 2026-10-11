@@ -236,8 +236,28 @@ public struct TaskWorkspaceAccess {
         case .invalid:
             return RuntimePathProjection(writable: [])
         case .retargeted(let pinned, _):
-            // The pin is still the checkout this task runs in.
-            return RuntimePathProjection(writable: normalizedUniquePaths(paths + [pinned]))
+            // The pin is still the checkout this task runs in. As for a bound
+            // worktree, the checkouts its prepared worktrees came from, and
+            // folders containing them, stay readable only: a parent grant
+            // would otherwise reach the original checkout and its neighbors.
+            let pin = Self.resolvedPath(pinned)
+            let sources = preparedSourceRepositories.map(Self.resolvedPath)
+            var writable: [String] = []
+            var readOnly: [String] = []
+            for path in paths {
+                let resolved = Self.resolvedPath(path)
+                let containsSource = sources.contains { $0.hasPrefix(resolved + "/") }
+                let isOtherSource = resolved != pin && sources.contains(resolved)
+                if containsSource || isOtherSource {
+                    readOnly.append(path)
+                } else {
+                    writable.append(path)
+                }
+            }
+            return RuntimePathProjection(
+                writable: normalizedUniquePaths(writable + [pinned]),
+                readOnly: normalizedUniquePaths(readOnly)
+            )
         case .bound(let binding, _, let pinned):
             let repository = Self.resolvedPath(binding.repositoryPath)
             var writable: [String] = []
@@ -279,6 +299,15 @@ public struct TaskWorkspaceAccess {
                 readOnly: normalizedUniquePaths(readOnly),
                 projected: normalizedUniquePaths(projected)
             )
+        }
+    }
+
+    /// The source checkout of every worktree prepared for the task.
+    private var preparedSourceRepositories: [String] {
+        task.events.compactMap { event -> String? in
+            guard !event.isDeleted, event.hasType(TaskEventTypes.Task.worktreePrepared),
+                  case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return nil }
+            return payload.repositoryPath
         }
     }
 

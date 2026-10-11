@@ -1290,6 +1290,67 @@ struct NewTaskWorktreeBaseTests {
             == WorkspacePathPresentation.resolvedPath(parent.appendingPathComponent(".git/modules/Library").path))
     }
 
+    @Test("A retargeted draft keeps a folder containing its source checkout read-only")
+    func retargetedDraftKeepsSourceAncestorReadOnly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let projects = fixture.root.appendingPathComponent("Projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        let repository = try fixture.repository("Projects/App")
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: repository.path, additionalPaths: [projects.path])
+        store.mainContext.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let sibling = fixture.root.appendingPathComponent("Sibling", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "sibling", sibling.path], at: repository)
+        #expect(TaskCodeLocationPin.set(sibling.path, workspace: workspace, task: draft))
+        guard case .retargeted = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("Expected the draft to be retargeted to the sibling checkout")
+            return
+        }
+
+        let access = TaskWorkspaceAccess(task: draft)
+        let writable = Set(access.runtimeWritablePaths.map(WorkspacePathPresentation.resolvedPath))
+        #expect(writable.contains(WorkspacePathPresentation.resolvedPath(sibling.path)))
+        // Neither the original checkout nor a folder containing it.
+        #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(projects.path)))
+        #expect(!writable.contains(WorkspacePathPresentation.resolvedPath(repository.path)))
+        #expect(Set(access.runtimeReadOnlyWorkspacePaths.map(WorkspacePathPresentation.resolvedPath))
+            .isSuperset(of: [projects.path, repository.path].map(WorkspacePathPresentation.resolvedPath)))
+    }
+
+    @Test("A dangling link at a worktree destination is skipped, so no branch is orphaned")
+    func danglingDestinationLinkIsSkipped() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        let candidates = Set([nil, draft.title].map { title in
+            GitService.worktreeLocation(
+                repoPath: repository.path,
+                branch: TaskWorktreeService.branchName(for: draft, title: title),
+                worktreesRoot: fixture.worktrees.path
+            )
+        })
+        for destination in candidates {
+            try FileManager.default.createDirectory(
+                atPath: (destination as NSString).deletingLastPathComponent, withIntermediateDirectories: true
+            )
+            try FileManager.default.createSymbolicLink(atPath: destination, withDestinationPath: "/nonexistent/astra")
+            #expect(!FileManager.default.fileExists(atPath: destination))
+        }
+
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let pin = try #require(draft.executionRootPath)
+        #expect(!candidates.contains(pin))
+        let branches = try fixture.git(["branch", "--list", "astra/*"], at: repository)
+            .split(whereSeparator: \.isNewline)
+        #expect(branches.count == 1)
+    }
+
     @Test("Current branch refuses a clone standing where Git still lists the selected linked checkout")
     func replacedLinkedCheckoutIsNotCurrentBranch() async throws {
         let fixture = try Fixture()

@@ -881,6 +881,42 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pending().isEmpty)
     }
 
+    @Test("A pending deletion removes the mirror it pinned, even after a symlinked .astra folder is retargeted")
+    func deletionCleanupPinsMirrorFiles() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let support = URL(fileURLWithPath: (WorkspaceFileLayout.workspaceConfigFile(for: folder.path) as NSString).deletingLastPathComponent)
+        let name = (WorkspaceFileLayout.workspaceConfigFile(for: folder.path) as NSString).lastPathComponent
+        func supportFolder(_ label: String) throws -> URL {
+            let url = fixture.root.appendingPathComponent(label, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            try "{}".write(to: url.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            return url
+        }
+        let original = try supportFolder("SupportA")
+        let other = try supportFolder("SupportB")
+        try FileManager.default.createSymbolicLink(at: support, withDestinationURL: original)
+        let workspace = Workspace(name: "Workspace", primaryPath: folder.path)
+        context.insert(workspace)
+        try context.save()
+        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        context.delete(workspace)
+        try context.save()
+
+        // Before the retry, the support folder now leads to another mirror.
+        try FileManager.default.removeItem(at: support)
+        try FileManager.default.createSymbolicLink(at: support, withDestinationURL: other)
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(!FileManager.default.fileExists(atPath: original.appendingPathComponent(name).path))
+        #expect(FileManager.default.fileExists(atPath: other.appendingPathComponent(name).path))
+        #expect(store.pending().isEmpty)
+    }
+
     @Test("Branch deletion and the Repository card's branch operations exclude each other")
     func branchDeletionGateExcludesCardOperations() throws {
         let fixture = try Fixture()
