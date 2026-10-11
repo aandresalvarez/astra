@@ -332,11 +332,23 @@ struct GitHubReviewPostWhenRequestedTests {
             return
         }
 
+        // A valid review padded past the limit: only the size bound refuses
+        // it. The same review padded to just under the limit posts.
         try FileManager.default.removeItem(at: fixture.file)
-        try Data(repeating: 0x20, count: 300 * 1024).write(to: fixture.file)
-        let large = await fixture.handler(level: .autonomous, cli: FakeCLI()).postGitHubReview(fixture.request(for: fixture.file))
+        try (fixture.data + Data(repeating: 0x20, count: 256 * 1024)).write(to: fixture.file)
+        let largeCLI = FakeCLI()
+        let large = await fixture.handler(level: .autonomous, cli: largeCLI).postGitHubReview(fixture.request(for: fixture.file))
         guard case .refused = large else {
             Issue.record("Expected a refusal for an oversized file, got \(large)")
+            return
+        }
+        #expect(await largeCLI.callCount() == 0)
+
+        let control = try Fixture()
+        try (control.data + Data(repeating: 0x20, count: 256 * 1024 - control.data.count)).write(to: control.file)
+        let fits = await control.handler(level: .autonomous, cli: FakeCLI()).postGitHubReview(control.request(for: control.file))
+        guard case .performed = fits else {
+            Issue.record("Expected a review at the limit to post, got \(fits)")
             return
         }
     }
