@@ -748,12 +748,14 @@ enum DockerExecutionPlanner {
             guard standardized != WorkspacePathPresentation.standardizedPath(currentDirectory) else { continue }
             appendReadOnlyPath(standardized, fallbackContainerPath: "/mnt/astra/read-only-workspace-\(offset + 1)")
         }
-        for metadata in taskAccess.runtimeWorktreeGitMetadataPaths {
+        // The shared Git directory is mounted read-only, with what Git in this
+        // checkout writes there mounted over it at the same paths.
+        let writableMetadata = workspaceAccess == .shared ? [] : taskAccess.runtimeWorktreeGitWritableMetadataPaths
+        for (metadata, access) in taskAccess.runtimeWorktreeGitMetadataPaths.map({ ($0, ExecutionEnvironmentMountAccess.readOnly) })
+            + writableMetadata.map({ ($0, ExecutionEnvironmentMountAccess.readWrite) }) {
             let path = WorkspacePathPresentation.standardizedPath(metadata)
-            let access: ExecutionEnvironmentMountAccess = workspaceAccess == .shared ? .readOnly : .readWrite
-            // A saved mount of exactly this path takes the run's access: Git
-            // writes its index and refs here, so a read-only copy would make
-            // a writable worktree fail to commit.
+            // A saved mount of exactly this path takes the run's access, so
+            // a saved writable copy never reopens the source checkout's index.
             if let index = mounts.firstIndex(where: { $0.hostPath == path && $0.containerPath == path }) {
                 mounts[index] = ExecutionEnvironmentMount(
                     hostPath: path, containerPath: path, access: access, role: mounts[index].role

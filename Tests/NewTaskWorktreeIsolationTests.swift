@@ -196,7 +196,8 @@ struct NewTaskWorktreeIsolationTests {
         #expect(!plan.hostWritablePaths.contains(projects.path))
         #expect(!plan.hostWritablePaths.contains(repository.path))
         #expect(plan.hostReadablePaths.contains(projects.path))
-        #expect(plan.hostWritablePaths.contains(repository.appendingPathComponent(".git").path))
+        #expect(plan.hostWritablePaths.contains(repository.appendingPathComponent(".git/objects").path))
+        #expect(!plan.hostWritablePaths.contains(repository.appendingPathComponent(".git").path))
     }
 
     @Test("Read-only ancestors retain configured additional-folder labels and shared admission claims", arguments: [false, true])
@@ -344,11 +345,21 @@ struct NewTaskWorktreeIsolationTests {
         #expect(!access.runtimeWorkspacePaths.contains(metadata))
         // Provider-native sandboxes never get it: Codex keeps `.git` read-only.
         #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: task).contains(metadata))
-        #expect(AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task).contains(metadata))
+        // Only what Git in the worktree writes: objects, refs, reflogs, and
+        // its own registry entry, never the source checkout's index or HEAD.
+        let writable = access.runtimeWorktreeGitWritableMetadataPaths
+        let entry = try #require(writable.last)
+        #expect(writable == ["objects", "refs", "logs"].map { metadata + "/" + $0 } + [entry])
+        #expect(entry.hasPrefix(metadata + "/worktrees/"))
+        #expect(AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task) == (AgentRuntimeProcessRunner.runtimeWritablePaths(for: task) + writable).sorted())
+        #expect(!AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task).contains(metadata))
         #expect(!AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task).contains(repository.path))
         let grant = try #require(launchPlan(task).hostPathGrants.first { $0.path == metadata })
-        #expect(grant.access == .readWrite)
+        #expect(grant.access == .read)
         #expect(grant.lifetime == .task)
+        let entryGrant = try #require(launchPlan(task).hostPathGrants.first { $0.path == entry })
+        #expect(entryGrant.access == .readWrite)
+        #expect(entryGrant.lifetime == .task)
         #expect(!launchPlan(task).hostWritablePaths.contains(repository.path))
         #expect(launchPlan(task, workspaceAccess: .shared).hostPathGrants.first { $0.path == metadata }?.access == .read)
 
@@ -401,7 +412,8 @@ struct NewTaskWorktreeIsolationTests {
         let metadata = repository.appendingPathComponent(".git").path
         #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths == [metadata])
         let plan = launchPlan(task)
-        #expect(plan.hostWritablePaths.contains(metadata))
+        #expect(plan.hostWritablePaths.contains(metadata + "/objects"))
+        #expect(!plan.hostWritablePaths.contains(metadata))
         #expect(!plan.hostWritablePaths.contains(linked.path))
         #expect(!plan.hostWritablePaths.contains(repository.path))
     }
@@ -516,7 +528,7 @@ struct NewTaskWorktreeIsolationTests {
         #expect(workdir.access == .readWrite)
     }
 
-    @Test("A saved read-only mount of the Git metadata itself takes the run's access")
+    @Test("A saved mount of the Git metadata itself stays read-only under the worktree's writable Git paths")
     func dockerMetadataMountTakesRunAccess() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -531,12 +543,18 @@ struct NewTaskWorktreeIsolationTests {
         )
         let environment = WorkspaceExecutionEnvironment(
             id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
-            mounts: [ExecutionEnvironmentMount(hostPath: metadata, containerPath: metadata, access: .readOnly, role: .additionalPath)]
+            mounts: [ExecutionEnvironmentMount(hostPath: metadata, containerPath: metadata, access: .readWrite, role: .additionalPath)]
         )
         let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
         let containerPaths = mounts.map(\.containerPath)
         #expect(Set(containerPaths).count == containerPaths.count)
-        #expect(mounts.first { $0.containerPath == metadata }?.access == .readWrite)
+        // A saved writable copy never reopens the source checkout's index:
+        // the shared directory is read-only, and only what Git in the
+        // worktree writes is mounted writable over it.
+        #expect(mounts.first { $0.containerPath == metadata }?.access == .readOnly)
+        for writable in TaskWorkspaceAccess(task: task).runtimeWorktreeGitWritableMetadataPaths {
+            #expect(mounts.first { $0.containerPath == writable }?.access == .readWrite)
+        }
     }
 
     @Test("A saved mount at the Git metadata's own path moves aside for it")
@@ -618,10 +636,14 @@ struct NewTaskWorktreeIsolationTests {
         #expect(mounts.first { $0.hostPath == nested.path }?.access == .readWrite)
         #expect(mounts.first { $0.hostPath == other.path }?.access == .readWrite)
         let gitMount = try #require(mounts.first { $0.hostPath == metadata && $0.containerPath == metadata })
-        #expect(gitMount.access == .readWrite)
-        #expect(DockerExecutionPlanner.mountPlan(
+        #expect(gitMount.access == .readOnly)
+        let objects = metadata + "/objects"
+        #expect(mounts.first { $0.hostPath == objects && $0.containerPath == objects }?.access == .readWrite)
+        let shared = DockerExecutionPlanner.mountPlan(
             currentDirectory: path, environment: environment, task: task, workspaceAccess: .shared
-        ).first { $0.hostPath == metadata }?.access == .readOnly)
+        )
+        #expect(shared.first { $0.hostPath == metadata }?.access == .readOnly)
+        #expect(!shared.contains { $0.hostPath == objects })
         let mcpVariables = DockerWorkspaceMCPProjection.environmentVariables(
             task: task, environment: environment, currentDirectory: path, runID: nil, workspaceAccess: .shared
         )
@@ -722,6 +744,28 @@ struct NewTaskWorktreeIsolationTests {
         )
         #expect(withGrant.exitCode == 0, "\(withGrant.stderr)")
         #expect(try fixture.git(["log", "-1", "--format=%s"], at: URL(fileURLWithPath: path)) == "Granted")
+
+        // The grant stops at what Git in the worktree writes: the source
+        // checkout's index, and the shared config Git runs there, stay
+        // read-only.
+        try "staged".write(to: repository.appendingPathComponent("untracked.txt"), atomically: true, encoding: .utf8)
+        let restage = await runner.run(
+            command: "git -C '\(repository.path)' add -A",
+            workingDirectory: path,
+            environment: environment,
+            additionalWritablePaths: AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task)
+        )
+        #expect(restage.exitCode != 0)
+        #expect(try fixture.git(["diff", "--cached", "--name-only"], at: repository).isEmpty)
+        let configure = await runner.run(
+            command: "git config core.fsmonitor 'touch planted'",
+            workingDirectory: path,
+            environment: environment,
+            additionalWritablePaths: AgentRuntimeProcessRunner.confinedCommandWritablePaths(for: task)
+        )
+        #expect(configure.exitCode != 0)
+        // `--get` fails when the key is unset.
+        #expect((try? fixture.git(["config", "--get", "core.fsmonitor"], at: repository)) == nil)
     }
 
     @Test("A nested repository keeps its own checkout; plain source subfolders map into the worktree")
@@ -1024,7 +1068,8 @@ struct NewTaskWorktreeIsolationTests {
         // repository run in parallel; the main checkout's writer (next test)
         // still excludes them.
         for (task, claims) in [(first, firstClaims), (second, secondClaims)] {
-            #expect(launchPlan(task).hostPathGrants.contains { $0.path == metadata && $0.access == .readWrite })
+            #expect(launchPlan(task).hostPathGrants.contains { $0.path == metadata && $0.access == .read })
+            #expect(launchPlan(task).hostPathGrants.contains { $0.path == metadata + "/objects" && $0.access == .readWrite })
             #expect(claims.contains { $0.kind == .gitCommonDirectory && $0.key == metadata && $0.access == .shared })
             #expect(claims.contains { $0.kind == .workspace && $0.key == metadata && $0.access == .shared })
         }

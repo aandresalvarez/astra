@@ -339,6 +339,37 @@ public enum TaskWorktreeBinding {
         return ((attributes[.size] as? NSNumber)?.intValue ?? 1) > 0
     }
 
+    /// Whether the registered worktree has refs of its own, such as
+    /// `refs/worktree/*` or a bisect in progress, which Git keeps in its
+    /// registry entry and a removal deletes with it. A reftable repository
+    /// keeps them in a table this doesn't read, and an entry that can't be
+    /// listed may hold some, so both count. Nil when it isn't registered.
+    public static func registeredWorktreeHasOwnRefs(repositoryPath: String, worktreePath: String) -> Bool? {
+        guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
+        let fileManager = FileManager.default
+        if (try? fileManager.attributesOfItem(atPath: registered.entry.appendingPathComponent("reftable").path)) != nil {
+            return true
+        }
+        let refs = registered.entry.appendingPathComponent("refs", isDirectory: true)
+        do {
+            _ = try fileManager.attributesOfItem(atPath: refs.path)
+        } catch {
+            let nsError = error as NSError
+            let missing = (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError)
+                || (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError)
+            return !missing
+        }
+        var unreadable = false
+        guard let items = fileManager.enumerator(
+            at: refs, includingPropertiesForKeys: [.isDirectoryKey], errorHandler: { _, _ in unreadable = true; return false }
+        ) else { return true }
+        for case let item as URL in items {
+            guard let values = try? item.resourceValues(forKeys: [.isDirectoryKey]) else { return true }
+            if values.isDirectory != true { return true }
+        }
+        return unreadable
+    }
+
     /// Marks the worktree `payload` names, just created, with its identity.
     public static func recordIdentity(of payload: TaskWorktreePayload) throws {
         guard let identity = payload.identity,
@@ -366,6 +397,24 @@ public enum TaskWorktreeBinding {
         guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath),
               holdsRegisteredCheckout(worktreePath, entry: registered.entry) else { return nil }
         return registered.commonDirectory
+    }
+
+    /// The registry entry of `checkout` inside `commonDirectory`, where Git
+    /// keeps that checkout's own index, HEAD, and logs, when the entry and
+    /// the checkout's `.git` file point at each other.
+    public static func registeredAdminEntry(checkout: String, commonDirectory: String) -> String? {
+        guard let expected = resolvedPath((checkout as NSString).appendingPathComponent(".git")) else { return nil }
+        let registry = URL(fileURLWithPath: commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil),
+              let entry = entries.first(where: { entry in
+                  guard let raw = try? String(contentsOf: entry.appendingPathComponent("gitdir"), encoding: .utf8) else {
+                      return false
+                  }
+                  return resolvedGitPath(raw, relativeTo: entry.path) == expected
+              }),
+              holdsRegisteredCheckout(checkout, entry: entry) else { return nil }
+        // Spelled under `commonDirectory` as given, as its other grants are.
+        return registry.appendingPathComponent(entry.lastPathComponent).path
     }
 
     /// The shared Git directory and the worktree's own registry entry in it.
