@@ -461,6 +461,30 @@ struct GitHubReviewPostWhenRequestedTests {
         }
     }
 
+    /// A broker bound to a run ASTRA can no longer find has no run to record
+    /// a post under, and the latest run is not a stand-in for it: nothing is
+    /// posted and the review is left for the sheet.
+    @Test("Auto posts nothing when the run the broker was bound to is gone")
+    func missingBoundRunPostsNothing() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI()
+        let handler = BrokeredExternalActionHandler(
+            modelContext: fixture.context,
+            taskID: fixture.task.id,
+            runID: UUID(),
+            policyLevel: .autonomous,
+            makeReviewService: { context in
+                GitHubReviewPublicationService(modelContext: context, cli: cli, originURL: { _ in nil })
+            }
+        )
+
+        let outcome = await handler.postGitHubReview(fixture.request(for: fixture.file))
+
+        #expect(outcome == .awaitingReview)
+        #expect(await cli.callCount() == 0)
+        #expect(fixture.records(GitHubReviewPublicationEventTypes.dispatched).isEmpty)
+    }
+
     /// Auto posts while a request is open, so every way the user calls it off
     /// has to close it — the noun forms too, and a stopping verb before the
     /// posting one, which the broad pattern used to read as a request.

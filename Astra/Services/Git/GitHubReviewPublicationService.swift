@@ -1128,7 +1128,7 @@ final class GitHubReviewPublicationService {
         task: AgentTask,
         fileName: String,
         contentDigest: String,
-        run: TaskRun? = nil
+        run: TaskRun
     ) async throws -> GitHubReviewPublicationRecord {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         guard GitHubReviewHostControlOperations.isReviewFileName(fileName), !fileName.contains("/"),

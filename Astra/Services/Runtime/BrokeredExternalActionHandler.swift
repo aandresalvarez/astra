@@ -99,14 +99,19 @@ final class BrokeredExternalActionHandler {
             }
             return .awaitingReview
         }
+        // The run the broker was bound to, as the connector path requires: a
+        // post outliving the wait must not record onto a later run, and one
+        // ASTRA cannot find has none to record under, so nothing is posted
+        // and the review is left for the sheet.
+        guard let run = task.runs.first(where: { $0.id == runID }) else {
+            return .awaitingReview
+        }
         do {
-            // The run the broker was bound to, as the connector path does: a
-            // post outliving the wait must not record onto a later run.
             let record = try await makeReviewService(modelContext).publishWhenRequested(
                 task: task,
                 fileName: request.fileName,
                 contentDigest: request.contentDigest,
-                run: task.runs.first { $0.id == runID }
+                run: run
             )
             return .performed(BrokeredExternalActionReceipt(
                 identifier: record.reviewID.map { "review \($0)" },
