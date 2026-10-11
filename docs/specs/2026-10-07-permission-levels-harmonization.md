@@ -391,11 +391,11 @@ Settled with the user on 2026-10-07. Decisions 1–4 were answered explicitly;
       it holds the bytes the broker read, through `prepare` and `publish`, and
       only while the user's request to post is open and is a command to post
       now — a positive list (`commandsPosting`) rather than a growing list of
-      negations, read over the whole message: every part of it is the
-      command, closed-form review work ("Review PR #12") or words that keep
-      it a command, so wording outside it ("ask me before posting", "hold
-      off", "add review comments", "The requested destination is Slack.")
-      offers the sheet instead of posting — and is
+      negations, in every slot of the command and over the whole message:
+      every part of it is the command, closed-form review work ("Review PR
+      #12") or words that keep it a command, so wording outside it ("ask me
+      before posting", "hold off", "add review comments", "The requested
+      destination is Slack.") offers the sheet instead of posting — and is
       the user's latest message, so nothing said after it has to be read as
       a cancellation for Auto to honour it (`publishWhenRequested`).
       "A file at this path was written or touched by the run" never makes one

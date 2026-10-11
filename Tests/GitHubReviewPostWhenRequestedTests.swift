@@ -165,7 +165,7 @@ struct GitHubReviewPostWhenRequestedTests {
         for command in [
             "Post a review on \(url)", "Please post the review on \(url)", "Review \(url) and post the review",
             "Review \(url), then submit the review", "Can you publish the review comments on \(url)?",
-            "Post a review on \(url) again", "Post the review to PR 12",
+            "Post a review on \(url) again", "Post the review to PR 12", "Post your final code review on \(url)",
             // Review work and words that keep it a command, around the command.
             "Draft the review for \(url) and then post the review", "First, post the review on \(url)",
             "Thanks! Please post the review on \(url)", "Review PR #12. Post the review."
@@ -190,6 +190,7 @@ struct GitHubReviewPostWhenRequestedTests {
             "Once CI is green, then post the review on \(url)",
             // Between the verb and the review, where only the whole-message reading sees it.
             "Post later the review on \(url)", "Post when ready the review on \(url)", "Post not yet the review on \(url)",
+            "Post the draft review on \(url)", "Post the review on \(url). Don\u{2019}t.",
             // A retraction in the same message, which the latest-message rule cannot see.
             "Post the review on \(url). Actually, don't.", "Post the review on \(url). Never mind.",
             "Post the review on \(url) — no, scratch that", "Post the review on \(url); stop, leave it",

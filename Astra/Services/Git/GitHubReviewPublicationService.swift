@@ -186,13 +186,22 @@ enum GitHubReviewPublicationRequirement {
     /// review sheet, where the user still decides; read as consent it let
     /// "add review comments to the file", "ask me before posting the review"
     /// and "hold off on posting the review" through, one phrasing per review
-    /// round. So this is a positive list rather than a list of negations: the
-    /// base verb post, publish or submit, before the review or its comments,
-    /// with nothing ahead of it in its clause but words that keep it a
-    /// command. Being wrong costs a review left for the sheet, never a post.
+    /// round. So every slot of the command is a positive list, never a list of
+    /// negations: words that keep it a command, the base verb post, publish or
+    /// submit, at most four words that only say which review (`reviewWords`),
+    /// the review or its comments, and nothing after it but a GitHub
+    /// destination. Being wrong costs a review left for the sheet, never a post.
     private static let imperativePublicationRegex = try? NSRegularExpression(
-        pattern: #"\b(?:post|publish|submit)\b(?:\s+\S+){0,4}?\s+\b(?:review\s+comments?|comments?|review)\b"#
+        pattern: #"\b(?:post|publish|submit)\b((?:\s+\S+){0,4}?)\s+\b(?:review\s+comments?|comments?|review)\b"#
     )
+    /// The words that may stand between the verb and the review: which review,
+    /// never when, whether, by whom or how much of it — "post the draft
+    /// review", "post later the review" and "post only the comments" are not
+    /// commands to post the file now.
+    private static let reviewWords: Set<String> = [
+        "the", "a", "an", "my", "your", "our", "this", "that", "its", "pr", "pr's", "github", "pull", "request",
+        "full", "whole", "complete", "completed", "finished", "final", "inline", "code"
+    ]
     /// "Review PR #12, then post it": the object is a pronoun for a review
     /// the same message named first. Read only when it did; Auto also needs
     /// nothing after it but a GitHub destination, so "post it to the channel"
@@ -217,32 +226,6 @@ enum GitHubReviewPublicationRequirement {
     /// the review goes or anything else, is not part of a command to post.
     private static let reviewWorkRegex = try? NSRegularExpression(
         pattern: #"^(?:re-?review|review|draft|write|prepare|finish)(?:\s+(?:the|a|your|this|that))?(?:\s+(?:review|pr|pull\s+request|changes|diff))?(?:\s+(?:of|for|on))?(?:\s+(?:https://github\.com/\S+|(?:pr|pull\s+request)\s*#?\d+|#\d+|it|them))?$"#
-    )
-    /// A condition anywhere in the message ("post the review once I approve",
-    /// "When I approve, post the review"), a pause in the command itself
-    /// ("post the draft myself"), or a message that holds the posting back
-    /// ("…, but ask me first") makes it not yet a command to post now. A
-    /// condition is read across the whole message because clauses are split
-    /// at commas, and a leading "When I approve," would otherwise be its own
-    /// clause and leave the command looking unconditional.
-    private static let deferringRegex = try? NSRegularExpression(
-        pattern: #"\b(?:after|once|when|whenever|until|till|if|unless|before|only|later|tomorrow)\b"#
-    )
-    /// Phrases that hold the posting back wherever they are in the message —
-    /// exceptions ("…, but not the summary", "except the summary"): the file
-    /// is posted whole, so a request for part of it is not consent to post
-    /// it — and any negation or reversal ("Post the review. Actually, don't."):
-    /// the latest-message rule cannot see a retraction inside the same
-    /// message, so Auto does not act on a message that contains one. Only
-    /// these: "first" or "prepare" elsewhere ("First, post the review, then
-    /// summarize it") is about other work, not the post.
-    private static let messagePausingRegex = try? NSRegularExpression(
-        pattern: #"\b(?:ask me|check with me|wait|hold off|hold on|hold it|not yet|let me|(?:don't|do not|dont|never)\s+(?:post|publish|submit|send)|(?:i|we)\s*(?:will|'ll|am going to|'m going to|are going to)\s+(?:post|publish|submit)|except|excluding|exclude|but not|other than|apart from|save for|leave out|leaving out|omit|omitting|without|don't|dont|do not|doesn't|does not|never|not|no|nope|cancel|stop|actually|never mind|nevermind|scratch that|forget|ignore|instead|rather|undo|revert|withdraw|abort)\b"#
-    )
-    /// Words that, inside the command itself — from its verb to the end of its
-    /// clause — make it something other than a post now.
-    private static let commandPausingRegex = try? NSRegularExpression(
-        pattern: #"\b(?:first|approve|approval|confirm|draft|prepare|myself|ourselves|i will|i'll|we will|we'll|only|except|excluding|without|minus)\b"#
     )
     /// A message that closes an open request without restating it: "don't post
     /// it", "cancel that", and the noun forms — "cancel the review", "stop the
@@ -451,21 +434,14 @@ enum GitHubReviewPublicationRequirement {
     /// The positive list `imperativePublicationRegex` describes, read over the
     /// whole message: every part of it is the command, review work in the
     /// closed form `reviewWorkRegex` allows, or words that keep it a command.
-    /// Any other sentence — "The requested destination is Slack.", "then
-    /// summarize it" — leaves the review for the sheet, so no other sentence
-    /// has to be understood to know it does not redirect or hold back the post.
+    /// Nothing else is read, so nothing else has to be understood: a
+    /// condition, a pause, an exception, a retraction or a sentence about
+    /// where the review goes ("The requested destination is Slack.") is
+    /// outside the list and leaves the review for the sheet.
     static func commandsPosting(_ text: String) -> Bool {
         let lower = text.lowercased()
-        guard let imperative = imperativePublicationRegex, let deferring = deferringRegex,
-              let messagePausing = messagePausingRegex, let commandPausing = commandPausingRegex,
-              let reviewWork = reviewWorkRegex,
-              messagePausing.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil,
-              deferring.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) == nil else {
+        guard let imperative = imperativePublicationRegex, let reviewWork = reviewWorkRegex else {
             return false
-        }
-        func pausesCommand(_ clause: String, _ matched: Range<String.Index>) -> Bool {
-            let command = String(clause[matched.lowerBound...])
-            return commandPausing.firstMatch(in: command, range: NSRange(command.startIndex..<command.endIndex, in: command)) != nil
         }
         // Clauses end at punctuation before a space or the end of the text, so
         // a link's dots do not split one, and a clause's parts end at a
@@ -486,9 +462,11 @@ enum GitHubReviewPublicationRequirement {
             // "Post the review to Slack" is a post somewhere else, and the
             // file only ever goes to the pull request.
             let named = imperative.matches(in: clause, range: range).contains { match in
-                guard let matched = Range(match.range, in: clause) else { return false }
+                guard let matched = Range(match.range, in: clause),
+                      let gap = Range(match.range(at: 1), in: clause) else { return false }
                 let rest = String(clause[matched.upperBound...])
-                return isCommand(clause, matched) && !pausesCommand(clause, matched)
+                return isCommand(clause, matched)
+                    && clause[gap].split(whereSeparator: \.isWhitespace).allSatisfy { reviewWords.contains(String($0)) }
                     && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
             }
             guard !named, let referential = referentialPublicationRegex else {
@@ -500,7 +478,7 @@ enum GitHubReviewPublicationRequirement {
                 let rest = String(clause[matched.upperBound...])
                 let reviewNamedFirst = mentionedReview
                     || reviewMentionRegex?.firstMatch(in: before, range: NSRange(before.startIndex..<before.endIndex, in: before)) != nil
-                return reviewNamedFirst && isCommand(clause, matched) && !pausesCommand(clause, matched)
+                return reviewNamedFirst && isCommand(clause, matched)
                     && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
             }
         }
