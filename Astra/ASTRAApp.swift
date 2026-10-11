@@ -887,12 +887,11 @@ public struct ASTRAApp: App {
             )
         }
 
-        // A workspace deletion a quit interrupted is finished before mirror
-        // recovery below, which would otherwise reimport the workspace.
-        WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
-        // A deletion still unsettled, for example a mirror that couldn't be
-        // removed, keeps its mirror out of recovery; an unreadable record
-        // stops recovery for this launch, since its mirror is unknown.
+        // A workspace deletion a quit interrupted keeps its mirror out of the
+        // recovery below and is settled once that recovery has run, so the
+        // workspaces it rebuilds count as owners of shared credentials. An
+        // unreadable record stops recovery, and settlement, for this launch,
+        // since what it guards is unknown.
         let unsettledDeletionMirrors = WorkspaceDeletionCleanupStore().pendingMirrorPaths()
         if unsettledDeletionMirrors == nil {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -903,11 +902,17 @@ public struct ASTRAApp: App {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
-            workspaceRecoveryAfterLaunch = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            let recovery = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
                 excludingConfigFiles: unsettledDeletionMirrors,
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
+            workspaceRecoveryAfterLaunch = Task { @MainActor in
+                await recovery.value
+                WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
+            }
+        } else if unsettledDeletionMirrors != nil {
+            WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
         // (runtime.loadPluginCatalog()), which runs synchronously in

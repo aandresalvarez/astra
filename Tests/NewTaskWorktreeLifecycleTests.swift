@@ -419,6 +419,33 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pending().isEmpty)
     }
 
+    @Test("A dangling SSH connections link fails the snapshot instead of reading as absent")
+    func danglingSSHConnectionsLinkFailsSnapshot() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let folder = fixture.root.appendingPathComponent("Workspace", isDirectory: true)
+        let file = SSHConnectionManager.connectionsFilePath(for: folder.path)
+        try FileManager.default.createDirectory(atPath: (file as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        #expect(try SSHConnectionManager.snapshot(workspacePath: folder.path) == nil)
+        try FileManager.default.createSymbolicLink(atPath: file, withDestinationPath: fixture.root.appendingPathComponent("gone.json").path)
+        #expect(!FileManager.default.fileExists(atPath: file))
+        #expect(throws: (any Error).self) { try SSHConnectionManager.snapshot(workspacePath: folder.path) }
+    }
+
+    @Test("Startup settles pending workspace deletions only after mirror recovery has run")
+    func startupSettlesDeletionsAfterRecovery() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8)
+        let recovery = try #require(source.range(of: "WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch("))
+        let awaited = try #require(source.range(of: "await recovery.value", range: recovery.upperBound..<source.endIndex))
+        let settle = try #require(source.range(
+            of: "WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)", range: awaited.upperBound..<source.endIndex
+        ))
+        #expect(awaited.lowerBound < settle.lowerBound)
+        // Nothing settles before recovery runs.
+        #expect(source.range(of: "WorkspaceDeletionCleanupService.resumePending", range: source.startIndex..<recovery.lowerBound) == nil)
+    }
+
     @Test("A replacement that isn't saved puts the workspace's SSH connections back")
     func failedReplacementRestoresSSHConnections() throws {
         let fixture = try Fixture()

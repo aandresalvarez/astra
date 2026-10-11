@@ -121,7 +121,10 @@ public enum SSHConnectionManager {
     public static func snapshot(workspacePath: String) throws -> Data? {
         guard !workspacePath.isEmpty else { return nil }
         let path = connectionsFilePath(for: workspacePath)
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        // Without following links: a dangling link is still there, and one
+        // that can't be read fails the snapshot rather than reading as absent,
+        // which a restore would then delete.
+        guard (try? FileManager.default.attributesOfItem(atPath: path)) != nil else { return nil }
         return try HostFileAccessBroker().readData(
             at: URL(fileURLWithPath: path),
             intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))

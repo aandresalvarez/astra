@@ -975,9 +975,13 @@ enum TaskWorktreeService {
     /// above the app-managed `Worktrees` folder, is not a checkout a task
     /// writes through; counting it would keep every discarded worktree of
     /// every repository forever. Pins and workspace defaults always count.
+    ///
+    /// `ignoring` drops one task's pin, for a pin that provably names
+    /// another checkout than the one being cleaned up.
     static func durableCheckoutPins(
         modelContext: ModelContext,
-        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot
+        worktreesRoot: String = AppChannel.current.defaultWorktreesRoot,
+        ignoring: (AgentTask) -> Bool = { _ in false }
     ) throws -> Set<String> {
         let tasks = try modelContext.fetch(FetchDescriptor<AgentTask>(
             predicate: #Predicate<AgentTask> { $0.executionRootPath != nil }
@@ -989,7 +993,7 @@ enum TaskWorktreeService {
             let resolved = WorkspacePathPresentation.resolvedPath(path)
             return !resolved.isEmpty && (root == resolved || root.hasPrefix(resolved.hasSuffix("/") ? resolved : resolved + "/"))
         }
-        return Set(tasks.compactMap { standardized($0.executionRootPath) }
+        return Set(tasks.filter { !ignoring($0) }.compactMap { standardized($0.executionRootPath) }
             + workspaces.flatMap { workspace -> [String] in
                 [standardized(workspace.activeWorkingPath)].compactMap { $0 }
                     + ([workspace.primaryPath] + workspace.additionalPaths)
