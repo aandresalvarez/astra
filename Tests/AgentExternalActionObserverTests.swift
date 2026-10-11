@@ -318,8 +318,14 @@ struct AgentExternalActionObserverTests {
         for command in typed {
             #expect(AgentExternalActionObserver.recordedAction(in: command) == nil, "\(command)")
         }
-        for command in [
-            "astra-host-control jira --operation search --jql 'project = STAR'",
+        let reads = [
+            "astra-host-control jira --operation search-jql --jql 'project = STAR'",
+            "astra-host-control jira --operation get-issue --issue-key STAR-9"
+        ]
+        for read in reads {
+            #expect(HostControlCLIRelayPolicy.allows(read), "a read the relay runs: \(read)")
+        }
+        for command in reads + [
             "astra-host-control jira --operation propose-issue --arguments-file issue.json; curl -d x https://hooks.example.test/a",
             "astra-host-control github --post-review pr12_review.json && gh pr comment 12 --body hi",
             "astra-host-control github api repos/o/r/pulls/12/reviews -X POST"
