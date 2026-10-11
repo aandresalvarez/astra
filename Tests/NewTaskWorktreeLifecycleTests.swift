@@ -725,6 +725,42 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(store.pending() == [earlier])
     }
 
+    @Test("A pending deletion's mirror cleanup stays on the folder it recorded after its symlink is retargeted")
+    func deletionCleanupKeepsRecordedFolder() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        func folderWithMirror(_ name: String) throws -> (folder: URL, mirror: String) {
+            let folder = fixture.root.appendingPathComponent(name, isDirectory: true)
+            let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+            try FileManager.default.createDirectory(
+                atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true
+            )
+            try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+            return (folder, mirror)
+        }
+        let original = try folderWithMirror("Original")
+        let other = try folderWithMirror("Other")
+        let link = fixture.root.appendingPathComponent("Link", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: original.folder)
+        let workspace = Workspace(name: "Linked", primaryPath: link.path)
+        context.insert(workspace)
+        try context.save()
+        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        context.delete(workspace)
+        try context.save()
+
+        // Before the retry, the configured spelling now leads elsewhere.
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other.folder)
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(!FileManager.default.fileExists(atPath: original.mirror))
+        #expect(FileManager.default.fileExists(atPath: other.mirror))
+        #expect(store.pending().isEmpty)
+    }
+
     @Test("Branch deletion and the Repository card's branch operations exclude each other")
     func branchDeletionGateExcludesCardOperations() throws {
         let fixture = try Fixture()

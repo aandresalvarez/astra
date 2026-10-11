@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import ASTRAModels
 @testable import ASTRA
+@testable import ASTRAPersistence
 import ASTRACore
 
 @Suite("Stanford Outlook Mail")
@@ -39,6 +40,50 @@ struct StanfordOutlookMailTests {
         #expect(scratch.configValue("ASTRA_MAIL_TENANT_DOMAIN") == connector.configValue("ASTRA_MAIL_TENANT_DOMAIN"))
         #expect(scratch.outlookTenantDomain == connector.outlookTenantDomain)
         #expect(connector.configValue("ASTRA_MAIL_TENANT_DOMAIN") != "stale-duplicate.example.edu")
+    }
+
+    @Test("Registry removal reports whether the entry is gone, and never rewrites a registry it can't read")
+    func registryRemovalReportsItsResult() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-mail-registry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let registry = root.appendingPathComponent("mail-accounts.json")
+        let connector = Connector(name: "Stanford Outlook Mail")
+        connector.applyStanfordOutlookDefaults()
+        try StanfordOutlookMail.$registryURLOverride.withValue(registry) {
+            // Nothing registered: nothing to remove.
+            #expect(StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [connector.id.uuidString])
+            // A registry that can't be rewritten keeps the entry and says so,
+            // and so does the connector's cleanup, though its credentials
+            // cleared. A temporary keychain makes that credential part succeed.
+            let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+            let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+            AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
+            defer { AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: []) }
+            try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
+                try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+                    #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+                    #expect(!connector.keychainCleanup.run(sparing: [], keepRegistryEntry: false))
+                    #expect(connector.keychainCleanup.run(sparing: [], keepRegistryEntry: true))
+                    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+                    #expect(connector.keychainCleanup.run(sparing: [], keepRegistryEntry: false))
+                }
+            }
+            #expect(StanfordOutlookMailRegistry.entries().isEmpty)
+
+            // An unreadable registry is left as it is, not emptied.
+            try Data("not json".utf8).write(to: registry)
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            #expect(try Data(contentsOf: registry) == Data("not json".utf8))
+        }
     }
 
     @Test("Outlook connector defaults are OAuth without token env keys")

@@ -13,6 +13,11 @@ import ASTRAPersistence
 struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     let workspaceID: UUID
     let primaryPath: String
+    /// The primary folder's physical path when the deletion was recorded.
+    /// Mirrors, ownership, and the record's key all use it, so a symlink in
+    /// the configured spelling retargeted before a retry can't aim cleanup
+    /// at another folder's mirror.
+    let physicalFolder: String
     let connectors: [ConnectorKeychainCleanup]
     let skills: [SkillKeychainCleanup]
 
@@ -20,17 +25,39 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         workspaceID id: UUID, primaryPath path: String,
         connectors connectorCleanups: [ConnectorKeychainCleanup], skills skillCleanups: [SkillKeychainCleanup]
     ) {
+        self.init(
+            workspaceID: id, primaryPath: path, physicalFolder: WorkspacePathPresentation.resolvedPath(path),
+            connectors: connectorCleanups, skills: skillCleanups
+        )
+    }
+
+    private init(
+        workspaceID id: UUID, primaryPath path: String, physicalFolder folder: String,
+        connectors connectorCleanups: [ConnectorKeychainCleanup], skills skillCleanups: [SkillKeychainCleanup]
+    ) {
         workspaceID = id
         primaryPath = path
+        physicalFolder = folder
         connectors = connectorCleanups
         skills = skillCleanups
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceID = try container.decode(UUID.self, forKey: .workspaceID)
+        primaryPath = try container.decode(String.self, forKey: .primaryPath)
+        // Records written before the folder was snapshotted resolve it once.
+        physicalFolder = try container.decodeIfPresent(String.self, forKey: .physicalFolder)
+            ?? WorkspacePathPresentation.resolvedPath(primaryPath)
+        connectors = try container.decode([ConnectorKeychainCleanup].self, forKey: .connectors)
+        skills = try container.decode([SkillKeychainCleanup].self, forKey: .skills)
     }
 
     /// Both records' credentials, so a cleanup still pending for the same
     /// deletion is never dropped by a later one.
     func merging(_ other: WorkspaceDeletionCleanupRecord) -> WorkspaceDeletionCleanupRecord {
         WorkspaceDeletionCleanupRecord(
-            workspaceID: workspaceID, primaryPath: primaryPath,
+            workspaceID: workspaceID, primaryPath: primaryPath, physicalFolder: physicalFolder,
             // By every namespace-defining fact, not only the connector ID: a
             // reimported connector can keep its ID under a new base URL.
             connectors: connectors + other.connectors.filter { !connectors.contains($0) },
@@ -42,6 +69,7 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
     init(_ workspace: Workspace) {
         workspaceID = workspace.id
         primaryPath = workspace.primaryPath
+        physicalFolder = WorkspacePathPresentation.resolvedPath(workspace.primaryPath)
         connectors = workspace.connectors.map(\.keychainCleanup)
             + workspace.skills.flatMap { $0.connectors.map(\.keychainCleanup) }
         skills = workspace.skills.map(\.keychainCleanup)
@@ -128,14 +156,14 @@ struct WorkspaceDeletionCleanupStore: Sendable {
             else { return nil }
             // Resolved, so the same mirror reached through a symlink or an
             // alias such as /tmp and /private/tmp still matches.
-            mirrors.insert(WorkspacePathPresentation.resolvedPath(WorkspaceFileLayout.workspaceConfigFile(for: record.primaryPath)))
-            mirrors.insert(WorkspacePathPresentation.resolvedPath(WorkspaceFileLayout.legacyWorkspaceConfigFile(for: record.primaryPath)))
+            mirrors.insert(WorkspacePathPresentation.resolvedPath(WorkspaceFileLayout.workspaceConfigFile(for: record.physicalFolder)))
+            mirrors.insert(WorkspacePathPresentation.resolvedPath(WorkspaceFileLayout.legacyWorkspaceConfigFile(for: record.physicalFolder)))
         }
         return mirrors
     }
 
     func recordURL(for record: WorkspaceDeletionCleanupRecord) -> URL {
-        let path = WorkspacePathPresentation.resolvedPath(record.primaryPath)
+        let path = record.physicalFolder
         let digest = SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
         return directory.appendingPathComponent(record.workspaceID.uuidString.lowercased() + "-" + digest + ".json")
     }
@@ -158,13 +186,15 @@ enum WorkspaceDeletionCleanupService {
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
               let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return false }
-        // Resolved, so an alias such as /tmp for /private/tmp or a symlinked
-        // folder still names the same live mirror.
-        let path = WorkspacePathPresentation.resolvedPath(record.primaryPath)
+        // The folder recorded at deletion, compared with where each stored
+        // workspace resolves now, so an alias such as /tmp for /private/tmp
+        // or a symlinked folder still names the same live mirror, and a
+        // symlink retargeted since never redirects the removal.
+        let path = record.physicalFolder
         // A mirror left behind would let recovery reimport the workspace, so
         // the record, and the credentials it needs, are kept for a retry.
         if !workspaces.contains(where: { WorkspacePathPresentation.resolvedPath($0.primaryPath) == path }),
-           !removeMirrors(for: record.primaryPath) {
+           !removeMirrors(for: path) {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "delete_workspace", "reason": "mirror_removal_failed"
             ], level: .error)

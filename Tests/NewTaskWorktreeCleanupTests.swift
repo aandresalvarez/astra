@@ -334,7 +334,7 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
-    @Test("An edit hidden by assume-unchanged keeps the worktree; an absent skip-worktree file does not")
+    @Test("An edit hidden by assume-unchanged, or a skip-worktree deletion outside a sparse checkout, keeps the worktree")
     func indexHiddenEditsKeepWorktree() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -346,11 +346,13 @@ struct NewTaskWorktreeCleanupTests {
         let file = checkout.appendingPathComponent("Sources/file.txt")
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
 
-        // As a sparse checkout leaves it: marked skip-worktree and absent.
+        // Marked skip-worktree and absent with no sparse rules to explain
+        // it: a deletion status can't see. A sparse checkout's own exclusions
+        // are covered by `absentSkipWorktreeNeedsSparseExclusion`.
         try fixture.git(["update-index", "--skip-worktree", "Sources/file.txt"], at: checkout)
         try FileManager.default.removeItem(at: file)
         #expect(await GitService.shared.worktreeIsClean(at: checkout.path) == true)
-        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
 
         // An edit Git is told not to look at is still an edit.
         try fixture.git(["update-index", "--no-skip-worktree", "Sources/file.txt"], at: checkout)
@@ -392,6 +394,36 @@ struct NewTaskWorktreeCleanupTests {
         try FileManager.default.removeItem(at: link)
         try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "nowhere")
         #expect(!FileManager.default.fileExists(atPath: link.path))
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+    }
+
+    @Test("An absent skip-worktree file counts as changed unless the checkout's sparse rules leave it out")
+    func absentSkipWorktreeNeedsSparseExclusion() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try fixture.commit("Docs/readme.txt", contents: "docs", message: "Add docs", at: repository)
+        let store = try Fixture.container()
+        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        // Outside a sparse checkout, nothing explains the absence.
+        try fixture.git(["update-index", "--skip-worktree", "Sources/file.txt"], at: checkout)
+        try FileManager.default.removeItem(at: checkout.appendingPathComponent("Sources/file.txt"))
+        #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+        try fixture.git(["update-index", "--no-skip-worktree", "Sources/file.txt"], at: checkout)
+        try fixture.git(["checkout", "--", "Sources/file.txt"], at: checkout)
+
+        // A file the sparse rules leave out is absent by design.
+        try fixture.git(["sparse-checkout", "set", "Sources"], at: checkout)
+        #expect(!FileManager.default.fileExists(atPath: checkout.appendingPathComponent("Docs/readme.txt").path))
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+
+        // One the rules include is still a hidden deletion.
+        try fixture.git(["update-index", "--skip-worktree", "Sources/file.txt"], at: checkout)
+        try FileManager.default.removeItem(at: checkout.appendingPathComponent("Sources/file.txt"))
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
     }
 

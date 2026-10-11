@@ -35,7 +35,12 @@ enum StanfordOutlookMail {
         defaultScopes.joined(separator: " ")
     }
 
+    /// Tests point the registry elsewhere through this task-local, so they
+    /// never read or rewrite the user's real mail registry.
+    @TaskLocal static var registryURLOverride: URL?
+
     static var registryURL: URL {
+        if let registryURLOverride { return registryURLOverride }
         let toolsRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".astra", isDirectory: true)
         return toolsRoot.appendingPathComponent("mail-accounts-\(AppChannel.current.keychainConnectorPrefix).json")
@@ -455,15 +460,21 @@ enum StanfordOutlookMailRegistry {
     }
 
     static func entries() -> [Entry] {
+        readEntries() ?? []
+    }
+
+    /// Nil when the registry can't be read or decoded, which a writer must
+    /// never take as empty.
+    private static func readEntries() -> [Entry]? {
         let registryURL = StanfordOutlookMail.registryURL
         let broker = HostFileAccessBroker()
         guard let data = try? broker.readData(
             at: registryURL,
             intent: .astraManagedStorage(root: registryURL.deletingLastPathComponent())
         ) else {
-            return []
+            return nil
         }
-        return (try? JSONDecoder().decode([Entry].self, from: data)) ?? []
+        return try? JSONDecoder().decode([Entry].self, from: data)
     }
 
     static func upsert(connector: Connector) {
@@ -483,11 +494,20 @@ enum StanfordOutlookMailRegistry {
         save(current)
     }
 
-    static func remove(connectorID: UUID) {
-        save(entries().filter { $0.connectorID != connectorID.uuidString })
+    /// True once no entry for `connectorID` remains. A registry that exists
+    /// but can't be read is left as it is, never rewritten without the other
+    /// accounts, and reported as not removed.
+    @discardableResult
+    static func remove(connectorID: UUID) -> Bool {
+        guard FileManager.default.fileExists(atPath: StanfordOutlookMail.registryURL.path) else { return true }
+        guard let current = readEntries() else { return false }
+        let remaining = current.filter { $0.connectorID != connectorID.uuidString }
+        guard remaining.count != current.count else { return true }
+        return save(remaining)
     }
 
-    private static func save(_ entries: [Entry]) {
+    @discardableResult
+    private static func save(_ entries: [Entry]) -> Bool {
         do {
             let directory = StanfordOutlookMail.registryURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -495,11 +515,13 @@ enum StanfordOutlookMailRegistry {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(entries.sorted { $0.email < $1.email })
             try data.write(to: StanfordOutlookMail.registryURL, options: [.atomic])
+            return true
         } catch {
             AppLogger.audit(.connectorTested, category: "Mail", fields: [
                 "result": "registry_write_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .warning)
+            return false
         }
     }
 }
@@ -593,7 +615,8 @@ enum OutlookMailConnectionAdapter: OutlookMailConnectionTesting {
         return OutlookConnectionResult(mail: me.mail, userPrincipalName: me.userPrincipalName, changedConfigEntries: changed)
     }
 
-    static func removeFromRegistry(connectorID: UUID) {
+    @discardableResult
+    static func removeFromRegistry(connectorID: UUID) -> Bool {
         StanfordOutlookMailRegistry.remove(connectorID: connectorID)
     }
 }

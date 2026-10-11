@@ -515,7 +515,8 @@ class GitService: GitRepositoryOperating {
         at repoPath: String,
         arguments: [String],
         timeout: TimeInterval? = nil,
-        failureLogLevel: LogLevel = .error
+        failureLogLevel: LogLevel = .error,
+        standardInput: Data? = nil
     ) async throws -> String {
         if !GitPollingLogPolicy.isReadOnlyPollQuery(arguments) {
             AppLogger.debug("git \(arguments.joined(separator: " "))", category: "Git")
@@ -526,7 +527,8 @@ class GitService: GitRepositoryOperating {
             environment: Self.gitEnvironment(),
             timeout: timeout ?? Self.defaultGitTimeout,
             label: (["git"] + arguments).joined(separator: " "),
-            failureLogLevel: failureLogLevel
+            failureLogLevel: failureLogLevel,
+            standardInput: standardInput
         )
     }
 
@@ -571,6 +573,9 @@ class GitService: GitRepositoryOperating {
     /// the caller):
     /// - `stdin` is detached to `/dev/null` so the child can never block waiting
     ///   for interactive input inside a process that has no controlling terminal.
+    ///   `standardInput`, when given, is written once and the pipe closed, so
+    ///   the child still sees end of input; a child that exits without reading
+    ///   it can't raise SIGPIPE in the app.
     /// - stdout/stderr are drained with non-blocking readability handlers, so a
     ///   stream larger than the OS pipe buffer (~64KB) can never wedge the child.
     /// - Completion fires when the process exits and both streams reach EOF, or
@@ -584,7 +589,8 @@ class GitService: GitRepositoryOperating {
         timeout: TimeInterval,
         label: String,
         currentDirectory: String? = nil,
-        failureLogLevel: LogLevel = .error
+        failureLogLevel: LogLevel = .error,
+        standardInput: Data? = nil
     ) async throws -> String {
         let command = label
         let budget = timeout
@@ -599,7 +605,13 @@ class GitService: GitRepositoryOperating {
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-        process.standardInput = FileHandle.nullDevice
+        let inPipe = standardInput.map { _ in Pipe() }
+        if let inPipe {
+            _ = fcntl(inPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+            process.standardInput = inPipe
+        } else {
+            process.standardInput = FileHandle.nullDevice
+        }
         process.environment = environment
 
         let state = GitProcessState(failureLogLevel: failureLogLevel)
@@ -662,7 +674,14 @@ class GitService: GitRepositoryOperating {
 
             do {
                 try process.run()
+                if let inPipe, let standardInput {
+                    DispatchQueue.global().async {
+                        try? inPipe.fileHandleForWriting.write(contentsOf: standardInput)
+                        try? inPipe.fileHandleForWriting.close()
+                    }
+                }
             } catch {
+                try? inPipe?.fileHandleForWriting.close()
                 state.markLaunchFailure(error)
                 finalize()
             }

@@ -1169,6 +1169,33 @@ struct NewTaskWorktreeBaseTests {
         #expect(await runner.count() == 0)
     }
 
+    @Test("A retargeted sibling checkout replaced by a plain folder invalidates the binding")
+    func replacedRetargetedCheckoutIsInvalid() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = workspace(repository, in: store.mainContext)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        try await prepare(draft, repository, context: store.mainContext, fixture: fixture)
+        let sibling = fixture.root.appendingPathComponent("Sibling", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "sibling", sibling.path], at: repository)
+        #expect(TaskCodeLocationPin.set(sibling.path, workspace: workspace, task: draft))
+        guard case .retargeted = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("Expected the draft to be retargeted to the sibling checkout")
+            return
+        }
+
+        // Git keeps the registry entry after the folder is replaced.
+        try FileManager.default.removeItem(at: sibling)
+        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
+        #expect(try fixture.git(["worktree", "list", "--porcelain"], at: repository).contains(sibling.lastPathComponent))
+        guard case .invalid = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("A replaced sibling checkout must not stay writable")
+            return
+        }
+    }
+
     @Test("Addressing PR comments from a task's worktree keeps that task's binding")
     func pullRequestCommentDraftKeepsWorktreeBinding() async throws {
         let fixture = try Fixture()

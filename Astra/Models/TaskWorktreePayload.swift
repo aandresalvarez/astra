@@ -283,8 +283,15 @@ public enum TaskWorktreeBinding {
         return ([workspace.primaryPath] + workspace.additionalPaths).contains { resolvedPath($0) == repository }
     }
 
+    /// The shared Git directory of a checkout the repository registers,
+    /// only while the folder at `worktreePath` is still that checkout: its own
+    /// `.git` file points back to the registry entry. A stale entry Git keeps
+    /// after the folder was replaced by a plain folder or another repository
+    /// doesn't count.
     private static func registeredCommonDirectory(repositoryPath: String, worktreePath: String) -> String? {
-        registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath)?.commonDirectory
+        guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath),
+              holdsRegisteredCheckout(worktreePath, entry: registered.entry) else { return nil }
+        return registered.commonDirectory
     }
 
     /// The shared Git directory and the worktree's own registry entry in it.
