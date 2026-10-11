@@ -893,13 +893,15 @@ public struct ASTRAApp: App {
         // launch that skips recovery, or meets an unreadable record, settles
         // nothing: the owners it would have rebuilt are unknown, so the
         // records wait for a launch that recovers.
-        let unsettledDeletionMirrors = WorkspaceDeletionCleanupStore().pendingMirrorPaths()
-        if unsettledDeletionMirrors == nil {
+        let deletionStore = WorkspaceDeletionCleanupStore()
+        let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
+        let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
+        if unsettledDeletionMirrors == nil || unsettledDeletionMirrorIDs == nil {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
             ], level: .error)
         }
-        if !skipWorkspaceRecovery, let unsettledDeletionMirrors {
+        if !skipWorkspaceRecovery, let unsettledDeletionMirrors, let unsettledDeletionMirrorIDs {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
@@ -907,6 +909,8 @@ public struct ASTRAApp: App {
                 modelContext: modelContext,
                 excludingConfigFiles: unsettledDeletionMirrors,
                 incompleteMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker,
+                excludingItemIdentities: unsettledDeletionMirrorIDs,
+                excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
@@ -920,7 +924,7 @@ public struct ASTRAApp: App {
                     return
                 }
                 workspaceRecoveryTrusted = true
-                WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext)
+                WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext, movedMirrors: movedDeletionMirrors)
             }
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
@@ -1012,6 +1016,9 @@ public struct ASTRAApp: App {
     @MainActor private static var workspaceRecoveryAfterLaunch: Task<Void, Never>?
     /// Set once this launch's recovery loaded every mirror it found.
     @MainActor private static var workspaceRecoveryTrusted = false
+    /// Pending deletions' mirrors recovery found away from their pinned
+    /// paths, matched by identity, for settlement to remove.
+    @MainActor private static var movedDeletionMirrors: [String] = []
 
     /// Compares every task-folder baseline a run left behind — interrupted by
     /// a crash, or cancelled by a quit before its worker compared — after

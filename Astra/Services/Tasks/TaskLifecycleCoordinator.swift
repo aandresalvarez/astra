@@ -806,8 +806,21 @@ final class TaskLifecycleCoordinator {
             // A mirror write queued before the deletion must not land after
             // the mirror is removed.
             WorkspaceAutoExportGate.shared.retire(workspaceID: cleanupRecord.workspaceID.uuidString)
-            if WorkspaceDeletionCleanupService.settle(cleanupRecord, modelContext: modelContext) {
-                store.remove(cleanupRecord)
+            // The mirrors no longer change, so their identities are pinned
+            // before anything else: a quit after this still recognizes them
+            // if the workspace folder is moved.
+            let pinned: WorkspaceDeletionCleanupRecord
+            do {
+                pinned = try store.pinMirrorIdentities(for: cleanupRecord)
+            } catch {
+                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "delete_workspace", "reason": "mirror_identity_unpinned",
+                    "error": error.localizedDescription
+                ], level: .error)
+                pinned = cleanupRecord
+            }
+            if WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext) {
+                store.remove(pinned)
             }
         } else {
             restoreRecord()

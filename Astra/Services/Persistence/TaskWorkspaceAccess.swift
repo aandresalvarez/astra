@@ -359,10 +359,18 @@ public struct TaskWorkspaceAccess {
 
     /// Whether a folder between `repository` (exclusive) and `path`
     /// (inclusive) is the root of another Git checkout.
+    /// Whether a folder between `repository` and `path` holds a real Git
+    /// checkout of its own: its `.git` leads to a valid Git directory other
+    /// than the repository's. A stale or malformed `.git` doesn't count, or
+    /// it would exempt part of the source checkout from protection.
     private func crossesGitRoot(_ path: String, below repository: String) -> Bool {
+        let sourceCommon = GitCheckoutLayout.commonDirectory(for: repository).map(Self.resolvedIdentity)
         var current = path
         while current.count > repository.count {
-            if fileSystem.fileExists(atPath: (current as NSString).appendingPathComponent(".git")) {
+            if fileSystem.fileExists(atPath: (current as NSString).appendingPathComponent(".git")),
+               let common = GitCheckoutLayout.commonDirectory(for: current),
+               GitCheckoutLayout.commonDirectory(ofGitDirectory: common) != nil,
+               Self.resolvedIdentity(common) != sourceCommon {
                 return true
             }
             current = (current as NSString).deletingLastPathComponent

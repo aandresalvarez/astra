@@ -501,26 +501,31 @@ enum StanfordOutlookMailRegistry {
     static func remove(connectorID: UUID) -> Bool {
         // Without following links: a dangling one is still a registry, whose
         // target could come back with the entry in it, so it is unverified.
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)
+        guard (try? FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)) != nil
         else { return true }
         guard let current = readEntries() else { return false }
         let remaining = current.filter { $0.connectorID != connectorID.uuidString }
         guard remaining.count != current.count else { return true }
-        // A registry that is a link would be replaced by the atomic write
-        // below while its target keeps the entry, so it stays uncleared.
-        guard attributes[.type] as? FileAttributeType != .typeSymbolicLink else { return false }
         return save(remaining)
+    }
+
+    /// Where the registry's contents live: the registry itself, or, when it
+    /// is a link, the file it resolves to. Writing the link's target keeps
+    /// the link and updates what every reader of it sees, rather than
+    /// replacing the link with a file while the old entries stay behind it.
+    private static var registryWriteURL: URL {
+        StanfordOutlookMail.registryURL.resolvingSymlinksInPath()
     }
 
     @discardableResult
     private static func save(_ entries: [Entry]) -> Bool {
         do {
-            let directory = StanfordOutlookMail.registryURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let target = registryWriteURL
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(entries.sorted { $0.email < $1.email })
-            try data.write(to: StanfordOutlookMail.registryURL, options: [.atomic])
+            try data.write(to: target, options: [.atomic])
             return true
         } catch {
             AppLogger.audit(.connectorTested, category: "Mail", fields: [
