@@ -177,19 +177,32 @@ public struct TaskWorkspaceAccess {
     /// entries, and the shared config and hooks, so a run can neither
     /// restage the source checkout nor plant configuration Git runs there.
     public var runtimeWorktreeGitWritableMetadataPaths: [String] {
-        let checkout: String
-        switch worktreeBindingState {
-        case .bound(let binding, _, _): checkout = binding.worktreePath
-        case .retargeted(let pinned, _): checkout = pinned
-        case .none, .invalid: return []
-        }
-        guard let common = runtimeWorktreeGitMetadataPaths.first,
-              let entry = TaskWorktreeBinding.registeredAdminEntry(checkout: checkout, commonDirectory: common)
-        else { return [] }
+        guard let common = runtimeWorktreeGitMetadataPaths.first, let entry = runtimeWorktreeGitAdminEntry else { return [] }
         let shared = ["objects", "refs", "logs", "reftable"]
             .map { (common as NSString).appendingPathComponent($0) }
             .filter { fileSystem.directoryExists(atPath: $0) }
         return shared + [entry]
+    }
+
+    /// The task checkout's own verified registry entry in its shared Git
+    /// directory, which holds its index, HEAD, and submodule repositories.
+    public var runtimeWorktreeGitAdminEntry: String? {
+        let checkout: String
+        switch worktreeBindingState {
+        case .bound(let binding, _, _): checkout = binding.worktreePath
+        case .retargeted(let pinned, _): checkout = pinned
+        case .none, .invalid: return nil
+        }
+        guard let common = runtimeWorktreeGitMetadataPaths.first else { return nil }
+        return TaskWorktreeBinding.registeredAdminEntry(checkout: checkout, commonDirectory: common)
+    }
+
+    /// Whether the task's checkout has submodule repositories in its registry
+    /// entry. Their `.git` files and `core.worktree` point back and forth by
+    /// relative paths, which hold only while the checkout keeps its host path.
+    public var runtimeWorktreeHasSubmoduleRepositories: Bool {
+        guard let entry = runtimeWorktreeGitAdminEntry else { return false }
+        return fileSystem.directoryExists(atPath: (entry as NSString).appendingPathComponent("modules"))
     }
 
     /// The `task.worktree.prepared` event that binds the task to its pinned

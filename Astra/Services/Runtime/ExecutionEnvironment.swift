@@ -730,9 +730,14 @@ enum DockerExecutionPlanner {
             ))
         }
 
+        // A worktree's submodules find their Git directories, and those
+        // find them back, by relative paths that hold only at the host's own
+        // layout, so such a checkout is mounted where it lives, beside its
+        // natively mounted Git metadata; the working directory follows it.
+        let keepsHostPath = taskAccess.runsInPreparedCheckout && taskAccess.runtimeWorktreeHasSubmoduleRepositories
         append(
             currentDirectory,
-            environment.containerWorkingDirectory,
+            keepsHostPath ? WorkspacePathPresentation.standardizedPath(currentDirectory) : environment.containerWorkingDirectory,
             .workspace,
             access: workspaceAccess == .shared ? .readOnly : .readWrite
         )

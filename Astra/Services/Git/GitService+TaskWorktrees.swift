@@ -99,13 +99,15 @@ extension GitService {
 
     /// Deletes a local branch only while it still points at `expectedCommit`,
     /// so a branch that gained commits after it was created is never dropped.
+    /// The ref itself is deleted, never one it points to: a task ref turned
+    /// into a symbolic ref would otherwise take its target, such as `main`.
     func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws {
         guard Self.isSafeRefComponent(branch), Self.isSafeRefComponent(expectedCommit) else {
             throw GitWorktreeError.invalidBranchName(branch)
         }
         _ = try await runGit(
             at: repoPath,
-            arguments: ["update-ref", "-d", "refs/heads/\(branch)", expectedCommit]
+            arguments: ["update-ref", "--no-deref", "-d", "refs/heads/\(branch)", expectedCommit]
         )
     }
 

@@ -226,6 +226,40 @@ struct NewTaskWorktreeCreationJournalTests {
         #expect(await GitService.shared.worktreeIsClean(at: notARepository.path) == nil)
     }
 
+    @Test("Docker keeps a worktree with submodules at its host path, so their relative Git pointers resolve")
+    func dockerKeepsSubmoduleWorktreeAtHostPath() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let task = draft(in: app, context: context)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+        let worktree = try #require(task.executionRootPath)
+        #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeHasSubmoduleRepositories)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest", mounts: []
+        )
+        #expect(environment.containerWorkingDirectory != WorkspacePathPresentation.standardizedPath(worktree))
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: worktree, environment: environment, task: task)
+        let checkout = try #require(mounts.first { $0.role == .workspace })
+        #expect(checkout.containerPath == WorkspacePathPresentation.standardizedPath(worktree))
+        // Followed inside the container, the submodule's relative pointer
+        // lands in a Git directory mounted at its own path.
+        let pointer = try String(contentsOfFile: worktree + "/libs/a/.git", encoding: .utf8)
+        let relative = pointer.replacingOccurrences(of: "gitdir:", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(!relative.hasPrefix("/"))
+        let resolved = URL(fileURLWithPath: checkout.containerPath + "/libs/a/" + relative).standardizedFileURL.path
+        #expect(mounts.contains { mount in
+            mount.containerPath == mount.hostPath
+                && WorkspacePathPresentation.resolvedPath(resolved).hasPrefix(WorkspacePathPresentation.resolvedPath(mount.containerPath) + "/")
+        })
+    }
+
     @Test("An unpopulated gitlink folder that can't be checked counts as holding files")
     func uncheckableGitlinkFolderHoldsFiles() async throws {
         let fixture = try Fixture()

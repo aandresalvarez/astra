@@ -14,6 +14,19 @@ import ASTRAPersistence
 struct NewTaskWorktreeOwnStateTests {
     private typealias Fixture = NewTaskWorktreeFixture
 
+    @Test("Deleting a task branch turned into a symbolic ref deletes only that ref, never its target")
+    func symbolicTaskRefDeletionKeepsTarget() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let main = try fixture.git(["rev-parse", "HEAD"], at: repository).trimmingCharacters(in: .whitespacesAndNewlines)
+        try fixture.git(["symbolic-ref", "refs/heads/astra/linked-0badc0de", "refs/heads/main"], at: repository)
+        try await GitService.shared.deleteLocalBranch("astra/linked-0badc0de", ifAt: main, at: repository.path)
+        #expect(try fixture.git(["rev-parse", "--verify", "-q", "refs/heads/main"], at: repository)
+            .trimmingCharacters(in: .whitespacesAndNewlines) == main)
+        #expect(try fixture.git(["for-each-ref", "refs/heads/astra"], at: repository).isEmpty)
+    }
+
     private func prepare(
         repository: URL, context: ModelContext, fixture: Fixture
     ) async throws -> (draft: AgentTask, discard: TaskWorktreeDiscard) {
