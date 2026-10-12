@@ -140,6 +140,40 @@ struct ConnectorCredentialCleanupTests {
         }
     }
 
+    @Test("A connector a pending workspace deletion still holds keeps the namespaces it shares")
+    func pendingWorkspaceDeletionRetainsSharedNamespaces() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            // Held only by a workspace deletion whose mirror may be recovered.
+            let retained = recreation(of: deleted)
+            let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: deleted))
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            #expect(ConnectorCredentialCleanup.run(
+                [deleted.keychainCleanup], modelContext: context, retained: [retained.keychainCleanup]
+            ))
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+        }
+        // The deletion outbox reports what its records hold, and nothing at
+        // all when a record can't be read.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-deletion-outbox-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let outbox = WorkspaceDeletionCleanupStore(directory: folder)
+        #expect(outbox.pendingConnectors()?.isEmpty == true)
+        let held = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+        try outbox.write(WorkspaceDeletionCleanupRecord(
+            workspaceID: UUID(), primaryPath: folder.appendingPathComponent("Deleted").path,
+            connectors: [held.keychainCleanup], skills: []
+        ))
+        #expect(outbox.pendingConnectors() == [held.keychainCleanup])
+        try Data("{".utf8).write(to: folder.appendingPathComponent("broken.json"))
+        #expect(outbox.pendingConnectors() == nil)
+    }
+
     @Test("An intent whose connector is still stored is discarded without a deletion audit")
     func staleIntentIsNotAuditedAsDeletion() throws {
         let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")

@@ -249,6 +249,21 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         }
     }
 
+    /// Every pending deletion's connectors, or nil when a record can't be
+    /// read, since what it holds is then unknown.
+    func pendingConnectors() -> [ConnectorKeychainCleanup]? {
+        guard let present = outboxPresent() else { return nil }
+        guard present else { return [] }
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else { return nil }
+        var connectors: [ConnectorKeychainCleanup] = []
+        for url in urls where url.pathExtension == "json" {
+            guard let record = try? read(url) else { return nil }
+            connectors += record.connectors
+        }
+        return connectors
+    }
+
     func remove(_ record: WorkspaceDeletionCleanupRecord) {
         try? FileManager.default.removeItem(at: recordURL(for: record))
     }

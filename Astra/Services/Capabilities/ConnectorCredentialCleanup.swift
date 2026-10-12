@@ -19,9 +19,18 @@ enum ConnectorCredentialCleanup {
         let outlookConnectorIDs: Set<UUID>
         let connectorIDs: Set<UUID>
 
-        init(_ connectors: [Connector]) {
+        /// `retained` are connectors a pending workspace deletion still
+        /// holds: their mirror may yet be recovered, so what they use stays.
+        init(_ connectors: [Connector], retained: [ConnectorKeychainCleanup] = []) {
             namespaces = Set(connectors.flatMap { KeychainSecretStore.connectorEntityIDs(for: $0) })
+                .union(retained.flatMap {
+                    KeychainSecretStore.connectorEntityIDs(
+                        id: $0.connectorID, serviceType: $0.serviceType, baseURL: $0.baseURL,
+                        originPackageID: $0.originPackageID, originComponentID: $0.originComponentID
+                    )
+                })
             outlookConnectorIDs = Set(connectors.filter(\.isStanfordOutlookMail).map(\.id))
+                .union(retained.filter(\.isStanfordOutlookMail).map(\.connectorID))
             connectorIDs = Set(connectors.map(\.id))
         }
     }
@@ -68,12 +77,23 @@ enum ConnectorCredentialCleanup {
     }
 
     /// Runs `cleanups` against the connectors `modelContext` stores, which
-    /// must already reflect the saved deletion. When they can't be read
-    /// nothing is removed: an orphaned credential is recoverable, one a
-    /// live connector still reads is not.
+    /// must already reflect the saved deletion, and those pending workspace
+    /// deletions still hold (`retained`, by default read from the app's
+    /// deletion outbox). When either can't be read nothing is removed: an
+    /// orphaned credential is recoverable, one a live connector still reads
+    /// is not.
     @discardableResult
-    static func run(_ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext) -> Bool {
+    static func run(
+        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil
+    ) -> Bool {
         guard !cleanups.isEmpty else { return true }
+        guard let retained = retained ?? retainedByPendingWorkspaceDeletions() else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "workspace_deletion_unreadable",
+                "connector_count": String(cleanups.count)
+            ], level: .error)
+            return false
+        }
         guard let stored = try? modelContext.fetch(FetchDescriptor<Connector>()) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "store_unreadable",
@@ -81,7 +101,16 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return false
         }
-        return run(cleanups, ownership: Ownership(stored))
+        return run(cleanups, ownership: Ownership(stored, retained: retained))
+    }
+
+    /// The connectors pending workspace deletions hold, whose mirrors startup
+    /// left out of recovery. Read only by the app, which tracks recovery; a
+    /// process that doesn't, such as a test, has none. Nil when a record
+    /// can't be read.
+    private static func retainedByPendingWorkspaceDeletions() -> [ConnectorKeychainCleanup]? {
+        guard WorkspaceRecoveryTrust.state != .notTracked else { return [] }
+        return WorkspaceDeletionCleanupStore().pendingConnectors()
     }
 
     /// Deletes connectors durably: `cleanups` are recorded before `save`,
