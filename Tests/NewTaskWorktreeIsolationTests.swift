@@ -452,6 +452,30 @@ struct NewTaskWorktreeIsolationTests {
         #expect(moved.access == .readOnly)
     }
 
+    @Test("A saved alias of a linked source's shared Git directory is read-only")
+    func savedAliasOfSharedGitDirectoryIsReadOnly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-linked", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "linked", linked.path], at: repository)
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "Linked", primaryPath: linked.path)
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        let path = try await prepare(task, linked, context: store.mainContext, fixture: fixture)
+        let metadata = repository.appendingPathComponent(".git").path
+        #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeGitMetadataPaths == [metadata])
+        // Outside the linked source, so no overlap with it shows; mounted
+        // writable elsewhere, it would reach the primary checkout's index.
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [ExecutionEnvironmentMount(hostPath: metadata, containerPath: "/alt-git", access: .readWrite, role: .additionalPath)]
+        )
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
+        #expect(mounts.first { $0.containerPath == "/alt-git" }?.access == .readOnly)
+    }
+
     @Test("A saved mount role never keeps the source checkout writable; only the real task folder keeps its access")
     func savedMountRolesDoNotExemptSourceCheckout() async throws {
         let fixture = try Fixture()

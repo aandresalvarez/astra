@@ -561,6 +561,13 @@ enum DockerExecutionPlanner {
             let sources = taskAccess.protectedSourceCheckouts.map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
             }
+            // The shared Git directory is protected the same way, even where
+            // it lies outside the source checkout, as a linked checkout's
+            // does: a saved alias of it would reach the source's index. What
+            // Git in this checkout writes there is mounted writable below.
+            let protected = sources + taskAccess.runtimeWorktreeGitMetadataPaths.map {
+                ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
+            }
             let checkout = ExecutionSandbox.canonicalize(currentDirectory)
                 ?? WorkspacePathPresentation.standardizedPath(currentDirectory)
             let writableNestedRepositories = Set(taskAccess.runtimeWritablePaths.map {
@@ -593,7 +600,7 @@ enum DockerExecutionPlanner {
                 // checkout is mounted at the working directory below, and a
                 // relocated copy would take its host path's only slot.
                 if host == checkout { return nil }
-                let touchesSource = sources.contains { source in
+                let touchesSource = protected.contains { source in
                     host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/")
                 }
                 guard touchesSource else {

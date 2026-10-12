@@ -799,6 +799,21 @@ struct NewTaskWorktreeLifecycleTests {
         ).complete)
     }
 
+    @Test("A partial-recovery marker that can't be checked is resumed, never taken as finished")
+    func uncheckableIncompleteMarkerIsResumed() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let folder = fixture.root.appendingPathComponent("Support", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let marker = folder.appendingPathComponent("WorkspaceRecoveryIncomplete")
+        #expect(!WorkspaceRecoveryService.incompleteMarkerPresent(marker))
+        try Data().write(to: marker)
+        #expect(WorkspaceRecoveryService.incompleteMarkerPresent(marker))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
+        #expect(WorkspaceRecoveryService.incompleteMarkerPresent(marker))
+    }
+
     @Test("Recovery trusts a nonempty store without scanning only while no deletion is pending")
     func recoveryShortcutWaitsForPendingDeletions() {
         #expect(WorkspaceRecoveryService.storeVouchesWithoutScan(

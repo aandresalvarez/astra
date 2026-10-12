@@ -340,6 +340,44 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("A creation marker that can't even be checked is unreadable, never absent")
+    func uncheckableMarkerIsUnreadable() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let checkout = fixture.root.appendingPathComponent("Plain", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "--detach", checkout.path, "HEAD"], at: repository)
+        // Neither marker is there: absent, unless they can't be checked.
+        let missing = try #require(TaskWorktreeBinding.registeredMarkers(repositoryPath: repository.path, worktreePath: checkout.path))
+        #expect(!missing.unreadable)
+        let uncheckable = try #require(TaskWorktreeBinding.registeredMarkers(
+            repositoryPath: repository.path, worktreePath: checkout.path,
+            attributes: { _ in throw CocoaError(.fileReadNoPermission) }
+        ))
+        #expect(uncheckable.unreadable)
+        #expect(uncheckable.lockReason == nil)
+    }
+
+    @Test("A worktree folder that can't be checked is retried, never taken as gone")
+    func uncheckableWorktreeFolderIsRetried() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        context.delete(draft)
+        try context.save()
+        let parent = (discard.worktreePath as NSString).deletingLastPathComponent
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent) }
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .retry("worktree_unavailable"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent)
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+    }
+
     @Test("A creation whose checkout can't even be checked is unreadable, never someone else's")
     func uncheckableCreationCheckoutIsUnreadable() async throws {
         let fixture = try Fixture()
