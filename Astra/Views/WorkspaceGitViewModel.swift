@@ -798,6 +798,9 @@ final class WorkspaceGitViewModel: ObservableObject {
         let omitted = summary.comments.count > 12
             ? "\n\nAdditional comments omitted from this prompt: \(summary.comments.count - 12). Re-fetch before editing."
             : ""
+        // The agent's GitHub tool rejects `gh api`, and `gh pr view --comments` leaves out
+        // inline review threads, so name the fixed thread reads it can actually run.
+        let repository = Self.pullRequestRepository(pr.url) ?? "OWNER/REPO"
         return """
         Address the review comments on GitHub pull request #\(pr.number): \(pr.title.isEmpty ? "Untitled PR" : pr.title)
 
@@ -810,8 +813,16 @@ final class WorkspaceGitViewModel: ObservableObject {
         Comments captured by ASTRA:
         \(comments)\(omitted)
 
-        Before editing, re-fetch the latest unresolved review comments for this PR with the GitHub CLI, because comments may have changed since ASTRA captured this snapshot. Make focused code changes that address the actionable comments, add or update regression tests for each bug fixed, run the narrow relevant tests, and summarize what remains. Do not merge the PR or post GitHub replies unless explicitly asked.
+        Before editing, re-read the unresolved review threads, because comments may have changed since ASTRA captured this snapshot: list them with ASTRA's GitHub tool `review-threads --repo \(repository) --pr \(pr.number)` and read each thread's comments with `review-thread --id THREAD_ID`, following every page. Make focused code changes that address the actionable comments, add or update regression tests for each bug fixed, run the narrow relevant tests, and summarize what remains. ASTRA cannot reply to or resolve review threads yet: give the reply you would post for each thread you addressed. Do not merge the PR.
         """
+    }
+
+    /// `OWNER/REPO` from a pull request URL (`https://github.com/OWNER/REPO/pull/N`).
+    nonisolated static func pullRequestRepository(_ url: String) -> String? {
+        guard let components = URLComponents(string: url), components.host?.lowercased() == "github.com" else { return nil }
+        let parts = components.path.split(separator: "/").map(String.init)
+        guard parts.count >= 4, parts[2] == "pull", !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        return "\(parts[0])/\(parts[1])"
     }
 
     // MARK: - Worktrees

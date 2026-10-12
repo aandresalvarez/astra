@@ -277,10 +277,22 @@ struct GitPushEnablementTests {
         #expect(task.title == "Address PR #95 comments")
         #expect(task.executionRootPath == repo)
         #expect(task.goal.contains("GitRepositoryInfo uses a fresh UUID"))
-        #expect(task.goal.contains("re-fetch the latest unresolved review comments"))
-        #expect(task.goal.contains("Do not merge the PR or post GitHub replies"))
+        // The agent re-reads threads with the host tool's fixed reads, not `gh api`, which it cannot run.
+        #expect(task.goal.contains("review-threads --repo coral/astra --pr 95"))
+        #expect(task.goal.contains("review-thread --id THREAD_ID"))
+        #expect(!task.goal.contains("with the GitHub CLI"))
+        #expect(task.goal.contains("give the reply you would post"))
+        #expect(task.goal.contains("Do not merge the PR."))
         #expect(task.draftMessages.contains("GitRepositoryInfo uses a fresh UUID"))
         #expect(task.events.isEmpty)
+    }
+
+    @Test("A pull request URL yields its OWNER/REPO for the thread reads")
+    func pullRequestRepositoryFromURL() {
+        #expect(WorkspaceGitViewModel.pullRequestRepository("https://github.com/coral/astra/pull/95") == "coral/astra")
+        #expect(WorkspaceGitViewModel.pullRequestRepository("https://github.com/owner/.github/pull/3/files") == "owner/.github")
+        #expect(WorkspaceGitViewModel.pullRequestRepository("https://gitlab.com/coral/astra/pull/95") == nil)
+        #expect(WorkspaceGitViewModel.pullRequestRepository("https://github.com/coral/astra/issues/95") == nil)
     }
 
     // MARK: - GitService integration
