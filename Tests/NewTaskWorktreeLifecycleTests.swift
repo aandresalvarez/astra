@@ -407,7 +407,7 @@ struct NewTaskWorktreeLifecycleTests {
         try context.save()
         let mirrors = try [interrupted, survivor, shared].map { try writeMirror($0.primaryPath) }
         for workspace in [interrupted, survivor, shared] {
-            try store.record(WorkspaceDeletionCleanupRecord(workspace))
+            try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(workspace)))
         }
         context.delete(interrupted)
         context.delete(shared)
@@ -719,6 +719,26 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!FileManager.default.fileExists(atPath: mirror))
     }
 
+    @Test("A mirror that appears after every mirror was pinned absent is a replacement, never the deletion's")
+    func mirrorAppearingAfterAbsentPinIsSpared() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let folder = fixture.root.appendingPathComponent("Reused", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let record = WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: [])
+        try store.write(record)
+        #expect(try store.pinMirrorIdentities(for: record).mirrorFileIDs.isEmpty)
+        // A new workspace writes its mirror there before the next launch.
+        let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
+        try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{\"new\":true}".write(toFile: mirror, atomically: true, encoding: .utf8)
+        #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
+        #expect(FileManager.default.fileExists(atPath: mirror))
+    }
+
     @Test("A pending deletion record that can't be checked stops a new one rather than being replaced")
     func uncheckableDeletionRecordIsNotReplaced() throws {
         let fixture = try Fixture()
@@ -821,7 +841,7 @@ struct NewTaskWorktreeLifecycleTests {
         let mirror = WorkspaceFileLayout.workspaceConfigFile(for: folder.path)
         try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
-        try store.record(WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: []))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: [])))
         // The mirror is still there; only its folder can't be entered.
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path) }
@@ -1077,7 +1097,7 @@ struct NewTaskWorktreeLifecycleTests {
         let mirror = WorkspaceFileLayout.workspaceConfigFile(for: original.path)
         try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
-        try store.record(WorkspaceDeletionCleanupRecord(deleted))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(deleted)))
         let id = deleted.id
         context.delete(deleted)
         try context.save()
@@ -1234,7 +1254,7 @@ struct NewTaskWorktreeLifecycleTests {
         let workspace = Workspace(name: "Linked", primaryPath: link.path)
         context.insert(workspace)
         try context.save()
-        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(workspace)))
         context.delete(workspace)
         try context.save()
 
@@ -1454,7 +1474,7 @@ struct NewTaskWorktreeLifecycleTests {
             atPath: mirror, withDestinationPath: fixture.root.appendingPathComponent("not-there.json").path
         )
         #expect(!FileManager.default.fileExists(atPath: mirror))
-        try store.record(WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: []))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(workspaceID: UUID(), primaryPath: folder.path, connectors: [], skills: [])))
 
         #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: store) == 1)
         #expect((try? FileManager.default.attributesOfItem(atPath: mirror)) == nil)
@@ -1484,7 +1504,7 @@ struct NewTaskWorktreeLifecycleTests {
         let workspace = Workspace(name: "Workspace", primaryPath: folder.path)
         context.insert(workspace)
         try context.save()
-        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(workspace)))
         context.delete(workspace)
         try context.save()
 
@@ -1528,7 +1548,7 @@ struct NewTaskWorktreeLifecycleTests {
         let mirrorFolder = (mirror as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: mirrorFolder, withIntermediateDirectories: true)
         try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
-        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(workspace)))
         context.delete(workspace)
         try context.save()
 

@@ -446,6 +446,33 @@ struct NewTaskWorktreeTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.worktrees.path))
     }
 
+    @Test("A destination that can't be checked is never taken as free, so no branch is created for it")
+    func uncheckableDestinationIsNotFree() async throws {
+        let fixture = try Fixture()
+        defer {
+            let parent = (GitService.worktreeLocation(
+                repoPath: fixture.root.appendingPathComponent("App").path, branch: "astra/x", worktreesRoot: fixture.worktrees.path
+            ) as NSString).deletingLastPathComponent
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent)
+            try? FileManager.default.removeItem(at: fixture.root)
+        }
+        let repository = try fixture.repository("App")
+        let parent = (GitService.worktreeLocation(repoPath: repository.path, branch: "astra/x", worktreesRoot: fixture.worktrees.path)
+            as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent)
+        let store = try container()
+        let task = AgentTask(title: "Update", goal: "Update", workspace: Workspace(name: "WS", primaryPath: repository.path))
+        await #expect(throws: (any Error).self) {
+            try await TaskWorktreeService.prepare(
+                task: task, request: TaskWorktreeRequest(repositoryPath: repository.path), modelContext: store.mainContext,
+                resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            )
+        }
+        #expect(try fixture.git(["branch", "--list", "astra/*"], at: repository).isEmpty)
+        #expect(task.executionRootPath == nil)
+    }
+
     @Test("Git destination failures leave the original task checkout and branch unchanged")
     func destinationFailureDoesNotPinTask() async throws {
         let fixture = try Fixture()

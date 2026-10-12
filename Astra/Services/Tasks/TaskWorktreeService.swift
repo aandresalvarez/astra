@@ -179,14 +179,23 @@ enum TaskWorktreeService {
             // A journaled name may belong to an interrupted creation that
             // hasn't been settled yet. Neither check follows links: a
             // dangling symlink at the destination makes `git worktree add -b`
-            // create the branch and then fail, orphaning that branch.
+            // create the branch and then fail, orphaning that branch. Only a
+            // path confirmed missing is free; one that can't be checked is
+            // skipped like a taken one.
             let journaled = journal.recordURL(taskID: task.id, worktreePath: destination)
-            guard (try? FileManager.default.attributesOfItem(atPath: destination)) == nil,
-                  (try? FileManager.default.attributesOfItem(atPath: journaled.path)) == nil,
+            guard confirmedMissing(destination), confirmedMissing(journaled.path),
                   !(await git.localBranchExists(branch, at: repositoryPath)) else { continue }
             return (branch, destination)
         }
         return nil
+    }
+
+    private static func confirmedMissing(_ path: String) -> Bool {
+        do {
+            return try GitService.attributesConfirmingAbsence(atPath: path) == nil
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Base

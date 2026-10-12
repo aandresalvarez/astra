@@ -478,7 +478,8 @@ enum HostControlPlaneMCPProjection {
         case "history":
             return "Retrieve bounded pages of this task's original durable evidence without database or arbitrary file access."
         case "github":
-            return "Run GitHub control-plane commands on the host through ASTRA without provider Bash."
+            return "Run GitHub control-plane commands on the host through ASTRA without provider Bash, "
+                + "or ask ASTRA to post a review file in the task directory as the task's permission level allows."
         case "gcloud":
             return "Run read-only Google Cloud control-plane commands on the host through ASTRA without provider Bash."
         case "bq":
@@ -488,7 +489,8 @@ enum HostControlPlaneMCPProjection {
         case "jira":
             return "Use typed Jira connector operations through ASTRA's host control-plane bridge. "
                 + "Reads return data; propose_issue, propose_comment, propose_update and propose_transition "
-                + "only stage a change in the task directory for the user to approve, and never post to Jira."
+                + "stage a change in the task directory and never post to Jira themselves: ASTRA sends it "
+                + "after the user approves it, or when proposed where the task's permission level does not ask."
         case "redcap":
             return "Use typed, read-only REDCap connector operations through ASTRA's host control-plane bridge. "
                 + "Record and report exports are written to a file in the task directory, not returned inline."
@@ -501,7 +503,12 @@ enum HostControlPlaneMCPProjection {
         switch tool {
         case "history":
             return ["event_id", "before_id", "offset"]
-        case "github", "gcloud", "bq":
+        case "github":
+            // `operation` and `review_file` are the typed request to post a
+            // review file (`GitHubReviewHostControlOperations`); without them a
+            // post_review call is stopped by the guard before the broker sees it.
+            return ["arguments", "timeout_seconds", "operation", GitHubReviewHostControlOperations.reviewFileKey]
+        case "gcloud", "bq":
             return ["arguments", "timeout_seconds"]
         case "ssh":
             return ["alias", "timeout_seconds"]
