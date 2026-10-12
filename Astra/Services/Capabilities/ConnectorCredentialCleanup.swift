@@ -87,7 +87,7 @@ enum ConnectorCredentialCleanup {
         _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil
     ) -> Bool {
         guard !cleanups.isEmpty else { return true }
-        guard let retained = retained ?? retainedByPendingWorkspaceDeletions() else {
+        guard let retained = retained ?? retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "workspace_deletion_unreadable",
                 "connector_count": String(cleanups.count)
@@ -108,9 +108,9 @@ enum ConnectorCredentialCleanup {
     /// left out of recovery. Read only by the app, which tracks recovery; a
     /// process that doesn't, such as a test, has none. Nil when a record
     /// can't be read.
-    private static func retainedByPendingWorkspaceDeletions() -> [ConnectorKeychainCleanup]? {
+    private static func retainedByPendingWorkspaceDeletions(modelContext: ModelContext) -> [ConnectorKeychainCleanup]? {
         guard WorkspaceRecoveryTrust.state != .notTracked else { return [] }
-        return WorkspaceDeletionCleanupStore().pendingConnectors()
+        return WorkspaceDeletionCleanupStore(for: modelContext).pendingConnectors()
     }
 
     /// Deletes connectors durably: `cleanups` are recorded before `save`,

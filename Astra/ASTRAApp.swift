@@ -894,7 +894,7 @@ public struct ASTRAApp: App {
         // nothing: the owners it would have rebuilt are unknown, so the
         // records wait for a launch that recovers.
         WorkspaceRecoveryTrust.set(.pending)
-        let deletionStore = WorkspaceDeletionCleanupStore()
+        let deletionStore = WorkspaceDeletionCleanupStore(for: modelContext)
         let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
         let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
         if unsettledDeletionMirrors == nil || unsettledDeletionMirrorIDs == nil {

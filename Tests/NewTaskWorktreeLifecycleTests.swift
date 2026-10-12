@@ -803,6 +803,37 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: mirror))
     }
 
+    @Test("The deletion outbox follows its store: the app's in Application Support, a test's never")
+    func deletionOutboxFollowsItsStore() throws {
+        let support = AppChannelStoragePaths.applicationSupportDirectory().standardizedFileURL.resolvingSymlinksInPath().path
+        let memory = try Fixture.container()
+        let outbox = WorkspaceDeletionCleanupStore(for: memory.mainContext)
+        #expect(!outbox.directory.resolvingSymlinksInPath().path.hasPrefix(support + "/"))
+        #expect(WorkspaceDeletionCleanupStore(for: memory.mainContext).directory == outbox.directory)
+        let other = try Fixture.container()
+        #expect(WorkspaceDeletionCleanupStore(for: other.mainContext).directory != outbox.directory)
+        // ASTRA's own store, active or a recovery's, shares one outbox there,
+        // where it always was; any other store keeps one beside it.
+        let root = URL(fileURLWithPath: "/tmp/astra-support-\(UUID().uuidString)")
+        let shared = root.appendingPathComponent("WorkspaceDeletionCleanup").path
+        #expect(WorkspaceDeletionCleanupStore.directory(
+            forStoreAt: root.appendingPathComponent("Stores/g1/default.store"), applicationSupport: root
+        ).path == shared)
+        #expect(WorkspaceDeletionCleanupStore.directory(
+            forStoreAt: root.appendingPathComponent("Stores/g1/recoveries/r/default.store"), applicationSupport: root
+        ).path == shared)
+        #expect(WorkspaceDeletionCleanupStore.directory(
+            forStoreAt: URL(fileURLWithPath: "/tmp/elsewhere/default.store"), applicationSupport: root
+        ).path == "/tmp/elsewhere/WorkspaceDeletionCleanup")
+        // The coordinator and startup both take the outbox for their store.
+        let base = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let coordinator = try String(contentsOf: base.appendingPathComponent("Astra/Services/Tasks/TaskLifecycleCoordinator.swift"), encoding: .utf8)
+        let app = try String(contentsOf: base.appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8)
+        #expect(coordinator.contains("WorkspaceDeletionCleanupStore(for: modelContext)"))
+        #expect(app.contains("WorkspaceDeletionCleanupStore(for: modelContext)"))
+        withExtendedLifetime((memory, other)) {}
+    }
+
     @Test("A pending deletion record that can't be checked stops a new one rather than being replaced")
     func uncheckableDeletionRecordIsNotReplaced() throws {
         let fixture = try Fixture()
