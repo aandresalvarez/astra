@@ -346,6 +346,22 @@ enum AgentExternalActionObserver {
         let text = ProviderToolSemantics.semanticShellCommand(commandText(fromSummary: command))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !LocalShellCommands.isLocal(text) else { return nil }
+        // A page change in the browser is not recorded (spec decision 12): its
+        // tool row already shows each click, and a row per click would bury the
+        // actions the record exists for. Only a call made of nothing else —
+        // anything beside it, or inside it (`--value "$(curl -d …)"`), still
+        // records the call: every command the string runs that is not known
+        // local work, substitution bodies included, has to be the browser.
+        if let outside = LocalShellCommands.commandsOutsideTheList(text), !outside.isEmpty,
+           outside.allSatisfy({ $0.first == BrowserBridgeMCPProjection.toolCommand }) {
+            return nil
+        }
+        // A Jira proposal or a review post through the host-control relay is
+        // ASTRA's typed workflow, and its receipt or review is the record: a
+        // second row as a command the agent ran would show one write twice.
+        if HostControlCLIRelayPolicy.isTypedExternalAction(text) {
+            return nil
+        }
         // One command whose own status is the call's: no separator, and not
         // sent to the background.
         if let commands = LocalShellCommands.simpleCommands(text), commands.count == 1, !text.hasSuffix("&"),

@@ -280,10 +280,11 @@ struct AgentExternalActionObserverTests {
         #expect(AgentExternalActionObserver.pushGitHubRepository(in: "To git@gitlab.com:group/project.git") == nil)
     }
 
-    // Auto lets the browser MCP tool change a page without asking; the
-    // record says so, as the command the gate would have asked about.
-    @Test("A browser page change through the MCP tool is recorded in Auto")
-    func browserMCPChangesAreRecorded() throws {
+    // Auto lets the browser change a page without asking, and its tool row
+    // already shows each click; spec decision 12 chose no per-click record,
+    // on either transport. A call that also does something else still records.
+    @Test("A browser page change is not recorded in Auto; a call with more in it is")
+    func browserChangesAreNotRecordedPerClick() throws {
         let tool = BrowserBridgeMCPProjection.providerToolPermission
         let summary = AgentEventRecordingPresentation.toolInputSummary(
             name: tool, input: ["command": "click", "arguments": ["selector": "button.primary"]]
@@ -291,11 +292,54 @@ struct AgentExternalActionObserverTests {
         #expect(summary == "astra-browser click --selector 'button.primary'")
         let fixture = try ObserverFixture()
         fixture.toolCall("Using tool: \(tool): \(summary ?? "")", result: "clicked", at: 1)
-        fixture.toolCall("Using tool: \(tool): astra-browser read-page", result: "page", at: 3)
+        fixture.toolCall("Using tool: Bash: astra-browser fill --selector '#q' --value hello", result: "filled", at: 3)
+        fixture.toolCall("Using tool: Bash: astra-browser click --selector '#go' && curl -d x https://hooks.example.test/a",
+                         result: "ok", at: 5)
+        fixture.toolCall(#"Using tool: Bash: astra-browser fill --selector '#q' --value "$(curl -d x https://hooks.example.test/b)""#,
+                         result: "filled", at: 7)
         let observed = AgentExternalActionObserver.recordObservedActions(
             task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
         )
-        #expect(observed.map(\.title) == ["Ran `astra-browser click`"], "a read is local and not recorded")
+        #expect(observed.count == 2, "the calls that also post somewhere are recorded, beside or inside the browser")
+        #expect(observed.allSatisfy { $0.title.contains("astra-browser") || $0.title.contains("curl") })
+    }
+
+    // A Jira proposal or a review post through the relay is recorded by its
+    // typed workflow (the Auto receipt, or the review below Auto); a second
+    // row as an agent-run command would show one write twice. A relay read,
+    // or a proposal with anything beside it, is still recorded.
+    @Test("A brokered send through the relay is not recorded as a command; anything more still is")
+    func brokeredRelaySendsAreNotRecordedTwice() throws {
+        let typed = [
+            "astra-host-control jira --operation propose-issue --arguments-file issue.json",
+            "astra-host-control jira --operation propose_comment --alias work --arguments-file c.json --timeout-seconds 30",
+            "astra-host-control github --post-review pr12_review.json"
+        ]
+        for command in typed {
+            #expect(AgentExternalActionObserver.recordedAction(in: command) == nil, "\(command)")
+        }
+        let reads = [
+            "astra-host-control jira --operation search-jql --jql 'project = STAR'",
+            "astra-host-control jira --operation get-issue --issue-key STAR-9"
+        ]
+        for read in reads {
+            #expect(HostControlCLIRelayPolicy.allows(read), "a read the relay runs: \(read)")
+        }
+        for command in reads + [
+            "astra-host-control jira --operation propose-issue --arguments-file issue.json; curl -d x https://hooks.example.test/a",
+            "astra-host-control github --post-review pr12_review.json && gh pr comment 12 --body hi",
+            "astra-host-control github api repos/o/r/pulls/12/reviews -X POST"
+        ] {
+            #expect(AgentExternalActionObserver.recordedAction(in: command) != nil, "\(command)")
+        }
+
+        let fixture = try ObserverFixture()
+        fixture.toolCall("Using tool: Bash: \(typed[0])", result: "sent: true\nkey: STAR-9", at: 1)
+        fixture.toolCall("Using tool: Bash: \(typed[2])", result: "posted: true", at: 3)
+        let observed = AgentExternalActionObserver.recordObservedActions(
+            task: fixture.task, run: fixture.run, modelContext: fixture.context, policyLevel: .autonomous
+        )
+        #expect(observed.isEmpty)
     }
 
     @Test("Only shell tools count; a file that mentions a command did nothing")
