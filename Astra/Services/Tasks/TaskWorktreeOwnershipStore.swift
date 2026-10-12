@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import ASTRACore
+import ASTRAPersistence
 
 /// App-owned provenance for the worktrees this install created. Task events
 /// can arrive through workspace import, so a worktree binding alone never
@@ -82,10 +83,12 @@ struct TaskWorktreeOwnershipStore: Sendable {
     }
 
     /// Takes the mark back when Git didn't remove the worktree after all.
+    /// Only a mark confirmed missing is already clear; any other failure
+    /// throws, since a mark left behind would vouch for a removal later.
     func clearRemoving(_ discard: TaskWorktreeDiscard) throws {
-        let url = removalMarkerURL(forWorktree: discard.worktreePath)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+        do {
+            try FileManager.default.removeItem(at: removalMarkerURL(forWorktree: discard.worktreePath))
+        } catch where WorkspaceFileLayout.isMissingFile(error) {}
     }
 
     func isRemoving(_ discard: TaskWorktreeDiscard) -> Bool {

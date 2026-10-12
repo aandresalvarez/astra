@@ -863,6 +863,11 @@ struct NewTaskWorktreeLifecycleTests {
             for: found, roots: WorkspaceRecoveryService.recoveryRoots(extraRoots: [root.path], includeDefaultRoots: false)
         )
         #expect(!broker.shouldSkip(found, intent: intent))
+        // A root above a protected folder, such as the home folder above
+        // Pictures, never sees what that folder holds, so it isn't complete.
+        #expect(!WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [fixture.root.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        ).complete)
         // A configured root the policy skips regardless, such as an app
         // bundle, may hide mirrors.
         let bundle = fixture.root.appendingPathComponent("Tool.app", isDirectory: true)

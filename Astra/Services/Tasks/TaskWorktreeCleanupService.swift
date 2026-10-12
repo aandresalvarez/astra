@@ -44,11 +44,15 @@ struct TaskWorktreeCleanupStore: Sendable {
         var errorDescription: String? { "The pending worktree cleanup record is invalid or has changed." }
     }
 
-    func record(_ discard: TaskWorktreeDiscard) throws {
+    /// Writes `discard`'s record, true when this call created it. One
+    /// already there must be the same; one that can't even be checked
+    /// throws, never reads as absent.
+    @discardableResult
+    func record(_ discard: TaskWorktreeDiscard) throws -> Bool {
         let url = recordURL(for: discard)
-        if FileManager.default.fileExists(atPath: url.path) {
+        if try GitService.attributesConfirmingAbsence(atPath: url.path) != nil {
             guard try read(url) == discard else { throw StoreError.invalidRecord }
-            return
+            return false
         }
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
@@ -57,6 +61,7 @@ struct TaskWorktreeCleanupStore: Sendable {
         encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(discard).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return true
     }
 
     func pendingURLs() throws -> [URL] {

@@ -35,6 +35,54 @@ struct NewTaskWorktreeOwnStateTests {
         #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("A removal mark or cleanup record that can't be checked is never taken as absent")
+    func uncheckableMarksAndRecordsFailClosed() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        // A record is created once, then found, and the caller learns which.
+        let records = fixture.cleanupStore
+        #expect(try records.record(discard))
+        #expect(try !records.record(discard))
+        try fixture.ownership.markRemoving(discard)
+        let ownership = fixture.ownership.directory.path
+        let outbox = records.directory.path
+        for folder in [ownership, outbox] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder)
+        }
+        defer { for folder in [ownership, outbox] { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder) } }
+        #expect(throws: (any Error).self) { try fixture.ownership.clearRemoving(discard) }
+        #expect(throws: (any Error).self) { try records.record(discard) }
+        for folder in [ownership, outbox] { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder) }
+        #expect(fixture.ownership.isRemoving(discard))
+        try fixture.ownership.clearRemoving(discard)
+        #expect(!fixture.ownership.isRemoving(discard))
+        try fixture.ownership.clearRemoving(discard)
+    }
+
+    @Test("A checkout whose shared Git directory can't be resolved gets no branch gate, on either side")
+    func unresolvableRepositoryHasNoGate() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let broken = fixture.root.appendingPathComponent("Broken", isDirectory: true)
+        try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
+        // A linked checkout's `.git` file that can't be read for the moment.
+        let dotGit = broken.appendingPathComponent(".git")
+        try "gitdir: /tmp/astra-gate-test/.git/worktrees/broken".write(to: dotGit, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dotGit.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dotGit.path) }
+        #expect(GitCheckoutLayout.commonDirectory(for: broken.path) == nil)
+        #expect(TaskBranchDeletionGate.beginCardOperation(at: broken.path) == nil)
+        #expect(TaskBranchDeletionGate.beginDeletion(at: broken.path) == nil)
+        // A folder confirmed not to be a checkout keys by its own path.
+        let plain = fixture.root.appendingPathComponent("Plain", isDirectory: true)
+        try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
+        let token = try #require(TaskBranchDeletionGate.beginCardOperation(at: plain.path))
+        TaskBranchDeletionGate.endCardOperation(token)
+    }
+
     @Test("Deleting a task branch turned into a symbolic ref deletes only that ref, never its target")
     func symbolicTaskRefDeletionKeepsTarget() async throws {
         let fixture = try Fixture()

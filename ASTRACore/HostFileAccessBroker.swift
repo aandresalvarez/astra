@@ -124,6 +124,23 @@ public struct HostFileAccessBroker {
         .filter { !shouldSkip($0, intent: intent) }
     }
 
+    /// `contentsOfDirectory`, with the children the policy left out, so a
+    /// scan that must see everything can tell when it didn't.
+    public func contentsOfDirectoryReportingSkipped(
+        at url: URL,
+        includingPropertiesForKeys keys: [URLResourceKey]? = nil,
+        options mask: FileManager.DirectoryEnumerationOptions = [],
+        intent: HostFileAccessIntent
+    ) throws -> (contents: [URL], skipped: [URL]) {
+        guard !shouldSkip(url, intent: intent) else { return ([], [url]) }
+        let all = try fileManager.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: safeResourceKeys(keys, intent: intent),
+            options: mask
+        )
+        return (all.filter { !shouldSkip($0, intent: intent) }, all.filter { shouldSkip($0, intent: intent) })
+    }
+
     public func enumerator(
         at url: URL,
         includingPropertiesForKeys keys: [URLResourceKey]? = nil,

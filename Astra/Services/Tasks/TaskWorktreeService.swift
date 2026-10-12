@@ -1149,9 +1149,7 @@ enum TaskWorktreeService {
         var added: [TaskWorktreeDiscard] = []
         for discard in discards {
             do {
-                let existed = FileManager.default.fileExists(atPath: cleanupStore.recordURL(for: discard).path)
-                try cleanupStore.record(discard)
-                if !existed { added.append(discard) }
+                if try cleanupStore.record(discard) { added.append(discard) }
                 AppLogger.breadcrumb(action: "task_worktree_cleanup_requested", category: "Git", taskID: discard.taskID, fields: [
                     "worktree": discard.worktreePath,
                     "branch": discard.branch
