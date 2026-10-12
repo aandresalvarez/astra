@@ -942,6 +942,12 @@ enum TaskWorktreeService {
         if TaskWorktreeBinding.registeredWorktreeHasLocalConfig(repositoryPath: repository, worktreePath: path) == true {
             return kept("worktree_config")
         }
+        // ASTRA creates the branch from a commit, with no upstream, so any
+        // `branch.<name>.*` setting, such as one `--set-upstream-to` or a
+        // description wrote, is the user's, and deleting the ref strands it.
+        if await git.branchHasConfiguration(discard.branch, at: repository) {
+            return kept("branch_config")
+        }
         if TaskWorktreeBinding.registeredWorktreeHasOwnRefs(repositoryPath: repository, worktreePath: path) == true {
             return kept("worktree_refs")
         }
@@ -977,7 +983,9 @@ enum TaskWorktreeService {
             }
         }
         // Last of the work checks, so a more specific reason above wins.
-        if TaskWorktreeBinding.registeredWorktreeHasOwnState(repositoryPath: repository, worktreePath: path) == true {
+        if TaskWorktreeBinding.registeredWorktreeHasOwnState(
+            repositoryPath: repository, worktreePath: path, baseCommit: discard.baseCommit
+        ) == true {
             return kept("worktree_state")
         }
         let registered = await git.listWorktrees(at: repository)

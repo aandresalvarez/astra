@@ -368,12 +368,17 @@ public enum TaskWorktreeBinding {
     /// deletes and no status, branch, or reflog shows, such as a merge or
     /// squash in progress (`MERGE_HEAD`, `SQUASH_MSG`), a rebase, a fetch's
     /// `FETCH_HEAD`, or a prepared commit message. Anything unknown counts,
-    /// as does an entry that can't be listed. Nil when the repository
+    /// as does an entry that can't be listed. `ORIG_HEAD` is baseline only
+    /// while it still names `baseCommit`, as `git worktree add` leaves it:
+    /// moved, it may be the only name for a commit. Nil when the repository
     /// doesn't register the path.
-    public static func registeredWorktreeHasOwnState(repositoryPath: String, worktreePath: String) -> Bool? {
+    public static func registeredWorktreeHasOwnState(repositoryPath: String, worktreePath: String, baseCommit: String) -> Bool? {
         guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: registered.entry.path) else { return true }
-        return names.contains { !baselineEntryNames.contains($0) }
+        if names.contains(where: { !baselineEntryNames.contains($0) }) { return true }
+        guard names.contains("ORIG_HEAD") else { return false }
+        let origHead = try? String(contentsOf: registered.entry.appendingPathComponent("ORIG_HEAD"), encoding: .utf8)
+        return origHead?.trimmingCharacters(in: .whitespacesAndNewlines) != baseCommit
     }
 
     private static func isMissingFileError(_ error: any Error) -> Bool {
