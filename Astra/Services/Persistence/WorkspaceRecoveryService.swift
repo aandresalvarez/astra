@@ -582,7 +582,9 @@ public enum WorkspaceRecoveryService {
             }
             let candidates = configs.filter { !deletionMirrors.contains($0) && !unidentified.contains($0) }
             if !moved.isEmpty { excludedByIdentity(moved) }
-            let loadedConfigs = await loadWorkspaceConfigs(candidates)
+            let loadedConfigs = await loadWorkspaceConfigs(
+                candidates, roots: recoveryRoots(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+            )
             guard !Task.isCancelled else { return false }
             // The marker goes down before anything is imported and comes off
             // only once recovery is trusted, so imports never become durable
@@ -637,13 +639,38 @@ public enum WorkspaceRecoveryService {
         extraRoots.isEmpty && includeDefaultRoots && !resumingPartialRecovery && !pendingDeletion && hasWorkspaces
     }
 
+    /// The configured folders a recovery scans: the workspaces root the
+    /// user chose and the channel's default, then `extraRoots`.
+    static func recoveryRoots(extraRoots: [String], includeDefaultRoots: Bool) -> [URL] {
+        var roots: [String] = []
+        if includeDefaultRoots {
+            if let configured = UserDefaults.standard.string(forKey: "workspacesRoot"), !configured.isEmpty {
+                roots.append(configured)
+            }
+            roots.append(AppChannel.current.defaultWorkspacesRoot)
+        }
+        roots.append(contentsOf: extraRoots)
+        return roots.map { URL(fileURLWithPath: expandTilde($0)) }
+    }
+
+    /// How a discovered mirror is read: under the configured root it was
+    /// found in, as the scan read it, so a root inside a protected folder,
+    /// such as one on a volume under /Volumes, loads what it discovered.
+    static func loadIntent(for config: URL, roots: [URL]) -> HostFileAccessIntent {
+        let path = config.standardizedFileURL.path
+        let root = roots
+            .filter { path.hasPrefix($0.standardizedFileURL.path + "/") }
+            .max { $0.standardizedFileURL.path.count < $1.standardizedFileURL.path.count }
+        return .implicitScan(root: root)
+    }
+
     /// Present while a launch's recovery left a mirror unloaded or a folder
     /// unscanned. Startup passes it; other callers keep no marker.
     public static var defaultIncompleteRecoveryMarker: URL {
         AppChannelStoragePaths.applicationSupportDirectory().appendingPathComponent("WorkspaceRecoveryIncomplete")
     }
 
-    private static func loadWorkspaceConfigs(_ configFiles: [URL]) async -> [LoadedWorkspaceConfig] {
+    private static func loadWorkspaceConfigs(_ configFiles: [URL], roots: [URL]) async -> [LoadedWorkspaceConfig] {
         await withTaskGroup(of: LoadedWorkspaceConfig?.self, returning: [LoadedWorkspaceConfig].self) { group in
             for configURL in configFiles {
                 group.addTask(priority: .utility) {
@@ -651,7 +678,7 @@ public enum WorkspaceRecoveryService {
                     do {
                         var config = try WorkspaceConfigManager.loadConfig(
                             from: configURL,
-                            accessIntent: .implicitScan(root: nil)
+                            accessIntent: loadIntent(for: configURL, roots: roots)
                         )
                         config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
                             .standardizedFileURL
@@ -837,20 +864,10 @@ public enum WorkspaceRecoveryService {
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> (configs: [URL], complete: Bool) {
         var complete = true
-        var roots: [String] = []
-        if includeDefaultRoots {
-            if let configured = UserDefaults.standard.string(forKey: "workspacesRoot"), !configured.isEmpty {
-                roots.append(configured)
-            }
-            roots.append(AppChannel.current.defaultWorkspacesRoot)
-        }
-        roots.append(contentsOf: extraRoots)
-
         var seen = Set<String>()
         var configs: [URL] = []
-        for root in roots {
+        for url in recoveryRoots(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots) {
             guard !Task.isCancelled else { complete = false; break }
-            let url = URL(fileURLWithPath: expandTilde(root))
             for config in scanForWorkspaceConfigs(
                 root: url,
                 maxDepth: 4,

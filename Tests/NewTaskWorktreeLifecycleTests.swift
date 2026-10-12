@@ -324,6 +324,35 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(try fixture.cleanupStore.pendingURLs().isEmpty)
     }
 
+    @Test("Replacing a folder with a live run recreates its tasks stopped, never running or admissible")
+    func folderReplaceRecreatesRunsStopped() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        let task = AgentTask(title: "Running", goal: "Explore", workspace: workspace)
+        task.status = .running
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, resourceClaims: [])
+        context.insert(request)
+        try context.save()
+        #expect(!request.state.isTerminal)
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore
+        )
+
+        let replaced = try #require(coordinator.createWorkspaceFromFolder(
+            fixture.storage, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .replace }
+        ))
+        let recreated = try #require(replaced.tasks.first { $0.title == "Running" })
+        #expect(![.running, .queued, .pendingUser].contains(recreated.status))
+        let requests = try TaskTurnRequestRepository.requests(for: recreated, in: context)
+        #expect(requests.allSatisfy { $0.state.isTerminal })
+        #expect(try TaskTurnRequestRepository.activeRequests(for: recreated, in: context).isEmpty)
+    }
+
     @Test("A deletion whose cancellation can't be saved stops nothing and keeps the task's requests", arguments: [false, true])
     func unsavedCancellationKeepsRequests(saves: Bool) async throws {
         let fixture = try Fixture()
@@ -825,6 +854,15 @@ struct NewTaskWorktreeLifecycleTests {
         )
         #expect(scan.configs.map { WorkspacePathPresentation.resolvedPath($0.path) } == [WorkspacePathPresentation.resolvedPath(mirror.path)])
         #expect(scan.complete)
+        // And it is read under that root, as the scan read it, not refused
+        // as an implicit read of a protected folder.
+        let broker = HostFileAccessBroker(homeDirectory: fixture.root)
+        let found = try #require(scan.configs.first)
+        #expect(broker.shouldSkip(found, intent: .implicitScan(root: nil)))
+        let intent = WorkspaceRecoveryService.loadIntent(
+            for: found, roots: WorkspaceRecoveryService.recoveryRoots(extraRoots: [root.path], includeDefaultRoots: false)
+        )
+        #expect(!broker.shouldSkip(found, intent: intent))
         // A configured root the policy skips regardless, such as an app
         // bundle, may hide mirrors.
         let bundle = fixture.root.appendingPathComponent("Tool.app", isDirectory: true)
