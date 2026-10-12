@@ -751,14 +751,26 @@ final class AgentRuntimeWorker {
         let historyGuidance = runtimeCapabilityProfile.canDeliverHostControlPlane
             && appliedRuntime.requirements.offeredHostControlTools.contains("history")
             ? TaskHistoryRetrievalGuidance.prompt : ""
+        // Said with the level the broker binding uses, so what the agent is
+        // told a proposal does and what the broker does with it agree.
+        let autoSendGuidance = { (text: String) in
+            HostControlPlanePromptGuidance.appendingAutoSendGuidance(
+                to: text,
+                policyLevel: manifest.policyLevel,
+                usesHostControlCLIRelay: runtimeCapabilityProfile.usesHostControlCLIRelay,
+                offersGitHubHostTool: runtimeCapabilityProfile.canDeliverHostControlPlane
+                    && appliedRuntime.requirements.offeredHostControlTools.contains("github")
+            )
+        }
+        prompt = autoSendGuidance(prompt)
         let promptWithoutResume = prompt + historyGuidance
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
         if auditPhase == .resume, approvedPlan == nil, nativeContinuationSessionID != nil {
-            prompt = AgentContinuationPrompt.build(message: sessionMessage ?? startPayload,
+            prompt = autoSendGuidance(AgentContinuationPrompt.build(message: sessionMessage ?? startPayload,
                 task: executionTask, executionPolicy: executionPolicy,
                 permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
-                repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment)
+                repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment))
         }
         prompt += historyGuidance
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -817,6 +829,23 @@ final class AgentRuntimeWorker {
 
         HostControlBrokerSessionRegistry.shared.bindHistory(container: modelContext.container, taskID: task.id, runID: run.id)
         defer { HostControlBrokerSessionRegistry.shared.unbindHistory(taskID: task.id, runID: run.id) }
+        // The run's own level, fixed here: a write the agent asks for is sent
+        // or left for review by the level the run launched with.
+        let coordinatorFactory = connectorMutationCoordinatorFactory
+        let reviewServiceFactory = gitHubReviewPublicationServiceFactory
+        HostControlBrokerSessionRegistry.shared.bindExternalActions(
+            BrokeredExternalActionBridge(handler: BrokeredExternalActionHandler(
+                modelContext: modelContext,
+                taskID: task.id,
+                runID: run.id,
+                policyLevel: manifest.policyLevel,
+                makeCoordinator: { coordinatorFactory?($0) ?? ConnectorMutationCoordinator(modelContext: $0) },
+                makeReviewService: { reviewServiceFactory?($0) ?? GitHubReviewPublicationService(modelContext: $0) }
+            )),
+            taskID: task.id,
+            runID: run.id
+        )
+        defer { HostControlBrokerSessionRegistry.shared.unbindExternalActions(taskID: task.id, runID: run.id) }
         let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol
@@ -1666,5 +1695,12 @@ final class AgentRuntimeWorker {
     /// protocol) for providers that support it, instead of failing the run and
     /// relaunching after approval.
     var liveApprovalsEnabled: Bool = true
+
+    /// Builds the coordinator a write the agent asks for in Auto is sent
+    /// through, and the service a requested review is posted through. Nil uses
+    /// the real ones; tests inject fakes to prove what would have gone out
+    /// without reaching a network.
+    var connectorMutationCoordinatorFactory: (@MainActor (ModelContext) -> ConnectorMutationCoordinator)?
+    var gitHubReviewPublicationServiceFactory: (@MainActor (ModelContext) -> GitHubReviewPublicationService)?
 
 }

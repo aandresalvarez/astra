@@ -360,6 +360,17 @@ private enum AstraHostControlBrokerCLI {
             return Invocation(tool: tool, arguments: try redcapArguments(remaining))
         case "ssh":
             return Invocation(tool: tool, arguments: try sshArguments(remaining))
+        case "github" where remaining.first == GitHubReviewHostControlOperations.postReviewOption:
+            // A request for ASTRA to post a review file, not a gh command. Only
+            // the file's name travels; the broker reads it from the task folder.
+            guard remaining.count == 2,
+                  GitHubReviewHostControlOperations.isReviewFileName(remaining[1]) else {
+                throw HostControlBrokerCLIError.invalidArguments
+            }
+            return Invocation(tool: tool, arguments: [
+                "operation": GitHubReviewHostControlOperations.postReview,
+                GitHubReviewHostControlOperations.reviewFileKey: remaining[1]
+            ])
         case "github", "gcloud", "bq":
             let commandArguments = remaining.first == "--"
                 ? Array(remaining.dropFirst())
@@ -551,16 +562,23 @@ private enum AstraHostControlBrokerCLI {
       astra-host-control jira --operation propose-issue|propose-comment|propose-update|propose-transition [--alias NAME] --arguments-file NAME.json
       astra-host-control redcap --operation status|project|metadata|user|record|report [--alias NAME] [--fields A,B] [--forms A,B] [--records 1,2] [--report-id N] [--raw-or-label raw|label]
       astra-host-control ssh --alias NAME
+      astra-host-control github --post-review NAME.json
       astra-host-control github|gcloud|bq -- ARGUMENT...
 
     redcap record and report write their rows to a file under the task
     directory and print only a receipt; nothing subject-level is returned on
     stdout.
 
-    jira propose-* stage a change for the user to review; nothing is sent.
-    NAME.json is a JSON object in the task folder holding the operation's
-    fields, the same ones the MCP tool takes (for example issue_key, comment
-    and visibility for propose-comment). It is a file name, not a path.
+    jira propose-* stage a change. Whether ASTRA sends it now or the user
+    reviews it first depends on the task's permission level, and the reply
+    says which. NAME.json is a JSON object in the task folder holding the
+    operation's fields, the same ones the MCP tool takes (for example
+    issue_key, comment and visibility for propose-comment). It is a file
+    name, not a path.
+
+    github --post-review asks ASTRA to post a review file you wrote in the
+    task folder, as the permission level allows; the reply says whether it
+    was posted.
     """
 }
 

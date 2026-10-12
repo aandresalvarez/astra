@@ -99,4 +99,24 @@ struct HostControlCLIRelayPolicyTests {
             "astra-host-control jira --operation get-transitions --issue-key ASTRA-1"
         ))
     }
+
+    /// The relay spelling of the request to post a review file: one bare review
+    /// file name, nothing beside it, and the gh route unchanged.
+    @Test("Relay allows a post-review request naming exactly one review file")
+    func relayAllowsPostReviewRequest() {
+        #expect(HostControlCLIRelayPolicy.allows("astra-host-control github --post-review pr12_review.json"))
+        #expect(HostControlCLIRelayPolicy.allows("astra-host-control github --post-review pr12_review_2.json"))
+        #expect(HostControlCLIRelayPolicy.allows("astra-host-control github -- pr view 12"))
+        for refused in [
+            "astra-host-control github --post-review",
+            "astra-host-control github --post-review notes.json",
+            "astra-host-control github --post-review ../pr12_review.json",
+            "astra-host-control github --post-review /tmp/pr12_review.json",
+            "astra-host-control github --post-review pr12_review.json --timeout-seconds 5",
+            "astra-host-control github --post-review pr12_review.json pr13_review.json",
+            "astra-host-control github --post-review pr12_review.json && env"
+        ] {
+            #expect(!HostControlCLIRelayPolicy.allows(refused), "\(refused)")
+        }
+    }
 }
