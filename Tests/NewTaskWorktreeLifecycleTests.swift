@@ -719,6 +719,41 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!FileManager.default.fileExists(atPath: mirror))
     }
 
+    @Test("A replacement mirror at a pending deletion's pinned path is recovered, so settlement counts its owners")
+    func replacementMirrorAtPinnedPathIsRecovered() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try Fixture.container()
+        let scanned = fixture.root.appendingPathComponent("Workspaces", isDirectory: true)
+        let folder = scanned.appendingPathComponent("Reused", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let deleted = Workspace(name: "Deleted", primaryPath: folder.path)
+        source.mainContext.insert(deleted)
+        try source.mainContext.save()
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try WorkspaceConfigManager.exportToFile(workspace: deleted, modelContext: source.mainContext, url: mirror)
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(deleted)))
+        // Before the next launch the folder holds a new workspace's mirror.
+        try FileManager.default.removeItem(at: mirror)
+        let replacement = Workspace(name: "Replacement", primaryPath: folder.path)
+        source.mainContext.insert(replacement)
+        try source.mainContext.save()
+        try WorkspaceConfigManager.exportToFile(workspace: replacement, modelContext: source.mainContext, url: mirror)
+
+        let empty = try Fixture.container()
+        var reported: [URL] = []
+        #expect(await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: empty.mainContext, excludingConfigFiles: try #require(store.pendingMirrorPaths()),
+            extraRoots: [scanned.path], includeDefaultRoots: false,
+            excludingItemIdentities: try #require(store.pendingMirrorIdentities()),
+            excludedByIdentity: { reported = $0 }
+        ).value)
+        #expect(try empty.mainContext.fetch(FetchDescriptor<Workspace>()).map(\.name) == ["Replacement"])
+        #expect(reported.isEmpty)
+    }
+
     @Test("A mirror that appears after every mirror was pinned absent is a replacement, never the deletion's")
     func mirrorAppearingAfterAbsentPinIsSpared() throws {
         let fixture = try Fixture()
@@ -1039,14 +1074,15 @@ struct NewTaskWorktreeLifecycleTests {
         try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
         try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
         let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
-        try store.record(WorkspaceDeletionCleanupRecord(workspace))
+        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(workspace)))
 
         let excluded = try #require(store.pendingMirrorPaths())
         #expect(excluded.contains(WorkspacePathPresentation.resolvedPath(mirror.path)))
         let empty = try Fixture.container()
         await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
             modelContext: empty.mainContext, excludingConfigFiles: excluded,
-            extraRoots: [fixture.root.path], includeDefaultRoots: false
+            extraRoots: [fixture.root.path], includeDefaultRoots: false,
+            excludingItemIdentities: try #require(store.pendingMirrorIdentities())
         ).value
         #expect(try empty.mainContext.fetchCount(FetchDescriptor<Workspace>()) == 0)
         // Without the record the same mirror is recovered.

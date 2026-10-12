@@ -555,31 +555,32 @@ public enum WorkspaceRecoveryService {
                 return await group.next() ?? ([], false)
             }
             let configs = scan.configs
-            // Mirrors of workspaces whose deletion is still being cleaned up.
-            let unexcluded = configs.filter {
-                !excluded.contains(WorkspacePathPresentation.resolvedPath($0.path))
-            }
-            // A pending deletion's mirror whose workspace folder was moved is
-            // still that deletion's: matched by item identity, it is left out
-            // and reported for settlement to remove. One whose identity can't
-            // be read may be that mirror: it isn't imported, and recovery
-            // isn't trusted, so settlement waits for a launch that can tell.
+            // A pending deletion's mirror is recognized by the identity pinned
+            // at deletion, wherever it is now: left out, and, moved with its
+            // folder, reported for settlement to remove. A file at a pinned
+            // path with another identity is a replacement, a new workspace's
+            // mirror, and is imported, so settlement counts its owners. One
+            // whose identity can't be read may be either: it isn't imported,
+            // and recovery isn't trusted, so settlement waits.
             var unidentified: [URL] = []
-            let moved = excludedIdentities.isEmpty ? [] : unexcluded.filter { config in
+            var deletionMirrors: [URL] = []
+            for config in configs {
+                let atPinnedPath = excluded.contains(WorkspacePathPresentation.resolvedPath(config.path))
+                guard atPinnedPath || !excludedIdentities.isEmpty else { continue }
                 do {
-                    return try itemIdentity(config.path).map(excludedIdentities.contains) == true
+                    if try itemIdentity(config.path).map(excludedIdentities.contains) == true { deletionMirrors.append(config) }
                 } catch {
                     unidentified.append(config)
-                    return false
                 }
             }
+            let moved = deletionMirrors.filter { !excluded.contains(WorkspacePathPresentation.resolvedPath($0.path)) }
             if !unidentified.isEmpty {
                 AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                     "operation": "recover_workspaces", "reason": "mirror_identity_unreadable",
                     "count": String(unidentified.count)
                 ], level: .error)
             }
-            let candidates = unexcluded.filter { !moved.contains($0) && !unidentified.contains($0) }
+            let candidates = configs.filter { !deletionMirrors.contains($0) && !unidentified.contains($0) }
             if !moved.isEmpty { excludedByIdentity(moved) }
             let loadedConfigs = await loadWorkspaceConfigs(candidates)
             guard !Task.isCancelled else { return false }
