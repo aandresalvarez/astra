@@ -672,6 +672,35 @@ struct ConnectorMutationCoordinatorTests {
         #expect(ConnectorMutationRequirementResolver.pendingMutations(task: fixture.task).isEmpty)
     }
 
+    /// A comment, update or transition acts on the ticket its route names. A
+    /// key in the answer (a proxy's wrapper, say) is not that ticket and is
+    /// never reported as one, nor linked.
+    @Test("A key in the answer to a comment is not taken as the ticket")
+    func commentAnswerKeyIsIgnored() async throws {
+        let fixture = try Fixture()
+        let pending = try fixture.stageProposal(
+            operation: "add_comment",
+            requestPath: "/rest/api/2/issue/SS-617/comment",
+            target: "SS-617 · public comment",
+            summary: "Thanks",
+            body: ["body": "Thanks."]
+        )
+        let sender = RecordingSender(
+            response: ConnectorMutationHTTPResponse(
+                statusCode: 201,
+                body: #"{"key":"OTHER-1","id":"10042","self":"https://jira.commit.test/rest/api/2/issue/10001/comment/10042"}"#
+            )
+        )
+        let coordinator = fixture.coordinator(sender: sender)
+        let proposal = try coordinator.prepare(task: fixture.task, pending: pending)
+        try fixture.recordStagedEvent(pending)
+
+        let receipt = try await coordinator.send(task: fixture.task, proposal: proposal)
+
+        #expect(receipt.createdKey == nil)
+        #expect(receipt.createdURL == "https://jira.commit.test/browse/SS-617?focusedCommentId=10042")
+    }
+
     /// Jira answers an edit with `204 No Content`, so there is no body to read a
     /// ticket out of. The route is what says which ticket, and success does not
     /// depend on there being anything in the answer.
