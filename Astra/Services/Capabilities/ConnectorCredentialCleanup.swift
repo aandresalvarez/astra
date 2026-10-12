@@ -68,7 +68,7 @@ enum ConnectorCredentialCleanup {
 
     /// Deletes connectors durably: `cleanups` are recorded before `save`,
     /// taken back when it fails, and cleared once they run. Any that don't
-    /// clear wait in `store`, by default the outbox beside `modelContext`'s
+    /// clear wait in `store`, by default the outbox for `modelContext`'s
     /// store, for `resumePending`. False, with nothing recorded, when the
     /// deletion wasn't saved; the caller rolls it back.
     @discardableResult
@@ -78,7 +78,7 @@ enum ConnectorCredentialCleanup {
         store: ConnectorCredentialCleanupStore? = nil,
         save: () -> Bool
     ) -> Bool {
-        let store = store ?? ConnectorCredentialCleanupStore(beside: modelContext)
+        let store = store ?? ConnectorCredentialCleanupStore(for: modelContext)
         let recorded: [URL]
         do {
             recorded = try store?.record(cleanups) ?? []
@@ -125,7 +125,7 @@ enum ConnectorCredentialCleanup {
     /// never saved is harmless: its connector is stored and keeps all it uses.
     @discardableResult
     static func resumePending(modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil) -> Int {
-        guard let store = store ?? ConnectorCredentialCleanupStore(beside: modelContext) else { return 0 }
+        guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
         guard let pending = store.pending() else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "intent_unreadable"
@@ -150,20 +150,33 @@ struct ConnectorCredentialCleanupStore: Sendable {
         self.directory = directory.standardizedFileURL
     }
 
-    /// The outbox beside the SwiftData store `modelContext` writes to, so
-    /// its records always describe that store's deletions. Nil for a store
-    /// kept only in memory, whose deletions no record should outlive.
+    /// The outbox for the SwiftData store `modelContext` writes to. Nil for
+    /// a store kept only in memory, whose deletions no record should outlive.
     @MainActor
-    init?(beside modelContext: ModelContext) {
+    init?(for modelContext: ModelContext) {
         guard let configuration = modelContext.container.configurations.first(where: { !$0.isStoredInMemoryOnly })
         else { return nil }
-        self.init(directory: configuration.url.deletingLastPathComponent()
-            .appendingPathComponent("ConnectorCredentialCleanup", isDirectory: true))
+        self.init(directory: Self.directory(
+            forStoreAt: configuration.url, applicationSupport: WorkspaceRecoveryService.applicationSupportDirectory
+        ))
+    }
+
+    /// The app's own store, the active one or a recovery's replacement, both
+    /// inside its Application Support folder, shares one outbox there: a
+    /// recovery that moves the store must not strand deletions it already
+    /// committed. Any other store, such as a scratch copy, keeps one beside it.
+    static func directory(forStoreAt store: URL, applicationSupport: URL) -> URL {
+        let support = applicationSupport.standardizedFileURL.resolvingSymlinksInPath()
+        let resolved = store.standardizedFileURL.resolvingSymlinksInPath().path
+        let root = resolved.hasPrefix(support.path + "/") ? support : store.deletingLastPathComponent()
+        return root.appendingPathComponent("ConnectorCredentialCleanup", isDirectory: true)
     }
 
     /// Writes each cleanup not already pending and returns the files this
     /// call added, which are all a failed save takes back. One already
-    /// there, or one that can't be checked, is left as it is.
+    /// there must read back as the same cleanup; one that can't, or can't
+    /// be checked at all, throws, so the deletion isn't saved behind an
+    /// intent that could never be retried.
     func record(_ cleanups: [ConnectorKeychainCleanup]) throws -> [URL] {
         guard !cleanups.isEmpty else { return [] }
         try FileManager.default.createDirectory(
@@ -176,6 +189,8 @@ struct ConnectorCredentialCleanupStore: Sendable {
                 let url = recordURL(for: cleanup, data: data)
                 do {
                     _ = try FileManager.default.attributesOfItem(atPath: url.path)
+                    guard try JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) == cleanup
+                    else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path]) }
                     continue
                 } catch where WorkspaceFileLayout.isMissingFile(error) {}
                 try data.write(to: url, options: .atomic)

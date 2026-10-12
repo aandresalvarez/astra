@@ -91,7 +91,7 @@ struct ConnectorCredentialCleanupTests {
     @Test("The cleanup outbox lives beside the store it describes, and an in-memory store has none")
     func outboxLivesBesideItsStore() throws {
         let memory = try credentialCleanupContainer()
-        #expect(ConnectorCredentialCleanupStore(beside: memory.mainContext) == nil)
+        #expect(ConnectorCredentialCleanupStore(for: memory.mainContext) == nil)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-store-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -99,10 +99,45 @@ struct ConnectorCredentialCleanupTests {
             for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(url: folder.appendingPathComponent("default.store"))]
         )
-        let outbox = try #require(ConnectorCredentialCleanupStore(beside: disk.mainContext))
+        let outbox = try #require(ConnectorCredentialCleanupStore(for: disk.mainContext))
         #expect(WorkspacePathPresentation.resolvedPath(outbox.directory.deletingLastPathComponent().path)
             == WorkspacePathPresentation.resolvedPath(folder.path))
         withExtendedLifetime(disk) {}
+        // The app's own store, active or replaced by a recovery, shares one
+        // outbox in Application Support, so a recovery strands nothing.
+        let support = folder.appendingPathComponent("Support", isDirectory: true)
+        let shared = support.appendingPathComponent("ConnectorCredentialCleanup").path
+        #expect(ConnectorCredentialCleanupStore.directory(
+            forStoreAt: support.appendingPathComponent("Stores/g1/default.store"), applicationSupport: support
+        ).path == shared)
+        #expect(ConnectorCredentialCleanupStore.directory(
+            forStoreAt: support.appendingPathComponent("Stores/g1/recoveries/\(UUID().uuidString)/default.store"),
+            applicationSupport: support
+        ).path == shared)
+    }
+
+    @Test("A pending intent that doesn't read back as the same cleanup stops the deletion")
+    func corruptExistingIntentStopsDeletion() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+        context.insert(connector)
+        try context.save()
+        let cleanup = connector.keychainCleanup
+        let recorded = try #require(try outbox.record([cleanup]).first)
+        // Truncated where it already stood.
+        try Data("{".utf8).write(to: recorded)
+        var saved = false
+        #expect(!ConnectorCredentialCleanup.deleteThenClean([cleanup], modelContext: context, store: outbox) {
+            saved = true
+            return true
+        })
+        #expect(!saved)
+        #expect(try Data(contentsOf: recorded) == Data("{".utf8))
     }
 
     @Test("A Configure deletion whose save fails is rolled back with its membership and records nothing")
