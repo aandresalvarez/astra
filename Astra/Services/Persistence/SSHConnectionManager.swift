@@ -158,7 +158,6 @@ public enum SSHConnectionManager {
     ) throws {
         guard !workspacePath.isEmpty else { return }
         let url = URL(fileURLWithPath: connectionsFilePath(for: workspacePath))
-        let current = try? FileManager.default.attributesOfItem(atPath: url.path)
         switch snapshot {
         case .file(let data):
             try fileWriter.writeAtomically(data, to: url)
@@ -167,6 +166,14 @@ public enum SSHConnectionManager {
                 try FileManager.default.removeItem(at: url)
             } catch where WorkspaceFileLayout.isMissingFile(error) {}
         case .link(let destination):
+            // Only a file confirmed missing is nothing to replace; one that
+            // can't be checked stops the restore.
+            let current: [FileAttributeKey: Any]?
+            do {
+                current = try FileManager.default.attributesOfItem(atPath: url.path)
+            } catch where WorkspaceFileLayout.isMissingFile(error) {
+                current = nil
+            }
             if current?[.type] as? FileAttributeType == .typeSymbolicLink,
                (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) == destination { return }
             if current != nil { try FileManager.default.removeItem(at: url) }

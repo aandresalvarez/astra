@@ -349,13 +349,13 @@ enum WorkspaceDeletionCleanupService {
                   case .some(.some(let current)) = currentIdentity(path) else { return false }
             return record.mirrorFileIDs.contains(current)
         }
-        // A pinned path whose file has another identity than the one pinned
-        // is a mirror created there since, such as a new workspace's after
-        // the folder was replaced, and is left alone. A missing one is
-        // confirmed absent by the removal.
+        // A pinned path whose file has an identity that wasn't pinned is a
+        // mirror created there since, such as a new workspace's after the
+        // folder was replaced, and is left alone. That includes any file at
+        // all once nothing was pinned: every mirror was confirmed absent at
+        // deletion. A missing one is confirmed absent by the removal.
         let pinnedFiles = record.mirrorFiles.filter { path in
             guard !liveMirrors.contains(path) else { return false }
-            guard !record.mirrorFileIDs.isEmpty else { return true }
             switch currentIdentity(path) {
             case .none: return false
             case .some(.none): return true

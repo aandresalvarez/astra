@@ -638,6 +638,11 @@ struct NewTaskWorktreeCleanupTests {
         try "docs".write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path) == false)
+        // One that can't be checked is a change, not a file the rules leave out.
+        let docs = file.deletingLastPathComponent().path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: docs)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docs)
         // Only the executable bit: the content hash is unchanged.
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
         #expect(await GitService.shared.indexHiddenEntriesChanged(at: checkout.path))

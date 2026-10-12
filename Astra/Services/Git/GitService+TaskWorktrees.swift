@@ -161,6 +161,26 @@ extension GitService {
     /// sparse rules explain it by leaving the path out; then an absent file
     /// is expected, and a present one's type, mode, and content must still
     /// match the index. Any failure to read counts as changed.
+    /// The attributes of the item at `path` itself, not following a link,
+    /// or nil only when it is confirmed missing: no such file, or a path
+    /// through a file. Any other failure throws, since the item may be there.
+    static func attributesConfirmingAbsence(atPath path: String) throws -> [FileAttributeKey: Any]? {
+        do {
+            return try FileManager.default.attributesOfItem(atPath: path)
+        } catch {
+            if isMissingFile(error) { return nil }
+            throw error
+        }
+    }
+
+    private static func isMissingFile(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) { return true }
+        if nsError.domain == NSPOSIXErrorDomain, [Int(ENOENT), Int(ENOTDIR)].contains(nsError.code) { return true }
+        return (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingFile) ?? false
+    }
+
     func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool {
         do {
             // `<tag> <mode> <object> <stage>\t<path>` per entry.
@@ -185,13 +205,15 @@ extension GitService {
                     // its path must still be a folder or absent: a file or
                     // link put in its place is invisible to status and to the
                     // submodule checks, yet a removal deletes it.
-                    if let type = (try? FileManager.default.attributesOfItem(atPath: full))?[.type] as? FileAttributeType,
+                    if let type = try Self.attributesConfirmingAbsence(atPath: full)?[.type] as? FileAttributeType,
                        type != .typeDirectory { return true }
                     continue
                 }
                 // Not following links: a symlink retargeted to a missing path
-                // is still there, and is a change.
-                guard let attributes = try? FileManager.default.attributesOfItem(atPath: full) else { continue }
+                // is still there, and is a change. Only a file confirmed
+                // missing is left to the sparse rules; one that can't be
+                // checked is a change.
+                guard let attributes = try Self.attributesConfirmingAbsence(atPath: full) else { continue }
                 switch (mode, attributes[.type] as? FileAttributeType) {
                 case ("120000", .typeSymbolicLink?):
                     // A link's blob is its target path, byte for byte: a
@@ -364,7 +386,10 @@ extension GitService {
     /// state, local state a forced removal deletes that no status or ref
     /// check shows. Left out are what those checks cover or Git rewrites on
     /// a read: objects, refs, reflogs, the index, nested submodules and
-    /// linked worktrees, and the template's sample hooks. LFS objects are
+    /// linked worktrees, and the template's sample hooks. The object
+    /// database is summarized by `count-objects`, so an object written but
+    /// named by nothing, which the reachability check can't see, still
+    /// changes the snapshot. LFS objects are
     /// listed by name, not hashed. The reflogs of `HEAD` and local branches
     /// are listed too: a visit to a commit a remote holds, then a return,
     /// leaves only navigation history the reachability check subtracts.
@@ -373,6 +398,7 @@ extension GitService {
         "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' | grep -v '^refs/remotes/'; "
             + "echo \"-- reflog\"; git log -g --format='%gd %H %gs' HEAD --branches; "
             + "echo \"-- config\"; git config --local --list; "
+            + "echo \"-- objects\"; git count-objects -v; "
             + "echo \"-- files\"; (cd \"$(git rev-parse --absolute-git-dir)\" && "
             + "{ find . " + submoduleGitDirectoryPrune + " -o -type f ! -path ./index ! -path ./packed-refs ! -name '*.sample' "
             + "-exec shasum {} +; "

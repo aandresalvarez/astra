@@ -196,6 +196,8 @@ struct NewTaskWorktreeCreationJournalTests {
         /// Only a hook linked to a script elsewhere, which a listing of
         /// regular files misses.
         case addedHookLink
+        /// An object written to the submodule's database that nothing names.
+        case unattachedObject
         /// A recorded conflict resolution in the submodule's `rr-cache/`.
         case rerereResolution
         /// A custom ref at a commit the remote holds, outside any branch or tag.
@@ -303,6 +305,12 @@ struct NewTaskWorktreeCreationJournalTests {
             let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
             try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createSymbolicLink(atPath: hook.path, withDestinationPath: "/usr/bin/true")
+        case .unattachedObject:
+            let submodule = worktree.appendingPathComponent("libs/a")
+            let scratch = submodule.appendingPathComponent("scratch.txt")
+            try "only copy\n".write(to: scratch, atomically: true, encoding: .utf8)
+            try fixture.git(["hash-object", "-w", "scratch.txt"], at: submodule)
+            try FileManager.default.removeItem(at: scratch)
         case .rerereResolution:
             let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: worktree.appendingPathComponent("libs/a"))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
