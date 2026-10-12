@@ -65,6 +65,30 @@ struct TaskCapabilityResolutionSnapshot {
         )
     }
 
+    /// The same snapshot, also exposing `labels`.
+    ///
+    /// A grant can land between capture and launch: in Auto the launch gate
+    /// allows a connector for the task without asking. A launch built from the
+    /// captured exposure would then start without the credential the chat says
+    /// was allowed. Scope stays what admission resolved; the exposure, and the
+    /// connector environment the process is built from, are refreshed from
+    /// the durable task grants the caller reads.
+    func addingApprovedCredentialLabels(
+        _ labels: [String],
+        secretStore: SecretStore = KeychainSecretStore()
+    ) -> TaskCapabilityResolutionSnapshot {
+        // Re-projected even when no label is new: a secret rotated or deleted
+        // between admission and launch must not reach the process as it was.
+        var policy = connectorCredentialExposurePolicy
+        policy.approvedCredentialLabels.formUnion(labels)
+        return TaskCapabilityResolutionSnapshot(
+            fullInventory: fullInventory.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),
+            providerLaunch: providerLaunch.reprojectingConnectorEnvironment(policy: policy, secretStore: secretStore),
+            providerLaunchContextText: providerLaunchContextText,
+            connectorCredentialExposurePolicy: policy
+        )
+    }
+
     func scope(_ requestedScope: TaskCapabilityResolutionScope) -> TaskCapabilityPromptScope {
         switch requestedScope {
         case .fullInventory:
@@ -289,8 +313,15 @@ struct TaskCapabilityResolver {
         task.workspace?.localTools.filter { !$0.isGlobal } ?? []
     }
 
+    /// A composer projection is never inserted (see `ComposerTaskProjection`),
+    /// but its workspace is, and that store holds the same global catalog the
+    /// submitted task will resolve against.
+    private var globalCatalogContext: ModelContext? {
+        task.modelContext ?? task.workspace?.modelContext
+    }
+
     private func globalSkills() -> [Skill] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.skills.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
@@ -307,7 +338,7 @@ struct TaskCapabilityResolver {
     }
 
     private func globalConnectors() -> [Connector] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.connectors.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
@@ -324,7 +355,7 @@ struct TaskCapabilityResolver {
     }
 
     private func globalLocalTools() -> [LocalTool] {
-        guard let ctx = task.modelContext else {
+        guard let ctx = globalCatalogContext else {
             return task.workspace?.localTools.filter { $0.isGlobal } ?? []
         }
         let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })
@@ -1299,7 +1330,7 @@ struct TaskCapabilityResolver {
 /// passes `ConnectorRuntimeProjection.canExposeCredential`, which is built from
 /// approved grants and knows nothing about any of these sets.
 struct TaskCapabilityPromptScope {
-    let resolver: SkillResolver
+    private(set) var resolver: SkillResolver
     let behaviorSkills: [Skill]
     let connectors: [Connector]
     let localTools: [LocalTool]
@@ -1339,5 +1370,30 @@ struct TaskCapabilityPromptScope {
     var reachableButNotNarratedConnectors: [Connector] {
         let narrated = Set(connectors.map(\.id))
         return reachableConnectors.filter { !narrated.contains($0.id) }
+    }
+}
+
+extension TaskCapabilityPromptScope {
+    /// The same scope with its reachable connectors' environment projected
+    /// again under `policy`, so a credential approved after capture is in the
+    /// process environment, not only in the launch metadata.
+    func reprojectingConnectorEnvironment(
+        policy: ConnectorRuntimeProjection.CredentialExposurePolicy,
+        secretStore: SecretStore
+    ) -> TaskCapabilityPromptScope {
+        var scope = self
+        scope.resolver = SkillResolver(
+            effectiveSnapshots: resolver.effectiveSnapshots,
+            detachedSnapshots: resolver.detachedSnapshots,
+            standaloneToolSnapshots: resolver.standaloneToolSnapshots,
+            liveLocalToolCommands: resolver.liveLocalToolCommands,
+            liveSkillEnvVars: resolver.liveSkillEnvVars,
+            connectorEnvVars: ConnectorRuntimeProjection(
+                connectors: reachableConnectors,
+                secretStore: secretStore,
+                credentialExposurePolicy: policy
+            ).environmentVariables()
+        )
+        return scope
     }
 }

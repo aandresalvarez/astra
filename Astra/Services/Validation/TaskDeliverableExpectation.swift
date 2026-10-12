@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
@@ -72,6 +73,198 @@ enum TaskDeliverableExpectation {
         requiredOutputFilenames: Set<String>
     ) -> Bool {
         requiresStandaloneArtifact(task) || !requiredOutputFilenames.isEmpty
+    }
+
+    /// Whether `run` owes the deliverable the task's own request names.
+    static func owesDeliverable(_ task: AgentTask, run: TaskRun?) -> Bool {
+        guard requiresDeliverableArtifact(task) else { return false }
+        guard let run else { return true }
+        return !followsUpDeliveredRequest(run, in: task)
+    }
+
+    /// One task-history row, as live events and transcript snapshots both carry it.
+    struct HistoryEvent {
+        let type: String
+        let runID: UUID?
+        let timestamp: Date
+        let payload: String
+    }
+
+    struct HistoryRun {
+        let id: UUID
+        let startedAt: Date
+        let status: RunStatus
+        let stopReason: String
+    }
+
+    static func followsUpDeliveredRequest(_ run: TaskRun, in task: AgentTask) -> Bool {
+        let relevantTypes = deliveryHistoryEventTypes
+        return followsUpDeliveredRequest(
+            runID: run.id,
+            startedAt: run.startedAt,
+            events: task.events.lazy
+                .filter { relevantTypes.contains($0.type) }
+                .map { HistoryEvent(type: $0.type, runID: $0.run?.id, timestamp: $0.timestamp, payload: $0.payload) },
+            runs: task.runs.lazy.map { HistoryRun(id: $0.id, startedAt: $0.startedAt, status: $0.status, stopReason: $0.stopReason) }
+        )
+    }
+
+    /// The same answer from bounded store reads instead of `task.events` and
+    /// `task.runs`, for the review dock, which asks once per snapshot revision
+    /// so its answer does not depend on the transcript window:
+    /// - the run's own source event (a run has one),
+    /// - whether any whole-task approval or finished plan precedes it (one row),
+    /// - the most recent earlier completed runs, newest first, stopping at the
+    ///   first that an approved-plan request did not start.
+    /// The last read looks at most `recentCompletedRunLimit` runs back; a task
+    /// whose last that-many completions were all intermediate plan steps reads
+    /// as still owing, which is the conservative answer.
+    @MainActor
+    static func followsUpDeliveredRequest(
+        taskID: UUID,
+        runID: UUID,
+        startedAt: Date,
+        in modelContext: ModelContext
+    ) throws -> Bool {
+        guard try runStartsByConversation(runID, in: modelContext) else { return false }
+
+        let approved = TaskEventTypes.Task.approved.rawValue
+        let planFinished = TaskEventTypes.Plan.executionCompleted.rawValue
+        let approvalPrefix = userApprovalPayloadPrefix
+        var metDescriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.timestamp < startedAt
+                && ($0.type == planFinished || ($0.type == approved && $0.payload.starts(with: approvalPrefix)))
+        })
+        metDescriptor.fetchLimit = 1
+        if try !modelContext.fetch(metDescriptor).isEmpty { return true }
+
+        let completed = TaskRunStopReason.completed.rawValue
+        var runDescriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> {
+                $0.task?.id == taskID && $0.startedAt < startedAt && $0.stopReason == completed
+            },
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        runDescriptor.fetchLimit = recentCompletedRunLimit
+        for earlierRun in try modelContext.fetch(runDescriptor) where earlierRun.status == .completed {
+            if try !runStartsAsApprovedPlan(earlierRun.id, in: modelContext) { return true }
+        }
+        return false
+    }
+
+    static let recentCompletedRunLimit = 50
+
+    @MainActor
+    private static func runSourceEvents(_ runID: UUID, in modelContext: ModelContext) throws -> [TaskEvent] {
+        let target: UUID? = runID
+        let sourceTypes = runSourceEventTypes
+        var descriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
+            $0.run?.id == target && sourceTypes.contains($0.type)
+        })
+        descriptor.fetchLimit = 4
+        return try modelContext.fetch(descriptor)
+    }
+
+    @MainActor
+    private static func runStartsByConversation(_ runID: UUID, in modelContext: ModelContext) throws -> Bool {
+        try runSourceEvents(runID, in: modelContext).contains {
+            requestSource(type: $0.type, payload: $0.payload) == .conversation
+        }
+    }
+
+    @MainActor
+    private static func runStartsAsApprovedPlan(_ runID: UUID, in modelContext: ModelContext) throws -> Bool {
+        try runSourceEvents(runID, in: modelContext).contains {
+            requestSource(type: $0.type, payload: $0.payload) == .approvedPlan
+        }
+    }
+
+    private static let runSourceEventTypes = [
+        TaskEventTypes.Conversation.userMessage.rawValue,
+        TaskEventTypes.ExecutionRequest.retry.rawValue,
+        TaskEventTypes.ExecutionRequest.resume.rawValue,
+        TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
+        TaskEventTypes.ExecutionRequest.planStep.rawValue
+    ]
+
+    /// Whether `runID` continues the conversation after the task's own request
+    /// was already met, and so does not owe that deliverable again — "commit
+    /// notes-a.txt" after the run that wrote it.
+    ///
+    /// Met: an earlier run finished `completed` (runtime success, or every
+    /// required outcome published; a blocked run is recorded as failed), the
+    /// approved plan finished, or the user approved the whole task. A finished
+    /// plan step is not evidence on its own while later steps remain, and a
+    /// publication receipt is not a whole-task approval.
+    ///
+    /// Continues the conversation: the run was started by a user message or by
+    /// a resume, retry or permission continuation of one. An approved plan step
+    /// carries out the task's own request, so it owes the deliverable however
+    /// many steps completed before it.
+    static func followsUpDeliveredRequest<Events: Sequence, Runs: Sequence>(
+        runID: UUID,
+        startedAt: Date,
+        events: Events,
+        runs: Runs
+    ) -> Bool where Events.Element == HistoryEvent, Runs.Element == HistoryRun {
+        var startedByConversation = false
+        var metEarlier = false
+        var planStepRunIDs: Set<UUID> = []
+        for event in events {
+            if let source = event.runID {
+                switch requestSource(type: event.type, payload: event.payload) {
+                case .conversation where source == runID: startedByConversation = true
+                case .approvedPlan: planStepRunIDs.insert(source)
+                default: break
+                }
+            }
+            if event.timestamp < startedAt,
+               event.type == TaskEventTypes.Plan.executionCompleted.rawValue
+                || (event.type == TaskEventTypes.Task.approved.rawValue && event.payload.hasPrefix(userApprovalPayloadPrefix)) {
+                metEarlier = true
+            }
+        }
+        guard startedByConversation else { return false }
+        return metEarlier || runs.contains {
+            $0.startedAt < startedAt && !planStepRunIDs.contains($0.id)
+                && $0.status == .completed && $0.stopReason == TaskRunStopReason.completed.rawValue
+        }
+    }
+
+    /// `TaskLifecycleCoordinator.approveTask`'s whole-task approval, as opposed
+    /// to the runtime-permission approvals and publication receipts that share
+    /// the `task.approved` event type.
+    static let userApprovalPayloadPrefix = "Task approved by user"
+
+    static let deliveryHistoryEventTypes: Set<String> = [
+        TaskEventTypes.Conversation.userMessage.rawValue,
+        TaskEventTypes.Task.approved.rawValue,
+        TaskEventTypes.Plan.executionCompleted.rawValue,
+        TaskEventTypes.ExecutionRequest.planStep.rawValue,
+        TaskEventTypes.ExecutionRequest.retry.rawValue,
+        TaskEventTypes.ExecutionRequest.resume.rawValue,
+        TaskEventTypes.ExecutionRequest.permissionResume.rawValue
+    ]
+
+    private enum RequestSource { case conversation, approvedPlan, other }
+
+    /// What started a run, read from its linked source event.
+    private static func requestSource(type: String, payload: String) -> RequestSource {
+        if type == TaskEventTypes.Conversation.userMessage.rawValue { return .conversation }
+        guard [
+            TaskEventTypes.ExecutionRequest.retry.rawValue,
+            TaskEventTypes.ExecutionRequest.resume.rawValue,
+            TaskEventTypes.ExecutionRequest.permissionResume.rawValue,
+            TaskEventTypes.ExecutionRequest.planStep.rawValue
+        ].contains(type),
+            let source = try? JSONDecoder().decode(TaskExecutionSourcePayloadV1.self, from: Data(payload.utf8)) else {
+            return .other
+        }
+        switch source.launchMode {
+        case .continuation: return .conversation
+        case .approvedPlan: return .approvedPlan
+        case .initial: return .other
+        }
     }
 
     static func requiredOutputFilenames(_ task: AgentTask) -> Set<String> {
@@ -194,13 +387,24 @@ enum TaskDeliverableExpectation {
         missingDeliverableMessage(for: task, requiredFilenames: requiredOutputFilenames(task))
     }
 
-    static func missingDeliverableMessage(for task: AgentTask, requiredFilenames: Set<String>) -> String {
+    /// `workspacePath` is the code root the deliverables were searched in.
+    /// Without one this names where the task's code runs: a pinned worktree,
+    /// not the workspace it belongs to.
+    static func missingDeliverableMessage(
+        for task: AgentTask,
+        requiredFilenames: Set<String>,
+        workspacePath: String? = nil
+    ) -> String {
         guard !requiredFilenames.isEmpty else {
             return missingArtifactMessage(for: task)
         }
 
         let access = TaskWorkspaceAccess(task: task)
-        let workspaceLocation = access.effectiveWorkspacePath.isEmpty ? "the workspace root" : access.effectiveWorkspacePath
+        let searchedRoot = workspacePath ?? access.codeWorkingDirectory
+        let rootLabel = searchedRoot.isEmpty || searchedRoot == access.effectiveWorkspacePath
+            ? "Workspace root"
+            : "Working directory"
+        let workspaceLocation = searchedRoot.isEmpty ? "the workspace root" : searchedRoot
         let taskFolderLocation = access.taskFolder.isEmpty ? "the task output folder" : access.taskFolder
         let filenames = requiredFilenames.sorted().joined(separator: ", ")
         let fileNoun = requiredFilenames.count == 1 ? "file" : "files"
@@ -208,7 +412,7 @@ enum TaskDeliverableExpectation {
         Missing explicitly requested deliverable \(fileNoun): \(filenames).
         ASTRA did not mark this task complete because this run did not create the requested \(fileNoun).
         Expected deliverable search roots:
-        - Workspace root: \(workspaceLocation)
+        - \(rootLabel): \(workspaceLocation)
         - Task output folder: \(taskFolderLocation)
         Ask the agent to write the missing \(fileNoun) to the requested workspace path, retry with the needed file-write approval, or explicitly choose a workspace path.
         """

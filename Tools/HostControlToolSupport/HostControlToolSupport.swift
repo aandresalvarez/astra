@@ -827,6 +827,9 @@ public final class HostControlMCPServer {
     private let cancellationRegistry: HostControlOperationCancellationRegistry
     private let diagnosticsRecorder: HostControlToolDiagnosticsRecorder?
     private let withholdingObserver: BrokeredCredentialWithholdingObserving?
+    /// ASTRA's side of a write: the only way a request here can lead to one.
+    /// Nil in the standalone helper, where every write waits for review.
+    private let externalActionRequester: (any BrokeredExternalActionRequesting)?
     private let processLimits: HostControlProcessLimits
     private lazy var server = MCPServer(
         name: "astra-host-control",
@@ -844,11 +847,13 @@ public final class HostControlMCPServer {
         diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil,
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
         processLimits: HostControlProcessLimits = .standard,
-        historyReader: (any TaskHistoryReading)? = nil
+        historyReader: (any TaskHistoryReading)? = nil,
+        externalActionRequester: (any BrokeredExternalActionRequesting)? = nil
     ) {
         let cancellationRegistry = HostControlOperationCancellationRegistry()
         self.configuration = configuration
         self.historyReader = historyReader
+        self.externalActionRequester = externalActionRequester
         self.cancellationRegistry = cancellationRegistry
         self.processRunner = processRunner ?? HostControlProcessRunner(
             limits: processLimits,
@@ -877,6 +882,18 @@ public final class HostControlMCPServer {
         case "history":
             return TaskHistoryHostControlPolicy.handle(arguments: arguments, reader: historyReader)
         case "github":
+            // A typed request, not a gh command: the agent asks ASTRA to post a
+            // review file it wrote. Told apart by the key, so a gh call that
+            // happens to mention reviews can never become one.
+            if arguments["operation"] != nil {
+                return GitHubReviewPostPolicy.handle(
+                    arguments: arguments,
+                    configuration: configuration,
+                    requester: externalActionRequester,
+                    diagnostics: diagnosticsRecorder
+                )
+            }
+            // Review-thread reads run ASTRA's fixed GraphQL, never caller query text.
             if let argv = stringArray(arguments["arguments"]),
                argv.first.map(GitHubReviewThreadReadOperation.names.contains) == true {
                 do {
@@ -1086,7 +1103,11 @@ public final class HostControlMCPServer {
             arguments: arguments,
             connector: connector,
             configuration: configuration,
-            diagnostics: diagnosticsRecorder
+            diagnostics: diagnosticsRecorder,
+            requester: externalActionRequester,
+            // Bounded the way every other call's is, and only when the call
+            // named one: ASTRA's own default otherwise.
+            timeoutSeconds: arguments["timeout_seconds"].map { timeoutSeconds(from: $0) }
         )
     }
 
@@ -1285,11 +1306,16 @@ public final class HostControlMCPServer {
 
     private func toolSchemas() -> [[String: Any]] {
         [
-            processSchema(
+            GitHubReviewPostPolicy.githubSchema(base: processSchema(
                 name: "github",
-                description: "Run read-only GitHub CLI control-plane commands on the host through ASTRA without provider Bash. " + GitHubReviewThreadReadOperation.guidance,
-                argumentDescription: "Read-only gh arguments, e.g. [\"pr\", \"view\", \"123\", \"--comments\"]. Review threads: [\"review-threads\", \"--repo\", \"OWNER/REPO\", \"--pr\", \"123\"] or [\"review-thread\", \"--id\", \"THREAD_ID\"]. Both support --after CURSOR; follow every pageInfo.hasNextPage. Raw api and writes are denied."
-            ),
+                description: "Run GitHub CLI control-plane commands on the host through ASTRA without provider Bash, "
+                    + "or ask ASTRA to post a pull-request review file you wrote with operation post_review. "
+                    + "ASTRA posts it only as the task's permission level allows; the reply says whether it was posted. "
+                    + GitHubReviewThreadReadOperation.guidance,
+                argumentDescription: "Arguments for gh, for example [\"pr\", \"view\", \"123\", \"--comments\"]. "
+                    + "Review threads: [\"review-threads\", \"--repo\", \"OWNER/REPO\", \"--pr\", \"123\"] or [\"review-thread\", \"--id\", \"THREAD_ID\"]; "
+                    + "both support --after CURSOR, so follow every pageInfo.hasNextPage. Omit with operation."
+            )),
             processSchema(
                 name: "gcloud",
                 description: "Run read-only Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",
@@ -1820,12 +1846,7 @@ private final class JiraHTTPClient {
     }
 
     private func credential(named logicalName: String, connector: HostControlConnector) -> String? {
-        guard let envKey = connector.environmentKey(forLogicalName: logicalName),
-              let value = configuration.environment[envKey],
-              !value.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return value
+        connector.projectedCredential(named: logicalName, environment: configuration.environment)
     }
 }
 

@@ -37,8 +37,58 @@ public struct TaskWorkspaceAccess {
         return effectiveWorkspacePath
     }
 
+    /// Additional folders a write-capable run may modify. Admission claims,
+    /// sandbox grants, Docker mounts, and provider directory arguments all
+    /// derive from this list, so narrowing it narrows every projection at once.
     public var runtimeWritablePaths: [String] {
-        normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+        let replaced = Set(replacedSourceCheckoutPaths)
+        return normalizedUniquePaths(task.workspace?.additionalPaths ?? []).filter { !replaced.contains($0) }
+    }
+
+    /// Workspace folders (primary or additional) that are the root of another
+    /// checkout of the same repository as the code working directory. Running
+    /// in a linked worktree replaces that source checkout: sibling worktrees
+    /// must not each hold it writable, or they serialize on a folder neither
+    /// one edits. Subfolders, unrelated repositories, and non-Git folders keep
+    /// their access. Identities are compared after resolving symlinks, so an
+    /// aliased checkout path still matches Git's real admin path.
+    public var replacedSourceCheckoutPaths: [String] {
+        let codeRoot = codeWorkingDirectory
+        guard !codeRoot.isEmpty,
+              let commonDirectory = GitCheckoutLayout.commonDirectory(for: codeRoot).map(Self.resolvedIdentity)
+        else { return [] }
+        let codeCheckout = GitCheckoutLayout.worktreeRoot(containing: codeRoot).map(Self.resolvedIdentity)
+        let folders = [task.workspace?.primaryPath ?? ""] + (task.workspace?.additionalPaths ?? [])
+        let candidates = normalizedUniquePaths(folders).filter { path in
+            guard let checkout = GitCheckoutLayout.worktreeRoot(containing: path) else { return false }
+            return checkout == URL(fileURLWithPath: path).standardizedFileURL.path
+                && Self.resolvedIdentity(checkout) != codeCheckout
+                && GitCheckoutLayout.commonDirectory(for: path).map(Self.resolvedIdentity) == commonDirectory
+        }
+        // A checkout beneath an additional folder that stays writable is still
+        // writable through that parent, so it is not treated as replaced.
+        let writableParents = normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+            .filter { !candidates.contains($0) }
+            .map(Self.resolvedIdentity)
+        return candidates.filter { candidate in
+            let path = Self.resolvedIdentity(candidate)
+            return !writableParents.contains { $0 != path && path.hasPrefix($0 + "/") }
+        }
+    }
+
+    /// Workspace folders the run can read but not write: a replaced source
+    /// checkout, or a workspace folder that is not the code root. Docker
+    /// mounts them read-only so they stay visible inside the container.
+    public var runtimeReadOnlyWorkspacePaths: [String] {
+        let writable = Set(runtimeWritablePaths + normalizedUniquePaths([codeWorkingDirectory]))
+        let folders = [task.workspace?.primaryPath ?? ""] + (task.workspace?.additionalPaths ?? [])
+        return normalizedUniquePaths(folders).filter {
+            !writable.contains($0) && fileSystem.directoryExists(atPath: $0)
+        }
+    }
+
+    private static func resolvedIdentity(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     public var runtimeReadOnlyInputPaths: [String] {

@@ -230,11 +230,14 @@ struct RuntimeEligibilityPreviewRequest {
             // draft: `quickRun` deletes the draft and enqueues a fresh task carrying the
             // live attachment and skill selection, which the draft only learns about on
             // the next `saveDraft()`. Evaluating an unmanaged projection also keeps this
-            // read-only preview from becoming a second writer of durable state.
-            let previewTask = AgentTask(
+            // read-only preview from becoming a second writer of durable state —
+            // which it did, as phantom drafts, while it held the managed skills.
+            let previewTask = ComposerTaskProjection.detachedTask(
                 title: goal.isEmpty ? "New Task" : String(goal.prefix(60)),
                 goal: goal,
                 workspace: draftTask?.workspace ?? workspace,
+                skills: selectedSkills,
+                inputs: attachedFiles,
                 tokenBudget: defaultBudget,
                 model: defaultModel,
                 runtime: requestedRuntime
@@ -249,8 +252,6 @@ struct RuntimeEligibilityPreviewRequest {
             previewTask.id = draftTask?.id
                 ?? workspace?.id
                 ?? Self.unanchoredComposerPreviewID
-            previewTask.inputs = attachedFiles
-            previewTask.skills = selectedSkills
             previewTask.runtimeExplicitlySelected = runtimeExplicitlySelected
             // Mirror the policy selection `quickRun` records, otherwise a workspace-level
             // default would outrank the composer's current pick (TaskPolicyStore.resolve

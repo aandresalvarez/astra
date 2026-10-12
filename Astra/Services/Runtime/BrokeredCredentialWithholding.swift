@@ -219,7 +219,17 @@ enum BrokeredCredentialApprovalDiscovery {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        ledger: BrokeredCredentialApprovalLedger = .shared
+        policyLevel: AgentPolicyLevel = .review,
+        runFinishedCleanly: Bool,
+        ledger: BrokeredCredentialApprovalLedger = .shared,
+        persistAutoGrant: @MainActor (AgentTask, ModelContext) -> Bool = { task, modelContext in
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "brokered_credential_auto_grant"]
+            )
+        }
     ) -> [BrokeredCredentialApprovalRecord] {
         let drained = ledger.drain(taskID: task.id, runID: run.id)
         guard !drained.isEmpty else { return [] }
@@ -247,6 +257,21 @@ enum BrokeredCredentialApprovalDiscovery {
             recorded.append(approval)
         }
         guard !recorded.isEmpty else { return [] }
+        // Auto asks nothing: the run's own request is the consent, so the
+        // connectors are allowed for the task and the chat says so — but only
+        // for a run whose provider finished cleanly (exit, error, budget,
+        // cancel). A run that did not becomes an offer, as does a grant that
+        // could not be saved, so the user sees it before the next run; the
+        // next Auto launch answers open offers the same way
+        // (`AutoConnectorOfferGrant`), which is why validation, run later in
+        // settlement, does not decide this. Offers an earlier Ask run left
+        // open are that run's question and stay open.
+        if !ExternalActionPolicy.asksUser(for: .connectorCredentialUse, level: policyLevel),
+           runFinishedCleanly,
+           grantForAuto(recorded, task: task, run: run, runtime: runtime, modelContext: modelContext,
+                        persist: persistAutoGrant) {
+            return recorded
+        }
         // One offer, never one per connector. The dock shows only the latest
         // open request and "Allow similar" grants exactly that one before
         // closing the rest, so a second offer in the store is a connector the
@@ -274,6 +299,56 @@ enum BrokeredCredentialApprovalDiscovery {
             ]
         )
         return recorded
+    }
+
+    /// The grant must be durable before it counts, as at launch: one only the
+    /// `ModelContext` holds is rolled back, and the caller offers instead.
+    private static func grantForAuto(
+        _ approvals: [BrokeredCredentialApprovalRecord],
+        task: AgentTask,
+        run: TaskRun,
+        runtime: AgentRuntimeID,
+        modelContext: ModelContext,
+        persist: @MainActor (AgentTask, ModelContext) -> Bool
+    ) -> Bool {
+        let grantsBefore = task.runtimePermissionGrantsJSON
+        let eventsBefore = Set(task.events.map(\.id))
+        let labels = approvals.flatMap(\.credentialLabels)
+        let granted = TaskRuntimePermissionGrants.record(
+            grants: labels.map { PermissionGrant.credential(label: $0) },
+            providerID: runtime,
+            task: task,
+            modelContext: modelContext,
+            source: "auto_policy"
+        )
+        AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+            "source": "brokered_credential_withheld",
+            "runtime": runtime.rawValue,
+            "connector_count": String(approvals.count),
+            "credential_label_count": String(labels.count),
+            "result": granted.isEmpty ? "auto_policy_grant_refused" : "auto_policy_granted"
+        ], level: granted.isEmpty ? .warning : .info, fieldMaxLength: 240)
+        guard !granted.isEmpty else { return false }
+        let names = ConnectorRuntimeProjection.joinedNames(approvals.map(\.connectorName))
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: "Auto allowed \(names) to use \(approvals.count > 1 ? "their" : "its") saved credentials "
+                + "for this task. The agent can use \(approvals.count > 1 ? "them" : "it") from the next message.",
+            run: run
+        ))
+        guard persist(task, modelContext) else {
+            task.runtimePermissionGrantsJSON = grantsBefore
+            for event in task.events where !eventsBefore.contains(event.id) {
+                modelContext.delete(event)
+            }
+            AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+                "source": "brokered_credential_withheld",
+                "result": "auto_policy_grant_unpersisted"
+            ], level: .error)
+            return false
+        }
+        return true
     }
 
     /// Records one offer for every connector in `approvals` and retires the

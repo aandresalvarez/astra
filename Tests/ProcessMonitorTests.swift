@@ -1654,9 +1654,12 @@ struct RuntimePolicyGuardTests {
                     ).first
                     : DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: runtime)
             )
+            // Auto: whether the alias is the workspace tool, not whether the
+            // level asks. Below Auto a workspace command is gated like Bash.
             let manifest = runtimePolicyManifest(
                 allowedTools: ["read"],
                 providerID: runtime,
+                policyLevel: .autonomous,
                 runtimeSupportTools: [descriptor]
             )
             let monitor = AgentRuntimeWorker.ProcessMonitor(
@@ -1735,9 +1738,12 @@ struct RuntimePolicyGuardTests {
                     runtimeProfile: .copilotProfile(supportsAdditionalMCPConfig: true)
                 )
                 : DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            // Auto: whether the alias is the workspace tool, not whether the
+            // level asks. Below Auto a workspace command is gated like Bash.
             let manifest = runtimePolicyManifest(
                 allowedTools: ["read"],
                 providerID: runtime,
+                policyLevel: .autonomous,
                 runtimeSupportTools: runtimeSupportTools
             )
             let monitor = AgentRuntimeWorker.ProcessMonitor(

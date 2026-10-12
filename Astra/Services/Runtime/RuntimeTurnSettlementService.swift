@@ -75,6 +75,39 @@ enum RuntimeTurnSettlementService {
         } && verdict(for: run, task: task) == nil
     }
 
+    /// Whether a run's provider finished its work. Auto allows a connector the
+    /// run reached for only then (`BrokeredCredentialApprovalDiscovery`): a
+    /// cancelled run is the user saying stop, and a run that failed, timed
+    /// out, or was stopped by policy, budget, or repetition did not finish.
+    /// The verdicts the outcome reads from the checkpoint count too: a
+    /// provider that reported an error but exited 0, and usage over a hard
+    /// budget, both end the run as failed.
+    static func finishedCleanly(checkpoint: Checkpoint, taskStatus: TaskStatus) -> Bool {
+        let budget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: checkpoint.effectiveTokenBudget,
+                                                tokensUsed: checkpoint.tokensUsed)
+        let overBudget = AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: checkpoint.result,
+            budget: budget,
+            budgetEnforcementMode: BudgetEnforcementMode(rawValue: checkpoint.budgetEnforcementMode) ?? .hardStop
+        )
+        return finishedCleanly(result: checkpoint.result, cancelled: checkpoint.cancelled, taskStatus: taskStatus,
+            agentReportedError: checkpoint.agentReportedError, overBudget: overBudget)
+    }
+
+    static func finishedCleanly(result: AgentProcessResult, cancelled: Bool, taskStatus: TaskStatus,
+                                agentReportedError: Bool, overBudget: Bool) -> Bool {
+        guard !cancelled, taskStatus != .cancelled else { return false }
+        guard result.exitCode == 0 || result.terminatedAfterTerminalProgress else { return false }
+        guard !agentReportedError, !overBudget else { return false }
+        return !result.timedOut
+            && !result.policyViolation
+            && !result.policyApprovalRequired
+            && !result.maxTurnsExceeded
+            && !result.budgetExceeded
+            && !result.repetitionKilled
+            && (result.runtimeStopReason?.isEmpty ?? true)
+    }
+
     /// The only normal/restart settlement pipeline. Streaming transport has
     /// already ended; completion effects require its committed return value.
     static func settle(checkpoint: Checkpoint, task: AgentTask, run: TaskRun, modelContext: ModelContext,

@@ -127,10 +127,36 @@ enum TaskRuntimePermissionOpenRequestStore {
     /// Auto authorizes provider-level requests, but it does not bypass the OS
     /// sandbox. Clear only requests whose enforcement tier Auto actually owns.
     @discardableResult
+    /// The connector credential offers still open, with their grants: Auto
+    /// grants these before it supersedes them, so switching a task to Auto
+    /// answers the user's pending decision instead of dropping it.
+    static func openConnectorCredentialOffers(for task: AgentTask) -> [(displayName: String, grants: [PermissionGrant])] {
+        typedEntries(for: task).compactMap { entry in
+            guard case .connectorCredentials(_, let displayName, _)? = entry.request else { return nil }
+            let grants = entry.grants.filter { if case .credential = $0 { return true } else { return false } }
+            return grants.isEmpty ? nil : (displayName, grants)
+        }
+    }
+
+    /// Closes the open connector credential offers that carry a grant; the
+    /// count closed.
+    @discardableResult
+    static func closeConnectorCredentialOffers(for task: AgentTask) -> Int {
+        let entries = typedEntries(for: task)
+        let remaining = entries.filter { !isGrantableConnectorOffer($0) }
+        guard remaining.count < entries.count else { return 0 }
+        task.runtimePermissionOpenRequestsJSON = encode(remaining)
+        return entries.count - remaining.count
+    }
+
+    /// Supersedes what Auto does not ask about. Sandbox path approvals stay
+    /// explicit, and a connector offer is answered by a grant instead
+    /// (`AutoConnectorOfferGrant`), so one whose grant could not be saved
+    /// stays open rather than vanishing.
     static func closeRequestsAuthorizedByAutonomousPolicy(for task: AgentTask) -> Int {
         switch typedState(for: task) {
         case .available(let entries):
-            let remaining = entries.filter(requiresExplicitSandboxApproval)
+            let remaining = entries.filter { requiresExplicitSandboxApproval($0) || isGrantableConnectorOffer($0) }
             let closedCount = entries.count - remaining.count
             guard closedCount > 0 else { return 0 }
             task.runtimePermissionOpenRequestsJSON = encode(remaining)
@@ -140,7 +166,7 @@ enum TaskRuntimePermissionOpenRequestStore {
             return 0
         case .missing:
             let entries = unresolvedCompatibilityEntries(for: task)
-            let remaining = entries.filter(requiresExplicitSandboxApproval)
+            let remaining = entries.filter { requiresExplicitSandboxApproval($0) || isGrantableConnectorOffer($0) }
             let closedCount = entries.count - remaining.count
             guard closedCount > 0 else { return 0 }
             task.runtimePermissionOpenRequestsJSON = encode(remaining)
@@ -209,6 +235,11 @@ enum TaskRuntimePermissionOpenRequestStore {
                 isFutureUse: TaskPermissionContinuation.isFutureUse(payload: entry.payload, task: task)),
             taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: entry.grants)
         )
+    }
+
+    private static func isGrantableConnectorOffer(_ entry: Entry) -> Bool {
+        guard case .connectorCredentials? = entry.request else { return false }
+        return entry.grants.contains { if case .credential = $0 { return true } else { return false } }
     }
 
     private static func requiresExplicitSandboxApproval(_ entry: Entry) -> Bool {

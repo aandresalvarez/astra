@@ -528,7 +528,7 @@ extension HeadlessChatScenarioTests {
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
-            printf '%s\\n' '{"type":"tool_call","tool":"shell","id":"call-1","command":"rm -rf build"}'
+            printf '%s\\n' '{"type":"tool_call","tool":"shell","id":"call-1","command":"sudo rm -rf build"}'
             /bin/sleep 20
             exit 0
             """)
@@ -717,7 +717,7 @@ extension HeadlessChatScenarioTests {
             named: "claude",
             script: Self.claudeScript(body: """
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-guard-session","model":"claude-sonnet-4-6"}'
-            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Bash","id":"toolu_bad","input":{"command":"rm -rf build"}}]}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Bash","id":"toolu_bad","input":{"command":"sudo rm -rf build"}}]}}'
             /bin/sleep 20
             exit 0
             """)

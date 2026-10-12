@@ -168,13 +168,23 @@ struct TaskDecisionDockContextBuilderTests {
             grants: [.sandboxPath(path: "/tmp/input", access: "read")],
             requestID: "sandbox-request"
         )
+        let shellPayload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .shell(command: "make test", toolName: "Bash"),
+            reason: "The command asks first.",
+            grants: [.shellCommand(executable: "make", pattern: "test *")],
+            requestID: "shell-request"
+        )
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: credentialPayload, task: task)
         TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: sandboxPayload, task: task)
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: shellPayload, task: task)
 
         let closed = TaskRuntimePermissionOpenRequestStore.closeRequestsAuthorizedByAutonomousPolicy(for: task)
 
+        // A connector offer is answered by a grant (`AutoConnectorOfferGrant`),
+        // not superseded, so one whose grant could not be saved stays open.
         #expect(closed == 1)
-        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task) == [sandboxPayload])
+        #expect(TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task) == [credentialPayload, sandboxPayload])
         #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
     }
 

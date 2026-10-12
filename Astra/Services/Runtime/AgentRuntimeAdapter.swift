@@ -1274,6 +1274,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             : baseAskFirstToolPermissions
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: context.task,
+            followsUpDeliveredRequest: context.executionPolicy.followsUpDeliveredRequest,
             permissionPolicy: effectivePermissionPolicy,
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstToolPermissions
@@ -1972,6 +1973,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             : baseAskFirstTools
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.persistedLaunchTools(
             task: context.task,
+            followsUpDeliveredRequest: context.executionPolicy.followsUpDeliveredRequest,
             permissionPolicy: providerLaunchPermissionPolicy,
             providerAllowedTools: providerAllowed,
             askFirstTools: askFirstTools

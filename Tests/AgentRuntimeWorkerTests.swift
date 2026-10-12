@@ -102,10 +102,18 @@ struct ProviderLaunchCapabilityScopeTests {
                 .appendingPathComponent("AgentPolicyAdapters.swift"),
             encoding: .utf8
         )
+        // One snapshot, from admission. After the connector gate it is refreshed
+        // in place — credential exposure only, from the durable task grants an
+        // Auto launch may have just recorded — and never recaptured.
         #expect(sourceContains(
             workerSource,
-            "let capabilityResolutionSnapshot = appliedRuntime.capabilityResolutionSnapshot"
+            "let admittedCapabilitySnapshot = appliedRuntime.capabilityResolutionSnapshot"
         ))
+        #expect(sourceContains(
+            workerSource,
+            "let capabilityResolutionSnapshot = admittedCapabilitySnapshot.addingApprovedCredentialLabels("
+        ))
+        #expect(!workerSource.contains("TaskCapabilityResolutionSnapshot.capture("))
         #expect(!workerSource.contains("exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous"))
         #expect(sourceContains(
             workerSource,

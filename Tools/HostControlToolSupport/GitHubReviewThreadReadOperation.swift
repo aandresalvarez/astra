@@ -6,7 +6,7 @@ public enum GitHubReviewThreadReadOperation {
     public static let names: Set<String> = ["review-threads", "review-thread"]
 
     public static let guidance = """
-    Read PR review threads with review-threads --repo OWNER/REPO --pr NUMBER and review-thread --id THREAD_ID. review-threads lists threads with only each thread's first comment (identity, no body) and review-thread returns the bodies; both accept --after CURSOR, so follow pageInfo.hasNextPage for threads and, for a thread, for its comments. ASTRA cannot reply to or resolve review threads yet: when asked, summarize each thread, make the requested fixes, and give the user the reply you would post for each thread. Raw api and other write paths remain unavailable through this capability.
+    Read PR review threads with review-threads --repo OWNER/REPO --pr NUMBER and review-thread --id THREAD_ID. review-threads lists threads with only each thread's first comment (identity, no body) and review-thread returns the bodies; both accept --after CURSOR, so follow pageInfo.hasNextPage for threads and, for a thread, for its comments. ASTRA cannot reply to or resolve review threads yet: when asked, summarize each thread, make the requested fixes, and give the user the reply you would post for each thread. Raw api calls remain unavailable.
     """
 
     public static func arguments(for input: [String]) throws -> [String] {

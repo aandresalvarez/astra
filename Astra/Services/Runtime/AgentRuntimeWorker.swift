@@ -417,6 +417,7 @@ final class AgentRuntimeWorker {
         }
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { return }
+        executionPolicy.followsUpDeliveredRequest = TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: task)
         let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
             ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
@@ -438,7 +439,7 @@ final class AgentRuntimeWorker {
             selectedRuntime: selectedRuntime,
             executionPolicy: executionPolicy
         )
-        let capabilityResolutionSnapshot = appliedRuntime.capabilityResolutionSnapshot
+        let admittedCapabilitySnapshot = appliedRuntime.capabilityResolutionSnapshot
         if let sensitiveDataBlock {
             RuntimeSensitiveDataLaunchGate.record(sensitiveDataBlock, task: task, run: run, modelContext: modelContext, phase: auditPhase)
             isRunning = false
@@ -487,7 +488,7 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             permissionPolicy: launchPermissionPolicy,
             executionPolicy: executionPolicy,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            capabilityResolutionSnapshot: admittedCapabilitySnapshot,
             precomputedRuntimeRequirements: appliedRuntime.requirements,
             runtimeConfiguration: runtimeConfiguration,
             preflightCache: capabilityPreflightCache,
@@ -498,6 +499,18 @@ final class AgentRuntimeWorker {
         ) else {
             return
         }
+        // The connector gate may have just recorded a task grant: Auto allows a
+        // connector without asking. The admitted snapshot predates it, so the
+        // exposure is refreshed from the durable grants before anything is built
+        // from it, or this launch would start without what the chat says was
+        // allowed.
+        let capabilityResolutionSnapshot = admittedCapabilitySnapshot.addingApprovedCredentialLabels(
+            TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                runtime: selectedRuntime,
+                additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+            )
+        )
         let githubRepositoryStatus = await capabilityPreflightCache.cachedStatus(
             for: CommonCLIPrerequisites.githubAuth,
             workingDirectory: capabilityWorkingDirectory
@@ -655,6 +668,8 @@ final class AgentRuntimeWorker {
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,
             workspaceAccess: executionWorkspaceAccess,
+            admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
+                .admittedWritableGitMetadataRoots(for: turnBegin.request, task: launchTask),
             // appliedRuntime.requirements is already resolved above (~line 528),
             // so no reordering was needed here — closes the last spot that
             // independently re-derived GitHub host-control routing instead of
@@ -736,14 +751,26 @@ final class AgentRuntimeWorker {
         let historyGuidance = runtimeCapabilityProfile.canDeliverHostControlPlane
             && appliedRuntime.requirements.offeredHostControlTools.contains("history")
             ? TaskHistoryRetrievalGuidance.prompt : ""
+        // Said with the level the broker binding uses, so what the agent is
+        // told a proposal does and what the broker does with it agree.
+        let autoSendGuidance = { (text: String) in
+            HostControlPlanePromptGuidance.appendingAutoSendGuidance(
+                to: text,
+                policyLevel: manifest.policyLevel,
+                usesHostControlCLIRelay: runtimeCapabilityProfile.usesHostControlCLIRelay,
+                offersGitHubHostTool: runtimeCapabilityProfile.canDeliverHostControlPlane
+                    && appliedRuntime.requirements.offeredHostControlTools.contains("github")
+            )
+        }
+        prompt = autoSendGuidance(prompt)
         let promptWithoutResume = prompt + historyGuidance
         // Compact only after this launch has proved native continuation safe.
         // Fresh handoffs (including changed signatures) keep the wider context.
         if auditPhase == .resume, approvedPlan == nil, nativeContinuationSessionID != nil {
-            prompt = AgentContinuationPrompt.build(message: sessionMessage ?? startPayload,
+            prompt = autoSendGuidance(AgentContinuationPrompt.build(message: sessionMessage ?? startPayload,
                 task: executionTask, executionPolicy: executionPolicy,
                 permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
-                repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment)
+                repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment))
         }
         prompt += historyGuidance
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -802,17 +829,36 @@ final class AgentRuntimeWorker {
 
         HostControlBrokerSessionRegistry.shared.bindHistory(container: modelContext.container, taskID: task.id, runID: run.id)
         defer { HostControlBrokerSessionRegistry.shared.unbindHistory(taskID: task.id, runID: run.id) }
+        // The run's own level, fixed here: a write the agent asks for is sent
+        // or left for review by the level the run launched with.
+        let coordinatorFactory = connectorMutationCoordinatorFactory
+        let reviewServiceFactory = gitHubReviewPublicationServiceFactory
+        HostControlBrokerSessionRegistry.shared.bindExternalActions(
+            BrokeredExternalActionBridge(handler: BrokeredExternalActionHandler(
+                modelContext: modelContext,
+                taskID: task.id,
+                runID: run.id,
+                policyLevel: manifest.policyLevel,
+                makeCoordinator: { coordinatorFactory?($0) ?? ConnectorMutationCoordinator(modelContext: $0) },
+                makeReviewService: { reviewServiceFactory?($0) ?? GitHubReviewPublicationService(modelContext: $0) }
+            )),
+            taskID: task.id,
+            runID: run.id
+        )
+        defer { HostControlBrokerSessionRegistry.shared.unbindExternalActions(taskID: task.id, runID: run.id) }
         let pendingEvents = OrderedMainActorTaskQueue()
         let eventPipeline = AgentRuntimeEventPipelineBox(
             supportsAstraRunProtocol: runtimeAdapter.descriptor.supportsAstraRunProtocol
         )
         let recordingState = AgentEventRecordingState()
+        recordingState.recordsExternalActions = !ExternalActionPolicy.asksUser(for: .agentCommand, level: manifest.policyLevel)
         let streamTelemetry = runtimeAdapter.recordsStreamTelemetry ? AgentRuntimeStreamTelemetry() : nil
         let streamDebugCapture = AgentRuntimeStreamDebugCapture.makeIfEnabled()
         let semanticProgressTimeout = AgentRuntimeProgressTimeoutPolicy.semanticProgressTimeout(
             task: executionTask,
             phase: auditPhase,
-            idleTimeoutSeconds: timeoutSeconds
+            idleTimeoutSeconds: timeoutSeconds,
+            followsUpDeliveredRequest: executionPolicy.followsUpDeliveredRequest
         )
         // Record only admitted attempts, paired with the session this launch uses.
         // Fresh launches acquire their session ID from the provider's start event.
@@ -1076,31 +1122,35 @@ final class AgentRuntimeWorker {
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
 
+        let resultCheckpoint = RuntimeTurnSettlementService.Checkpoint(
+            requestID: turnBegin.request?.id, result: result, runtime: selectedRuntime,
+                phase: auditPhase, executionPath: executionPath, launchSnapshot: .init(task: executionTask),
+                permissionPolicy: launchPermissionPolicy, sandboxEnforcement: executionPolicy.sandboxEnforcementSnapshot,
+                verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
+                    fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext),
+                timeoutSeconds: timeoutSeconds, budgetEnforcementMode: budgetEnforcementMode.rawValue,
+                effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
+                tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
+                cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
+                approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
+                sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
+                    startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase))
+
         // Before the outcome branches, not inside one. What the run left behind
         // for the user is waiting whether the run succeeded, was cancelled, or
-        // failed right after leaving it.
+        // failed right after leaving it; only a clean finish lets Auto allow a
+        // connector the run reached for.
         RunBoundaryDiscovery.recordWhatTheRunLeftForTheUser(
             task: task,
             run: run,
-            modelContext: modelContext
+            modelContext: modelContext,
+            policyLevel: manifest.policyLevel,
+            runFinishedCleanly: RuntimeTurnSettlementService.finishedCleanly(
+                checkpoint: resultCheckpoint, taskStatus: task.status)
         )
 
-
         do {
-            try RuntimeTurnSettlementService.capture(
-                .init(requestID: turnBegin.request?.id, result: result, runtime: selectedRuntime,
-                    phase: auditPhase, executionPath: executionPath, launchSnapshot: .init(task: executionTask),
-                    permissionPolicy: launchPermissionPolicy, sandboxEnforcement: executionPolicy.sandboxEnforcementSnapshot,
-                    verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
-                        fallbackRuntime: selectedRuntime, preferredModel: validationModel, modelContext: modelContext),
-                    timeoutSeconds: timeoutSeconds, budgetEnforcementMode: budgetEnforcementMode.rawValue,
-                    effectiveTokenBudget: AgentRuntimeProcessRunner.effectiveTokenBudget(for: executionTask),
-                    tokensUsed: task.tokensUsed, agentReportedError: recordingState.agentReportedError(for: run),
-                    cancelled: cancellationRequested, failureDiagnostic: failureDiagnostic,
-                    approvedPlan: approvedPlan, chainedGoal: task.chainedGoal, scheduleID: task.originScheduleID,
-                    sessionMessage: runtimeAdapter.sessionTurnMessage(task: task, promptOverride: promptOverride,
-                        startPayload: startEventPayload, sessionMessage: sessionMessage, phase: auditPhase)),
-                task: task, run: run, modelContext: modelContext)
+            try RuntimeTurnSettlementService.capture(resultCheckpoint, task: task, run: run, modelContext: modelContext)
         } catch {
             RuntimeTurnSettlementService.reportPersistenceFailure(task: task, run: run, modelContext: modelContext)
             settlementHandled = true
@@ -1645,5 +1695,12 @@ final class AgentRuntimeWorker {
     /// protocol) for providers that support it, instead of failing the run and
     /// relaunching after approval.
     var liveApprovalsEnabled: Bool = true
+
+    /// Builds the coordinator a write the agent asks for in Auto is sent
+    /// through, and the service a requested review is posted through. Nil uses
+    /// the real ones; tests inject fakes to prove what would have gone out
+    /// without reaching a network.
+    var connectorMutationCoordinatorFactory: (@MainActor (ModelContext) -> ConnectorMutationCoordinator)?
+    var gitHubReviewPublicationServiceFactory: (@MainActor (ModelContext) -> GitHubReviewPublicationService)?
 
 }

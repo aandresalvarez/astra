@@ -129,7 +129,14 @@ public enum CodexStreamEventParser {
         }
         let itemType = string(in: item, keys: ["type", "kind"])?.lowercased() ?? "unknown"
         if itemType == "command_execution" {
-            return [.toolResult(id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item))]
+            // The exit code and status are the outcome, as every other
+            // provider reports a failed command; the summary only shows them.
+            let exitCode = int(in: item, keys: ["exit_code", "exitCode"])
+            let status = string(in: item, keys: ["status"])?.lowercased()
+            let failed = (exitCode.map { $0 != 0 } ?? false) || status.map(failedItemStatuses.contains) == true
+            return [.toolResult(
+                id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item), isError: failed
+            )]
         }
         if itemType == "file_change" {
             let itemID = string(in: item, keys: ["id", "call_id", "callId"])

@@ -21,7 +21,7 @@ struct PermissionApprovalContinuationTests {
         }, sandboxEnforcementProvider: { .off })
         defer { queue.cancelAll() }
         queue.applySettings(claudePath: "/bin/sh", defaultRuntimeID: .claudeCode,
-            timeoutSeconds: 10, validationModel: "claude-sonnet-4-6", defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue)
+            timeoutSeconds: 10, validationModel: "claude-sonnet-4-6", defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue)
         _ = TaskStateMachine.enqueueFromUITestSeed(fixture.task, modelContext: fixture.context)
         let initial = try #require(ExecutionRequestSubmissionService.submitInitial(for: fixture.task, into: fixture.context).success)
         await queue.signalExecutionRequest(id: initial.requestID, task: fixture.task, modelContext: fixture.context).value

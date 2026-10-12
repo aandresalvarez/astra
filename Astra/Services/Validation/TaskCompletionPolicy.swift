@@ -150,9 +150,9 @@ enum TaskCompletionPolicy {
         let pendingPublication = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
             task: task,
             run: run
-        ) ?? (permissionPolicy == .autonomous
-            ? nil
-            : TaskExternalOutcomeRequirementResolver.makeGitHubPullRequest(task: task, run: run))
+        ) ?? (ExternalActionPolicy.asksUser(for: .gitPullRequestPublication, level: permissionPolicy.agentPolicyLevel)
+            ? TaskExternalOutcomeRequirementResolver.makeGitHubPullRequest(task: task, run: run)
+            : nil)
         if let pendingPublication {
             return .block(
                 gate: .requiredExternalOutcome,
@@ -179,7 +179,7 @@ enum TaskCompletionPolicy {
         task: AgentTask,
         run: TaskRun
     ) -> TaskCompletionPolicyDecision {
-        let requiresArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
+        let requiresArtifact = TaskDeliverableExpectation.owesDeliverable(task, run: run)
         let hasArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
         let fields = [
             "gate": TaskCompletionPolicyGate.manualArtifactRequirement.rawValue,

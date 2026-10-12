@@ -7,6 +7,10 @@ import ASTRAPersistence
 @MainActor
 final class AgentEventRecordingState {
     private let maxCoalescedPayloadLength: Int
+    /// Set for a run whose level performs and records actions outside ASTRA
+    /// (Auto). Its calls' result markers are the durable record of what the
+    /// agent did; at other levels the run guard asked first, so none is kept.
+    var recordsExternalActions = false
     private var lastConversationEventByKey: [String: TaskEvent] = [:]
     /// Runs whose `run.output` was last written by a `.completed` summary.
     /// Providers like Codex emit several `agent_message` items per turn (progress
@@ -16,6 +20,9 @@ final class AgentEventRecordingState {
     private var runsWithCompletedOutput: Set<UUID> = []
     private var toolUseEvidenceByRunAndID: [String: String] = [:]
     private var toolNamesByRunAndID: [String: String] = [:]
+    /// The untruncated call, kept for the Auto record: an action past the
+    /// event's first 300 characters is still the action that ran.
+    private var toolUseCommandByRunAndID: [String: String] = [:]
     private var runsWithProviderStart: Set<UUID> = []
     /// Runs whose provider stream said the turn itself failed.
     private var runsWithAgentReportedError: Set<UUID> = []
@@ -148,10 +155,16 @@ final class AgentEventRecordingState {
         }
     }
 
-    func recordToolUse(id: String, name: String, evidence: String, run: TaskRun) {
+    func recordToolUse(id: String, name: String, evidence: String, run: TaskRun, fullEvidence: String? = nil) {
         guard !id.isEmpty else { return }
         toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"] = evidence
         toolNamesByRunAndID["\(run.id.uuidString)#\(id)"] = name
+        toolUseCommandByRunAndID["\(run.id.uuidString)#\(id)"] = fullEvidence ?? evidence
+    }
+
+    func toolUseFullEvidence(id: String, run: TaskRun) -> String? {
+        guard !id.isEmpty else { return nil }
+        return toolUseCommandByRunAndID["\(run.id.uuidString)#\(id)"]
     }
 
     func toolUseEvidence(id: String, run: TaskRun) -> String? {
@@ -456,6 +469,13 @@ enum AgentEventRecordingPresentation {
         if ["webfetch", "websearch"].contains(lower) {
             return firstString(in: input, keys: ["url", "uri", "summary"])
         }
+        // The browser MCP tool, as the `astra-browser` command it runs, with
+        // its arguments: what the approval gate judged and Auto records.
+        if AgentRuntimePolicyGuard.isBrowserBridgeTool(name), let command = firstString(in: input, keys: ["command"]) {
+            return ([BrowserBridgeMCPProjection.toolCommand, command]
+                + [AgentRuntimePolicyGuard.browserArgumentWords(input["arguments"])].compactMap { $0 })
+                .joined(separator: " ")
+        }
         return firstString(in: input, keys: ["summary"])
     }
 
@@ -703,11 +723,27 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
             let payload = "Using tool: \(name)\(suffix)"
-            recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run)
+            recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run,
+                                          fullEvidence: "Using tool: \(name)" + (inputSummary.map { ": \($0)" } ?? ""))
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run))
 
         case .toolResult(let toolID, let content, let isError):
             recordingState?.breakConversationCoalescing(for: run)
+            // An external action keeps its own call's evidence, even when it
+            // printed nothing or failed partway: a batch answers its calls in
+            // any order, and successful results otherwise carry no call id.
+            if recordingState?.recordsExternalActions == true,
+               let evidence = recordingState?.toolUseEvidence(id: toolID, run: run),
+               let marker = AgentExternalActionObserver.resultMarker(
+                   evidence: evidence,
+                   fullEvidence: recordingState?.toolUseFullEvidence(id: toolID, run: run),
+                   output: content,
+                   failed: isError
+               ) {
+                modelContext.insert(TaskEvent.structuredPayloadEvent(
+                    task: task, type: AgentExternalActionObserver.resultEventType, payload: marker, run: run
+                ))
+            }
             if !content.isEmpty {
                 let eventType = isError ? TaskEventTypes.Tool.resultFailed : TaskEventTypes.Tool.result
                 let payload = isError

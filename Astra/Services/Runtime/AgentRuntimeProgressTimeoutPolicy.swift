@@ -11,9 +11,12 @@ enum AgentRuntimeProgressTimeoutPolicy {
     static func semanticProgressTimeout(
         task: AgentTask,
         phase _: RunPhase,
-        idleTimeoutSeconds: TimeInterval
+        idleTimeoutSeconds: TimeInterval,
+        followsUpDeliveredRequest: Bool = false
     ) -> TimeInterval {
-        guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else {
+        // A follow-up after the deliverable was met writes nothing it owes,
+        // so it gets the informational window.
+        guard !followsUpDeliveredRequest, TaskDeliverableExpectation.requiresDeliverableArtifact(task) else {
             return min(idleTimeoutSeconds, 180)
         }
 

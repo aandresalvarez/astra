@@ -438,16 +438,34 @@ enum PermissionBroker {
         return .providerTool(name: canonical)
     }
 
+    /// The grants approving a shell command, one for each of its commands,
+    /// or nil when one of them yields none: an approval of the rest would not
+    /// cover it. A content grant names the whole command as written — its
+    /// setup (`cd`, `export`) and its case included — so a command that
+    /// differs anywhere is a new one to approve.
+    static func completeShellApprovalGrants(command: String) -> [PermissionGrant]? {
+        let content = ProviderToolSemantics.semanticShellCommand(command)
+        var grants: [PermissionGrant] = []
+        for segment in actionableShellSegments(command) where !isBenignShellSetupSegment(segment) {
+            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(forShellSegment: segment, content: content),
+                  segmentGrants.allSatisfy(isSafeGrant) else {
+                return nil
+            }
+            grants.append(contentsOf: segmentGrants)
+        }
+        return grants.isEmpty ? nil : sanitizeGrants(grants)
+    }
+
     private static func shellApprovalGrants(command: String?) -> [PermissionGrant] {
         guard let command else { return [] }
-        let segments = actionableShellSegments(command).filter { !isBenignShellSetupSegment($0) }
+        let content = ProviderToolSemantics.semanticShellCommand(command)
         var grants: [PermissionGrant] = []
-        for segment in segments {
-            guard let grant = ShellCommandRiskClassifier.approvalGrant(forShellSegment: segment),
-                  isSafeGrant(grant) else {
+        for segment in actionableShellSegments(command) where !isBenignShellSetupSegment(segment) {
+            guard let segmentGrants = ShellCommandRiskClassifier.approvalGrants(forShellSegment: segment, content: content),
+                  segmentGrants.allSatisfy(isSafeGrant) else {
                 continue
             }
-            grants.append(grant)
+            grants.append(contentsOf: segmentGrants)
         }
         return sanitizeGrants(grants)
     }
@@ -499,7 +517,9 @@ enum PermissionBroker {
             case .sandboxPath, .gitPublish, .connectorMutation:
                 return false
             default:
-                return true
+                // A content grant is ASTRA's gate's half of a shell approval;
+                // the provider replays the command by its pattern.
+                return !ShellCommandRiskClassifier.isContentGrant(grant)
             }
         }
     }
@@ -820,9 +840,21 @@ enum PermissionBroker {
             .map(String.init)
         var segments: [String] = []
         for rawSegment in rawSegments {
-            appendUnique(normalizedShellText(actionableShellSegment(rawSegment)), to: &segments)
+            appendUnique(optionCasePreservingShellText(actionableShellSegment(rawSegment)), to: &segments)
         }
         return segments
+    }
+
+    /// `normalizedShellText`, except that option tokens keep their case: the
+    /// classifier reads it (`curl -X` and `-F` send, `-x` names a proxy and
+    /// `-f` only fails quietly), and a lowercased write flag synthesized the
+    /// grant a read of the same host gets.
+    private static func optionCasePreservingShellText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .map { token in token.hasPrefix("-") ? String(token) : token.lowercased() }
+            .joined(separator: " ")
     }
 
     private static func shellSegmentSeparatorsNormalized(_ command: String) -> String {

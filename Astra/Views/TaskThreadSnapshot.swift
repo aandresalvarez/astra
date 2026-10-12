@@ -16,6 +16,8 @@ enum TaskConversationItem: Identifiable, Sendable {
     /// row (e.g. the same permission approved several times in a run).
     case systemInfo(text: String, timestamp: Date, count: Int)
     case recapResult(text: String, timestamp: Date)
+    /// Something ASTRA did outside the machine, read from its receipt.
+    case externalAction(ExternalActionRecord)
 
     var id: String {
         switch self {
@@ -27,6 +29,16 @@ enum TaskConversationItem: Identifiable, Sendable {
         case .scheduleResult(_, let timestamp): return "schedule-\(timestamp.timeIntervalSince1970)"
         case .systemInfo(_, let timestamp, _): return "system-\(timestamp.timeIntervalSince1970)"
         case .recapResult(_, let timestamp): return "recap-\(timestamp.timeIntervalSince1970)"
+        case .externalAction(let record): return "external-\(record.id.uuidString)"
+        }
+    }
+
+    /// How a system-side item reads as conversation context for a provider.
+    var systemContextLine: String? {
+        switch self {
+        case .systemInfo(let text, _, _): "System: \(text)"
+        case .externalAction(let record): "System: \(record.contextLine)"
+        default: nil
         }
     }
 }
@@ -1124,6 +1136,19 @@ struct TaskThreadSnapshot: Sendable {
             )
         }
         var nextRunIndex = 0
+        // A receipt renders as a record row; the text notice an older build
+        // wrote beside it would narrate the same action a second time.
+        let externalActionRecords: [UUID: ExternalActionRecord] = Dictionary(
+            uniqueKeysWithValues: conversationEvents.compactMap { event in
+                ExternalActionRecordProjection.record(
+                    type: event.type,
+                    payload: event.payload,
+                    eventID: event.id,
+                    timestamp: event.timestamp
+                ).map { (event.id, $0) }
+            }
+        )
+        let supersededNotices = Set(externalActionRecords.values.flatMap(\.legacyNotices))
 
         func appendCompletedRuns(upTo timestamp: Date) {
             while nextRunIndex < visibleRuns.count {
@@ -1140,6 +1165,14 @@ struct TaskThreadSnapshot: Sendable {
             if eventIndex.isMultiple(of: 32) { try cancellationCheck() }
             appendCompletedRuns(upTo: event.timestamp)
 
+            if let record = externalActionRecords[event.id] {
+                items.append(.externalAction(record))
+                continue
+            }
+            if event.type == "task.approved" || event.type == "system.info",
+               supersededNotices.contains(event.payload.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                continue
+            }
             switch event.type {
             case "user.message":
                 items.append(.userMessage(eventID: event.id, text: event.payload, timestamp: event.timestamp))
@@ -1232,6 +1265,8 @@ struct TaskThreadSnapshot: Sendable {
         case "schedule.result":
             return isActionableScheduleResult(event.payload)
         case let type where visibleSystemTimelineEventTypes.contains(type):
+            return true
+        case let type where ExternalActionRecordProjection.eventTypes.contains(type):
             return true
         default:
             return false
@@ -1504,6 +1539,8 @@ struct TaskThreadTranscriptMetrics: Equatable, Sendable {
             case .agentResponse(let run):
                 text = run.output
                 agentResponseCount += 1
+            case .externalAction(let record):
+                text = record.contextLine
             }
             let scan = try Self.scan(text, cancellationCheck: cancellationCheck)
             textBytes += scan.bytes

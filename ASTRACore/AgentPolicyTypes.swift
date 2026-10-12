@@ -47,15 +47,25 @@ public enum AgentPolicyLevel: String, Codable, CaseIterable, Identifiable, Senda
         case .locked:
             "Legacy custom preset: read and plan only."
         case .review:
-            "Ask before edits, shell commands, network access, credentials, and sensitive actions."
+            "Asks before changing files, running commands, or acting outside ASTRA, such as GitHub, Jira, or messages. Reading files stays free."
         case .build:
             "Legacy custom preset: edit scoped files and run approved build or test commands."
         case .network:
             "Legacy custom preset: allow approved connectors and network destinations."
         case .autonomous:
-            "Do routine work automatically while ASTRA still stops terminal denials, budgets, and non-negotiable safety checks."
+            "Does everything without asking. Actions outside ASTRA are recorded in the chat with a link. Sandbox and credential protections still apply."
         case .custom:
-            "Use a saved configuration for exact tool, shell, network, and provider rules."
+            "Uses your saved tool, shell, and network rules. Acting outside ASTRA asks first, as in Ask."
+        }
+    }
+
+    /// One line per level for the level picker: the level, then what it means.
+    public var menuTitle: String {
+        switch self {
+        case .review: "Ask — asks before changes and before acting outside ASTRA"
+        case .autonomous: "Auto — does everything without asking"
+        case .custom: "Custom — your saved rules; asks before acting outside ASTRA"
+        case .locked, .build, .network: displayName
         }
     }
 
@@ -238,15 +248,19 @@ public struct AgentPolicy: Codable, Equatable, Sendable {
                 level: .review,
                 allowedTools: ["Read", "Glob", "Grep"],
                 askFirstTools: ["Write", "Edit", "MultiEdit", "Bash", "WebFetch", "WebSearch"],
-                deniedShellPatterns: [
+                // Ask asks before anything with an effect rather than refusing
+                // it, so these are named for approval, not denied. `sudo`
+                // stays denied: it cannot prompt in a non-interactive run, so
+                // an approval would still end in a failed command.
+                askFirstShellPatterns: [
                     "rm:*",
-                    "sudo:*",
                     "chmod:*",
                     "chown:*",
                     "git push:*",
                     "deploy:*",
                     "publish:*"
-                ]
+                ],
+                deniedShellPatterns: ["sudo:*"]
             )
         case .build:
             AgentPolicy(

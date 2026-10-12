@@ -42,10 +42,7 @@ enum ComposerToolbarPresentation {
     }
 
     static func permissionModeHelp(for level: AgentPolicyLevel) -> String {
-        if level.userFacingLevel == .autonomous {
-            return "Auto skips provider prompts. Execution Sandbox independently controls OS isolation; ASTRA's in-app privacy checks remain active."
-        }
-        return level.userFacingLevel.shortDescription
+        level.userFacingLevel.shortDescription
     }
 }
 
@@ -656,7 +653,7 @@ struct ComposerToolbar: View {
                     setPolicyLevel(level)
                 } label: {
                     HStack {
-                        Label(level.displayName, systemImage: level.symbolName)
+                        Label(level.menuTitle, systemImage: level.symbolName)
                         if currentPolicyLevel.userFacingLevel == level {
                             Image(systemName: "checkmark")
                         }

@@ -326,11 +326,11 @@ extension HeadlessChatScenarioTests {
             script: Self.claudeScript(body: """
             IFS= read -r first_line
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"autodeny-sess","model":"claude-sonnet-4-6"}'
-            printf '%s\\n' '{"type":"control_request","request_id":"req-deny-2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git push origin main"}}}'
+            printf '%s\\n' '{"type":"control_request","request_id":"req-deny-2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"sudo rm -rf /var/tmp/build"}}}'
             IFS= read -r response_line
             printf '%s\\n' "$response_line" >> \(Self.shQuote(stdinFile.path))
-            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Skipped the denied push."}]}}'
-            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Skipped the denied push.","usage":{"input_tokens":3,"output_tokens":5}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Skipped the denied command."}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Skipped the denied command.","usage":{"input_tokens":3,"output_tokens":5}}'
             while IFS= read -r _; do :; done
             exit 0
             """)
@@ -339,9 +339,11 @@ extension HeadlessChatScenarioTests {
         let task = harness.makeTask(runtime: .claudeCode, goal: "Publish the branch", model: "claude-sonnet-4-6")
         let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath, liveApprovals: true)
 
-        // git push is deny-listed in review policy, so the classifier denies it
-        // up front — the provider gets a deny over stdin and the user is never
-        // interrupted (no pending ask, task never pauses).
+        // sudo is deny-listed in Ask (it cannot prompt in a non-interactive
+        // run), so the classifier denies it up front — the provider gets a
+        // deny over stdin and the user is never interrupted (no pending ask,
+        // task never pauses). `git push` used to be the example; Ask now asks
+        // before it instead of refusing it.
         _ = await harness.execute(task: task, worker: worker)
 
         #expect(InFlightPermissionCenter.shared.pendingAsks(taskID: task.id).isEmpty)
@@ -373,7 +375,7 @@ extension HeadlessChatScenarioTests {
             script: Self.claudeScript(body: """
             IFS= read -r first_line
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"deny-then-fail-sess","model":"claude-sonnet-4-6"}'
-            printf '%s\\n' '{"type":"control_request","request_id":"req-deny-fail","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"git push origin main"}}}'
+            printf '%s\\n' '{"type":"control_request","request_id":"req-deny-fail","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"sudo rm -rf /var/tmp/build"}}}'
             IFS= read -r _response
             printf '%s\\n' 'unrelated provider crash' >&2
             exit 7

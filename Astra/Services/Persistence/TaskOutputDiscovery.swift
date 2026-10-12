@@ -45,8 +45,9 @@ public enum TaskOutputDiscovery {
         // re-resolving the roots per file change is pure repetition.
         let roots = RunFileRoots(taskFolder: taskAccess.taskFolder, workspacePath: executionPath)
         for change in run.fileChanges {
-            guard let file = discoveredRunFile(
-                path: change.path,
+            guard let path = resolvedChangePath(change, workspacePath: executionPath, taskFolder: taskAccess.taskFolder),
+                  let file = discoveredRunFile(
+                path: path,
                 roots: roots,
                 fileManager: fileManager
             ) else { continue }
@@ -67,6 +68,26 @@ public enum TaskOutputDiscovery {
         return discovered.sorted {
             $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
         }
+    }
+
+    /// The absolute path a recorded change names. A tool reports paths
+    /// relative to the run's working directory; a task-folder snapshot records
+    /// them relative to the task folder. Left unresolved, a relative path was
+    /// read against the app's own working directory and matched nothing.
+    public static func resolvedChangePath(
+        _ change: StoredFileChange,
+        workspacePath: String,
+        taskFolder: String
+    ) -> String? {
+        let path = change.path.replacingOccurrences(of: "\\", with: "/")
+        guard !path.isEmpty else { return nil }
+        if path.hasPrefix("/") { return URL(fileURLWithPath: path).standardizedFileURL.path }
+        let root = change.kind.isObserved ? taskFolder : workspacePath
+        guard !root.isEmpty else { return nil }
+        return URL(fileURLWithPath: root, isDirectory: true)
+            .appendingPathComponent(path)
+            .standardizedFileURL
+            .path
     }
 
     @MainActor

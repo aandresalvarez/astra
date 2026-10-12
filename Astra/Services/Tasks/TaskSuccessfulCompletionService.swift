@@ -27,7 +27,7 @@ enum TaskSuccessfulCompletionService {
             modelContext: modelContext,
             originURL: reviewOriginURL
         )
-        if permissionPolicy != .autonomous {
+        if ExternalActionPolicy.asksUser(for: .gitPullRequestPublication, level: permissionPolicy.agentPolicyLevel) {
             TaskRuntimeOutcomeTransition.queueGitHubPullRequestIfNeeded(
                 task: task,
                 run: run,

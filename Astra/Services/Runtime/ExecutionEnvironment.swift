@@ -650,6 +650,14 @@ enum DockerExecutionPlanner {
             append(standardized, "/mnt/astra/path-\(index)", .additionalPath)
             index += 1
         }
+        // Folders the run may read but not write, such as a source checkout
+        // replaced by the task's worktree, stay visible read-only.
+        for path in taskAccess.runtimeReadOnlyWorkspacePaths {
+            let standardized = WorkspacePathPresentation.standardizedPath(path)
+            guard standardized != WorkspacePathPresentation.standardizedPath(currentDirectory) else { continue }
+            append(standardized, "/mnt/astra/path-\(index)", .additionalPath, access: .readOnly)
+            index += 1
+        }
         var inputIndex = 1
         var seenInputs: Set<String> = []
         for path in taskAccess.runtimeReadOnlyInputPaths + additionalReadOnlyInputPaths {

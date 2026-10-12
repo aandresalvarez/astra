@@ -1,8 +1,10 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SwiftData
 import ASTRAModels
 import ASTRAPersistence
+import HostControlToolSupport
 
 /// A review composed by an agent is data until the user approves this exact
 /// destination, commit, summary, and set of inline comments.
@@ -53,6 +55,17 @@ struct GitHubReviewPublicationRecord: Codable {
     let pullRequestURL: String
     let reviewURL: String?
     let reviewID: Int?
+    /// Who let ASTRA post it. Absent on receipts written before levels were
+    /// harmonized, every one of which the user reviewed in the sheet.
+    var authorization: ExternalActionAuthorization? = nil
+}
+
+/// The review file an agent asked ASTRA to post where the level asks first:
+/// the one the sheet must offer, because the broker told the agent the user
+/// would see exactly that review.
+struct GitHubReviewRequestRecord: Codable, Equatable {
+    let filePath: String
+    let contentDigest: String
 }
 
 private struct GitHubReviewUnusableArtifactRecord: Codable {
@@ -81,6 +94,7 @@ enum GitHubReviewPublicationEventTypes {
     static let targetBound = "github.review.target-bound"
     static let targetUnresolved = "github.review.target-unresolved"
     static let receiptRecovery = "github.review.receipt-recovery"
+    static let requested = "github.review.requested"
 }
 
 private enum GitHubReviewTargetResolver {
@@ -98,6 +112,16 @@ private enum GitHubReviewTargetResolver {
     private static func matches(_ pattern: String, in text: String) -> [NSTextCheckingResult] {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return [] }
         return regex.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+    }
+
+    /// Every pull request the text links, in order.
+    static func pullRequests(in text: String) -> [Target] {
+        matches(pullRequestPattern, in: text).compactMap { match in
+            guard let numberRange = Range(match.range(at: 3), in: text),
+                  let number = Int(text[numberRange]),
+                  let repository = repository(from: match, in: text) else { return nil }
+            return Target(repository: repository, number: number)
+        }
     }
 
     static func pullRequest(in text: String) -> Target? {
@@ -125,6 +149,21 @@ private enum GitHubReviewTargetResolver {
         return "\(text[ownerRange])/\(repository)"
     }
 
+    /// Every pull request number the text names, by link or as "PR 12".
+    static func namedNumbers(in text: String) -> Set<Int> {
+        let shorthand = matches(shorthandPattern, in: text).compactMap { match in
+            Range(match.range(at: 1), in: text).flatMap { Int(text[$0]) }
+        }
+        return Set(pullRequests(in: text).map(\.number) + shorthand)
+    }
+
+    /// Whether the text names more than one pull request ("Review <link to
+    /// 12>, then post the review to PR 13"): it has no single target, whichever
+    /// of them is linked, numbered first, or matched by a file name.
+    static func namesConflictingPullRequests(_ text: String?) -> Bool {
+        text.map { namedNumbers(in: $0).count > 1 } ?? false
+    }
+
     static func shorthandNumber(in text: String) -> Int? {
         let found = matches(shorthandPattern, in: text)
         guard found.count == 1, let numberRange = Range(found[0].range(at: 1), in: text) else { return nil }
@@ -139,6 +178,7 @@ private enum GitHubReviewTargetResolver {
     }
 
     static func durableTarget(task: AgentTask, request: String?) -> Target? {
+        guard !namesConflictingPullRequests(request) else { return nil }
         if let request, request.range(of: "github.com/", options: .caseInsensitive) != nil {
             if let target = pullRequest(in: request) { return target }
             if let number = shorthandNumber(in: request),
@@ -147,11 +187,26 @@ private enum GitHubReviewTargetResolver {
             }
             return nil
         }
-        if let request, let number = shorthandNumber(in: request),
-           let repository = repository(in: task.goal) {
-            return Target(repository: repository, number: number)
+        if let number = requestedNumber(task: task, request: request) {
+            // "PR 12" after a goal that links several pull requests means the
+            // one linked as 12, when exactly one repository has it there.
+            let linked = pullRequests(in: task.goal).filter { $0.number == number }
+            if let first = linked.first,
+               Set(linked.map { $0.repository.lowercased() }).count == 1 {
+                return first
+            }
+            if let repository = repository(in: task.goal) {
+                return Target(repository: repository, number: number)
+            }
         }
         return pullRequest(in: task.goal)
+    }
+
+    /// The pull request a shorthand request means: the number it names, or —
+    /// for "post the review" after a goal of "review PR #12" — the goal's.
+    static func requestedNumber(task: AgentTask, request: String?) -> Int? {
+        guard !namesConflictingPullRequests(request) else { return nil }
+        return request.flatMap(shorthandNumber(in:)) ?? shorthandNumber(in: task.goal)
     }
 }
 
@@ -161,25 +216,103 @@ enum GitHubReviewPublicationRequirement {
     private static let publicationRegex = try? NSRegularExpression(
         pattern: #"\b(?:post|posting|publish|publishing|submit|submitting|add|adding|send|sending|leave|leaving)\b(?:\s+\S+){0,4}?\s+\b(?:comments?|review)\b"#
     )
-    private static let pronounCancellationRegex = try? NSRegularExpression(
-        pattern: #"\b(?:(?:do not|don't|dont|never)\s+(?:post|publish|submit|send|add)\s+(?:it|that|them|this)|(?:cancel|stop)\s+(?:that|it|this))\b"#
+    /// What Auto takes as consent to post without the sheet: a command, in
+    /// so many words. The broad pattern above is right for offering the Post
+    /// review sheet, where the user still decides; read as consent it let
+    /// "add review comments to the file", "ask me before posting the review"
+    /// and "hold off on posting the review" through, one phrasing per review
+    /// round. So every slot of the command is a positive list, never a list of
+    /// negations: words that keep it a command, the base verb post, publish or
+    /// submit, at most four words that only say which review (`reviewWords`),
+    /// the review or its comments, and nothing after it but a GitHub
+    /// destination. Being wrong costs a review left for the sheet, never a post.
+    private static let imperativePublicationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:post|publish|submit)\b((?:\s+\S+){0,4}?)\s+\b(?:review\s+comments?|code\s+review|comments?|review)\b"#
+    )
+    /// The words that may stand between the verb and the review: which review,
+    /// never when, whether, by whom or how much of it — "post the draft
+    /// review", "post later the review", "post only the comments" and "post
+    /// the inline comments" are not commands to post the whole file now. The
+    /// file always carries a summary and a verdict, so a kind of comment is
+    /// part of it, and "code review" is read whole as the object instead.
+    private static let reviewWords: Set<String> = [
+        "the", "a", "an", "my", "your", "our", "this", "that", "its", "pr", "pr's", "github", "pull", "request",
+        "full", "whole", "complete", "completed", "finished", "final"
+    ]
+    /// "Review PR #12, then post it": the object is a pronoun for a review
+    /// the same message named first. Read only when it did; Auto also needs
+    /// nothing after it but a GitHub destination, so "post it to the channel"
+    /// is never a review posted to a pull request.
+    private static let referentialPublicationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:post|posting|publish|publishing|submit|submitting)\s+(?:it|them)\b"#
+    )
+    private static let reviewMentionRegex = try? NSRegularExpression(pattern: #"\b(?:reviews?|comments?)\b"#)
+    /// Where a command may send the review: GitHub or the pull request,
+    /// named or linked. A link is exactly a pull request's URL — never `\S+`,
+    /// which would read "<link>,later" as one link and the condition as part
+    /// of where it goes.
+    private static let gitHubDestinationRegex = try? NSRegularExpression(
+        pattern: #"^\s*(?:(?:on|to|for)\s+(?:github|the\s+pr|the\s+pull\s+request|pr\s*#?\d+|pull\s+request\s*#?\d+|https://github\.com/[a-z0-9-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*/?))?\s*(?:now|please|again)?\s*$"#
+    )
+    private static let imperativeLeadWords: Set<String> = [
+        "please", "and", "then", "also", "now", "so", "ok", "okay", "go", "ahead", "kindly", "just",
+        "finally", "lastly", "next", "can", "could", "would", "will", "you", "yes", "sure", "alright"
+    ]
+    /// A part of a message that is only these words asks for nothing.
+    private static let fillerWords = imperativeLeadWords.union(["first", "thanks", "thank"])
+    /// The only other work a message that is consent may ask for: reviewing,
+    /// drafting or preparing the review, of the pull request or of nothing
+    /// named ("Review PR #12, then post it", "Draft the review for <link> and
+    /// then post the review"). A closed form: any other sentence, about where
+    /// the review goes or anything else, is not part of a command to post.
+    private static let reviewWorkRegex = try? NSRegularExpression(
+        pattern: #"^(?:re-?review|review|draft|write|prepare|finish)(?:\s+(?:the|a|your|this|that))?(?:\s+(?:review|pr|pull\s+request|changes|diff))?(?:\s+(?:of|for|on))?(?:\s+(?:https://github\.com/[a-z0-9-]+/[a-z0-9_.-]+/pull/[1-9][0-9]*/?|(?:pr|pull\s+request)\s*#?\d+|#\d+|it|them))?$"#
+    )
+    /// A message that closes an open request without restating it: "don't post
+    /// it", "cancel that", and the noun forms — "cancel the review", "stop the
+    /// review", "withdraw the comments". Auto posts while a request is open,
+    /// so a cancellation it cannot read is a post the user called off.
+    private static let cancellationRegex = try? NSRegularExpression(
+        pattern: #"\b(?:(?:do not|don't|dont|never)\s+(?:post|publish|submit|send|add)\s+(?:it|that|them|this)|(?:cancel|stop|withdraw|abort|scrap|drop|discard|forget)\s+(?:that|it|this|(?:(?:the|that|this|my|your|our)\s+)?(?:github\s+)?(?:pr\s+)?(?:review|reviews|posting|post|comments?)))\b"#
     )
 
     struct PostingRequest {
         let text: String
         let timestamp: Date?
         let eventID: UUID?
+
+        /// Which request this is: the message it came from, or the goal.
+        var identity: String { "\(eventID?.uuidString ?? "goal"):\(text)" }
     }
 
     static func isPending(task: AgentTask) -> Bool {
+        isOpen(task: task, answeredBy: [
+            GitHubReviewPublicationEventTypes.receipt,
+            GitHubReviewPublicationEventTypes.receiptRecovery
+        ])
+    }
+
+    /// Whether no post has even been attempted for the open request — what
+    /// Auto posts on. A dispatch with no receipt may have posted the review
+    /// (GitHub accepted it, the answer was lost), so it answers the request
+    /// too: under the same request a second file could be a second review.
+    /// Ask keeps `isPending`, where the user decides each post in the sheet.
+    static func isOpenForUnreviewedPost(task: AgentTask) -> Bool {
+        isOpen(task: task, answeredBy: [
+            GitHubReviewPublicationEventTypes.receipt,
+            GitHubReviewPublicationEventTypes.receiptRecovery,
+            GitHubReviewPublicationEventTypes.dispatched
+        ])
+    }
+
+    private static func isOpen(task: AgentTask, answeredBy answering: Set<String>) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
         guard let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request.text)
                 ?? boundTarget(task: task, request: request) else {
             return hasUnresolvedTarget(task: task, request: request)
         }
         return !task.events.contains { event in
-            guard [GitHubReviewPublicationEventTypes.receipt,
-                   GitHubReviewPublicationEventTypes.receiptRecovery].contains(event.type),
+            guard answering.contains(event.type),
                   (request.timestamp.map { event.timestamp >= $0 } ?? true),
                   let data = event.payload.data(using: .utf8),
                   let receipt = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
@@ -192,24 +325,14 @@ enum GitHubReviewPublicationRequirement {
     static func postingRequest(task: AgentTask) -> PostingRequest? {
         var current = publicationIntent(in: task.goal) == .publish
             ? PostingRequest(text: task.goal, timestamp: nil, eventID: nil) : nil
-        let messages = task.events
-            .filter {
-                $0.type == TaskEventTypes.Conversation.userMessage.rawValue
-                    || $0.type == TaskPlanConversationEventTypes.userMessage
-            }
-            .sorted { lhs, rhs in
-                lhs.timestamp == rhs.timestamp
-                    ? lhs.id.uuidString < rhs.id.uuidString
-                    : lhs.timestamp < rhs.timestamp
-            }
-        for message in messages {
+        for message in userMessages(task: task) {
             switch publicationIntent(in: message.payload) {
             case .publish:
                 current = PostingRequest(text: message.payload, timestamp: message.timestamp, eventID: message.id)
             case .cancel:
                 current = nil
             case nil:
-                if current != nil, pronounCancellation(in: message.payload) {
+                if current != nil, cancellation(in: message.payload) {
                     current = nil
                 }
             }
@@ -253,12 +376,18 @@ enum GitHubReviewPublicationRequirement {
         return "ASTRA is waiting for a GitHub target. Add a full pull request URL or reconnect this workspace to its GitHub repository, then ask ASTRA to post the review again."
     }
 
+    /// Whether a shorthand request ("post the review to PR 12") may be bound
+    /// to the workspace's origin: only when neither the request nor the goal
+    /// names GitHub at all. A goal that links pull requests and still yields
+    /// no single target is ambiguous, and the origin's PR 12 could be a
+    /// different pull request from any the user named.
     static func needsOriginTargetBinding(task: AgentTask) -> Bool {
         guard let request = postingRequest(task: task) else { return false }
         return GitHubReviewTargetResolver.durableTarget(task: task, request: request.text) == nil
             && boundTarget(task: task, request: request) == nil
             && request.text.range(of: "github.com/", options: .caseInsensitive) == nil
-            && GitHubReviewTargetResolver.shorthandNumber(in: request.text) != nil
+            && task.goal.range(of: "github.com/", options: .caseInsensitive) == nil
+            && GitHubReviewTargetResolver.requestedNumber(task: task, request: request.text) != nil
     }
 
     @MainActor
@@ -272,7 +401,7 @@ enum GitHubReviewPublicationRequirement {
     ) async -> Bool {
         guard needsOriginTargetBinding(task: task),
               let request = postingRequest(task: task),
-              let number = GitHubReviewTargetResolver.shorthandNumber(in: request.text) else { return false }
+              let number = GitHubReviewTargetResolver.requestedNumber(task: task, request: request.text) else { return false }
         let path = task.executionRootPath ?? task.workspace?.primaryPath
         let origin: String?
         if let path {
@@ -318,21 +447,140 @@ enum GitHubReviewPublicationRequirement {
         publicationIntent(in: request) == .publish
     }
 
+    /// Whether the open posting request asks, in so many words, to post,
+    /// publish or submit the review — what Auto requires before it posts one
+    /// without the sheet. Offline: it reads the request, not GitHub.
+    static func explicitlyRequestsPosting(task: AgentTask) -> Bool {
+        guard let request = postingRequest(task: task), isLatestInstruction(request, task: task) else { return false }
+        return commandsPosting(request.text)
+    }
+
+    /// Whether nothing the user said came after the request. Auto acts on the
+    /// user's latest word only: "actually, no", "never mind" or anything else
+    /// after a command to post leaves the review for the sheet, so no way of
+    /// taking it back has to be recognised for Auto to honour it.
+    private static func isLatestInstruction(_ request: PostingRequest, task: AgentTask) -> Bool {
+        let messages = userMessages(task: task)
+        guard let eventID = request.eventID else { return messages.isEmpty }
+        return messages.last?.id == eventID
+    }
+
+    private static func userMessages(task: AgentTask) -> [TaskEvent] {
+        task.events
+            .filter {
+                $0.type == TaskEventTypes.Conversation.userMessage.rawValue
+                    || $0.type == TaskPlanConversationEventTypes.userMessage
+            }
+            .sorted { lhs, rhs in
+                lhs.timestamp == rhs.timestamp
+                    ? lhs.id.uuidString < rhs.id.uuidString
+                    : lhs.timestamp < rhs.timestamp
+            }
+    }
+
+    /// The positive list `imperativePublicationRegex` describes, read over the
+    /// whole message: every part of it is the command, review work in the
+    /// closed form `reviewWorkRegex` allows, or words that keep it a command.
+    /// Nothing else is read, so nothing else has to be understood: a
+    /// condition, a pause, an exception, a retraction or a sentence about
+    /// where the review goes ("The requested destination is Slack.") is
+    /// outside the list and leaves the review for the sheet.
+    static func commandsPosting(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        guard let imperative = imperativePublicationRegex, let reviewWork = reviewWorkRegex else {
+            return false
+        }
+        // Clauses end at punctuation before a space or the end of the text, so
+        // a link's dots do not split one, and a clause's parts end at a
+        // free-standing `and` or `then` ("review it and post the review").
+        let clauses = lower
+            .replacingOccurrences(of: #"[.!?;,](?=\s|$)|\n|(?<!\S)(?:and|then)(?!\S)"#, with: "\u{1E}", options: .regularExpression)
+            .components(separatedBy: "\u{1E}")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        func isCommand(_ clause: String, _ matched: Range<String.Index>) -> Bool {
+            let lead = clause[..<matched.lowerBound].split(whereSeparator: { !$0.isLetter && $0 != "'" }).map(String.init)
+            return lead.allSatisfy(imperativeLeadWords.contains)
+        }
+        var mentionedReview = false
+        func postsNow(_ clause: String) -> Bool {
+            let range = NSRange(clause.startIndex..<clause.endIndex, in: clause)
+            guard let destination = gitHubDestinationRegex else { return false }
+            // What follows the command is where it goes: nothing, or GitHub.
+            // "Post the review to Slack" is a post somewhere else, and the
+            // file only ever goes to the pull request.
+            let named = imperative.matches(in: clause, range: range).contains { match in
+                guard let matched = Range(match.range, in: clause),
+                      let gap = Range(match.range(at: 1), in: clause) else { return false }
+                let rest = String(clause[matched.upperBound...])
+                return isCommand(clause, matched)
+                    && clause[gap].split(whereSeparator: \.isWhitespace).allSatisfy { reviewWords.contains(String($0)) }
+                    && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
+            }
+            guard !named, let referential = referentialPublicationRegex else {
+                return named
+            }
+            return referential.matches(in: clause, range: range).contains { match in
+                guard let matched = Range(match.range, in: clause) else { return false }
+                let before = String(clause[..<matched.lowerBound])
+                let rest = String(clause[matched.upperBound...])
+                let reviewNamedFirst = mentionedReview
+                    || reviewMentionRegex?.firstMatch(in: before, range: NSRange(before.startIndex..<before.endIndex, in: before)) != nil
+                return reviewNamedFirst && isCommand(clause, matched)
+                    && destination.firstMatch(in: rest, range: NSRange(rest.startIndex..<rest.endIndex, in: rest)) != nil
+            }
+        }
+        var commanded = false
+        for clause in clauses {
+            defer {
+                if !mentionedReview, let mention = reviewMentionRegex {
+                    mentionedReview = mention.firstMatch(in: clause, range: NSRange(clause.startIndex..<clause.endIndex, in: clause)) != nil
+                }
+            }
+            let work = clause.split(whereSeparator: \.isWhitespace).map(String.init)
+                .drop(while: fillerWords.contains).joined(separator: " ")
+            if work.isEmpty || reviewWork.firstMatch(in: work, range: NSRange(work.startIndex..<work.endIndex, in: work)) != nil {
+                continue
+            }
+            guard postsNow(clause) else { return false }
+            commanded = true
+        }
+        return commanded
+    }
+
     private enum Intent { case publish, cancel }
 
-    private static func pronounCancellation(in request: String) -> Bool {
-        guard let regex = pronounCancellationRegex else { return false }
+    private static func cancellation(in request: String) -> Bool {
+        guard let regex = cancellationRegex else { return false }
         let lower = request.lowercased()
         return regex.firstMatch(in: lower, range: NSRange(lower.startIndex..<lower.endIndex, in: lower)) != nil
     }
 
     private static func publicationIntent(in request: String) -> Intent? {
+        publicationIntent(in: request, using: publicationRegex, referential: true)
+    }
+
+    /// Referential matches ("…, then post it") whose text before them names
+    /// the review they refer to.
+    private static func referentialMatches(in lower: String) -> [NSTextCheckingResult] {
+        guard let referential = referentialPublicationRegex, let mention = reviewMentionRegex else { return [] }
+        let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
+        return referential.matches(in: lower, range: range).filter { match in
+            mention.firstMatch(in: lower, range: NSRange(location: 0, length: match.range.location)) != nil
+        }
+    }
+
+    private static func publicationIntent(
+        in request: String,
+        using regex: NSRegularExpression?,
+        referential: Bool = false
+    ) -> Intent? {
         let lower = request.lowercased()
         // Bind the publishing verb to the review object. A request to add
         // tests while reviewing a PR must not become permission to post.
-        guard let regex = publicationRegex else { return nil }
+        guard let regex else { return nil }
         let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
-        return regex.matches(in: lower, range: range).last.flatMap { match in
+        let matches = regex.matches(in: lower, range: range) + (referential ? referentialMatches(in: lower) : [])
+        return matches.max(by: { $0.range.location < $1.range.location }).flatMap { match in
             guard let matchRange = Range(match.range, in: lower) else { return nil }
         let prefix = lower[..<matchRange.lowerBound]
         let clause = String(prefix.suffix(64))
@@ -342,7 +590,8 @@ enum GitHubReviewPublicationRequirement {
         let words = clause.split(whereSeparator: { $0.isWhitespace }).suffix(4)
         let lead = words.joined(separator: " ")
         let matchedClause = String(lower[matchRange])
-        let negationPattern = #"\b(?:do not|don't|dont|never|without|no|not)\b"#
+        // "stop posting the review" calls it off as surely as "don't post it".
+        let negationPattern = #"\b(?:do not|don't|dont|never|without|no|not|stop|cancel|abort|withdraw|skip)\b"#
         let negatedBeforeVerb = lead.range(of: negationPattern, options: .regularExpression) != nil
         let negatedBetweenVerbAndObject = matchedClause.range(of: negationPattern, options: .regularExpression) != nil
         return !negatedBeforeVerb && !negatedBetweenVerbAndObject
@@ -358,6 +607,9 @@ enum GitHubReviewPublicationError: LocalizedError {
     case staleHead
     case uncertain
     case receiptPersistenceFailed(String)
+    /// Auto posts a review only because the user asked for one to be posted,
+    /// and only while that request is open.
+    case notRequested
 
     var errorDescription: String? {
         switch self {
@@ -371,6 +623,10 @@ enum GitHubReviewPublicationError: LocalizedError {
             "ASTRA sent the review request but could not confirm the result. Check the pull request on GitHub before trying again."
         case .receiptPersistenceFailed(let reviewURL):
             "GitHub confirmed the review at \(reviewURL), but ASTRA could not save its receipt. Check GitHub before continuing; ASTRA will not resend this file."
+        case .notRequested:
+            "No request to post a review is open on this task: the user has not asked ASTRA to post, publish "
+                + "or submit one, withdrew it, or it was already posted. Without that request ASTRA does not post "
+                + "a review on its own; the file waits for the user's review."
         }
     }
 }
@@ -382,10 +638,38 @@ enum GitHubReviewArtifactPolicy {
         }
     }
 
+    /// The one rule, shared with the broker's post-review request, so a file
+    /// the agent can ask ASTRA to post is a file the dock would offer.
     static func isReviewFile(_ path: String) -> Bool {
-        let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
-        return name == "github_review.json"
-            || name.range(of: #"^pr[0-9]+_review(?:_[a-z0-9-]+)?\.json$"#, options: .regularExpression) != nil
+        GitHubReviewHostControlOperations.isReviewFileName(URL(fileURLWithPath: path).lastPathComponent)
+    }
+
+    /// Whether two spellings name the same review file in the task folder.
+    ///
+    /// Dispatch and dismissal are recorded against the path the poster used,
+    /// and the dock asks about paths from artifacts and tool events, which may
+    /// spell the task folder through a symlink (`/var` and `/private/var`) or
+    /// not. Compared as strings, a review Auto posted under one spelling would
+    /// be offered again under the other — and a second Post is a second
+    /// review. Compared by their place under the task folder, lexically, so the
+    /// dock's check stays free of per-path filesystem work.
+    ///
+    /// And without regard to case. The default macOS volume does not tell
+    /// `PR12_REVIEW.JSON` from `pr12_review.json`, and the review-file rule
+    /// accepts both, so a case-sensitive comparison let one file be posted
+    /// twice under two spellings. On a case-sensitive volume this can only
+    /// refuse a second file whose name differs by case alone — the safe way to
+    /// be wrong, and a new review takes a new name anyway.
+    static func sameFile(_ lhs: String, _ rhs: String, root: TaskOutputArtifactPathPolicy.ResolvedRoot) -> Bool {
+        lhs == rhs || (taskFolderKey(lhs, root: root).map { $0 == taskFolderKey(rhs, root: root) } ?? false)
+    }
+
+    private static func taskFolderKey(_ path: String, root: TaskOutputArtifactPathPolicy.ResolvedRoot) -> String? {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        for base in [root.standardized, root.resolved] where !base.isEmpty && standardized.hasPrefix(base + "/") {
+            return String(standardized.dropFirst(base.count + 1)).lowercased()
+        }
+        return nil
     }
 }
 
@@ -427,32 +711,94 @@ final class GitHubReviewPublicationService {
     }
 
     static func hasDispatched(task: AgentTask, filePath: String) -> Bool {
-        task.events.contains { event in
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
+        return task.events.contains { event in
             guard event.type == GitHubReviewPublicationEventTypes.dispatched,
                   let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewPublicationRecord.self, from: data) else {
                 return false
             }
-            return record.filePath == filePath
+            return GitHubReviewArtifactPolicy.sameFile(record.filePath, filePath, root: root)
         }
     }
 
     static func hasDismissed(task: AgentTask, filePath: String) -> Bool {
-        task.events.contains { event in
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
+        return task.events.contains { event in
             guard event.type == GitHubReviewPublicationEventTypes.unusable,
                   let data = event.payload.data(using: .utf8),
                   let record = try? JSONDecoder().decode(GitHubReviewUnusableArtifactRecord.self, from: data) else {
                 return false
             }
-            return record.filePath == filePath
+            return GitHubReviewArtifactPolicy.sameFile(record.filePath, filePath, root: root)
         }
     }
 
     static func pendingCandidatePath(task: AgentTask, filePaths: [String]) -> String? {
-        filePaths.first { path in
+        candidatePaths(task: task, filePaths: filePaths).first { path in
             GitHubReviewArtifactPolicy.isReviewFile(path)
                 && !hasDispatched(task: task, filePath: path)
                 && !hasDismissed(task: task, filePath: path)
+        }
+    }
+
+    /// The files the agent asked to post, latest first, ahead of every other
+    /// review artifact: the sheet offers the one the agent was told the user
+    /// would see, not whichever review file sorts first — or none, when the
+    /// requested file was never registered as an artifact.
+    static func candidatePaths(task: AgentTask, filePaths: [String]) -> [String] {
+        let requested = task.events
+            .filter { $0.type == GitHubReviewPublicationEventTypes.requested }
+            .sorted { $0.timestamp > $1.timestamp }
+            .compactMap { event -> String? in
+                (try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data(event.payload.utf8)))?.filePath
+            }
+        var seen = Set<String>()
+        return (requested + filePaths).filter { seen.insert($0).inserted }
+    }
+
+    /// The digest the latest request for this file recorded, matched by the
+    /// file's place in the task folder; nil when the agent never named it.
+    static func requestedDigest(task: AgentTask, filePath: String) -> String? {
+        let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
+        return task.events
+            .filter { $0.type == GitHubReviewPublicationEventTypes.requested }
+            .sorted { $0.timestamp > $1.timestamp }
+            .lazy
+            .compactMap { try? JSONDecoder().decode(GitHubReviewRequestRecord.self, from: Data($0.payload.utf8)) }
+            .first { GitHubReviewArtifactPolicy.sameFile($0.filePath, filePath, root: root) }?
+            .contentDigest
+    }
+
+    /// Records the file an agent asked to post where the level asks first, so
+    /// the sheet offers that file. Nothing is posted.
+    func recordReviewRequest(task: AgentTask, fileName: String, contentDigest: String, run: TaskRun?) throws {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard GitHubReviewHostControlOperations.isReviewFileName(fileName), !fileName.contains("/"),
+              !taskFolder.isEmpty else {
+            throw GitHubReviewPublicationError.invalid("Choose a PR review JSON file from this task’s folder.")
+        }
+        let event = TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: GitHubReviewPublicationEventTypes.requested,
+            payload: GitHubReviewRequestRecord(
+                filePath: URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path,
+                contentDigest: contentDigest.lowercased()
+            ),
+            run: run
+        )
+        modelContext.insert(event)
+        do {
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "github_review_requested"]
+            )
+        } catch {
+            task.events.removeAll { $0.id == event.id }
+            modelContext.delete(event)
+            throw error
         }
     }
 
@@ -467,11 +813,21 @@ final class GitHubReviewPublicationService {
     func prepareFirstAvailable(task: AgentTask, filePaths: [String]) async throws -> GitHubReviewProposal {
         var lastUnusable: Error?
         var dismissals: [GitHubReviewUnusableArtifactRecord] = []
-        for path in filePaths where GitHubReviewArtifactPolicy.isReviewFile(path)
+        for path in Self.candidatePaths(task: task, filePaths: filePaths) where GitHubReviewArtifactPolicy.isReviewFile(path)
             && !Self.hasDispatched(task: task, filePath: path)
             && !Self.hasDismissed(task: task, filePath: path) {
             do {
                 let proposal = try await prepare(task: task, filePath: path)
+                // The agent was told the user would see exactly the review it
+                // named. Different bytes there now are not that review, under
+                // this name or any spelling of it, so the file is retired like
+                // any review that cannot be posted as it stands.
+                if let requested = Self.requestedDigest(task: task, filePath: path), requested != proposal.digest {
+                    throw GitHubReviewPublicationError.unusableArtifact(
+                        "This review file changed after the agent asked to post it, so it is not the review it asked "
+                            + "about. Ask the agent to write the review it wants posted to a new file name."
+                    )
+                }
                 try persistDismissals(dismissals, task: task)
                 return proposal
             } catch let error as GitHubReviewPublicationError {
@@ -508,7 +864,10 @@ final class GitHubReviewPublicationService {
         }
     }
 
-    func prepare(task: AgentTask, filePath: String) async throws -> GitHubReviewProposal {
+    /// `run` is the run the post belongs to — Auto's bound run, whose records
+    /// must not land on a run that started while the post was in flight — and
+    /// nil for the sheet, which belongs to the latest run.
+    func prepare(task: AgentTask, filePath: String, run boundRun: TaskRun? = nil) async throws -> GitHubReviewProposal {
         guard !Self.hasDispatched(task: task, filePath: filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
@@ -526,7 +885,7 @@ final class GitHubReviewPublicationService {
         }
         let targetBindingChanged = await GitHubReviewPublicationRequirement.bindOriginTargetIfNeeded(
             task: task,
-            run: task.runs.max(by: { $0.startedAt < $1.startedAt }),
+            run: boundRun ?? task.runs.max(by: { $0.startedAt < $1.startedAt }),
             modelContext: modelContext,
             originURL: originURL
         )
@@ -571,22 +930,45 @@ final class GitHubReviewPublicationService {
     /// The dispatch event is durably saved before the network call. If ASTRA
     /// exits or the response is lost, this file cannot be submitted again by a
     /// later click without first checking GitHub and creating a new proposal.
-    func publish(task: AgentTask, proposal: GitHubReviewProposal) async throws -> GitHubReviewPublicationRecord {
+    /// `authorization` says who let ASTRA post it: the user in the sheet, or
+    /// Auto without asking. It is recorded on the receipt and changes none of
+    /// the checks below.
+    /// `postingRequest` is, for Auto, the identity of the request the post was
+    /// asked under: a post that outlives the broker's wait must not go out on
+    /// the strength of a request the user made after it began.
+    func publish(
+        task: AgentTask,
+        proposal: GitHubReviewProposal,
+        authorization: ExternalActionAuthorization = .userReviewed,
+        postingRequest: String? = nil,
+        run boundRun: TaskRun? = nil
+    ) async throws -> GitHubReviewPublicationRecord {
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
-        let current = try await prepare(task: task, filePath: proposal.filePath)
+        let current = try await prepare(task: task, filePath: proposal.filePath, run: boundRun)
         guard current.id == proposal.id, current.digest == proposal.digest else {
             throw GitHubReviewPublicationError.invalid("The review file changed after you opened it. Review the new content before posting.")
         }
         guard !Self.hasDispatched(task: task, filePath: proposal.filePath) else {
             throw GitHubReviewPublicationError.alreadyDispatched
         }
+        // Auto posts because the user asked; a "don't post it" recorded while
+        // the checks above awaited, or a review already posted for the
+        // request, closes it, so it is read here, with no suspension before
+        // dispatch is recorded.
+        if authorization == .autoPolicy,
+           !(GitHubReviewPublicationRequirement.isOpenForUnreviewedPost(task: task)
+               && GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task)
+               && postingRequest != nil
+               && GitHubReviewPublicationRequirement.postingRequest(task: task)?.identity == postingRequest) {
+            throw GitHubReviewPublicationError.notRequested
+        }
         let inputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-github-review-\(UUID().uuidString).json")
         try current.validatedData.write(to: inputURL, options: [.atomic])
         defer { try? FileManager.default.removeItem(at: inputURL) }
-        let run = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        let run = boundRun ?? task.runs.max(by: { $0.startedAt < $1.startedAt })
         let dispatched = GitHubReviewPublicationRecord(
             proposalID: proposal.id,
             filePath: proposal.filePath,
@@ -658,7 +1040,8 @@ final class GitHubReviewPublicationService {
             filePath: proposal.filePath,
             pullRequestURL: proposal.pullRequestURL,
             reviewURL: response.htmlUrl,
-            reviewID: response.id
+            reviewID: response.id,
+            authorization: authorization
         )
         let persistedEventIDs = Set(task.events.map(\.id))
         let priorState = TaskStateMachine.ExternalOutcomeReceiptSnapshot(task: task, run: run)
@@ -749,6 +1132,58 @@ final class GitHubReviewPublicationService {
         }
     }
 
+    /// Auto: posts the review file the agent asked ASTRA to post, at the moment
+    /// it asks, and returns the receipt to it.
+    ///
+    /// What is eligible is this request's artifact: the file it names, holding
+    /// the bytes whose digest the broker read when the agent asked. Never a
+    /// review file a run wrote or touched — that rule let Auto post a review an
+    /// earlier Ask run had left for the user — and never anything after the
+    /// run, so there is no window in which a cancel, a failed check, a crash
+    /// or a decline has to decide whether to post. Every check `prepare` and
+    /// `publish` make for the sheet still holds, including that the user asked
+    /// for a review to be posted and has not withdrawn it.
+    func publishWhenRequested(
+        task: AgentTask,
+        fileName: String,
+        contentDigest: String,
+        run: TaskRun
+    ) async throws -> GitHubReviewPublicationRecord {
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        guard GitHubReviewHostControlOperations.isReviewFileName(fileName), !fileName.contains("/"),
+              !taskFolder.isEmpty else {
+            throw GitHubReviewPublicationError.invalid("Choose a PR review JSON file from this task’s folder.")
+        }
+        // Offline and first, so a task whose user never asked for a review to
+        // be posted reaches no GitHub endpoint. Whether that request is still
+        // open is read by `publish`, after `prepare` has bound a shorthand
+        // target ("post a review on PR 12") to the workspace's origin — before
+        // that binding a shorthand request does not yet read as pending.
+        guard GitHubReviewPublicationRequirement.explicitlyRequestsPosting(task: task),
+              let request = GitHubReviewPublicationRequirement.postingRequest(task: task) else {
+            throw GitHubReviewPublicationError.notRequested
+        }
+        let filePath = URL(fileURLWithPath: taskFolder, isDirectory: true).appendingPathComponent(fileName).path
+        let proposal = try await prepare(task: task, filePath: filePath, run: run)
+        guard proposal.digest == contentDigest.lowercased() else {
+            // Not the review the agent asked about, under this name or any
+            // other spelling of it: retired like any review that cannot be
+            // posted as it stands, so neither Auto nor the dock offers it
+            // again once the agent posts its replacement under a new name.
+            try persistDismissals([.init(
+                filePath: filePath,
+                reason: "This review file changed after the agent asked to post it, so it is not the review it asked about."
+            )], task: task)
+            throw GitHubReviewPublicationError.invalid(
+                "The review file changed after you asked to post it. Write the review you want posted to a new "
+                    + "file name and ask again."
+            )
+        }
+        return try await publish(
+            task: task, proposal: proposal, authorization: .autoPolicy, postingRequest: request.identity, run: run
+        )
+    }
+
     private func readPayload(task: AgentTask, filePath: String) throws -> (Data, GitHubReviewPayload) {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         let root = URL(fileURLWithPath: taskFolder, isDirectory: true).resolvingSymlinksInPath().path
@@ -757,22 +1192,44 @@ final class GitHubReviewPublicationService {
               GitHubReviewArtifactPolicy.isReviewFile(url.path) else {
             throw GitHubReviewPublicationError.invalid("Choose a PR review JSON file from this task’s folder.")
         }
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard attributes[.type] as? FileAttributeType == .typeRegular,
-              let size = attributes[.size] as? Int,
-              size > 0, size <= Self.maximumPayloadBytes else {
-            throw GitHubReviewPublicationError.invalid("The review file must be a regular JSON file under 256 KB.")
-        }
-        let data = try Data(contentsOf: url)
-        guard data.count <= Self.maximumPayloadBytes else {
-            throw GitHubReviewPublicationError.invalid("The review file is too large.")
-        }
+        let data = try Self.readBoundedRegularFile(atPath: url.path, limit: Self.maximumPayloadBytes)
         try Self.rejectUnreviewedFields(in: data)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let payload = try decoder.decode(GitHubReviewPayload.self, from: data)
         try Self.validate(payload)
         return (data, payload)
+    }
+
+    /// Reads the review file once, through one descriptor: opened without
+    /// following a link and without blocking, checked to be a regular file by
+    /// `fstat` on that descriptor, and read to at most the limit. The folder is
+    /// agent-writable, so a check by path followed by a read by path could be
+    /// answered by two different files — a FIFO that blocks the main actor, or
+    /// a file large enough to be allocated whole before any size check.
+    private static func readBoundedRegularFile(atPath path: String, limit: Int) throws -> Data {
+        let tooLarge = GitHubReviewPublicationError.invalid("The review file must be a regular JSON file under 256 KB.")
+        let descriptor = path.withCString { open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) }
+        guard descriptor >= 0 else { throw tooLarge }
+        defer { close(descriptor) }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_size > 0, status.st_size <= off_t(limit) else {
+            throw tooLarge
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while data.count <= limit {
+            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw tooLarge
+            }
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        guard !data.isEmpty, data.count <= limit else { throw tooLarge }
+        return data
     }
 
     /// The app sends the reviewed file bytes to GitHub. Refuse fields the sheet
@@ -826,6 +1283,11 @@ final class GitHubReviewPublicationService {
         if let target = GitHubReviewTargetResolver.durableTarget(task: task, request: request)
             ?? postingRequest.flatMap({ GitHubReviewPublicationRequirement.boundTarget(task: task, request: $0) }) {
             return target
+        }
+        if GitHubReviewTargetResolver.namesConflictingPullRequests(request) {
+            throw GitHubReviewPublicationError.invalid(
+                "The posting request names more than one pull request. Name the one pull request to post the review to."
+            )
         }
         if let postingRequest,
            GitHubReviewPublicationRequirement.hasUnresolvedTarget(task: task, request: postingRequest) {

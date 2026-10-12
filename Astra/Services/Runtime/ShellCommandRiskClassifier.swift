@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ASTRACore
 
@@ -56,6 +57,45 @@ enum ShellCommandRiskClassifier {
     static func approvalGrant(forShellSegment segment: String) -> PermissionGrant? {
         guard let assessment = assessment(forShellSegment: segment) else { return nil }
         return .shellCommand(executable: assessment.executable, pattern: assessment.pattern)
+    }
+
+    /// Every grant approving one shell command: the pattern, which a provider
+    /// matches on replay, and — for anything but a read — a grant naming the
+    /// command's whole content. A pattern stops after a few words (`gh pr
+    /// comment 12 *`), so without the second grant approving one comment,
+    /// body or request approved every other one the pattern also matches.
+    /// The external-action gate compares grants (`AgentRuntimePolicyGuard`),
+    /// so it asks again; the provider still matches the pattern, so the
+    /// approved command itself still replays.
+    /// `content`: the segment as written, when `segment` was normalized
+    /// for pattern matching; the content grant names what was written.
+    static func approvalGrants(forShellSegment segment: String, content: String? = nil) -> [PermissionGrant]? {
+        guard let assessment = assessment(forShellSegment: segment) else { return nil }
+        let grant = PermissionGrant.shellCommand(executable: assessment.executable, pattern: assessment.pattern)
+        switch assessment.risk {
+        case .read, .fileRead, .networkRead:
+            return [grant]
+        case .mutation, .destructive, .credential, .system, .scriptExecution, .packageMutation, .unknown:
+            return [grant, contentGrant(executable: assessment.executable, segment: content ?? segment)]
+        }
+    }
+
+    /// Names a command's content without repeating it: its words, as the
+    /// shell splits them, so quoting and spacing do not change it.
+    static let contentGrantPrefix = "content-sha256-"
+
+    /// Whether a grant is one of these: ASTRA's gate reads it, a provider has
+    /// no command it could match, and a person needs the pattern beside it.
+    static func isContentGrant(_ grant: PermissionGrant) -> Bool {
+        guard case .shellCommand(_, let pattern) = grant else { return false }
+        return pattern.hasPrefix(contentGrantPrefix)
+    }
+
+    private static func contentGrant(executable: String, segment: String) -> PermissionGrant {
+        let words = [executable.lowercased()] + shellTokens(strippingBenignRedirections(segment)).dropFirst()
+        let digest = SHA256.hash(data: Data(words.joined(separator: "\u{1F}").utf8))
+            .prefix(16).map { String(format: "%02x", $0) }.joined()
+        return .shellCommand(executable: executable, pattern: contentGrantPrefix + digest)
     }
 
     /// Removes provably-benign I/O redirections from a single (already
@@ -316,23 +356,59 @@ enum ShellCommandRiskClassifier {
 
     private static func riskForNetworkTransfer(executable: String, args: [String]) -> Risk {
         guard ["curl", "wget"].contains(executable) else { return .mutation }
-        if args.contains(where: isNetworkMutationFlag) {
+        if usesOpaqueRequestConfig(executable: executable, args: args) { return .mutation }
+        if withoutReadMethodRequests(args).contains(where: isNetworkMutationFlag) {
             return .mutation
         }
         return .networkRead
     }
 
     private static func shellApprovalPattern(executable: String, args: [String], risk: Risk) -> String {
+        // A request read from a config file is approved with that file named,
+        // so the grant is still a write's.
+        if ["curl", "wget"].contains(executable), usesOpaqueRequestConfig(executable: executable, args: args) {
+            let tokens = args.map(normalizedPatternToken).filter(isSafeShellPatternToken)
+            return (Array(tokens.prefix(4)) + ["*"]).joined(separator: " ")
+        }
         if ["curl", "wget"].contains(executable),
            let hostPattern = hostScopedShellPattern(from: args) {
-            return hostPattern
+            // A write keeps the flag that makes it one, so approving it never
+            // reads as approving every request to the host, and a host-scoped
+            // read approval never covers a later write.
+            let writes = withoutReadMethodRequests(args)
+            guard writes.contains(where: isRemoteWriteFlag) else { return hostPattern }
+            // And the method it names: approving `-X POST` is not approving
+            // `-X DELETE`, and a body sent with `-X DELETE` is not the POST
+            // its `-d` alone would be. A method this cannot read yields no
+            // grant, so it is asked about each time.
+            let method = explicitRequestMethod(executable: executable, args: writes)
+            if case .some(.none) = method { return "" }
+            let methodPattern = method.flatMap { $0 }.map { "\(executable == "wget" ? "--method" : "-X") \($0)" }
+            let flagPattern = writes.first { isRemoteWriteFlag($0) && !isRequestMethodOption($0, executable: executable) }
+                .map { flag -> String in
+                    let name = flag.split(separator: "=", maxSplits: 1).first.map(String.init) ?? flag
+                    return flag.contains("=") ? "\(name)=*" : name
+                }
+            return ([flagPattern, methodPattern].compactMap { $0 } + [hostPattern]).joined(separator: " ")
         }
-        let actionTokens = commandActionTokens(executable: executable, args: args, risk: risk)
+        let allActionTokens = commandActionTokens(executable: executable, args: args, risk: risk)
             .map(normalizedPatternToken)
-            .filter(isSafeShellPatternToken)
+        let actionTokens = allActionTokens.filter(isSafeShellPatternToken)
         guard !actionTokens.isEmpty else { return "*" }
         let tokenLimit = patternTokenLimit(for: risk)
-        return (Array(actionTokens.prefix(tokenLimit)) + ["*"]).joined(separator: " ")
+        let kept = Array(actionTokens.prefix(tokenLimit))
+        // A force or delete past the kept tokens stays in the pattern, so
+        // approving a push is not approving a force. A deleting refspec
+        // (`:branch`) is not a safe pattern token, so it is named by the
+        // flag that means the same.
+        var escalations = executable == "git"
+            ? actionTokens.dropFirst(tokenLimit).filter { isPushEscalation($0) }
+            : []
+        if executable == "git", allActionTokens.contains(where: { $0.hasPrefix(":") && $0.count > 1 }),
+           !kept.contains("--delete"), !escalations.contains("--delete") {
+            escalations.append("--delete")
+        }
+        return (kept + escalations + ["*"]).joined(separator: " ")
     }
 
     private static func patternTokenLimit(for risk: Risk) -> Int {
@@ -517,20 +593,158 @@ enum ShellCommandRiskClassifier {
         return true
     }
 
-    private static func isNetworkMutationFlag(_ token: String) -> Bool {
+    private static func isPushEscalation(_ token: String) -> Bool {
+        let name = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        return ["--force", "-f", "--force-with-lease", "--force-if-includes", "--delete", "-d", "--mirror",
+                "--prune", "--all"].contains(name)
+            || (token.hasPrefix("+") && token.count > 1)
+    }
+
+    /// `curl -X GET`, `--request=GET`, `-XHEAD` and `wget --method GET` name a
+    /// read, so they are not the write flags they would otherwise look like.
+    private static func withoutReadMethodRequests(_ args: [String]) -> [String] {
+        let readMethods: Set<String> = ["GET", "HEAD", "OPTIONS"]
+        let methodOptions: Set<String> = ["-X", "--request", "--method"]
+        var kept: [String] = []
+        var index = 0
+        while index < args.count {
+            let arg = args[index]
+            let parts = arg.split(separator: "=", maxSplits: 1).map(String.init)
+            if methodOptions.contains(arg), args.indices.contains(index + 1),
+               readMethods.contains(args[index + 1].uppercased()) {
+                index += 2
+                continue
+            }
+            if parts.count == 2, methodOptions.contains(parts[0].lowercased() == "--request" ? "--request" : parts[0]),
+               readMethods.contains(parts[1].uppercased()) {
+                index += 1
+                continue
+            }
+            if arg.hasPrefix("-X"), !arg.hasPrefix("--"), readMethods.contains(String(arg.dropFirst(2)).uppercased()) {
+                index += 1
+                continue
+            }
+            kept.append(arg)
+            index += 1
+        }
+        return kept
+    }
+
+    /// The method a request names, read as curl reads it — the last `-X` or
+    /// `--request` wins (wget: `--method`) — once read methods are dropped.
+    /// `.none` when it names none; `.some(nil)` when it names one this cannot
+    /// read, which no grant may stand for.
+    private static func explicitRequestMethod(executable: String, args: [String]) -> String?? {
+        var method: String?? = .none
+        var index = 0
+        while index < args.count {
+            let arg = normalizedArgument(args[index])
+            if isRequestMethodOption(arg, executable: executable) {
+                var value: String?
+                if let equals = arg.firstIndex(of: "="), arg.hasPrefix("--") {
+                    value = String(arg[arg.index(after: equals)...])
+                } else if arg.hasPrefix("--") || arg == "-X" {
+                    if args.indices.contains(index + 1) { value = normalizedArgument(args[index + 1]) }
+                    index += 1
+                } else {
+                    // `-XPOST`, `-sXPOST`: the method is the rest of the token,
+                    // or the next one when the token ends at `X`.
+                    let rest = String(arg.dropFirst(combinedShortOptions(arg).count + 1))
+                    if !rest.isEmpty {
+                        value = rest
+                    } else {
+                        if args.indices.contains(index + 1) { value = normalizedArgument(args[index + 1]) }
+                        index += 1
+                    }
+                }
+                method = .some(value.flatMap {
+                    $0.range(of: #"^[A-Za-z]{1,32}$"#, options: .regularExpression) != nil ? $0.uppercased() : nil
+                })
+            }
+            index += 1
+        }
+        return method
+    }
+
+    /// `-X`/`--request` (curl) or `--method` (wget), in any spelling curl
+    /// and wget accept: separate, `=`-attached, or `-XPOST`/`-sXPOST`.
+    private static func isRequestMethodOption(_ token: String, executable: String) -> Bool {
+        let normalized = normalizedArgument(token)
+        let name = (normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized).lowercased()
+        if executable == "wget" { return name == "--method" }
+        if name == "--request" { return true }
+        guard normalized.hasPrefix("-"), !normalized.hasPrefix("--") else { return false }
+        return normalized == "-X" || combinedShortOptions(normalized).last == "-X"
+    }
+
+    /// The mutation flags that send something to the remote end, as opposed
+    /// to `-o`/`--output`, which only write the response to a local file.
+    /// Short flags count combined or with their value attached (`-sSd`,
+    /// `-XPOST`, `-dbody`), as curl accepts them.
+    private static func isRemoteWriteFlag(_ token: String) -> Bool {
         let normalized = normalizedArgument(token)
         let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
-        if ["-d", "-F", "-X", "-T", "-o", "-O"].contains(optionName) {
-            return true
-        }
         if optionName.hasPrefix("--") {
             return [
                 "--data", "--data-raw", "--data-binary", "--data-urlencode",
                 "--form", "--form-string", "--request", "--upload-file",
-                "--post-file", "--post-data", "--output"
-            ].contains(optionName.lowercased())
+                "--post-file", "--post-data", "--json", "--body-data", "--body-file", "--data-ascii", "--quote",
+                "--mail-rcpt"
+            ].contains(optionName.lowercased()) || isWriteMethodOption(normalized)
         }
-        return false
+        let remoteWriteShortFlags: Set<String> = ["-d", "-F", "-X", "-T", "-Q"]
+        return remoteWriteShortFlags.contains(optionName)
+            || combinedShortOptions(normalized).contains(where: remoteWriteShortFlags.contains)
+    }
+
+    /// `curl -K file` / `--config` and `wget -e` / `--execute` / `--config`
+    /// take options from somewhere this does not read — `--data` among them —
+    /// so the request is not called a read.
+    private static func usesOpaqueRequestConfig(executable: String, args: [String]) -> Bool {
+        switch executable {
+        case "curl":
+            return args.contains { arg in
+                arg == "-K" || arg == "--config" || arg.hasPrefix("--config=") || combinedShortOptions(arg).contains("-K")
+            }
+        case "wget":
+            return args.contains { ["-e", "--execute", "--config"].contains($0) || $0.hasPrefix("--execute=") || $0.hasPrefix("--config=") }
+        default:
+            return false
+        }
+    }
+
+    /// `wget --method=POST`. A bare `--method` hides its value in the next
+    /// token, so it counts as a write unless it names a read.
+    private static func isWriteMethodOption(_ token: String) -> Bool {
+        let parts = token.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.first?.lowercased() == "--method" else { return false }
+        guard parts.count == 2 else { return true }
+        return !["GET", "HEAD", "OPTIONS"].contains(parts[1].uppercased())
+    }
+
+    /// The short options one `-abc` token sets, up to the first that takes a
+    /// value: the rest of the token is that value.
+    private static func combinedShortOptions(_ token: String) -> [String] {
+        guard token.hasPrefix("-"), !token.hasPrefix("--"), token.count > 2 else { return [] }
+        var options: [String] = []
+        for character in token.dropFirst() {
+            options.append("-\(character)")
+            if curlShortOptionsWithValues.contains(character) { break }
+        }
+        return options
+    }
+
+    private static let curlShortOptionsWithValues: Set<Character> = [
+        "A", "b", "c", "C", "d", "D", "e", "E", "F", "H", "K", "m", "o", "P", "Q", "r", "t", "T", "u", "U",
+        "w", "x", "X", "y", "Y", "z"
+    ]
+
+    private static func isNetworkMutationFlag(_ token: String) -> Bool {
+        if isRemoteWriteFlag(token) { return true }
+        let normalized = normalizedArgument(token)
+        let optionName = normalized.split(separator: "=", maxSplits: 1).first.map(String.init) ?? normalized
+        if ["-o", "-O"].contains(optionName) || optionName.lowercased() == "--output" { return true }
+        return combinedShortOptions(normalized).contains { $0 == "-o" || $0 == "-O" }
     }
 
     private static func looksLikeReadOnlySQL(_ token: String) -> Bool {

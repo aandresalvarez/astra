@@ -297,6 +297,19 @@ struct ConnectorMutationDiscoveryTests {
         )
     }
 
+    /// The broker numbers a run's proposals across services, and a later one
+    /// can depend on an earlier one: the run's sequence decides the order.
+    @Test("A run's proposals are ordered by its sequence across services")
+    func proposalsFollowTheRunSequenceAcrossServices() {
+        let run = UUID().uuidString
+        let expected = ["slack-post_message-\(run)-1.json", "jira-create_issue-\(run)-2.json", "jira-add_comment-\(run)-10.json"]
+        let ordered = expected.reversed()
+            .map { (key: ConnectorMutationDiscovery.stagedOrderKey($0), name: $0) }
+            .sorted { $0.key < $1.key }
+            .map(\.name)
+        #expect(ordered == expected)
+    }
+
     /// A name the broker did not write must not be able to reorder the ones it
     /// did, and must not disappear either — the scan is the only thing that
     /// tells the user a file is there at all.
@@ -392,12 +405,12 @@ struct ConnectorMutationDiscoveryTests {
 
         let directory = ConnectorMutationStaging.stagingDirectory(taskFolder: fixture.taskFolder)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        // `aaa-` sorts ahead of the broker's `jira-…` names, so these are the
+        // `0-` sorts ahead of any run's ID in the broker's names, so these are the
         // first thing the scan reaches.
         let broken = ConnectorMutationDiscovery.maximumProposalsPerScan
         for index in 1...broken {
             try "not an envelope".write(
-                to: directory.appendingPathComponent("aaa-broken-\(index).json"),
+                to: directory.appendingPathComponent("0-broken-\(index).json"),
                 atomically: true,
                 encoding: .utf8
             )
@@ -434,7 +447,7 @@ struct ConnectorMutationDiscoveryTests {
         let broken = ConnectorMutationDiscovery.maximumFilesExaminedPerScan
         for index in 1...broken {
             try "not an envelope".write(
-                to: directory.appendingPathComponent("aaa-broken-\(index).json"),
+                to: directory.appendingPathComponent("0-broken-\(index).json"),
                 atomically: true,
                 encoding: .utf8
             )
