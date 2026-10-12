@@ -893,6 +893,7 @@ public struct ASTRAApp: App {
         // launch that skips recovery, or meets an unreadable record, settles
         // nothing: the owners it would have rebuilt are unknown, so the
         // records wait for a launch that recovers.
+        WorkspaceRecoveryTrust.set(.pending)
         let deletionStore = WorkspaceDeletionCleanupStore()
         let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
         let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
@@ -918,12 +919,14 @@ public struct ASTRAApp: App {
                 // for the store's owners and pins; otherwise destructive
                 // cleanup waits for a launch whose recovery does.
                 guard await recovery.value else {
+                    WorkspaceRecoveryTrust.set(.untrusted)
                     AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                         "operation": "recover_workspaces", "reason": "mirror_unloadable_cleanup_deferred"
                     ], level: .error)
                     return
                 }
                 workspaceRecoveryTrusted = true
+                WorkspaceRecoveryTrust.set(.trusted)
                 WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext, movedMirrors: movedDeletionMirrors)
                 ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
             }

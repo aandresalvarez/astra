@@ -158,10 +158,17 @@ struct CapabilityDisableSaveFailureTests {
             persist: failingPersist
         )
 
-        // Empty result and no committed deletions.
+        // Empty result and no committed deletions, flagged as rolled back so
+        // the caller doesn't report a disable that didn't happen.
         #expect(result.removedWorkspaceConnectorIDs.isEmpty)
         #expect(result.removedWorkspaceSkillIDs.isEmpty)
+        #expect(!result.persisted)
         #expect(try context.fetch(FetchDescriptor<Connector>()).count == connectorsBefore)
+        let view = try String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/Views/PluginCatalogView.swift"), encoding: .utf8
+        )
+        #expect(view.contains("guard result.persisted else {"))
     }
 }
 

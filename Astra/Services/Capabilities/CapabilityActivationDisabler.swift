@@ -12,6 +12,9 @@ struct CapabilityActivationDisabler {
         var disabledToolIDs: [UUID] = []
         var removedWorkspaceSkillIDs: [UUID] = []
         var removedWorkspaceConnectorIDs: [UUID] = []
+        /// False when the disable was rolled back, leaving the package
+        /// enabled; the caller must not report it as done.
+        var persisted = true
     }
 
     @discardableResult
@@ -119,7 +122,7 @@ struct CapabilityActivationDisabler {
                 "result": "save_failed_disable_rolled_back",
                 "deferred_cleanup_count": String(pendingKeychainCleanups.count + pendingConnectorCleanups.count)
             ], level: .error)
-            return Result(packageID: package.id)
+            return Result(packageID: package.id, persisted: false)
         }
         return result
     }

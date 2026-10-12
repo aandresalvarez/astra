@@ -17,10 +17,12 @@ enum ConnectorCredentialCleanup {
     struct Ownership {
         let namespaces: Set<String>
         let outlookConnectorIDs: Set<UUID>
+        let connectorIDs: Set<UUID>
 
         init(_ connectors: [Connector]) {
             namespaces = Set(connectors.flatMap { KeychainSecretStore.connectorEntityIDs(for: $0) })
             outlookConnectorIDs = Set(connectors.filter(\.isStanfordOutlookMail).map(\.id))
+            connectorIDs = Set(connectors.map(\.id))
         }
     }
 
@@ -55,7 +57,9 @@ enum ConnectorCredentialCleanup {
             // entry no live Outlook connector claims.
             let ownsRegistryEntry = cleanup.isStanfordOutlookMail && !keepRegistryEntry
             guard ownsRegistryEntry || !unownedNamespaces(of: cleanup, ownership: ownership).isEmpty else {
-                auditSkipped(cleanup)
+                // A connector still stored under this ID wasn't deleted: its
+                // intent outlived a deletion that was never saved.
+                if !ownership.connectorIDs.contains(cleanup.connectorID) { auditSkipped(cleanup) }
                 continue
             }
             cleared = cleanup.run(sparing: ownership.namespaces, keepRegistryEntry: keepRegistryEntry) && cleared
@@ -85,13 +89,20 @@ enum ConnectorCredentialCleanup {
     /// clear wait in `store`, by default the outbox for `modelContext`'s
     /// store, for `resumePending`. False, with nothing recorded, when the
     /// deletion wasn't saved; the caller rolls it back.
+    ///
+    /// The cleanup runs at once only while `cleansNow`, by default whenever
+    /// launch recovery vouches for the store: before that, a connector that
+    /// exists only in a mirror not yet imported could share a namespace, so
+    /// the intent waits for the trusted launch's `resumePending`.
     @discardableResult
     static func deleteThenClean(
         _ cleanups: [ConnectorKeychainCleanup],
         modelContext: ModelContext,
         store: ConnectorCredentialCleanupStore? = nil,
+        cleansNow: Bool? = nil,
         save: () -> Bool
     ) -> Bool {
+        let cleansNow = cleansNow ?? WorkspaceRecoveryTrust.allowsCleanup
         let store = store ?? ConnectorCredentialCleanupStore(for: modelContext)
         let recorded: [URL]
         do {
@@ -107,7 +118,8 @@ enum ConnectorCredentialCleanup {
             store?.remove(recorded)
             return false
         }
-        if run(cleanups, modelContext: modelContext) { store?.remove(recorded) }
+        // Without an outbox there is nothing to defer to, so it runs now.
+        if cleansNow || store == nil, run(cleanups, modelContext: modelContext) { store?.remove(recorded) }
         return true
     }
 
@@ -160,6 +172,21 @@ enum ConnectorCredentialCleanup {
         }
         return cleared
     }
+}
+
+/// Whether this launch's workspace recovery vouches for the store, so a
+/// cleanup that decides ownership from it may run. Only the app tracks it:
+/// `pending` from the start of launch recovery, then `trusted` or
+/// `untrusted`. A process that never starts one, as a test, isn't tracked
+/// and cleans at once.
+@MainActor
+enum WorkspaceRecoveryTrust {
+    enum State { case notTracked, pending, trusted, untrusted }
+    private(set) static var state: State = .notTracked
+
+    static var allowsCleanup: Bool { state == .notTracked || state == .trusted }
+
+    static func set(_ state: State) { self.state = state }
 }
 
 /// An app-owned outbox of connector credential cleanups, one atomic record
