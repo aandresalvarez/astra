@@ -196,6 +196,8 @@ struct NewTaskWorktreeCreationJournalTests {
         /// Only a hook linked to a script elsewhere, which a listing of
         /// regular files misses.
         case addedHookLink
+        /// A recorded conflict resolution in the submodule's `rr-cache/`.
+        case rerereResolution
         /// A custom ref at a commit the remote holds, outside any branch or tag.
         case customRef
         /// A visit to a commit the remote holds and a return to the recorded
@@ -301,6 +303,12 @@ struct NewTaskWorktreeCreationJournalTests {
             let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
             try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.createSymbolicLink(atPath: hook.path, withDestinationPath: "/usr/bin/true")
+        case .rerereResolution:
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: worktree.appendingPathComponent("libs/a"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolution = URL(fileURLWithPath: gitDirectory).appendingPathComponent("rr-cache/0123abcd/postimage")
+            try FileManager.default.createDirectory(at: resolution.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "resolved\n".write(to: resolution, atomically: true, encoding: .utf8)
         case .customRef:
             try fixture.git(["update-ref", "refs/keep/check", "HEAD"], at: worktree.appendingPathComponent("libs/a"))
         case .reflogVisit:

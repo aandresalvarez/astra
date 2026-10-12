@@ -3,6 +3,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 enum TaskWorktreeCleanupOutcome: Equatable {
     case removed
@@ -384,9 +385,15 @@ enum TaskWorktreeCleanupService {
         let repository = TaskWorktreeService.cleanupRepository(for: discard)
         guard let markers = TaskWorktreeBinding.registeredMarkers(repositoryPath: repository, worktreePath: discard.worktreePath)
         else {
-            // A checkout Git made whose entry can't be found or read.
+            // A checkout Git made whose entry can't be found or read. Only a
+            // `.git` confirmed missing means Git never made one here.
             let dotGit = (discard.worktreePath as NSString).appendingPathComponent(".git")
-            return (try? FileManager.default.attributesOfItem(atPath: dotGit)) != nil ? .unreadable : .notOurs
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: dotGit)
+                return .unreadable
+            } catch {
+                return WorkspaceFileLayout.isMissingFile(error) ? .notOurs : .unreadable
+            }
         }
         if markers.lockReason == TaskWorktreeBinding.lockReason(forIdentity: identity) { return .ours }
         return markers.unreadable ? .unreadable : .notOurs

@@ -347,35 +347,33 @@ public enum TaskWorktreeBinding {
         }
     }
 
-    /// State Git keeps in the registry entry for an operation in progress: a
-    /// merge, cherry-pick, revert, rebase, sequence, or bisect. A merge that
-    /// changes no file leaves status clean and the branch where it was, so
-    /// only these show it, and a removal deletes them.
-    static let operationStateNames = [
-        "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_START",
-        "rebase-merge", "rebase-apply", "sequencer"
+    /// What a registry entry holds for a worktree nobody has used: what
+    /// `git worktree add` and ASTRA write, and what other checks cover
+    /// (refs, reflogs, per-worktree config, submodule repositories).
+    static let baselineEntryNames: Set<String> = [
+        "HEAD", "ORIG_HEAD", "commondir", "gitdir", "index", "locked", "logs", "refs", "modules",
+        "config.worktree", identityFileName, "astra-submodule-tags"
     ]
 
-    /// Whether the registered worktree is in the middle of a Git operation.
-    /// A state file that can't be checked counts. Nil when the repository
+    /// Whether the registered worktree's entry holds anything beyond that
+    /// baseline: state Git keeps for this worktree alone, which a removal
+    /// deletes and no status, branch, or reflog shows, such as a merge or
+    /// squash in progress (`MERGE_HEAD`, `SQUASH_MSG`), a rebase, a fetch's
+    /// `FETCH_HEAD`, or a prepared commit message. Anything unknown counts,
+    /// as does an entry that can't be listed. Nil when the repository
     /// doesn't register the path.
-    public static func registeredWorktreeHasOperationInProgress(repositoryPath: String, worktreePath: String) -> Bool? {
+    public static func registeredWorktreeHasOwnState(repositoryPath: String, worktreePath: String) -> Bool? {
         guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
-        return operationStateNames.contains { name in
-            do {
-                _ = try FileManager.default.attributesOfItem(atPath: registered.entry.appendingPathComponent(name).path)
-                return true
-            } catch {
-                return !isMissingFileError(error)
-            }
-        }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: registered.entry.path) else { return true }
+        return names.contains { !baselineEntryNames.contains($0) }
     }
 
     private static func isMissingFileError(_ error: any Error) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain,
            [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) { return true }
-        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) { return true }
+        // A path through a file can't exist either.
+        if nsError.domain == NSPOSIXErrorDomain, [Int(ENOENT), Int(ENOTDIR)].contains(nsError.code) { return true }
         return (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingFileError) ?? false
     }
 

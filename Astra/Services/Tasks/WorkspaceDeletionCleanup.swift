@@ -139,17 +139,28 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// pending record with the same key is merged rather than replaced. One
     /// that can't be read stops the deletion instead of being overwritten.
     @discardableResult
-    func record(_ record: WorkspaceDeletionCleanupRecord) throws -> WorkspaceDeletionCleanupRecord {
-        let stored = try existing(matching: record).map { $0.merging(record) } ?? record
+    func record(
+        _ record: WorkspaceDeletionCleanupRecord,
+        attributes: (String) throws -> [FileAttributeKey: Any] = { try FileManager.default.attributesOfItem(atPath: $0) }
+    ) throws -> WorkspaceDeletionCleanupRecord {
+        let stored = try existing(matching: record, attributes: attributes).map { $0.merging(record) } ?? record
         try write(stored)
         return stored
     }
 
-    /// The pending record with `record`'s key, if any. One that can't be read
-    /// throws rather than reading as absent.
-    func existing(matching record: WorkspaceDeletionCleanupRecord) throws -> WorkspaceDeletionCleanupRecord? {
+    /// The pending record with `record`'s key, if any. One that can't be read,
+    /// or even checked, throws rather than reading as absent.
+    func existing(
+        matching record: WorkspaceDeletionCleanupRecord,
+        attributes: (String) throws -> [FileAttributeKey: Any] = { try FileManager.default.attributesOfItem(atPath: $0) }
+    ) throws -> WorkspaceDeletionCleanupRecord? {
         let url = recordURL(for: record)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            _ = try attributes(url.path)
+        } catch {
+            if WorkspaceFileLayout.isMissingFile(error) { return nil }
+            throw error
+        }
         return try read(url)
     }
 

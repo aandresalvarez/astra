@@ -719,6 +719,26 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!FileManager.default.fileExists(atPath: mirror))
     }
 
+    @Test("A pending deletion record that can't be checked stops a new one rather than being replaced")
+    func uncheckableDeletionRecordIsNotReplaced() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let store = WorkspaceDeletionCleanupStore(directory: fixture.root.appendingPathComponent("DeletionCleanup"))
+        let record = WorkspaceDeletionCleanupRecord(
+            workspaceID: UUID(), primaryPath: fixture.root.appendingPathComponent("Deleted").path, connectors: [], skills: []
+        )
+        let first = try store.record(record)
+        let before = try Data(contentsOf: store.recordURL(for: record))
+        struct Uncheckable: Error {}
+        #expect(throws: Uncheckable.self) {
+            try store.record(record, attributes: { _ in throw Uncheckable() })
+        }
+        #expect(try Data(contentsOf: store.recordURL(for: record)) == before)
+        // A confirmed missing one starts fresh.
+        store.remove(first)
+        #expect(try store.record(record, attributes: { _ in throw CocoaError(.fileReadNoSuchFile) }) == record)
+    }
+
     @Test("A deletion outbox that can't be checked is unknown, never empty")
     func untraversableOutboxIsUnknown() throws {
         let fixture = try Fixture()
