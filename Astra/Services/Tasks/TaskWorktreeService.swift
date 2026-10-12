@@ -929,9 +929,6 @@ enum TaskWorktreeService {
         if TaskWorktreeBinding.registeredWorktreeHasOwnRefs(repositoryPath: repository, worktreePath: path) == true {
             return kept("worktree_refs")
         }
-        if TaskWorktreeBinding.registeredWorktreeHasOperationInProgress(repositoryPath: repository, worktreePath: path) == true {
-            return kept("operation_in_progress")
-        }
         // A tip that can't be read is retried, never taken as a missing branch.
         let commit: String?
         switch await git.localBranchTip(discard.branch, at: repository) {
@@ -962,6 +959,10 @@ enum TaskWorktreeService {
             case .commits(let commits):
                 if commits.isEmpty || commits.contains(where: { $0 != discard.baseCommit }) { return kept("reflog_changes") }
             }
+        }
+        // Last of the work checks, so a more specific reason above wins.
+        if TaskWorktreeBinding.registeredWorktreeHasOwnState(repositoryPath: repository, worktreePath: path) == true {
+            return kept("worktree_state")
         }
         let registered = await git.listWorktrees(at: repository)
         guard !registered.isEmpty else { return kept("registry_unavailable", retry: true) }

@@ -340,6 +340,43 @@ struct NewTaskWorktreeCleanupTests {
         #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("A creation whose checkout can't even be checked is unreadable, never someone else's")
+    func uncheckableCreationCheckoutIsUnreadable() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let branch = "astra/uncheckable-0badc0de"
+        var intent = TaskWorktreeDiscard(
+            taskID: UUID(), repositoryPath: repository.path,
+            worktreePath: GitService.worktreeLocation(repoPath: repository.path, branch: branch, worktreesRoot: fixture.worktrees.path),
+            branch: branch, baseCommit: try fixture.git(["rev-parse", "HEAD"], at: repository)
+        )
+        intent.identity = UUID().uuidString
+        _ = try await GitService.shared.addLockedTaskWorktree(
+            repoPath: repository.path, branch: branch, base: intent.baseCommit, worktreesRoot: fixture.worktrees.path,
+            lockReason: TaskWorktreeBinding.lockReason(forIdentity: try #require(intent.identity))
+        )
+        #expect(TaskWorktreeCleanupService.creationMarker(intent) == .ours)
+        // Neither the registry entry nor the checkout's `.git` can be
+        // reached, which is not the same as Git never having made one.
+        let parent = (intent.worktreePath as NSString).deletingLastPathComponent
+        let registry = repository.appendingPathComponent(".git/worktrees").path
+        for folder in [parent, registry] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder)
+        }
+        defer {
+            for folder in [parent, registry] { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder) }
+        }
+        #expect(TaskWorktreeCleanupService.creationMarker(intent) == .unreadable)
+        for folder in [parent, registry] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder)
+        }
+        // Gone for real, it isn't ours to keep a journal for.
+        try fixture.git(["worktree", "unlock", intent.worktreePath], at: repository)
+        try fixture.git(["worktree", "remove", "--force", intent.worktreePath], at: repository)
+        #expect(TaskWorktreeCleanupService.creationMarker(intent) == .notOurs)
+    }
+
     @Test("A creation journal whose lock marker can't be read is kept for a retry")
     func unreadableCreationMarkerKeepsJournal() async throws {
         let fixture = try Fixture()
@@ -679,8 +716,9 @@ struct NewTaskWorktreeCleanupTests {
         #expect(check(NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))) == true)
     }
 
-    @Test("A merge in progress that changes no file keeps an otherwise untouched worktree")
-    func mergeInProgressKeepsWorktree() async throws {
+    @Test("State Git keeps for the worktree alone keeps an otherwise untouched worktree",
+          arguments: ["merge", "squash", "fetch"])
+    func worktreeOwnStateKeepsWorktree(operation: String) async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App")
@@ -689,20 +727,29 @@ struct NewTaskWorktreeCleanupTests {
         let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
         let checkout = URL(fileURLWithPath: discard.worktreePath)
         let identity = ["-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid", "-c", "commit.gpgsign=false"]
-        // A divergent commit with the same tree: merging it changes nothing
-        // the status or the branch shows.
+        // A divergent commit with the same tree: merging or squashing it
+        // changes nothing the status or the branch shows, and a fetch of it
+        // names it only in `FETCH_HEAD`.
         let side = try fixture.git(identity + ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Side"], at: checkout)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        try fixture.git(identity + ["merge", "--quiet", "--no-commit", "--no-ff", side], at: checkout)
+        switch operation {
+        case "merge": try fixture.git(identity + ["merge", "--quiet", "--no-commit", "--no-ff", side], at: checkout)
+        case "squash": try fixture.git(identity + ["merge", "--quiet", "--squash", side], at: checkout)
+        default:
+            try fixture.git(["update-ref", "refs/heads/side", side], at: repository)
+            try fixture.git(["fetch", "--quiet", repository.path, "side"], at: checkout)
+            try fixture.git(["update-ref", "-d", "refs/heads/side"], at: repository)
+        }
         #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
         context.delete(draft)
         try context.save()
 
         #expect(await TaskWorktreeService.discardOutcome(
             discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
-        ) == .kept("operation_in_progress"))
+        ) == .kept("worktree_state"))
         #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
 
+        guard operation == "merge" else { return }
         try fixture.git(["merge", "--abort"], at: checkout)
         #expect(await TaskWorktreeService.discardOutcome(
             discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership

@@ -477,12 +477,30 @@ enum StanfordOutlookMailRegistry {
         return try? JSONDecoder().decode([Entry].self, from: data)
     }
 
-    static func upsert(connector: Connector) {
+    static func upsert(
+        connector: Connector,
+        attributes: (String) throws -> [FileAttributeKey: Any] = { try FileManager.default.attributesOfItem(atPath: $0) }
+    ) {
         guard connector.isStanfordOutlookMail else { return }
         // A registry that exists but can't be read is never rewritten with
-        // only this account: the others it holds would be lost.
+        // only this account: the others it holds would be lost. Only one
+        // confirmed missing starts empty; one that can't be checked is
+        // left alone too.
         let existing: [Entry]
-        if (try? FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)) != nil {
+        let present: Bool
+        do {
+            _ = try attributes(StanfordOutlookMail.registryURL.path)
+            present = true
+        } catch {
+            guard WorkspaceFileLayout.isMissingFile(error) else {
+                AppLogger.audit(.connectorTested, category: "Mail", fields: [
+                    "result": "registry_unreadable_upsert_skipped"
+                ], level: .warning)
+                return
+            }
+            present = false
+        }
+        if present {
             guard let read = readEntries() else {
                 AppLogger.audit(.connectorTested, category: "Mail", fields: [
                     "result": "registry_unreadable_upsert_skipped"

@@ -358,23 +358,30 @@ extension GitService {
     /// Every populated submodule's refs other than remote-tracking ones,
     /// through Git, packed or loose: tags, and any custom ref such as
     /// `refs/keep/*`, even at a commit a remote holds. Then its
-    /// repository configuration, such as a remote added since, and its
-    /// repository-local files, hooks and `info/`, by content: local state a
-    /// forced removal deletes that no status or ref check shows, with each
-    /// symbolic link by its target. Sample hooks from the template are left
-    /// out. The reflogs of `HEAD` and local branches are listed too: a visit
-    /// to a commit a remote holds, then a return, leaves only navigation
-    /// history the reachability check subtracts.
+    /// repository configuration, such as a remote added since, and every
+    /// other file in its Git directory by content, each symbolic link by its
+    /// target: hooks, `info/`, `rr-cache/` resolutions, an operation's
+    /// state, local state a forced removal deletes that no status or ref
+    /// check shows. Left out are what those checks cover or Git rewrites on
+    /// a read: objects, refs, reflogs, the index, nested submodules and
+    /// linked worktrees, and the template's sample hooks. LFS objects are
+    /// listed by name, not hashed. The reflogs of `HEAD` and local branches
+    /// are listed too: a visit to a commit a remote holds, then a return,
+    /// leaves only navigation history the reachability check subtracts.
     static let submoduleTagListing = [
         "submodule", "foreach", "--quiet", "--recursive",
         "echo \"== $displaypath\"; git for-each-ref --format='%(refname) %(objectname)' | grep -v '^refs/remotes/'; "
             + "echo \"-- reflog\"; git log -g --format='%gd %H %gs' HEAD --branches; "
             + "echo \"-- config\"; git config --local --list; "
             + "echo \"-- files\"; (cd \"$(git rev-parse --absolute-git-dir)\" && "
-            + "{ find hooks info -type f ! -name '*.sample' -exec shasum {} +; "
-            + "find hooks info -type l -exec sh -c 'for p; do echo \"link $p $(readlink \"$p\")\"; done' sh {} +; "
+            + "{ find . " + submoduleGitDirectoryPrune + " -o -type f ! -path ./index ! -path ./packed-refs ! -name '*.sample' "
+            + "-exec shasum {} +; "
+            + "find . " + submoduleGitDirectoryPrune + " -o -type l -exec sh -c 'for p; do echo \"link $p $(readlink \"$p\")\"; done' sh {} +; "
+            + "find ./lfs -type f 2>/dev/null; "
             + "} 2>/dev/null | sort)"
     ]
+    static let submoduleGitDirectoryPrune =
+        "\\( -path ./objects -o -path ./refs -o -path ./logs -o -path ./modules -o -path ./worktrees -o -path ./lfs \\) -prune"
     static let submoduleTagSnapshotFileName = "astra-submodule-tags"
 
     func recordSubmoduleTagSnapshot(at worktreePath: String) async throws {

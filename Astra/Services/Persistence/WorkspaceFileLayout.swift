@@ -33,12 +33,13 @@ public enum WorkspaceFileLayout {
     }
 
     /// Whether `error` reports a missing file, as opposed to one that exists
-    /// but can't be read.
+    /// but can't be read. A path through a file (`ENOTDIR`) can't exist
+    /// either.
     public static func isMissingFile(_ error: any Error) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain,
            [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) { return true }
-        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ENOENT) { return true }
+        if nsError.domain == NSPOSIXErrorDomain, [Int(ENOENT), Int(ENOTDIR)].contains(nsError.code) { return true }
         return (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingFile) ?? false
     }
 

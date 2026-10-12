@@ -42,6 +42,27 @@ struct StanfordOutlookMailTests {
         #expect(connector.configValue("ASTRA_MAIL_TENANT_DOMAIN") != "stale-duplicate.example.edu")
     }
 
+    @Test("An upsert never rewrites a registry it can't check")
+    func uncheckableRegistryIsNotRewritten() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-mail-registry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = root.appendingPathComponent("mail-accounts.json")
+        let first = Connector(name: "Stanford Outlook Mail")
+        first.applyStanfordOutlookDefaults()
+        let second = Connector(name: "Stanford Outlook Mail 2")
+        second.applyStanfordOutlookDefaults()
+        StanfordOutlookMail.$registryURLOverride.withValue(registry) {
+            StanfordOutlookMailRegistry.upsert(connector: first)
+            // The stat fails though the registry, and its folder, are writable.
+            StanfordOutlookMailRegistry.upsert(connector: second, attributes: { _ in throw CocoaError(.fileReadNoPermission) })
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [first.id.uuidString])
+            StanfordOutlookMailRegistry.upsert(connector: second)
+            #expect(Set(StanfordOutlookMailRegistry.entries().map(\.connectorID)) == [first.id.uuidString, second.id.uuidString])
+        }
+    }
+
     @Test("A registry that can't be checked is never reported as removed")
     func uncheckableRegistryIsNotRemoved() throws {
         let root = FileManager.default.temporaryDirectory
