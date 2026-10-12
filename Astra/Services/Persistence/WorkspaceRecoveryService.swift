@@ -1170,7 +1170,7 @@ public enum WorkspaceRecoveryService {
         }
 
         guard maxDepth > 0 else { return results }
-        guard let children = try? hostFileAccess.contentsOfDirectory(
+        guard let listing = try? hostFileAccess.contentsOfDirectoryReportingSkipped(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey],
             intent: intent
@@ -1179,6 +1179,10 @@ public enum WorkspaceRecoveryService {
             complete = false
             return results
         }
+        // A protected folder the policy leaves out of the listing, such as
+        // ~/Pictures under a home-folder root, may hold mirrors unseen.
+        if !listing.skipped.isEmpty { complete = false }
+        let children = listing.contents
 
         for child in children {
             guard !Task.isCancelled else { complete = false; break }

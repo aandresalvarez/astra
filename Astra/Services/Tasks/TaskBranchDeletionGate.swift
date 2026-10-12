@@ -23,14 +23,24 @@ enum TaskBranchDeletionGate {
     private static var cardOperations: [String: Set<UUID>] = [:]
 
     /// The repository identity both sides agree on: its shared Git directory.
-    private static func key(_ path: String) -> String {
-        WorkspacePathPresentation.resolvedPath(GitCheckoutLayout.commonDirectory(for: path) ?? path)
+    /// A path is its own key only while it is confirmed not to be a Git
+    /// checkout; a checkout whose shared directory can't be resolved has no
+    /// key, so nothing starts on a key the other side might not share.
+    private static func key(_ path: String) -> String? {
+        if let common = GitCheckoutLayout.commonDirectory(for: path) { return WorkspacePathPresentation.resolvedPath(common) }
+        let dotGit = (path as NSString).appendingPathComponent(".git")
+        do {
+            guard try GitService.attributesConfirmingAbsence(atPath: dotGit) == nil else { return nil }
+        } catch {
+            return nil
+        }
+        return WorkspacePathPresentation.resolvedPath(path)
     }
 
-    /// Nil while cleanup is deleting a branch in this repository.
+    /// Nil while cleanup is deleting a branch in this repository, or when
+    /// the repository's identity can't be read.
     static func beginCardOperation(at path: String) -> Token? {
-        let repository = key(path)
-        guard !deleting.contains(repository) else { return nil }
+        guard let repository = key(path), !deleting.contains(repository) else { return nil }
         let token = Token(repository: repository)
         cardOperations[repository, default: []].insert(token.id)
         return token
@@ -51,8 +61,8 @@ enum TaskBranchDeletionGate {
 
     /// Nil while a card operation is in flight here or another deletion is.
     static func beginDeletion(at path: String) -> DeletionToken? {
-        let repository = key(path)
-        guard cardOperations[repository]?.isEmpty != false, deleting.insert(repository).inserted else { return nil }
+        guard let repository = key(path),
+              cardOperations[repository]?.isEmpty != false, deleting.insert(repository).inserted else { return nil }
         return DeletionToken(repository: repository)
     }
 
