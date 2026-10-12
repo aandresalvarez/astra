@@ -173,6 +173,26 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
     }
 
+    /// The marker is ASTRA's bookkeeping beside the review file, not output:
+    /// the file the fallback writes is never listed as an artifact, while the
+    /// review file itself still is.
+    @Test("A retired marker is internal state, not an artifact")
+    func retiredMarkerIsInternalState() throws {
+        let fixture = try Fixture()
+
+        GitHubReviewPublicationService.retireWithoutRecord(task: fixture.task, filePath: fixture.file.path)
+
+        let markers = try FileManager.default
+            .contentsOfDirectory(atPath: fixture.file.deletingLastPathComponent().path)
+            .filter { $0.hasPrefix(fixture.file.lastPathComponent + ".") }
+        try #require(!markers.isEmpty, "the premise: a marker was written")
+        for marker in markers {
+            #expect(TaskOutputArtifactPathPolicy.isInternalStateRelativePath(marker), "\(marker)")
+        }
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath(fixture.file.lastPathComponent))
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("notes.retired.md"))
+    }
+
     /// The marker alone — what a relaunch has after an unsaved dismissal —
     /// keeps the file off the dock.
     @Test("A retired marker beside a review file keeps it off the dock")

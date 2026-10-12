@@ -184,6 +184,12 @@ public enum TaskOutputArtifactPathPolicy {
         if name == "fork_manifest.json" {
             return true
         }
+        // A review file retired without its record
+        // (`GitHubReviewPublicationService.retireWithoutRecord`): ASTRA's
+        // bookkeeping beside the file, never output.
+        if name.hasSuffix(".json.retired") {
+            return true
+        }
         if name.hasPrefix("turn_") && name.hasSuffix(".md") {
             return true
         }
