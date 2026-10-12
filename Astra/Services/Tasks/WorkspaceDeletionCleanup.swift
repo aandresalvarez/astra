@@ -129,9 +129,34 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
 struct WorkspaceDeletionCleanupStore: Sendable {
     let directory: URL
 
-    init(directory: URL = AppChannelStoragePaths.applicationSupportDirectory()
-        .appendingPathComponent("WorkspaceDeletionCleanup", isDirectory: true)) {
+    init(directory: URL) {
         self.directory = directory.standardizedFileURL
+    }
+
+    /// The outbox for the SwiftData store `modelContext` writes to, so its
+    /// records always describe that store's deletions. ASTRA's own store,
+    /// active or a recovery's replacement, shares one in its Application
+    /// Support folder, which a recovery that moves the store doesn't strand;
+    /// any other store keeps one beside it, and one kept only in memory, as
+    /// a test's, gets a temporary folder, never the app's own.
+    @MainActor
+    init(for modelContext: ModelContext) {
+        let support = AppChannelStoragePaths.applicationSupportDirectory()
+        guard let configuration = modelContext.container.configurations.first(where: { !$0.isStoredInMemoryOnly }) else {
+            let container = UInt(bitPattern: ObjectIdentifier(modelContext.container).hashValue)
+            self.init(directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("astra-workspace-deletion-cleanup", isDirectory: true)
+                .appendingPathComponent("\(ProcessInfo.processInfo.processIdentifier)-\(container)", isDirectory: true))
+            return
+        }
+        self.init(directory: Self.directory(forStoreAt: configuration.url, applicationSupport: support))
+    }
+
+    static func directory(forStoreAt store: URL, applicationSupport: URL) -> URL {
+        let support = applicationSupport.standardizedFileURL.resolvingSymlinksInPath()
+        let resolved = store.standardizedFileURL.resolvingSymlinksInPath().path
+        let root = resolved.hasPrefix(support.path + "/") ? support : store.deletingLastPathComponent()
+        return root.appendingPathComponent("WorkspaceDeletionCleanup", isDirectory: true)
     }
 
     /// Records `record` and returns what is now stored. Records are keyed by
@@ -418,9 +443,10 @@ enum WorkspaceDeletionCleanupService {
     @discardableResult
     static func resumePending(
         modelContext: ModelContext,
-        store: WorkspaceDeletionCleanupStore = WorkspaceDeletionCleanupStore(),
+        store: WorkspaceDeletionCleanupStore? = nil,
         movedMirrors: [String] = []
     ) -> Int {
+        let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
         var settled = 0
         for record in store.pending()
         where settle(record, modelContext: ModelContext(modelContext.container), movedMirrors: movedMirrors) {

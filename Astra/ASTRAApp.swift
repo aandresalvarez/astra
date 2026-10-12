@@ -893,7 +893,7 @@ public struct ASTRAApp: App {
         // launch that skips recovery, or meets an unreadable record, settles
         // nothing: the owners it would have rebuilt are unknown, so the
         // records wait for a launch that recovers.
-        let deletionStore = WorkspaceDeletionCleanupStore()
+        let deletionStore = WorkspaceDeletionCleanupStore(for: modelContext)
         let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
         let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
         if unsettledDeletionMirrors == nil || unsettledDeletionMirrorIDs == nil {

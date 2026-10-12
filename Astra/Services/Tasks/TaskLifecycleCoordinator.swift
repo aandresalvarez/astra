@@ -20,7 +20,7 @@ final class TaskLifecycleCoordinator {
             await GitService.shared.getRemoteOriginURL(at: path)
         },
         worktreeCleanupStore: TaskWorktreeCleanupStore = TaskWorktreeCleanupStore(),
-        workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore = WorkspaceDeletionCleanupStore(),
+        workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore? = nil,
         persistWorkspaceChange: @escaping @MainActor (Workspace?, ModelContext) -> Bool = { workspace, context in
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context)
         }
@@ -29,7 +29,7 @@ final class TaskLifecycleCoordinator {
         self.taskQueue = taskQueue
         self.reviewOriginURL = reviewOriginURL
         self.worktreeCleanupStore = worktreeCleanupStore
-        self.workspaceDeletionCleanupStore = workspaceDeletionCleanupStore
+        self.workspaceDeletionCleanupStore = workspaceDeletionCleanupStore ?? WorkspaceDeletionCleanupStore(for: modelContext)
         self.persistWorkspaceChange = persistWorkspaceChange
     }
 
