@@ -18,17 +18,26 @@ import Darwin
 public enum ProcessGroupSpawn {
     /// Configures `attr` so `posix_spawn` places the child in a new process
     /// group headed by itself (`setpgid(child, 0)` semantics via
-    /// `posix_spawnattr_setpgroup(attr, 0)`). Callers still perform the
-    /// `posix_spawn` call themselves with their own file actions.
+    /// `posix_spawnattr_setpgroup(attr, 0)`), with no signals blocked.
+    /// Callers still perform the `posix_spawn` call themselves with their own
+    /// file actions.
     ///
-    /// Returns `false` if either attribute call fails; the caller should
+    /// The empty mask is what lets the group's SIGTERM land. A child otherwise
+    /// inherits the spawning thread's mask, and Swift concurrency and Dispatch
+    /// worker threads block SIGTERM: a group spawned from one ignored every
+    /// SIGTERM teardown and died only to the SIGKILL that follows it.
+    ///
+    /// Returns `false` if any attribute call fails; the caller should
     /// treat that as a launch failure and must not proceed to `posix_spawn`
     /// without process-group isolation.
     @discardableResult
     public static func configureNewProcessGroup(_ attr: inout posix_spawnattr_t?) -> Bool {
-        let flags = Int16(POSIX_SPAWN_SETPGROUP)
+        var noSignals = sigset_t()
+        sigemptyset(&noSignals)
+        let flags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK)
         guard posix_spawnattr_setflags(&attr, flags) == 0,
-              posix_spawnattr_setpgroup(&attr, 0) == 0 else {
+              posix_spawnattr_setpgroup(&attr, 0) == 0,
+              posix_spawnattr_setsigmask(&attr, &noSignals) == 0 else {
             return false
         }
         return true
