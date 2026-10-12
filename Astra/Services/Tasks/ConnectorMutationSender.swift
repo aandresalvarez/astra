@@ -120,6 +120,9 @@ struct ConnectorMutationHTTPRequest: @unchecked Sendable {
     let method: String
     let body: Data
     let authorizationHeader: String
+    /// Per stall and for the whole exchange, as `URLSessionConnectorMutationSender`
+    /// applies it.
+    var timeoutSeconds: TimeInterval = URLSessionConnectorMutationSender.timeoutSeconds
 }
 
 struct ConnectorMutationHTTPResponse: Equatable, Sendable {
@@ -177,10 +180,11 @@ struct URLSessionConnectorMutationSender: ConnectorMutationSending {
     /// a server dribbling bytes below the limit holds the send open for as long
     /// as it likes, and a write with no answer is the one outcome the commit
     /// path cannot resolve for the user.
+    /// The default; a request may carry its own (`ConnectorMutationHTTPRequest`).
     static let timeoutSeconds: TimeInterval = 30
 
     func send(_ request: ConnectorMutationHTTPRequest) async throws -> ConnectorMutationHTTPResponse {
-        var urlRequest = URLRequest(url: request.url, timeoutInterval: Self.timeoutSeconds)
+        var urlRequest = URLRequest(url: request.url, timeoutInterval: request.timeoutSeconds)
         urlRequest.httpMethod = request.method
         urlRequest.httpBody = request.body
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -188,8 +192,8 @@ struct URLSessionConnectorMutationSender: ConnectorMutationSending {
         urlRequest.setValue(request.authorizationHeader, forHTTPHeaderField: "Authorization")
 
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = Self.timeoutSeconds
-        configuration.timeoutIntervalForResource = Self.timeoutSeconds
+        configuration.timeoutIntervalForRequest = request.timeoutSeconds
+        configuration.timeoutIntervalForResource = request.timeoutSeconds
         configuration.httpCookieStorage = nil
         configuration.urlCache = nil
         // A write must not be replayed by the loading system on ASTRA's behalf.
