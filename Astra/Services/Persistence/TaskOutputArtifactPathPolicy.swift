@@ -186,8 +186,16 @@ public enum TaskOutputArtifactPathPolicy {
         }
         // A review file retired without its record
         // (`GitHubReviewPublicationService.retireWithoutRecord`): ASTRA's
-        // bookkeeping beside the file, never output.
-        if name.hasSuffix(".json.retired") {
+        // bookkeeping beside the file, never output. Only a review file's name
+        // before `.retired`, at the task folder's root — the names
+        // `GitHubReviewHostControlOperations.isReviewFileName` accepts, which a
+        // test holds this pattern to — so a deliverable that merely ends in
+        // `.retired` stays visible.
+        if !normalized.contains("/"),
+           name.range(
+               of: #"^(?:github_review|pr[0-9]+_review(?:_[a-z0-9-]+)?)\.json\.retired$"#,
+               options: .regularExpression
+           ) != nil {
             return true
         }
         if name.hasPrefix("turn_") && name.hasSuffix(".md") {

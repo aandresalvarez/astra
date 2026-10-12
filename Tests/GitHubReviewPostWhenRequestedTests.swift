@@ -193,6 +193,27 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("notes.retired.md"))
     }
 
+    /// The visibility policy cannot see the review-name rule (it lives in a
+    /// module persistence does not import), so it keeps its own copy, held
+    /// here to the same names: only a review file's marker is hidden, and a
+    /// deliverable that merely ends in `.retired` stays visible.
+    @Test("Only a review file's marker is hidden from artifacts")
+    func onlyReviewMarkersAreHidden() {
+        for name in [
+            "github_review.json", "pr12_review.json", "pr7_review_second-pass.json", "PR12_Review.json",
+            "report.json", "pr_review.json", "pr12_review.md", "review.json", "pr12_review_.json",
+            "pr12_review_v2.json.bak", "github_review.json.json"
+        ] {
+            #expect(
+                TaskOutputArtifactPathPolicy.isInternalStateRelativePath(name + ".retired")
+                    == GitHubReviewHostControlOperations.isReviewFileName(name),
+                "\(name)"
+            )
+        }
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("report.json.retired"))
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("sub/pr12_review.json.retired"))
+    }
+
     /// The marker alone — what a relaunch has after an unsaved dismissal —
     /// keeps the file off the dock.
     @Test("A retired marker beside a review file keeps it off the dock")
