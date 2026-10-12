@@ -679,6 +679,36 @@ struct NewTaskWorktreeCleanupTests {
         #expect(check(NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))) == true)
     }
 
+    @Test("A merge in progress that changes no file keeps an otherwise untouched worktree")
+    func mergeInProgressKeepsWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let checkout = URL(fileURLWithPath: discard.worktreePath)
+        let identity = ["-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid", "-c", "commit.gpgsign=false"]
+        // A divergent commit with the same tree: merging it changes nothing
+        // the status or the branch shows.
+        let side = try fixture.git(identity + ["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Side"], at: checkout)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try fixture.git(identity + ["merge", "--quiet", "--no-commit", "--no-ff", side], at: checkout)
+        #expect(try fixture.git(["status", "--porcelain"], at: checkout).isEmpty)
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("operation_in_progress"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+
+        try fixture.git(["merge", "--abort"], at: checkout)
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .removed)
+    }
+
     @Test("A per-worktree ref keeps an otherwise untouched worktree")
     func worktreeRefKeepsWorktree() async throws {
         let fixture = try Fixture()

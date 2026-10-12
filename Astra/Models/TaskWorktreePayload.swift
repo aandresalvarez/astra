@@ -347,6 +347,30 @@ public enum TaskWorktreeBinding {
         }
     }
 
+    /// State Git keeps in the registry entry for an operation in progress: a
+    /// merge, cherry-pick, revert, rebase, sequence, or bisect. A merge that
+    /// changes no file leaves status clean and the branch where it was, so
+    /// only these show it, and a removal deletes them.
+    static let operationStateNames = [
+        "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_START",
+        "rebase-merge", "rebase-apply", "sequencer"
+    ]
+
+    /// Whether the registered worktree is in the middle of a Git operation.
+    /// A state file that can't be checked counts. Nil when the repository
+    /// doesn't register the path.
+    public static func registeredWorktreeHasOperationInProgress(repositoryPath: String, worktreePath: String) -> Bool? {
+        guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
+        return operationStateNames.contains { name in
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: registered.entry.appendingPathComponent(name).path)
+                return true
+            } catch {
+                return !isMissingFileError(error)
+            }
+        }
+    }
+
     private static func isMissingFileError(_ error: any Error) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSCocoaErrorDomain,

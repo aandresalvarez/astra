@@ -42,6 +42,30 @@ struct StanfordOutlookMailTests {
         #expect(connector.configValue("ASTRA_MAIL_TENANT_DOMAIN") != "stale-duplicate.example.edu")
     }
 
+    @Test("A registry that can't be checked is never reported as removed")
+    func uncheckableRegistryIsNotRemoved() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-mail-registry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let registry = root.appendingPathComponent("mail-accounts.json")
+        let connector = Connector(name: "Stanford Outlook Mail")
+        connector.applyStanfordOutlookDefaults()
+        StanfordOutlookMail.$registryURLOverride.withValue(registry) {
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [connector.id.uuidString])
+            // The registry's folder can't be traversed, so it can't be stated.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [connector.id.uuidString])
+            #expect(StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+        }
+    }
+
     @Test("Registry removal reports whether the entry is gone, and never rewrites a registry it can't read")
     func registryRemovalReportsItsResult() throws {
         let root = FileManager.default.temporaryDirectory

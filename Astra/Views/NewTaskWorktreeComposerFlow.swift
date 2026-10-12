@@ -50,6 +50,22 @@ enum NewTaskWorktreeComposerFlow {
         TaskCodeLocationPin.set(workspace.activeWorkingPath, workspace: workspace, task: draft)
     }
 
+    /// The worktree a launch creates. A draft's newest recorded choice wins
+    /// over this window's selection for the checkbox and base: another window
+    /// may have changed either without moving the code location, which is
+    /// all that refreshes the selection. Without a recorded choice, the
+    /// selection is all there is.
+    static func launchRequest(_ selection: NewTaskWorktreeSelection, recordedOn draft: AgentTask?) -> TaskWorktreeRequest? {
+        guard let draft, !draft.isDeleted, let recorded = TaskWorktreeService.latestRequest(for: draft) else {
+            return selection.request
+        }
+        guard recorded.enabled else { return nil }
+        var current = selection
+        current.isEnabled = true
+        current.base = recorded.base
+        return current.request
+    }
+
     /// A draft that prepared a worktree may move only to a checkout of that
     /// repository, with or without a second worktree requested: unchecking
     /// the request would otherwise keep a pin its binding can't verify.

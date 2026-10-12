@@ -364,15 +364,32 @@ enum TaskWorktreeService {
     /// two choices made within a second stay ordered after a store is rebuilt
     /// from a mirror that keeps whole seconds.
     static func latestRequest(for task: AgentTask) -> TaskWorktreeRequestPayload? {
+        orderedRequests(for: task).last?.payload
+    }
+
+    /// The draft's readable requests, oldest first, by sequence and then time.
+    private static func orderedRequests(for task: AgentTask) -> [(event: TaskEvent, payload: TaskWorktreeRequestPayload)] {
         task.events
             .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreeRequested) }
             .compactMap { event in
-                (try? event.decodePayload(as: TaskWorktreeRequestPayload.self).get()).map { (event.timestamp, $0) }
+                (try? event.decodePayload(as: TaskWorktreeRequestPayload.self).get()).map { (event, $0) }
             }
-            .max { lhs, rhs in
-                let left = lhs.1.sequence ?? -1, right = rhs.1.sequence ?? -1
-                return left != right ? left < right : lhs.0 < rhs.0
-            }?.1
+            .sorted { lhs, rhs in
+                let left = lhs.payload.sequence ?? -1, right = rhs.payload.sequence ?? -1
+                return left != right ? left < right : lhs.event.timestamp < rhs.event.timestamp
+            }
+    }
+
+    /// Numbers the draft's requests 0, 1, … in their current order, for when
+    /// an imported sequence reached the maximum: a later choice then still
+    /// gets a higher one rather than tying at the maximum, where timestamps
+    /// stored to the second can't order it.
+    private static func renumberRequests(on task: AgentTask) {
+        for (index, request) in orderedRequests(for: task).enumerated() {
+            var payload = request.payload
+            payload.sequence = index
+            if case .success(let encoded) = TaskEvent.encodePayload(payload) { request.event.payload = encoded }
+        }
     }
 
     /// Records the composer's worktree choice on a draft so reopening the draft
@@ -384,13 +401,18 @@ enum TaskWorktreeService {
         on task: AgentTask,
         modelContext: ModelContext
     ) -> Bool {
-        let latest = latestRequest(for: task)
+        var latest = latestRequest(for: task)
         var request = request
-        // Saturating: an imported sequence can be any value, even Int.max.
-        let previous = latest?.sequence ?? -1
-        request.sequence = previous == .max ? .max : max(previous, -1) + 1
-        guard latest != request, latest != nil || request.enabled,
-              case .success(let payload) = TaskEvent.encodePayload(request) else { return false }
+        guard latest != request, latest != nil || request.enabled else { return false }
+        // An imported sequence can be any value, even Int.max.
+        if latest?.sequence == .max {
+            renumberRequests(on: task)
+            latest = latestRequest(for: task)
+        }
+        let previous = max(latest?.sequence ?? -1, -1)
+        guard previous < .max else { return false }
+        request.sequence = previous + 1
+        guard case .success(let payload) = TaskEvent.encodePayload(request) else { return false }
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.worktreeRequested,
@@ -906,6 +928,9 @@ enum TaskWorktreeService {
         }
         if TaskWorktreeBinding.registeredWorktreeHasOwnRefs(repositoryPath: repository, worktreePath: path) == true {
             return kept("worktree_refs")
+        }
+        if TaskWorktreeBinding.registeredWorktreeHasOperationInProgress(repositoryPath: repository, worktreePath: path) == true {
+            return kept("operation_in_progress")
         }
         // A tip that can't be read is retried, never taken as a missing branch.
         let commit: String?
