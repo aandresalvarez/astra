@@ -1026,6 +1026,11 @@ enum TaskWorktreeService {
                 }
             }
         }
+        // A registered checkout whose folder is gone may have been moved, not
+        // deleted: Git would prune it without `--force`, breaking the moved
+        // checkout's `.git` and losing its index. Only a removal this cleanup
+        // started vouches that it is gone.
+        if !exists, isRegistered, ownership?.isRemoving(discard) != true { return kept("worktree_missing") }
         if exists || isRegistered {
             do {
                 try ownership?.markRemoving(discard)
@@ -1046,8 +1051,10 @@ enum TaskWorktreeService {
         }
         // From this check to the deletion, the Repository card can't check
         // the branch out; it waits for any branch operation it started.
-        guard TaskBranchDeletionGate.beginDeletion(at: repository) else { return kept("repository_busy", retry: true) }
-        defer { TaskBranchDeletionGate.endDeletion(at: repository) }
+        guard let deletionHold = TaskBranchDeletionGate.beginDeletion(at: repository) else {
+            return kept("repository_busy", retry: true)
+        }
+        defer { TaskBranchDeletionGate.endDeletion(deletionHold) }
         let remaining = await git.listWorktrees(at: repository)
         guard !remaining.isEmpty else { return kept("registry_unavailable", retry: true) }
         guard !remaining.contains(where: { $0.branch == discard.branch }) else { return kept("branch_in_use") }

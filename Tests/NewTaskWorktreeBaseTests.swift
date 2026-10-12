@@ -1563,8 +1563,8 @@ struct NewTaskWorktreeBaseTests {
         let panel = WorkspaceGitViewModel()
         panel.setWorkspaceForTesting(workspace)
         panel.selectedRepository = GitRepositoryInfo(name: "App", path: repository.path)
-        #expect(TaskBranchDeletionGate.beginDeletion(at: repository.path))
-        defer { TaskBranchDeletionGate.endDeletion(at: repository.path) }
+        let deletion = try #require(TaskBranchDeletionGate.beginDeletion(at: repository.path))
+        defer { TaskBranchDeletionGate.endDeletion(deletion) }
         panel.newBranchName = "feature"
         panel.createAndCheckoutBranch()
         #expect(panel.errorMessage == TaskBranchDeletionGate.busyMessage)

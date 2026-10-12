@@ -41,14 +41,22 @@ enum TaskBranchDeletionGate {
         if cardOperations[token.repository]?.isEmpty == true { cardOperations[token.repository] = nil }
     }
 
-    /// False while a card operation is in flight here or another deletion is.
-    static func beginDeletion(at path: String) -> Bool {
-        let repository = key(path)
-        guard cardOperations[repository]?.isEmpty != false else { return false }
-        return deleting.insert(repository).inserted
+    /// The deletion's hold on its repository, released by exactly the key it
+    /// took: the repository's layout can change while it is held, as when
+    /// its checkout moves, and a key recomputed then would leave this one
+    /// held until the app restarts.
+    struct DeletionToken {
+        fileprivate let repository: String
     }
 
-    static func endDeletion(at path: String) {
-        deleting.remove(key(path))
+    /// Nil while a card operation is in flight here or another deletion is.
+    static func beginDeletion(at path: String) -> DeletionToken? {
+        let repository = key(path)
+        guard cardOperations[repository]?.isEmpty != false, deleting.insert(repository).inserted else { return nil }
+        return DeletionToken(repository: repository)
+    }
+
+    static func endDeletion(_ token: DeletionToken) {
+        deleting.remove(token.repository)
     }
 }
