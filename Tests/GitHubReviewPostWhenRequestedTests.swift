@@ -95,6 +95,77 @@ struct GitHubReviewPostWhenRequestedTests {
         ) == nil)
     }
 
+    /// A file the agent was told to replace stays retired when the event saying
+    /// so cannot be saved: the dock never offers it beside the replacement, and
+    /// the marker beside it is what still holds after a relaunch.
+    @Test("A changed Auto review file stays retired when its dismissal cannot be saved")
+    func changedFileStaysRetiredWithoutItsRecord() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI()
+        let request = fixture.request(for: fixture.file)
+        try Data("""
+            {"event":"REQUEST_CHANGES","commit_id":"\(Self.head)","body":"Something else entirely"}
+            """.utf8).write(to: fixture.file)
+        let handler = fixture.handler(
+            level: .autonomous, cli: cli, saveRecords: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        )
+
+        let outcome = await handler.postGitHubReview(request)
+
+        guard case let .refused(message) = outcome, message.contains("changed after you asked") else {
+            Issue.record("Expected the changed-file refusal, got \(outcome)")
+            return
+        }
+        #expect(fixture.task.events.allSatisfy { $0.type != GitHubReviewPublicationEventTypes.unusable })
+        #expect(FileManager.default.fileExists(atPath: fixture.file.path + ".retired"))
+
+        let replacement = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_review_2.json")
+        try fixture.data.write(to: replacement)
+        let posted = await handler.postGitHubReview(fixture.request(for: replacement))
+        guard case .performed = posted else {
+            Issue.record("Expected the replacement to post, got \(posted)")
+            return
+        }
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(
+            task: fixture.task, filePaths: [fixture.file.path, replacement.path]
+        ) == nil)
+    }
+
+    /// The marker alone — what a relaunch has after an unsaved dismissal —
+    /// keeps the file off the dock.
+    @Test("A retired marker beside a review file keeps it off the dock")
+    func retiredMarkerKeepsTheFileOffTheDock() throws {
+        let fixture = try Fixture()
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: [fixture.file.path])
+                == fixture.file.path)
+
+        #expect(FileManager.default.createFile(atPath: fixture.file.path + ".retired", contents: Data()))
+
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: [fixture.file.path]) == nil)
+    }
+
+    /// Below Auto the agent is told the user will see this exact review. That
+    /// holds only once the file and its digest are recorded, so a request
+    /// ASTRA cannot record is refused rather than promised.
+    @Test("Below Auto a request ASTRA cannot record is refused, not promised")
+    func unrecordedRequestIsRefused() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI()
+
+        let outcome = await fixture.handler(
+            level: .review, cli: cli, saveRecords: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        ).postGitHubReview(fixture.request(for: fixture.file))
+
+        guard case let .refused(message) = outcome else {
+            Issue.record("Expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(message.contains("could not record"))
+        #expect(fixture.task.events.allSatisfy { $0.type != GitHubReviewPublicationEventTypes.requested })
+        #expect(await cli.callCount() == 0)
+    }
+
     @Test("Auto posts a review only when the user asked for one to be posted")
     func noPostingRequestNoPost() async throws {
         let fixture = try Fixture(goal: "review this pr in detail https://github.com/example/repo/pull/12")
@@ -822,7 +893,8 @@ struct GitHubReviewPostWhenRequestedTests {
         func handler(
             level: AgentPolicyLevel,
             cli: some GitHubReviewCLI,
-            origin: String? = nil
+            origin: String? = nil,
+            saveRecords: ((AgentTask, ModelContext) throws -> Void)? = nil
         ) -> BrokeredExternalActionHandler {
             BrokeredExternalActionHandler(
                 modelContext: context,
@@ -830,7 +902,9 @@ struct GitHubReviewPostWhenRequestedTests {
                 runID: run.id,
                 policyLevel: level,
                 makeReviewService: { context in
-                    GitHubReviewPublicationService(modelContext: context, cli: cli, originURL: { _ in origin })
+                    GitHubReviewPublicationService(
+                        modelContext: context, cli: cli, saveRecords: saveRecords, originURL: { _ in origin }
+                    )
                 }
             )
         }

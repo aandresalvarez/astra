@@ -694,12 +694,16 @@ final class GitHubReviewPublicationService {
     private let modelContext: ModelContext
     private let cli: any GitHubReviewCLI
     private let saveReceipt: ((AgentTask, ModelContext) throws -> Void)?
+    /// Saves the records that are not receipts — a request to post, a
+    /// dismissal — when a test needs that save to fail; nil is the store.
+    private let saveRecords: ((AgentTask, ModelContext) throws -> Void)?
     private let originURL: (String) async -> String?
 
     init(
         modelContext: ModelContext,
         cli: any GitHubReviewCLI = NativeGitHubReviewCLI(),
         saveReceipt: ((AgentTask, ModelContext) throws -> Void)? = nil,
+        saveRecords: ((AgentTask, ModelContext) throws -> Void)? = nil,
         originURL: @escaping (String) async -> String? = { path in
             await GitService.shared.getRemoteOriginURL(at: path)
         }
@@ -707,6 +711,7 @@ final class GitHubReviewPublicationService {
         self.modelContext = modelContext
         self.cli = cli
         self.saveReceipt = saveReceipt
+        self.saveRecords = saveRecords
         self.originURL = originURL
     }
 
@@ -724,6 +729,10 @@ final class GitHubReviewPublicationService {
 
     static func hasDismissed(task: AgentTask, filePath: String) -> Bool {
         let root = TaskOutputArtifactPathPolicy.ResolvedRoot(TaskWorkspaceAccess(task: task).taskFolder)
+        if retiredWithoutRecord[task.id]?.contains(where: { GitHubReviewArtifactPolicy.sameFile($0, filePath, root: root) }) == true
+            || (try? FileManager.default.attributesOfItem(atPath: filePath + "." + retiredMarkerExtension)) != nil {
+            return true
+        }
         return task.events.contains { event in
             guard event.type == GitHubReviewPublicationEventTypes.unusable,
                   let data = event.payload.data(using: .utf8),
@@ -789,12 +798,16 @@ final class GitHubReviewPublicationService {
         )
         modelContext.insert(event)
         do {
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "github_review_requested"]
-            )
+            if let saveRecords {
+                try saveRecords(task, modelContext)
+            } else {
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: task.workspace,
+                    modelContext: modelContext,
+                    taskID: task.id,
+                    auditFields: ["operation": "github_review_requested"]
+                )
+            }
         } catch {
             task.events.removeAll { $0.id == event.id }
             modelContext.delete(event)
@@ -844,6 +857,33 @@ final class GitHubReviewPublicationService {
         throw lastUnusable ?? GitHubReviewPublicationError.invalid("No review proposal is available to post.")
     }
 
+    /// Review files retired when the event saying so could not be saved: in
+    /// memory for this launch, and as a marker beside the file. The event is
+    /// the authority; this is what still holds without it. Deleting the marker
+    /// only re-exposes the agent's own file to the user's review.
+    private static var retiredWithoutRecord: [UUID: [String]] = [:]
+    private static let retiredMarkerExtension = "retired"
+
+    /// The marker is created inside the task folder's directory, opened
+    /// without following a link, exclusively and without following one at
+    /// the marker's name: the folder is agent-writable.
+    private static func retireWithoutRecord(task: AgentTask, filePath: String) {
+        retiredWithoutRecord[task.id, default: []].append(filePath)
+        let url = URL(fileURLWithPath: filePath)
+        let directoryDescriptor = url.deletingLastPathComponent().path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard directoryDescriptor >= 0 else { return }
+        defer { close(directoryDescriptor) }
+        let descriptor = (url.lastPathComponent + "." + retiredMarkerExtension).withCString {
+            openat(directoryDescriptor, $0, O_CREAT | O_EXCL | O_NOFOLLOW | O_WRONLY | O_CLOEXEC, 0o600)
+        }
+        guard descriptor >= 0 else { return }
+        fsync(descriptor)
+        close(descriptor)
+        fsync(directoryDescriptor)
+    }
+
     private func persistDismissals(_ records: [GitHubReviewUnusableArtifactRecord], task: AgentTask) throws {
         guard !records.isEmpty else { return }
         let events = records.map { record in
@@ -851,12 +891,16 @@ final class GitHubReviewPublicationService {
         }
         events.forEach(modelContext.insert)
         do {
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "github_review_unusable_artifacts"]
-            )
+            if let saveRecords {
+                try saveRecords(task, modelContext)
+            } else {
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: task.workspace,
+                    modelContext: modelContext,
+                    taskID: task.id,
+                    auditFields: ["operation": "github_review_unusable_artifacts"]
+                )
+            }
         } catch {
             events.forEach { modelContext.delete($0) }
             task.events.removeAll { event in events.contains { $0.id == event.id } }
@@ -1170,10 +1214,16 @@ final class GitHubReviewPublicationService {
             // other spelling of it: retired like any review that cannot be
             // posted as it stands, so neither Auto nor the dock offers it
             // again once the agent posts its replacement under a new name.
-            try persistDismissals([.init(
-                filePath: filePath,
-                reason: "This review file changed after the agent asked to post it, so it is not the review it asked about."
-            )], task: task)
+            do {
+                try persistDismissals([.init(
+                    filePath: filePath,
+                    reason: "This review file changed after the agent asked to post it, so it is not the review it asked about."
+                )], task: task)
+            } catch {
+                // The agent is about to be told to use a new name, so the old
+                // one must stay retired even without the event saying so.
+                Self.retireWithoutRecord(task: task, filePath: filePath)
+            }
             throw GitHubReviewPublicationError.invalid(
                 "The review file changed after you asked to post it. Write the review you want posted to a new "
                     + "file name and ask again."
