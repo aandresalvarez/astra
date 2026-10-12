@@ -554,8 +554,14 @@ enum DockerExecutionPlanner {
     ) -> [ExecutionEnvironmentMount] {
         var mounts = environment.mounts
         let taskAccess = TaskWorkspaceAccess(task: task)
+        // A worktree's submodules find their Git directories, and those
+        // find them back, by relative paths that hold only at the host's own
+        // layout, so such a checkout is mounted where it lives, beside its
+        // natively mounted Git metadata; the working directory follows it.
+        let checkoutContainerPath = taskAccess.runsInPreparedCheckout && taskAccess.runtimeWorktreeHasSubmoduleRepositories
+            ? WorkspacePathPresentation.standardizedPath(currentDirectory) : environment.containerWorkingDirectory
         // A bound worktree and a draft retargeted to another verified
-        // checkout both mount that checkout at the working directory, and
+        // checkout both mount that checkout at `checkoutContainerPath`, and
         // both keep their source checkouts read-only.
         if taskAccess.runsInPreparedCheckout {
             let sources = taskAccess.protectedSourceCheckouts.map {
@@ -573,7 +579,7 @@ enum DockerExecutionPlanner {
             let writableNestedRepositories = Set(taskAccess.runtimeWritablePaths.map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
             })
-            // The worktree is mounted at the working directory below, so an
+            // The worktree is mounted at `checkoutContainerPath` below, so an
             // unrelated saved mount there moves aside rather than giving Docker
             // two mounts at one path; it keeps its access and stays mapped.
             var relocatedWorkdir = "/mnt/astra/workspace-primary"
@@ -604,7 +610,7 @@ enum DockerExecutionPlanner {
                     host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/")
                 }
                 guard touchesSource else {
-                    guard mount.containerPath == environment.containerWorkingDirectory else { return mount }
+                    guard mount.containerPath == checkoutContainerPath else { return mount }
                     return ExecutionEnvironmentMount(
                         hostPath: mount.hostPath, containerPath: relocatedWorkdir, access: mount.access, role: mount.role
                     )
@@ -614,7 +620,7 @@ enum DockerExecutionPlanner {
                 }
                 // A saved workspace mount cannot compete with the worktree
                 // for the container's working directory or restore source writes.
-                if mount.containerPath == environment.containerWorkingDirectory { return nil }
+                if mount.containerPath == checkoutContainerPath { return nil }
                 return ExecutionEnvironmentMount(
                     hostPath: mount.hostPath,
                     containerPath: mount.containerPath,
@@ -730,14 +736,9 @@ enum DockerExecutionPlanner {
             ))
         }
 
-        // A worktree's submodules find their Git directories, and those
-        // find them back, by relative paths that hold only at the host's own
-        // layout, so such a checkout is mounted where it lives, beside its
-        // natively mounted Git metadata; the working directory follows it.
-        let keepsHostPath = taskAccess.runsInPreparedCheckout && taskAccess.runtimeWorktreeHasSubmoduleRepositories
         append(
             currentDirectory,
-            keepsHostPath ? WorkspacePathPresentation.standardizedPath(currentDirectory) : environment.containerWorkingDirectory,
+            checkoutContainerPath,
             .workspace,
             access: workspaceAccess == .shared ? .readOnly : .readWrite
         )

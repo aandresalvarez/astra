@@ -591,8 +591,10 @@ struct NewTaskWorktreeCleanupTests {
         let outcome = await TaskWorktreeService.discardOutcome(
             discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
         )
-        #expect(outcome == .removed, "\(outcome)")
-        #expect(try fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+        // The null ID isn't counted as work: the reflog check passes, and the
+        // checkout is kept only because a folder gone without ASTRA's own
+        // removal may have moved, which comes after it.
+        #expect(outcome == .kept("worktree_missing"), "\(outcome)")
     }
 
     @Test("An assume-unchanged flag alone is local work, and keeps the worktree")

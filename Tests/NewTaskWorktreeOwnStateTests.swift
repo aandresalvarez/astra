@@ -14,6 +14,27 @@ import ASTRAPersistence
 struct NewTaskWorktreeOwnStateTests {
     private typealias Fixture = NewTaskWorktreeFixture
 
+    @Test("A registered worktree moved on disk keeps its registration and branch; only ASTRA's own removal prunes it")
+    func movedWorktreeKeepsRegistration() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        // Renamed, not deleted: Git still registers the old path.
+        let moved = discard.worktreePath + "-moved"
+        try FileManager.default.moveItem(atPath: discard.worktreePath, toPath: moved)
+        context.delete(draft)
+        try context.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("worktree_missing"))
+        #expect(try fixture.git(["status", "--porcelain"], at: URL(fileURLWithPath: moved)).isEmpty)
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
     @Test("Deleting a task branch turned into a symbolic ref deletes only that ref, never its target")
     func symbolicTaskRefDeletionKeepsTarget() async throws {
         let fixture = try Fixture()

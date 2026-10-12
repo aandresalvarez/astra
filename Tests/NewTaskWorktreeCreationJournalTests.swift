@@ -241,11 +241,22 @@ struct NewTaskWorktreeCreationJournalTests {
         )
         let worktree = try #require(task.executionRootPath)
         #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeHasSubmoduleRepositories)
+        // An unrelated saved mount already at the worktree's host path moves
+        // aside rather than giving Docker two mounts at one destination.
+        let other = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
         let environment = WorkspaceExecutionEnvironment(
-            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest", mounts: []
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [ExecutionEnvironmentMount(
+                hostPath: other.path, containerPath: WorkspacePathPresentation.standardizedPath(worktree),
+                access: .readWrite, role: .additionalPath
+            )]
         )
         #expect(environment.containerWorkingDirectory != WorkspacePathPresentation.standardizedPath(worktree))
         let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: worktree, environment: environment, task: task)
+        let containerPaths = mounts.map(\.containerPath)
+        #expect(Set(containerPaths).count == containerPaths.count)
+        #expect(mounts.contains { WorkspacePathPresentation.standardizedPath($0.hostPath) == WorkspacePathPresentation.standardizedPath(other.path) })
         let checkout = try #require(mounts.first { $0.role == .workspace })
         #expect(checkout.containerPath == WorkspacePathPresentation.standardizedPath(worktree))
         // Followed inside the container, the submodule's relative pointer

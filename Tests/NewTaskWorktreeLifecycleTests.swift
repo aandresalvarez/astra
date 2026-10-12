@@ -1574,13 +1574,29 @@ struct NewTaskWorktreeLifecycleTests {
         defer { fixture.cleanUp() }
         let repository = try fixture.repository("App").path
         let card = try #require(TaskBranchDeletionGate.beginCardOperation(at: repository))
-        #expect(!TaskBranchDeletionGate.beginDeletion(at: repository))
+        #expect(TaskBranchDeletionGate.beginDeletion(at: repository) == nil)
         TaskBranchDeletionGate.endCardOperation(card)
-        #expect(TaskBranchDeletionGate.beginDeletion(at: repository))
+        let deletion = try #require(TaskBranchDeletionGate.beginDeletion(at: repository))
         #expect(TaskBranchDeletionGate.beginCardOperation(at: repository) == nil)
-        TaskBranchDeletionGate.endDeletion(at: repository)
+        TaskBranchDeletionGate.endDeletion(deletion)
         let again = try #require(TaskBranchDeletionGate.beginCardOperation(at: repository))
         TaskBranchDeletionGate.endCardOperation(again)
+    }
+
+    @Test("A branch deletion's hold is released by the key it took, even after the checkout moves")
+    func branchDeletionGateReleasesItsOwnKey() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let original = try fixture.repository("App")
+        let deletion = try #require(TaskBranchDeletionGate.beginDeletion(at: original.path))
+        // The checkout moves while cleanup holds its repository.
+        let moved = fixture.root.appendingPathComponent("App-moved", isDirectory: true)
+        try FileManager.default.moveItem(at: original, to: moved)
+        TaskBranchDeletionGate.endDeletion(deletion)
+        // Put back, the repository is free again.
+        try FileManager.default.moveItem(at: moved, to: original)
+        let card = try #require(TaskBranchDeletionGate.beginCardOperation(at: original.path))
+        TaskBranchDeletionGate.endCardOperation(card)
     }
 
     @Test("A mirror that can't be removed keeps the deletion record for a retry")
