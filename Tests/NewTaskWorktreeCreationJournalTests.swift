@@ -226,6 +226,22 @@ struct NewTaskWorktreeCreationJournalTests {
         #expect(await GitService.shared.worktreeIsClean(at: notARepository.path) == nil)
     }
 
+    @Test("An unpopulated gitlink folder that can't be checked counts as holding files")
+    func uncheckableGitlinkFolderHoldsFiles() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let library = try fixture.repository("Lib")
+        let app = try fixture.repository("App")
+        try addSubmodule(library, at: "deps/lib", in: app, fixture: fixture)
+        try fixture.git(["submodule", "deinit", "--quiet", "--force", "deps/lib"], at: app)
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: app.path) == false)
+        // The gitlink's folder can't be reached, so what it holds is unknown.
+        let deps = app.appendingPathComponent("deps").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: deps)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: deps) }
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: app.path))
+    }
+
     @Test("A file put in place of a hidden unpopulated gitlink counts as changed")
     func fileAtHiddenGitlinkPathCounts() async throws {
         let fixture = try Fixture()

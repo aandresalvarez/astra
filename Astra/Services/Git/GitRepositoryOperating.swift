@@ -126,6 +126,9 @@ protocol GitRepositoryOperating: AnyObject {
     /// True when the checkout holds ignored files, which a non-forced
     /// `git worktree remove` deletes without asking; also true on error.
     func hasIgnoredFiles(at repoPath: String) async -> Bool
+    /// True when the repository holds any `branch.<branch>.*` setting, such
+    /// as an upstream or a description; also true on error.
+    func branchHasConfiguration(_ branch: String, at repoPath: String) async -> Bool
     /// True when either reflog remembers work beyond the creation commit, or
     /// when the reflogs cannot be read safely.
     func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool
@@ -230,6 +233,7 @@ extension GitRepositoryOperating {
     func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool { true }
     func pathIsHiddenFromStatus(_ path: String, in checkout: String) async -> Bool { false }
     func hasIgnoredFiles(at repoPath: String) async -> Bool { true }
+    func branchHasConfiguration(_ branch: String, at repoPath: String) async -> Bool { true }
     func hasWorktreeReflogChanges(branch: String, baseCommit: String, worktreePath: String?, repoPath: String) async -> Bool { true }
 
     /// Alternate operators fail closed: a new worktree whose submodules they

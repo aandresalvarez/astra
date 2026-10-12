@@ -84,6 +84,19 @@ extension GitService {
         }
     }
 
+    func branchHasConfiguration(_ branch: String, at repoPath: String) async -> Bool {
+        do {
+            // Names print with the section and key lowercased and the
+            // branch name, the subsection, as written.
+            let names = try await runGit(
+                at: repoPath, arguments: ["config", "--local", "--list", "--name-only"], failureLogLevel: .warning
+            ).split(whereSeparator: \.isNewline)
+            return names.contains { $0.hasPrefix("branch.\(branch).") }
+        } catch {
+            return true
+        }
+    }
+
     /// Deletes a local branch only while it still points at `expectedCommit`,
     /// so a branch that gained commits after it was created is never dropped.
     func deleteLocalBranch(_ branch: String, ifAt expectedCommit: String, at repoPath: String) async throws {
@@ -113,7 +126,7 @@ extension GitService {
             // can always see commits that were later reset away.
             arguments: [
                 "-c", "core.logAllRefUpdates=true",
-                "worktree", "add", "--lock", "--reason", lockReason, "-b", branch, destination, base
+                "worktree", "add", "--lock", "--reason", lockReason, "--no-track", "-b", branch, destination, base
             ],
             timeout: Self.networkGitTimeout
         )
@@ -140,9 +153,15 @@ extension GitService {
                 for entry in entries.split(separator: "\0") where entry.hasPrefix("160000 ") {
                     guard let tab = entry.firstIndex(of: "\t") else { return true }
                     let folder = (root as NSString).appendingPathComponent(String(entry[entry.index(after: tab)...]))
-                    var isDirectory = ObjCBool(false)
-                    guard fileManager.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue,
-                          !fileManager.fileExists(atPath: (folder as NSString).appendingPathComponent(".git")) else { continue }
+                    // Only a folder confirmed missing, or something other than
+                    // a folder, holds nothing here; one that can't be checked
+                    // may, and throws. A real `.git` folder or file is a
+                    // populated submodule, whose work is checked with it.
+                    guard try Self.attributesConfirmingAbsence(atPath: folder)?[.type] as? FileAttributeType == .typeDirectory
+                    else { continue }
+                    let dotGit = try Self.attributesConfirmingAbsence(atPath: (folder as NSString).appendingPathComponent(".git"))?[.type]
+                        as? FileAttributeType
+                    if dotGit == .typeDirectory || dotGit == .typeRegular { continue }
                     if try !fileManager.contentsOfDirectory(atPath: folder).isEmpty { return true }
                 }
             }
