@@ -88,6 +88,107 @@ struct ConnectorCredentialCleanupTests {
         }
     }
 
+    @Test("The cleanup outbox lives beside the store it describes, and an in-memory store has none")
+    func outboxLivesBesideItsStore() throws {
+        let memory = try credentialCleanupContainer()
+        #expect(ConnectorCredentialCleanupStore(beside: memory.mainContext) == nil)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-store-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let disk = try ModelContainer(
+            for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: folder.appendingPathComponent("default.store"))]
+        )
+        let outbox = try #require(ConnectorCredentialCleanupStore(beside: disk.mainContext))
+        #expect(WorkspacePathPresentation.resolvedPath(outbox.directory.deletingLastPathComponent().path)
+            == WorkspacePathPresentation.resolvedPath(folder.path))
+        withExtendedLifetime(disk) {}
+    }
+
+    @Test("A Configure deletion whose save fails is rolled back with its membership and records nothing")
+    func failedConfigureDeletionRollsBack() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        try withTemporaryCredentialKeychain {
+            let workspace = Workspace(name: "WS", primaryPath: "/tmp/astra-connector-cleanup-ws")
+            let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            connector.isGlobal = true
+            context.insert(workspace)
+            context.insert(connector)
+            workspace.enabledGlobalConnectorIDs = [connector.id.uuidString]
+            try context.save()
+            let own = KeychainSecretStore.connectorEntityID(for: connector.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+
+            #expect(!ConnectorCredentialCleanup.deleteConnector(connector, in: workspace, modelContext: context, store: outbox) { false })
+            // Nothing a later save could commit without its cleanup.
+            #expect(!connector.isDeleted)
+            try context.save()
+            #expect(try ModelContext(container).fetchCount(FetchDescriptor<Connector>()) == 1)
+            #expect(workspace.enabledGlobalConnectorIDs == [connector.id.uuidString])
+            #expect(outbox.pending()?.isEmpty == true)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+
+            #expect(ConnectorCredentialCleanup.deleteConnector(connector, in: workspace, modelContext: context, store: outbox) {
+                (try? context.save()) != nil
+            })
+            #expect(try context.fetchCount(FetchDescriptor<Connector>()) == 0)
+            #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+            #expect(outbox.pending()?.isEmpty == true)
+        }
+    }
+
+    @Test("A cleanup that fails after the deletion is saved stays pending and is retried at launch")
+    func failedPostSaveCleanupIsRetried() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        let outbox = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
+        let registryFolder = root.appendingPathComponent("Mail", isDirectory: true)
+        try FileManager.default.createDirectory(at: registryFolder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: registryFolder.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try withTemporaryCredentialKeychain {
+            try StanfordOutlookMail.$registryURLOverride.withValue(registryFolder.appendingPathComponent("mail-accounts.json")) {
+                let connector = Connector(name: "Stanford Outlook Mail")
+                connector.applyStanfordOutlookDefaults()
+                context.insert(connector)
+                try context.save()
+                StanfordOutlookMailRegistry.upsert(connector: connector)
+                let cleanup = connector.keychainCleanup
+                context.delete(connector)
+                // The registry can't be rewritten, so the saved deletion's
+                // cleanup can't clear it now.
+                try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: registryFolder.path)
+                #expect(ConnectorCredentialCleanup.deleteThenClean([cleanup], modelContext: context, store: outbox) {
+                    (try? context.save()) != nil
+                })
+                #expect(outbox.pending()?.map(\.cleanup) == [cleanup])
+                #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 0)
+                #expect(outbox.pending()?.count == 1)
+
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: registryFolder.path)
+                #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
+                #expect(StanfordOutlookMailRegistry.entries().isEmpty)
+                #expect(outbox.pending()?.isEmpty == true)
+            }
+        }
+        // Startup retries them only once recovery vouches for the store.
+        let app = try String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8
+        )
+        let trusted = try #require(app.range(of: "workspaceRecoveryTrusted = true"))
+        #expect(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: trusted.upperBound..<app.endIndex) != nil)
+    }
+
     @Test("Disabling a package keeps the credentials a recreated connector outside it still reads")
     func disableSparesSharedNamespace() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

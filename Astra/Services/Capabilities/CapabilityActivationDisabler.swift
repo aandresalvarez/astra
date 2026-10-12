@@ -21,7 +21,8 @@ struct CapabilityActivationDisabler {
         capabilities: WorkspaceCapabilities,
         modelContext: ModelContext,
         availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
     ) -> Result {
         let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
         let state = CapabilityPackageState(
@@ -100,9 +101,11 @@ struct CapabilityActivationDisabler {
         // or MCP-only packages. Skipping the save there would make the
         // disable look applied in memory but never reach SwiftData / the
         // exported config. Keychain cleanup stays gated on a successful save.
-        if persist(workspace, modelContext) {
+        if ConnectorCredentialCleanup.deleteThenClean(
+            pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
+            save: { persist(workspace, modelContext) }
+        ) {
             pendingKeychainCleanups.forEach { $0() }
-            ConnectorCredentialCleanup.run(pendingConnectorCleanups, modelContext: modelContext)
         } else {
             // Failed save: revert the pending deletes and the workspace
             // membership arrays (which rollback does not restore) so the

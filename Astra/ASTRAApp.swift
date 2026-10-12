@@ -925,6 +925,7 @@ public struct ASTRAApp: App {
                 }
                 workspaceRecoveryTrusted = true
                 WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext, movedMirrors: movedDeletionMirrors)
+                ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
             }
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()

@@ -36,7 +36,8 @@ struct CapabilityUninstaller {
     func remove(
         _ requestedPackage: PluginPackage,
         modelContext: ModelContext,
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id }) else {
@@ -186,7 +187,13 @@ struct CapabilityUninstaller {
             modelContext.delete(skill)
         }
 
-        guard persist(nil, modelContext) else {
+        // The connectors' cleanups are recorded before the save and run, read
+        // after it, so a connector sharing a namespace with one removed here
+        // keeps its credentials; any that don't clear are retried at launch.
+        guard ConnectorCredentialCleanup.deleteThenClean(
+            pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
+            save: { persist(nil, modelContext) }
+        ) else {
             // Abort before touching the keychain or the library file: the
             // deletes were not persisted, so removing either would strand
             // resources (file gone) or credentials (records still present).
@@ -195,9 +202,6 @@ struct CapabilityUninstaller {
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
-        // Read after the save, so a connector sharing a namespace with one
-        // removed here keeps its credentials.
-        ConnectorCredentialCleanup.run(pendingConnectorCleanups, modelContext: modelContext)
         for workspace in workspaces where result.disabledWorkspaceIDs.contains(workspace.id) {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         }
