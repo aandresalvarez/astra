@@ -139,15 +139,6 @@ struct AgentExecutionScopedProcessTests {
         return condition()
     }
 
-    /// Whether `pid` is still a live process. `kill(pid, 0)` can't tell: on
-    /// macOS it succeeds for a child that exited but nobody has reaped yet.
-    private func processIsRunning(_ pid: pid_t) -> Bool {
-        var info = proc_bsdinfo()
-        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return false }
-        return info.pbi_status != UInt32(SZOMB) && info.pbi_flags & UInt32(PROC_FLAG_INEXIT) == 0
-    }
-
     /// The lines `process` writes to stdout, each as soon as the child writes
     /// it. The stream ends at EOF: once every holder of the pipe, background
     /// children included, has exited.
