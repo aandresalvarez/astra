@@ -840,8 +840,11 @@ final class TaskLifecycleCoordinator {
 
     /// Replacements save the new reference graph before any checkout is
     /// removed, so imported tasks keep worktrees they take over.
+    /// `afterCancellation` runs once the existing workspace's turn requests
+    /// are durably cancelled and its tasks settled, before anything is
+    /// deleted, so an export taken there never restores a stopped run.
     private func replaceWorkspace(
-        _ existing: Workspace, replacementPath: String, create: () -> Workspace
+        _ existing: Workspace, replacementPath: String, afterCancellation: () -> Void = {}, create: () -> Workspace
     ) -> Workspace? {
         var replacement: Workspace?
         // The import writes the replacement's SSH connections, at its own
@@ -860,6 +863,10 @@ final class TaskLifecycleCoordinator {
             }
         }
         guard let requests = cancelDurably(existing.tasks) else { return nil }
+        // The settling a failed replacement applies, done first: an export of
+        // the workspace would otherwise still show its runs as running.
+        settleAfterUnsavedDeletion(existing.tasks)
+        afterCancellation()
         let existingID = existing.id.uuidString
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
@@ -1005,17 +1012,20 @@ final class TaskLifecycleCoordinator {
             case .skip:
                 return nil
             case .replace:
-                if var exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
-                    exportedConfig.name = name
-                    exportedConfig.primaryPath = url.path
-                    return replaceWorkspace(existing, replacementPath: exportedConfig.primaryPath) {
-                        WorkspaceConfigManager.importWorkspace(
-                            from: exportedConfig, modelContext: modelContext,
-                            scheduleTrustPolicy: .preserveEnabledState, taskRecoveryTrustPolicy: .trustedLocalRecovery
-                        )
-                    }
+                // Exported only once its runs are cancelled, so the trusted
+                // import recreates them stopped, never running or admissible.
+                var exportedConfig: WorkspaceConfigManager.WorkspaceConfig?
+                return replaceWorkspace(existing, replacementPath: url.path, afterCancellation: {
+                    exportedConfig = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext)
+                }) {
+                    guard var config = exportedConfig else { return insertWorkspaceFromFolder(name: name, path: url.path) }
+                    config.name = name
+                    config.primaryPath = url.path
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: config, modelContext: modelContext,
+                        scheduleTrustPolicy: .preserveEnabledState, taskRecoveryTrustPolicy: .trustedLocalRecovery
+                    )
                 }
-                return replaceWorkspace(existing, replacementPath: url.path) { insertWorkspaceFromFolder(name: name, path: url.path) }
             case .duplicate:
                 return insertWorkspaceFromFolder(name: name + " (Imported)", path: url.path)
             }
