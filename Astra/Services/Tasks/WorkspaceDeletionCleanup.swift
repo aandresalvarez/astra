@@ -214,7 +214,8 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// must not import wherever the mirror now is. Nil when a record can't
     /// be read.
     func pendingMirrorIdentities() -> Set<String>? {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        guard let present = outboxPresent() else { return nil }
+        guard present else { return [] }
         guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         else { return nil }
         var ids = Set<String>()
@@ -223,6 +224,18 @@ struct WorkspaceDeletionCleanupStore: Sendable {
             ids.formUnion(record.mirrorFileIDs)
         }
         return ids
+    }
+
+    /// Whether the outbox folder exists: false only when it is confirmed
+    /// missing, nil when it can't be checked, as behind a folder that can't
+    /// be traversed, since its records would then go unseen.
+    func outboxPresent() -> Bool? {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: directory.path)
+            return true
+        } catch {
+            return WorkspaceFileLayout.isMissingFile(error) ? false : nil
+        }
     }
 
     func remove(_ record: WorkspaceDeletionCleanupRecord) {
@@ -240,7 +253,8 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// mirror it guards is unknown.
     func pendingMirrorPaths() -> Set<String>? {
         // No outbox means nothing pending; one that can't be listed is unknown.
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        guard let present = outboxPresent() else { return nil }
+        guard present else { return [] }
         guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         else { return nil }
         var mirrors = Set<String>()

@@ -719,6 +719,46 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!FileManager.default.fileExists(atPath: mirror))
     }
 
+    @Test("A deletion outbox that can't be checked is unknown, never empty")
+    func untraversableOutboxIsUnknown() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let parent = fixture.root.appendingPathComponent("Support", isDirectory: true)
+        let store = WorkspaceDeletionCleanupStore(directory: parent.appendingPathComponent("DeletionCleanup"))
+        #expect(store.pendingMirrorPaths() == [])
+        #expect(store.pendingMirrorIdentities() == [])
+        try store.write(WorkspaceDeletionCleanupRecord(
+            workspaceID: UUID(), primaryPath: fixture.root.appendingPathComponent("Deleted").path, connectors: [], skills: []
+        ))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path) }
+        #expect(store.pendingMirrorPaths() == nil)
+        #expect(store.pendingMirrorIdentities() == nil)
+    }
+
+    @Test("A configured recovery root inside a protected folder is scanned, and one still skipped leaves the scan incomplete")
+    func protectedConfiguredRootIsScannedOrIncomplete() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        // `Pictures` under the privacy home is protected from implicit scans.
+        let root = fixture.root.appendingPathComponent("Pictures/Workspaces", isDirectory: true)
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.appendingPathComponent("App").path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{}".write(to: mirror, atomically: true, encoding: .utf8)
+        let scan = WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [root.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        )
+        #expect(scan.configs.map { WorkspacePathPresentation.resolvedPath($0.path) } == [WorkspacePathPresentation.resolvedPath(mirror.path)])
+        #expect(scan.complete)
+        // A configured root the policy skips regardless, such as an app
+        // bundle, may hide mirrors.
+        let bundle = fixture.root.appendingPathComponent("Tool.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        #expect(!WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [bundle.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        ).complete)
+    }
+
     @Test("Recovery trusts a nonempty store without scanning only while no deletion is pending")
     func recoveryShortcutWaitsForPendingDeletions() {
         #expect(WorkspaceRecoveryService.storeVouchesWithoutScan(

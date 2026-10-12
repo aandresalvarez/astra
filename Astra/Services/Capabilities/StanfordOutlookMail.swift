@@ -510,13 +510,17 @@ enum StanfordOutlookMailRegistry {
 
     /// True once no entry for `connectorID` remains. A registry that exists
     /// but can't be read is left as it is, never rewritten without the other
-    /// accounts, and reported as not removed.
+    /// accounts, and reported as not removed, as is one that can't even be
+    /// checked: only a confirmed missing registry holds no entry.
     @discardableResult
     static func remove(connectorID: UUID) -> Bool {
         // Without following links: a dangling one is still a registry, whose
         // target could come back with the entry in it, so it is unverified.
-        guard (try? FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)) != nil
-        else { return true }
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)
+        } catch {
+            return WorkspaceFileLayout.isMissingFile(error)
+        }
         guard let current = readEntries() else { return false }
         let remaining = current.filter { $0.connectorID != connectorID.uuidString }
         guard remaining.count != current.count else { return true }

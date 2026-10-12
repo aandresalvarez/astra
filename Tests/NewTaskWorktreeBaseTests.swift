@@ -1506,6 +1506,51 @@ struct NewTaskWorktreeBaseTests {
         ))
         let next = TaskWorktreeRequestPayload(enabled: true, base: .currentBranch, repositoryPath: repository.path)
         #expect(TaskWorktreeService.recordRequestIfChanged(next, on: draft, modelContext: context))
+        // Later choices still order after it, even with every timestamp tied,
+        // and the imported one the newest by time, as a mirror stored to the
+        // second can leave them.
+        let off = TaskWorktreeRequestPayload(enabled: false, base: .currentBranch, repositoryPath: repository.path)
+        #expect(TaskWorktreeService.recordRequestIfChanged(off, on: draft, modelContext: context))
+        let tied = Date(timeIntervalSince1970: 1_800_000_000)
+        for event in draft.events where event.hasType(TaskEventTypes.Task.worktreeRequested) { event.timestamp = tied }
+        let importedEvent = try #require(draft.events.first {
+            (try? $0.decodePayload(as: TaskWorktreeRequestPayload.self).get())?.base == .defaultBranch
+        })
+        importedEvent.timestamp = tied.addingTimeInterval(1)
+        #expect(TaskWorktreeService.latestRequest(for: draft) == off)
+        let again = TaskWorktreeRequestPayload(enabled: true, base: .currentBranch, repositoryPath: repository.path)
+        #expect(TaskWorktreeService.recordRequestIfChanged(again, on: draft, modelContext: context))
+        #expect(TaskWorktreeService.latestRequest(for: draft) == again)
+    }
+
+    @Test("A launch takes the draft's newest recorded checkbox and base over a stale selection")
+    func launchRequestFollowsRecordedChoice() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = workspace(repository, in: context)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        var stale = NewTaskWorktreeSelection()
+        let app = GitRepositoryInfo(name: "App", path: repository.path)
+        stale.repositories = [app]
+        stale.choose(app)
+        stale.isEnabled = true
+        stale.base = .defaultBranch
+        // Nothing recorded yet: the selection is all there is.
+        #expect(NewTaskWorktreeComposerFlow.launchRequest(stale, recordedOn: draft)?.base == .defaultBranch)
+        #expect(NewTaskWorktreeComposerFlow.launchRequest(stale, recordedOn: nil)?.base == .defaultBranch)
+        // Another window changes the base, then turns the worktree off.
+        #expect(TaskWorktreeService.recordRequestIfChanged(
+            TaskWorktreeRequestPayload(enabled: true, base: .currentBranch, repositoryPath: repository.path), on: draft, modelContext: context
+        ))
+        #expect(NewTaskWorktreeComposerFlow.launchRequest(stale, recordedOn: draft)?.base == .currentBranch)
+        #expect(TaskWorktreeService.recordRequestIfChanged(
+            TaskWorktreeRequestPayload(enabled: false, base: .currentBranch, repositoryPath: repository.path), on: draft, modelContext: context
+        ))
+        #expect(NewTaskWorktreeComposerFlow.launchRequest(stale, recordedOn: draft) == nil)
     }
 
     @Test("Creating and checking out a branch from the Repository card waits for branch cleanup")

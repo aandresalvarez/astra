@@ -49,7 +49,7 @@ extension ChatPanelView {
 
     /// The worktree the next planning step or run creates, if any.
     var requestedWorktree: TaskWorktreeRequest? {
-        allowsWorktreeChoice ? worktreeSelection.request : nil
+        allowsWorktreeChoice ? NewTaskWorktreeComposerFlow.launchRequest(worktreeSelection, recordedOn: composerDraft) : nil
     }
 
     var canSubmitWorktreeSelection: Bool {

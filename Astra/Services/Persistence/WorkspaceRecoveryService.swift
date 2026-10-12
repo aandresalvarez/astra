@@ -1094,6 +1094,7 @@ public enum WorkspaceRecoveryService {
         let hostFileAccess = HostFileAccessBroker(homeDirectory: privacyHomeDirectory)
         return scanForWorkspaceConfigs(
             root: root,
+            scanRoot: root,
             maxDepth: maxDepth,
             remainingBudget: &remainingBudget,
             hostFileAccess: hostFileAccess,
@@ -1101,8 +1102,13 @@ public enum WorkspaceRecoveryService {
         )
     }
 
+    /// `scanRoot` is the configured root the scan started from: one inside a
+    /// privacy-protected folder, such as a volume under /Volumes, is scanned
+    /// because it was configured, and one that is still skipped leaves the
+    /// scan incomplete, since mirrors beneath it went unseen.
     private static func scanForWorkspaceConfigs(
         root: URL,
+        scanRoot: URL,
         maxDepth: Int,
         remainingBudget: inout Int,
         hostFileAccess: HostFileAccessBroker,
@@ -1111,8 +1117,9 @@ public enum WorkspaceRecoveryService {
         guard !Task.isCancelled else { complete = false; return [] }
         guard maxDepth >= 0 else { return [] }
         guard remainingBudget > 0 else { complete = false; return [] }
-        let intent = HostFileAccessIntent.implicitScan(root: nil)
+        let intent = HostFileAccessIntent.implicitScan(root: scanRoot)
         guard !hostFileAccess.shouldSkip(root, intent: intent) else {
+            if root == scanRoot { complete = false }
             return []
         }
         remainingBudget -= 1
@@ -1164,6 +1171,7 @@ public enum WorkspaceRecoveryService {
             results.append(
                 contentsOf: scanForWorkspaceConfigs(
                     root: child,
+                    scanRoot: scanRoot,
                     maxDepth: maxDepth - 1,
                     remainingBudget: &remainingBudget,
                     hostFileAccess: hostFileAccess,
