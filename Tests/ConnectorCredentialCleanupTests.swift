@@ -116,6 +116,41 @@ struct ConnectorCredentialCleanupTests {
         ).path == shared)
     }
 
+    @Test("A corrupt intent is left for later but never holds back the readable ones")
+    func corruptIntentDoesNotBlockOthers() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            _ = try outbox.record([deleted.keychainCleanup])
+            let corrupt = outbox.directory.appendingPathComponent("unrelated.json")
+            try Data("{".utf8).write(to: corrupt)
+
+            #expect(outbox.pending()?.complete == false)
+            #expect(outbox.pending()?.records.map(\.cleanup) == [deleted.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+            #expect(FileManager.default.fileExists(atPath: corrupt.path))
+        }
+    }
+
+    @Test("A deletion whose credentials all stay with live owners is still audited")
+    func skippedCleanupIsAudited() throws {
+        let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+        // Still stored, as after a deletion that wasn't saved, it owns every
+        // namespace its cleanup would touch, so none is run.
+        let ownership = ConnectorCredentialCleanup.Ownership([deleted])
+        var audited: [UUID] = []
+        #expect(ConnectorCredentialCleanup.run([deleted.keychainCleanup], ownership: ownership) { audited.append($0.connectorID) })
+        #expect(audited == [deleted.id])
+    }
+
     @Test("A pending intent that doesn't read back as the same cleanup stops the deletion")
     func corruptExistingIntentStopsDeletion() throws {
         let container = try credentialCleanupContainer()
@@ -165,7 +200,7 @@ struct ConnectorCredentialCleanupTests {
             try context.save()
             #expect(try ModelContext(container).fetchCount(FetchDescriptor<Connector>()) == 1)
             #expect(workspace.enabledGlobalConnectorIDs == [connector.id.uuidString])
-            #expect(outbox.pending()?.isEmpty == true)
+            #expect(outbox.pending()?.records.isEmpty == true)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
 
             #expect(ConnectorCredentialCleanup.deleteConnector(connector, in: workspace, modelContext: context, store: outbox) {
@@ -174,7 +209,7 @@ struct ConnectorCredentialCleanupTests {
             #expect(try context.fetchCount(FetchDescriptor<Connector>()) == 0)
             #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
-            #expect(outbox.pending()?.isEmpty == true)
+            #expect(outbox.pending()?.records.isEmpty == true)
         }
     }
 
@@ -205,14 +240,14 @@ struct ConnectorCredentialCleanupTests {
                 #expect(ConnectorCredentialCleanup.deleteThenClean([cleanup], modelContext: context, store: outbox) {
                     (try? context.save()) != nil
                 })
-                #expect(outbox.pending()?.map(\.cleanup) == [cleanup])
+                #expect(outbox.pending()?.records.map(\.cleanup) == [cleanup])
                 #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 0)
-                #expect(outbox.pending()?.count == 1)
+                #expect(outbox.pending()?.records.count == 1)
 
                 try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: registryFolder.path)
                 #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
                 #expect(StanfordOutlookMailRegistry.entries().isEmpty)
-                #expect(outbox.pending()?.isEmpty == true)
+                #expect(outbox.pending()?.records.isEmpty == true)
             }
         }
         // Startup retries them only once recovery vouches for the store.

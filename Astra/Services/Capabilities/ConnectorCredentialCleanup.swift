@@ -34,16 +34,30 @@ enum ConnectorCredentialCleanup {
     }
 
     /// Runs each cleanup against `ownership`, attempting every one. True when
-    /// everything owed was cleared.
+    /// everything owed was cleared. A deletion whose credentials all stay
+    /// with live owners is still audited, through `auditSkipped`, as the
+    /// cleanup it doesn't need would have.
     @discardableResult
-    static func run(_ cleanups: [ConnectorKeychainCleanup], ownership: Ownership) -> Bool {
+    static func run(
+        _ cleanups: [ConnectorKeychainCleanup], ownership: Ownership,
+        auditSkipped: (ConnectorKeychainCleanup) -> Void = { cleanup in
+            AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
+                "connector_id": cleanup.connectorID.uuidString,
+                "service_type": cleanup.serviceType,
+                "credentials": "kept_for_live_owners"
+            ])
+        }
+    ) -> Bool {
         var cleared = true
         for cleanup in cleanups {
             let keepRegistryEntry = ownership.outlookConnectorIDs.contains(cleanup.connectorID)
             // Owed when a namespace has no live owner, or a mail-registry
             // entry no live Outlook connector claims.
             let ownsRegistryEntry = cleanup.isStanfordOutlookMail && !keepRegistryEntry
-            guard ownsRegistryEntry || !unownedNamespaces(of: cleanup, ownership: ownership).isEmpty else { continue }
+            guard ownsRegistryEntry || !unownedNamespaces(of: cleanup, ownership: ownership).isEmpty else {
+                auditSkipped(cleanup)
+                continue
+            }
             cleared = cleanup.run(sparing: ownership.namespaces, keepRegistryEntry: keepRegistryEntry) && cleared
         }
         return cleared
@@ -128,13 +142,20 @@ enum ConnectorCredentialCleanup {
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
         guard let pending = store.pending() else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                "scope": "connector_cleanup", "reason": "intent_unreadable"
+                "scope": "connector_cleanup", "reason": "outbox_unreadable"
             ], level: .error)
             return 0
         }
+        // A record that can't be read stays for a later launch, but never
+        // holds back the ones that can.
+        if !pending.complete {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "intent_unreadable"
+            ], level: .error)
+        }
         var cleared = 0
-        for (url, cleanup) in pending where run([cleanup], modelContext: ModelContext(modelContext.container)) {
-            store.remove([url])
+        for record in pending.records where run([record.cleanup], modelContext: ModelContext(modelContext.container)) {
+            store.remove([record.url])
             cleared += 1
         }
         return cleared
@@ -208,23 +229,38 @@ struct ConnectorCredentialCleanupStore: Sendable {
         for url in urls { try? FileManager.default.removeItem(at: url) }
     }
 
-    /// Every pending cleanup, or nil when the outbox or a record can't be
-    /// read, since what it owes is then unknown.
-    func pending() -> [(url: URL, cleanup: ConnectorKeychainCleanup)]? {
+    /// Every readable pending cleanup, and whether that was all of them: a
+    /// record that can't be read is left on disk and only marks the listing
+    /// incomplete, so it never holds back the others. Nil when the outbox
+    /// itself can't be listed.
+    func pending() -> Pending? {
         let urls: [URL]
         do {
             urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         } catch {
-            return WorkspaceFileLayout.isMissingFile(error) ? [] : nil
+            guard WorkspaceFileLayout.isMissingFile(error) else { return nil }
+            return Pending(records: [], complete: true)
         }
-        var pending: [(url: URL, cleanup: ConnectorKeychainCleanup)] = []
+        var records: [Pending.Record] = []
+        var complete = true
         for url in urls.filter({ $0.pathExtension == "json" }).sorted(by: { $0.path < $1.path }) {
             guard let cleanup = try? JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) else {
-                return nil
+                complete = false
+                continue
             }
-            pending.append((url, cleanup))
+            records.append(Pending.Record(url: url, cleanup: cleanup))
         }
-        return pending
+        return Pending(records: records, complete: complete)
+    }
+
+    struct Pending {
+        struct Record {
+            let url: URL
+            let cleanup: ConnectorKeychainCleanup
+        }
+        let records: [Record]
+        /// False when a record couldn't be read and was left out.
+        let complete: Bool
     }
 
     private static func encode(_ cleanup: ConnectorKeychainCleanup) throws -> Data {
