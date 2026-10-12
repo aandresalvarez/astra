@@ -131,6 +131,31 @@ struct GitHubReviewPostWhenRequestedTests {
         ) == nil)
     }
 
+    /// When neither the event nor the marker can be written (a read-only task
+    /// folder), the file still stays retired for this launch.
+    @Test("A changed Auto review file stays retired for the launch when no marker can be written")
+    func changedFileStaysRetiredWithoutAMarker() async throws {
+        let fixture = try Fixture()
+        let request = fixture.request(for: fixture.file)
+        try Data("""
+            {"event":"REQUEST_CHANGES","commit_id":"\(Self.head)","body":"Something else entirely"}
+            """.utf8).write(to: fixture.file)
+        let folder = fixture.file.deletingLastPathComponent().path
+        #expect(chmod(folder, 0o500) == 0)
+        defer { chmod(folder, 0o700) }
+
+        let outcome = await fixture.handler(
+            level: .autonomous, cli: FakeCLI(), saveRecords: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        ).postGitHubReview(request)
+
+        guard case .refused = outcome else {
+            Issue.record("Expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.file.path + ".retired"), "the premise: no marker")
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+    }
+
     /// The marker alone — what a relaunch has after an unsaved dismissal —
     /// keeps the file off the dock.
     @Test("A retired marker beside a review file keeps it off the dock")
