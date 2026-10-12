@@ -867,7 +867,7 @@ final class GitHubReviewPublicationService {
     /// The marker is created inside the task folder's directory, opened
     /// without following a link, exclusively and without following one at
     /// the marker's name: the folder is agent-writable.
-    private static func retireWithoutRecord(task: AgentTask, filePath: String) {
+    static func retireWithoutRecord(task: AgentTask, filePath: String) {
         retiredWithoutRecord[task.id, default: []].append(filePath)
         let url = URL(fileURLWithPath: filePath)
         let directoryDescriptor = url.deletingLastPathComponent().path.withCString {

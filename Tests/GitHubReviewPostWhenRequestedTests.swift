@@ -156,6 +156,23 @@ struct GitHubReviewPostWhenRequestedTests {
         #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
     }
 
+    /// The task folder is agent-writable and the marker's name predictable: a
+    /// link planted there is never followed, so nothing is created where it
+    /// points, and the link itself still keeps the file off the dock.
+    @Test("A link planted at the retired marker is never followed")
+    func retiredMarkerLinkIsNotFollowed() throws {
+        let fixture = try Fixture()
+        let outside = fixture.root.appendingPathComponent("outside-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(
+            atPath: fixture.file.path + ".retired", withDestinationPath: outside.path
+        )
+
+        GitHubReviewPublicationService.retireWithoutRecord(task: fixture.task, filePath: fixture.file.path)
+
+        #expect(!FileManager.default.fileExists(atPath: outside.path), "nothing is created through the link")
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+    }
+
     /// The marker alone — what a relaunch has after an unsaved dismissal —
     /// keeps the file off the dock.
     @Test("A retired marker beside a review file keeps it off the dock")
