@@ -922,7 +922,14 @@ enum TaskWorktreeService {
                 else { return kept("repository_unverifiable") }
             }
         }
-        let exists = FileManager.default.fileExists(atPath: path)
+        // A checkout that can't be checked is retried, never taken as gone:
+        // that would skip every check of what it holds.
+        let exists: Bool
+        do {
+            exists = try GitService.attributesConfirmingAbsence(atPath: path) != nil
+        } catch {
+            return kept("worktree_unavailable", retry: true)
+        }
         if exists {
             if let unclean = await uncleanOutcome() { return unclean }
             guard !(await git.hasIgnoredFiles(at: path)) else { return kept("ignored_files") }

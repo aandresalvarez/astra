@@ -532,7 +532,7 @@ public enum WorkspaceRecoveryService {
         // recovery leaves `incompleteMarker`, so the next launch rescans even
         // though the store is no longer empty.
         Task { @MainActor in
-            let resumingPartialRecovery = incompleteMarker.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            let resumingPartialRecovery = incompleteMarker.map(incompleteMarkerPresent) ?? false
             if storeVouchesWithoutScan(
                 extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots,
                 resumingPartialRecovery: resumingPartialRecovery,
@@ -610,6 +610,18 @@ public enum WorkspaceRecoveryService {
             // A marker that can't be removed only costs a rescan next launch.
             if trusted, let incompleteMarker { try? FileManager.default.removeItem(at: incompleteMarker) }
             return trusted
+        }
+    }
+
+    /// Whether a partial recovery's marker is down. Only one confirmed
+    /// missing means the last recovery finished; one that can't be checked
+    /// is resumed like one there.
+    static func incompleteMarkerPresent(_ marker: URL) -> Bool {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: marker.path)
+            return true
+        } catch {
+            return !WorkspaceFileLayout.isMissingFile(error)
         }
     }
 

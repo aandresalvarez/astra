@@ -312,14 +312,22 @@ public enum TaskWorktreeBinding {
     /// `unreadable` is set when a marker file exists but couldn't be read,
     /// which is never the same as its absence.
     public static func registeredMarkers(
-        repositoryPath: String, worktreePath: String
+        repositoryPath: String, worktreePath: String,
+        attributes: (String) throws -> [FileAttributeKey: Any] = { try FileManager.default.attributesOfItem(atPath: $0) }
     ) -> (identity: String?, lockReason: String?, unreadable: Bool)? {
         guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
         var unreadable = false
         func read(_ name: String) -> String? {
             let url = registered.entry.appendingPathComponent(name)
             guard let value = try? String(contentsOf: url, encoding: .utf8) else {
-                if (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil { unreadable = true }
+                // Only a marker confirmed missing is absent; one there, or
+                // one that can't even be checked, is unreadable.
+                do {
+                    _ = try attributes(url.path)
+                    unreadable = true
+                } catch {
+                    if !isMissingFileError(error) { unreadable = true }
+                }
                 return nil
             }
             return value.trimmingCharacters(in: .whitespacesAndNewlines)
