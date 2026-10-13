@@ -182,6 +182,20 @@ extension GitService {
     /// sparse rules explain it by leaving the path out; then an absent file
     /// is expected, and a present one's type, mode, and content must still
     /// match the index. Any failure to read counts as changed.
+    /// Whether an ordinary index entry's file has another executable bit than
+    /// its mode records. A missing file, a link, or a non-file entry is left
+    /// to status; one that can't be checked throws.
+    static func executableBitDiffers(_ entry: Substring, in worktreePath: String) throws -> Bool {
+        guard let tab = entry.firstIndex(of: "\t") else { return true }
+        let fields = entry[entry.startIndex..<tab].split(separator: " ")
+        guard fields.count == 4, fields[1] == "100644" || fields[1] == "100755" else { return false }
+        let full = (worktreePath as NSString).appendingPathComponent(String(entry[entry.index(after: tab)...]))
+        guard let attributes = try attributesConfirmingAbsence(atPath: full),
+              attributes[.type] as? FileAttributeType == .typeRegular else { return false }
+        let executable = ((attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0) & 0o100 != 0
+        return executable != (fields[1] == "100755")
+    }
+
     /// The attributes of the item at `path` itself, not following a link,
     /// or nil only when it is confirmed missing: no such file, or a path
     /// through a file. Any other failure throws, since the item may be there.
@@ -215,10 +229,18 @@ extension GitService {
             let listing = try await runGit(
                 at: worktreePath, arguments: ["ls-files", "-v", "-s", "-z"], failureLogLevel: .warning
             )
+            // With `core.fileMode` off, Git ignores the executable bit, so a
+            // mode-only edit to an ordinary file is clean to status and to a
+            // non-forced removal; it is compared here instead.
+            let fileMode = try? await runGit(
+                at: worktreePath, arguments: ["config", "--bool", "--get", "core.fileMode"], failureLogLevel: .debug
+            )
+            let ignoresFileMode = fileMode?.trimmingCharacters(in: .whitespacesAndNewlines) == "false"
             var skipWorktreeFiles: [String] = []
             for entry in listing.split(separator: "\0") {
                 guard let tag = entry.first else { continue }
                 if tag.isLowercase { return true }
+                if tag == "H", ignoresFileMode, try Self.executableBitDiffers(entry, in: worktreePath) { return true }
                 guard tag == "S" else { continue }
                 guard let tab = entry.firstIndex(of: "\t") else { return true }
                 let fields = entry[entry.startIndex..<tab].split(separator: " ")
@@ -522,7 +544,7 @@ extension GitService {
     /// Throws when any part of it can't be read.
     static func storedSubmoduleRepositories(in modules: URL) throws -> Set<String>? {
         let manager = FileManager.default
-        guard manager.fileExists(atPath: modules.path) else { return nil }
+        guard try attributesConfirmingAbsence(atPath: modules.path) != nil else { return nil }
         var failure: Error?
         guard let entries = manager.enumerator(
             at: modules, includingPropertiesForKeys: [.isDirectoryKey],
@@ -537,8 +559,11 @@ extension GitService {
             // Object stores can be large and never hold another repository.
             if entry.lastPathComponent == "objects" {
                 entries.skipDescendants()
-            } else if manager.fileExists(atPath: entry.appendingPathComponent("HEAD").path),
-                      manager.fileExists(atPath: entry.appendingPathComponent("objects").path) {
+            } else if try attributesConfirmingAbsence(atPath: entry.appendingPathComponent("HEAD").path) != nil,
+                      try attributesConfirmingAbsence(atPath: entry.appendingPathComponent("objects").path) != nil {
+                // Not following links, and throwing when either can't be
+                // checked: a repository whose HEAD is a dangling link is still
+                // one a forced removal would delete.
                 repositories.insert(repositoryKey(entry.path))
             }
         }

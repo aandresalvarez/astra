@@ -3,7 +3,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
-import ASTRAPersistence
+@testable import ASTRAPersistence
 @testable import ASTRA
 
 /// State Git keeps for one worktree alone, in its registry entry or its
@@ -201,6 +201,55 @@ struct NewTaskWorktreeOwnStateTests {
             #expect(source.contains("guard case .inherited(let inheritedBinding) = TaskWorktreeBinding.inheritCheckout("))
             #expect(!source.contains("TaskWorktreeBinding.inheritPin("))
         }
+    }
+
+    @Test("With file modes ignored, an executable-bit edit still counts as local work")
+    func modeOnlyEditCountsWithFileModeOff() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        try fixture.git(["config", "core.fileMode", "false"], at: repository)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: repository.path) == false)
+        let file = try #require(try fixture.git(["ls-files"], at: repository).split(whereSeparator: \.isNewline).first.map(String.init))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: repository.appendingPathComponent(file).path)
+        #expect(try fixture.git(["status", "--porcelain"], at: repository).isEmpty)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: repository.path))
+    }
+
+    @Test("A stored submodule repository whose HEAD is a dangling link is still a repository")
+    func danglingHeadStoredRepositoryCounts() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let modules = fixture.root.appendingPathComponent("modules", isDirectory: true)
+        let stored = modules.appendingPathComponent("lib", isDirectory: true)
+        for folder in ["objects", "refs", "logs"] {
+            try FileManager.default.createDirectory(at: stored.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        // A reflog's HEAD alone, without objects, isn't a repository.
+        try "".write(to: stored.appendingPathComponent("logs/HEAD"), atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            atPath: stored.appendingPathComponent("HEAD").path, withDestinationPath: fixture.root.appendingPathComponent("gone").path
+        )
+        #expect(try GitService.storedSubmoduleRepositories(in: modules) == [GitService.repositoryKey(stored.path)])
+    }
+
+    @Test("An auto-export lands only for a current ticket, and a retired one leaves no file behind")
+    func autoExportGateWritesOnlyCurrentTickets() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let gate = WorkspaceAutoExportGate()
+        let folder = fixture.root.appendingPathComponent("Mirror", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let mirror = folder.appendingPathComponent(".astra-workspace.json")
+        let current = gate.ticket(for: "ws")
+        #expect(try gate.writeIfCurrent(current, data: Data("one".utf8), to: mirror))
+        #expect(try Data(contentsOf: mirror) == Data("one".utf8))
+        let stale = gate.ticket(for: "ws")
+        gate.retire(workspaceID: "ws")
+        #expect(try !gate.writeIfCurrent(stale, data: Data("two".utf8), to: mirror))
+        #expect(try Data(contentsOf: mirror) == Data("one".utf8))
+        // The bytes are staged beside the mirror and never left there.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [".astra-workspace.json"])
     }
 
     @Test("Deleting a task branch turned into a symbolic ref deletes only that ref, never its target")
