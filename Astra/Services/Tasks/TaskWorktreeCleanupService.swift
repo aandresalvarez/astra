@@ -166,7 +166,11 @@ enum TaskWorktreeCleanupService {
         defer { activeRecords.remove(key) }
         do {
             guard try store.read(url) == discard else { throw TaskWorktreeCleanupStore.StoreError.invalidRecord }
-            if !store.ownership.owns(discard) {
+            switch store.ownership.ownershipState(discard) {
+            case .owned: break
+            // Unknown, never foreign: the record waits for a retry.
+            case .unreadable: return false
+            case .notOwned:
                 switch creationMarker(discard) {
                 case .ours: try store.ownership.record(.init(discard))
                 case .unreadable: return false
@@ -338,7 +342,9 @@ enum TaskWorktreeCleanupService {
             do {
                 let discard = try journal.read(url)
                 guard !activeRecords.contains(activeKey(journal.recordURL(for: discard))) else { continue }
-                let owned = journal.ownership.owns(discard)
+                let ownership = journal.ownership.ownershipState(discard)
+                if ownership == .unreadable { continue }
+                let owned = ownership == .owned
                 let marker = owned ? .ours : creationMarker(discard)
                 // A marker that can't be read is retried, never taken as foreign.
                 if !owned, marker == .unreadable { continue }
