@@ -452,6 +452,34 @@ struct NewTaskWorktreeIsolationTests {
         #expect(moved.access == .readOnly)
     }
 
+    @Test("A saved writable mount of a sibling worktree, or of a folder holding one, is read-only")
+    func savedMountOfSiblingWorktreeIsReadOnly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        let path = try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+        let sibling = fixture.root.appendingPathComponent("Siblings/App-other", isDirectory: true)
+        try FileManager.default.createDirectory(at: sibling.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fixture.git(["worktree", "add", "--quiet", "--detach", sibling.path, "HEAD"], at: repository)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [
+                ExecutionEnvironmentMount(hostPath: sibling.path, containerPath: "/sibling", access: .readWrite, role: .additionalPath),
+                ExecutionEnvironmentMount(
+                    hostPath: sibling.deletingLastPathComponent().path, containerPath: "/siblings", access: .readWrite, role: .additionalPath
+                )
+            ]
+        )
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
+        #expect(mounts.first { $0.containerPath == "/sibling" }?.access == .readOnly)
+        #expect(mounts.first { $0.containerPath == "/siblings" }?.access == .readOnly)
+        #expect(mounts.first { $0.role == .workspace }?.access == .readWrite)
+    }
+
     @Test("A saved alias of a linked source's shared Git directory is read-only")
     func savedAliasOfSharedGitDirectoryIsReadOnly() async throws {
         let fixture = try Fixture()

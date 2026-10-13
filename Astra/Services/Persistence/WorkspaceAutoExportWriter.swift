@@ -27,13 +27,23 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
         return Ticket(workspaceID: workspaceID, generation: generations[workspaceID, default: 0])
     }
 
-    /// Runs `write` only while no `retire` came after `ticket`, holding the
-    /// gate across it. False when the write was dropped.
-    func writeIfCurrent(_ ticket: Ticket, _ write: () throws -> Void) throws -> Bool {
+    /// Writes `data` to `url` only while no `retire` came after `ticket`.
+    /// The slow part, writing the bytes, happens outside the gate, into a
+    /// temporary file beside `url`; the gate is held only to check the
+    /// generation and rename that file into place, so a `retire` on the main
+    /// actor never waits on a stalled volume, and no write lands after it.
+    /// False when the write was dropped.
+    func writeIfCurrent(_ ticket: Ticket, data: Data, to url: URL) throws -> Bool {
+        let staging = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).astra-export-\(UUID().uuidString)")
+        try data.write(to: staging)
+        defer { try? FileManager.default.removeItem(at: staging) }
         lock.lock()
         defer { lock.unlock() }
         guard generations[ticket.workspaceID, default: 0] == ticket.generation else { return false }
-        try write()
+        guard Darwin.rename(staging.path, url.path) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
         return true
     }
 
@@ -71,9 +81,7 @@ actor WorkspaceAutoExportWriter {
     ) {
         do {
             let data = try encoder.encode(config)
-            let written = try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket) {
-                try data.write(to: url, options: .atomic)
-            }
+            let written = try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url)
             if !written {
                 AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                     "result": "auto_export_skipped",

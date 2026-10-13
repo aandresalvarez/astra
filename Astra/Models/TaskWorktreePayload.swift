@@ -447,6 +447,18 @@ public enum TaskWorktreeBinding {
         return registered.commonDirectory
     }
 
+    /// The checkouts `commonDirectory` registers as linked worktrees, by the
+    /// paths their registry entries record.
+    public static func registeredCheckouts(commonDirectory: String) -> [String] {
+        let registry = URL(fileURLWithPath: commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
+        let entries = (try? FileManager.default.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil)) ?? []
+        return entries.compactMap { entry in
+            guard let raw = try? String(contentsOf: entry.appendingPathComponent("gitdir"), encoding: .utf8),
+                  let dotGit = resolvedGitPath(raw, relativeTo: entry.path) else { return nil }
+            return (dotGit as NSString).deletingLastPathComponent
+        }
+    }
+
     /// The registry entry of `checkout` inside `commonDirectory`, where Git
     /// keeps that checkout's own index, HEAD, and logs, when the entry and
     /// the checkout's `.git` file point at each other.

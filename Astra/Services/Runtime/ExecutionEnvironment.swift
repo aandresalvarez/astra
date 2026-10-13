@@ -567,15 +567,20 @@ enum DockerExecutionPlanner {
             let sources = taskAccess.protectedSourceCheckouts.map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
             }
+            let checkout = ExecutionSandbox.canonicalize(currentDirectory)
+                ?? WorkspacePathPresentation.standardizedPath(currentDirectory)
             // The shared Git directory is protected the same way, even where
             // it lies outside the source checkout, as a linked checkout's
             // does: a saved alias of it would reach the source's index. What
             // Git in this checkout writes there is mounted writable below.
-            let protected = sources + taskAccess.runtimeWorktreeGitMetadataPaths.map {
+            // Sibling worktrees of the same repository too: the run holds no
+            // claim on them, so a saved mount of one, or of a folder holding
+            // them such as the worktrees root, is read-only.
+            let siblings = taskAccess.runtimeWorktreeGitMetadataPaths.flatMap(TaskWorktreeBinding.registeredCheckouts)
+                .map { ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0) }
+            let protected = sources + (taskAccess.runtimeWorktreeGitMetadataPaths + siblings).map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
-            }
-            let checkout = ExecutionSandbox.canonicalize(currentDirectory)
-                ?? WorkspacePathPresentation.standardizedPath(currentDirectory)
+            }.filter { $0 != checkout }
             let writableNestedRepositories = Set(taskAccess.runtimeWritablePaths.map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
             })
