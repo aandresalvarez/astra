@@ -62,6 +62,32 @@ struct NewTaskWorktreeOwnStateTests {
         try fixture.ownership.clearRemoving(discard)
     }
 
+    @Test("An ownership record that can't be read keeps the cleanup record for a retry")
+    func unreadableOwnershipKeepsCleanupRecord() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        try fixture.cleanupStore.record(discard)
+        context.delete(draft)
+        try context.save()
+        #expect(fixture.ownership.ownershipState(discard) == .owned)
+        let ownership = fixture.ownership.directory.path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: ownership)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ownership) }
+        #expect(fixture.ownership.ownershipState(discard) == .unreadable)
+        // Unknown, never foreign: nothing is removed and nothing is dropped.
+        #expect(!(await TaskWorktreeCleanupService.process(
+            discard, store: fixture.cleanupStore, modelContext: context, resourceQueue: fixture.resourceQueue
+        )))
+        #expect(try fixture.cleanupStore.pendingURLs().count == 1)
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ownership)
+        #expect(fixture.ownership.ownershipState(discard) == .owned)
+    }
+
     @Test("A checkout whose shared Git directory can't be resolved gets no branch gate, on either side")
     func unresolvableRepositoryHasNoGate() throws {
         let fixture = try Fixture()

@@ -1154,11 +1154,16 @@ public enum WorkspaceRecoveryService {
         }
         remainingBudget -= 1
 
-        var isDirectory: ObjCBool = false
-        guard hostFileAccess.fileExists(at: root, isDirectory: &isDirectory, intent: intent),
-              isDirectory.boolValue else {
+        // Only a folder confirmed missing is empty; one that can't be
+        // checked, as behind an ACL, may hold the only mirrors of owners.
+        let type: FileAttributeType?
+        do {
+            type = try hostFileAccess.itemType(at: root, intent: intent)
+        } catch {
+            complete = false
             return []
         }
+        guard type == .typeDirectory else { return [] }
 
         let directConfig = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
         let legacyConfig = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root.path))

@@ -54,6 +54,23 @@ public struct HostFileAccessBroker {
         return fileManager.fileExists(atPath: url.path, isDirectory: isDirectory)
     }
 
+    /// The type of the item at `url`, following links, or nil only when it
+    /// is confirmed missing or the policy skips it. A stat that fails for
+    /// another reason throws: the item may be there.
+    public func itemType(at url: URL, intent: HostFileAccessIntent) throws -> FileAttributeType? {
+        guard !shouldSkip(url, intent: intent) else { return nil }
+        do {
+            return try fileManager.attributesOfItem(atPath: url.resolvingSymlinksInPath().path)[.type] as? FileAttributeType
+        } catch {
+            let nsError = error as NSError
+            let missing = (nsError.domain == NSCocoaErrorDomain
+                && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code))
+                || (nsError.domain == NSPOSIXErrorDomain && [Int(ENOENT), Int(ENOTDIR)].contains(nsError.code))
+            if missing { return nil }
+            throw error
+        }
+    }
+
     public func readData(at url: URL, intent: HostFileAccessIntent) throws -> Data {
         try requireAccess(to: url, intent: intent)
         guard let data = fileManager.contents(atPath: url.path) else {

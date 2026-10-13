@@ -923,6 +923,24 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(WorkspaceRecoveryService.incompleteMarkerPresent(marker))
     }
 
+    @Test("A recovery root that can't be checked leaves the scan incomplete; a missing one doesn't")
+    func uncheckableRecoveryRootIsIncomplete() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let missing = fixture.root.appendingPathComponent("NotThere/Workspaces")
+        #expect(WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [missing.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        ).complete)
+        let locked = fixture.root.appendingPathComponent("Locked", isDirectory: true)
+        let root = locked.appendingPathComponent("Workspaces", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+        #expect(!WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [root.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        ).complete)
+    }
+
     @Test("Recovery trusts a nonempty store without scanning only while no deletion is pending")
     func recoveryShortcutWaitsForPendingDeletions() {
         #expect(WorkspaceRecoveryService.storeVouchesWithoutScan(

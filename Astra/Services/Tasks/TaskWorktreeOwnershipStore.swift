@@ -55,11 +55,27 @@ struct TaskWorktreeOwnershipStore: Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
+    enum OwnershipState { case owned, notOwned, unreadable }
+
+    /// Whether this install created exactly this worktree, branch, and base.
+    /// A missing, mismatched, or corrupt record is not owned, which waiting
+    /// won't change; one that can't be read for the moment, as behind an
+    /// ACL or an I/O error, is unknown, so a cleanup keeps its record.
+    func ownershipState(_ discard: TaskWorktreeDiscard) -> OwnershipState {
+        let expected = Record(discard)
+        do {
+            return try read(forWorktree: expected.worktreePath) == expected ? .owned : .notOwned
+        } catch is DecodingError {
+            return .notOwned
+        } catch {
+            return .unreadable
+        }
+    }
+
     /// True only when this install created exactly this worktree, branch, and
     /// base. A missing, unreadable, or mismatched record means not owned.
     func owns(_ discard: TaskWorktreeDiscard) -> Bool {
-        let expected = Record(discard)
-        return (try? read(forWorktree: expected.worktreePath)) == expected
+        ownershipState(discard) == .owned
     }
 
     /// Drops the record once its worktree is gone, so a later checkout at the
@@ -110,8 +126,13 @@ struct TaskWorktreeOwnershipStore: Sendable {
 
     private func read(forWorktree path: String) throws -> Record? {
         let url = recordURL(forWorktree: path)
-        guard FileManager.default.fileExists(atPath: url.path),
-              try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true,
+        // A record that can't even be checked throws, never reads as absent.
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch where WorkspaceFileLayout.isMissingFile(error) {
+            return nil
+        }
+        guard try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true,
               url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
                 == directory.resolvingSymlinksInPath().standardizedFileURL.path else {
             return nil
