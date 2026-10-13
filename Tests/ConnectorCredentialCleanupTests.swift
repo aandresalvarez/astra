@@ -224,6 +224,10 @@ struct ConnectorCredentialCleanupTests {
         let trusted = try #require(app.range(of: "WorkspaceRecoveryTrust.set(.trusted)"))
         let vouched = try #require(app.range(of: "workspaceRecoveryTrusted = true"))
         #expect(pending.lowerBound < recovery.lowerBound)
+        // Pending connector cleanup keeps launch recovery from trusting a
+        // nonempty store without scanning, as worktree cleanup does.
+        #expect(app.contains("let connectorCleanup = ConnectorCredentialCleanupStore(for: modelContext).map"))
+        #expect(app.contains("|| connectorCleanup"))
         #expect(vouched.upperBound <= trusted.lowerBound)
         #expect(WorkspaceRecoveryTrust.state == .notTracked)
     }

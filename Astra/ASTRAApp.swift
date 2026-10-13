@@ -906,11 +906,17 @@ public struct ASTRAApp: App {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
-            // Worktree cleanup and interrupted creations read pins from the
-            // store too, so while any is pending recovery scans for mirrors.
+            // Worktree cleanup, interrupted creations, and connector credential
+            // cleanup read owners from the store too, so while any is pending
+            // recovery scans for mirrors.
             let worktreeCleanup = TaskWorktreeCleanupStore()
+            // An outbox that can't be listed counts as pending.
+            let connectorCleanup = ConnectorCredentialCleanupStore(for: modelContext).map { outbox in
+                outbox.pending().map { !$0.records.isEmpty || !$0.complete } ?? true
+            } ?? false
             let pendingWorktreeCleanup = ((try? worktreeCleanup.pendingURLs()).map { !$0.isEmpty } ?? true)
                 || ((try? worktreeCleanup.ownership.creationJournal.pendingURLs()).map { !$0.isEmpty } ?? true)
+                || connectorCleanup
             let recovery = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
                 excludingConfigFiles: unsettledDeletionMirrors,
