@@ -1168,10 +1168,21 @@ public enum WorkspaceRecoveryService {
         let directConfig = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
         let legacyConfig = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root.path))
         var results: [URL] = []
-        if hostFileAccess.fileExists(at: directConfig, intent: intent) {
-            results.append(directConfig)
-        } else if hostFileAccess.fileExists(at: legacyConfig, intent: intent) {
-            results.append(legacyConfig)
+        // Nil when the probe fails for another reason than a missing file:
+        // the current mirror may be there, so neither it nor a legacy one is
+        // taken in its place, and the scan isn't complete.
+        func present(_ url: URL) -> Bool? {
+            do { return try hostFileAccess.itemType(at: url, intent: intent) != nil } catch { return nil }
+        }
+        switch present(directConfig) {
+        case true?: results.append(directConfig)
+        case nil: complete = false
+        case false?:
+            switch present(legacyConfig) {
+            case true?: results.append(legacyConfig)
+            case nil: complete = false
+            case false?: break
+            }
         }
 
         guard maxDepth > 0 else { return results }
