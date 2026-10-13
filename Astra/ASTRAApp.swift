@@ -906,10 +906,16 @@ public struct ASTRAApp: App {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
+            // Worktree cleanup and interrupted creations read pins from the
+            // store too, so while any is pending recovery scans for mirrors.
+            let worktreeCleanup = TaskWorktreeCleanupStore()
+            let pendingWorktreeCleanup = ((try? worktreeCleanup.pendingURLs()).map { !$0.isEmpty } ?? true)
+                || ((try? worktreeCleanup.ownership.creationJournal.pendingURLs()).map { !$0.isEmpty } ?? true)
             let recovery = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
                 excludingConfigFiles: unsettledDeletionMirrors,
                 incompleteMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker,
+                pendingCleanup: pendingWorktreeCleanup,
                 excludingItemIdentities: unsettledDeletionMirrorIDs,
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }

@@ -519,6 +519,7 @@ public enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         incompleteMarker: URL? = nil,
+        pendingCleanup: Bool = false,
         excludingItemIdentities excludedIdentities: Set<String> = [],
         excludedByIdentity: @escaping @MainActor ([URL]) -> Void = { _ in },
         itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
@@ -536,7 +537,7 @@ public enum WorkspaceRecoveryService {
             if storeVouchesWithoutScan(
                 extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots,
                 resumingPartialRecovery: resumingPartialRecovery,
-                pendingDeletion: !excluded.isEmpty || !excludedIdentities.isEmpty,
+                pendingCleanup: pendingCleanup || !excluded.isEmpty || !excludedIdentities.isEmpty,
                 hasWorkspaces: !fetchExistingWorkspaces(modelContext: modelContext).isEmpty
             ) {
                 return true
@@ -629,14 +630,15 @@ public enum WorkspaceRecoveryService {
     }
 
     /// Whether a launch may trust a store that already holds workspaces
-    /// without scanning for mirrors. Never while a deletion is pending: its
-    /// mirror may have moved with its folder, and only the scan finds it by
-    /// identity, so settlement would otherwise leave it to be reimported.
+    /// without scanning for mirrors. Never while cleanup is pending, a
+    /// workspace deletion or a worktree cleanup or creation: each decides
+    /// ownership from the store, and a workspace only a mirror holds, or a
+    /// deletion's mirror moved with its folder, is found only by the scan.
     static func storeVouchesWithoutScan(
         extraRoots: [String], includeDefaultRoots: Bool, resumingPartialRecovery: Bool,
-        pendingDeletion: Bool, hasWorkspaces: Bool
+        pendingCleanup: Bool, hasWorkspaces: Bool
     ) -> Bool {
-        extraRoots.isEmpty && includeDefaultRoots && !resumingPartialRecovery && !pendingDeletion && hasWorkspaces
+        extraRoots.isEmpty && includeDefaultRoots && !resumingPartialRecovery && !pendingCleanup && hasWorkspaces
     }
 
     /// The configured folders a recovery scans: the workspaces root the
@@ -1165,8 +1167,6 @@ public enum WorkspaceRecoveryService {
         }
         guard type == .typeDirectory else { return [] }
 
-        let directConfig = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
-        let legacyConfig = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root.path))
         var results: [URL] = []
         // Nil when the probe fails for another reason than a missing file:
         // the current mirror may be there, so neither it nor a legacy one is
@@ -1174,16 +1174,21 @@ public enum WorkspaceRecoveryService {
         func present(_ url: URL) -> Bool? {
             do { return try hostFileAccess.itemType(at: url, intent: intent) != nil } catch { return nil }
         }
-        switch present(directConfig) {
-        case true?: results.append(directConfig)
-        case nil: complete = false
-        case false?:
-            switch present(legacyConfig) {
-            case true?: results.append(legacyConfig)
+        func appendMirror(of folder: URL) {
+            let current = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+            let legacy = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: folder.path))
+            switch present(current) {
+            case true?: results.append(current)
             case nil: complete = false
-            case false?: break
+            case false?:
+                switch present(legacy) {
+                case true?: results.append(legacy)
+                case nil: complete = false
+                case false?: break
+                }
             }
         }
+        appendMirror(of: root)
 
         guard maxDepth > 0 else { return results }
         guard let listing = try? hostFileAccess.contentsOfDirectoryReportingSkipped(
@@ -1203,7 +1208,12 @@ public enum WorkspaceRecoveryService {
         for child in children {
             guard !Task.isCancelled else { complete = false; break }
             guard remainingBudget > 0 else { complete = false; break }
-            guard !skippedRecoveryDirectoryNames.contains(child.lastPathComponent) else { continue }
+            // A workspace may itself be named like a build folder: its own
+            // mirror is still found, only nothing beneath it is scanned.
+            if skippedRecoveryDirectoryNames.contains(child.lastPathComponent) {
+                appendMirror(of: child)
+                continue
+            }
             guard !hostFileAccess.shouldSkip(child, intent: intent) else {
                 continue
             }

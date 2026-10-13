@@ -967,6 +967,34 @@ struct NewTaskWorktreeIsolationTests {
 
     // MARK: - Templates
 
+    @Test("A template whose conversation checkout is reserved creates nothing rather than run elsewhere")
+    func templateRefusesReservedCheckout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "/template review", workspace: workspace)
+        let path = try await prepare(draft, repository, context: context, fixture: fixture)
+        let template = TaskTemplate(name: "Review", mainGoal: "Review files", workspace: workspace)
+        template.beforeGoal = "Prepare"
+        context.insert(template)
+        let tasksBefore = try context.fetchCount(FetchDescriptor<AgentTask>())
+        let reservation = try #require(TaskWorktreeCheckoutReservation.acquire(path))
+        defer { TaskWorktreeCheckoutReservation.release(reservation) }
+        let creation = WorkspaceCommandService.createTemplateTasks(
+            template: template, taskTitle: "Review files", variables: [:], selectedSkills: [],
+            defaultModel: "", defaultRuntimeID: "claude_code", workspace: workspace,
+            modelContext: context, source: "test", checkoutSource: draft
+        )
+        #expect(creation.checkoutUnavailable)
+        #expect(!creation.initialRequestSubmitted)
+        #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == tasksBefore)
+        #expect(try context.fetch(FetchDescriptor<TaskTurnRequest>()).isEmpty)
+    }
+
     @Test("Template hooks are injected and restored in the admitted worktree, leaving the source untouched")
     func templateHooksStayInBoundWorktree() async throws {
         let fixture = try Fixture()
