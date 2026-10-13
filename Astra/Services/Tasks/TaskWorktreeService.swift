@@ -764,7 +764,10 @@ enum TaskWorktreeService {
                     identity: binding.identity,
                     commonDirectoryID: binding.commonDirectoryID
                 )
-                guard ownership.owns(discard) else {
+                // One whose ownership can't be read for now is still queued:
+                // cleanup checks again, and keeps its record while it can't
+                // tell, rather than this deletion leaving no intent at all.
+                guard ownership.ownershipState(discard) != .notOwned else {
                     AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
                         "worktree": binding.worktreePath,
                         "branch": binding.branch,

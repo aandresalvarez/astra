@@ -70,14 +70,17 @@ struct NewTaskWorktreeOwnStateTests {
         let store = try Fixture.container()
         let context = store.mainContext
         let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
-        try fixture.cleanupStore.record(discard)
-        context.delete(draft)
-        try context.save()
         #expect(fixture.ownership.ownershipState(discard) == .owned)
         let ownership = fixture.ownership.directory.path
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: ownership)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ownership) }
         #expect(fixture.ownership.ownershipState(discard) == .unreadable)
+        // A deletion taken now still queues the worktree, so cleanup can retry.
+        #expect(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).map(\.worktreePath)
+            == [discard.worktreePath])
+        try fixture.cleanupStore.record(discard)
+        context.delete(draft)
+        try context.save()
         // Unknown, never foreign: nothing is removed and nothing is dropped.
         #expect(!(await TaskWorktreeCleanupService.process(
             discard, store: fixture.cleanupStore, modelContext: context, resourceQueue: fixture.resourceQueue
