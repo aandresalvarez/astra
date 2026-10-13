@@ -986,6 +986,18 @@ struct NewTaskWorktreeLifecycleTests {
         )
         #expect(scan.configs.map { WorkspacePathPresentation.resolvedPath($0.path) } == [WorkspacePathPresentation.resolvedPath(mirror.path)])
         #expect(scan.complete)
+        // A hidden workspace folder is found by its own mirror too.
+        let hidden = root.appendingPathComponent(".client", isDirectory: true)
+        let hiddenMirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: hidden.path))
+        try FileManager.default.createDirectory(at: hiddenMirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{}".write(to: hiddenMirror, atomically: true, encoding: .utf8)
+        let withHidden = WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [root.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        )
+        #expect(withHidden.configs.map { WorkspacePathPresentation.resolvedPath($0.path) }.contains(
+            WorkspacePathPresentation.resolvedPath(hiddenMirror.path)
+        ))
+        #expect(withHidden.complete)
         // Startup scans while worktree cleanup or creation records are pending.
         let app = try String(
             contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

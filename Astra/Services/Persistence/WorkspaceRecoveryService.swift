@@ -1223,9 +1223,11 @@ public enum WorkspaceRecoveryService {
                 complete = false
                 continue
             }
-            guard values.isDirectory == true,
-                  values.isHidden != true,
-                  values.isPackage != true else {
+            guard values.isDirectory == true else { continue }
+            // A hidden or package folder isn't scanned beneath, but it may be
+            // a workspace itself, so its own mirror is still probed.
+            guard values.isHidden != true, values.isPackage != true else {
+                appendMirror(of: child)
                 continue
             }
             results.append(
