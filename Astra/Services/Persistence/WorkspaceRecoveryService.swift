@@ -1190,7 +1190,10 @@ public enum WorkspaceRecoveryService {
         }
         appendMirror(of: root)
 
-        guard maxDepth > 0 else { return results }
+        // At the depth limit the children are still probed for their own
+        // mirrors, one level further, but not descended into: a workspace
+        // just below the limit is found rather than left out unnoticed.
+        let atDepthLimit = maxDepth == 0
         guard let listing = try? hostFileAccess.contentsOfDirectoryReportingSkipped(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey],
@@ -1224,6 +1227,10 @@ public enum WorkspaceRecoveryService {
                 continue
             }
             guard values.isDirectory == true else { continue }
+            if atDepthLimit {
+                appendMirror(of: child)
+                continue
+            }
             // A hidden or package folder isn't scanned beneath, but it may be
             // a workspace itself, so its own mirror is still probed.
             guard values.isHidden != true, values.isPackage != true else {

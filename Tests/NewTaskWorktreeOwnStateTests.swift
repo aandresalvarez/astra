@@ -35,6 +35,36 @@ struct NewTaskWorktreeOwnStateTests {
         #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
     }
 
+    @Test("A cleanup outbox that can't be checked throws rather than listing as empty")
+    func uncheckableCleanupOutboxThrows() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let parent = fixture.root.appendingPathComponent("Outbox", isDirectory: true)
+        let store = TaskWorktreeCleanupStore(directory: parent.appendingPathComponent("Records"))
+        #expect(try store.pendingURLs().isEmpty)
+        try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent.path) }
+        #expect(throws: (any Error).self) { try store.pendingURLs() }
+    }
+
+    @Test("A Git directory whose HEAD can't be checked resolves nothing, never the repository storing it")
+    func uncheckableGitDirectoryStopsAncestrySearch() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let stored = repository.appendingPathComponent(".git/modules/lib", isDirectory: true)
+        for folder in ["objects", "refs"] {
+            try FileManager.default.createDirectory(at: stored.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        try "ref: refs/heads/main\n".write(to: stored.appendingPathComponent("HEAD"), atomically: true, encoding: .utf8)
+        #expect(GitCheckoutLayout.commonDirectory(for: stored.path).map(WorkspacePathPresentation.resolvedPath)
+            == WorkspacePathPresentation.resolvedPath(stored.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: stored.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stored.path) }
+        #expect(GitCheckoutLayout.commonDirectory(for: stored.path) == nil)
+    }
+
     @Test("A removal mark or cleanup record that can't be checked is never taken as absent")
     func uncheckableMarksAndRecordsFailClosed() async throws {
         let fixture = try Fixture()
@@ -166,8 +196,19 @@ struct NewTaskWorktreeOwnStateTests {
         try context.save()
         try fixture.ownership.markRemoving(discard)
         #expect(fixture.ownership.removalState(discard) == .marked)
-        // The folder is gone while Git still registers it.
-        try FileManager.default.moveItem(atPath: discard.worktreePath, toPath: discard.worktreePath + "-gone")
+        // The mark is written before Git removes anything, so a folder gone
+        // while Git still registers it is kept even though it is marked: it
+        // may have been moved after a quit, not removed.
+        let moved = discard.worktreePath + "-moved"
+        try FileManager.default.moveItem(atPath: discard.worktreePath, toPath: moved)
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("worktree_missing"))
+        #expect(try fixture.git(["status", "--porcelain"], at: URL(fileURLWithPath: moved)).isEmpty)
+        // Once Git's entry is gone, the resumed branch phase reads the mark;
+        // one it can't read is retried, never taken as unmarked.
+        try FileManager.default.moveItem(atPath: moved, toPath: discard.worktreePath)
+        try fixture.git(["worktree", "remove", "--force", discard.worktreePath], at: repository)
         let ownership = fixture.ownership.directory.path
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: ownership)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ownership) }
@@ -176,6 +217,36 @@ struct NewTaskWorktreeOwnStateTests {
             discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
         ) == .retry("removal_mark_unreadable"))
         #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
+    @Test("A recreated worktree verifies against Git's identity even when an older incarnation sorts first")
+    func olderSamePathIncarnationIsPassedOver() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, _) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let current = try #require(draft.events.first { $0.hasType(TaskEventTypes.Task.worktreePrepared) })
+        guard case .bound = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("Expected the draft to be bound")
+            return
+        }
+        // Another incarnation at the same path, with an identity Git no
+        // longer registers, ordered first, as tied whole-second timestamps
+        // from a mirror can leave it.
+        var fields = try #require(try JSONSerialization.jsonObject(with: Data(current.payload.utf8)) as? [String: Any])
+        #expect(fields["identity"] != nil)
+        fields["identity"] = UUID().uuidString
+        let stale = String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+        let older = TaskEvent(task: draft, eventType: TaskEventTypes.Task.worktreePrepared, payload: stale)
+        older.timestamp = current.timestamp.addingTimeInterval(1)
+        context.insert(older)
+        guard case .bound(_, let event, _) = TaskWorktreeBinding.state(of: draft) else {
+            Issue.record("The incarnation Git registers must still bind")
+            return
+        }
+        #expect(event.id == current.id)
     }
 
     @Test("A derived task isn't created onto another checkout when its source's is reserved")

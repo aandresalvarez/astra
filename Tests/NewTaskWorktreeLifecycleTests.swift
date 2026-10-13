@@ -986,6 +986,18 @@ struct NewTaskWorktreeLifecycleTests {
         )
         #expect(scan.configs.map { WorkspacePathPresentation.resolvedPath($0.path) } == [WorkspacePathPresentation.resolvedPath(mirror.path)])
         #expect(scan.complete)
+        // One just below the depth limit is found by its own mirror.
+        let deep = root.appendingPathComponent("a/b/c/d/deep", isDirectory: true)
+        let deepMirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: deep.path))
+        try FileManager.default.createDirectory(at: deepMirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{}".write(to: deepMirror, atomically: true, encoding: .utf8)
+        let withDeep = WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [root.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        )
+        #expect(withDeep.configs.map { WorkspacePathPresentation.resolvedPath($0.path) }.contains(
+            WorkspacePathPresentation.resolvedPath(deepMirror.path)
+        ))
+        #expect(withDeep.complete)
         // A hidden workspace folder is found by its own mirror too.
         let hidden = root.appendingPathComponent(".client", isDirectory: true)
         let hiddenMirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: hidden.path))
