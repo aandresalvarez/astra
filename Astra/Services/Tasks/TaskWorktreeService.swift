@@ -1041,15 +1041,11 @@ enum TaskWorktreeService {
         }
         // A registered checkout whose folder is gone may have been moved, not
         // deleted: Git would prune it without `--force`, breaking the moved
-        // checkout's `.git` and losing its index. Only a removal this cleanup
-        // started vouches that it is gone.
-        if !exists, isRegistered {
-            switch ownership?.removalState(discard) ?? .notMarked {
-            case .marked: break
-            case .unreadable: return kept("removal_mark_unreadable", retry: true)
-            case .notMarked: return kept("worktree_missing")
-            }
-        }
+        // checkout's `.git` and losing its index. The removal mark doesn't
+        // tell either, as it is written before `git worktree remove` runs and
+        // so records intent, not a removal. Only Git's entry being gone shows
+        // one happened, which the resumed branch phase above checks.
+        if !exists, isRegistered { return kept("worktree_missing") }
         if exists || isRegistered {
             do {
                 try ownership?.markRemoving(discard)

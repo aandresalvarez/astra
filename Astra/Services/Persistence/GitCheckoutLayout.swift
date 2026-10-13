@@ -29,13 +29,27 @@ public enum GitCheckoutLayout {
         guard let standardized = standardizedPath(path) else { return nil }
         var candidate = URL(fileURLWithPath: standardized, isDirectory: true)
         while true {
-            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent(".git").path) {
-                return commonDirectory(ofWorktreeRoot: candidate.path)
-            }
-            if let common = commonDirectory(ofGitDirectory: candidate.path) { return common }
+            // A probe that fails for another reason than a missing file stops
+            // the search with no identity: going on upward would take the
+            // repository that stores this one, as a superproject does.
+            guard let dotGit = itemExists(candidate.appendingPathComponent(".git").path),
+                  let head = itemExists(candidate.appendingPathComponent("HEAD").path) else { return nil }
+            if dotGit { return commonDirectory(ofWorktreeRoot: candidate.path) }
+            if head, let common = commonDirectory(ofGitDirectory: candidate.path) { return common }
             let parent = candidate.deletingLastPathComponent()
             guard parent.path != candidate.path else { return nil }
             candidate = parent
+        }
+    }
+
+    /// True when something is at `path`, following links; false only when
+    /// it is confirmed missing; nil when that can't be told.
+    private static func itemExists(_ path: String) -> Bool? {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+            return true
+        } catch {
+            return WorkspaceFileLayout.isMissingFile(error) ? false : nil
         }
     }
 

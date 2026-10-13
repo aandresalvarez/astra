@@ -168,15 +168,19 @@ public enum TaskWorktreeBinding {
         guard !events.isEmpty else { return .none }
         let pin = WorkspacePathPresentation.standardizedPath(pinned)
         var repositories: [String] = []
+        var samePathUnverified = false
         for event in events {
             switch event.decodePayload(as: TaskWorktreePayload.self) {
             case .success(let payload):
                 if WorkspacePathPresentation.standardizedPath(payload.worktreePath) == pin {
-                    guard repositoryIsConfigured(payload.repositoryPath, for: task),
-                          gitCommonDirectory(for: payload) != nil else {
-                        return .invalid("The configured repository does not register \(pinned) as a linked worktree.")
+                    if repositoryIsConfigured(payload.repositoryPath, for: task), gitCommonDirectory(for: payload) != nil {
+                        return .bound(payload, event: event, pinned: pinned)
                     }
-                    return .bound(payload, event: event, pinned: pinned)
+                    // An older incarnation at the same path, which a mirror's
+                    // whole-second timestamps can order first, is passed over
+                    // for one Git still registers; none verifying is invalid.
+                    samePathUnverified = true
+                    continue
                 }
                 if repositoryIsConfigured(payload.repositoryPath, for: task) {
                     repositories.append(payload.repositoryPath)
@@ -184,6 +188,9 @@ public enum TaskWorktreeBinding {
             case .failure(let error):
                 return .invalid(error.description)
             }
+        }
+        if samePathUnverified {
+            return .invalid("The configured repository does not register \(pinned) as a linked worktree.")
         }
         // Repository evidence, never a matching path: the configured
         // repository folder replaced by a plain folder is not its checkout.

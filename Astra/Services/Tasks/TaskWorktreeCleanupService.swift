@@ -64,8 +64,10 @@ struct TaskWorktreeCleanupStore: Sendable {
         return true
     }
 
+    /// Every pending record. Only an outbox confirmed missing is empty; one
+    /// that can't be checked throws, so startup never reads it as no work.
     func pendingURLs() throws -> [URL] {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        guard try GitService.attributesConfirmingAbsence(atPath: directory.path) != nil else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey]
         ).filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }
