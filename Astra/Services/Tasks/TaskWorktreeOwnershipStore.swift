@@ -107,11 +107,25 @@ struct TaskWorktreeOwnershipStore: Sendable {
         } catch where WorkspaceFileLayout.isMissingFile(error) {}
     }
 
+    enum RemovalMark { case marked, notMarked, unreadable }
+
+    /// Whether this cleanup marked the worktree's removal. A mark confirmed
+    /// missing, or naming another identity, isn't this one's; one that can't
+    /// be read for now is unknown, so cleanup retries rather than settling.
+    func removalState(_ discard: TaskWorktreeDiscard) -> RemovalMark {
+        guard let identity = discard.identity else { return .notMarked }
+        do {
+            let raw = try String(contentsOf: removalMarkerURL(forWorktree: discard.worktreePath), encoding: .utf8)
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines) == identity ? .marked : .notMarked
+        } catch where WorkspaceFileLayout.isMissingFile(error) {
+            return .notMarked
+        } catch {
+            return .unreadable
+        }
+    }
+
     func isRemoving(_ discard: TaskWorktreeDiscard) -> Bool {
-        guard let identity = discard.identity,
-              let raw = try? String(contentsOf: removalMarkerURL(forWorktree: discard.worktreePath), encoding: .utf8)
-        else { return false }
-        return raw.trimmingCharacters(in: .whitespacesAndNewlines) == identity
+        removalState(discard) == .marked
     }
 
     private func removalMarkerURL(forWorktree path: String) -> URL {

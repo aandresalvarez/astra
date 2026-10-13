@@ -153,7 +153,13 @@ enum TaskCorrectiveWorkService {
             "Validation assertion \(payload.failedAssertionID) passes when rerun."
         ]
         child.reasoningEffort = sourceTask.reasoningEffort
-        let inheritedBinding = TaskWorktreeBinding.inheritPin(from: sourceTask, into: child)
+        // Corrective work runs in the source's checkout or isn't created.
+        guard case .inherited(let inheritedBinding) = TaskWorktreeBinding.inheritCheckout(from: sourceTask, into: child) else {
+            AppLogger.audit(.taskFailed, category: "Validation", taskID: sourceTask.id, fields: [
+                "operation": "corrective_task_creation", "reason": "checkout_reserved"
+            ], level: .error)
+            return nil
+        }
         child.executionEnvironmentSnapshotJSON = sourceTask.executionEnvironmentSnapshotJSON
         child.queuePosition = (sourceTask.workspace?.tasks.map(\.queuePosition).max() ?? sourceTask.queuePosition) + 1
         modelContext.insert(child)

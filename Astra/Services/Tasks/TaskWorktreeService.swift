@@ -910,6 +910,8 @@ enum TaskWorktreeService {
                         return kept("unlock_failed", retry: true)
                     }
                 }
+            } else if ownership?.removalState(discard) == .unreadable {
+                return kept("removal_mark_unreadable", retry: true)
             } else if ownership?.isRemoving(discard) != true {
                 // Gone without this cleanup having removed it: nothing ties
                 // the branch to this worktree any more, so it is kept.
@@ -1033,7 +1035,13 @@ enum TaskWorktreeService {
         // deleted: Git would prune it without `--force`, breaking the moved
         // checkout's `.git` and losing its index. Only a removal this cleanup
         // started vouches that it is gone.
-        if !exists, isRegistered, ownership?.isRemoving(discard) != true { return kept("worktree_missing") }
+        if !exists, isRegistered {
+            switch ownership?.removalState(discard) ?? .notMarked {
+            case .marked: break
+            case .unreadable: return kept("removal_mark_unreadable", retry: true)
+            case .notMarked: return kept("worktree_missing")
+            }
+        }
         if exists || isRegistered {
             do {
                 try ownership?.markRemoving(discard)
