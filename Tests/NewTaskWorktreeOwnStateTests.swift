@@ -252,6 +252,29 @@ struct NewTaskWorktreeOwnStateTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [".astra-workspace.json"])
     }
 
+    @Test("A Repository-card branch operation in flight keeps cleanup from removing the worktree at all")
+    func cardOperationBlocksWorktreeRemoval() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        context.delete(draft)
+        try context.save()
+        // The card may switch this folder's branch after cleanup's checks, so
+        // nothing is removed while it holds the repository.
+        let card = try #require(TaskBranchDeletionGate.beginCardOperation(at: repository.path))
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .retry("repository_busy"))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath))
+        TaskBranchDeletionGate.endCardOperation(card)
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .removed)
+    }
+
     @Test("Deleting a task branch turned into a symbolic ref deletes only that ref, never its target")
     func symbolicTaskRefDeletionKeepsTarget() async throws {
         let fixture = try Fixture()

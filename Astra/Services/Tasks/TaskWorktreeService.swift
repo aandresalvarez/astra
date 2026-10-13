@@ -927,6 +927,14 @@ enum TaskWorktreeService {
                 else { return kept("repository_unverifiable") }
             }
         }
+        // From the checks of what the checkout holds and which branch it is
+        // on, through its removal and the branch deletion, the Repository
+        // card can't check out a branch here; it waits for any branch
+        // operation it started.
+        guard let deletionHold = TaskBranchDeletionGate.beginDeletion(at: repository) else {
+            return kept("repository_busy", retry: true)
+        }
+        defer { TaskBranchDeletionGate.endDeletion(deletionHold) }
         // A checkout that can't be checked is retried, never taken as gone:
         // that would skip every check of what it holds.
         let exists: Bool
@@ -1060,12 +1068,6 @@ enum TaskWorktreeService {
             }
             if let problem = referenceProblem() { return kept(problem, retry: true) }
         }
-        // From this check to the deletion, the Repository card can't check
-        // the branch out; it waits for any branch operation it started.
-        guard let deletionHold = TaskBranchDeletionGate.beginDeletion(at: repository) else {
-            return kept("repository_busy", retry: true)
-        }
-        defer { TaskBranchDeletionGate.endDeletion(deletionHold) }
         let remaining = await git.listWorktrees(at: repository)
         guard !remaining.isEmpty else { return kept("registry_unavailable", retry: true) }
         guard !remaining.contains(where: { $0.branch == discard.branch }) else { return kept("branch_in_use") }
