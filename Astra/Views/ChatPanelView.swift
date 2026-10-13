@@ -2024,6 +2024,10 @@ struct ChatPanelView: View {
                     checkoutSource: checkoutSource
                 )
                 activeSlashContext = nil
+                if creation.checkoutUnavailable {
+                    messages.append(ChatMessage(role: "assistant", content: "ASTRA is removing this conversation's worktree, so the template task wasn't created. Try again in a moment."))
+                    return
+                }
                 if !creation.initialRequestSubmitted { messages.append(ChatMessage(role: "assistant", content: "The template task was saved as a draft because ASTRA could not queue its initial run. Open the task and retry when ready.")) }
                 onTaskCreated?(creation.mainTask)
             }

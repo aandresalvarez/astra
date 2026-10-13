@@ -969,20 +969,45 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(blocked.configs.isEmpty)
     }
 
+    @Test("A workspace named like a build folder is still recovered; nothing beneath it is scanned")
+    func buildNamedWorkspaceIsRecovered() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let root = fixture.root.appendingPathComponent("Workspaces", isDirectory: true)
+        let named = root.appendingPathComponent("node_modules", isDirectory: true)
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: named.path))
+        let nested = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: named.appendingPathComponent("pkg").path))
+        for file in [mirror, nested] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "{}".write(to: file, atomically: true, encoding: .utf8)
+        }
+        let scan = WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: [root.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+        )
+        #expect(scan.configs.map { WorkspacePathPresentation.resolvedPath($0.path) } == [WorkspacePathPresentation.resolvedPath(mirror.path)])
+        #expect(scan.complete)
+        // Startup scans while worktree cleanup or creation records are pending.
+        let app = try String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8
+        )
+        #expect(app.contains("pendingCleanup: pendingWorktreeCleanup,"))
+    }
+
     @Test("Recovery trusts a nonempty store without scanning only while no deletion is pending")
     func recoveryShortcutWaitsForPendingDeletions() {
         #expect(WorkspaceRecoveryService.storeVouchesWithoutScan(
-            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingDeletion: false, hasWorkspaces: true
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingCleanup: false, hasWorkspaces: true
         ))
         // A pending deletion's mirror may have moved; only the scan finds it.
         #expect(!WorkspaceRecoveryService.storeVouchesWithoutScan(
-            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingDeletion: true, hasWorkspaces: true
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingCleanup: true, hasWorkspaces: true
         ))
         #expect(!WorkspaceRecoveryService.storeVouchesWithoutScan(
-            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: true, pendingDeletion: false, hasWorkspaces: true
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: true, pendingCleanup: false, hasWorkspaces: true
         ))
         #expect(!WorkspaceRecoveryService.storeVouchesWithoutScan(
-            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingDeletion: false, hasWorkspaces: false
+            extraRoots: [], includeDefaultRoots: true, resumingPartialRecovery: false, pendingCleanup: false, hasWorkspaces: false
         ))
     }
 

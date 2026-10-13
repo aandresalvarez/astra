@@ -80,11 +80,17 @@ public enum GitCheckoutLayout {
         guard let gitDirectory = resolvedGitDirectory else { return nil }
         // `commondir` exists only inside a linked worktree's admin directory
         // and normally holds a path relative to it (`../..`).
+        // Only one confirmed missing makes this Git directory its own common
+        // one, as a submodule's is; one that can't be read resolves nothing,
+        // never the admin directory standing in for the shared one.
         let commonDirFile = (gitDirectory as NSString).appendingPathComponent("commondir")
-        guard let raw = try? String(contentsOfFile: commonDirFile, encoding: .utf8) else {
-            return gitDirectory
+        let raw: String
+        do {
+            raw = try String(contentsOfFile: commonDirFile, encoding: .utf8)
+        } catch {
+            return WorkspaceFileLayout.isMissingFile(error) ? gitDirectory : nil
         }
-        return resolvedGitPath(raw, relativeTo: gitDirectory) ?? gitDirectory
+        return resolvedGitPath(raw, relativeTo: gitDirectory)
     }
 
     private static func linkedWorktreeGitDirectory(at dotGitFile: String, root: String) -> String? {

@@ -91,6 +91,26 @@ struct NewTaskWorktreeOwnStateTests {
         #expect(fixture.ownership.ownershipState(discard) == .owned)
     }
 
+    @Test("A linked checkout whose commondir can't be read resolves no shared directory, so no gate key")
+    func unreadableCommondirResolvesNothing() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let linked = fixture.root.appendingPathComponent("App-linked", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "--detach", linked.path, "HEAD"], at: repository)
+        #expect(GitCheckoutLayout.commonDirectory(for: linked.path).map(WorkspacePathPresentation.resolvedPath)
+            == WorkspacePathPresentation.resolvedPath(repository.appendingPathComponent(".git").path))
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: repository.appendingPathComponent(".git/worktrees"), includingPropertiesForKeys: nil
+        )
+        let commondir = try #require(entries.first).appendingPathComponent("commondir").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: commondir)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: commondir) }
+        #expect(GitCheckoutLayout.commonDirectory(for: linked.path) == nil)
+        #expect(TaskBranchDeletionGate.beginCardOperation(at: linked.path) == nil)
+        #expect(TaskBranchDeletionGate.beginDeletion(at: linked.path) == nil)
+    }
+
     @Test("A checkout whose shared Git directory can't be resolved gets no branch gate, on either side")
     func unresolvableRepositoryHasNoGate() throws {
         let fixture = try Fixture()
