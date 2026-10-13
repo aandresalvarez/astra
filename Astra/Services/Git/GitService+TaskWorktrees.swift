@@ -204,6 +204,13 @@ extension GitService {
 
     func indexHiddenEntriesChanged(at worktreePath: String) async -> Bool {
         do {
+            // Resolve-undo entries keep a resolved conflict's stages, which
+            // `git update-index --unresolve` restores; status never shows them
+            // and a removal deletes them with the index.
+            let resolveUndo = try await runGit(
+                at: worktreePath, arguments: ["ls-files", "--resolve-undo", "-z"], failureLogLevel: .warning
+            )
+            if !resolveUndo.isEmpty { return true }
             // `<tag> <mode> <object> <stage>\t<path>` per entry.
             let listing = try await runGit(
                 at: worktreePath, arguments: ["ls-files", "-v", "-s", "-z"], failureLogLevel: .warning

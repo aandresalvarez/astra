@@ -112,6 +112,77 @@ struct NewTaskWorktreeOwnStateTests {
         TaskBranchDeletionGate.endCardOperation(token)
     }
 
+    @Test("Resolve-undo entries a resolved conflict left in the index count as local work")
+    func resolveUndoEntriesCount() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let identity = ["-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid", "-c", "commit.gpgsign=false"]
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: repository.path) == false)
+        try fixture.git(identity + ["checkout", "--quiet", "-b", "side"], at: repository)
+        try fixture.commit("conflict.txt", contents: "side", message: "Side", at: repository)
+        try fixture.git(identity + ["checkout", "--quiet", "main"], at: repository)
+        try fixture.commit("conflict.txt", contents: "main", message: "Main", at: repository)
+        _ = try? fixture.git(identity + ["merge", "--quiet", "side"], at: repository)
+        // Resolved back to HEAD and the merge forgotten: status is clean,
+        // but the index keeps the conflict's stages for `--unresolve`.
+        try fixture.git(["checkout", "--quiet", "--ours", "conflict.txt"], at: repository)
+        try fixture.git(["add", "conflict.txt"], at: repository)
+        try fixture.git(["merge", "--quit"], at: repository)
+        #expect(try fixture.git(["status", "--porcelain"], at: repository).isEmpty)
+        #expect(try !fixture.git(["ls-files", "--resolve-undo"], at: repository).isEmpty)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: repository.path))
+    }
+
+    @Test("A removal mark that can't be read is retried, never taken as unmarked")
+    func unreadableRemovalMarkIsRetried() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        context.delete(draft)
+        try context.save()
+        try fixture.ownership.markRemoving(discard)
+        #expect(fixture.ownership.removalState(discard) == .marked)
+        // The folder is gone while Git still registers it.
+        try FileManager.default.moveItem(atPath: discard.worktreePath, toPath: discard.worktreePath + "-gone")
+        let ownership = fixture.ownership.directory.path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: ownership)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ownership) }
+        #expect(fixture.ownership.removalState(discard) == .unreadable)
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: context, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .retry("removal_mark_unreadable"))
+        #expect(try !fixture.git(["branch", "--list", discard.branch], at: repository).isEmpty)
+    }
+
+    @Test("A derived task isn't created onto another checkout when its source's is reserved")
+    func reservedSourceCheckoutRefusesInheritance() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (draft, discard) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let child = AgentTask(title: "Follow-up", goal: "Continue", workspace: draft.workspace)
+        let reservation = try #require(TaskWorktreeCheckoutReservation.acquire(discard.worktreePath))
+        defer { TaskWorktreeCheckoutReservation.release(reservation) }
+        guard case .refused = TaskWorktreeBinding.inheritCheckout(from: draft, into: child) else {
+            Issue.record("A reserved checkout must refuse inheritance")
+            return
+        }
+        #expect(child.executionRootPath != discard.worktreePath)
+        // Both derived-task paths stop on a refusal rather than continuing.
+        let base = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        for file in ["Astra/Services/Tasks/ChainedTaskSubmissionService.swift", "Astra/Services/Validation/TaskCorrectiveWorkService.swift"] {
+            let source = try String(contentsOf: base.appendingPathComponent(file), encoding: .utf8)
+            #expect(source.contains("guard case .inherited(let inheritedBinding) = TaskWorktreeBinding.inheritCheckout("))
+            #expect(!source.contains("TaskWorktreeBinding.inheritPin("))
+        }
+    }
+
     @Test("Deleting a task branch turned into a symbolic ref deletes only that ref, never its target")
     func symbolicTaskRefDeletionKeepsTarget() async throws {
         let fixture = try Fixture()

@@ -560,15 +560,29 @@ public enum TaskWorktreeBinding {
         return prepared.first
     }
 
+    public enum PinInheritance {
+        /// The source checkout is reserved by cleanup, so `target` wasn't
+        /// pinned: a derived task must not be created onto another checkout.
+        case refused
+        /// Pinned, with the copy of any prepared event to insert.
+        case inherited(TaskEvent?)
+    }
+
     /// Pins `target` to `source`'s checkout. Any prepared event travels with
     /// the pin, including an unreadable one, so a derived task cannot fall
-    /// back to the source checkout. Returns the copy for the caller to insert.
+    /// back to the source checkout.
+    public static func inheritCheckout(from source: AgentTask, into target: AgentTask) -> PinInheritance {
+        guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: target) else { return .refused }
+        guard let binding = eventForInheritance(from: source) else { return .inherited(nil) }
+        applyIsolation(to: target, for: binding)
+        return .inherited(copy(binding, to: target))
+    }
+
+    /// `inheritCheckout`'s copied event, or nil when refused or there is none.
     @discardableResult
     public static func inheritPin(from source: AgentTask, into target: AgentTask) -> TaskEvent? {
-        guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: target) else { return nil }
-        guard let binding = eventForInheritance(from: source) else { return nil }
-        applyIsolation(to: target, for: binding)
-        return copy(binding, to: target)
+        guard case .inherited(let binding) = inheritCheckout(from: source, into: target) else { return nil }
+        return binding
     }
 
     /// A task pinned to the worktree `binding` names runs in it directly:
