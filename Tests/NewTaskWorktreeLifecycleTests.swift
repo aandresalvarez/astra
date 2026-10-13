@@ -941,6 +941,34 @@ struct NewTaskWorktreeLifecycleTests {
         ).complete)
     }
 
+    @Test("A workspace whose mirror can't be checked leaves the scan incomplete, and no legacy mirror stands in")
+    func uncheckableMirrorProbeIsIncomplete() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let root = fixture.root.appendingPathComponent("Workspaces", isDirectory: true)
+        let workspace = root.appendingPathComponent("App", isDirectory: true)
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.path))
+        let legacy = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspace.path))
+        try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: legacy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "{}".write(to: mirror, atomically: true, encoding: .utf8)
+        try "{}".write(to: legacy, atomically: true, encoding: .utf8)
+        func scan() -> (configs: [URL], complete: Bool) {
+            WorkspaceRecoveryService.discoverWorkspaceConfigFilesReportingCompleteness(
+                extraRoots: [root.path], includeDefaultRoots: false, privacyHomeDirectory: fixture.root
+            )
+        }
+        #expect(scan().configs.map(\.lastPathComponent) == [mirror.lastPathComponent])
+        #expect(scan().complete)
+        // The current mirror's folder can't be entered, as behind an ACL.
+        let support = mirror.deletingLastPathComponent().path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: support)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: support) }
+        let blocked = scan()
+        #expect(!blocked.complete)
+        #expect(blocked.configs.isEmpty)
+    }
+
     @Test("Recovery trusts a nonempty store without scanning only while no deletion is pending")
     func recoveryShortcutWaitsForPendingDeletions() {
         #expect(WorkspaceRecoveryService.storeVouchesWithoutScan(
