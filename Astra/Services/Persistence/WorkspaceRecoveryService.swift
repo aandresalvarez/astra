@@ -523,6 +523,7 @@ public enum WorkspaceRecoveryService {
         excludingItemIdentities excludedIdentities: Set<String> = [],
         excludedByIdentity: @escaping @MainActor ([URL]) -> Void = { _ in },
         vouchedWithoutScan: @escaping @MainActor () -> Void = {},
+        registeredFolders: [String]? = [],
         itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {}
@@ -549,10 +550,22 @@ public enum WorkspaceRecoveryService {
             ) { group in
                 group.addTask(priority: .utility) {
                     guard !Task.isCancelled else { return ([], false) }
-                    return discoverWorkspaceConfigFilesReportingCompleteness(
+                    let scanned = discoverWorkspaceConfigFilesReportingCompleteness(
                         extraRoots: extraRoots,
                         includeDefaultRoots: includeDefaultRoots,
                         privacyHomeDirectory: privacyHomeDirectory
+                    )
+                    // Folders a mirror was written into, wherever they are,
+                    // so a workspace imported outside the roots is found too.
+                    // A registry that can't be read leaves the scan incomplete.
+                    guard let registeredFolders else { return (scanned.configs, false) }
+                    let registered = discoverRegisteredMirrors(
+                        in: registeredFolders, privacyHomeDirectory: privacyHomeDirectory
+                    )
+                    let found = Set(scanned.configs.map { normalizePath($0.path) })
+                    return (
+                        scanned.configs + registered.configs.filter { !found.contains(normalizePath($0.path)) },
+                        scanned.complete && registered.complete
                     )
                 }
                 return await group.next() ?? ([], false)
@@ -586,7 +599,9 @@ public enum WorkspaceRecoveryService {
             let candidates = configs.filter { !deletionMirrors.contains($0) && !unidentified.contains($0) }
             if !moved.isEmpty { excludedByIdentity(moved) }
             let loadedConfigs = await loadWorkspaceConfigs(
-                candidates, roots: recoveryRoots(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+                candidates,
+                roots: recoveryRoots(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+                    + (registeredFolders ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
             )
             guard !Task.isCancelled else { return false }
             // The marker goes down before anything is imported and comes off
@@ -889,6 +904,53 @@ public enum WorkspaceRecoveryService {
         return (configs, complete)
     }
 
+    /// The mirror in each of `folders`, probed directly rather than scanned,
+    /// and whether every probe could tell. A folder that is gone holds none.
+    public static func discoverRegisteredMirrors(
+        in folders: [String],
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> (configs: [URL], complete: Bool) {
+        let hostFileAccess = HostFileAccessBroker(homeDirectory: privacyHomeDirectory)
+        var complete = true
+        var configs: [URL] = []
+        for folder in folders {
+            guard !Task.isCancelled else { return (configs, false) }
+            let url = URL(fileURLWithPath: folder, isDirectory: true)
+            switch mirror(in: url, hostFileAccess: hostFileAccess, intent: .implicitScan(root: url)) {
+            case .found(let config): configs.append(config)
+            case .absent: break
+            case .unknown: complete = false
+            }
+        }
+        return (configs, complete)
+    }
+
+    private enum MirrorProbe {
+        case found(URL)
+        case absent
+        /// A probe failed for another reason than a missing file: the
+        /// current mirror may be there, so no legacy one is taken instead.
+        case unknown
+    }
+
+    private static func mirror(in folder: URL, hostFileAccess: HostFileAccessBroker, intent: HostFileAccessIntent) -> MirrorProbe {
+        func present(_ url: URL) -> Bool? {
+            do { return try hostFileAccess.itemType(at: url, intent: intent) != nil } catch { return nil }
+        }
+        let current = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        let legacy = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: folder.path))
+        switch present(current) {
+        case true?: return .found(current)
+        case nil: return .unknown
+        case false?:
+            switch present(legacy) {
+            case true?: return .found(legacy)
+            case nil: return .unknown
+            case false?: return .absent
+            }
+        }
+    }
+
     private struct ActiveStorePointer: Codable {
         let relativePath: String
         let compatibility: PersistentStoreCompatibilityMetadata?
@@ -1170,24 +1232,12 @@ public enum WorkspaceRecoveryService {
         guard type == .typeDirectory else { return [] }
 
         var results: [URL] = []
-        // Nil when the probe fails for another reason than a missing file:
-        // the current mirror may be there, so neither it nor a legacy one is
-        // taken in its place, and the scan isn't complete.
-        func present(_ url: URL) -> Bool? {
-            do { return try hostFileAccess.itemType(at: url, intent: intent) != nil } catch { return nil }
-        }
+        // A probe that can't tell leaves the scan incomplete.
         func appendMirror(of folder: URL) {
-            let current = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
-            let legacy = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: folder.path))
-            switch present(current) {
-            case true?: results.append(current)
-            case nil: complete = false
-            case false?:
-                switch present(legacy) {
-                case true?: results.append(legacy)
-                case nil: complete = false
-                case false?: break
-                }
+            switch mirror(in: folder, hostFileAccess: hostFileAccess, intent: intent) {
+            case .found(let config): results.append(config)
+            case .absent: break
+            case .unknown: complete = false
             }
         }
         appendMirror(of: root)

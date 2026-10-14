@@ -480,6 +480,55 @@ struct NewTaskWorktreeIsolationTests {
         #expect(mounts.first { $0.role == .workspace }?.access == .readWrite)
     }
 
+    @Test("A primary checkout whose Git directory is kept apart stays read-only, or every saved mount does")
+    func separateGitDirPrimaryCheckoutIsReadOnly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let primary = try fixture.repository("App")
+        let gitDirectory = fixture.root.appendingPathComponent("App.git", isDirectory: true)
+        _ = try fixture.git(["init", "--quiet", "--separate-git-dir", gitDirectory.path], at: primary)
+        let linked = fixture.root.appendingPathComponent("App-linked", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "linked", linked.path], at: primary)
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "Linked", primaryPath: linked.path)
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        let path = try await prepare(task, linked, context: store.mainContext, fixture: fixture)
+        let cache = fixture.root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        func plan(_ saved: [ExecutionEnvironmentMount]) -> [ExecutionEnvironmentMount] {
+            DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: WorkspaceExecutionEnvironment(
+                id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest", mounts: saved
+            ), task: task)
+        }
+        let cacheMount = ExecutionEnvironmentMount(hostPath: cache.path, containerPath: "/cache", access: .readWrite, role: .additionalPath)
+        // Mounted itself, its `.git` file names the shared directory.
+        let found = plan([
+            ExecutionEnvironmentMount(hostPath: primary.path, containerPath: "/primary", access: .readWrite, role: .additionalPath),
+            cacheMount
+        ])
+        #expect(found.first { $0.containerPath == "/primary" }?.access == .readOnly)
+        #expect(found.first { $0.containerPath == "/cache" }?.access == .readWrite)
+        // Reached only through a folder holding it, nothing names it, so no
+        // saved mount stays writable.
+        let unknown = plan([
+            ExecutionEnvironmentMount(
+                hostPath: fixture.root.path, containerPath: "/all", access: .readWrite, role: .additionalPath
+            ),
+            cacheMount
+        ])
+        #expect(unknown.first { $0.containerPath == "/all" }?.access == .readOnly)
+        #expect(unknown.first { $0.containerPath == "/cache" }?.access == .readOnly)
+        #expect(unknown.first { $0.role == .workspace }?.access == .readWrite)
+        // A `core.worktree` names it, and a bare repository has none.
+        try fixture.git(["config", "core.worktree", primary.path], at: primary)
+        #expect(TaskWorktreeBinding.primaryCheckout(commonDirectory: gitDirectory.path, candidates: [])
+            == .known(WorkspacePathPresentation.resolvedPath(primary.path)))
+        try fixture.git(["config", "--unset", "core.worktree"], at: primary)
+        try fixture.git(["config", "core.bare", "true"], at: gitDirectory)
+        #expect(TaskWorktreeBinding.primaryCheckout(commonDirectory: gitDirectory.path, candidates: []) == .bare)
+    }
+
     @Test("A saved alias of a linked source's shared Git directory is read-only")
     func savedAliasOfSharedGitDirectoryIsReadOnly() async throws {
         let fixture = try Fixture()

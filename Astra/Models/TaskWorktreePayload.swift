@@ -474,6 +474,51 @@ public enum TaskWorktreeBinding {
         }
     }
 
+    public enum PrimaryCheckout: Equatable, Sendable {
+        case known(String)
+        case bare
+        /// A Git directory kept apart from its checkout that names it nowhere.
+        case unknown
+    }
+
+    /// The primary checkout of the repository whose shared Git directory is
+    /// `commonDirectory`, which `registeredCheckouts` doesn't list. A `.git`
+    /// folder's is its parent. One kept apart with `--separate-git-dir`
+    /// records its checkout only as `core.worktree`, if at all, so otherwise
+    /// it is whichever of `candidates` has a `.git` file pointing here.
+    public static func primaryCheckout(commonDirectory: String, candidates: [String]) -> PrimaryCheckout {
+        let common = URL(fileURLWithPath: commonDirectory).standardizedFileURL
+        if common.lastPathComponent == ".git" { return .known(common.deletingLastPathComponent().path) }
+        guard let config = try? String(contentsOf: common.appendingPathComponent("config"), encoding: .utf8) else {
+            return .unknown
+        }
+        var inCore = false
+        var bare = false
+        for raw in config.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                inCore = line.lowercased().replacingOccurrences(of: " ", with: "") == "[core]"
+                continue
+            }
+            guard inCore, let equals = line.firstIndex(of: "=") else { continue }
+            let key = line[..<equals].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            if key == "worktree", let worktree = resolvedGitPath(value, relativeTo: common.path) { return .known(worktree) }
+            if key == "bare" { bare = ["true", "yes", "on", "1"].contains(value.lowercased()) }
+        }
+        if bare { return .bare }
+        let resolvedCommon = resolvedPath(common.path)
+        for candidate in candidates {
+            guard let raw = try? String(contentsOfFile: (candidate as NSString).appendingPathComponent(".git"), encoding: .utf8),
+                  raw.hasPrefix("gitdir:"),
+                  resolvedGitPath(String(raw.dropFirst("gitdir:".count)), relativeTo: candidate) == resolvedCommon
+            else { continue }
+            return .known(candidate)
+        }
+        return .unknown
+    }
+
     /// The registry entry of `checkout` inside `commonDirectory`, where Git
     /// keeps that checkout's own index, HEAD, and logs, when the entry and
     /// the checkout's `.git` file point at each other.
