@@ -772,7 +772,9 @@ enum TaskWorktreeService {
             .compactMap { event -> TaskWorktreeDiscard? in
                 // A path is taken once, by its newest incarnation this install
                 // owns: one that isn't owned, as an older or replaced event
-                // with the same timestamp, doesn't hide the one that is.
+                // with the same timestamp, doesn't hide the one that is. One
+                // whose ownership can't be read yet doesn't take it either,
+                // so every incarnation is queued until cleanup can tell.
                 guard case .success(let binding) = event.decodePayload(as: TaskWorktreePayload.self),
                       let baseCommit = binding.baseCommit, !baseCommit.isEmpty,
                       !seen.contains(WorkspacePathPresentation.standardizedPath(binding.worktreePath)) else {
@@ -791,7 +793,8 @@ enum TaskWorktreeService {
                 // One whose ownership can't be read for now is still queued:
                 // cleanup checks again, and keeps its record while it can't
                 // tell, rather than this deletion leaving no intent at all.
-                guard ownership.ownershipState(discard) != .notOwned else {
+                let state = ownership.ownershipState(discard)
+                guard state != .notOwned else {
                     AppLogger.breadcrumb(action: "task_worktree_kept", category: "Git", taskID: task.id, fields: [
                         "worktree": binding.worktreePath,
                         "branch": binding.branch,
@@ -799,7 +802,7 @@ enum TaskWorktreeService {
                     ])
                     return nil
                 }
-                seen.insert(WorkspacePathPresentation.standardizedPath(binding.worktreePath))
+                if state == .owned { seen.insert(WorkspacePathPresentation.standardizedPath(binding.worktreePath)) }
                 return discard
             }
     }

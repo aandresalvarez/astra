@@ -913,8 +913,11 @@ public struct ASTRAApp: App {
             // Every folder a mirror was written into is probed too, wherever
             // it is. The store's own workspaces are recorded first, so ones
             // imported before the registry existed are covered from now on.
+            // One that can't be recorded leaves the registry incomplete, so
+            // this launch's recovery isn't trusted.
             let mirrorRegistry = WorkspaceMirrorRegistry(for: modelContext)
-            mirrorRegistry?.register(((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).map(\.primaryPath))
+            let storedFolders = (try? modelContext.fetch(FetchDescriptor<Workspace>())).map { $0.map(\.primaryPath) }
+            let registryComplete = storedFolders.map { mirrorRegistry?.register($0) ?? true } ?? false
             let recovery = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
                 excludingConfigFiles: unsettledDeletionMirrors,
@@ -922,7 +925,7 @@ public struct ASTRAApp: App {
                 pendingCleanup: pendingWorktreeCleanup,
                 excludingItemIdentities: unsettledDeletionMirrorIDs,
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
-                registeredFolders: mirrorRegistry.map { $0.folders() } ?? [],
+                registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in

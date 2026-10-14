@@ -38,11 +38,15 @@ public struct WorkspaceMirrorRegistry: Sendable {
         return root.appendingPathComponent("WorkspaceMirrorFolders", isDirectory: true)
     }
 
-    /// Records each folder not already recorded. A folder that can't be
-    /// recorded is logged: until it is, recovery can't find its mirror
-    /// outside the scanned roots.
-    public func register(_ folders: [String]) {
-        for folder in Set(folders.map(WorkspacePathPresentation.standardizedPath)) where !folder.isEmpty {
+    /// Records each folder not already recorded, by the physical folder its
+    /// path reaches now, so a link retargeted later never sends recovery to
+    /// another folder than the one the mirror was written into. False when
+    /// any couldn't be recorded: its mirror then mustn't be written, or
+    /// recovery could trust a registry that leaves it out.
+    @discardableResult
+    public func register(_ folders: [String]) -> Bool {
+        var recorded = true
+        for folder in Set(folders.filter { !$0.isEmpty }.map(WorkspacePathPresentation.resolvedPath)) where !folder.isEmpty {
             let url = recordURL(for: folder)
             // One that can't be checked is written again, which is harmless.
             if (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil { continue }
@@ -52,12 +56,14 @@ public struct WorkspaceMirrorRegistry: Sendable {
                 )
                 try Data(folder.utf8).write(to: url, options: .atomic)
             } catch {
+                recorded = false
                 AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                     "operation": "register_workspace_mirror", "reason": "registry_unwritable",
                     "error_type": String(describing: type(of: error))
                 ], level: .error)
             }
         }
+        return recorded
     }
 
     /// Every recorded folder, or nil when the registry or a record can't be
