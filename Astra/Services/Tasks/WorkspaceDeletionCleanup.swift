@@ -551,7 +551,10 @@ enum WorkspaceDeletionCleanupService {
                 retained: others.flatMap(\.connectors), movedMirrors: movedMirrors
             ) else { continue }
             store.remove(record)
-            remaining = others
+            // Only a settled saved deletion stops holding what it names. An
+            // unconfirmed one keeps its connectors for the rest of the batch,
+            // whichever order the records come in.
+            if committed { remaining = others }
             settled += 1
         }
         return settled

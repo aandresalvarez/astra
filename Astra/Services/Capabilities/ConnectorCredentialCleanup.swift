@@ -230,14 +230,15 @@ enum ConnectorCredentialCleanup {
             return 0
         }
         let currentStore = PersistentStoreIdentity.current(for: modelContext)
-        // Every record is classified first: one that can't be confirmed, its
-        // connector maybe still in an earlier store, keeps what it uses while
-        // the others run.
+        // Every record is classified first: one from a store since replaced
+        // that can't be confirmed keeps what it uses while the others run,
+        // even when a connector with its ID is stored now, since that one
+        // may resolve elsewhere than the earlier store's.
         let classified = pending.records.map { record in
             let stored = storedIDs.contains(record.cleanup.connectorID)
             let sameStore = record.storeIdentity != nil && record.storeIdentity == currentStore
             let committed = record.committed || (!stored && sameStore)
-            return (record: record, committed: committed, unconfirmed: !committed && !stored && !sameStore)
+            return (record: record, committed: committed, unconfirmed: !committed && !sameStore)
         }
         let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup)
         var cleared = 0

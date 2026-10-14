@@ -402,6 +402,25 @@ struct ConnectorCredentialCleanupTests {
             outbox.remove(first)
             #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
             #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == nil)
+
+            // An unconfirmed record settled first in the batch still holds its
+            // connectors while a saved sibling settles after it.
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            let early = WorkspaceDeletionCleanupRecord(
+                workspaceID: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001")),
+                primaryPath: folder.appendingPathComponent("Early").path, connectors: [deleted.keychainCleanup], skills: []
+            )
+            let late = WorkspaceDeletionCleanupRecord(
+                workspaceID: try #require(UUID(uuidString: "FFFFFFFF-0000-0000-0000-000000000001")),
+                primaryPath: folder.appendingPathComponent("Late").path, connectors: [recreation(of: deleted).keychainCleanup], skills: []
+            )
+            try outbox.write(early)
+            try outbox.markStore(early, identity: "another-store")
+            try outbox.write(late)
+            try outbox.markCommitted(late)
+            #expect(outbox.pending().map(\.workspaceID) == [early.workspaceID, late.workspaceID])
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 2)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
         }
     }
 
@@ -442,6 +461,21 @@ struct ConnectorCredentialCleanupTests {
             outbox.markCommitted([later.keychainCleanup])
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 2)
             #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+
+            // Still an owner when the store now holds a connector with its ID
+            // at another endpoint: the earlier store's may use the old one.
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            let moved = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira-moved.example.invalid")
+            moved.id = earlier.id
+            context.insert(moved)
+            try context.save()
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store")
+            _ = try outbox.record([later.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([later.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 2)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+            context.delete(moved)
+            try context.save()
 
             // Recorded again for a new attempt, an intent names that attempt's store.
             _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store")
