@@ -777,9 +777,13 @@ final class TaskLifecycleCoordinator {
             ], level: .error)
             return (false, nil, nil)
         }
+        // The store mark a reused record had before this attempt, put back
+        // with the record if the deletion isn't saved.
+        var previousStoreMark: Data?
         func restoreRecord() {
             do {
                 try store.restore(previousRecord, replacing: cleanupRecord)
+                if previousRecord != nil { store.restoreStoreMark(cleanupRecord, previous: previousStoreMark) }
             } catch {
                 AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                     "operation": "delete_workspace", "reason": "deletion_cleanup_restore_failed",
@@ -788,7 +792,7 @@ final class TaskLifecycleCoordinator {
             }
         }
         do {
-            try store.markStore(cleanupRecord, identity: PersistentStoreIdentity.current(for: modelContext))
+            previousStoreMark = try store.markStore(cleanupRecord, identity: PersistentStoreIdentity.current(for: modelContext))
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",

@@ -598,6 +598,70 @@ struct ConnectorCredentialCleanupTests {
         }
     }
 
+    @Test("Stale-mirror intents and ID-less mirror connectors stay owners, and a failed workspace deletion restores its store mark")
+    func mirrorOwnersAndRestoredStoreMark() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-mirror-owners-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let connectorOutbox = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Connectors"))
+        let outbox = WorkspaceDeletionCleanupStore(directory: root.appendingPathComponent("Workspaces"))
+        try withTemporaryCredentialKeychain {
+            let folder = root.appendingPathComponent("App", isDirectory: true)
+            let workspace = Workspace(name: "App", primaryPath: folder.path)
+            context.insert(workspace)
+            try context.save()
+            let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+            try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: deleted))
+            // A saved connector deletion its workspace's mirror still lists.
+            try Data(#"{"connectors":[{"id":"\#(deleted.id.uuidString)"}]}"#.utf8).write(to: mirror)
+            _ = try connectorOutbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            connectorOutbox.markCommitted([deleted.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.unconfirmedOwners(modelContext: context, store: connectorOutbox) == [deleted.keychainCleanup])
+            // A saved workspace deletion sharing the namespace spares it.
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            let sibling = WorkspaceDeletionCleanupRecord(
+                workspaceID: UUID(), primaryPath: root.appendingPathComponent("Gone").path,
+                connectors: [recreation(of: deleted).keychainCleanup], skills: []
+            )
+            try outbox.write(sibling)
+            try outbox.markCommitted(sibling)
+            #expect(WorkspaceDeletionCleanupService.resumePending(
+                modelContext: context, store: outbox, connectorOutbox: connectorOutbox
+            ) == 1)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+
+            // A mirror listing the connector without an ID keeps its namespace
+            // from a saved cleanup: an import would restore it under a new ID.
+            try Data(#"{"connectors":[{"name":"Jira","serviceType":"jira","baseURL":"https://jira.example.invalid"}]}"#.utf8)
+                .write(to: mirror)
+            let mirrored = try #require(ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: context))
+            #expect(mirrored.ids.isEmpty)
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: connectorOutbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+        }
+
+        // Deleting the workspace again fails to save: the reused record keeps
+        // naming the earlier store.
+        let earlier = WorkspaceDeletionCleanupRecord(workspace(in: context))
+        try outbox.write(earlier)
+        try outbox.markStore(earlier, identity: "another-store")
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: TaskQueue(poolSize: 0),
+            worktreeCleanupStore: TaskWorktreeCleanupStore(directory: root.appendingPathComponent("WorktreeCleanup")),
+            workspaceDeletionCleanupStore: outbox, persistWorkspaceChange: { _, _ in false }
+        )
+        let stored = workspace(in: context)
+        #expect(!coordinator.deleteWorkspace(stored, existingWorkspaces: [stored]).persisted)
+        #expect(outbox.storeMark(of: earlier) == .recorded("another-store"))
+    }
+
+    private func workspace(in context: ModelContext) -> Workspace {
+        (try? context.fetch(FetchDescriptor<Workspace>()).first { $0.name == "App" })!
+    }
+
     @Test("A connector intent whose store mark can't be read waits")
     func unreadableStoreMarkWaits() throws {
         let container = try credentialCleanupContainer()

@@ -252,6 +252,7 @@ enum ConnectorCredentialCleanup {
         let classified = classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
         let stale = classified.filter { $0.committed && mirrored.ids.contains($0.record.cleanup.connectorID) }
         let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup) + pending.heldBack + stale.map(\.record.cleanup)
+            + mirrored.unidentified
         let staleIDs = Set(stale.map(\.record.cleanup.connectorID))
         for (workspace, listed) in mirrored.byWorkspace where !listed.isDisjoint(with: staleIDs) {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
@@ -274,18 +275,28 @@ enum ConnectorCredentialCleanup {
         return cleared
     }
 
-    /// The connector IDs each stored workspace's mirror lists. A missing
-    /// mirror lists none; nil when one that exists can't be read.
+    /// The connector IDs each stored workspace's mirror lists, and, as
+    /// owners of the namespaces they resolve to, the connectors one lists
+    /// without a valid ID, which an import gives a new ID. A missing mirror
+    /// lists none; nil when one that exists can't be read.
     static func connectorsInStoredMirrors(
         modelContext: ModelContext
-    ) -> (ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)])? {
+    ) -> (ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)], unidentified: [ConnectorKeychainCleanup])? {
         struct Listed: Decodable {
-            struct Entry: Decodable { let id: String? }
+            struct Entry: Decodable {
+                let id: String?
+                let name: String?
+                let serviceType: String?
+                let baseURL: String?
+                let originPackageID: String?
+                let originComponentID: String?
+            }
             let connectors: [Entry]?
         }
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else { return nil }
         var all = Set<UUID>()
         var byWorkspace: [(Workspace, Set<UUID>)] = []
+        var unidentified: [ConnectorKeychainCleanup] = []
         for workspace in workspaces {
             for file in [
                 WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath),
@@ -299,12 +310,25 @@ enum ConnectorCredentialCleanup {
                     return nil
                 }
                 guard let listed = try? JSONDecoder().decode(Listed.self, from: data) else { return nil }
-                let ids = Set((listed.connectors ?? []).compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
+                var ids = Set<UUID>()
+                for entry in listed.connectors ?? [] {
+                    if let id = entry.id.flatMap(UUID.init(uuidString:)) {
+                        ids.insert(id)
+                        continue
+                    }
+                    // Unmanaged and never inserted: only its facts are read.
+                    let connector = Connector(
+                        name: entry.name ?? "", serviceType: entry.serviceType ?? "", baseURL: entry.baseURL ?? ""
+                    )
+                    connector.originPackageID = entry.originPackageID
+                    connector.originComponentID = entry.originComponentID
+                    unidentified.append(connector.keychainCleanup)
+                }
                 all.formUnion(ids)
                 byWorkspace.append((workspace, ids))
             }
         }
-        return (all, byWorkspace)
+        return (all, byWorkspace, unidentified)
     }
 
     private struct Classified {
@@ -339,8 +363,13 @@ enum ConnectorCredentialCleanup {
         guard let pending = store.pending(), pending.complete,
               let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>()))
                 .map({ Set($0.map(\.id)) }) else { return nil }
-        return classify(pending.records, storedIDs: storedIDs, modelContext: modelContext).filter(\.unconfirmed).map(\.record.cleanup)
-            + pending.heldBack
+        // Also those a stored workspace's mirror still lists, which the
+        // connector pass will hold, and connectors such a mirror lists
+        // without an ID, which recovery could restore from it.
+        guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext) else { return nil }
+        return classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
+            .filter { $0.unconfirmed || ($0.committed && mirrored.ids.contains($0.record.cleanup.connectorID)) }
+            .map(\.record.cleanup) + pending.heldBack + mirrored.unidentified
     }
 }
 

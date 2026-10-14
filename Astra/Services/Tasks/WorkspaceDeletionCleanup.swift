@@ -298,9 +298,30 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// Keeps beside `record` the store its deletion is about to be saved to,
     /// so a retry against that same store can tell a deletion saved just
     /// before a quit, its mark not yet written, from one never saved.
-    func markStore(_ record: WorkspaceDeletionCleanupRecord, identity: String?) throws {
-        guard let identity else { return }
-        try Data(identity.utf8).write(to: storeMarkURL(for: record), options: .atomic)
+    /// Returns the mark it replaced, nil when there was none, for
+    /// `restoreStoreMark` to put back if the deletion isn't saved. One that
+    /// can't be read throws, since it couldn't be put back.
+    @discardableResult
+    func markStore(_ record: WorkspaceDeletionCleanupRecord, identity: String?) throws -> Data? {
+        let url = storeMarkURL(for: record)
+        let previous: Data?
+        do {
+            previous = try Data(contentsOf: url)
+        } catch where WorkspaceFileLayout.isMissingFile(error) {
+            previous = nil
+        }
+        if let identity { try Data(identity.utf8).write(to: url, options: .atomic) }
+        return previous
+    }
+
+    /// Puts back the store mark `markStore` replaced: a reused record from
+    /// an earlier store keeps naming that store.
+    func restoreStoreMark(_ record: WorkspaceDeletionCleanupRecord, previous: Data?) {
+        if let previous {
+            try? previous.write(to: storeMarkURL(for: record), options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: storeMarkURL(for: record))
+        }
     }
 
     enum StoreMark: Equatable {
