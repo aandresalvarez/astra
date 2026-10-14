@@ -111,21 +111,43 @@ enum AsyncProcessRunner {
     static func terminateProcessTree(_ process: Process) {
         guard process.isRunning else { return }
         let pid = process.processIdentifier
-        terminateDescendants(of: pid, signal: SIGTERM)
+        let descendants = stopProcessTree(rootedAt: pid)
+        for child in descendants.reversed() {
+            kill(child, SIGTERM)
+        }
         process.terminate()
+        // A stopped process holds its SIGTERM until it is continued.
+        for stopped in descendants.reversed() + [pid] {
+            kill(stopped, SIGCONT)
+        }
 
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2) {
             guard process.isRunning else { return }
-            terminateDescendants(of: pid, signal: SIGKILL)
+            for child in stopProcessTree(rootedAt: pid).reversed() {
+                kill(child, SIGKILL)
+            }
             kill(pid, SIGKILL)
         }
     }
 
-    private static func terminateDescendants(of pid: pid_t, signal: Int32) {
-        for child in childPIDs(of: pid) {
-            terminateDescendants(of: child, signal: signal)
-            kill(child, signal)
+    /// Stops `root` and every descendant, each one before its children are
+    /// listed, and returns the descendants, parents before children. A tree
+    /// that is still running can fork after the list is taken, and a child
+    /// that leaves the wrapper's process group then escapes both the walk and
+    /// `terminate()`'s group signal; once the wrapper dies it is no longer
+    /// the wrapper's child for a later walk to find.
+    private static func stopProcessTree(rootedAt root: pid_t) -> [pid_t] {
+        kill(root, SIGSTOP)
+        var descendants: [pid_t] = []
+        var parents = [root]
+        while let parent = parents.popLast() {
+            for child in childPIDs(of: parent) {
+                kill(child, SIGSTOP)
+                descendants.append(child)
+                parents.append(child)
+            }
         }
+        return descendants
     }
 
     private static func childPIDs(of pid: pid_t) -> [pid_t] {
