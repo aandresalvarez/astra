@@ -842,7 +842,10 @@ final class TaskLifecycleCoordinator {
                     "error": error.localizedDescription
                 ], level: .error)
             }
-            if WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext, committed: true) {
+            // Connectors other pending deletions hold are spared; while any
+            // of those can't be read, the retry at launch settles this one.
+            if let retained = store.connectors(pendingBesides: pinned),
+               WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext, committed: true, retained: retained) {
                 store.remove(pinned)
             }
         } else {

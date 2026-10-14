@@ -337,6 +337,92 @@ struct ConnectorCredentialCleanupTests {
         }
     }
 
+    @Test("Workspace deletions: legacy records settle by the store, unconfirmed ones touch nothing, siblings share, unreadable marks wait")
+    func workspaceDeletionResumeEdgeCases() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-deletion-outbox-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let outbox = WorkspaceDeletionCleanupStore(directory: folder)
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: deleted))
+            func record(_ name: String, _ connectors: [ConnectorKeychainCleanup]) -> WorkspaceDeletionCleanupRecord {
+                WorkspaceDeletionCleanupRecord(
+                    workspaceID: UUID(), primaryPath: folder.appendingPathComponent(name).path, connectors: connectors, skills: []
+                )
+            }
+
+            // Written before store marks existed, its workspace gone: settled.
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            let legacy = record("Legacy", [deleted.keychainCleanup])
+            try outbox.write(legacy)
+            #expect(outbox.storeMark(of: legacy) == .absent)
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+
+            // Unconfirmed, from another store: its mirror and credentials stay.
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            let unconfirmed = record("Unconfirmed", [deleted.keychainCleanup])
+            let mirror = WorkspaceFileLayout.workspaceConfigFile(for: unconfirmed.primaryPath)
+            try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
+            try outbox.write(unconfirmed)
+            try outbox.markStore(unconfirmed, identity: "another-store")
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(FileManager.default.fileExists(atPath: mirror))
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            #expect(outbox.pending().isEmpty)
+
+            // A store mark that can't be read leaves the record for later.
+            let waiting = record("Waiting", [deleted.keychainCleanup])
+            try outbox.write(waiting)
+            try outbox.markStore(waiting, identity: "store")
+            let mark = outbox.recordURL(for: waiting).appendingPathExtension("store").path
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mark)
+            #expect(outbox.storeMark(of: waiting) == .unreadable)
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 0)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: mark)
+            outbox.remove(waiting)
+
+            // Two saved deletions share a stable namespace: settling one spares
+            // what the other, still pending, holds.
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            let first = record("First", [deleted.keychainCleanup])
+            let second = record("Second", [recreation(of: deleted).keychainCleanup])
+            for pending in [first, second] {
+                try outbox.write(pending)
+                try outbox.markCommitted(pending)
+            }
+            #expect(WorkspaceDeletionCleanupService.settle(
+                first, modelContext: context, retained: try #require(outbox.connectors(pendingBesides: first))
+            ))
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+            outbox.remove(first)
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == nil)
+        }
+    }
+
+    @Test("A connector intent whose store mark can't be read waits")
+    func unreadableStoreMarkWaits() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+        let urls = try outbox.record([connector.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+        let mark = try #require(urls.first).appendingPathExtension("store").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mark)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: mark) }
+        #expect(outbox.pending()?.complete == false)
+        #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 0)
+        #expect(FileManager.default.fileExists(atPath: try #require(urls.first).path))
+    }
+
     @Test("A launch that trusts the store without scanning lets no credential cleanup run")
     func cleanupWaitsWhenStoreVouchesWithoutScan() async throws {
         #expect(!WorkspaceRecoveryTrust.allowsCleanup(in: .vouchedWithoutScan))

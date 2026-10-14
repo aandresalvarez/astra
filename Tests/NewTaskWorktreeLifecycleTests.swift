@@ -1317,10 +1317,11 @@ struct NewTaskWorktreeLifecycleTests {
         let mirror = WorkspaceFileLayout.workspaceConfigFile(for: original.path)
         try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
-        try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(deleted)))
+        let pinned = try store.pinMirrorIdentities(for: store.record(WorkspaceDeletionCleanupRecord(deleted)))
         let id = deleted.id
         context.delete(deleted)
         try context.save()
+        try store.markCommitted(pinned)
         // An import elsewhere reused the ID before the cleanup was retried.
         let reimported = Workspace(name: "Reimported", primaryPath: elsewhere.path)
         reimported.id = id

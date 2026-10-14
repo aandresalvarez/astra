@@ -303,9 +303,29 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         try Data(identity.utf8).write(to: storeMarkURL(for: record), options: .atomic)
     }
 
-    /// The store `record` was recorded against, when known.
-    func storeIdentity(of record: WorkspaceDeletionCleanupRecord) -> String? {
-        (try? Data(contentsOf: storeMarkURL(for: record))).map { String(decoding: $0, as: UTF8.self) }
+    enum StoreMark: Equatable {
+        /// Written before this mark existed, or with the store unidentified.
+        case absent
+        case recorded(String)
+        case unreadable
+    }
+
+    /// The store `record` was recorded against.
+    func storeMark(of record: WorkspaceDeletionCleanupRecord) -> StoreMark {
+        do {
+            return .recorded(String(decoding: try Data(contentsOf: storeMarkURL(for: record)), as: UTF8.self))
+        } catch {
+            return WorkspaceFileLayout.isMissingFile(error) ? .absent : .unreadable
+        }
+    }
+
+    /// The connectors every other pending deletion holds, which `record`'s
+    /// settlement must spare: a mirror one of them keeps may yet be
+    /// recovered. Nil when a record can't be read.
+    func connectors(pendingBesides record: WorkspaceDeletionCleanupRecord) -> [ConnectorKeychainCleanup]? {
+        guard pendingConnectors() != nil else { return nil }
+        let own = recordURL(for: record)
+        return pending().filter { recordURL(for: $0) != own }.flatMap(\.connectors)
     }
 
     private func storeMarkURL(for record: WorkspaceDeletionCleanupRecord) -> URL {
@@ -400,9 +420,13 @@ enum WorkspaceDeletionCleanupService {
     /// `committed` is whether the deletion is known to be saved. Credentials
     /// of one that isn't are left alone: nothing proves it happened.
     static func settle(
-        _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext, committed: Bool = true, movedMirrors: [String] = [],
+        _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext, committed: Bool = true,
+        retained: [ConnectorKeychainCleanup] = [], movedMirrors: [String] = [],
         identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:)
     ) -> Bool {
+        // A deletion not known to be saved removes nothing at all: its
+        // workspace may still be in the store it was recorded for.
+        guard committed else { return true }
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let connectors = try? modelContext.fetch(FetchDescriptor<Connector>()),
               let skills = try? modelContext.fetch(FetchDescriptor<Skill>()) else { return false }
@@ -465,7 +489,7 @@ enum WorkspaceDeletionCleanupService {
         // a stable endpoint or package namespace under a new ID, so
         // connector ownership is per namespace.
         var cleared = ConnectorCredentialCleanup.run(
-            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors), committed: committed
+            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
         )
         for skill in record.skills where !liveSkills.contains(skill.skillID) {
             cleared = skill.run() && cleared
@@ -489,19 +513,32 @@ enum WorkspaceDeletionCleanupService {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
         guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Workspace>()))
             .map({ Set($0.map(\.id)) }) else { return 0 }
+        // What other deletions hold is spared, so every record must read.
+        guard store.pendingConnectors() != nil else { return 0 }
         let currentStore = PersistentStoreIdentity.current(for: modelContext)
+        var remaining = store.pending()
         var settled = 0
-        for record in store.pending() {
+        for record in remaining {
             // A mark that can't be checked leaves the record for later. One
             // a quit left unwritten is implied by the same store no longer
-            // holding the workspace: only the saved deletion removed it.
+            // holding the workspace: only the saved deletion removed it. A
+            // record from before store marks existed, most often one whose
+            // saved deletion's cleanup failed, is judged by that alone.
             guard let marked = store.isCommitted(record) else { continue }
-            let sameStore = store.storeIdentity(of: record).map { $0 == currentStore } ?? false
-            let committed = marked || (sameStore && !storedIDs.contains(record.workspaceID))
+            let committed: Bool
+            switch store.storeMark(of: record) {
+            case .unreadable: continue
+            case .absent: committed = marked || !storedIDs.contains(record.workspaceID)
+            case .recorded(let recorded):
+                committed = marked || (recorded == currentStore && !storedIDs.contains(record.workspaceID))
+            }
+            let others = remaining.filter { store.recordURL(for: $0) != store.recordURL(for: record) }
             guard settle(
-                record, modelContext: ModelContext(modelContext.container), committed: committed, movedMirrors: movedMirrors
+                record, modelContext: ModelContext(modelContext.container), committed: committed,
+                retained: others.flatMap(\.connectors), movedMirrors: movedMirrors
             ) else { continue }
             store.remove(record)
+            remaining = others
             settled += 1
         }
         return settled

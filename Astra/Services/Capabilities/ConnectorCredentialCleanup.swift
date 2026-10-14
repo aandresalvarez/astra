@@ -399,7 +399,17 @@ struct ConnectorCredentialCleanupStore: Sendable {
                 complete = false
                 continue
             }
-            let storeIdentity = (try? Data(contentsOf: Self.storeMark(for: url))).map { String(decoding: $0, as: UTF8.self) }
+            // Only a store mark confirmed missing is unknown; one that can't
+            // be read leaves the record for later too.
+            let storeIdentity: String?
+            do {
+                storeIdentity = String(decoding: try Data(contentsOf: Self.storeMark(for: url)), as: UTF8.self)
+            } catch where WorkspaceFileLayout.isMissingFile(error) {
+                storeIdentity = nil
+            } catch {
+                complete = false
+                continue
+            }
             records.append(Pending.Record(url: url, cleanup: cleanup, committed: committed, storeIdentity: storeIdentity))
         }
         return Pending(records: records, complete: complete)
