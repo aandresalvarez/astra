@@ -34,6 +34,8 @@ public enum WorkspaceRecoveryService {
 
     private struct LoadedWorkspaceConfig: @unchecked Sendable {
         public var config: WorkspaceConfigManager.WorkspaceConfig
+        /// The mirror file it was read from.
+        public var mirrorFile: URL
     }
 
     public struct LegacyStoreRepairResult: Equatable {
@@ -526,7 +528,8 @@ public enum WorkspaceRecoveryService {
         registeredFolders: [String]? = [],
         itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
-        afterImport: @escaping @MainActor () -> Void = {}
+        afterImport: @escaping @MainActor () -> Void = {},
+        deletionMirrorsNow: @escaping @MainActor () -> Set<String>? = { [] }
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
         // nothing needed recovering, or the scan finished and each discovered
@@ -622,7 +625,21 @@ public enum WorkspaceRecoveryService {
                     return false
                 }
             }
-            let chosen = newestMirrorPerWorkspace(loadedConfigs)
+            // A workspace deleted while its mirror was loading is left out:
+            // the pending deletions are read again in the same main-actor
+            // step as the import, so no deletion can land in between. One
+            // that can't be read imports nothing.
+            guard let deletedNow = deletionMirrorsNow() else {
+                AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
+                ], level: .error)
+                return false
+            }
+            let current = loadedConfigs.filter { loaded in
+                !deletedNow.contains(loaded.mirrorFile.path)
+                    && !deletedNow.contains(WorkspacePathPresentation.resolvedPath(loaded.mirrorFile.path))
+            }
+            let chosen = newestMirrorPerWorkspace(current)
             let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: chosen.configs, save: saveImports)
             if recovered.imported > 0 {
                 afterImport()
@@ -704,7 +721,7 @@ public enum WorkspaceRecoveryService {
                         config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
                             .standardizedFileURL
                             .path
-                        return LoadedWorkspaceConfig(config: config)
+                        return LoadedWorkspaceConfig(config: config, mirrorFile: configURL)
                     } catch {
                         AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                             "config_file": configURL.lastPathComponent,

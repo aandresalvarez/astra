@@ -934,7 +934,9 @@ public struct ASTRAApp: App {
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
                 vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
-                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
+                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
+                // A deletion made while recovery loads keeps its mirror out too.
+                deletionMirrorsNow: { deletionStore.pendingMirrorPaths() }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
                 // Only a recovery that loaded every mirror it found vouches

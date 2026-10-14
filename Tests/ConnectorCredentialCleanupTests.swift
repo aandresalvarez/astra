@@ -479,6 +479,40 @@ struct ConnectorCredentialCleanupTests {
         #expect(cleanup.contains("let cleansNow = cleansNow ?? (WorkspaceRecoveryTrust.state == .notTracked)"))
     }
 
+    @Test("Recovery leaves out a mirror whose workspace was deleted while it loaded")
+    func recoveryRechecksDeletionsBeforeImport() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-recovery-race-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Deleted", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let source = try credentialCleanupContainer()
+        let workspace = Workspace(name: "Deleted", primaryPath: folder.path)
+        source.mainContext.insert(workspace)
+        try source.mainContext.save()
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
+        let emptyRoot = root.appendingPathComponent("Workspaces", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
+        func recover(_ deletedNow: Set<String>?) async throws -> (trusted: Bool, names: [String]) {
+            let lost = try credentialCleanupContainer()
+            let trusted = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+                modelContext: lost.mainContext, extraRoots: [emptyRoot.path], includeDefaultRoots: false,
+                registeredFolders: [folder.path], deletionMirrorsNow: { deletedNow }
+            ).value
+            return (trusted, try lost.mainContext.fetch(FetchDescriptor<Workspace>()).map(\.name))
+        }
+        #expect(try await recover([]).names == ["Deleted"])
+        // Deleted after the scan began: the mirror is pending deletion now.
+        let deleted = try await recover([WorkspacePathPresentation.resolvedPath(mirror.path)])
+        #expect(deleted.trusted)
+        #expect(deleted.names.isEmpty)
+        // Pending deletions that can't be read import nothing.
+        let unread = try await recover(nil)
+        #expect(!unread.trusted)
+        #expect(unread.names.isEmpty)
+        withExtendedLifetime(source) {}
+    }
+
     @Test("A connector intent whose store mark can't be read waits")
     func unreadableStoreMarkWaits() throws {
         let container = try credentialCleanupContainer()
