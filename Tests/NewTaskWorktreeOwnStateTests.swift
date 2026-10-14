@@ -251,6 +251,14 @@ struct NewTaskWorktreeOwnStateTests {
         // nothing because the newer one at its path isn't owned.
         #expect(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).map(\.identity)
             == [identity(of: current)])
+        // While ownership can't be read, neither takes the path: both are
+        // queued, and the deletion stops rather than recording either alone.
+        let ownership = fixture.ownership.directory.path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: ownership)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ownership) }
+        let unknown = TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership)
+        #expect(Set(unknown.map(\.identity)) == [identity(of: current), fields["identity"] as? String])
+        #expect(throws: (any Error).self) { for discard in unknown { try fixture.cleanupStore.record(discard) } }
     }
 
     private func identity(of event: TaskEvent) -> String? {
@@ -717,7 +725,7 @@ struct NewTaskWorktreeOwnStateTests {
         disk.mainContext.insert(workspace)
         try disk.mainContext.save()
         WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: disk.mainContext)
-        #expect(registry.folders() == [WorkspacePathPresentation.standardizedPath(imported.path)])
+        #expect(registry.folders() == [WorkspacePathPresentation.resolvedPath(imported.path)])
         try WorkspaceConfigManager.exportToFile(
             workspace: workspace, modelContext: disk.mainContext,
             url: URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: imported.path))
@@ -744,5 +752,99 @@ struct NewTaskWorktreeOwnStateTests {
         try Data([0xFF]).write(to: registry.directory.appendingPathComponent("broken.folder"))
         #expect(registry.folders() == nil)
         withExtendedLifetime((memory, disk, lost, unread)) {}
+    }
+
+    @Test("A mirror folder is registered by the folder it reaches, and one that can't be registered gets no mirror")
+    func mirrorRegistrationIsPhysicalAndFailsClosed() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let registry = WorkspaceMirrorRegistry(directory: fixture.root.appendingPathComponent("Registry", isDirectory: true))
+        let real = fixture.root.appendingPathComponent("Real", isDirectory: true)
+        let other = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        for folder in [real, other] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        let link = fixture.root.appendingPathComponent("Link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        #expect(registry.register([link.path]))
+        // Retargeted later, the link no longer leads to the mirror's folder.
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: other)
+        #expect(registry.folders() == [WorkspacePathPresentation.resolvedPath(real.path)])
+
+        // Through autoExport: a registry that can't be written stops the mirror.
+        let storeURL = fixture.root.appendingPathComponent("Store/default.store")
+        try FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let disk = try ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(url: storeURL)])
+        let context = disk.mainContext
+        let stored = try #require(WorkspaceMirrorRegistry(for: context))
+        try FileManager.default.createDirectory(at: stored.directory, withIntermediateDirectories: true)
+        let blocked = Workspace(name: "Blocked", primaryPath: fixture.root.appendingPathComponent("Blocked").path)
+        let allowed = Workspace(name: "Allowed", primaryPath: fixture.root.appendingPathComponent("Allowed").path)
+        for workspace in [blocked, allowed] {
+            try FileManager.default.createDirectory(atPath: workspace.primaryPath, withIntermediateDirectories: true)
+            context.insert(workspace)
+        }
+        try context.save()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: stored.directory.path)
+        WorkspaceConfigManager.autoExport(workspace: blocked, modelContext: context)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stored.directory.path)
+        WorkspaceConfigManager.autoExport(workspace: allowed, modelContext: context)
+        let allowedMirror = WorkspaceFileLayout.workspaceConfigFile(for: allowed.primaryPath)
+        var polls = 0
+        while !FileManager.default.fileExists(atPath: allowedMirror), polls < 500 {
+            polls += 1
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(FileManager.default.fileExists(atPath: allowedMirror))
+        #expect(!FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: blocked.primaryPath)))
+        #expect(stored.folders() == [WorkspacePathPresentation.resolvedPath(allowed.primaryPath)])
+        withExtendedLifetime(disk) {}
+    }
+
+    @Test("Recovery keeps the newest of a workspace's mirrors, and isn't trusted when two can't be told apart")
+    func duplicateMirrorsPickNewestOrStayUntrusted() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let source = try Fixture.container()
+        let workspace = Workspace(name: "Current", primaryPath: fixture.root.appendingPathComponent("New").path)
+        source.mainContext.insert(workspace)
+        try source.mainContext.save()
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: source.mainContext))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        func write(_ config: WorkspaceConfigManager.WorkspaceConfig, to name: String) throws -> String {
+            let folder = fixture.root.appendingPathComponent(name, isDirectory: true)
+            let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+            try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try encoder.encode(config).write(to: mirror)
+            return folder.path
+        }
+        var stale = config
+        stale.name = "Stale"
+        stale.exportedAt = config.exportedAt.addingTimeInterval(-3600)
+        let emptyRoot = fixture.root.appendingPathComponent("Workspaces", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
+        func recover(_ folders: [String]) async throws -> (trusted: Bool, names: [String]) {
+            let lost = try Fixture.container()
+            let trusted = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+                modelContext: lost.mainContext, extraRoots: [emptyRoot.path], includeDefaultRoots: false,
+                registeredFolders: folders
+            ).value
+            return (trusted, try lost.mainContext.fetch(FetchDescriptor<Workspace>()).map(\.name))
+        }
+        // "A-Old" sorts first, so only the export time picks the newer.
+        let old = try write(stale, to: "A-Old")
+        let new = try write(config, to: "B-New")
+        let newest = try await recover([old, new])
+        #expect(newest.trusted)
+        #expect(newest.names == ["Current"])
+        // A copy with the same contents is interchangeable.
+        let copy = try write(config, to: "C-Copy")
+        #expect(try await recover([new, copy]).trusted)
+        // Exported at the same moment with different contents: untrusted.
+        var rival = config
+        rival.name = "Rival"
+        let tied = try write(rival, to: "D-Rival")
+        #expect(try await !recover([new, tied]).trusted)
+        withExtendedLifetime(source) {}
     }
 }

@@ -622,12 +622,14 @@ public enum WorkspaceRecoveryService {
                     return false
                 }
             }
-            let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs, save: saveImports)
+            let chosen = newestMirrorPerWorkspace(loadedConfigs)
+            let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: chosen.configs, save: saveImports)
             if recovered.imported > 0 {
                 afterImport()
             }
             // Owners and pins count only once the store holds them durably.
-            let trusted = scan.complete && unidentified.isEmpty && loadedConfigs.count == candidates.count && recovered.durable
+            let trusted = scan.complete && unidentified.isEmpty && loadedConfigs.count == candidates.count
+                && !chosen.conflicting && recovered.durable
             // A marker that can't be removed only costs a rescan next launch.
             if trusted, let incompleteMarker { try? FileManager.default.removeItem(at: incompleteMarker) }
             return trusted
@@ -727,6 +729,51 @@ public enum WorkspaceRecoveryService {
             }
             return loadedConfigs
         }
+    }
+
+    /// One mirror per workspace ID, the most recently exported, since an
+    /// import keeps the first it meets and skips the rest. Copies whose
+    /// contents match, as a duplicated folder leaves, are interchangeable.
+    /// Two exported at the same moment that differ can't be told apart, so
+    /// recovery isn't trusted: either may leave out owners the other holds.
+    private static func newestMirrorPerWorkspace(
+        _ loaded: [LoadedWorkspaceConfig]
+    ) -> (configs: [LoadedWorkspaceConfig], conflicting: Bool) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        func contents(_ config: WorkspaceConfigManager.WorkspaceConfig) -> Data? {
+            var config = config
+            config.primaryPath = ""
+            return try? encoder.encode(config)
+        }
+        var conflicting = false
+        var chosen: [String: LoadedWorkspaceConfig] = [:]
+        var order: [String] = []
+        var unidentified: [LoadedWorkspaceConfig] = []
+        for candidate in loaded.sorted(by: { $0.config.primaryPath < $1.config.primaryPath }) {
+            guard let id = candidate.config.id, !id.isEmpty else {
+                unidentified.append(candidate)
+                continue
+            }
+            guard let current = chosen[id] else {
+                chosen[id] = candidate
+                order.append(id)
+                continue
+            }
+            if candidate.config.exportedAt > current.config.exportedAt {
+                chosen[id] = candidate
+            } else if candidate.config.exportedAt == current.config.exportedAt {
+                let same = contents(candidate.config).map { $0 == contents(current.config) } ?? false
+                if !same { conflicting = true }
+            }
+        }
+        if conflicting {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "recover_workspaces", "reason": "conflicting_mirrors"
+            ], level: .error)
+        }
+        return (order.compactMap { chosen[$0] } + unidentified, conflicting)
     }
 
     @discardableResult

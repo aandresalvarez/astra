@@ -463,15 +463,23 @@ public enum TaskWorktreeBinding {
     }
 
     /// The checkouts `commonDirectory` registers as linked worktrees, by the
-    /// paths their registry entries record.
-    public static func registeredCheckouts(commonDirectory: String) -> [String] {
+    /// paths their registry entries record. Nil when the registry or any
+    /// entry can't be read: a checkout left out would look unclaimed.
+    public static func registeredCheckouts(commonDirectory: String) -> [String]? {
         let registry = URL(fileURLWithPath: commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
-        let entries = (try? FileManager.default.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil)) ?? []
-        return entries.compactMap { entry in
+        let entries: [URL]
+        do {
+            entries = try FileManager.default.contentsOfDirectory(at: registry, includingPropertiesForKeys: nil)
+        } catch {
+            return isMissingFileError(error) ? [] : nil
+        }
+        var checkouts: [String] = []
+        for entry in entries {
             guard let raw = try? String(contentsOf: entry.appendingPathComponent("gitdir"), encoding: .utf8),
                   let dotGit = resolvedGitPath(raw, relativeTo: entry.path) else { return nil }
-            return (dotGit as NSString).deletingLastPathComponent
+            checkouts.append((dotGit as NSString).deletingLastPathComponent)
         }
+        return checkouts
     }
 
     public enum PrimaryCheckout: Equatable, Sendable {

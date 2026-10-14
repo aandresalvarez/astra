@@ -1059,8 +1059,13 @@ public enum WorkspaceConfigManager {
         guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
         let workspaceID = workspace.id.uuidString
         // Recorded before the mirror lands, so recovery after a lost store
-        // probes this folder even when no scanned root holds it.
-        WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath])
+        // probes this folder even when no scanned root holds it. A folder
+        // that can't be recorded gets no mirror: one recovery can't find
+        // would hold owners a trusted cleanup never counts.
+        guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else {
+            logAutoExportSkipped(workspace: workspace, reason: "mirror_registry_unwritable")
+            return
+        }
         // Taken with the snapshot, so a deletion settled first drops it.
         let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspaceID)
         Task.detached(priority: .utility) {

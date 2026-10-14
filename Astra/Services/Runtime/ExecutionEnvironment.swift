@@ -577,17 +577,25 @@ enum DockerExecutionPlanner {
             // claim on them, so a saved mount of one, or of a folder holding
             // them such as the worktrees root, is read-only.
             // The primary checkout is no registered sibling: it is found from
-            // the shared Git directory, and where that doesn't name it, every
-            // saved mount is kept read-only, since any may reach it.
-            var siblingPaths = taskAccess.runtimeWorktreeGitMetadataPaths.flatMap(TaskWorktreeBinding.registeredCheckouts)
-            var primaryUnknown = false
+            // the shared Git directory. Where that doesn't name it, or a
+            // registry entry can't be read, every saved mount is kept
+            // read-only, since any may reach a checkout left out.
+            var siblingPaths: [String] = []
+            var checkoutsUnknown = false
+            for metadata in taskAccess.runtimeWorktreeGitMetadataPaths {
+                guard let registered = TaskWorktreeBinding.registeredCheckouts(commonDirectory: metadata) else {
+                    checkoutsUnknown = true
+                    continue
+                }
+                siblingPaths += registered
+            }
             if let common = taskAccess.runtimeWorktreeGitMetadataPaths.first {
                 switch TaskWorktreeBinding.primaryCheckout(
                     commonDirectory: common, candidates: taskAccess.protectedSourceCheckouts + mounts.map(\.hostPath)
                 ) {
                 case .known(let primary): siblingPaths.append(primary)
                 case .bare: break
-                case .unknown: primaryUnknown = true
+                case .unknown: checkoutsUnknown = true
                 }
             }
             let siblings = siblingPaths
@@ -629,8 +637,8 @@ enum DockerExecutionPlanner {
                     host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/")
                 }
                 guard touchesSource else {
-                    // Where the primary checkout is unknown, it may be here.
-                    let access = primaryUnknown ? .readOnly : mount.access
+                    // Where a checkout is unknown, it may be here.
+                    let access = checkoutsUnknown ? .readOnly : mount.access
                     guard mount.containerPath == checkoutContainerPath else {
                         return ExecutionEnvironmentMount(
                             hostPath: mount.hostPath, containerPath: mount.containerPath, access: access, role: mount.role

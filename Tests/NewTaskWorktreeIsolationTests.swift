@@ -529,6 +529,34 @@ struct NewTaskWorktreeIsolationTests {
         #expect(TaskWorktreeBinding.primaryCheckout(commonDirectory: gitDirectory.path, candidates: []) == .bare)
     }
 
+    @Test("A sibling registry entry that can't be read keeps every saved mount read-only")
+    func unreadableSiblingEntryKeepsSavedMountsReadOnly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        store.mainContext.insert(workspace)
+        let task = AgentTask(title: "Update", goal: "Update files", workspace: workspace)
+        let path = try await prepare(task, repository, context: store.mainContext, fixture: fixture)
+        let sibling = fixture.root.appendingPathComponent("App-other", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "--detach", sibling.path, "HEAD"], at: repository)
+        let cache = fixture.root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [ExecutionEnvironmentMount(hostPath: cache.path, containerPath: "/cache", access: .readWrite, role: .additionalPath)]
+        )
+        #expect(DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
+            .first { $0.containerPath == "/cache" }?.access == .readWrite)
+        let gitdir = repository.appendingPathComponent(".git/worktrees/App-other/gitdir").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: gitdir)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: gitdir) }
+        #expect(TaskWorktreeBinding.registeredCheckouts(commonDirectory: repository.appendingPathComponent(".git").path) == nil)
+        #expect(DockerExecutionPlanner.mountPlan(currentDirectory: path, environment: environment, task: task)
+            .first { $0.containerPath == "/cache" }?.access == .readOnly)
+    }
+
     @Test("A saved alias of a linked source's shared Git directory is read-only")
     func savedAliasOfSharedGitDirectoryIsReadOnly() async throws {
         let fixture = try Fixture()
