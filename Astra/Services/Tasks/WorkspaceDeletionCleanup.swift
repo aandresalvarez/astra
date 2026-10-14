@@ -291,6 +291,30 @@ struct WorkspaceDeletionCleanupStore: Sendable {
 
     func remove(_ record: WorkspaceDeletionCleanupRecord) {
         try? FileManager.default.removeItem(at: recordURL(for: record))
+        try? FileManager.default.removeItem(at: commitMarkURL(for: record))
+    }
+
+    /// Marks `record`'s deletion as saved, beside the record, so a retry
+    /// knows it happened whatever the store holds then: a workspace imported
+    /// since under the same ID doesn't make it unsaved, and one a recovered
+    /// store lacks doesn't make it saved.
+    func markCommitted(_ record: WorkspaceDeletionCleanupRecord) throws {
+        try Data().write(to: commitMarkURL(for: record), options: .atomic)
+    }
+
+    /// Whether `record`'s deletion is marked saved; nil when that can't be
+    /// checked.
+    func isCommitted(_ record: WorkspaceDeletionCleanupRecord) -> Bool? {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: commitMarkURL(for: record).path)
+            return true
+        } catch {
+            return WorkspaceFileLayout.isMissingFile(error) ? false : nil
+        }
+    }
+
+    private func commitMarkURL(for record: WorkspaceDeletionCleanupRecord) -> URL {
+        recordURL(for: record).appendingPathExtension("committed")
     }
 
     /// Readable records; an unreadable one stays on disk and is skipped.
@@ -354,8 +378,11 @@ enum WorkspaceDeletionCleanupService {
     ///
     /// A mirror whose identity can't be read keeps the record: it may be a
     /// replacement at the pinned path, or the moved mirror itself.
+    ///
+    /// `committed` is whether the deletion is known to be saved. Credentials
+    /// of one that isn't are left alone: nothing proves it happened.
     static func settle(
-        _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext, movedMirrors: [String] = [],
+        _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext, committed: Bool = true, movedMirrors: [String] = [],
         identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:)
     ) -> Bool {
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()),
@@ -418,12 +445,9 @@ enum WorkspaceDeletionCleanupService {
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so
-        // connector ownership is per namespace. The deletion was saved once
-        // its workspace is no longer stored; until then a connector still
-        // stored under a recorded ID owes nothing.
+        // connector ownership is per namespace.
         var cleared = ConnectorCredentialCleanup.run(
-            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors),
-            committed: !workspaces.contains { $0.id == record.workspaceID }
+            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors), committed: committed
         )
         for skill in record.skills where !liveSkills.contains(skill.skillID) {
             cleared = skill.run() && cleared
@@ -446,8 +470,12 @@ enum WorkspaceDeletionCleanupService {
     ) -> Int {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
         var settled = 0
-        for record in store.pending()
-        where settle(record, modelContext: ModelContext(modelContext.container), movedMirrors: movedMirrors) {
+        for record in store.pending() {
+            // A mark that can't be checked leaves the record for later.
+            guard let committed = store.isCommitted(record) else { continue }
+            guard settle(
+                record, modelContext: ModelContext(modelContext.container), committed: committed, movedMirrors: movedMirrors
+            ) else { continue }
             store.remove(record)
             settled += 1
         }

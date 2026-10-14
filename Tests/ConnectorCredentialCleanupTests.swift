@@ -278,6 +278,44 @@ struct ConnectorCredentialCleanupTests {
         }
     }
 
+    @Test("A saved workspace deletion cleans its connectors even after its ID is reused; an unsaved one cleans none")
+    func workspaceDeletionCommitIsMarkedNotInferred() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-deletion-outbox-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let outbox = WorkspaceDeletionCleanupStore(directory: folder)
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            let workspaceID = UUID()
+            let record = WorkspaceDeletionCleanupRecord(
+                workspaceID: workspaceID, primaryPath: folder.appendingPathComponent("Deleted").path,
+                connectors: [deleted.keychainCleanup], skills: []
+            )
+            // A workspace imported since under the same ID, without the connector.
+            let reimported = Workspace(name: "Again", primaryPath: folder.appendingPathComponent("Again").path)
+            reimported.id = workspaceID
+            context.insert(reimported)
+            try context.save()
+
+            // Never marked saved: nothing proves the deletion, so its
+            // credentials stay, whatever the store holds.
+            try outbox.write(record)
+            #expect(outbox.isCommitted(record) == false)
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+
+            // Marked saved, the reused ID doesn't make it unsaved.
+            try outbox.write(record)
+            try outbox.markCommitted(record)
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+        }
+    }
+
     @Test("A launch that trusts the store without scanning lets no credential cleanup run")
     func cleanupWaitsWhenStoreVouchesWithoutScan() async throws {
         #expect(!WorkspaceRecoveryTrust.allowsCleanup(in: .vouchedWithoutScan))

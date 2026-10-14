@@ -821,7 +821,19 @@ final class TaskLifecycleCoordinator {
         // Cancellation exports mirrors, so they are removed only after it and
         // the deletion are saved. An unsaved deletion owes nothing new.
         if result.persisted {
-            if WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext) {
+            // Marked saved before anything is removed, so a retry after a quit
+            // knows the deletion happened. One whose mark can't be written is
+            // settled now all the same; if that doesn't finish, a retry leaves
+            // its credentials, which is recoverable.
+            do {
+                try store.markCommitted(pinned)
+            } catch {
+                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "delete_workspace", "reason": "commit_mark_unwritable",
+                    "error": error.localizedDescription
+                ], level: .error)
+            }
+            if WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext, committed: true) {
                 store.remove(pinned)
             }
         } else {
