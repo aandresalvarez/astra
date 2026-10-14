@@ -868,7 +868,7 @@ final class TaskLifecycleCoordinator {
                    modelContext: modelContext, excludingWorkspaceIDs: deleting
                ),
                WorkspaceDeletionCleanupService.settle(
-                   pinned, modelContext: modelContext, committed: true,
+                   pinned, modelContext: modelContext,
                    retained: others.flatMap(\.connectors) + intentOwners,
                    retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }).union(mirrored.skillIDs),
                    movedMirrors: WorkspaceRecoveryTrust.loadedMirrors
