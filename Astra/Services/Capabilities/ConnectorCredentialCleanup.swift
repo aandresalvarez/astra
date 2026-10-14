@@ -216,10 +216,13 @@ enum ConnectorCredentialCleanup {
         }
         // A record that can't be read stays for a later launch, but never
         // holds back the ones that can.
-        if !pending.complete {
+        // A record that can't be decoded may name an owner no other record
+        // shows, so nothing runs until it can be read.
+        guard pending.complete else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "intent_unreadable"
             ], level: .error)
+            return 0
         }
         guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>())).map({ Set($0.map(\.id)) })
         else {

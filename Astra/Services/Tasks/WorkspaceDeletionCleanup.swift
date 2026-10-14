@@ -458,10 +458,13 @@ enum WorkspaceDeletionCleanupService {
                 return nil
             }
         }
+        // A moved mirror is this deletion's by a pinned identity, or, for
+        // one recovery left out by ID because the deletion came while it
+        // loaded, by naming the deleted workspace's ID.
         let moved = movedMirrors.filter { path in
             guard !liveMirrors.contains(path), !liveMirrors.contains(WorkspacePathPresentation.resolvedPath(path)),
                   case .some(.some(let current)) = currentIdentity(path) else { return false }
-            return record.mirrorFileIDs.contains(current)
+            return record.mirrorFileIDs.contains(current) || mirrorWorkspaceID(at: path) == record.workspaceID.uuidString
         }
         // A pinned path whose file has an identity that wasn't pinned is a
         // mirror created there since, such as a new workspace's after the
@@ -515,7 +518,8 @@ enum WorkspaceDeletionCleanupService {
         store: WorkspaceDeletionCleanupStore? = nil,
         movedMirrors: [String] = [],
         connectorOutbox: ConnectorCredentialCleanupStore? = nil,
-        dropsUnconfirmed: Bool = true
+        dropsUnconfirmed: Bool = true,
+        rescanMarker: URL? = nil
     ) -> Int {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
         // What other deletions and unconfirmed connector intents hold is
@@ -534,7 +538,7 @@ enum WorkspaceDeletionCleanupService {
             case .unconfirmed:
                 // Nothing is removed for it. Dropped here, or once every other
                 // cleanup has run, so its mirror can be recovered again.
-                guard dropsUnconfirmed else { continue }
+                guard dropsUnconfirmed, requestRescan(rescanMarker) else { continue }
                 store.remove(record)
                 settled += 1
             case .committed:
@@ -552,15 +556,45 @@ enum WorkspaceDeletionCleanupService {
         return settled
     }
 
+    /// The workspace ID a mirror file names, or nil when it can't be read.
+    static func mirrorWorkspaceID(at path: String) -> String? {
+        struct Identified: Decodable { let id: String? }
+        return (try? JSONDecoder().decode(Identified.self, from: Data(contentsOf: URL(fileURLWithPath: path))))?.id
+    }
+
     /// Drops the records `resumePending` left with `dropsUnconfirmed` off,
     /// once the cleanups that had to spare what they hold have run.
     @discardableResult
-    static func dropUnconfirmed(modelContext: ModelContext, store: WorkspaceDeletionCleanupStore? = nil) -> Int {
+    ///
+    /// Each kept its mirror out of this launch's recovery, and once it is
+    /// gone nothing pending forces the next launch to scan, so `rescanMarker`
+    /// is put down first: that launch then scans and can reimport the
+    /// mirror. While the marker can't be written, nothing is dropped.
+    static func dropUnconfirmed(
+        modelContext: ModelContext, store: WorkspaceDeletionCleanupStore? = nil, rescanMarker: URL?
+    ) -> Int {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
         guard let classified = classify(store: store, modelContext: modelContext) else { return 0 }
         let unconfirmed = classified.filter { $0.disposition == .unconfirmed }.map(\.record)
+        guard !unconfirmed.isEmpty, requestRescan(rescanMarker) else { return 0 }
         for record in unconfirmed { store.remove(record) }
         return unconfirmed.count
+    }
+
+    /// False when `marker` can't be written.
+    private static func requestRescan(_ marker: URL?) -> Bool {
+        guard let marker else { return true }
+        do {
+            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: marker, options: .atomic)
+            return true
+        } catch {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "rescan_marker_unwritable",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return false
+        }
     }
 
     enum Disposition: Equatable {

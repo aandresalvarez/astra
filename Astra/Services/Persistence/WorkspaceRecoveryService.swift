@@ -529,7 +529,8 @@ public enum WorkspaceRecoveryService {
         itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {},
-        deletionMirrorsNow: @escaping @MainActor () -> (paths: Set<String>, workspaceIDs: Set<String>)? = { ([], []) }
+        deletionMirrorsNow: @escaping @MainActor () -> (paths: Set<String>, workspaceIDs: Set<String>)? = { ([], []) },
+        excludedByWorkspaceID: @escaping @MainActor ([URL]) -> Void = { _ in }
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
         // nothing needed recovering, or the scan finished and each discovered
@@ -637,11 +638,20 @@ public enum WorkspaceRecoveryService {
             }
             // By the deleted workspace's ID too, as for a mirror found away
             // from its pinned path, its folder moved before the deletion.
-            let current = loadedConfigs.filter { loaded in
-                !deletedNow.paths.contains(loaded.mirrorFile.path)
-                    && !deletedNow.paths.contains(WorkspacePathPresentation.resolvedPath(loaded.mirrorFile.path))
-                    && !(loaded.config.id.map(deletedNow.workspaceIDs.contains) ?? false)
+            // One left out by ID alone lies away from the deletion's pinned
+            // path, so it is reported for settlement to remove too.
+            var current: [LoadedWorkspaceConfig] = []
+            var movedByID: [URL] = []
+            for loaded in loadedConfigs {
+                if deletedNow.paths.contains(loaded.mirrorFile.path)
+                    || deletedNow.paths.contains(WorkspacePathPresentation.resolvedPath(loaded.mirrorFile.path)) { continue }
+                if loaded.config.id.map(deletedNow.workspaceIDs.contains) ?? false {
+                    movedByID.append(loaded.mirrorFile)
+                    continue
+                }
+                current.append(loaded)
             }
+            if !movedByID.isEmpty { excludedByWorkspaceID(movedByID) }
             let chosen = newestMirrorPerWorkspace(current)
             let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: chosen.configs, save: saveImports)
             if recovered.imported > 0 {

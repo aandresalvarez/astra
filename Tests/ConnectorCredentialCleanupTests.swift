@@ -116,8 +116,8 @@ struct ConnectorCredentialCleanupTests {
         ).path == shared)
     }
 
-    @Test("A corrupt intent is left for later but never holds back the readable ones")
-    func corruptIntentDoesNotBlockOthers() throws {
+    @Test("An intent that can't be decoded holds back the batch until it can")
+    func corruptIntentHoldsBackTheBatch() throws {
         let container = try credentialCleanupContainer()
         let context = container.mainContext
         let outbox = ConnectorCredentialCleanupStore(
@@ -135,9 +135,14 @@ struct ConnectorCredentialCleanupTests {
 
             #expect(outbox.pending()?.complete == false)
             #expect(outbox.pending()?.records.map(\.cleanup) == [deleted.keychainCleanup])
+            // It may name an owner no other record shows: nothing runs.
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 0)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            #expect(FileManager.default.fileExists(atPath: corrupt.path))
+            // Once it reads, or is gone, the batch runs.
+            try FileManager.default.removeItem(at: corrupt)
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
-            #expect(FileManager.default.fileExists(atPath: corrupt.path))
         }
     }
 
@@ -467,7 +472,17 @@ struct ConnectorCredentialCleanupTests {
             #expect(AstraSecureKeychainStore.load(service: skillService, account: "KEY") == "skill")
             // Kept until the connector pass has run, then dropped.
             #expect(outbox.pending() == [unconfirmed])
-            #expect(WorkspaceDeletionCleanupService.dropUnconfirmed(modelContext: context, store: outbox) == 1)
+            // Dropping it lets nothing force the next launch's scan, so a
+            // rescan marker goes down first; one that can't be written keeps it.
+            let marker = folder.appendingPathComponent("Rescan")
+            let blocked = folder.appendingPathComponent("NotAFolder")
+            try Data().write(to: blocked)
+            #expect(WorkspaceDeletionCleanupService.dropUnconfirmed(
+                modelContext: context, store: outbox, rescanMarker: blocked.appendingPathComponent("Rescan")
+            ) == 0)
+            #expect(outbox.pending() == [unconfirmed])
+            #expect(WorkspaceDeletionCleanupService.dropUnconfirmed(modelContext: context, store: outbox, rescanMarker: marker) == 1)
+            #expect(FileManager.default.fileExists(atPath: marker.path))
             #expect(outbox.pending().isEmpty)
         }
         // Deleting a workspace or a connector in the app cleans up only once
@@ -493,11 +508,13 @@ struct ConnectorCredentialCleanupTests {
         try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
         let emptyRoot = root.appendingPathComponent("Workspaces", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
+        var reported: [URL] = []
         func recover(_ deletedNow: (paths: Set<String>, workspaceIDs: Set<String>)?) async throws -> (trusted: Bool, names: [String]) {
             let lost = try credentialCleanupContainer()
             let trusted = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: lost.mainContext, extraRoots: [emptyRoot.path], includeDefaultRoots: false,
-                registeredFolders: [folder.path], deletionMirrorsNow: { deletedNow }
+                registeredFolders: [folder.path], deletionMirrorsNow: { deletedNow },
+                excludedByWorkspaceID: { reported += $0 }
             ).value
             return (trusted, try lost.mainContext.fetch(FetchDescriptor<Workspace>()).map(\.name))
         }
@@ -507,9 +524,19 @@ struct ConnectorCredentialCleanupTests {
         #expect(deleted.trusted)
         #expect(deleted.names.isEmpty)
         // Its folder moved before the deletion: matched by its ID instead.
+        #expect(reported.isEmpty)
         let moved = try await recover(([], [workspace.id.uuidString]))
         #expect(moved.trusted)
         #expect(moved.names.isEmpty)
+        // Reported, and settlement removes it though no identity was pinned
+        // for it: it names the deleted workspace.
+        #expect(reported.map(\.path) == [mirror.path])
+        let settling = try credentialCleanupContainer()
+        let record = WorkspaceDeletionCleanupRecord(
+            workspaceID: workspace.id, primaryPath: root.appendingPathComponent("OldPath").path, connectors: [], skills: []
+        )
+        #expect(WorkspaceDeletionCleanupService.settle(record, modelContext: settling.mainContext, movedMirrors: reported.map(\.path)))
+        #expect(!FileManager.default.fileExists(atPath: mirror.path))
         // Pending deletions that can't be read import nothing.
         let unread = try await recover(nil)
         #expect(!unread.trusted)
@@ -724,7 +751,7 @@ struct ConnectorCredentialCleanupTests {
         // an unconfirmed workspace deletion is dropped only after both passes.
         let gate = try #require(app.range(of: "if WorkspaceRecoveryTrust.allowsCleanup {\n                    WorkspaceDeletionCleanupService.resumePending("))
         let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: gate.upperBound..<app.endIndex))
-        let drop = try #require(app.range(of: "WorkspaceDeletionCleanupService.dropUnconfirmed(modelContext: modelContext)", range: connectors.upperBound..<app.endIndex))
+        let drop = try #require(app.range(of: "WorkspaceDeletionCleanupService.dropUnconfirmed(\n                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker", range: connectors.upperBound..<app.endIndex))
         #expect(app[gate.upperBound..<drop.lowerBound].contains("dropsUnconfirmed: false"))
         #expect(app.components(separatedBy: "ConnectorCredentialCleanup.resumePending(").count == 2)
         #expect(vouched.upperBound <= trusted.lowerBound)

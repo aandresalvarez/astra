@@ -944,7 +944,9 @@ public struct ASTRAApp: App {
                     deletionStore.pendingMirrorPaths().map { paths in
                         (paths, Set(deletionStore.pending().map(\.workspaceID.uuidString)).subtracting(launchDeletionIDs))
                     }
-                }
+                },
+                // Settlement removes those wherever they are.
+                excludedByWorkspaceID: { movedDeletionMirrors += $0.map(\.path) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
                 // Only a recovery that loaded every mirror it found vouches
@@ -971,7 +973,9 @@ public struct ASTRAApp: App {
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
                     ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
-                    WorkspaceDeletionCleanupService.dropUnconfirmed(modelContext: modelContext)
+                    WorkspaceDeletionCleanupService.dropUnconfirmed(
+                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
+                    )
                 }
             }
         }
