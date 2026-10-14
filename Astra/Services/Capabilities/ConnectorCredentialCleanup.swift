@@ -237,10 +237,27 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return 0
         }
+        // A deletion saved just before a quit may not have reached the
+        // mirrors, and recovery leaves a stored workspace's mirror as it is;
+        // a later recovery from that mirror would restore the connector
+        // without its credentials. So a cleanup waits, as an owner, while a
+        // stored workspace's mirror still lists its connector, and that
+        // workspace is exported again for the next launch.
+        guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "workspace_mirror_unreadable"
+            ], level: .error)
+            return 0
+        }
         let classified = classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
-        let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup) + pending.heldBack
+        let stale = classified.filter { $0.committed && mirrored.ids.contains($0.record.cleanup.connectorID) }
+        let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup) + pending.heldBack + stale.map(\.record.cleanup)
+        let staleIDs = Set(stale.map(\.record.cleanup.connectorID))
+        for (workspace, listed) in mirrored.byWorkspace where !listed.isDisjoint(with: staleIDs) {
+            WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+        }
         var cleared = 0
-        for entry in classified {
+        for entry in classified where !(entry.committed && staleIDs.contains(entry.record.cleanup.connectorID)) {
             if entry.unconfirmed {
                 AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                     "scope": "connector_cleanup", "reason": "intent_unconfirmed_after_store_change",
@@ -255,6 +272,39 @@ enum ConnectorCredentialCleanup {
             cleared += 1
         }
         return cleared
+    }
+
+    /// The connector IDs each stored workspace's mirror lists. A missing
+    /// mirror lists none; nil when one that exists can't be read.
+    static func connectorsInStoredMirrors(
+        modelContext: ModelContext
+    ) -> (ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)])? {
+        struct Listed: Decodable {
+            struct Entry: Decodable { let id: String? }
+            let connectors: [Entry]?
+        }
+        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else { return nil }
+        var all = Set<UUID>()
+        var byWorkspace: [(Workspace, Set<UUID>)] = []
+        for workspace in workspaces {
+            for file in [
+                WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath),
+                WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspace.primaryPath)
+            ] where !file.isEmpty {
+                let data: Data
+                do {
+                    data = try Data(contentsOf: URL(fileURLWithPath: file))
+                } catch {
+                    if WorkspaceFileLayout.isMissingFile(error) { continue }
+                    return nil
+                }
+                guard let listed = try? JSONDecoder().decode(Listed.self, from: data) else { return nil }
+                let ids = Set((listed.connectors ?? []).compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
+                all.formUnion(ids)
+                byWorkspace.append((workspace, ids))
+            }
+        }
+        return (all, byWorkspace)
     }
 
     private struct Classified {

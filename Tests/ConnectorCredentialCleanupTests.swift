@@ -531,6 +531,20 @@ struct ConnectorCredentialCleanupTests {
         // Reported, and settlement removes it though no identity was pinned
         // for it: it names the deleted workspace.
         #expect(reported.map(\.path) == [mirror.path])
+        // Any spelling of the ID matches, as the importer reads it.
+        #expect(try await recover(([], [workspace.id.uuidString.lowercased()])).names.isEmpty)
+        // A reported mirror that can't be read keeps the deletion pending.
+        let unreadable = root.appendingPathComponent("Unreadable.json")
+        try FileManager.default.copyItem(at: mirror, to: unreadable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: unreadable.path) }
+        let pendingCheck = try credentialCleanupContainer()
+        #expect(!WorkspaceDeletionCleanupService.settle(
+            WorkspaceDeletionCleanupRecord(
+                workspaceID: workspace.id, primaryPath: root.appendingPathComponent("OldPath").path, connectors: [], skills: []
+            ),
+            modelContext: pendingCheck.mainContext, movedMirrors: [unreadable.path]
+        ))
         let settling = try credentialCleanupContainer()
         let record = WorkspaceDeletionCleanupRecord(
             workspaceID: workspace.id, primaryPath: root.appendingPathComponent("OldPath").path, connectors: [], skills: []
@@ -542,6 +556,46 @@ struct ConnectorCredentialCleanupTests {
         #expect(!unread.trusted)
         #expect(unread.names.isEmpty)
         withExtendedLifetime(source) {}
+    }
+
+    @Test("A saved connector deletion waits while a stored workspace's mirror still lists the connector")
+    func cleanupWaitsForStaleMirror() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-stale-mirror-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outbox = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
+        try withTemporaryCredentialKeychain {
+            let folder = root.appendingPathComponent("App", isDirectory: true)
+            let workspace = Workspace(name: "App", primaryPath: folder.path)
+            context.insert(workspace)
+            try context.save()
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            _ = try outbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([deleted.keychainCleanup])
+            // The deletion saved, but the quit came before the export.
+            let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+            try FileManager.default.createDirectory(at: mirror.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(#"{"connectors":[{"id":"\#(deleted.id.uuidString)"}]}"#.utf8).write(to: mirror)
+            #expect(ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: context)?.ids == [deleted.id])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 0)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            // Once the mirror no longer lists it, the cleanup runs.
+            try Data(#"{"connectors":[]}"#.utf8).write(to: mirror)
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+            // A mirror that can't be read runs nothing. Another workspace's,
+            // since the first is being exported again in the background.
+            let other = Workspace(name: "Other", primaryPath: root.appendingPathComponent("Other").path)
+            context.insert(other)
+            try context.save()
+            let corrupt = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: other.primaryPath))
+            try FileManager.default.createDirectory(at: corrupt.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("{".utf8).write(to: corrupt)
+            #expect(ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: context) == nil)
+        }
     }
 
     @Test("A connector intent whose store mark can't be read waits")

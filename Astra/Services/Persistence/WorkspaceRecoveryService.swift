@@ -640,12 +640,15 @@ public enum WorkspaceRecoveryService {
             // from its pinned path, its folder moved before the deletion.
             // One left out by ID alone lies away from the deletion's pinned
             // path, so it is reported for settlement to remove too.
+            // IDs compared as UUIDs, as the importer reads them, so no
+            // spelling of the deleted workspace's ID slips past.
+            let deletedIDs = Set(deletedNow.workspaceIDs.compactMap(UUID.init(uuidString:)))
             var current: [LoadedWorkspaceConfig] = []
             var movedByID: [URL] = []
             for loaded in loadedConfigs {
                 if deletedNow.paths.contains(loaded.mirrorFile.path)
                     || deletedNow.paths.contains(WorkspacePathPresentation.resolvedPath(loaded.mirrorFile.path)) { continue }
-                if loaded.config.id.map(deletedNow.workspaceIDs.contains) ?? false {
+                if loaded.config.id.flatMap(UUID.init(uuidString:)).map(deletedIDs.contains) ?? false {
                     movedByID.append(loaded.mirrorFile)
                     continue
                 }

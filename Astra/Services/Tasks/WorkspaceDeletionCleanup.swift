@@ -464,7 +464,13 @@ enum WorkspaceDeletionCleanupService {
         let moved = movedMirrors.filter { path in
             guard !liveMirrors.contains(path), !liveMirrors.contains(WorkspacePathPresentation.resolvedPath(path)),
                   case .some(.some(let current)) = currentIdentity(path) else { return false }
-            return record.mirrorFileIDs.contains(current) || mirrorWorkspaceID(at: path) == record.workspaceID.uuidString
+            if record.mirrorFileIDs.contains(current) { return true }
+            // One that can't be read may be it: the record is kept.
+            guard let named = mirrorWorkspaceID(at: path) else {
+                identityUnreadable = true
+                return false
+            }
+            return named == record.workspaceID
         }
         // A pinned path whose file has an identity that wasn't pinned is a
         // mirror created there since, such as a new workspace's after the
@@ -556,10 +562,14 @@ enum WorkspaceDeletionCleanupService {
         return settled
     }
 
-    /// The workspace ID a mirror file names, or nil when it can't be read.
-    static func mirrorWorkspaceID(at path: String) -> String? {
+    /// The workspace ID a mirror file names, parsed as the importer parses
+    /// it, so any spelling of the same UUID matches. `.some(nil)` for a mirror
+    /// that names none or no valid one; nil when it can't be read or decoded.
+    static func mirrorWorkspaceID(at path: String) -> UUID?? {
         struct Identified: Decodable { let id: String? }
-        return (try? JSONDecoder().decode(Identified.self, from: Data(contentsOf: URL(fileURLWithPath: path))))?.id
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let identified = try? JSONDecoder().decode(Identified.self, from: data) else { return nil }
+        return .some(identified.id.flatMap(UUID.init(uuidString:)))
     }
 
     /// Drops the records `resumePending` left with `dropsUnconfirmed` off,
