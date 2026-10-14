@@ -19,7 +19,7 @@ struct AgentRuntimeExecutionContext {
         return AgentRuntimeExecutionContext(
             task: executionTask,
             executionPath: executionPath,
-            shouldCleanupIsolation: shouldCleanupIsolation
+            shouldCleanupIsolation: shouldCleanupIsolation && TaskWorktreeBinding.payload(for: launchTask) == nil
         )
     }
 

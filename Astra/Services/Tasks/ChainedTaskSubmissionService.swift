@@ -31,12 +31,19 @@ enum ChainedTaskSubmissionService {
             validationStrategy: task.validationStrategy
         )
         if let taskID { nextTask.id = taskID }
+        // A chained run takes the source's checkout or isn't created: one the
+        // cleanup has reserved is never swapped for the workspace default.
+        guard case .inherited(let inheritedBinding) = TaskWorktreeBinding.inheritCheckout(from: task, into: nextTask) else {
+            AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
+                "operation": "chained_execution_submission", "reason": "checkout_reserved"
+            ], level: .error)
+            return
+        }
         TaskStateMachine.enqueueChainedFollowUp(nextTask, modelContext: modelContext)
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
         nextTask.runtimeExplicitlySelected = task.runtimeExplicitlySelected
         nextTask.reasoningEffort = task.reasoningEffort
-        nextTask.executionRootPath = task.executionRootPath
         nextTask.executionEnvironmentSnapshotJSON = task.executionEnvironmentSnapshotJSON
         if !run.output.isEmpty {
             nextTask.inputs = ["Previous task output (\(task.title)):\n\(String(run.output.prefix(5000)))"]
@@ -44,6 +51,7 @@ enum ChainedTaskSubmissionService {
         nextTask.skills = task.skills
         TaskCapabilitySnapshotter.capture(for: nextTask)
         modelContext.insert(nextTask)
+        if let inheritedBinding { modelContext.insert(inheritedBinding) }
         let chainEvent = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.chained,

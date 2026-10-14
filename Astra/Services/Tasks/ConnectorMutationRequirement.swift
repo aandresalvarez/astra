@@ -68,6 +68,12 @@ struct TaskStagedConnectorMutation: Codable, Sendable, Equatable, Identifiable {
     /// had declined was silently swallowed, because the second proposal looked
     /// like a replay of the first. Content equality is not intent equality.
     let requestDigest: String
+    /// `.autoPolicy` when Auto sent this the moment the agent proposed it; nil
+    /// when it waits for the user's review, which is what every record written
+    /// before Auto could send meant. An Auto record had one attempt and its
+    /// outcome went back to the agent, so a failure retires it too (see
+    /// `ConnectorMutationRequirementResolver`).
+    let authorization: ExternalActionAuthorization?
 
     var id: String { stagedPayloadPath }
 
@@ -80,9 +86,11 @@ struct TaskStagedConnectorMutation: Codable, Sendable, Equatable, Identifiable {
         target: String,
         summary: String,
         stagedPayloadPath: String,
-        requestDigest: String
+        requestDigest: String,
+        authorization: ExternalActionAuthorization? = nil
     ) {
         version = 1
+        self.authorization = authorization
         self.runID = runID
         self.serviceType = serviceType
         self.operation = operation
@@ -106,7 +114,9 @@ struct TaskStagedConnectorMutation: Codable, Sendable, Equatable, Identifiable {
 enum ConnectorMutationRequirementResolver {
     /// Every staged mutation that has not since been sent, declined, or failed
     /// terminally — oldest first, so the user works through them in the order
-    /// the agent composed them.
+    /// the agent composed them. An Auto record with no outcome at all is kept:
+    /// ASTRA stopped while sending it, so the review shows it — refused as
+    /// already sent if the send was claimed — rather than letting it vanish.
     @MainActor
     static func pendingMutations(task: AgentTask) -> [TaskStagedConnectorMutation] {
         pendingMutations(events: task.events.map { TaskOutcomeEventRecord(event: $0) })
@@ -125,6 +135,7 @@ enum ConnectorMutationRequirementResolver {
         let types = [
             ConnectorMutationEventTypes.staged,
             ConnectorMutationEventTypes.receipt,
+            ConnectorMutationEventTypes.failed,
             ConnectorMutationEventTypes.indeterminate,
             ConnectorMutationEventTypes.declined,
             ConnectorMutationEventTypes.quarantined
@@ -162,6 +173,15 @@ enum ConnectorMutationRequirementResolver {
                 // thing even when it says the same words, and sending or
                 // declining one must not retire the other.
                 guard let path = resolvedStagedPath(in: event.payload) else { continue }
+                pending.removeValue(forKey: path)
+            case ConnectorMutationEventTypes.failed:
+                // A failure leaves a proposal the user reviews sendable. One Auto
+                // sent when the agent proposed it is different: it had its one
+                // attempt, and the agent was told the outcome and may already
+                // have proposed a corrected one. Offering the failed one for a
+                // later send is how the second write would happen.
+                guard let path = resolvedStagedPath(in: event.payload),
+                      pending[path]?.authorization == .autoPolicy else { continue }
                 pending.removeValue(forKey: path)
             default:
                 continue

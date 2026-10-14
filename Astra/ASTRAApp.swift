@@ -887,14 +887,97 @@ public struct ASTRAApp: App {
             )
         }
 
-        if !skipWorkspaceRecovery {
+        // A workspace deletion a quit interrupted keeps its mirror out of the
+        // recovery below and is settled once that recovery has run, so the
+        // workspaces it rebuilds count as owners of shared credentials. A
+        // launch that skips recovery, or meets an unreadable record, settles
+        // nothing: the owners it would have rebuilt are unknown, so the
+        // records wait for a launch that recovers.
+        WorkspaceRecoveryTrust.set(.pending)
+        let deletionStore = WorkspaceDeletionCleanupStore(for: modelContext)
+        let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
+        let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
+        if unsettledDeletionMirrors == nil || unsettledDeletionMirrorIDs == nil {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
+            ], level: .error)
+        }
+        if !skipWorkspaceRecovery, let unsettledDeletionMirrors, let unsettledDeletionMirrorIDs {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
-            workspaceRecoveryAfterLaunch = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            // Worktree cleanup, interrupted creations, and connector credential
+            // cleanup read owners from the store too, so while any is pending
+            // recovery scans for mirrors.
+            let worktreeCleanup = TaskWorktreeCleanupStore()
+            // An outbox that can't be listed counts as pending.
+            let connectorCleanup = ConnectorCredentialCleanupStore(for: modelContext).map { outbox in
+                outbox.pending().map { !$0.records.isEmpty || !$0.complete } ?? true
+            } ?? false
+            let pendingWorktreeCleanup = ((try? worktreeCleanup.pendingURLs()).map { !$0.isEmpty } ?? true)
+                || ((try? worktreeCleanup.ownership.creationJournal.pendingURLs()).map { !$0.isEmpty } ?? true)
+                || connectorCleanup
+            // Every folder a mirror was written into is probed too, wherever
+            // it is. The store's own workspaces are recorded first, so ones
+            // imported before the registry existed are covered from now on.
+            // One that can't be recorded leaves the registry incomplete, so
+            // this launch's recovery isn't trusted.
+            let mirrorRegistry = WorkspaceMirrorRegistry(for: modelContext)
+            let storedFolders = (try? modelContext.fetch(FetchDescriptor<Workspace>())).map { $0.map(\.primaryPath) }
+            let registryComplete = storedFolders.map { mirrorRegistry?.register($0) ?? true } ?? false
+            let recovery = WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: modelContext,
-                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
+                excludingConfigFiles: unsettledDeletionMirrors,
+                incompleteMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker,
+                pendingCleanup: pendingWorktreeCleanup,
+                excludingItemIdentities: unsettledDeletionMirrorIDs,
+                excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
+                vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
+                registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
+                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
+                // A pending deletion, one made while recovery loads included,
+                // keeps its mirror out by path or, wherever a copy of it is
+                // now, as across volumes where its identity doesn't follow,
+                // by ID.
+                deletionMirrorsNow: {
+                    deletionStore.pendingMirrorPaths().map { paths in
+                        (paths, Set(deletionStore.pending().map(\.workspaceID.uuidString)))
+                    }
+                },
+                // Settlement removes those wherever they are.
+                excludedByWorkspaceID: { movedDeletionMirrors += $0.map(\.path) },
+                loadedMirrors: { WorkspaceRecoveryTrust.recordLoadedMirrors($0.map(\.path)) }
             )
+            workspaceRecoveryAfterLaunch = Task { @MainActor in
+                // Only a recovery that loaded every mirror it found vouches
+                // for the store's owners and pins; otherwise destructive
+                // cleanup waits for a launch whose recovery does.
+                guard await recovery.value else {
+                    WorkspaceRecoveryTrust.set(.untrusted)
+                    AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                        "operation": "recover_workspaces", "reason": "mirror_unloadable_cleanup_deferred"
+                    ], level: .error)
+                    return
+                }
+                workspaceRecoveryTrusted = true
+                // Trusted without a scan, the store vouches for its pins, but
+                // a workspace only a mirror holds could share a connector's
+                // namespace: credential cleanups wait, and their records make
+                // the next launch scan.
+                WorkspaceRecoveryTrust.set(recoveryVouchedWithoutScan ? .vouchedWithoutScan : .trusted)
+                // Only a scan vouches for credential owners: on a launch that
+                // skipped it, even a cleanup recorded meanwhile waits. Each
+                // pass spares what the other's pending records hold, so an
+                // unconfirmed workspace deletion is dropped only after both.
+                if WorkspaceRecoveryTrust.allowsCleanup {
+                    WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
+                                                                  movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
+                    ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                    WorkspaceDeletionCleanupService.dropUnconfirmed(
+                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
+                    )
+                }
+            }
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
         // (runtime.loadPluginCatalog()), which runs synchronously in
@@ -930,12 +1013,39 @@ public struct ASTRAApp: App {
 
     @MainActor private static var runtimeSettlementRecovery: Task<Void, Never>?
     @MainActor private static var runtimeSettlementAutoExportWorkspaces = true
+    @MainActor private static var worktreeCleanupRecovery: Task<Void, Never>?
 
     @MainActor
     static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
         runDeferredStartupWork(modelContext: modelContext)
         await recoverTaskFolderSnapshots(modelContext: modelContext)
+        await recoverPendingWorktreeCleanup(modelContext: modelContext, taskQueue: taskQueue)
         await recoverRuntimeSettlements(modelContext: modelContext, taskQueue: taskQueue)
+    }
+
+    @MainActor
+    private static func recoverPendingWorktreeCleanup(modelContext: ModelContext, taskQueue: TaskQueue) async {
+        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else { return }
+        // Pins that keep a worktree may live only in mirrors a skipped,
+        // blocked, or partly failed recovery didn't import, so cleanup waits
+        // for a launch whose recovery loaded every mirror, as workspace
+        // deletion settlement does.
+        await workspaceRecoveryAfterLaunch?.value
+        guard workspaceRecoveryAfterLaunch != nil, workspaceRecoveryTrusted else {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "worktree_cleanup", "reason": "deferred_until_workspace_recovery"
+            ], level: .warning)
+            return
+        }
+        if let recovery = worktreeCleanupRecovery { await recovery.value; return }
+        let recovery = Task { @MainActor in
+            // Interrupted creations settle first, so a worktree whose binding
+            // was never saved is removed rather than left unowned.
+            _ = await TaskWorktreeCleanupService.resumeInterruptedCreations(modelContext: modelContext, resourceQueue: taskQueue)
+            _ = await TaskWorktreeCleanupService.resumePending(modelContext: modelContext, resourceQueue: taskQueue)
+        }
+        worktreeCleanupRecovery = recovery
+        await recovery.value
     }
 
     @MainActor
@@ -956,6 +1066,12 @@ public struct ASTRAApp: App {
     /// Rebuilding workspaces from their mirrors, when the store has none; the
     /// tasks it imports may hold baselines to recover.
     @MainActor private static var workspaceRecoveryAfterLaunch: Task<Void, Never>?
+    /// Set once this launch's recovery loaded every mirror it found.
+    @MainActor private static var workspaceRecoveryTrusted = false
+    /// Pending deletions' mirrors recovery found away from their pinned
+    /// paths, matched by identity, for settlement to remove.
+    @MainActor private static var movedDeletionMirrors: [String] = []
+    @MainActor private static var recoveryVouchedWithoutScan = false
 
     /// Compares every task-folder baseline a run left behind — interrupted by
     /// a crash, or cancelled by a quit before its worker compared — after

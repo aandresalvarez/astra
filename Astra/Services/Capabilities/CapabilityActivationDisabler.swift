@@ -12,6 +12,9 @@ struct CapabilityActivationDisabler {
         var disabledToolIDs: [UUID] = []
         var removedWorkspaceSkillIDs: [UUID] = []
         var removedWorkspaceConnectorIDs: [UUID] = []
+        /// False when the disable was rolled back, leaving the package
+        /// enabled; the caller must not report it as done.
+        var persisted = true
     }
 
     @discardableResult
@@ -21,7 +24,8 @@ struct CapabilityActivationDisabler {
         capabilities: WorkspaceCapabilities,
         modelContext: ModelContext,
         availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
-        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
+        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
     ) -> Result {
         let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
         let state = CapabilityPackageState(
@@ -73,10 +77,13 @@ struct CapabilityActivationDisabler {
         // saved; otherwise a failed save would leave connector/skill records
         // that look configured but whose credentials are gone.
         var pendingKeychainCleanups: [() -> Void] = []
+        // Snapshotted before the delete; run after the save, against the
+        // connectors that remain.
+        var pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
 
         for connector in state.linkedConnectors where !connector.isGlobal {
             guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
-            pendingKeychainCleanups.append { connector.cleanupKeychain() }
+            pendingConnectorCleanups.append(connector.keychainCleanup)
             result.removedWorkspaceConnectorIDs.append(connector.id)
             modelContext.delete(connector)
         }
@@ -97,7 +104,10 @@ struct CapabilityActivationDisabler {
         // or MCP-only packages. Skipping the save there would make the
         // disable look applied in memory but never reach SwiftData / the
         // exported config. Keychain cleanup stays gated on a successful save.
-        if persist(workspace, modelContext) {
+        if ConnectorCredentialCleanup.deleteThenClean(
+            pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
+            save: { persist(workspace, modelContext) }
+        ) {
             pendingKeychainCleanups.forEach { $0() }
         } else {
             // Failed save: revert the pending deletes and the workspace
@@ -110,9 +120,9 @@ struct CapabilityActivationDisabler {
                 "source": "package_disable",
                 "package_id": package.id,
                 "result": "save_failed_disable_rolled_back",
-                "deferred_cleanup_count": String(pendingKeychainCleanups.count)
+                "deferred_cleanup_count": String(pendingKeychainCleanups.count + pendingConnectorCleanups.count)
             ], level: .error)
-            return Result(packageID: package.id)
+            return Result(packageID: package.id, persisted: false)
         }
         return result
     }

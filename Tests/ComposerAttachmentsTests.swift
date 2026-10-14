@@ -113,7 +113,7 @@ struct ComposerAttachmentsTests {
         #expect(restore.lowerBound < firstReturn.lowerBound)
 
         let save = try body(of: "saveDraft", in: chat)
-        let existingDraft = try #require(save.range(of: "if let draft = draftTask {"))
+        let existingDraft = try #require(save.range(of: "if let draft = composerDraft {"))
         let newDraft = try #require(save[existingDraft.upperBound...].range(of: "} else {"))
         #expect(save[existingDraft.upperBound..<newDraft.lowerBound].contains(
             "draft.inputs = ComposerAttachments.inputs(draft.inputs, replacingPathsWith: attachedFiles)"
@@ -150,7 +150,14 @@ struct ComposerAttachmentsTests {
         let button = try #require(chat[..<label.lowerBound].range(of: "Button {", options: .backwards))
         let startOver = chat[button.upperBound..<label.lowerBound]
         #expect(startOver.contains("modelContext.delete(draft)"))
+        #expect(startOver.contains("else { return }"))
         #expect(startOver.contains("attachedFiles = []"))
+        let deletion = startOver.range(of: "modelContext.delete(draft)")
+        let reset = startOver.range(of: "attachedFiles = []")
+        let stopped = startOver.range(of: "else { return }")
+        #expect(deletion != nil && stopped != nil && reset != nil)
+        #expect(deletion!.lowerBound < stopped!.lowerBound)
+        #expect(stopped!.lowerBound < reset!.lowerBound)
     }
 
     private func body(of function: String, in source: String) throws -> Substring {

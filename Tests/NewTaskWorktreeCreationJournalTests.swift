@@ -1,0 +1,683 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+@MainActor
+@Suite("New task worktree creation journal and submodules", .serialized)
+struct NewTaskWorktreeCreationJournalTests {
+    private typealias Fixture = NewTaskWorktreeFixture
+
+    private func commitAll(_ message: String, at repository: URL, fixture: Fixture) throws {
+        try fixture.git([
+            "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+            "commit", "--quiet", "-m", message
+        ], at: repository)
+    }
+
+    /// Git blocks local-path submodule clones by default; fixtures allow them.
+    private func addSubmodule(_ source: URL, at path: String, in repository: URL, fixture: Fixture) throws {
+        try fixture.git(["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", source.path, path], at: repository)
+        try commitAll("Add \(path)", at: repository, fixture: fixture)
+    }
+
+    /// `App` with an initialized `libs/a`, whose own `deps/nested` is
+    /// initialized too, and a registered `libs/b` the repository never
+    /// initialized.
+    private func repositoryWithSubmodules(_ fixture: Fixture) throws -> URL {
+        let nested = try fixture.repository("Nested")
+        let libA = try fixture.repository("LibA")
+        try addSubmodule(nested, at: "deps/nested", in: libA, fixture: fixture)
+        let libB = try fixture.repository("LibB")
+        let app = try fixture.repository("App")
+        try addSubmodule(libA, at: "libs/a", in: app, fixture: fixture)
+        try addSubmodule(libB, at: "libs/b", in: app, fixture: fixture)
+        try fixture.git(["-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"], at: app)
+        try fixture.git(["submodule", "deinit", "--quiet", "libs/b"], at: app)
+        return app
+    }
+
+    /// ASTRA's submodule commands, with the local-path clones fixtures need.
+    private func localSubmoduleSetup(_ fixture: Fixture, commands: [[String]] = GitService.taskWorktreeSubmoduleCommands,
+                                     thenFail: Bool = false) -> TaskWorktreeSubmoduleSetup {
+        { _, path in
+            for arguments in commands {
+                try fixture.git(["-c", "protocol.file.allow=always"] + arguments, at: URL(fileURLWithPath: path))
+            }
+            if thenFail { throw CocoaError(.fileReadNoPermission) }
+        }
+    }
+
+    private func draft(in repository: URL, context: ModelContext) -> AgentTask {
+        let workspace = Workspace(name: "App", primaryPath: repository.path)
+        context.insert(workspace)
+        return AgentTask(title: "Update libraries", goal: "Update the libraries", workspace: workspace)
+    }
+
+    private func jsonFiles(in directory: URL) throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+    }
+
+    /// An intent for a worktree ASTRA would create for a new task.
+    private func intent(_ name: String, in repository: URL, fixture: Fixture) throws -> TaskWorktreeDiscard {
+        let branch = "astra/\(name)-0badc0de"
+        return TaskWorktreeDiscard(
+            taskID: UUID(), repositoryPath: repository.path,
+            worktreePath: GitService.worktreeLocation(
+                repoPath: repository.path, branch: branch, worktreesRoot: fixture.worktrees.path
+            ),
+            branch: branch, baseCommit: try fixture.git(["rev-parse", "HEAD"], at: repository)
+        )
+    }
+
+    /// Runs `git worktree add` the way creation does for `intent`.
+    @discardableResult
+    private func addWorktree(for intent: TaskWorktreeDiscard, fixture: Fixture) async throws -> String {
+        let created = try await GitService.shared.addWorktree(
+            repoPath: intent.repositoryPath, branch: intent.branch, createBranch: true, base: intent.baseCommit,
+            worktreesRoot: fixture.worktrees.path
+        )
+        #expect(created == intent.worktreePath)
+        return created
+    }
+
+    /// Nothing from a failed or abandoned creation remains: no checkout, no
+    /// branch, no journal entry, and no ownership record.
+    private func expectNothingLeft(in repository: URL, fixture: Fixture) async throws {
+        #expect(await GitService.shared.listWorktrees(at: repository.path).count == 1)
+        #expect(try fixture.git(["branch", "--list", "astra/*"], at: repository).isEmpty)
+        #expect(try fixture.ownership.creationJournal.pendingURLs().isEmpty)
+        #expect(try jsonFiles(in: fixture.ownership.directory).isEmpty)
+    }
+
+    // MARK: - Submodules
+
+    @Test("A new worktree populates the submodules the repository initialized, recursively")
+    func worktreeMirrorsInitializedSubmodules() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let task = draft(in: app, context: store.mainContext)
+
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+
+        let worktree = URL(fileURLWithPath: try #require(task.executionRootPath))
+        #expect(FileManager.default.fileExists(atPath: worktree.appendingPathComponent("libs/a/Sources/file.txt").path))
+        #expect(FileManager.default.fileExists(
+            atPath: worktree.appendingPathComponent("libs/a/deps/nested/Sources/file.txt").path
+        ))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: worktree.appendingPathComponent("libs/b").path).isEmpty)
+        #expect(try fixture.git(["status", "--porcelain", "--ignore-submodules=none"], at: worktree).isEmpty)
+        #expect(await GitService.shared.submoduleCheckoutState(at: worktree.path) == .unchanged)
+        #expect(try fixture.ownership.creationJournal.pendingURLs().isEmpty)
+    }
+
+    @Test("A worktree whose submodules can't be set up blocks the task and leaves nothing behind")
+    func submoduleFailureAbandonsCreation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        // The worktree's clone of libs/a has nowhere to come from.
+        try fixture.git(["config", "submodule.libs/a.url", fixture.root.appendingPathComponent("Missing").path], at: app)
+        let store = try Fixture.container()
+        let task = draft(in: app, context: store.mainContext)
+
+        do {
+            try await TaskWorktreeService.prepare(
+                task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+                modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+            )
+            Issue.record("Expected submodule setup to fail")
+        } catch TaskWorktreeCreationError.submodulesUnavailable(let path, _) {
+            #expect(path == app.path)
+        }
+
+        #expect(task.executionRootPath == nil)
+        #expect(task.events.isEmpty)
+        try await expectNothingLeft(in: app, fixture: fixture)
+    }
+
+    @Test("A partly set-up worktree is removed, populated submodules included, when setup fails")
+    func partialSubmoduleSetupIsRemoved() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let task = draft(in: app, context: store.mainContext)
+
+        await #expect(throws: TaskWorktreeCreationError.self) {
+            try await TaskWorktreeService.prepare(
+                task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+                modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+                setUpSubmodules: localSubmoduleSetup(
+                    fixture, commands: Array(GitService.taskWorktreeSubmoduleCommands.prefix(1)), thenFail: true
+                )
+            )
+        }
+
+        #expect(task.executionRootPath == nil)
+        try await expectNothingLeft(in: app, fixture: fixture)
+    }
+
+    enum SubmoduleWork: String, CaseIterable, Sendable {
+        case none
+        /// A commit only the nested submodule's reflog holds, invisible to the
+        /// worktree's own status once the submodule is back on its commit.
+        case unpushedCommit
+        /// A deinitialized submodule keeps its repository in the worktree's
+        /// Git folder, where a forced removal would delete it.
+        case deinitialized
+        /// An edit to a nested submodule's file marked assume-unchanged, which
+        /// every status and the local-work script trust the index for.
+        case indexHiddenEdit
+        /// A submodule checked out at another commit its remote holds, with
+        /// its gitlink marked assume-unchanged so no status shows it.
+        case hiddenGitlinkMove
+        /// A local branch or tag at a commit the remote already holds.
+        case localBranch
+        case localTag
+        /// The same tag after `git pack-refs`, with no loose file left.
+        case packedTag
+        /// Only the submodule repository's configuration: a remote added.
+        case addedRemote
+        /// Only a local hook in the submodule repository.
+        case addedHook
+        /// Only a hook linked to a script elsewhere, which a listing of
+        /// regular files misses.
+        case addedHookLink
+        /// An object written to the submodule's database that nothing names.
+        case unattachedObject
+        /// A recorded conflict resolution in the submodule's `rr-cache/`.
+        case rerereResolution
+        /// A custom ref at a commit the remote holds, outside any branch or tag.
+        case customRef
+        /// A visit to a commit the remote holds and a return to the recorded
+        /// one, leaving only reflog history.
+        case reflogVisit
+        /// Another detached linked worktree registered on the submodule,
+        /// whose `.git` file would point into the deleted repository.
+        case linkedWorktree
+    }
+
+    @Test("Worktree cleanliness is true, false, or unknown, and an unknown status is never clean")
+    func worktreeCleanlinessFailsClosed() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        #expect(await GitService.shared.worktreeIsClean(at: repository.path) == true)
+        try "edit".write(to: repository.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+        #expect(await GitService.shared.worktreeIsClean(at: repository.path) == false)
+        // Where `git status` fails, the status list reads as clean; the
+        // cleanliness check reports it as unknown instead.
+        let notARepository = fixture.root.appendingPathComponent("not-a-repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: notARepository, withIntermediateDirectories: true)
+        #expect(await GitService.shared.getStatusFiles(at: notARepository.path).isEmpty)
+        #expect(await GitService.shared.worktreeIsClean(at: notARepository.path) == nil)
+    }
+
+    @Test("Docker keeps a worktree with submodules at its host path, so their relative Git pointers resolve")
+    func dockerKeepsSubmoduleWorktreeAtHostPath() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let task = draft(in: app, context: context)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+        let worktree = try #require(task.executionRootPath)
+        #expect(TaskWorkspaceAccess(task: task).runtimeWorktreeHasSubmoduleRepositories)
+        // An unrelated saved mount already at the worktree's host path moves
+        // aside rather than giving Docker two mounts at one destination.
+        let other = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test", kind: .dockerImage, displayName: "Test", image: "astra/test:latest",
+            mounts: [ExecutionEnvironmentMount(
+                hostPath: other.path, containerPath: WorkspacePathPresentation.standardizedPath(worktree),
+                access: .readWrite, role: .additionalPath
+            )]
+        )
+        #expect(environment.containerWorkingDirectory != WorkspacePathPresentation.standardizedPath(worktree))
+        let mounts = DockerExecutionPlanner.mountPlan(currentDirectory: worktree, environment: environment, task: task)
+        let containerPaths = mounts.map(\.containerPath)
+        #expect(Set(containerPaths).count == containerPaths.count)
+        #expect(mounts.contains { WorkspacePathPresentation.standardizedPath($0.hostPath) == WorkspacePathPresentation.standardizedPath(other.path) })
+        let checkout = try #require(mounts.first { $0.role == .workspace })
+        #expect(checkout.containerPath == WorkspacePathPresentation.standardizedPath(worktree))
+        // Followed inside the container, the submodule's relative pointer
+        // lands in a Git directory mounted at its own path.
+        let pointer = try String(contentsOfFile: worktree + "/libs/a/.git", encoding: .utf8)
+        let relative = pointer.replacingOccurrences(of: "gitdir:", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(!relative.hasPrefix("/"))
+        let resolved = URL(fileURLWithPath: checkout.containerPath + "/libs/a/" + relative).standardizedFileURL.path
+        #expect(mounts.contains { mount in
+            mount.containerPath == mount.hostPath
+                && WorkspacePathPresentation.resolvedPath(resolved).hasPrefix(WorkspacePathPresentation.resolvedPath(mount.containerPath) + "/")
+        })
+    }
+
+    @Test("An unpopulated gitlink folder that can't be checked counts as holding files")
+    func uncheckableGitlinkFolderHoldsFiles() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let library = try fixture.repository("Lib")
+        let app = try fixture.repository("App")
+        try addSubmodule(library, at: "deps/lib", in: app, fixture: fixture)
+        try fixture.git(["submodule", "deinit", "--quiet", "--force", "deps/lib"], at: app)
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: app.path) == false)
+        // The gitlink's folder can't be reached, so what it holds is unknown.
+        let deps = app.appendingPathComponent("deps").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: deps)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: deps) }
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: app.path))
+    }
+
+    @Test("A file put in place of a hidden unpopulated gitlink counts as changed")
+    func fileAtHiddenGitlinkPathCounts() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let task = draft(in: app, context: context)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        let worktree = URL(fileURLWithPath: discard.worktreePath)
+        // `libs/b` was never initialized, so its folder is empty. Flagging
+        // its gitlink is already local work.
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: worktree.path) == false)
+        try fixture.git(["update-index", "--assume-unchanged", "libs/b"], at: worktree)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: worktree.path))
+
+        let gitlink = worktree.appendingPathComponent("libs/b")
+        try FileManager.default.removeItem(at: gitlink)
+        try "replacement".write(to: gitlink, atomically: true, encoding: .utf8)
+        #expect(try fixture.git(["status", "--porcelain"], at: worktree).isEmpty)
+        #expect(await GitService.shared.indexHiddenEntriesChanged(at: worktree.path))
+    }
+
+    @Test("Discarding removes submodules only while they hold no local work", arguments: SubmoduleWork.allCases)
+    func discardRespectsSubmoduleWork(work: SubmoduleWork) async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let task = draft(in: app, context: context)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: context, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        let worktree = URL(fileURLWithPath: discard.worktreePath)
+        switch work {
+        case .none:
+            break
+        case .unpushedCommit:
+            let nested = worktree.appendingPathComponent("libs/a/deps/nested")
+            let recorded = try fixture.git(["rev-parse", "HEAD"], at: nested)
+            try fixture.git([
+                "-c", "user.name=ASTRA Tests", "-c", "user.email=astra-tests@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Local work"
+            ], at: nested)
+            try fixture.git(["checkout", "--quiet", "--detach", recorded], at: nested)
+        case .deinitialized:
+            try fixture.git(["submodule", "deinit", "--quiet", "libs/a"], at: worktree)
+        case .hiddenGitlinkMove:
+            let library = fixture.root.appendingPathComponent("LibA")
+            try fixture.commit("Sources/later.txt", contents: "later", message: "Later", at: library)
+            let submodule = worktree.appendingPathComponent("libs/a")
+            try fixture.git(["-c", "protocol.file.allow=always", "fetch", "--quiet", "origin"], at: submodule)
+            try fixture.git(["checkout", "--quiet", "--detach", "origin/main"], at: submodule)
+            try fixture.git(["update-index", "--assume-unchanged", "libs/a"], at: worktree)
+        case .localBranch:
+            try fixture.git(["branch", "keep", "HEAD"], at: worktree.appendingPathComponent("libs/a"))
+        case .localTag:
+            try fixture.git(["tag", "keep"], at: worktree.appendingPathComponent("libs/a"))
+        case .addedHook:
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: worktree.appendingPathComponent("libs/a"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
+            try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "#!/bin/sh\nexit 0\n".write(to: hook, atomically: true, encoding: .utf8)
+        case .addedHookLink:
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: worktree.appendingPathComponent("libs/a"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let hook = URL(fileURLWithPath: gitDirectory).appendingPathComponent("hooks/pre-commit")
+            try FileManager.default.createDirectory(at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(atPath: hook.path, withDestinationPath: "/usr/bin/true")
+        case .unattachedObject:
+            let submodule = worktree.appendingPathComponent("libs/a")
+            let scratch = submodule.appendingPathComponent("scratch.txt")
+            try "only copy\n".write(to: scratch, atomically: true, encoding: .utf8)
+            try fixture.git(["hash-object", "-w", "scratch.txt"], at: submodule)
+            try FileManager.default.removeItem(at: scratch)
+        case .rerereResolution:
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: worktree.appendingPathComponent("libs/a"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolution = URL(fileURLWithPath: gitDirectory).appendingPathComponent("rr-cache/0123abcd/postimage")
+            try FileManager.default.createDirectory(at: resolution.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "resolved\n".write(to: resolution, atomically: true, encoding: .utf8)
+        case .customRef:
+            try fixture.git(["update-ref", "refs/keep/check", "HEAD"], at: worktree.appendingPathComponent("libs/a"))
+        case .reflogVisit:
+            let submodule = worktree.appendingPathComponent("libs/a")
+            let recorded = try fixture.git(["rev-parse", "HEAD"], at: submodule).trimmingCharacters(in: .whitespacesAndNewlines)
+            try fixture.git(["checkout", "--quiet", "--detach", "HEAD~1"], at: submodule)
+            try fixture.git(["checkout", "--quiet", "--detach", recorded], at: submodule)
+            #expect(try fixture.git(["for-each-ref", "--format=%(refname:short) %(upstream:track)", "refs/heads"], at: submodule)
+                .split(whereSeparator: \.isNewline).allSatisfy { !$0.contains("[") })
+            #expect(try fixture.git(["rev-list", "-n", "1", "--all", "--reflog", "--not", "--remotes"], at: submodule).isEmpty)
+        case .linkedWorktree:
+            let linked = fixture.root.appendingPathComponent("LibA-linked")
+            try fixture.git(["worktree", "add", "--quiet", "--detach", linked.path, "HEAD"], at: worktree.appendingPathComponent("libs/a"))
+        case .addedRemote:
+            try fixture.git(["remote", "add", "backup", "https://example.invalid/backup.git"], at: worktree.appendingPathComponent("libs/a"))
+        case .packedTag:
+            let submodule = worktree.appendingPathComponent("libs/a")
+            try fixture.git(["tag", "keep"], at: submodule)
+            try fixture.git(["pack-refs", "--all"], at: submodule)
+            let gitDirectory = try fixture.git(["rev-parse", "--absolute-git-dir"], at: submodule)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(!FileManager.default.fileExists(atPath: gitDirectory + "/refs/tags/keep"))
+        case .indexHiddenEdit:
+            let nested = worktree.appendingPathComponent("libs/a/deps/nested")
+            let file = try #require(try fixture.git(["ls-files"], at: nested).split(whereSeparator: \.isNewline).first.map(String.init))
+            try fixture.git(["update-index", "--assume-unchanged", file], at: nested)
+            try "hidden edit".write(to: nested.appendingPathComponent(file), atomically: true, encoding: .utf8)
+            #expect(try fixture.git(["status", "--porcelain"], at: nested).isEmpty)
+        }
+        #expect(try fixture.git(["status", "--porcelain"], at: worktree).isEmpty)
+        context.delete(task)
+        try context.save()
+
+        let outcome = await TaskWorktreeService.discardOutcome(discard, modelContext: context, resourceQueue: fixture.resourceQueue)
+
+        let removed = work == .none
+        // A flagged gitlink is local index state in the worktree itself.
+        let reason = work == .hiddenGitlinkMove ? "index_hidden_changes" : "submodule_changes"
+        #expect(outcome == (removed ? .removed : .kept(reason)))
+        #expect(FileManager.default.fileExists(atPath: discard.worktreePath) == !removed)
+        #expect(try fixture.git(["branch", "--list", discard.branch], at: app).isEmpty == removed)
+    }
+
+    // MARK: - Creation journal
+
+    @Test("A creation interrupted after Git ran is removed on next launch")
+    func interruptedCreationIsRemoved() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let journal = fixture.ownership.creationJournal
+        let intent = try intent("interrupted", in: repository, fixture: fixture)
+        // What a crash between `git worktree add` and saving the task leaves.
+        try journal.record(intent)
+        try journal.ownership.record(.init(intent))
+        try await addWorktree(for: intent, fixture: fixture)
+        let store = try Fixture.container()
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 1)
+
+        #expect(!FileManager.default.fileExists(atPath: intent.worktreePath))
+        try await expectNothingLeft(in: repository, fixture: fixture)
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 0)
+    }
+
+    @Test("A journal entry without its ownership record never touches Git")
+    func unownedJournalEntryLeavesGitAlone() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let journal = fixture.ownership.creationJournal
+        let intent = try intent("unowned", in: repository, fixture: fixture)
+        // Ownership is recorded only once Git created the worktree, so a
+        // checkout at this path without it isn't one this creation made.
+        try journal.record(intent)
+        try await addWorktree(for: intent, fixture: fixture)
+        let store = try Fixture.container()
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 0)
+
+        #expect(try journal.pendingURLs().isEmpty)
+        #expect(FileManager.default.fileExists(atPath: intent.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
+    }
+
+    @Test("A creation is never settled by an older prepared event at the same path")
+    func olderPreparedEventDoesNotSettleNewCreation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let task = draft(in: repository, context: store.mainContext)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        var intent = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        #expect(intent.identity != nil)
+        // The old checkout and branch are removed outside ASTRA; the saved
+        // prepared event still names the path.
+        try fixture.git(["worktree", "remove", "--force", intent.worktreePath], at: repository)
+        try fixture.git(["branch", "-D", intent.branch], at: repository)
+        // A new creation at the same path crashes before saving its event.
+        intent.identity = UUID().uuidString
+        let journal = fixture.ownership.creationJournal
+        try journal.record(intent)
+        try journal.ownership.record(.init(intent))
+        _ = try await GitService.shared.addLockedTaskWorktree(
+            repoPath: repository.path, branch: intent.branch, base: intent.baseCommit,
+            worktreesRoot: fixture.worktrees.path, lockReason: TaskWorktreeBinding.lockReason(forIdentity: try #require(intent.identity))
+        )
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 1)
+        #expect(!FileManager.default.fileExists(atPath: intent.worktreePath))
+        #expect(try fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
+        #expect(try journal.pendingURLs().isEmpty)
+    }
+
+    @Test("A creation whose task binding was saved keeps its worktree and settles the journal")
+    func savedBindingSettlesJournal() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let task = draft(in: repository, context: store.mainContext)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+        let journal = fixture.ownership.creationJournal
+        #expect(try journal.pendingURLs().isEmpty)
+        // The intent outlived a save that bound the worktree.
+        let intent = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        try journal.record(intent)
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: ModelContext(store), resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 0)
+
+        #expect(try journal.pendingURLs().isEmpty)
+        #expect(FileManager.default.fileExists(atPath: intent.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
+        #expect(fixture.ownership.owns(intent))
+    }
+
+    @Test("Recovery leaves an in-flight creation alone; abandoning it clears the journal")
+    func inFlightCreationIsSkipped() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let journal = fixture.ownership.creationJournal
+        let intent = try intent("in-flight", in: repository, fixture: fixture)
+        let store = try Fixture.container()
+        try TaskWorktreeCleanupService.beginCreation(intent, journal: journal)
+        #expect(throws: (any Error).self) { try TaskWorktreeCleanupService.beginCreation(intent, journal: journal) }
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 0)
+        #expect(try journal.pendingURLs().count == 1)
+        // Nothing is owned until Git has created the worktree.
+        #expect(!journal.ownership.owns(intent))
+
+        await TaskWorktreeCleanupService.abandonCreation(
+            intent, journal: journal, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, git: GitService.shared
+        )
+        try await expectNothingLeft(in: repository, fixture: fixture)
+    }
+
+    @Test("Files inside a submodule folder that isn't populated keep the worktree")
+    func filesInUnpopulatedGitlinkKeepWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let app = try repositoryWithSubmodules(fixture)
+        let store = try Fixture.container()
+        let task = draft(in: app, context: store.mainContext)
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: app.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue,
+            worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership,
+            setUpSubmodules: localSubmoduleSetup(fixture)
+        )
+        let discard = try #require(TaskWorktreeService.discardSnapshots(for: task, ownership: fixture.ownership).first)
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: discard.worktreePath) == false)
+        // `libs/b` is registered but never initialized, so its folder is an
+        // empty gitlink that Git doesn't look inside.
+        let stray = URL(fileURLWithPath: discard.worktreePath).appendingPathComponent("libs/b/notes.txt")
+        try FileManager.default.createDirectory(at: stray.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "keep me".write(to: stray, atomically: true, encoding: .utf8)
+        #expect(await GitService.shared.unpopulatedGitlinksHoldFiles(at: discard.worktreePath))
+        store.mainContext.delete(task)
+        try store.mainContext.save()
+
+        #expect(await TaskWorktreeService.discardOutcome(
+            discard, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, ownership: fixture.ownership
+        ) == .kept("submodule_files"))
+        #expect(FileManager.default.fileExists(atPath: stray.path))
+    }
+
+    @Test("A creation that loses its branch and folder to another process never removes them")
+    func failedCreationLeavesCompetingWorktree() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let journal = fixture.ownership.creationJournal
+        var intent = try intent("raced", in: repository, fixture: fixture)
+        intent.identity = "raced-identity"
+        let store = try Fixture.container()
+        try TaskWorktreeCleanupService.beginCreation(intent, journal: journal)
+        // Another process takes the branch and folder before ASTRA's
+        // `git worktree add` runs, so that command fails and is abandoned.
+        // The competitor's worktree doesn't carry this intent's lock reason.
+        try await addWorktree(for: intent, fixture: fixture)
+
+        await TaskWorktreeCleanupService.abandonCreation(
+            intent, journal: journal, modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, git: GitService.shared
+        )
+
+        #expect(FileManager.default.fileExists(atPath: intent.worktreePath))
+        #expect(try !fixture.git(["branch", "--list", intent.branch], at: repository).isEmpty)
+        #expect(try journal.pendingURLs().isEmpty)
+        #expect(!journal.ownership.owns(intent))
+    }
+
+    @Test("A creation that stopped after Git ran but before recording ownership is still removed")
+    func lockedCreationIsAdopted() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let journal = fixture.ownership.creationJournal
+        var intent = try intent("locked", in: repository, fixture: fixture)
+        intent.identity = "locked-identity"
+        // What a quit right after `git worktree add --lock` leaves: the
+        // journal entry and Git's own lock reason, but no ownership record.
+        try journal.record(intent)
+        let created = try await GitService.shared.addLockedTaskWorktree(
+            repoPath: repository.path, branch: intent.branch, base: intent.baseCommit,
+            worktreesRoot: fixture.worktrees.path, lockReason: TaskWorktreeBinding.lockReason(forIdentity: "locked-identity")
+        )
+        #expect(created == intent.worktreePath)
+        #expect(!fixture.ownership.owns(intent))
+        let store = try Fixture.container()
+
+        #expect(await TaskWorktreeCleanupService.resumeInterruptedCreations(
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, journal: journal
+        ) == 1)
+        #expect(!FileManager.default.fileExists(atPath: intent.worktreePath))
+        try await expectNothingLeft(in: repository, fixture: fixture)
+    }
+
+    @Test("A branch tip is a commit, positively absent, or unavailable")
+    func branchTipIsTriState() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let head = try fixture.git(["rev-parse", "HEAD"], at: repository)
+        #expect(await GitService.shared.localBranchTip("main", at: repository.path) == .commit(head))
+        try fixture.git(["branch", "main-extra"], at: repository)
+        // `for-each-ref` matches by prefix; only the exact branch counts.
+        #expect(await GitService.shared.localBranchTip("mai", at: repository.path) == .absent)
+        #expect(await GitService.shared.localBranchTip("gone", at: repository.path) == .absent)
+        let notARepository = fixture.root.appendingPathComponent("not-a-repository", isDirectory: true)
+        try FileManager.default.createDirectory(at: notARepository, withIntermediateDirectories: true)
+        #expect(await GitService.shared.getCommitSHA("refs/heads/main", at: notARepository.path) == nil)
+        #expect(await GitService.shared.localBranchTip("main", at: notARepository.path) == .unavailable)
+    }
+
+    @Test("A name an unsettled creation journaled is not reused")
+    func journaledNameIsSkipped() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let task = draft(in: repository, context: store.mainContext)
+        let journal = fixture.ownership.creationJournal
+        let first = TaskWorktreeService.branchName(for: task)
+        let pending = TaskWorktreeDiscard(
+            taskID: task.id, repositoryPath: repository.path,
+            worktreePath: GitService.worktreeLocation(
+                repoPath: repository.path, branch: first, worktreesRoot: fixture.worktrees.path
+            ),
+            branch: first, baseCommit: "0000000000000000000000000000000000000000"
+        )
+        try journal.record(pending)
+
+        try await TaskWorktreeService.prepare(
+            task: task, request: TaskWorktreeRequest(repositoryPath: repository.path, base: .currentBranch),
+            modelContext: store.mainContext, resourceQueue: fixture.resourceQueue, worktreesRoot: fixture.worktrees.path, ownership: fixture.ownership
+        )
+
+        let binding = try #require(TaskWorktreeService.activeWorktreeBinding(for: task))
+        #expect(binding.branch == TaskWorktreeService.branchName(for: task, attempt: 2))
+        #expect(try journal.pendingURLs().map(\.lastPathComponent) == [journal.recordURL(for: pending).lastPathComponent])
+    }
+}

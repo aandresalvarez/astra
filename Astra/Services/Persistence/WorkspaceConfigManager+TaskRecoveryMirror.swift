@@ -12,8 +12,11 @@ extension WorkspaceConfigManager {
 
     /// Execution evidence is not presentation text. Keep its structured payload
     /// and source identities intact even when display history is bounded.
+    /// Worktree events are the task's durable checkout binding; dropping them
+    /// would turn a worktree pin into a legacy pin on recovery.
     static func isTaskRecoveryEvent(_ type: String) -> Bool {
-        ["runtime.", "execution.request.", "permission.", "plan.", "validation."].contains { type.hasPrefix($0) }
+        ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "task.worktree."]
+            .contains { type.hasPrefix($0) }
     }
 
     /// Recovery authority is explicit and independent of schedule enablement.

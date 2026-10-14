@@ -51,4 +51,15 @@ public protocol SkillSecretPersisting: Sendable {
     static func deleteSecret(key: String, skillID: UUID) -> Bool
     static func secretExists(key: String, skillID: UUID) -> Bool
     static func deleteAllSecrets(skillID: UUID)
+    /// A requirement, so the registered persistence's real result is used.
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool
+}
+
+public extension SkillSecretPersisting {
+    /// `deleteAllSecrets` reporting whether the secrets were cleared.
+    /// Defaulted to success so test fakes keep compiling.
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool {
+        deleteAllSecrets(skillID: skillID)
+        return true
+    }
 }

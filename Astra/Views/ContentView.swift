@@ -76,6 +76,8 @@ struct ContentView: View {
     @State private var renamingWorkspace: Workspace?
     @State private var renameText = ""
     @State private var linkedScheduleWarning: LinkedScheduleWarning?
+    @State private var taskDeletionFailure: String?
+    @State private var workspaceDeletionFailure: String?
     @State private var externalRouteNotice = ""
     @State private var runningTaskCount = 0
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
@@ -123,6 +125,7 @@ struct ContentView: View {
     /// Hover state of the show-sidebar toggle, which drives the transient
     /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
     @State private var isSidebarToggleHovered = false
+    @State private var newTaskWorktreeIntents = NewTaskWorktreeIntentStore()
     @State private var cachedHasCanvasContent = false
     /// Run-once guard for the deferred Sparkle update probe. handleAppear can
     /// fire on more than one .onAppear for the same view instance; this keeps
@@ -972,6 +975,7 @@ struct ContentView: View {
     private var rootLayoutWithNewTaskSwitcher: some View {
         rootLayoutWithFeedbackChrome
             .environment(\.newTaskComposerWorkspaceID, sceneSelection.newTaskComposerWorkspaceID)
+            .environment(\.newTaskWorktreeIntents, newTaskWorktreeIntents)
             .environment(\.newTaskWorkspaceSwitcher, NewTaskWorkspaceSwitcher(
                 workspaces: workspaces,
                 select: { sceneSelection.retargetComposer(to: $0) },
@@ -1130,6 +1134,8 @@ struct ContentView: View {
             )
         }
         .workspaceCapabilityEnableFailureAlert(isPresented: $isShowingWorkspaceCapabilityEnableFailure)
+        .taskDeletionFailureAlert($taskDeletionFailure)
+        .workspaceDeletionFailureAlert($workspaceDeletionFailure)
         .alert(item: $linkedScheduleWarning) { warning in
             Alert(
                 title: Text(warning.action.alertTitle),
@@ -2356,9 +2362,10 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
+        let result = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
+        guard result.persisted else { workspaceDeletionFailure = "ASTRA couldn't save the deletion, so the workspace was kept."; return }
         markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
-        let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
-        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
+        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: result.nextWorkspace))
     }
 
     private func importWorkspace() {
@@ -2549,16 +2556,20 @@ struct ContentView: View {
     }
 
     private func deleteTask(_ task: AgentTask) {
-        let deletedTaskID = task.id
-        if selectedTask?.id == task.id {
-            setSelectedTask(nil)
+        let deletedTaskID = task.id, wasSelected = selectedTask?.id == task.id
+        // Selection clears only as the deletion happens. A failed save puts the
+        // task back, so it is reselected and the user is told it was kept.
+        let deleted = coordinator.deleteTask(task) { if wasSelected { setSelectedTask(nil) } }
+        refreshRunningTaskCount()
+        guard deleted else {
+            if wasSelected, selectedTask?.id != deletedTaskID, !task.isDeleted { setSelectedTask(task) }
+            taskDeletionFailure = "ASTRA couldn't save the deletion, so \"\(task.title)\" was kept."
+            return
         }
-        _ = coordinator.deleteTask(task)
         // Release the task's browser (WebContent process + bridge listener) and
         // markdown sessions; otherwise they leak until the window closes.
         browserSessionStore.releaseSession(for: deletedTaskID)
         markdownSessionStore.releaseSession(for: deletedTaskID)
-        refreshRunningTaskCount()
     }
 
     private func requestDeleteTask(_ task: AgentTask) {

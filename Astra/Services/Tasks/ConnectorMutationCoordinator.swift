@@ -16,6 +16,11 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case connectorNotFound(String)
     case connectorServiceMismatch(expected: String, found: String)
     case connectorChangedSinceReview(reviewed: String, now: String)
+    /// Auto: the connector points somewhere other than it did when the run
+    /// launched, so this run's proposal is not sent there.
+    case connectorChangedSinceLaunch(launched: String, now: String)
+    /// Auto: the connector's credential is not the one the run launched with.
+    case credentialChangedSinceLaunch(alias: String)
     case missingCredential(String)
     case invalidBaseURL(String)
     case insecureTransport(alias: String, url: String)
@@ -24,6 +29,11 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
     case sendNotReserved(reason: String)
     case dispatchedWithoutConfirmation(target: String, reason: String)
     case sentButNotRecorded(target: String, reason: String)
+    /// Auto could not durably record the proposal, so it did not send it.
+    case proposalNotRecorded(reason: String)
+    /// Auto tried this one when the agent proposed it, and the agent was told
+    /// why it did not go. Not a send anyone can make from the dock.
+    case returnedToAgent(target: String)
 
     var errorDescription: String? {
         switch self {
@@ -48,6 +58,12 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
         case let .connectorChangedSinceReview(reviewed, now):
             "This proposal was reviewed as a request to \(reviewed), but it would now go to \(now). "
                 + "Refusing to send; reopen the review to approve the new destination."
+        case let .connectorChangedSinceLaunch(launched, now):
+            "This run composed the proposal for \(launched), but the connector now sends to \(now). "
+                + "ASTRA did not send it; start a new run to use the connector as it is now."
+        case let .credentialChangedSinceLaunch(alias):
+            "The \(alias) connector's credential changed after this run started, so ASTRA did not send the "
+                + "proposal under a different account. Start a new run to use the connector as it is now."
         case let .missingCredential(alias):
             "The \(alias) connector has no usable credential in the Keychain, so ASTRA cannot send this."
         case let .invalidBaseURL(url):
@@ -72,6 +88,12 @@ enum ConnectorMutationCoordinatorError: LocalizedError, Equatable {
         case let .sentButNotRecorded(target, reason):
             "ASTRA sent this to \(target) and the connector accepted it, but the receipt could not be "
                 + "saved to this task (\(reason)). The change has been made — do not send it again."
+        case let .proposalNotRecorded(reason):
+            "ASTRA could not record this proposal on the task (\(reason)), so it did not send it."
+        case let .returnedToAgent(target):
+            "Auto tried to send this to \(target) when the agent proposed it, and the agent was told why it "
+                + "did not go. ASTRA will not send it from here; if it is still wanted, ask the agent to propose "
+                + "it again."
         }
     }
 
@@ -294,11 +316,11 @@ struct ConnectorMutationProposal: Equatable, Identifiable {
 }
 
 /// Owns the app's side of a staged connector mutation: reading it back for
-/// review, and recording the user's decision.
+/// review, sending it, and recording what happened.
 ///
-/// The agent proposed; this is where the user disposes. Sending itself is the
-/// next piece of work — until it lands, approving is deliberately not offered,
-/// because a button that claims to send and does not is worse than no button.
+/// The agent proposed; this is where it is disposed of — by the user in the
+/// review sheet, or, where the run's level does not ask, by Auto at the moment
+/// the broker asks (`sendWhenProposed`). Both go through `prepare` and `send`.
 @MainActor
 final class ConnectorMutationCoordinator {
     typealias DurableEventSave = @MainActor (
@@ -353,6 +375,9 @@ final class ConnectorMutationCoordinator {
         // how a second identical POST gets a plausible-looking click.
         guard !Self.hasBeenSent(stagedPath: staged.path) else {
             throw ConnectorMutationCoordinatorError.alreadySent(staged.target)
+        }
+        guard !Self.wasReturnedToAgent(stagedPath: staged.path) else {
+            throw ConnectorMutationCoordinatorError.returnedToAgent(target: staged.target)
         }
         return try resolveProposal(staged)
     }
@@ -453,13 +478,19 @@ final class ConnectorMutationCoordinator {
     /// `authorization` says who let ASTRA send it: the user in the review sheet,
     /// or Auto without asking. It is recorded on the receipt and changes nothing
     /// about the checks below, which hold the same for both.
+    /// `timeoutSeconds` bounds the exchange; nil is the sender's default.
     func send(
         task: AgentTask,
         proposal: ConnectorMutationProposal,
-        authorization: ExternalActionAuthorization = .userReviewed
+        authorization: ExternalActionAuthorization = .userReviewed,
+        launchCredential: String? = nil,
+        timeoutSeconds: TimeInterval? = nil
     ) async throws -> ConnectorMutationReceipt {
         guard !Self.hasBeenSent(stagedPath: proposal.stagedPayloadPath) else {
             throw ConnectorMutationCoordinatorError.alreadySent(proposal.target)
+        }
+        guard !Self.wasReturnedToAgent(stagedPath: proposal.stagedPayloadPath) else {
+            throw ConnectorMutationCoordinatorError.returnedToAgent(target: proposal.target)
         }
         let staged = try readStaged(
             task: task,
@@ -498,7 +529,7 @@ final class ConnectorMutationCoordinator {
                     now: "\(current.connectorAlias) (\(current.destinationURL))"
                 )
             }
-            request = try buildRequest(current)
+            request = try buildRequest(current, timeoutSeconds: timeoutSeconds, launchCredential: launchCredential)
             try Self.reserveSend(stagedPath: staged.path, target: proposal.target)
         } catch {
             // Recorded, then rethrown. The sheet shows the error and the row
@@ -574,7 +605,10 @@ final class ConnectorMutationCoordinator {
 
         // The write has happened. From here the only question is how well ASTRA
         // can describe it — never whether to try again.
-        let receipt = Self.receipt(for: current, response: response, baseURL: request.url, authorization: authorization)
+        let receipt = Self.receipt(
+            for: current, response: response, baseURL: request.url, authorization: authorization,
+            authorizationHeader: request.authorizationHeader
+        )
         do {
             try record(
                 receipt,
@@ -610,7 +644,173 @@ final class ConnectorMutationCoordinator {
         return receipt
     }
 
-    private func buildRequest(_ proposal: ConnectorMutationProposal) throws -> ConnectorMutationHTTPRequest {
+    /// Auto: sends a proposal the moment the broker staged it, and returns the
+    /// receipt to the agent that proposed it.
+    ///
+    /// There is no later window. The proposal is recorded, prepared and sent
+    /// in this one call, through the same `prepare` and `send` the review sheet
+    /// uses — the digest re-read, the derived route, the re-resolved
+    /// destination, the durable reservation before dispatch, and no resend of
+    /// an ambiguous outcome — so nothing about it waits for the run to end,
+    /// pass its checks, or be recovered after a crash. The record carries
+    /// `.autoPolicy`, so any outcome retires it: a refusal goes back to the
+    /// agent rather than waiting in the dock for a second attempt.
+    ///
+    /// `stagedPath` and `requestDigest` come from the broker's own write, never
+    /// from the agent, and the bytes are re-read against that digest here.
+    func sendWhenProposed(
+        task: AgentTask,
+        run: TaskRun,
+        stagedPath: String,
+        requestDigest: String,
+        launchBaseURL: String,
+        launchCredential: String,
+        timeoutSeconds: TimeInterval? = nil
+    ) async throws -> ConnectorMutationReceipt {
+        let staged = try readStaged(task: task, path: stagedPath, digest: requestDigest)
+        guard !ConnectorMutationRequirementResolver.recordedStagedPaths(task: task).contains(staged.path) else {
+            throw ConnectorMutationCoordinatorError.staleProposal(
+                "This proposal is already recorded on the task, so ASTRA will not send it from this request."
+            )
+        }
+        let pending = TaskStagedConnectorMutation(
+            runID: run.id,
+            serviceType: staged.serviceType,
+            operation: staged.operation,
+            connectorID: staged.connectorID,
+            connectorAlias: staged.connectorAlias,
+            target: staged.target,
+            summary: staged.summary,
+            stagedPayloadPath: staged.path,
+            requestDigest: staged.digest,
+            authorization: .autoPolicy
+        )
+        // Claimed before the record exists, so no rebuild of the dock can see
+        // the record without the claim and offer a review of a send in flight.
+        Self.sendingWhenProposed.insert(staged.path)
+        defer { Self.sendingWhenProposed.remove(staged.path) }
+        do {
+            try record(pending, type: ConnectorMutationEventTypes.staged, task: task, run: run,
+                       operation: "connector_mutation_staged_auto")
+        } catch {
+            throw ConnectorMutationCoordinatorError.proposalNotRecorded(reason: error.localizedDescription)
+        }
+
+        var proposal: ConnectorMutationProposal?
+        do {
+            let prepared = try prepare(task: task, pending: pending)
+            proposal = prepared
+            // No sheet shows Auto where a write goes, so it goes only where the
+            // run launched: a connector edited since then would carry this
+            // run's proposal, with the current credential, to another host.
+            // `send` re-resolves the connector against this same destination.
+            let launched = Self.url(baseURL: launchBaseURL, path: prepared.requestPath)?.absoluteString
+            guard launched == prepared.destinationURL else {
+                throw ConnectorMutationCoordinatorError.connectorChangedSinceLaunch(
+                    launched: launched ?? launchBaseURL, now: prepared.destinationURL
+                )
+            }
+            return try await send(
+                task: task, proposal: prepared, authorization: .autoPolicy,
+                launchCredential: launchCredential, timeoutSeconds: timeoutSeconds
+            )
+        } catch {
+            retireIfStillPending(task: task, pending: pending, proposal: proposal, error: error)
+            throw error
+        }
+    }
+
+    /// Gives an Auto record the outcome its attempt did not record itself.
+    ///
+    /// `send` records what happens once it is past its first checks; `prepare`
+    /// and `send`'s own entry checks record nothing, because for a proposal the
+    /// user reviews a refusal there leaves it as reviewable as it was. An Auto
+    /// record must not be left like that — the agent was already told — so it
+    /// is closed here: as indeterminate when the error says the write may have
+    /// happened, as a failure otherwise. Best effort, like `recordFailure`: the
+    /// caller is already throwing what the agent needs to see.
+    private func retireIfStillPending(
+        task: AgentTask,
+        pending: TaskStagedConnectorMutation,
+        proposal: ConnectorMutationProposal?,
+        error: Error
+    ) {
+        guard ConnectorMutationRequirementResolver.pendingMutations(task: task)
+            .contains(where: { $0.stagedPayloadPath == pending.stagedPayloadPath }) else { return }
+        let coordinatorError = error as? ConnectorMutationCoordinatorError
+        if coordinatorError?.isTerminal == true {
+            try? record(
+                ConnectorMutationIndeterminateOutcome(
+                    stagedPayloadPath: pending.stagedPayloadPath,
+                    requestDigest: pending.requestDigest,
+                    serviceType: pending.serviceType,
+                    operation: pending.operation,
+                    target: pending.target,
+                    destinationURL: proposal?.destinationURL ?? "",
+                    statusCode: 0,
+                    message: error.localizedDescription
+                ),
+                type: ConnectorMutationEventTypes.indeterminate,
+                task: task,
+                stagedPath: pending.stagedPayloadPath,
+                operation: "connector_mutation_indeterminate"
+            )
+        } else {
+            // Marked before the event, and on disk: if the store that would not
+            // take the failure send itself recorded will not take this one
+            // either, the record stays pending, and without the mark the dock
+            // would offer a manual send of what the agent was told to correct —
+            // a second Jira write once the corrected one lands.
+            Self.markReturnedToAgent(stagedPath: pending.stagedPayloadPath)
+            do {
+                try record(
+                    ConnectorMutationFailure(
+                        stagedPayloadPath: pending.stagedPayloadPath,
+                        requestDigest: pending.requestDigest,
+                        statusCode: coordinatorError?.statusCode ?? 0,
+                        message: error.localizedDescription
+                    ),
+                    type: ConnectorMutationEventTypes.failed,
+                    task: task,
+                    stagedPath: pending.stagedPayloadPath,
+                    operation: "connector_mutation_failed"
+                )
+            } catch {
+                AuditLoggingSeam.required.audit(
+                    .dataStoreRecovered,
+                    category: "Tasks",
+                    fields: [
+                        "operation": "connector_mutation_auto_failure_unrecorded",
+                        "service_type": pending.serviceType,
+                        "connector_operation": pending.operation,
+                        "error": error.localizedDescription
+                    ],
+                    level: .error
+                )
+            }
+        }
+    }
+
+    /// Proposals this process is sending the moment they were proposed.
+    ///
+    /// Presentation only, and only for the seconds a dispatch is in flight: the
+    /// record exists from before the request goes out, and without this the
+    /// dock would offer "Review & send" for a write Auto is already making. The
+    /// events stay the authority — once the send returns, its outcome retires
+    /// the record and this set no longer holds it.
+    private static var sendingWhenProposed: Set<String> = []
+
+    /// The pending proposals the user can review now: every one except those
+    /// Auto is sending at this moment.
+    static func reviewable(_ pending: [TaskStagedConnectorMutation]) -> [TaskStagedConnectorMutation] {
+        pending.filter { !sendingWhenProposed.contains($0.stagedPayloadPath) }
+    }
+
+    private func buildRequest(
+        _ proposal: ConnectorMutationProposal,
+        timeoutSeconds: TimeInterval? = nil,
+        launchCredential: String? = nil
+    ) throws -> ConnectorMutationHTTPRequest {
         let connector = try resolveConnector(proposal)
         guard let url = URL(string: proposal.destinationURL) else {
             throw ConnectorMutationCoordinatorError.invalidBaseURL(connector.baseURL)
@@ -622,11 +822,19 @@ final class ConnectorMutationCoordinator {
         // expected — which is exactly why it is worth stating: the gate must
         // hold even if a future caller builds a request by another route.
         try Self.requireProtectedTransport(connector)
+        let credential = try credential(for: connector, alias: proposal.connectorAlias)
+        // Auto: under the account the run launched with, read here where the
+        // header is built, so a credential replaced at any point since launch
+        // is refused rather than sent under.
+        if let launchCredential, credential.fingerprint != launchCredential {
+            throw ConnectorMutationCoordinatorError.credentialChangedSinceLaunch(alias: proposal.connectorAlias)
+        }
         return ConnectorMutationHTTPRequest(
             url: url,
             method: proposal.requestMethod,
             body: proposal.requestBody,
-            authorizationHeader: try authorizationHeader(for: connector, alias: proposal.connectorAlias)
+            authorizationHeader: credential.header,
+            timeoutSeconds: timeoutSeconds ?? URLSessionConnectorMutationSender.timeoutSeconds
         )
     }
 
@@ -698,7 +906,7 @@ final class ConnectorMutationCoordinator {
     /// `authMethod` would be a scheme no one reviewed. A service without an
     /// entry here cannot be committed, which is the same default-deny the read
     /// gates use.
-    private func authorizationHeader(for connector: Connector, alias: String) throws -> String {
+    private func credential(for connector: Connector, alias: String) throws -> (header: String, fingerprint: String) {
         let credentials = connector.credentials(store: secretStore)
         func value(_ names: [String]) -> String? {
             for name in names {
@@ -715,7 +923,10 @@ final class ConnectorMutationCoordinator {
                   let token = value(["JIRA_API_TOKEN", "API_TOKEN", "TOKEN"]) else {
                 throw ConnectorMutationCoordinatorError.missingCredential(alias)
             }
-            return "Basic \(Data("\(email):\(token)".utf8).base64EncodedString())"
+            return (
+                header: "Basic \(Data("\(email):\(token)".utf8).base64EncodedString())",
+                fingerprint: ConnectorCredentialFingerprint.jira(email: email, token: token)
+            )
         default:
             throw ConnectorMutationCoordinatorError.unsupportedOperation(
                 serviceType: connector.serviceType,
@@ -735,27 +946,41 @@ final class ConnectorMutationCoordinator {
         return url
     }
 
+    /// What the write's answer may put on a receipt — which is stored, shown,
+    /// and returned to the agent through the broker. A success body can reflect
+    /// the credential as surely as an error body (`ConnectorMutationSecretRedaction`),
+    /// so it is scrubbed before it is read, and only values of the shape each
+    /// field must have are kept: an issue key, a numeric comment id, a link on
+    /// the connector's own host.
     private static func receipt(
         for proposal: ConnectorMutationProposal,
         response: ConnectorMutationHTTPResponse,
         baseURL: URL,
-        authorization: ExternalActionAuthorization
+        authorization: ExternalActionAuthorization,
+        authorizationHeader: String
     ) -> ConnectorMutationReceipt {
-        let object = (try? JSONSerialization.jsonObject(with: Data(response.body.utf8))) as? [String: Any]
+        let body = ConnectorMutationSecretRedaction.redacted(response.body, authorizationHeader: authorizationHeader)
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
         // A created issue names itself in the response. A comment, an update and
         // a transition act on a ticket the proposal already addressed, and their
         // answers are a comment record or an empty `204` — so the ticket comes
         // from the route, which ASTRA derived and the user read, rather than
-        // from a body that may not exist.
-        let createdKey = (object?["key"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        // from a body that may not exist. A key in such an answer (a proxy's
+        // wrapper, say) names nothing ASTRA sent to, and is never taken.
         let routeKey = ConnectorMutationOperations
             .definition(serviceType: proposal.serviceType, operation: proposal.operation)?
             .issueKey(inResolvedPath: proposal.requestPath)
+        let createdKey = routeKey == nil
+            ? (object?["key"] as? String).flatMap { JiraHostControlOperations.isValidIssueKey($0) ? $0 : nil }
+            : nil
         let commentID = proposal.operation == "add_comment"
-            ? (object?["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ? (object?["id"] as? String).flatMap { !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) ? $0 : nil }
             : nil
         let browseURL = (createdKey ?? routeKey).flatMap { key -> String? in
             var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+            components?.user = nil
+            components?.password = nil
+            components?.fragment = nil
             components?.path = "/browse/\(key)"
             components?.query = nil
             if let commentID {
@@ -772,7 +997,18 @@ final class ConnectorMutationCoordinator {
             destinationURL: proposal.destinationURL,
             statusCode: response.statusCode,
             createdKey: createdKey,
-            createdURL: browseURL ?? (object?["self"] as? String),
+            createdURL: browseURL ?? (object?["self"] as? String).flatMap { link -> String? in
+                // On the connector's own host, and only as scheme, host and
+                // path: user info, a query or a fragment can carry a session
+                // or a credential, and the receipt reaches the agent.
+                guard var components = URLComponents(string: link),
+                      components.host?.lowercased() == baseURL.host?.lowercased() else { return nil }
+                components.user = nil
+                components.password = nil
+                components.query = nil
+                components.fragment = nil
+                return components.url?.absoluteString
+            },
             authorization: authorization
         )
     }
@@ -897,12 +1133,22 @@ final class ConnectorMutationCoordinator {
         stagedPath: String,
         operation: String
     ) throws {
+        try record(payload, type: type, task: task, run: run(for: task, stagedPath: stagedPath), operation: operation)
+    }
+
+    private func record<T: Encodable>(
+        _ payload: T,
+        type: String,
+        task: AgentTask,
+        run: TaskRun?,
+        operation: String
+    ) throws {
         let previousUpdatedAt = task.updatedAt
         let event = TaskEvent.structuredPayloadEvent(
             task: task,
             type: type,
             payload: payload,
-            run: run(for: task, stagedPath: stagedPath)
+            run: run
         )
         modelContext.insert(event)
         do {
@@ -1035,6 +1281,48 @@ final class ConnectorMutationCoordinator {
             || fileManager.fileExists(atPath: sentMarkerPath(stagedPath: stagedPath))
     }
 
+    // MARK: - Returned to the agent
+
+    /// Auto proposals whose one attempt failed, the agent having been told.
+    /// The event that retires one is the authority; this mark is what still
+    /// holds when that event could not be saved, beside the envelope like the
+    /// send claim and for the same reason: deleting it only re-exposes the
+    /// agent's own proposal to the user's review.
+    private static var returnedStagedPaths: Set<String> = []
+    private static let returnedMarkerExtension = "returned"
+
+    /// Any entry at the marker's name counts, read without following it: a
+    /// link the agent planted there can only keep its own proposal off the
+    /// dock, never point ASTRA's check somewhere else.
+    static func wasReturnedToAgent(stagedPath: String, fileManager: FileManager = .default) -> Bool {
+        returnedStagedPaths.contains(stagedPath)
+            || (try? fileManager.attributesOfItem(atPath: stagedPath + "." + returnedMarkerExtension)) != nil
+    }
+
+    /// Best effort on disk, always in memory: a mark that cannot be written
+    /// still holds for this launch, and the audit line says it was needed.
+    ///
+    /// The folder is agent-writable and staged names are predictable, so the
+    /// marker is never opened by a path ASTRA would follow: the staging
+    /// directory is opened without following a link, and the marker is
+    /// created inside it, exclusively and without following one. A link
+    /// planted at either name makes the write fail; nothing outside is opened.
+    private static func markReturnedToAgent(stagedPath: String) {
+        returnedStagedPaths.insert(stagedPath)
+        let markerName = URL(fileURLWithPath: stagedPath).lastPathComponent + "." + returnedMarkerExtension
+        let directoryDescriptor = openStagingDirectory(of: stagedPath)
+        guard directoryDescriptor >= 0 else { return }
+        defer { close(directoryDescriptor) }
+        let descriptor = markerName.withCString {
+            openat(directoryDescriptor, $0, O_CREAT | O_EXCL | O_NOFOLLOW | O_WRONLY | O_CLOEXEC, 0o600)
+        }
+        guard descriptor >= 0 else { return }
+        try? writeAll(descriptor: descriptor, bytes: Array("returned\n".utf8))
+        fsync(descriptor)
+        close(descriptor)
+        fsync(directoryDescriptor)
+    }
+
     /// Claims the send on disk, before it happens, and refuses to proceed if the
     /// claim cannot be made durable.
     ///
@@ -1055,9 +1343,22 @@ final class ConnectorMutationCoordinator {
     /// marker, the other gets `EEXIST` and is told the proposal is already
     /// claimed. `fsync` before returning, because a claim still sitting in the
     /// page cache is not a claim that survives the crash it exists for.
-    private static func reserveSend(stagedPath: String, target: String) throws {
-        let markerPath = sentMarkerPath(stagedPath: stagedPath)
-        let descriptor = markerPath.withCString { open($0, O_CREAT | O_EXCL | O_WRONLY, 0o600) }
+    ///
+    /// Through the staging directory's own descriptor, never the marker's path:
+    /// the directory is agent-writable, and Auto reaches this with no one
+    /// watching, so a directory swapped for a link after the envelope was read
+    /// fails the claim — nothing sent — instead of creating a file wherever
+    /// the link points.
+    static func reserveSend(stagedPath: String, target: String) throws {
+        let markerName = URL(fileURLWithPath: stagedPath).lastPathComponent + "." + sentMarkerExtension
+        let directoryDescriptor = openStagingDirectory(of: stagedPath)
+        guard directoryDescriptor >= 0 else {
+            throw ConnectorMutationCoordinatorError.sendNotReserved(reason: Self.describe(errno: errno))
+        }
+        defer { close(directoryDescriptor) }
+        let descriptor = markerName.withCString {
+            openat(directoryDescriptor, $0, O_CREAT | O_EXCL | O_NOFOLLOW | O_WRONLY | O_CLOEXEC, 0o600)
+        }
         guard descriptor >= 0 else {
             let code = errno
             if code == EEXIST {
@@ -1074,7 +1375,7 @@ final class ConnectorMutationCoordinator {
             // The claim is not durable, so it must not be left behind either: a
             // marker this call did not commit would block a send that never
             // happened.
-            unlink(markerPath)
+            _ = markerName.withCString { unlinkat(directoryDescriptor, $0, 0) }
             throw ConnectorMutationCoordinatorError.sendNotReserved(reason: error.localizedDescription)
         }
         close(descriptor)
@@ -1082,20 +1383,31 @@ final class ConnectorMutationCoordinator {
         // Unchecked, unlike the two above: on APFS the directory entry lands
         // with the file, and there is no useful recovery from failing here
         // other than the in-memory set that already covers this launch.
-        let directoryPath = (markerPath as NSString).deletingLastPathComponent
-        let directoryDescriptor = directoryPath.withCString { open($0, O_RDONLY) }
-        if directoryDescriptor >= 0 {
-            fsync(directoryDescriptor)
-            close(directoryDescriptor)
-        }
+        fsync(directoryDescriptor)
         sentStagedPaths.insert(stagedPath)
     }
 
     /// Gives a claim back, for the one outcome that is not ambiguous: the
-    /// provider answered, on the record, that it did not act.
-    private static func releaseSendReservation(stagedPath: String) {
+    /// provider answered, on the record, that it did not act. Removed through
+    /// the staging directory's descriptor, so a swapped directory removes
+    /// nothing outside it.
+    static func releaseSendReservation(stagedPath: String) {
         sentStagedPaths.remove(stagedPath)
-        try? FileManager.default.removeItem(atPath: sentMarkerPath(stagedPath: stagedPath))
+        let markerName = URL(fileURLWithPath: stagedPath).lastPathComponent + "." + sentMarkerExtension
+        let directoryDescriptor = openStagingDirectory(of: stagedPath)
+        guard directoryDescriptor >= 0 else { return }
+        defer { close(directoryDescriptor) }
+        _ = markerName.withCString { unlinkat(directoryDescriptor, $0, 0) }
+    }
+
+    /// The directory a staged envelope sits in, opened without following a
+    /// link, or -1 with `errno` set. Markers are created and removed only
+    /// through it: the folder is agent-writable, and a path reopened by name
+    /// could have been swapped for a link to anywhere.
+    private static func openStagingDirectory(of stagedPath: String) -> Int32 {
+        URL(fileURLWithPath: stagedPath).deletingLastPathComponent().path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
     }
 
     /// A full write, or a thrown error. `write(2)` is allowed to be partial and
@@ -1128,6 +1440,7 @@ final class ConnectorMutationCoordinator {
     /// Test seam. Production never forgets a send.
     static func resetSentStagedPathsForTesting() {
         sentStagedPaths.removeAll()
+        returnedStagedPaths.removeAll()
     }
 
     /// Re-indented for reading. Falls back to the exact bytes rather than an

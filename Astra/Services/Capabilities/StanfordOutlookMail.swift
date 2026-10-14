@@ -35,7 +35,12 @@ enum StanfordOutlookMail {
         defaultScopes.joined(separator: " ")
     }
 
+    /// Tests point the registry elsewhere through this task-local, so they
+    /// never read or rewrite the user's real mail registry.
+    @TaskLocal static var registryURLOverride: URL?
+
     static var registryURL: URL {
+        if let registryURLOverride { return registryURLOverride }
         let toolsRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".astra", isDirectory: true)
         return toolsRoot.appendingPathComponent("mail-accounts-\(AppChannel.current.keychainConnectorPrefix).json")
@@ -455,20 +460,58 @@ enum StanfordOutlookMailRegistry {
     }
 
     static func entries() -> [Entry] {
+        readEntries() ?? []
+    }
+
+    /// Nil when the registry can't be read or decoded, which a writer must
+    /// never take as empty.
+    private static func readEntries() -> [Entry]? {
         let registryURL = StanfordOutlookMail.registryURL
         let broker = HostFileAccessBroker()
         guard let data = try? broker.readData(
             at: registryURL,
             intent: .astraManagedStorage(root: registryURL.deletingLastPathComponent())
         ) else {
-            return []
+            return nil
         }
-        return (try? JSONDecoder().decode([Entry].self, from: data)) ?? []
+        return try? JSONDecoder().decode([Entry].self, from: data)
     }
 
-    static func upsert(connector: Connector) {
+    static func upsert(
+        connector: Connector,
+        attributes: (String) throws -> [FileAttributeKey: Any] = { try FileManager.default.attributesOfItem(atPath: $0) }
+    ) {
         guard connector.isStanfordOutlookMail else { return }
-        var current = entries().filter { $0.connectorID != connector.id.uuidString }
+        // A registry that exists but can't be read is never rewritten with
+        // only this account: the others it holds would be lost. Only one
+        // confirmed missing starts empty; one that can't be checked is
+        // left alone too.
+        let existing: [Entry]
+        let present: Bool
+        do {
+            _ = try attributes(StanfordOutlookMail.registryURL.path)
+            present = true
+        } catch {
+            guard WorkspaceFileLayout.isMissingFile(error) else {
+                AppLogger.audit(.connectorTested, category: "Mail", fields: [
+                    "result": "registry_unreadable_upsert_skipped"
+                ], level: .warning)
+                return
+            }
+            present = false
+        }
+        if present {
+            guard let read = readEntries() else {
+                AppLogger.audit(.connectorTested, category: "Mail", fields: [
+                    "result": "registry_unreadable_upsert_skipped"
+                ], level: .warning)
+                return
+            }
+            existing = read
+        } else {
+            existing = []
+        }
+        var current = existing.filter { $0.connectorID != connector.id.uuidString }
         current.append(Entry(
             connectorID: connector.id.uuidString,
             name: connector.name,
@@ -483,23 +526,60 @@ enum StanfordOutlookMailRegistry {
         save(current)
     }
 
-    static func remove(connectorID: UUID) {
-        save(entries().filter { $0.connectorID != connectorID.uuidString })
+    /// True once no entry for `connectorID` remains. A registry that exists
+    /// but can't be read is left as it is, never rewritten without the other
+    /// accounts, and reported as not removed, as is one that can't even be
+    /// checked: only a confirmed missing registry holds no entry.
+    @discardableResult
+    static func remove(connectorID: UUID) -> Bool {
+        // Without following links: a dangling one is still a registry, whose
+        // target could come back with the entry in it, so it is unverified.
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: StanfordOutlookMail.registryURL.path)
+        } catch {
+            return WorkspaceFileLayout.isMissingFile(error)
+        }
+        guard let current = readEntries() else { return false }
+        let remaining = current.filter { $0.connectorID != connectorID.uuidString }
+        guard remaining.count != current.count else { return true }
+        return save(remaining)
     }
 
-    private static func save(_ entries: [Entry]) {
+    /// Where the registry's contents live: the registry itself, or, when it
+    /// is a link, the file it resolves to. Writing the link's target keeps
+    /// the link and updates what every reader of it sees, rather than
+    /// replacing the link with a file while the old entries stay behind it.
+    /// Nil when that file lies outside the registry's own managed folder,
+    /// the same boundary the broker reads within, so a link can never make
+    /// ASTRA overwrite an unrelated file.
+    private static var registryWriteURL: URL? {
+        let target = StanfordOutlookMail.registryURL.resolvingSymlinksInPath()
+        let root = StanfordOutlookMail.registryURL.deletingLastPathComponent().resolvingSymlinksInPath().path
+        let folder = target.deletingLastPathComponent().path
+        return folder == root || folder.hasPrefix(root + "/") ? target : nil
+    }
+
+    @discardableResult
+    private static func save(_ entries: [Entry]) -> Bool {
+        guard let target = registryWriteURL else {
+            AppLogger.audit(.connectorTested, category: "Mail", fields: [
+                "result": "registry_target_outside_managed_folder"
+            ], level: .error)
+            return false
+        }
         do {
-            let directory = StanfordOutlookMail.registryURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(entries.sorted { $0.email < $1.email })
-            try data.write(to: StanfordOutlookMail.registryURL, options: [.atomic])
+            try data.write(to: target, options: [.atomic])
+            return true
         } catch {
             AppLogger.audit(.connectorTested, category: "Mail", fields: [
                 "result": "registry_write_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .warning)
+            return false
         }
     }
 }
@@ -593,7 +673,8 @@ enum OutlookMailConnectionAdapter: OutlookMailConnectionTesting {
         return OutlookConnectionResult(mail: me.mail, userPrincipalName: me.userPrincipalName, changedConfigEntries: changed)
     }
 
-    static func removeFromRegistry(connectorID: UUID) {
+    @discardableResult
+    static func removeFromRegistry(connectorID: UUID) -> Bool {
         StanfordOutlookMailRegistry.remove(connectorID: connectorID)
     }
 }

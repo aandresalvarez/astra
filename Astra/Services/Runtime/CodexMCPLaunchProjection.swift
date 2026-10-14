@@ -19,6 +19,7 @@ struct CodexMCPLaunchProjection {
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
         taskEnvironment: [String: String] = [:],
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         // When the caller already ran this task through
         // AgentRuntimeLaunchRuntimeResolver.resolve(), pass its
         // TaskRuntimeRequirementSet here so the MCP server this projection
@@ -75,7 +76,8 @@ struct CodexMCPLaunchProjection {
             task: task,
             environment: executionEnvironment,
             currentDirectory: workspacePath,
-            runID: runID
+            runID: runID,
+            workspaceAccess: workspaceAccess
         )
         let explicitMCPEnvironment = taskEnvironment
             .merging(workspaceExecutorEnvironment) { current, _ in current }

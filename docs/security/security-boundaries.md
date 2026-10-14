@@ -99,6 +99,74 @@ and `~/Documents/Astra Dev/Workspaces`.
 - A workspace's `activeWorkingPath` controls where new chats run. Existing
   tasks may keep an `executionRootPath` snapshot so later workspace focus
   changes do not move the thread into a different checkout.
+- A task started in a new worktree is bound to it by its newest
+  `task.worktree.prepared` event whose worktree is still the task's pin
+  (`TaskWorktreeBinding`). The binding is accepted only when its source
+  repository belongs to the configured workspace and registers the pinned
+  checkout; matching paths in an imported event are not authority. Retargeted
+  pins must name that repository or one of its registered worktrees. Invalid
+  bindings block launch before template hooks or provider setup can write.
+  Launch grants the worktree as the only writable
+  copy of its repository: configured folders that contain the source checkout
+  are granted read-only, nested Git checkouts keep their own paths, and an
+  unreadable binding grants no workspace paths at all. The shared Git
+  directory is granted (read-only for shared-access runs) only when it is
+  derived from the recorded source repository, is a real Git directory, and
+  lists the worktree as a linked worktree. It is never derived from the
+  worktree's own `.git` file, which the task can rewrite. ASTRA's Seatbelt
+  receives it for both the agent and validation commands, so Git works in the
+  worktree as in a normal checkout, hooks and config included. Docker workspace
+  commands mount the verified Git directory at its original absolute path,
+  while saved source-checkout mounts become read-only or are replaced by the
+  task worktree. Read-only workspace ancestors remain mounted at noncolliding
+  container paths and participate in host-to-container path mapping. Execution
+  and planning prompts retain their original workspace labels and mark them
+  read-only; shared workspace admission claims serialize writers against these
+  reads, including for legacy requests. Every
+  worktree Git grant has a matching admission claim, independent of Git prompt
+  intent, including legacy requests. That claim is shared, whatever the run's
+  workspace access: Git locks refs, the index, and config per operation, so
+  sibling worktree tasks of one repository run together, while a writer of the
+  main checkout holds the directory exclusively and waits for them. Template
+  hooks are injected and restored at the same captured code checkout that
+  admission claims. Provider-native sandboxes do not receive the Git directory:
+  Codex keeps `.git` read-only by design, and a writable
+  root over the shared Git directory would undo that. Derived tasks
+  (chained, corrective, fork, and template) and recovery-mirror imports copy
+  the binding, so they never fall back to the source checkout. A prepared
+  worktree supersedes legacy branch/copy isolation, and runtime cleanup never
+  treats the bound checkout as a disposable copy. Failed initial
+  submissions save and export draft adoption and temporary-task deletion
+  together; recovery save failures are surfaced rather than reported as success.
+  Automatic cleanup records an atomic intent in the channel's App Support
+  `WorktreeCleanup/` outbox before deleting the draft, outside provider-writable
+  workspace paths. Workspace deletion and replacement record the same intents
+  for unexecuted drafts. Removal runs only after deletion and any replacement
+  bindings are saved. Failed saves preserve the workspace and UI selection. Startup retries
+  interrupted cleanup and reads committed task references through a fresh
+  context, so a failed deletion save cannot authorize removal. An interrupted
+  branch deletion can finish even after its worktree was removed. Intent write,
+  reference-read, and Git failures are logged; retryable failures retain the
+  intent until removal or a terminal preservation decision. Every cleanup
+  attempt rechecks local ownership; a missing, unreadable, or changed creation
+  record keeps the checkout. Exclusive cleanup reservations compare resolved
+  paths, including symlink aliases and overlapping ancestors or descendants,
+  and a competing removal retries without replacing the first reservation.
+  Fetch, creation, and submodule setup acquire shared Git-common-directory
+  and metadata workspace claims from the runtime queue's existing lease
+  owner, so they run beside sibling worktree tasks but never beside a
+  main-checkout writer; creation also claims its destination exclusively,
+  and concurrent creations on one repository are serialized in-process.
+  Removal and branch deletion hold those claims exclusively, so no sibling
+  can check out a branch between cleanup's check and its deletion; cleanup
+  also claims the checkout exclusively. Busy creation fails visibly before mutation, while
+  busy cleanup retains its intent. Leases release on success or failure and survive queue cancellation
+  until the lifecycle operation finishes.
+  Cleanup keeps any
+  worktree that has changes, ignored files, or new
+  commits, including commits retained only in its branch or HEAD reflog;
+  that another task or workspace default references; or whose
+  references cannot be read.
 - `current_state.json`, `current_state.md`, `session_history.md`, diagnostics,
   turn outputs, and runtime-bin folders are ASTRA-owned task state. Agents may
   read them for context when prompted, but they must not be treated as
@@ -129,15 +197,17 @@ boundary. The full inventory is in
   launch stops if that grant cannot be saved; a connector the agent reached for
   mid-run is allowed only after a clean finish and a durable save, and offered
   otherwise; an Auto launch answers an offer still open). A staged Jira write
-  and a requested GitHub review are still reviewed in the sheet in Auto for
-  now: ASTRA learns of them only after the run, so sending them without asking
-  would mean sending after the turn; they will be sent when the agent asks
-  (spec decision 15). Every action outside ASTRA leaves a record in the chat,
-  derived from its receipt. A command the agent ran itself that
+  is sent when the agent proposes it, and a requested GitHub review is posted
+  when the agent asks ASTRA to post the file it wrote; the receipt (key, link,
+  or error) is the agent's tool result (spec decision 15, below). Every action
+  outside ASTRA leaves a record in the chat, derived from its receipt. A
+  command the agent ran itself that
   is not known local work — exactly what Ask would have asked about — is
   recorded with an **Agent** pill as the command it ran; a call that is one
-  `git push` or `gh` write gets that action's title. The next turn's prompt
-  lists these records too.
+  `git push` or `gh` write gets that action's title. A call made only of
+  `astra-browser` page changes is not recorded (spec decision 12): its tool
+  row already shows each click. The next turn's prompt lists these records
+  too.
 - **Custom** applies the saved per-item tool, shell, and network rules (an
   enabled local tool becomes a grant only when those rules allow Bash, on
   every runtime) to local work only. A shell command runs on a rule alone
@@ -209,6 +279,53 @@ boundary. The full inventory is in
 - Prompts that are not action approvals stay in every level: widening the
   Seatbelt sandbox after a denial and the sensitive-data runtime-switch
   acknowledgement.
+
+### Writes sent when the agent asks (Auto)
+
+The host-control broker composes and stages a connector write, or reads a
+review file the agent names, and then asks the app over
+`BrokeredExternalActionRequesting`. The broker never sends anything and never
+reads a permission level (`BrokeredConnectorFitnessTests` pins both). The app
+answers through `BrokeredExternalActionHandler`, bound when the run launches
+to the task, the run, and the run's own user-facing level, so a request
+chooses none of them:
+
+- **Ask and Custom**: `ExternalActionPolicy` asks, so nothing is sent or
+  recorded at proposal time. The run boundary records the proposal and the
+  dock offers the review sheet, exactly as before.
+- **Auto**: the proposal is recorded with `authorization: .autoPolicy` and
+  sent at once through the sheet's own `ConnectorMutationCoordinator.prepare`
+  and `send`: the staged bytes are re-read against the digest of the bytes the
+  broker wrote (never a path the agent named), the route is derived from
+  ASTRA's table, the destination is re-resolved from the connector, the send
+  is reserved durably before dispatch, and an ambiguous outcome is never sent
+  again. Any outcome retires an Auto record, so a refused write goes back to
+  the agent and is never offered for a later send. A requested review is
+  posted through `GitHubReviewPublicationService.prepare` and `publish`, only
+  for the file the request names while it still holds the bytes the broker
+  read, and only while the user's request to post a review is open and is a
+  command to post it now: a positive list in every slot — nothing ahead of
+  the verb but words that keep it a command, the base verb post, publish or
+  submit, at most four words that say which review, the review or its
+  comments, nothing after it but a GitHub destination, and nothing else in
+  the message but review work in a closed form ("Review PR #12", "Draft the
+  review for <link>"). A condition, a pause, an exception, a retraction or a
+  sentence about where the review goes is outside the list and leaves the
+  review for the sheet — and it is the user's latest
+  word — anything said after it ("actually, no", "never mind", or any other
+  message) leaves the review for the sheet. Wording that falls outside
+  the list still offers the sheet, so a misreading leaves a review unposted,
+  never posts one. Whether a run wrote or touched a review file never makes
+  it eligible.
+
+Nothing about either send depends on how the run ends, its checks,
+settlement, or crash recovery: the run boundary sends nothing at any level.
+If the app cannot record the proposal, it sends nothing and the proposal waits
+for review. A send still in flight when ASTRA stops leaves a record with no
+outcome, which the dock shows like any other proposal, refused as already sent
+when the send was claimed. The broker waits a bounded time for the answer;
+past it the agent is told the outcome is not yet known and not to ask again,
+while the send finishes and records its own outcome.
 
 ## Repeatable Checks
 
