@@ -48,9 +48,14 @@ enum ConnectorCredentialCleanup {
     /// everything owed was cleared. A deletion whose credentials all stay
     /// with live owners is still audited, through `auditSkipped`, as the
     /// cleanup it doesn't need would have.
+    ///
+    /// `committed` is whether the deletion is known to be saved. One that
+    /// isn't, whose connector is still stored under its ID, was never saved:
+    /// it owes nothing and is reported as nothing, even when that connector
+    /// has since moved off a namespace the intent names.
     @discardableResult
     static func run(
-        _ cleanups: [ConnectorKeychainCleanup], ownership: Ownership,
+        _ cleanups: [ConnectorKeychainCleanup], ownership: Ownership, committed: Bool = true,
         auditSkipped: (ConnectorKeychainCleanup) -> Void = { cleanup in
             AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
                 "connector_id": cleanup.connectorID.uuidString,
@@ -61,14 +66,13 @@ enum ConnectorCredentialCleanup {
     ) -> Bool {
         var cleared = true
         for cleanup in cleanups {
+            if !committed, ownership.connectorIDs.contains(cleanup.connectorID) { continue }
             let keepRegistryEntry = ownership.outlookConnectorIDs.contains(cleanup.connectorID)
             // Owed when a namespace has no live owner, or a mail-registry
             // entry no live Outlook connector claims.
             let ownsRegistryEntry = cleanup.isStanfordOutlookMail && !keepRegistryEntry
             guard ownsRegistryEntry || !unownedNamespaces(of: cleanup, ownership: ownership).isEmpty else {
-                // A connector still stored under this ID wasn't deleted: its
-                // intent outlived a deletion that was never saved.
-                if !ownership.connectorIDs.contains(cleanup.connectorID) { auditSkipped(cleanup) }
+                auditSkipped(cleanup)
                 continue
             }
             cleared = cleanup.run(sparing: ownership.namespaces, keepRegistryEntry: keepRegistryEntry) && cleared
@@ -84,7 +88,8 @@ enum ConnectorCredentialCleanup {
     /// is not.
     @discardableResult
     static func run(
-        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil
+        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil,
+        committed: Bool = true
     ) -> Bool {
         guard !cleanups.isEmpty else { return true }
         guard let retained = retained ?? retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
@@ -101,7 +106,7 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return false
         }
-        return run(cleanups, ownership: Ownership(stored, retained: retained))
+        return run(cleanups, ownership: Ownership(stored, retained: retained), committed: committed)
     }
 
     /// The connectors pending workspace deletions hold, whose mirrors startup
@@ -147,6 +152,10 @@ enum ConnectorCredentialCleanup {
             store?.remove(recorded)
             return false
         }
+        // Marked saved, so a retry tells this deletion from an intent whose
+        // save never happened. A mark that can't be written leaves the retry
+        // to judge by whether the connector is still stored.
+        store?.markCommitted(cleanups)
         // Without an outbox there is nothing to defer to, so it runs now.
         if cleansNow || store == nil, run(cleanups, modelContext: modelContext) { store?.remove(recorded) }
         return true
@@ -177,7 +186,8 @@ enum ConnectorCredentialCleanup {
     /// Retries the cleanups a failed run or a quit left, against what the
     /// store holds now. Startup calls it only once recovery is trusted, so a
     /// connector a mirror still owns counts. A record whose deletion was
-    /// never saved is harmless: its connector is stored and keeps all it uses.
+    /// never saved, unmarked with its connector still stored, is dropped
+    /// without running or reporting anything.
     @discardableResult
     static func resumePending(modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil) -> Int {
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
@@ -195,7 +205,8 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
         }
         var cleared = 0
-        for record in pending.records where run([record.cleanup], modelContext: ModelContext(modelContext.container)) {
+        for record in pending.records
+        where run([record.cleanup], modelContext: ModelContext(modelContext.container), committed: record.committed) {
             store.remove([record.url])
             cleared += 1
         }
@@ -205,15 +216,21 @@ enum ConnectorCredentialCleanup {
 
 /// Whether this launch's workspace recovery vouches for the store, so a
 /// cleanup that decides ownership from it may run. Only the app tracks it:
-/// `pending` from the start of launch recovery, then `trusted` or
-/// `untrusted`. A process that never starts one, as a test, isn't tracked
-/// and cleans at once.
+/// `pending` from the start of launch recovery, then `trusted`,
+/// `vouchedWithoutScan`, or `untrusted`. A process that never starts one, as
+/// a test, isn't tracked and cleans at once.
 @MainActor
 enum WorkspaceRecoveryTrust {
-    enum State { case notTracked, pending, trusted, untrusted }
+    /// `vouchedWithoutScan`: the store held workspaces and nothing was
+    /// pending, so no mirror was scanned. A workspace only a mirror holds may
+    /// still share a namespace, so a cleanup waits in its outbox, whose record
+    /// makes the next launch scan before it runs.
+    enum State { case notTracked, pending, trusted, vouchedWithoutScan, untrusted }
     private(set) static var state: State = .notTracked
 
-    static var allowsCleanup: Bool { state == .notTracked || state == .trusted }
+    static var allowsCleanup: Bool { allowsCleanup(in: state) }
+
+    static func allowsCleanup(in state: State) -> Bool { state == .notTracked || state == .trusted }
 
     static func set(_ state: State) { self.state = state }
 }
@@ -282,7 +299,31 @@ struct ConnectorCredentialCleanupStore: Sendable {
     }
 
     func remove(_ urls: [URL]) {
-        for url in urls { try? FileManager.default.removeItem(at: url) }
+        for url in urls {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: Self.commitMark(for: url))
+        }
+    }
+
+    /// Marks the records of `cleanups` as deletions that were saved, beside
+    /// each record, so its own content and name stay what `record` wrote.
+    func markCommitted(_ cleanups: [ConnectorKeychainCleanup]) {
+        for cleanup in cleanups {
+            guard let data = try? Self.encode(cleanup) else { continue }
+            let mark = Self.commitMark(for: recordURL(for: cleanup, data: data))
+            do {
+                try Data().write(to: mark, options: .atomic)
+            } catch {
+                AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                    "scope": "connector_cleanup", "reason": "commit_mark_unwritable",
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+            }
+        }
+    }
+
+    private static func commitMark(for record: URL) -> URL {
+        record.appendingPathExtension("committed")
     }
 
     /// Every readable pending cleanup, and whether that was all of them: a
@@ -304,7 +345,18 @@ struct ConnectorCredentialCleanupStore: Sendable {
                 complete = false
                 continue
             }
-            records.append(Pending.Record(url: url, cleanup: cleanup))
+            // A mark that can't be checked leaves the record for later.
+            let committed: Bool
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: Self.commitMark(for: url).path)
+                committed = true
+            } catch where WorkspaceFileLayout.isMissingFile(error) {
+                committed = false
+            } catch {
+                complete = false
+                continue
+            }
+            records.append(Pending.Record(url: url, cleanup: cleanup, committed: committed))
         }
         return Pending(records: records, complete: complete)
     }
@@ -313,6 +365,8 @@ struct ConnectorCredentialCleanupStore: Sendable {
         struct Record {
             let url: URL
             let cleanup: ConnectorKeychainCleanup
+            /// Whether its deletion is marked saved.
+            let committed: Bool
         }
         let records: [Record]
         /// False when a record couldn't be read and was left out.

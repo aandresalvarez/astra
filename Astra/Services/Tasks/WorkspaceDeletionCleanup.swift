@@ -418,9 +418,12 @@ enum WorkspaceDeletionCleanupService {
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so
-        // connector ownership is per namespace.
+        // connector ownership is per namespace. The deletion was saved once
+        // its workspace is no longer stored; until then a connector still
+        // stored under a recorded ID owes nothing.
         var cleared = ConnectorCredentialCleanup.run(
-            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors)
+            record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors),
+            committed: !workspaces.contains { $0.id == record.workspaceID }
         )
         for skill in record.skills where !liveSkills.contains(skill.skillID) {
             cleared = skill.run() && cleared

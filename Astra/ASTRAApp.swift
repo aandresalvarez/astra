@@ -924,6 +924,7 @@ public struct ASTRAApp: App {
                 pendingCleanup: pendingWorktreeCleanup,
                 excludingItemIdentities: unsettledDeletionMirrorIDs,
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
+                vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
@@ -938,7 +939,11 @@ public struct ASTRAApp: App {
                     return
                 }
                 workspaceRecoveryTrusted = true
-                WorkspaceRecoveryTrust.set(.trusted)
+                // Trusted without a scan, the store vouches for its pins, but
+                // a workspace only a mirror holds could share a connector's
+                // namespace: credential cleanups wait, and their records make
+                // the next launch scan.
+                WorkspaceRecoveryTrust.set(recoveryVouchedWithoutScan ? .vouchedWithoutScan : .trusted)
                 WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext, movedMirrors: movedDeletionMirrors)
                 ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
             }
@@ -1035,6 +1040,7 @@ public struct ASTRAApp: App {
     /// Pending deletions' mirrors recovery found away from their pinned
     /// paths, matched by identity, for settlement to remove.
     @MainActor private static var movedDeletionMirrors: [String] = []
+    @MainActor private static var recoveryVouchedWithoutScan = false
 
     /// Compares every task-folder baseline a run left behind — interrupted by
     /// a crash, or cancelled by a quit before its worker compared — after

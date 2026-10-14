@@ -522,6 +522,7 @@ public enum WorkspaceRecoveryService {
         pendingCleanup: Bool = false,
         excludingItemIdentities excludedIdentities: Set<String> = [],
         excludedByIdentity: @escaping @MainActor ([URL]) -> Void = { _ in },
+        vouchedWithoutScan: @escaping @MainActor () -> Void = {},
         itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {}
@@ -540,6 +541,7 @@ public enum WorkspaceRecoveryService {
                 pendingCleanup: pendingCleanup || !excluded.isEmpty || !excludedIdentities.isEmpty,
                 hasWorkspaces: !fetchExistingWorkspaces(modelContext: modelContext).isEmpty
             ) {
+                vouchedWithoutScan()
                 return true
             }
             let scan = await withTaskGroup(
