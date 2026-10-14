@@ -965,11 +965,14 @@ final class ConnectorMutationCoordinator {
         // a transition act on a ticket the proposal already addressed, and their
         // answers are a comment record or an empty `204` — so the ticket comes
         // from the route, which ASTRA derived and the user read, rather than
-        // from a body that may not exist.
-        let createdKey = (object?["key"] as? String).flatMap { JiraHostControlOperations.isValidIssueKey($0) ? $0 : nil }
+        // from a body that may not exist. A key in such an answer (a proxy's
+        // wrapper, say) names nothing ASTRA sent to, and is never taken.
         let routeKey = ConnectorMutationOperations
             .definition(serviceType: proposal.serviceType, operation: proposal.operation)?
             .issueKey(inResolvedPath: proposal.requestPath)
+        let createdKey = routeKey == nil
+            ? (object?["key"] as? String).flatMap { JiraHostControlOperations.isValidIssueKey($0) ? $0 : nil }
+            : nil
         let commentID = proposal.operation == "add_comment"
             ? (object?["id"] as? String).flatMap { !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) ? $0 : nil }
             : nil

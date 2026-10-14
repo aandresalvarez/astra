@@ -95,6 +95,160 @@ struct GitHubReviewPostWhenRequestedTests {
         ) == nil)
     }
 
+    /// A file the agent was told to replace stays retired when the event saying
+    /// so cannot be saved: the dock never offers it beside the replacement, and
+    /// the marker beside it is what still holds after a relaunch.
+    @Test("A changed Auto review file stays retired when its dismissal cannot be saved")
+    func changedFileStaysRetiredWithoutItsRecord() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI()
+        let request = fixture.request(for: fixture.file)
+        try Data("""
+            {"event":"REQUEST_CHANGES","commit_id":"\(Self.head)","body":"Something else entirely"}
+            """.utf8).write(to: fixture.file)
+        let handler = fixture.handler(
+            level: .autonomous, cli: cli, saveRecords: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        )
+
+        let outcome = await handler.postGitHubReview(request)
+
+        guard case let .refused(message) = outcome, message.contains("changed after you asked") else {
+            Issue.record("Expected the changed-file refusal, got \(outcome)")
+            return
+        }
+        #expect(fixture.task.events.allSatisfy { $0.type != GitHubReviewPublicationEventTypes.unusable })
+        #expect(FileManager.default.fileExists(atPath: fixture.file.path + ".retired"))
+
+        let replacement = fixture.file.deletingLastPathComponent().appendingPathComponent("pr12_review_2.json")
+        try fixture.data.write(to: replacement)
+        let posted = await handler.postGitHubReview(fixture.request(for: replacement))
+        guard case .performed = posted else {
+            Issue.record("Expected the replacement to post, got \(posted)")
+            return
+        }
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(
+            task: fixture.task, filePaths: [fixture.file.path, replacement.path]
+        ) == nil)
+    }
+
+    /// When neither the event nor the marker can be written (a read-only task
+    /// folder), the file still stays retired for this launch.
+    @Test("A changed Auto review file stays retired for the launch when no marker can be written")
+    func changedFileStaysRetiredWithoutAMarker() async throws {
+        let fixture = try Fixture()
+        let request = fixture.request(for: fixture.file)
+        try Data("""
+            {"event":"REQUEST_CHANGES","commit_id":"\(Self.head)","body":"Something else entirely"}
+            """.utf8).write(to: fixture.file)
+        let folder = fixture.file.deletingLastPathComponent().path
+        #expect(chmod(folder, 0o500) == 0)
+        defer { chmod(folder, 0o700) }
+
+        let outcome = await fixture.handler(
+            level: .autonomous, cli: FakeCLI(), saveRecords: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        ).postGitHubReview(request)
+
+        guard case .refused = outcome else {
+            Issue.record("Expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: fixture.file.path + ".retired"), "the premise: no marker")
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+    }
+
+    /// The task folder is agent-writable and the marker's name predictable: a
+    /// link planted there is never followed, so nothing is created where it
+    /// points, and the link itself still keeps the file off the dock.
+    @Test("A link planted at the retired marker is never followed")
+    func retiredMarkerLinkIsNotFollowed() throws {
+        let fixture = try Fixture()
+        let outside = fixture.root.appendingPathComponent("outside-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(
+            atPath: fixture.file.path + ".retired", withDestinationPath: outside.path
+        )
+
+        GitHubReviewPublicationService.retireWithoutRecord(task: fixture.task, filePath: fixture.file.path)
+
+        #expect(!FileManager.default.fileExists(atPath: outside.path), "nothing is created through the link")
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+    }
+
+    /// The marker is ASTRA's bookkeeping beside the review file, not output:
+    /// the file the fallback writes is never listed as an artifact, while the
+    /// review file itself still is.
+    @Test("A retired marker is internal state, not an artifact")
+    func retiredMarkerIsInternalState() throws {
+        let fixture = try Fixture()
+
+        GitHubReviewPublicationService.retireWithoutRecord(task: fixture.task, filePath: fixture.file.path)
+
+        let markers = try FileManager.default
+            .contentsOfDirectory(atPath: fixture.file.deletingLastPathComponent().path)
+            .filter { $0.hasPrefix(fixture.file.lastPathComponent + ".") }
+        try #require(!markers.isEmpty, "the premise: a marker was written")
+        for marker in markers {
+            #expect(TaskOutputArtifactPathPolicy.isInternalStateRelativePath(marker), "\(marker)")
+        }
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath(fixture.file.lastPathComponent))
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("notes.retired.md"))
+    }
+
+    /// The visibility policy cannot see the review-name rule (it lives in a
+    /// module persistence does not import), so it keeps its own copy, held
+    /// here to the same names: only a review file's marker is hidden, and a
+    /// deliverable that merely ends in `.retired` stays visible.
+    @Test("Only a review file's marker is hidden from artifacts")
+    func onlyReviewMarkersAreHidden() {
+        for name in [
+            "github_review.json", "pr12_review.json", "pr7_review_second-pass.json", "PR12_Review.json",
+            "report.json", "pr_review.json", "pr12_review.md", "review.json", "pr12_review_.json",
+            "pr12_review_v2.json.bak", "github_review.json.json"
+        ] {
+            #expect(
+                TaskOutputArtifactPathPolicy.isInternalStateRelativePath(name + ".retired")
+                    == GitHubReviewHostControlOperations.isReviewFileName(name),
+                "\(name)"
+            )
+        }
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("report.json.retired"))
+        #expect(!TaskOutputArtifactPathPolicy.isInternalStateRelativePath("sub/pr12_review.json.retired"))
+    }
+
+    /// The marker alone — what a relaunch has after an unsaved dismissal —
+    /// keeps the file off the dock.
+    @Test("A retired marker beside a review file keeps it off the dock")
+    func retiredMarkerKeepsTheFileOffTheDock() throws {
+        let fixture = try Fixture()
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: [fixture.file.path])
+                == fixture.file.path)
+
+        #expect(FileManager.default.createFile(atPath: fixture.file.path + ".retired", contents: Data()))
+
+        #expect(GitHubReviewPublicationService.hasDismissed(task: fixture.task, filePath: fixture.file.path))
+        #expect(GitHubReviewPublicationService.pendingCandidatePath(task: fixture.task, filePaths: [fixture.file.path]) == nil)
+    }
+
+    /// Below Auto the agent is told the user will see this exact review. That
+    /// holds only once the file and its digest are recorded, so a request
+    /// ASTRA cannot record is refused rather than promised.
+    @Test("Below Auto a request ASTRA cannot record is refused, not promised")
+    func unrecordedRequestIsRefused() async throws {
+        let fixture = try Fixture()
+        let cli = FakeCLI()
+
+        let outcome = await fixture.handler(
+            level: .review, cli: cli, saveRecords: { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        ).postGitHubReview(fixture.request(for: fixture.file))
+
+        guard case let .refused(message) = outcome else {
+            Issue.record("Expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(message.contains("could not record"))
+        #expect(fixture.task.events.allSatisfy { $0.type != GitHubReviewPublicationEventTypes.requested })
+        #expect(await cli.callCount() == 0)
+    }
+
     @Test("Auto posts a review only when the user asked for one to be posted")
     func noPostingRequestNoPost() async throws {
         let fixture = try Fixture(goal: "review this pr in detail https://github.com/example/repo/pull/12")
@@ -822,7 +976,8 @@ struct GitHubReviewPostWhenRequestedTests {
         func handler(
             level: AgentPolicyLevel,
             cli: some GitHubReviewCLI,
-            origin: String? = nil
+            origin: String? = nil,
+            saveRecords: ((AgentTask, ModelContext) throws -> Void)? = nil
         ) -> BrokeredExternalActionHandler {
             BrokeredExternalActionHandler(
                 modelContext: context,
@@ -830,7 +985,9 @@ struct GitHubReviewPostWhenRequestedTests {
                 runID: run.id,
                 policyLevel: level,
                 makeReviewService: { context in
-                    GitHubReviewPublicationService(modelContext: context, cli: cli, originURL: { _ in origin })
+                    GitHubReviewPublicationService(
+                        modelContext: context, cli: cli, saveRecords: saveRecords, originURL: { _ in origin }
+                    )
                 }
             )
         }

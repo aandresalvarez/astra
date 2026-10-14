@@ -181,6 +181,26 @@ public enum SSHConnectionManager {
         }
     }
 
+    /// Keeps a `snapshot` that `restore` couldn't put back beside the
+    /// connections file, under a dated name nothing loads, and returns its
+    /// path. It is never applied on its own: replaying it later could
+    /// overwrite edits made in between. Nil when there was no file to keep.
+    public static func preserveUnrestored(_ snapshot: Snapshot, workspacePath: String, now: Date = Date()) throws -> String? {
+        let file = connectionsFilePath(for: workspacePath)
+        guard !file.isEmpty else { return nil }
+        let stamp = ISO8601DateFormatter().string(from: now).replacingOccurrences(of: ":", with: "-")
+        let copy = file + ".unrestored-" + stamp
+        switch snapshot {
+        case .absent:
+            return nil
+        case .file(let data):
+            try data.write(to: URL(fileURLWithPath: copy), options: .withoutOverwriting)
+        case .link(let destination):
+            try FileManager.default.createSymbolicLink(atPath: copy, withDestinationPath: destination)
+        }
+        return copy
+    }
+
     private static func migrateLegacyConnectionsIfNeeded(workspacePath: String) {
         let canonical = WorkspaceFileLayout.sshConnectionsFile(for: workspacePath)
         let legacy = WorkspaceFileLayout.legacySSHConnectionsFile(for: workspacePath)

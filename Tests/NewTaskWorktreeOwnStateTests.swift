@@ -528,4 +528,58 @@ struct NewTaskWorktreeOwnStateTests {
         #expect(!FileManager.default.fileExists(atPath: discard.worktreePath))
     }
 
+    @Test("An SSH file a rejected replacement can't put back is kept beside it, never applied")
+    func unrestorableSSHFileIsKeptBesideIt() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "App", primaryPath: fixture.storage.path)
+        context.insert(workspace)
+        try context.save()
+        SSHConnectionManager.save(
+            [SSHConnection(name: "original", host: "original-host", user: "me", keyPath: "", configAlias: "original")],
+            workspacePath: fixture.storage.path
+        )
+        let sshFile = SSHConnectionManager.connectionsFilePath(for: fixture.storage.path)
+        let originalData = try Data(contentsOf: URL(fileURLWithPath: sshFile))
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: fixture.storage.path))
+        try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(config).write(to: configURL, options: .atomic)
+        // The save fails, and by then nothing can be written at the file's
+        // path: a folder with contents sits there.
+        let coordinator = TaskLifecycleCoordinator(
+            modelContext: context, taskQueue: fixture.resourceQueue, worktreeCleanupStore: fixture.cleanupStore,
+            persistWorkspaceChange: { _, _ in
+                try? FileManager.default.removeItem(atPath: sshFile)
+                try? FileManager.default.createDirectory(atPath: sshFile, withIntermediateDirectories: true)
+                try? Data("x".utf8).write(to: URL(fileURLWithPath: sshFile).appendingPathComponent("blocker"))
+                return false
+            }
+        )
+
+        #expect(coordinator.importFromConfig(
+            at: configURL, existingWorkspaces: [workspace], askDuplicateAction: { _, _ in .replace }
+        ) == nil)
+        let support = (sshFile as NSString).deletingLastPathComponent
+        let name = (sshFile as NSString).lastPathComponent
+        let copies = try FileManager.default.contentsOfDirectory(atPath: support).filter { $0.hasPrefix(name + ".unrestored-") }
+        #expect(copies.count == 1)
+        let copy = try #require(copies.first)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: support).appendingPathComponent(copy)) == originalData)
+        // Kept, not loaded: the connections file is still what blocked it.
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: sshFile, isDirectory: &isDirectory) && isDirectory.boolValue)
+
+        // A link is kept as a link to the same place; no file means nothing to keep.
+        let target = fixture.root.appendingPathComponent("managed-ssh.json").path
+        let linkCopy = try #require(try SSHConnectionManager.preserveUnrestored(
+            .link(destination: target), workspacePath: fixture.storage.path, now: Date(timeIntervalSince1970: 0)
+        ))
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: linkCopy) == target)
+        #expect(try SSHConnectionManager.preserveUnrestored(.absent, workspacePath: fixture.storage.path) == nil)
+    }
 }
