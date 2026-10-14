@@ -47,16 +47,11 @@ enum ConnectorCredentialCleanup {
     /// Runs each cleanup against `ownership`, attempting every one. True when
     /// everything owed was cleared. A deletion whose credentials all stay
     /// with live owners is still audited, through `auditSkipped`, as the
-    /// cleanup it doesn't need would have.
-    ///
-    /// `committed` is whether the deletion is known to be saved. One that
-    /// isn't runs nothing and reports nothing: the store it is judged against
-    /// may not be the one it was recorded for, as after a store recovery, so
-    /// a connector missing from it proves no deletion. At worst its
-    /// credentials are left orphaned, which is recoverable.
+    /// cleanup it doesn't need would have. Only a deletion known to be saved
+    /// is run: `CleanupRecordMarks.verdict` decides which.
     @discardableResult
     static func run(
-        _ cleanups: [ConnectorKeychainCleanup], ownership: Ownership, committed: Bool = true,
+        _ cleanups: [ConnectorKeychainCleanup], ownership: Ownership,
         auditSkipped: (ConnectorKeychainCleanup) -> Void = { cleanup in
             AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
                 "connector_id": cleanup.connectorID.uuidString,
@@ -67,7 +62,6 @@ enum ConnectorCredentialCleanup {
     ) -> Bool {
         var cleared = true
         for cleanup in cleanups {
-            if !committed { continue }
             let keepRegistryEntry = ownership.outlookConnectorIDs.contains(cleanup.connectorID)
             // Owed when a namespace has no live owner, or a mail-registry
             // entry no live Outlook connector claims.
@@ -89,8 +83,7 @@ enum ConnectorCredentialCleanup {
     /// is not.
     @discardableResult
     static func run(
-        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil,
-        committed: Bool = true
+        _ cleanups: [ConnectorKeychainCleanup], modelContext: ModelContext, retained: [ConnectorKeychainCleanup]? = nil
     ) -> Bool {
         guard !cleanups.isEmpty else { return true }
         guard let retained = retained ?? retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
@@ -107,7 +100,7 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return false
         }
-        return run(cleanups, ownership: Ownership(stored, retained: retained), committed: committed)
+        return run(cleanups, ownership: Ownership(stored, retained: retained))
     }
 
     /// The connectors pending workspace deletions hold, whose mirrors startup
@@ -274,24 +267,30 @@ enum ConnectorCredentialCleanup {
         let stale = classified.filter {
             $0.committed && mirrored.ids.contains($0.record.cleanup.connectorID) && !storedIDs.contains($0.record.cleanup.connectorID)
         }
-        let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup) + pending.heldBack + stale.map(\.record.cleanup)
-            + mirrored.owners
+        let owners = classified.filter(\.holdsOwnership).map(\.record.cleanup) + pending.heldBack
+            + stale.map(\.record.cleanup) + mirrored.owners
         let staleIDs = Set(stale.map(\.record.cleanup.connectorID))
         for (workspace, listed) in mirrored.byWorkspace where !listed.isDisjoint(with: staleIDs) {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         }
         var cleared = 0
-        for entry in classified where !(entry.committed && staleIDs.contains(entry.record.cleanup.connectorID)) {
-            if entry.unconfirmed {
+        for entry in classified {
+            switch entry.verdict {
+            case .wait:
+                continue
+            case .unsaved:
+                // Its connector is stored: nothing was deleted to report.
+                break
+            case .unconfirmed:
                 AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                     "scope": "connector_cleanup", "reason": "intent_unconfirmed_after_store_change",
                     "connector_id": entry.record.cleanup.connectorID.uuidString
                 ], level: .error)
+            case .committed:
+                guard !staleIDs.contains(entry.record.cleanup.connectorID),
+                      run([entry.record.cleanup], modelContext: ModelContext(modelContext.container), retained: workspaceRetained + owners)
+                else { continue }
             }
-            guard run(
-                [entry.record.cleanup], modelContext: ModelContext(modelContext.container),
-                retained: workspaceRetained + unconfirmed, committed: entry.committed
-            ) else { continue }
             store.remove([entry.record.url])
             cleared += 1
         }
@@ -390,23 +389,27 @@ enum ConnectorCredentialCleanup {
 
     private struct Classified {
         let record: ConnectorCredentialCleanupStore.Pending.Record
-        let committed: Bool
-        /// From a store since replaced and not confirmed saved: its
-        /// connector may still be in that store, so it keeps what it uses
-        /// while the others run, even when a connector with its ID is stored
-        /// now, since that one may resolve elsewhere.
-        let unconfirmed: Bool
+        let verdict: CleanupRecordMarks.Verdict
+        var committed: Bool { verdict == .committed }
+        /// Not run, but an owner of what it names while the others run: one
+        /// from a store since replaced, whose connector may still be in that
+        /// store even when a connector with its ID is stored now, since that
+        /// one may resolve elsewhere, and one kept for later.
+        var holdsOwnership: Bool { verdict == .unconfirmed || verdict == .wait }
     }
 
+    /// Each record's verdict, by the rule every cleanup outbox shares, its
+    /// owner being the deleted connector.
     private static func classify(
         _ records: [ConnectorCredentialCleanupStore.Pending.Record], storedIDs: Set<UUID>, modelContext: ModelContext
     ) -> [Classified] {
         let currentStore = PersistentStoreIdentity.current(for: modelContext)
+        let storeCreated = PersistentStoreIdentity.createdAt(for: modelContext)
         return records.map { record in
-            let stored = storedIDs.contains(record.cleanup.connectorID)
-            let sameStore = record.storeIdentity != nil && record.storeIdentity == currentStore
-            let committed = record.committed || (!stored && sameStore)
-            return Classified(record: record, committed: committed, unconfirmed: !committed && !sameStore)
+            Classified(record: record, verdict: CleanupRecordMarks.verdict(
+                record.marks, ownerStored: storedIDs.contains(record.cleanup.connectorID),
+                currentStore: currentStore, storeCreated: storeCreated, writtenAt: record.writtenAt
+            ))
         }
     }
 
@@ -431,7 +434,7 @@ enum ConnectorCredentialCleanup {
                 .map({ Set($0.map(\.id)) }) else { return nil }
         return classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
             .filter {
-                $0.unconfirmed || ($0.committed && mirrored.ids.contains($0.record.cleanup.connectorID)
+                $0.holdsOwnership || ($0.committed && mirrored.ids.contains($0.record.cleanup.connectorID)
                     && !storedIDs.contains($0.record.cleanup.connectorID))
             }
             .map(\.record.cleanup) + pending.heldBack + mirrored.owners
@@ -534,22 +537,14 @@ struct ConnectorCredentialCleanupStore: Sendable {
                     // Reused for this attempt, so it names this attempt's store;
                     // a failed save puts the earlier one back.
                     if let storeIdentity {
-                        let mark = Self.storeMark(for: url)
-                        let previous: Data?
-                        do {
-                            previous = try Data(contentsOf: mark)
-                        } catch where WorkspaceFileLayout.isMissingFile(error) {
-                            previous = nil
-                        }
-                        try Data(storeIdentity.utf8).write(to: mark, options: .atomic)
-                        recording.replacedStoreMarks.append((url, previous))
+                        recording.replacedStoreMarks.append((url, try CleanupRecordMarks(record: url).markStore(storeIdentity)))
                     }
                     continue
                 } catch where WorkspaceFileLayout.isMissingFile(error) {}
                 try data.write(to: url, options: .atomic)
                 recording.added.append(url)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-                if let storeIdentity { try Data(storeIdentity.utf8).write(to: Self.storeMark(for: url), options: .atomic) }
+                if let storeIdentity { try CleanupRecordMarks(record: url).markStore(storeIdentity) }
             }
         } catch {
             undo(recording)
@@ -562,20 +557,14 @@ struct ConnectorCredentialCleanupStore: Sendable {
     func undo(_ recording: Recording) {
         remove(recording.added)
         for (record, previous) in recording.replacedStoreMarks {
-            let mark = Self.storeMark(for: record)
-            if let previous {
-                try? previous.write(to: mark, options: .atomic)
-            } else {
-                try? FileManager.default.removeItem(at: mark)
-            }
+            CleanupRecordMarks(record: record).restoreStore(previous)
         }
     }
 
     func remove(_ urls: [URL]) {
         for url in urls {
             try? FileManager.default.removeItem(at: url)
-            try? FileManager.default.removeItem(at: Self.commitMark(for: url))
-            try? FileManager.default.removeItem(at: Self.storeMark(for: url))
+            CleanupRecordMarks(record: url).remove()
         }
     }
 
@@ -588,9 +577,8 @@ struct ConnectorCredentialCleanupStore: Sendable {
     /// each record, so its own content and name stay what `record` wrote.
     func markCommitted(_ cleanups: [ConnectorKeychainCleanup]) {
         for record in recordURLs(for: cleanups) {
-            let mark = Self.commitMark(for: record)
             do {
-                try Data().write(to: mark, options: .atomic)
+                try CleanupRecordMarks(record: record).markCommitted()
             } catch {
                 AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                     "scope": "connector_cleanup", "reason": "commit_mark_unwritable",
@@ -598,14 +586,6 @@ struct ConnectorCredentialCleanupStore: Sendable {
                 ], level: .error)
             }
         }
-    }
-
-    private static func commitMark(for record: URL) -> URL {
-        record.appendingPathExtension("committed")
-    }
-
-    private static func storeMark(for record: URL) -> URL {
-        record.appendingPathExtension("store")
     }
 
     /// Every readable pending cleanup, and whether that was all of them: a
@@ -628,34 +608,16 @@ struct ConnectorCredentialCleanupStore: Sendable {
                 complete = false
                 continue
             }
-            // A mark that can't be checked leaves the record for later, and
-            // its cleanup held back as an owner of what it names meanwhile:
-            // the store it names may still hold that connector.
-            let committed: Bool
-            do {
-                _ = try FileManager.default.attributesOfItem(atPath: Self.commitMark(for: url).path)
-                committed = true
-            } catch where WorkspaceFileLayout.isMissingFile(error) {
-                committed = false
-            } catch {
+            // A mark that can't be read leaves the record for later, and its
+            // cleanup held back as an owner of what it names meanwhile: the
+            // store it names may still hold that connector.
+            let marks = CleanupRecordMarks(record: url)
+            let state = marks.read()
+            guard state.committed != nil, state.store != .unreadable else {
                 heldBack.append(cleanup)
                 continue
             }
-            // Only a store mark confirmed missing is unknown.
-            let storeIdentity: String?
-            do {
-                guard let decoded = PersistentStoreIdentity.decode(try Data(contentsOf: Self.storeMark(for: url))) else {
-                    heldBack.append(cleanup)
-                    continue
-                }
-                storeIdentity = decoded
-            } catch where WorkspaceFileLayout.isMissingFile(error) {
-                storeIdentity = nil
-            } catch {
-                heldBack.append(cleanup)
-                continue
-            }
-            records.append(Pending.Record(url: url, cleanup: cleanup, committed: committed, storeIdentity: storeIdentity))
+            records.append(Pending.Record(url: url, cleanup: cleanup, marks: state, writtenAt: marks.writtenAt))
         }
         return Pending(records: records, heldBack: heldBack, complete: complete)
     }
@@ -664,10 +626,15 @@ struct ConnectorCredentialCleanupStore: Sendable {
         struct Record {
             let url: URL
             let cleanup: ConnectorKeychainCleanup
+            let marks: CleanupRecordMarks.State
+            let writtenAt: Date?
             /// Whether its deletion is marked saved.
-            let committed: Bool
-            /// The store it was recorded against, when known.
-            let storeIdentity: String?
+            var committed: Bool { marks.committed == true }
+            /// The store it was recorded against, when its mark names one.
+            var storeIdentity: String? {
+                if case .recorded(let identity) = marks.store { return identity }
+                return nil
+            }
         }
         let records: [Record]
         /// Readable cleanups whose marks can't be read: not run, but owners
