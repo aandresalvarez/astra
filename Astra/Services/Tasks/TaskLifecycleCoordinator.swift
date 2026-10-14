@@ -891,12 +891,21 @@ final class TaskLifecycleCoordinator {
                     try SSHConnectionManager.restore(snapshot.data, workspacePath: snapshot.path)
                 } catch {
                     // Not retried later: replaying an old file at the next
-                    // launch could overwrite edits made in between.
-                    AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: [
+                    // launch could overwrite edits made in between. The old
+                    // file is kept beside it instead, for the user to take back.
+                    var fields = [
                         "operation": "replace_workspace", "reason": "ssh_restore_failed",
                         "path": SSHConnectionManager.connectionsFilePath(for: snapshot.path),
                         "error": error.localizedDescription
-                    ], level: .error)
+                    ]
+                    do {
+                        if let copy = try SSHConnectionManager.preserveUnrestored(snapshot.data, workspacePath: snapshot.path) {
+                            fields["recovery_copy"] = copy
+                        }
+                    } catch {
+                        fields["recovery_copy_error"] = error.localizedDescription
+                    }
+                    AppLogger.audit(.workspaceRecoveryFailed, category: "App", fields: fields, level: .error)
                 }
             }
             // The writes it retired are replaced by one current export, taken
