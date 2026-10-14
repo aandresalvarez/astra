@@ -334,7 +334,9 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     /// The store `record` was recorded against.
     func storeMark(of record: WorkspaceDeletionCleanupRecord) -> StoreMark {
         do {
-            return .recorded(String(decoding: try Data(contentsOf: storeMarkURL(for: record)), as: UTF8.self))
+            // One that reads but isn't a store identity, as a truncated write
+            // leaves, can't say which store either.
+            return PersistentStoreIdentity.decode(try Data(contentsOf: storeMarkURL(for: record))).map { .recorded($0) } ?? .unreadable
         } catch {
             return WorkspaceFileLayout.isMissingFile(error) ? .absent : .unreadable
         }

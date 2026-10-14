@@ -252,7 +252,7 @@ struct ConnectorCredentialCleanupTests {
             let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
             let own = KeychainSecretStore.connectorEntityID(for: connector.id)
             #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
-            _ = try outbox.record([connector.keychainCleanup], storeIdentity: "another-store")
+            _ = try outbox.record([connector.keychainCleanup], storeIdentity: "/elsewhere/another.store|1:1")
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
             #expect(outbox.pending()?.records.isEmpty == true)
@@ -374,7 +374,7 @@ struct ConnectorCredentialCleanupTests {
             try FileManager.default.createDirectory(atPath: (mirror as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
             try "{}".write(toFile: mirror, atomically: true, encoding: .utf8)
             try outbox.write(unconfirmed)
-            try outbox.markStore(unconfirmed, identity: "another-store")
+            try outbox.markStore(unconfirmed, identity: "/elsewhere/another.store|1:1")
             #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
             #expect(FileManager.default.fileExists(atPath: mirror))
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
@@ -383,7 +383,7 @@ struct ConnectorCredentialCleanupTests {
             // A store mark that can't be read leaves the record for later.
             let waiting = record("Waiting", [deleted.keychainCleanup])
             try outbox.write(waiting)
-            try outbox.markStore(waiting, identity: "store")
+            try outbox.markStore(waiting, identity: "/elsewhere/store|1:4")
             let mark = outbox.recordURL(for: waiting).appendingPathExtension("store").path
             try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mark)
             #expect(outbox.storeMark(of: waiting) == .unreadable)
@@ -420,7 +420,7 @@ struct ConnectorCredentialCleanupTests {
                 primaryPath: folder.appendingPathComponent("Late").path, connectors: [recreation(of: deleted).keychainCleanup], skills: []
             )
             try outbox.write(early)
-            try outbox.markStore(early, identity: "another-store")
+            try outbox.markStore(early, identity: "/elsewhere/another.store|1:1")
             try outbox.write(late)
             try outbox.markCommitted(late)
             #expect(outbox.pending().map(\.workspaceID) == [early.workspaceID, late.workspaceID])
@@ -448,7 +448,7 @@ struct ConnectorCredentialCleanupTests {
             #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
             #expect(AstraSecureKeychainStore.save(service: skillService, account: "KEY", value: "skill", label: nil))
             // An unconfirmed connector intent shares the namespace.
-            _ = try connectorOutbox.record([recreation(of: deleted).keychainCleanup], storeIdentity: "another-store")
+            _ = try connectorOutbox.record([recreation(of: deleted).keychainCleanup], storeIdentity: "/elsewhere/another.store|1:1")
             // An unconfirmed workspace deletion shares the skill.
             let unconfirmed = WorkspaceDeletionCleanupRecord(
                 workspaceID: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000002")),
@@ -456,7 +456,7 @@ struct ConnectorCredentialCleanupTests {
                 skills: [skillCleanup]
             )
             try outbox.write(unconfirmed)
-            try outbox.markStore(unconfirmed, identity: "another-store")
+            try outbox.markStore(unconfirmed, identity: "/elsewhere/another.store|1:1")
             let saved = WorkspaceDeletionCleanupRecord(
                 workspaceID: try #require(UUID(uuidString: "FFFFFFFF-0000-0000-0000-000000000002")),
                 primaryPath: folder.appendingPathComponent("Saved").path, connectors: [deleted.keychainCleanup],
@@ -651,7 +651,7 @@ struct ConnectorCredentialCleanupTests {
         // naming the earlier store.
         let earlier = WorkspaceDeletionCleanupRecord(workspace(in: context))
         try outbox.write(earlier)
-        try outbox.markStore(earlier, identity: "another-store")
+        try outbox.markStore(earlier, identity: "/elsewhere/another.store|1:1")
         let coordinator = TaskLifecycleCoordinator(
             modelContext: context, taskQueue: TaskQueue(poolSize: 0),
             worktreeCleanupStore: TaskWorktreeCleanupStore(directory: root.appendingPathComponent("WorktreeCleanup")),
@@ -659,7 +659,7 @@ struct ConnectorCredentialCleanupTests {
         )
         let stored = workspace(in: context)
         #expect(!coordinator.deleteWorkspace(stored, existingWorkspaces: [stored]).persisted)
-        #expect(outbox.storeMark(of: earlier) == .recorded("another-store"))
+        #expect(outbox.storeMark(of: earlier) == .recorded("/elsewhere/another.store|1:1"))
     }
 
     private func workspace(in context: ModelContext) -> Workspace {
@@ -683,13 +683,35 @@ struct ConnectorCredentialCleanupTests {
             let copy = root.appendingPathComponent("OldCopy/.astra/.astra-workspace.json")
             try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(#"{"connectors":[{"id":"\#(deleted.id.uuidString)"}]}"#.utf8).write(to: copy)
-            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox, extraMirrors: [copy.path]) == 0)
+            // It can't be rewritten, so it holds nothing back: the intent runs
+            // and goes, sparing what the copy's connector would use.
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox, extraMirrors: [copy.path]) == 1)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
-            // Restored from that copy under its ID, the connector owns what it
-            // uses, and the obsolete intent runs and goes.
+            #expect(outbox.pending()?.records.isEmpty == true)
+
+            // A stored workspace's own mirror listing it holds the intent until
+            // exported again, but only its current mirror: a legacy one beside
+            // that, which recovery doesn't read, holds nothing.
+            let folder = root.appendingPathComponent("App", isDirectory: true)
+            let workspace = Workspace(name: "App", primaryPath: folder.path)
+            context.insert(workspace)
+            try context.save()
+            let current = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+            let legacy = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: folder.path))
+            try FileManager.default.createDirectory(at: current.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(#"{"connectors":[{"id":"\#(deleted.id.uuidString)"}]}"#.utf8).write(to: legacy)
+            #expect(ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: context, extraMirrors: [])?.ids == [deleted.id])
+            try Data(#"{"connectors":[]}"#.utf8).write(to: current)
+            #expect(ConnectorCredentialCleanup.connectorsInStoredMirrors(modelContext: context, extraMirrors: [])?.ids.isEmpty == true)
+
+            // Restored under its ID, the connector owns what it uses, and an
+            // intent its own mirror still lists runs and goes.
+            try Data(#"{"connectors":[{"id":"\#(deleted.id.uuidString)"}]}"#.utf8).write(to: current)
+            _ = try outbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([deleted.keychainCleanup])
             context.insert(deleted)
             try context.save()
-            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox, extraMirrors: [copy.path]) == 1)
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox, extraMirrors: []) == 1)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
             #expect(outbox.pending()?.records.isEmpty == true)
         }
@@ -783,7 +805,7 @@ struct ConnectorCredentialCleanupTests {
             workspaceID: UUID(), primaryPath: root.appendingPathComponent("Unmarked").path, connectors: [], skills: []
         )
         try outbox.write(unmarked)
-        try outbox.markStore(unmarked, identity: "some-store")
+        try outbox.markStore(unmarked, identity: "/elsewhere/some.store|1:2")
         #expect(WorkspaceDeletionCleanupService.classify(store: outbox, modelContext: context) { _ in nil }?
             .first { $0.record == unmarked }?.disposition == .wait)
         #expect(WorkspaceDeletionCleanupService.classify(store: outbox, modelContext: context)?
@@ -802,6 +824,33 @@ struct ConnectorCredentialCleanupTests {
                 .appendingPathComponent("Astra/Services/Tasks/TaskLifecycleCoordinator.swift"), encoding: .utf8
         )
         #expect(coordinator.contains("movedMirrors: WorkspaceRecoveryTrust.loadedMirrors"))
+    }
+
+    @Test("A store mark that reads but isn't a store identity can't confirm anything")
+    func malformedStoreMarkWaits() throws {
+        #expect(PersistentStoreIdentity.isWellFormed("/stores/default.store|16777232:42"))
+        #expect(PersistentStoreIdentity.isWellFormed("memory:123:456"))
+        for malformed in ["", "/stores/default.store|16777232:", "/stores/default.store", "store|1:2", "memory:"] {
+            #expect(!PersistentStoreIdentity.isWellFormed(malformed))
+        }
+        #expect(PersistentStoreIdentity.decode(Data([0xFF, 0xFE])) == nil)
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-malformed-mark-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outbox = WorkspaceDeletionCleanupStore(directory: root.appendingPathComponent("Workspaces"))
+        let record = WorkspaceDeletionCleanupRecord(
+            workspaceID: UUID(), primaryPath: root.appendingPathComponent("Gone").path, connectors: [], skills: []
+        )
+        try outbox.write(record)
+        try Data("/stores/default.st".utf8).write(to: outbox.recordURL(for: record).appendingPathExtension("store"))
+        #expect(outbox.storeMark(of: record) == .unreadable)
+        #expect(WorkspaceDeletionCleanupService.classify(store: outbox, modelContext: context)?.first?.disposition == .wait)
+        let connectors = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Connectors"))
+        let cleanup = Connector(name: "Jira", serviceType: "jira").keychainCleanup
+        let url = try #require(try connectors.record([cleanup]).first)
+        try Data().write(to: url.appendingPathExtension("store"))
+        #expect(connectors.pending()?.heldBack == [cleanup])
     }
 
     @Test("A connector intent whose store mark can't be read waits")
@@ -838,7 +887,7 @@ struct ConnectorCredentialCleanupTests {
             let later = recreation(of: earlier)
             let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: earlier))
             #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
-            let held = try #require(try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store").first)
+            let held = try #require(try outbox.record([earlier.keychainCleanup], storeIdentity: "/elsewhere/another.store|1:1").first)
             let mark = held.appendingPathExtension("store").path
             try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mark)
             _ = try outbox.record([later.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
@@ -855,7 +904,7 @@ struct ConnectorCredentialCleanupTests {
             #expect(!ConnectorCredentialCleanup.deleteThenClean(
                 [earlier.keychainCleanup], modelContext: context, store: outbox, cleansNow: false
             ) { false })
-            #expect(outbox.pending()?.records.map(\.storeIdentity) == ["another-store"])
+            #expect(outbox.pending()?.records.map(\.storeIdentity) == ["/elsewhere/another.store|1:1"])
         }
     }
 
@@ -873,7 +922,7 @@ struct ConnectorCredentialCleanupTests {
             let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: earlier))
             #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
             // One intent from a store since replaced, unconfirmed; one saved.
-            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store")
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "/elsewhere/another.store|1:1")
             _ = try outbox.record([later.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
             outbox.markCommitted([later.keychainCleanup])
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 2)
@@ -886,7 +935,7 @@ struct ConnectorCredentialCleanupTests {
             moved.id = earlier.id
             context.insert(moved)
             try context.save()
-            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store")
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "/elsewhere/another.store|1:1")
             _ = try outbox.record([later.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
             outbox.markCommitted([later.keychainCleanup])
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 2)
@@ -895,9 +944,9 @@ struct ConnectorCredentialCleanupTests {
             try context.save()
 
             // Recorded again for a new attempt, an intent names that attempt's store.
-            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store")
-            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "this-store")
-            #expect(outbox.pending()?.records.map(\.storeIdentity) == ["this-store"])
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "/elsewhere/another.store|1:1")
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "/elsewhere/this.store|1:3")
+            #expect(outbox.pending()?.records.map(\.storeIdentity) == ["/elsewhere/this.store|1:3"])
         }
     }
 

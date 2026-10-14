@@ -302,7 +302,8 @@ enum ConnectorCredentialCleanup {
     /// this launch's recovery loaded (`extraMirrors`, by default those it
     /// recorded), such as an old folder's or a copy's that recovery skipped
     /// because the workspace is stored: a later recovery could restore from
-    /// any of them. `ids` are the connector IDs listed; `owners` every listed
+    /// any of them. `ids` are the connector IDs the stored workspaces' own
+    /// mirrors list, which an export rewrites; `owners` every listed
     /// connector, by the namespaces it resolves to, an import giving one
     /// without a valid ID a new one; `skillIDs` the skills listed. A loaded
     /// mirror of a workspace pending deletion (`excludingWorkspaceIDs`, by
@@ -346,7 +347,11 @@ enum ConnectorCredentialCleanup {
         where !own.contains(WorkspacePathPresentation.resolvedPath(extra)) {
             files.append((nil, extra))
         }
+        // A stored workspace's legacy mirror counts only without its current
+        // one, as recovery reads it; an export then replaces what it lists.
+        var readCurrent = Set<UUID>()
         for (workspace, file) in files {
+            if let workspace, readCurrent.contains(workspace.id) { continue }
             let data: Data
             do {
                 data = try Data(contentsOf: URL(fileURLWithPath: file))
@@ -371,8 +376,14 @@ enum ConnectorCredentialCleanup {
                 owners.append(connector.keychainCleanup)
             }
             skillIDs.formUnion((listed.skills ?? []).compactMap { $0.id.flatMap(UUID.init(uuidString:)) })
-            all.formUnion(ids)
-            if let workspace { byWorkspace.append((workspace, ids)) }
+            // Only a stored workspace's own mirror holds an intent back: an
+            // export rewrites it. Any other copy names owners, which every
+            // cleanup spares, but can't be rewritten, so it holds nothing.
+            if let workspace {
+                readCurrent.insert(workspace.id)
+                all.formUnion(ids)
+                byWorkspace.append((workspace, ids))
+            }
         }
         return (all, byWorkspace, owners, skillIDs)
     }
@@ -633,7 +644,11 @@ struct ConnectorCredentialCleanupStore: Sendable {
             // Only a store mark confirmed missing is unknown.
             let storeIdentity: String?
             do {
-                storeIdentity = String(decoding: try Data(contentsOf: Self.storeMark(for: url)), as: UTF8.self)
+                guard let decoded = PersistentStoreIdentity.decode(try Data(contentsOf: Self.storeMark(for: url))) else {
+                    heldBack.append(cleanup)
+                    continue
+                }
+                storeIdentity = decoded
             } catch where WorkspaceFileLayout.isMissingFile(error) {
                 storeIdentity = nil
             } catch {
