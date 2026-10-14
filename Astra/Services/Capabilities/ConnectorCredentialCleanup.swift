@@ -50,9 +50,10 @@ enum ConnectorCredentialCleanup {
     /// cleanup it doesn't need would have.
     ///
     /// `committed` is whether the deletion is known to be saved. One that
-    /// isn't, whose connector is still stored under its ID, was never saved:
-    /// it owes nothing and is reported as nothing, even when that connector
-    /// has since moved off a namespace the intent names.
+    /// isn't runs nothing and reports nothing: the store it is judged against
+    /// may not be the one it was recorded for, as after a store recovery, so
+    /// a connector missing from it proves no deletion. At worst its
+    /// credentials are left orphaned, which is recoverable.
     @discardableResult
     static func run(
         _ cleanups: [ConnectorKeychainCleanup], ownership: Ownership, committed: Bool = true,
@@ -66,7 +67,7 @@ enum ConnectorCredentialCleanup {
     ) -> Bool {
         var cleared = true
         for cleanup in cleanups {
-            if !committed, ownership.connectorIDs.contains(cleanup.connectorID) { continue }
+            if !committed { continue }
             let keepRegistryEntry = ownership.outlookConnectorIDs.contains(cleanup.connectorID)
             // Owed when a namespace has no live owner, or a mail-registry
             // entry no live Outlook connector claims.
@@ -153,11 +154,15 @@ enum ConnectorCredentialCleanup {
             return false
         }
         // Marked saved, so a retry tells this deletion from an intent whose
-        // save never happened. A mark that can't be written leaves the retry
-        // to judge by whether the connector is still stored.
+        // save never happened. One whose mark can't be written is never run
+        // by a retry, only dropped.
         store?.markCommitted(cleanups)
         // Without an outbox there is nothing to defer to, so it runs now.
-        if cleansNow || store == nil, run(cleanups, modelContext: modelContext) { store?.remove(recorded) }
+        // Once it has, the matching records go, including one an earlier
+        // identical deletion left, which this run has just settled.
+        if cleansNow || store == nil, run(cleanups, modelContext: modelContext) {
+            store?.remove(store?.recordURLs(for: cleanups) ?? recorded)
+        }
         return true
     }
 
@@ -185,9 +190,8 @@ enum ConnectorCredentialCleanup {
 
     /// Retries the cleanups a failed run or a quit left, against what the
     /// store holds now. Startup calls it only once recovery is trusted, so a
-    /// connector a mirror still owns counts. A record whose deletion was
-    /// never saved, unmarked with its connector still stored, is dropped
-    /// without running or reporting anything.
+    /// connector a mirror still owns counts. A record not marked saved is
+    /// dropped without running or reporting anything.
     @discardableResult
     static func resumePending(modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil) -> Int {
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
@@ -305,12 +309,16 @@ struct ConnectorCredentialCleanupStore: Sendable {
         }
     }
 
+    /// Where the records of `cleanups` are, whether or not they exist.
+    func recordURLs(for cleanups: [ConnectorKeychainCleanup]) -> [URL] {
+        cleanups.compactMap { cleanup in (try? Self.encode(cleanup)).map { recordURL(for: cleanup, data: $0) } }
+    }
+
     /// Marks the records of `cleanups` as deletions that were saved, beside
     /// each record, so its own content and name stay what `record` wrote.
     func markCommitted(_ cleanups: [ConnectorKeychainCleanup]) {
-        for cleanup in cleanups {
-            guard let data = try? Self.encode(cleanup) else { continue }
-            let mark = Self.commitMark(for: recordURL(for: cleanup, data: data))
+        for record in recordURLs(for: cleanups) {
+            let mark = Self.commitMark(for: record)
             do {
                 try Data().write(to: mark, options: .atomic)
             } catch {

@@ -129,6 +129,7 @@ struct ConnectorCredentialCleanupTests {
             let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
             #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
             _ = try outbox.record([deleted.keychainCleanup])
+            outbox.markCommitted([deleted.keychainCleanup])
             let corrupt = outbox.directory.appendingPathComponent("unrelated.json")
             try Data("{".utf8).write(to: corrupt)
 
@@ -228,6 +229,51 @@ struct ConnectorCredentialCleanupTests {
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
             #expect(AstraSecureKeychainStore.load(service: oldStable, account: "TOKEN") == nil)
             // Removing a record takes its mark with it.
+            #expect(try FileManager.default.contentsOfDirectory(atPath: outbox.directory.path).isEmpty)
+        }
+    }
+
+    @Test("An intent never marked saved runs nothing, even for a connector the store no longer has")
+    func uncommittedIntentNeverRuns() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        try withTemporaryCredentialKeychain {
+            // Recorded, then the process exited before the save; the store a
+            // recovery replaced it with lacks the connector.
+            let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: connector.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            _ = try outbox.record([connector.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            #expect(outbox.pending()?.records.isEmpty == true)
+        }
+    }
+
+    @Test("A cleanup that runs clears an identical record an earlier deletion left")
+    func successfulCleanupClearsReusedRecord() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        try withTemporaryCredentialKeychain {
+            let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            context.insert(connector)
+            try context.save()
+            let cleanup = connector.keychainCleanup
+            // An earlier deletion of the same connector left its record.
+            _ = try outbox.record([cleanup])
+            outbox.markCommitted([cleanup])
+            context.delete(connector)
+            #expect(ConnectorCredentialCleanup.deleteThenClean([cleanup], modelContext: context, store: outbox, cleansNow: true) {
+                (try? context.save()) != nil
+            })
             #expect(try FileManager.default.contentsOfDirectory(atPath: outbox.directory.path).isEmpty)
         }
     }
