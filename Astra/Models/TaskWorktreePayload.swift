@@ -402,15 +402,23 @@ public enum TaskWorktreeBinding {
     /// registry entry and a removal deletes with it. A reftable repository
     /// keeps them in a table this doesn't read, and an entry that can't be
     /// listed may hold some, so both count. Nil when it isn't registered.
-    public static func registeredWorktreeHasOwnRefs(repositoryPath: String, worktreePath: String) -> Bool? {
+    public static func registeredWorktreeHasOwnRefs(
+        repositoryPath: String, worktreePath: String,
+        attributes: (String) throws -> [FileAttributeKey: Any] = FileManager.default.attributesOfItem(atPath:)
+    ) -> Bool? {
         guard let registered = registeredEntry(repositoryPath: repositoryPath, worktreePath: worktreePath) else { return nil }
         let fileManager = FileManager.default
-        if (try? fileManager.attributesOfItem(atPath: registered.entry.appendingPathComponent("reftable").path)) != nil {
+        // Only a table confirmed missing rules it out; one that can't be
+        // checked may hold the worktree's refs.
+        do {
+            _ = try attributes(registered.entry.appendingPathComponent("reftable").path)
             return true
+        } catch {
+            if !isMissingFileError(error) { return true }
         }
         let refs = registered.entry.appendingPathComponent("refs", isDirectory: true)
         do {
-            _ = try fileManager.attributesOfItem(atPath: refs.path)
+            _ = try attributes(refs.path)
         } catch {
             return !isMissingFileError(error)
         }

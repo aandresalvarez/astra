@@ -372,8 +372,25 @@ enum TaskWorktreeService {
     /// The newest request by its recorded sequence, then by timestamp, so
     /// two choices made within a second stay ordered after a store is rebuilt
     /// from a mirror that keeps whole seconds.
+    ///
+    /// A request that can't be read and is at least as new as the newest
+    /// readable one may have turned creation off or changed it, so the
+    /// choice reads as off, keeping that base, rather than falling back to
+    /// an older one. A choice made after it is newer and wins again.
     static func latestRequest(for task: AgentTask) -> TaskWorktreeRequestPayload? {
-        orderedRequests(for: task).last?.payload
+        let latest = orderedRequests(for: task).last
+        let newestUnreadable = task.events
+            .filter {
+                !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreeRequested)
+                    && (try? $0.decodePayload(as: TaskWorktreeRequestPayload.self).get()) == nil
+            }
+            .map(\.timestamp).max()
+        guard let newestUnreadable, latest.map({ newestUnreadable >= $0.event.timestamp }) ?? true else {
+            return latest?.payload
+        }
+        var off = TaskWorktreeRequestPayload(enabled: false, base: latest?.payload.base ?? .defaultBranch)
+        off.sequence = latest?.payload.sequence
+        return off
     }
 
     /// The draft's readable requests, oldest first, by sequence and then time.

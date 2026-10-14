@@ -1805,7 +1805,6 @@ struct NewTaskWorktreeCleanupTests {
         // snapshots, and the Git panel's own mirror property.
         let reviewed: Set<String> = [
             "Astra/Models/AgentTask.swift",
-            "Astra/Models/AgentTaskForkService.swift",
             "Astra/Models/TaskWorktreePayload.swift",
             "Astra/Models/Workspace.swift",
             "Astra/Services/Persistence/WorkspaceConfigManager.swift",

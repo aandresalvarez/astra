@@ -41,6 +41,7 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
     case historicalFileCopyUnavailable
     case fileCopiesRequireWorkspace
     case manifestWriteFailed
+    case sourceCheckoutReserved
 
     public var errorDescription: String? {
         switch self {
@@ -56,6 +57,8 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
             "Independent file copies need a workspace folder to copy into. Use shared files for this conversation."
         case .manifestWriteFailed:
             "ASTRA could not prepare the conversation checkpoint. No fork was created."
+        case .sourceCheckoutReserved:
+            "This conversation's worktree is being cleaned up. Try again once that finishes. No fork was created."
         }
     }
 }
@@ -128,9 +131,11 @@ public enum AgentTaskForkService {
         // newly constructed task. A conversation fork must never share an
         // operational provider session or task-scoped authorization.
         // A fork continues the source's line of work, so it stays in the same
-        // worktree the source was pinned to.
-        if !TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: forked) {
-            forked.executionRootPath = nil
+        // worktree the source was pinned to. One cleanup is removing can't be
+        // inherited, and a fork without it would carry the source's binding
+        // onto no checkout, so none is created, as for chained tasks.
+        guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: forked) else {
+            throw AgentTaskForkError.sourceCheckoutReserved
         }
         forked.executionEnvironmentSnapshotJSON = source.executionEnvironmentSnapshotJSON
         forked.forkedAtRunIndex = cutoffIndex
