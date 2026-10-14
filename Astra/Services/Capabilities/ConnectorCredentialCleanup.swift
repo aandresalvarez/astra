@@ -141,7 +141,7 @@ enum ConnectorCredentialCleanup {
         let store = store ?? ConnectorCredentialCleanupStore(for: modelContext)
         let recorded: [URL]
         do {
-            recorded = try store?.record(cleanups) ?? []
+            recorded = try store?.record(cleanups, storeIdentity: PersistentStoreIdentity.current(for: modelContext)) ?? []
         } catch {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "intent_unwritable",
@@ -154,8 +154,8 @@ enum ConnectorCredentialCleanup {
             return false
         }
         // Marked saved, so a retry tells this deletion from an intent whose
-        // save never happened. One whose mark can't be written is never run
-        // by a retry, only dropped.
+        // save never happened. One a quit or a failed write leaves unmarked
+        // is still known saved by a retry against the same store.
         store?.markCommitted(cleanups)
         // Without an outbox there is nothing to defer to, so it runs now.
         // Once it has, the matching records go, including one an earlier
@@ -190,8 +190,16 @@ enum ConnectorCredentialCleanup {
 
     /// Retries the cleanups a failed run or a quit left, against what the
     /// store holds now. Startup calls it only once recovery is trusted, so a
-    /// connector a mirror still owns counts. A record not marked saved is
-    /// dropped without running or reporting anything.
+    /// connector a mirror still owns counts.
+    ///
+    /// A record not marked saved was saved anyway when the store is the one
+    /// it was recorded against and no longer holds its connector: only the
+    /// saved deletion removed it. One whose connector is still stored was
+    /// never saved and is dropped without running or reporting anything. One
+    /// whose store has changed since, as by a recovery, can't be told apart;
+    /// it is dropped too and reported, since running it could remove what a
+    /// connector in the earlier store still uses, while an orphaned
+    /// credential is recoverable.
     @discardableResult
     static func resumePending(modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil) -> Int {
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
@@ -208,9 +216,26 @@ enum ConnectorCredentialCleanup {
                 "scope": "connector_cleanup", "reason": "intent_unreadable"
             ], level: .error)
         }
+        guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>())).map({ Set($0.map(\.id)) })
+        else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "store_unreadable"
+            ], level: .error)
+            return 0
+        }
+        let currentStore = PersistentStoreIdentity.current(for: modelContext)
         var cleared = 0
-        for record in pending.records
-        where run([record.cleanup], modelContext: ModelContext(modelContext.container), committed: record.committed) {
+        for record in pending.records {
+            let stored = storedIDs.contains(record.cleanup.connectorID)
+            let sameStore = record.storeIdentity != nil && record.storeIdentity == currentStore
+            if !record.committed, !stored, !sameStore {
+                AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                    "scope": "connector_cleanup", "reason": "intent_unconfirmed_after_store_change",
+                    "connector_id": record.cleanup.connectorID.uuidString
+                ], level: .error)
+            }
+            let committed = record.committed || (!stored && sameStore)
+            guard run([record.cleanup], modelContext: ModelContext(modelContext.container), committed: committed) else { continue }
             store.remove([record.url])
             cleared += 1
         }
@@ -275,7 +300,11 @@ struct ConnectorCredentialCleanupStore: Sendable {
     /// there must read back as the same cleanup; one that can't, or can't
     /// be checked at all, throws, so the deletion isn't saved behind an
     /// intent that could never be retried.
-    func record(_ cleanups: [ConnectorKeychainCleanup]) throws -> [URL] {
+    ///
+    /// `storeIdentity` is the store the deletion is about to be saved to,
+    /// kept beside each new record: a retry against that same store can then
+    /// tell a deletion saved just before a quit from one never saved.
+    func record(_ cleanups: [ConnectorKeychainCleanup], storeIdentity: String? = nil) throws -> [URL] {
         guard !cleanups.isEmpty else { return [] }
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
@@ -292,8 +321,9 @@ struct ConnectorCredentialCleanupStore: Sendable {
                     continue
                 } catch where WorkspaceFileLayout.isMissingFile(error) {}
                 try data.write(to: url, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
                 added.append(url)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                if let storeIdentity { try Data(storeIdentity.utf8).write(to: Self.storeMark(for: url), options: .atomic) }
             }
         } catch {
             remove(added)
@@ -306,6 +336,7 @@ struct ConnectorCredentialCleanupStore: Sendable {
         for url in urls {
             try? FileManager.default.removeItem(at: url)
             try? FileManager.default.removeItem(at: Self.commitMark(for: url))
+            try? FileManager.default.removeItem(at: Self.storeMark(for: url))
         }
     }
 
@@ -332,6 +363,10 @@ struct ConnectorCredentialCleanupStore: Sendable {
 
     private static func commitMark(for record: URL) -> URL {
         record.appendingPathExtension("committed")
+    }
+
+    private static func storeMark(for record: URL) -> URL {
+        record.appendingPathExtension("store")
     }
 
     /// Every readable pending cleanup, and whether that was all of them: a
@@ -364,7 +399,8 @@ struct ConnectorCredentialCleanupStore: Sendable {
                 complete = false
                 continue
             }
-            records.append(Pending.Record(url: url, cleanup: cleanup, committed: committed))
+            let storeIdentity = (try? Data(contentsOf: Self.storeMark(for: url))).map { String(decoding: $0, as: UTF8.self) }
+            records.append(Pending.Record(url: url, cleanup: cleanup, committed: committed, storeIdentity: storeIdentity))
         }
         return Pending(records: records, complete: complete)
     }
@@ -375,6 +411,8 @@ struct ConnectorCredentialCleanupStore: Sendable {
             let cleanup: ConnectorKeychainCleanup
             /// Whether its deletion is marked saved.
             let committed: Bool
+            /// The store it was recorded against, when known.
+            let storeIdentity: String?
         }
         let records: [Record]
         /// False when a record couldn't be read and was left out.

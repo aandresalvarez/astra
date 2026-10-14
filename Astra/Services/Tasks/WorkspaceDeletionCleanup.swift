@@ -292,6 +292,24 @@ struct WorkspaceDeletionCleanupStore: Sendable {
     func remove(_ record: WorkspaceDeletionCleanupRecord) {
         try? FileManager.default.removeItem(at: recordURL(for: record))
         try? FileManager.default.removeItem(at: commitMarkURL(for: record))
+        try? FileManager.default.removeItem(at: storeMarkURL(for: record))
+    }
+
+    /// Keeps beside `record` the store its deletion is about to be saved to,
+    /// so a retry against that same store can tell a deletion saved just
+    /// before a quit, its mark not yet written, from one never saved.
+    func markStore(_ record: WorkspaceDeletionCleanupRecord, identity: String?) throws {
+        guard let identity else { return }
+        try Data(identity.utf8).write(to: storeMarkURL(for: record), options: .atomic)
+    }
+
+    /// The store `record` was recorded against, when known.
+    func storeIdentity(of record: WorkspaceDeletionCleanupRecord) -> String? {
+        (try? Data(contentsOf: storeMarkURL(for: record))).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    private func storeMarkURL(for record: WorkspaceDeletionCleanupRecord) -> URL {
+        recordURL(for: record).appendingPathExtension("store")
     }
 
     /// Marks `record`'s deletion as saved, beside the record, so a retry
@@ -469,10 +487,17 @@ enum WorkspaceDeletionCleanupService {
         movedMirrors: [String] = []
     ) -> Int {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
+        guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Workspace>()))
+            .map({ Set($0.map(\.id)) }) else { return 0 }
+        let currentStore = PersistentStoreIdentity.current(for: modelContext)
         var settled = 0
         for record in store.pending() {
-            // A mark that can't be checked leaves the record for later.
-            guard let committed = store.isCommitted(record) else { continue }
+            // A mark that can't be checked leaves the record for later. One
+            // a quit left unwritten is implied by the same store no longer
+            // holding the workspace: only the saved deletion removed it.
+            guard let marked = store.isCommitted(record) else { continue }
+            let sameStore = store.storeIdentity(of: record).map { $0 == currentStore } ?? false
+            let committed = marked || (sameStore && !storedIDs.contains(record.workspaceID))
             guard settle(
                 record, modelContext: ModelContext(modelContext.container), committed: committed, movedMirrors: movedMirrors
             ) else { continue }

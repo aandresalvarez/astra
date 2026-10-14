@@ -787,6 +787,16 @@ final class TaskLifecycleCoordinator {
                 ], level: .error)
             }
         }
+        do {
+            try store.markStore(cleanupRecord, identity: PersistentStoreIdentity.current(for: modelContext))
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",
+                "error": error.localizedDescription
+            ], level: .error)
+            restoreRecord()
+            return (false, nil, nil)
+        }
         guard let requests = cancelDurably(ws.tasks) else {
             restoreRecord()
             return (false, nil, nil)
@@ -822,9 +832,8 @@ final class TaskLifecycleCoordinator {
         // the deletion are saved. An unsaved deletion owes nothing new.
         if result.persisted {
             // Marked saved before anything is removed, so a retry after a quit
-            // knows the deletion happened. One whose mark can't be written is
-            // settled now all the same; if that doesn't finish, a retry leaves
-            // its credentials, which is recoverable.
+            // knows the deletion happened. Without the mark, as after a quit
+            // just before it, a retry against the same store still knows.
             do {
                 try store.markCommitted(pinned)
             } catch {

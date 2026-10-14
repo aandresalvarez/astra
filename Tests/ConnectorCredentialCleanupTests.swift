@@ -233,7 +233,7 @@ struct ConnectorCredentialCleanupTests {
         }
     }
 
-    @Test("An intent never marked saved runs nothing, even for a connector the store no longer has")
+    @Test("An intent not marked saved runs only against the store it was recorded for, once that store lacks its connector")
     func uncommittedIntentNeverRuns() throws {
         let container = try credentialCleanupContainer()
         let context = container.mainContext
@@ -247,10 +247,19 @@ struct ConnectorCredentialCleanupTests {
             let connector = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
             let own = KeychainSecretStore.connectorEntityID(for: connector.id)
             #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
-            _ = try outbox.record([connector.keychainCleanup])
+            _ = try outbox.record([connector.keychainCleanup], storeIdentity: "another-store")
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
             #expect(outbox.pending()?.records.isEmpty == true)
+
+            // Recorded against this very store, which no longer holds the
+            // connector: the deletion was saved and the quit came before its
+            // mark, so the cleanup runs.
+            _ = try outbox.record([connector.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            #expect(outbox.pending()?.records.map(\.committed) == [false])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: outbox.directory.path).isEmpty)
         }
     }
 
@@ -310,6 +319,18 @@ struct ConnectorCredentialCleanupTests {
             // Marked saved, the reused ID doesn't make it unsaved.
             try outbox.write(record)
             try outbox.markCommitted(record)
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
+
+            // A quit after the save, before the mark: the store it was
+            // recorded against no longer holds the workspace, so it was saved.
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            context.delete(reimported)
+            try context.save()
+            try outbox.write(record)
+            try outbox.markStore(record, identity: PersistentStoreIdentity.current(for: context))
+            #expect(outbox.isCommitted(record) == false)
             #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
             #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
