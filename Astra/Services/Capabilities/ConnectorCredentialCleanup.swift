@@ -143,10 +143,19 @@ enum ConnectorCredentialCleanup {
     ) -> Bool {
         let cleansNow = cleansNow ?? (WorkspaceRecoveryTrust.state == .notTracked)
         let store = store ?? ConnectorCredentialCleanupStore(for: modelContext)
+        // A retry can tell a saved deletion from one never saved only by the
+        // store it was recorded against, so one that can't be identified
+        // isn't deleted.
+        let storeIdentity = PersistentStoreIdentity.current(for: modelContext)
+        if store != nil, storeIdentity == nil {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "store_unidentified"
+            ], level: .error)
+            return false
+        }
         let recorded: ConnectorCredentialCleanupStore.Recording
         do {
-            recorded = try store?.begin(cleanups, storeIdentity: PersistentStoreIdentity.current(for: modelContext))
-                ?? ConnectorCredentialCleanupStore.Recording()
+            recorded = try store?.begin(cleanups, storeIdentity: storeIdentity) ?? ConnectorCredentialCleanupStore.Recording()
         } catch {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "intent_unwritable",
@@ -206,7 +215,9 @@ enum ConnectorCredentialCleanup {
     /// connector in the earlier store still uses, while an orphaned
     /// credential is recoverable.
     @discardableResult
-    static func resumePending(modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil) -> Int {
+    static func resumePending(
+        modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil, extraMirrors: [String]? = nil
+    ) -> Int {
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
         guard let pending = store.pending() else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
@@ -243,14 +254,18 @@ enum ConnectorCredentialCleanup {
         // without its credentials. So a cleanup waits, as an owner, while a
         // stored workspace's mirror still lists its connector, and that
         // workspace is exported again for the next launch.
-        guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext) else {
+        guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "workspace_mirror_unreadable"
             ], level: .error)
             return 0
         }
         let classified = classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
-        let stale = classified.filter { $0.committed && mirrored.ids.contains($0.record.cleanup.connectorID) }
+        // One whose connector is stored again, as restored from that very
+        // mirror, isn't stale: the stored connector owns what it uses.
+        let stale = classified.filter {
+            $0.committed && mirrored.ids.contains($0.record.cleanup.connectorID) && !storedIDs.contains($0.record.cleanup.connectorID)
+        }
         let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup) + pending.heldBack + stale.map(\.record.cleanup)
             + mirrored.unidentified
         let staleIDs = Set(stale.map(\.record.cleanup.connectorID))
@@ -275,12 +290,16 @@ enum ConnectorCredentialCleanup {
         return cleared
     }
 
-    /// The connector IDs each stored workspace's mirror lists, and, as
-    /// owners of the namespaces they resolve to, the connectors one lists
-    /// without a valid ID, which an import gives a new ID. A missing mirror
-    /// lists none; nil when one that exists can't be read.
+    /// The connector IDs each stored workspace's mirror lists, and every
+    /// other mirror this launch's recovery loaded (`extraMirrors`, by default
+    /// those it recorded), such as an old folder's or a copy's that recovery
+    /// skipped because the workspace is stored: a later recovery could
+    /// restore from any of them. As owners of the namespaces they resolve
+    /// to, also the connectors one lists without a valid ID, which an import
+    /// gives a new ID. A missing mirror lists none; nil when one that exists
+    /// can't be read.
     static func connectorsInStoredMirrors(
-        modelContext: ModelContext
+        modelContext: ModelContext, extraMirrors: [String]? = nil
     ) -> (ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)], unidentified: [ConnectorKeychainCleanup])? {
         struct Listed: Decodable {
             struct Entry: Decodable {
@@ -297,36 +316,43 @@ enum ConnectorCredentialCleanup {
         var all = Set<UUID>()
         var byWorkspace: [(Workspace, Set<UUID>)] = []
         var unidentified: [ConnectorKeychainCleanup] = []
-        for workspace in workspaces {
-            for file in [
+        // Only a stored workspace's own mirror can be exported again.
+        var files: [(workspace: Workspace?, path: String)] = workspaces.flatMap { workspace in
+            [
                 WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath),
                 WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspace.primaryPath)
-            ] where !file.isEmpty {
-                let data: Data
-                do {
-                    data = try Data(contentsOf: URL(fileURLWithPath: file))
-                } catch {
-                    if WorkspaceFileLayout.isMissingFile(error) { continue }
-                    return nil
-                }
-                guard let listed = try? JSONDecoder().decode(Listed.self, from: data) else { return nil }
-                var ids = Set<UUID>()
-                for entry in listed.connectors ?? [] {
-                    if let id = entry.id.flatMap(UUID.init(uuidString:)) {
-                        ids.insert(id)
-                        continue
-                    }
-                    // Unmanaged and never inserted: only its facts are read.
-                    let connector = Connector(
-                        name: entry.name ?? "", serviceType: entry.serviceType ?? "", baseURL: entry.baseURL ?? ""
-                    )
-                    connector.originPackageID = entry.originPackageID
-                    connector.originComponentID = entry.originComponentID
-                    unidentified.append(connector.keychainCleanup)
-                }
-                all.formUnion(ids)
-                byWorkspace.append((workspace, ids))
+            ].filter { !$0.isEmpty }.map { (workspace, $0) }
+        }
+        let own = Set(files.map { WorkspacePathPresentation.resolvedPath($0.path) })
+        for extra in Set(extraMirrors ?? WorkspaceRecoveryTrust.loadedMirrors)
+        where !own.contains(WorkspacePathPresentation.resolvedPath(extra)) {
+            files.append((nil, extra))
+        }
+        for (workspace, file) in files {
+            let data: Data
+            do {
+                data = try Data(contentsOf: URL(fileURLWithPath: file))
+            } catch {
+                if WorkspaceFileLayout.isMissingFile(error) { continue }
+                return nil
             }
+            guard let listed = try? JSONDecoder().decode(Listed.self, from: data) else { return nil }
+            var ids = Set<UUID>()
+            for entry in listed.connectors ?? [] {
+                if let id = entry.id.flatMap(UUID.init(uuidString:)) {
+                    ids.insert(id)
+                    continue
+                }
+                // Unmanaged and never inserted: only its facts are read.
+                let connector = Connector(
+                    name: entry.name ?? "", serviceType: entry.serviceType ?? "", baseURL: entry.baseURL ?? ""
+                )
+                connector.originPackageID = entry.originPackageID
+                connector.originComponentID = entry.originComponentID
+                unidentified.append(connector.keychainCleanup)
+            }
+            all.formUnion(ids)
+            if let workspace { byWorkspace.append((workspace, ids)) }
         }
         return (all, byWorkspace, unidentified)
     }
@@ -368,7 +394,10 @@ enum ConnectorCredentialCleanup {
         // without an ID, which recovery could restore from it.
         guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext) else { return nil }
         return classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
-            .filter { $0.unconfirmed || ($0.committed && mirrored.ids.contains($0.record.cleanup.connectorID)) }
+            .filter {
+                $0.unconfirmed || ($0.committed && mirrored.ids.contains($0.record.cleanup.connectorID)
+                    && !storedIDs.contains($0.record.cleanup.connectorID))
+            }
             .map(\.record.cleanup) + pending.heldBack + mirrored.unidentified
     }
 }
@@ -392,6 +421,12 @@ enum WorkspaceRecoveryTrust {
     static func allowsCleanup(in state: State) -> Bool { state == .notTracked || state == .trusted }
 
     static func set(_ state: State) { self.state = state }
+
+    /// The mirror files this launch's recovery loaded, which credential
+    /// cleanup reconciles along with the stored workspaces' own.
+    private(set) static var loadedMirrors: [String] = []
+
+    static func recordLoadedMirrors(_ mirrors: [String]) { loadedMirrors = mirrors }
 }
 
 /// An app-owned outbox of connector credential cleanups, one atomic record

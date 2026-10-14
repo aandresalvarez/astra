@@ -792,7 +792,12 @@ final class TaskLifecycleCoordinator {
             }
         }
         do {
-            previousStoreMark = try store.markStore(cleanupRecord, identity: PersistentStoreIdentity.current(for: modelContext))
+            // Without the store's identity a retry couldn't tell this deletion
+            // saved, so one that can't be identified isn't deleted.
+            guard let identity = PersistentStoreIdentity.current(for: modelContext) else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            previousStoreMark = try store.markStore(cleanupRecord, identity: identity)
         } catch {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",

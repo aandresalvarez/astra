@@ -530,7 +530,8 @@ public enum WorkspaceRecoveryService {
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {},
         deletionMirrorsNow: @escaping @MainActor () -> (paths: Set<String>, workspaceIDs: Set<String>)? = { ([], []) },
-        excludedByWorkspaceID: @escaping @MainActor ([URL]) -> Void = { _ in }
+        excludedByWorkspaceID: @escaping @MainActor ([URL]) -> Void = { _ in },
+        loadedMirrors: @escaping @MainActor ([URL]) -> Void = { _ in }
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
         // nothing needed recovering, or the scan finished and each discovered
@@ -608,6 +609,8 @@ public enum WorkspaceRecoveryService {
                     + (registeredFolders ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
             )
             guard !Task.isCancelled else { return false }
+            // Every mirror loaded, imported or not, for cleanup to reconcile.
+            loadedMirrors(loadedConfigs.map(\.mirrorFile))
             // The marker goes down before anything is imported and comes off
             // only once recovery is trusted, so imports never become durable
             // while the incomplete state isn't. If it can't be written,

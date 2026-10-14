@@ -509,16 +509,19 @@ struct ConnectorCredentialCleanupTests {
         let emptyRoot = root.appendingPathComponent("Workspaces", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
         var reported: [URL] = []
+        var loaded: [URL] = []
         func recover(_ deletedNow: (paths: Set<String>, workspaceIDs: Set<String>)?) async throws -> (trusted: Bool, names: [String]) {
             let lost = try credentialCleanupContainer()
             let trusted = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: lost.mainContext, extraRoots: [emptyRoot.path], includeDefaultRoots: false,
                 registeredFolders: [folder.path], deletionMirrorsNow: { deletedNow },
-                excludedByWorkspaceID: { reported += $0 }
+                excludedByWorkspaceID: { reported += $0 }, loadedMirrors: { loaded = $0 }
             ).value
             return (trusted, try lost.mainContext.fetch(FetchDescriptor<Workspace>()).map(\.name))
         }
         #expect(try await recover(([], [])).names == ["Deleted"])
+        // Every mirror it loaded is reported for cleanup to reconcile.
+        #expect(loaded.map(\.path) == [mirror.path])
         // Deleted after the scan began: the mirror is pending deletion now.
         let deleted = try await recover(([WorkspacePathPresentation.resolvedPath(mirror.path)], []))
         #expect(deleted.trusted)
@@ -660,6 +663,59 @@ struct ConnectorCredentialCleanupTests {
 
     private func workspace(in context: ModelContext) -> Workspace {
         (try? context.fetch(FetchDescriptor<Workspace>()).first { $0.name == "App" })!
+    }
+
+    @Test("Cleanup reconciles every mirror recovery loaded, runs once the connector is stored again, and needs the store's identity")
+    func cleanupReconcilesLoadedMirrorsAndNeedsStoreIdentity() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-loaded-mirrors-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outbox = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            _ = try outbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([deleted.keychainCleanup])
+            // An old copy recovery loaded but didn't import still lists it.
+            let copy = root.appendingPathComponent("OldCopy/.astra/.astra-workspace.json")
+            try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(#"{"connectors":[{"id":"\#(deleted.id.uuidString)"}]}"#.utf8).write(to: copy)
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox, extraMirrors: [copy.path]) == 0)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            // Restored from that copy under its ID, the connector owns what it
+            // uses, and the obsolete intent runs and goes.
+            context.insert(deleted)
+            try context.save()
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox, extraMirrors: [copy.path]) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            #expect(outbox.pending()?.records.isEmpty == true)
+        }
+
+        // A store that can't be identified deletes nothing.
+        let storeURL = root.appendingPathComponent("Store/default.store")
+        try FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let disk = try ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(url: storeURL)])
+        try disk.mainContext.save()
+        #expect(PersistentStoreIdentity.current(for: disk.mainContext) != nil)
+        try FileManager.default.removeItem(at: storeURL)
+        #expect(PersistentStoreIdentity.current(for: disk.mainContext) == nil)
+        var saved = false
+        #expect(!ConnectorCredentialCleanup.deleteThenClean(
+            [Connector(name: "Jira", serviceType: "jira").keychainCleanup], modelContext: disk.mainContext, store: outbox
+        ) { saved = true; return true })
+        #expect(!saved)
+        withExtendedLifetime(disk) {}
+
+        // Every pending deletion's ID filters recovery, those pending at launch included.
+        let app = try String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8
+        )
+        #expect(app.contains("(paths, Set(deletionStore.pending().map(\\.workspaceID.uuidString)))"))
+        #expect(!app.contains("launchDeletionIDs"))
+        #expect(app.contains("loadedMirrors: { WorkspaceRecoveryTrust.recordLoadedMirrors($0.map(\\.path)) }"))
     }
 
     @Test("A connector intent whose store mark can't be read waits")

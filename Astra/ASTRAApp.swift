@@ -897,7 +897,6 @@ public struct ASTRAApp: App {
         let deletionStore = WorkspaceDeletionCleanupStore(for: modelContext)
         let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
         let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
-        let launchDeletionIDs = Set(deletionStore.pending().map(\.workspaceID.uuidString))
         if unsettledDeletionMirrors == nil || unsettledDeletionMirrorIDs == nil {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
@@ -936,17 +935,18 @@ public struct ASTRAApp: App {
                 vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
-                // A deletion made while recovery loads keeps its mirror out
-                // too, by path or, wherever that mirror is now, by ID. Only
-                // those new since launch go by ID: one already pending keeps
-                // the identity rules above.
+                // A pending deletion, one made while recovery loads included,
+                // keeps its mirror out by path or, wherever a copy of it is
+                // now, as across volumes where its identity doesn't follow,
+                // by ID.
                 deletionMirrorsNow: {
                     deletionStore.pendingMirrorPaths().map { paths in
-                        (paths, Set(deletionStore.pending().map(\.workspaceID.uuidString)).subtracting(launchDeletionIDs))
+                        (paths, Set(deletionStore.pending().map(\.workspaceID.uuidString)))
                     }
                 },
                 // Settlement removes those wherever they are.
-                excludedByWorkspaceID: { movedDeletionMirrors += $0.map(\.path) }
+                excludedByWorkspaceID: { movedDeletionMirrors += $0.map(\.path) },
+                loadedMirrors: { WorkspaceRecoveryTrust.recordLoadedMirrors($0.map(\.path)) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
                 // Only a recovery that loaded every mirror it found vouches
