@@ -477,7 +477,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     )
                     return
                 }
-                let signalResult = Self.configureDefaultSignalState(&spawnAttributes)
+                let signalResult = ProcessGroupSpawn.configureDefaultSignalState(&spawnAttributes)
                 guard signalResult == 0 else {
                     cleanupPipes()
                     state.finish(
@@ -631,29 +631,6 @@ public struct ProcessBinaryRunner: BinaryRunner {
             guard result == 0 else { return result }
         }
         return 0
-    }
-
-    /// `posix_spawn` gives the child the spawning thread's signal mask and
-    /// every disposition the parent ignores. This runs on a GCD worker thread,
-    /// which blocks asynchronous signals, so without a reset the child starts
-    /// with SIGTERM blocked: it cannot trap SIGTERM or exit on it, and every
-    /// timeout ends in SIGKILL. `Process` resets both the same way.
-    private static func configureDefaultSignalState(_ attributes: inout posix_spawnattr_t?) -> Int32 {
-        var flags: Int16 = 0
-        var result = posix_spawnattr_getflags(&attributes, &flags)
-        guard result == 0 else { return result }
-        result = posix_spawnattr_setflags(
-            &attributes,
-            flags | Int16(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)
-        )
-        guard result == 0 else { return result }
-        var noSignals = sigset_t()
-        sigemptyset(&noSignals)
-        result = posix_spawnattr_setsigmask(&attributes, &noSignals)
-        guard result == 0 else { return result }
-        var allSignals = sigset_t()
-        sigfillset(&allSignals)
-        return posix_spawnattr_setsigdefault(&attributes, &allSignals)
     }
 
     private static func environmentVector(_ environment: [String: String]?) -> [String] {

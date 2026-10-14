@@ -345,8 +345,23 @@ private final class HostControlScopedProcess: @unchecked Sendable {
             }
         }
 
-        try check(posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP)), operation: "posix_spawnattr_setflags")
+        // Also reset the child's signal state, as `ProcessGroupSpawn` (not
+        // importable here) does: the broker spawns from a GCD thread, which
+        // blocks SIGTERM, so `terminate()` could otherwise only end in SIGKILL.
+        try check(
+            posix_spawnattr_setflags(
+                &attr,
+                Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)
+            ),
+            operation: "posix_spawnattr_setflags"
+        )
         try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
+        var noSignals = sigset_t()
+        sigemptyset(&noSignals)
+        try check(posix_spawnattr_setsigmask(&attr, &noSignals), operation: "posix_spawnattr_setsigmask")
+        var allSignals = sigset_t()
+        sigfillset(&allSignals)
+        try check(posix_spawnattr_setsigdefault(&attr, &allSignals), operation: "posix_spawnattr_setsigdefault")
 
         var argv = makeCStringArray([launchPlan.executablePath] + launchPlan.arguments)
         var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())

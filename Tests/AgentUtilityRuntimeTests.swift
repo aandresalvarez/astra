@@ -552,16 +552,20 @@ struct AgentUtilityRuntimeTests {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-utility-timeout-reap-\(UUID().uuidString)", isDirectory: true)
         let helper = root.appendingPathComponent("helper")
-        let pidFile = root.appendingPathComponent("provider.pid")
-        let childPIDFile = root.appendingPathComponent("provider-child.pid")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
+        // The provider marks `ready` once both PIDs are on disk. It dies on the
+        // timeout's SIGTERM, so a short budget can end it before it gets there.
+        // That attempt proves nothing, and the next budget is longer. (Until
+        // the provider stopped inheriting a blocked SIGTERM, it always had the
+        // three seconds until SIGKILL to write them.)
         let script = """
         #!/bin/sh
-        printf '%s' "$$" > '\(pidFile.path)'
+        printf '%s' "$$" > "$1/provider.pid"
         sleep \(Self.longRunningHelperSleepSeconds) &
-        printf '%s' "$!" > '\(childPIDFile.path)'
+        printf '%s' "$!" > "$1/provider-child.pid"
+        : > "$1/ready"
         wait
         """
         try writeExecutableScript(at: helper, contents: script)
@@ -572,36 +576,48 @@ struct AgentUtilityRuntimeTests {
         let runner = AgentRuntimeProcessRunner { _ in
             ExecutionSandboxSettings(enforcement: .off)
         }
-        let result = await runner.runUtilityProcess(
-            AgentUtilityLaunchPlan(
-                process: AgentRuntimeProcessLaunchPlan(
-                    runtime: .claudeCode,
-                    executablePath: helper.path,
-                    arguments: [],
-                    currentDirectory: root.path,
-                    environment: RuntimeProcessEnvironment.enriched(),
-                    browserShimDirectory: nil,
-                    providerVersion: nil,
-                    parsesJSONLines: false
-                ),
-                providerHomeDirectory: "",
-                permissionPolicy: .restricted,
-                timeoutSeconds: 0.2
+        for (attempt, timeout) in [0.2, 0.8, 3.2, 12.8].enumerated() {
+            let directory = root.appendingPathComponent("attempt-\(attempt)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let result = await runner.runUtilityProcess(
+                AgentUtilityLaunchPlan(
+                    process: AgentRuntimeProcessLaunchPlan(
+                        runtime: .claudeCode,
+                        executablePath: helper.path,
+                        arguments: [directory.path],
+                        currentDirectory: root.path,
+                        environment: RuntimeProcessEnvironment.enriched(),
+                        browserShimDirectory: nil,
+                        providerVersion: nil,
+                        parsesJSONLines: false
+                    ),
+                    providerHomeDirectory: "",
+                    permissionPolicy: .restricted,
+                    timeoutSeconds: timeout
+                )
             )
-        )
 
-        #expect(result.exitCode == -1)
-        #expect(result.error.contains("timed out"))
-        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
-        let pid = try #require(pid_t(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
-        errno = 0
-        #expect(kill(pid, 0) == -1 && errno == ESRCH,
-                "Await returned while provider pid \(pid) was still alive")
-        let childPIDText = try String(contentsOf: childPIDFile, encoding: .utf8)
-        let childPID = try #require(pid_t(childPIDText.trimmingCharacters(in: .whitespacesAndNewlines)))
-        errno = 0
-        #expect(kill(childPID, 0) == -1 && errno == ESRCH,
-                "Await returned while provider child pid \(childPID) was still alive")
+            #expect(result.exitCode == -1)
+            #expect(result.error.contains("timed out"))
+            guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("ready").path) else {
+                continue
+            }
+            let pidText = try String(contentsOf: directory.appendingPathComponent("provider.pid"), encoding: .utf8)
+            let pid = try #require(pid_t(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
+            errno = 0
+            #expect(kill(pid, 0) == -1 && errno == ESRCH,
+                    "Await returned while provider pid \(pid) was still alive")
+            let childPIDText = try String(
+                contentsOf: directory.appendingPathComponent("provider-child.pid"),
+                encoding: .utf8
+            )
+            let childPID = try #require(pid_t(childPIDText.trimmingCharacters(in: .whitespacesAndNewlines)))
+            errno = 0
+            #expect(kill(childPID, 0) == -1 && errno == ESRCH,
+                    "Await returned while provider child pid \(childPID) was still alive")
+            return
+        }
+        Issue.record("The provider never recorded both PIDs before its timeout, up to a 12.8 s budget")
     }
 
     @Test("Copilot utility returns after completed stream output even if wrapper stays alive")

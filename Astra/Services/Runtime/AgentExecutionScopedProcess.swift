@@ -147,6 +147,11 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         guard ProcessGroupSpawn.configureNewProcessGroup(&attr) else {
             throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_setflags", code: errno)
         }
+        // `run()` is called from the Swift concurrency pool, whose threads
+        // block SIGTERM. Without this the provider inherits that mask, and
+        // `terminate()`'s SIGTERM never reaches it.
+        try check(ProcessGroupSpawn.configureDefaultSignalState(&attr),
+                  operation: "posix_spawnattr (default signal state)")
 
         var argv = makeCStringArray([executablePath] + arguments)
         var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
