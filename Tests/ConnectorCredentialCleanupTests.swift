@@ -180,18 +180,36 @@ struct ConnectorCredentialCleanupTests {
         #expect(outbox.pendingConnectors() == nil)
     }
 
-    @Test("An intent whose connector is still stored is discarded without a deletion audit")
-    func staleIntentIsNotAuditedAsDeletion() throws {
-        let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
-        // Still stored, as after a deletion that wasn't saved, it owns every
-        // namespace its cleanup would touch, so none is run and no deletion
-        // happened to audit.
-        let ownership = ConnectorCredentialCleanup.Ownership([deleted])
-        var audited: [UUID] = []
-        #expect(ConnectorCredentialCleanup.run([deleted.keychainCleanup], ownership: ownership, committed: false) {
-            audited.append($0.connectorID)
-        })
-        #expect(audited.isEmpty)
+    @Test("One rule tells every cleanup outbox whether a deletion was saved")
+    func cleanupVerdictRule() {
+        typealias Marks = CleanupRecordMarks
+        let here = "/stores/default.store|1:1", there = "/stores/old.store|1:2"
+        let created = Date(timeIntervalSince1970: 1_000)
+        func verdict(
+            _ committed: Bool?, _ store: Marks.StoreMark, stored: Bool, current: String? = here, written: Date? = created
+        ) -> Marks.Verdict {
+            Marks.verdict(
+                Marks.State(committed: committed, store: store), ownerStored: stored,
+                currentStore: current, storeCreated: created, writtenAt: written
+            )
+        }
+        // Marked saved: saved, whatever the store holds.
+        #expect(verdict(true, .recorded(there), stored: true) == .committed)
+        // Unmarked, recorded for this store: its owner tells.
+        #expect(verdict(false, .recorded(here), stored: false) == .committed)
+        #expect(verdict(false, .recorded(here), stored: true) == .unsaved)
+        // Recorded for another store: can't be told.
+        #expect(verdict(false, .recorded(there), stored: false) == .unconfirmed)
+        #expect(verdict(false, .recorded(there), stored: true) == .unconfirmed)
+        // Before store marks: only one written for this store is judged.
+        #expect(verdict(false, .absent, stored: false) == .committed)
+        #expect(verdict(false, .absent, stored: true) == .unsaved)
+        #expect(verdict(false, .absent, stored: false, written: Date(timeIntervalSince1970: 0)) == .wait)
+        // A mark, or the store, that can't be read waits.
+        #expect(verdict(nil, .recorded(here), stored: false) == .wait)
+        #expect(verdict(false, .unreadable, stored: false) == .wait)
+        #expect(verdict(true, .unreadable, stored: false) == .wait)
+        #expect(verdict(false, .recorded(here), stored: false, current: nil) == .wait)
     }
 
     @Test("An unsaved deletion's intent leaves a connector edited since alone; a saved one cleans what it left")
@@ -215,12 +233,6 @@ struct ConnectorCredentialCleanupTests {
             connector.baseURL = "https://jira-new.example.invalid"
             try context.save()
             #expect(outbox.pending()?.records.map(\.committed) == [false])
-            var audited: [UUID] = []
-            #expect(ConnectorCredentialCleanup.run(
-                [cleanup], ownership: ConnectorCredentialCleanup.Ownership([connector]), committed: false
-            ) { audited.append($0.connectorID) })
-            #expect(audited.isEmpty)
-            #expect(AstraSecureKeychainStore.load(service: oldStable, account: "TOKEN") == "old")
             // The retry drops the record without touching anything.
             #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
             #expect(outbox.pending()?.records.isEmpty == true)
@@ -334,7 +346,7 @@ struct ConnectorCredentialCleanupTests {
             context.delete(reimported)
             try context.save()
             try outbox.write(record)
-            try outbox.markStore(record, identity: PersistentStoreIdentity.current(for: context))
+            try outbox.markStore(record, identity: try #require(PersistentStoreIdentity.current(for: context)))
             #expect(outbox.isCommitted(record) == false)
             #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
