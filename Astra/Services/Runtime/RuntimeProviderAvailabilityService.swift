@@ -10,6 +10,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
     var vertexSonnetModel: String
     var vertexHaikuModel: String
     var antigravityAuthMode: AntigravityAuthMode
+    /// Billing project for the ADC route; see `AntigravityADCProjectStore`.
+    var antigravityADCProject: String
 
     init(
         claudePath: String,
@@ -20,7 +22,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         vertexOpusModel: String,
         vertexSonnetModel: String,
         vertexHaikuModel: String,
-        antigravityAuthMode: AntigravityAuthMode = .consumer
+        antigravityAuthMode: AntigravityAuthMode = .consumer,
+        antigravityADCProject: String = ""
     ) {
         self.init(
             providerSettings: AgentRuntimeProviderSettings(
@@ -38,7 +41,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
             vertexHaikuModel: vertexHaikuModel,
-            antigravityAuthMode: antigravityAuthMode
+            antigravityAuthMode: antigravityAuthMode,
+            antigravityADCProject: antigravityADCProject
         )
     }
 
@@ -50,7 +54,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         vertexOpusModel: String,
         vertexSonnetModel: String,
         vertexHaikuModel: String,
-        antigravityAuthMode: AntigravityAuthMode = .consumer
+        antigravityAuthMode: AntigravityAuthMode = .consumer,
+        antigravityADCProject: String = ""
     ) {
         self.providerSettings = providerSettings
         self.claudeProvider = claudeProvider
@@ -60,6 +65,7 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
         self.vertexSonnetModel = vertexSonnetModel
         self.vertexHaikuModel = vertexHaikuModel
         self.antigravityAuthMode = antigravityAuthMode
+        self.antigravityADCProject = antigravityADCProject
     }
 
     func readinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
@@ -73,7 +79,8 @@ struct RuntimeProviderAvailabilityConfiguration: Equatable, Sendable {
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
             vertexHaikuModel: vertexHaikuModel,
-            antigravityAuthMode: antigravityAuthMode
+            antigravityAuthMode: antigravityAuthMode,
+            antigravityADCProject: antigravityADCProject
         )
     }
 }

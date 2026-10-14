@@ -5,9 +5,11 @@ import os
 /// What ASTRA can see of the local Google Cloud Application Default
 /// Credentials that the Antigravity ADC route (`AGY_ADC_AUTH=true`) relies on.
 ///
-/// gcloud owns this file; ASTRA only reads it. The quota project shown here is
-/// the one `agy` will bill against, so it is read back rather than remembered
-/// from what the user last typed into Settings.
+/// gcloud owns this file; ASTRA only reads it. Its quota project is what
+/// other tools bill, and what Settings offers to adopt while ASTRA has no
+/// saved project. ASTRA's own launches bill `AntigravityADCProjectStore`'s
+/// project instead, because any bare `gcloud auth application-default login`
+/// can rewrite this file without one.
 enum AntigravityADCStatus: Equatable, Sendable {
     case gcloudMissing
     case notSignedIn

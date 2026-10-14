@@ -245,6 +245,7 @@ enum AntigravityCLIRuntime {
     static func modelOptions(
         executablePath: String,
         authMode: AntigravityAuthMode,
+        adcProject: String,
         providerHomeDirectory: String
     ) -> [AntigravityModelOption]? {
         guard FileManager.default.isExecutableFile(atPath: executablePath),
@@ -254,6 +255,7 @@ enum AntigravityCLIRuntime {
                   timeoutSeconds: 8,
                   environment: probeEnvironment(
                       mode: authMode,
+                      adcProject: adcProject,
                       providerHomeDirectory: providerHomeDirectory,
                       extraVariables: ["NO_COLOR": "1"]
                   )
@@ -356,7 +358,10 @@ enum AntigravityCLIRuntime {
     /// the runtime — exporting it in a terminal has no effect on ASTRA's own
     /// launches.
     static func authEnvironment(defaults: UserDefaults = .standard) -> [String: String] {
-        authEnvironment(mode: resolvedAuthMode(defaults: defaults))
+        authEnvironment(
+            mode: resolvedAuthMode(defaults: defaults),
+            adcProject: AntigravityADCProjectStore.load(defaults: defaults)
+        )
     }
 
     /// The persisted route, defaulting to consumer sign-in when unset or
@@ -378,13 +383,25 @@ enum AntigravityCLIRuntime {
         mode == .adc ? [] : ["AGY_ADC_AUTH"]
     }
 
-    /// Pure variant for call sites that already have the resolved mode
+    /// Billing project for the ADC route. `agy`'s Google auth library sends
+    /// it as `x-goog-user-project` ahead of the ADC file's `quota_project_id`,
+    /// so a gcloud login that rewrites the file cannot change what ASTRA's
+    /// launches bill. See `AntigravityADCProjectStore`.
+    static let quotaProjectEnvironmentKey = "GOOGLE_CLOUD_QUOTA_PROJECT"
+
+    /// Pure variant for call sites that already have the resolved route
     /// threaded through (e.g. `RuntimeReadinessConfiguration`), so the
-    /// live-account readiness check honors the same setting as a real
-    /// launch without re-reading `UserDefaults` itself.
-    static func authEnvironment(mode: AntigravityAuthMode) -> [String: String] {
+    /// live-account readiness check honors the same settings as a real
+    /// launch without re-reading `UserDefaults` itself. An empty or malformed
+    /// `adcProject` leaves billing to the ADC file, as before it was saved.
+    static func authEnvironment(mode: AntigravityAuthMode, adcProject: String) -> [String: String] {
         guard mode == .adc else { return [:] }
-        return ["AGY_ADC_AUTH": "true"]
+        var environment = ["AGY_ADC_AUTH": "true"]
+        let project = AntigravityADCProjectStore.sanitized(adcProject)
+        if !project.isEmpty {
+            environment[quotaProjectEnvironmentKey] = project
+        }
+        return environment
     }
 
     /// `RuntimeProcessEnvironment.enriched` with the route's removals applied.
@@ -413,11 +430,12 @@ enum AntigravityCLIRuntime {
     /// inherited `AGY_ADC_AUTH` rather than merely not set it.
     static func probeEnvironment(
         mode: AntigravityAuthMode,
+        adcProject: String,
         providerHomeDirectory: String,
         extraVariables: [String: String] = [:]
     ) -> [String: String] {
         var extraVars = extraVariables
-        for (key, value) in authEnvironment(mode: mode) {
+        for (key, value) in authEnvironment(mode: mode, adcProject: adcProject) {
             extraVars[key] = value
         }
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -647,6 +665,7 @@ enum AntigravityCLIRuntime {
     static func refreshStructuredOutputSupport(
         executablePath: String,
         authMode: AntigravityAuthMode = .consumer,
+        adcProject: String = "",
         providerHomeDirectory: String = "",
         defaults: UserDefaults = .standard
     ) -> Bool {
@@ -668,6 +687,7 @@ enum AntigravityCLIRuntime {
                   timeoutSeconds: 8,
                   environment: probeEnvironment(
                       mode: authMode,
+                      adcProject: adcProject,
                       providerHomeDirectory: providerHomeDirectory,
                       extraVariables: ["NO_COLOR": "1"]
                   )

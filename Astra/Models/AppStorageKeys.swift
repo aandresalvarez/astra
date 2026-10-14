@@ -85,6 +85,7 @@ public enum AppStorageKeys {
     public static let copilotPath = "copilotPath"
     public static let claudeProvider = "astra.claudeProvider.v1"
     public static let antigravityAuthMode = "astra.antigravityAuthMode.v1"
+    public static let antigravityADCProject = "astra.antigravityADCProject.v1"
     public static let claudeVertexProjectID = "astra.claudeVertexProjectID.v1"
     public static let claudeVertexRegion = "astra.claudeVertexRegion.v1"
     public static let claudeVertexOpusModel = "astra.claudeVertexOpusModel.v1"
