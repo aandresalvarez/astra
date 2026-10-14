@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import ASTRAModels
 @testable import ASTRA
+@testable import ASTRAPersistence
 import ASTRACore
 
 @Suite("Stanford Outlook Mail")
@@ -39,6 +40,129 @@ struct StanfordOutlookMailTests {
         #expect(scratch.configValue("ASTRA_MAIL_TENANT_DOMAIN") == connector.configValue("ASTRA_MAIL_TENANT_DOMAIN"))
         #expect(scratch.outlookTenantDomain == connector.outlookTenantDomain)
         #expect(connector.configValue("ASTRA_MAIL_TENANT_DOMAIN") != "stale-duplicate.example.edu")
+    }
+
+    @Test("An upsert never rewrites a registry it can't check")
+    func uncheckableRegistryIsNotRewritten() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-mail-registry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = root.appendingPathComponent("mail-accounts.json")
+        let first = Connector(name: "Stanford Outlook Mail")
+        first.applyStanfordOutlookDefaults()
+        let second = Connector(name: "Stanford Outlook Mail 2")
+        second.applyStanfordOutlookDefaults()
+        StanfordOutlookMail.$registryURLOverride.withValue(registry) {
+            StanfordOutlookMailRegistry.upsert(connector: first)
+            // The stat fails though the registry, and its folder, are writable.
+            StanfordOutlookMailRegistry.upsert(connector: second, attributes: { _ in throw CocoaError(.fileReadNoPermission) })
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [first.id.uuidString])
+            StanfordOutlookMailRegistry.upsert(connector: second)
+            #expect(Set(StanfordOutlookMailRegistry.entries().map(\.connectorID)) == [first.id.uuidString, second.id.uuidString])
+        }
+    }
+
+    @Test("A registry that can't be checked is never reported as removed")
+    func uncheckableRegistryIsNotRemoved() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-mail-registry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let registry = root.appendingPathComponent("mail-accounts.json")
+        let connector = Connector(name: "Stanford Outlook Mail")
+        connector.applyStanfordOutlookDefaults()
+        StanfordOutlookMail.$registryURLOverride.withValue(registry) {
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [connector.id.uuidString])
+            // The registry's folder can't be traversed, so it can't be stated.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root.path)
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [connector.id.uuidString])
+            #expect(StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+        }
+    }
+
+    @Test("Registry removal reports whether the entry is gone, and never rewrites a registry it can't read")
+    func registryRemovalReportsItsResult() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-mail-registry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let registry = root.appendingPathComponent("mail-accounts.json")
+        let connector = Connector(name: "Stanford Outlook Mail")
+        connector.applyStanfordOutlookDefaults()
+        try StanfordOutlookMail.$registryURLOverride.withValue(registry) {
+            // Nothing registered: nothing to remove.
+            #expect(StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            #expect(StanfordOutlookMailRegistry.entries().map(\.connectorID) == [connector.id.uuidString])
+            // A registry that can't be rewritten keeps the entry and says so,
+            // and so does the connector's cleanup, though its credentials
+            // cleared. A temporary keychain makes that credential part succeed.
+            let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+            let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+            AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
+            defer { AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: []) }
+            try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
+                try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+                    #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+                    #expect(!connector.keychainCleanup.run(sparing: [], keepRegistryEntry: false))
+                    #expect(connector.keychainCleanup.run(sparing: [], keepRegistryEntry: true))
+                    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+                    #expect(connector.keychainCleanup.run(sparing: [], keepRegistryEntry: false))
+                }
+            }
+            #expect(StanfordOutlookMailRegistry.entries().isEmpty)
+
+            // A link to a registry holding the entry: the entry is removed
+            // from the file behind the link, which stays a link.
+            let target = root.appendingPathComponent("managed.json")
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            try FileManager.default.moveItem(at: registry, to: target)
+            try FileManager.default.createSymbolicLink(at: registry, withDestinationURL: target)
+            #expect(StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            #expect(try FileManager.default.destinationOfSymbolicLink(atPath: registry.path) == target.path)
+            #expect(StanfordOutlookMailRegistry.entries().isEmpty)
+            try FileManager.default.removeItem(at: registry)
+            try FileManager.default.moveItem(at: target, to: registry)
+
+            // A dangling link is a registry that can't be verified.
+            try FileManager.default.removeItem(at: registry)
+            try FileManager.default.createSymbolicLink(
+                at: registry, withDestinationURL: root.appendingPathComponent("gone.json")
+            )
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            try FileManager.default.removeItem(at: registry)
+
+            // An unreadable registry is left as it is, not emptied, by a
+            // removal or by an upsert that would keep only its own account.
+            try Data("not json".utf8).write(to: registry)
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            #expect(try Data(contentsOf: registry) == Data("not json".utf8))
+            try FileManager.default.removeItem(at: registry)
+
+            // A link to a file outside the registry's folder is never written.
+            let outside = FileManager.default.temporaryDirectory
+                .appendingPathComponent("astra-unrelated-\(UUID().uuidString).txt")
+            defer { try? FileManager.default.removeItem(at: outside) }
+            try Data("user file".utf8).write(to: outside)
+            try FileManager.default.createSymbolicLink(at: registry, withDestinationURL: outside)
+            StanfordOutlookMailRegistry.upsert(connector: connector)
+            #expect(!StanfordOutlookMailRegistry.remove(connectorID: connector.id))
+            #expect(try Data(contentsOf: outside) == Data("user file".utf8))
+            #expect(try FileManager.default.destinationOfSymbolicLink(atPath: registry.path) == outside.path)
+        }
     }
 
     @Test("Outlook connector defaults are OAuth without token env keys")

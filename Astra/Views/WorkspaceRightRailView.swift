@@ -268,6 +268,7 @@ struct WorkspaceRightRailView: View {
     @State private var approvedCapabilityRefreshID = UUID()
     @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
+    @State private var folderRefusal: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
@@ -593,6 +594,7 @@ struct WorkspaceRightRailView: View {
         } message: {
             Text(capabilityError ?? "")
         }
+        .workspaceFolderRefusalAlert($folderRefusal)
     }
 
     private func floatingContextSection<Content: View>(
@@ -2250,11 +2252,9 @@ struct WorkspaceRightRailView: View {
         panel.message = "Choose a folder the agent can also read from or execute in"
         panel.prompt = "Add Folder"
         if panel.runModal() == .OK, let url = panel.url {
-            let path = url.path
-            if !workspace.additionalPaths.contains(path) {
-                workspace.additionalPaths.append(path)
-                markWorkspaceConfigurationChanged()
-            }
+            let outcome = WorkspaceConfiguredRoots.addAdditionalPaths([url.path], to: workspace)
+            folderRefusal = outcome.refusalMessage
+            if outcome == .updated { markWorkspaceConfigurationChanged() }
         }
     }
 

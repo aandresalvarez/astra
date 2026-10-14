@@ -14,16 +14,7 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
 
     var body: some View {
         summaryRow
-            .padding(.horizontal, TaskComposerPresentation.decisionRowHorizontalPadding)
-            .padding(.vertical, TaskComposerPresentation.decisionRowVerticalPadding)
-            .contentShape(Rectangle())
-            .overlay(alignment: .leading) {
-                Capsule()
-                    .fill(toneColor.opacity(0.76))
-                    .frame(width: TaskComposerPresentation.decisionAccentWidth)
-                    .padding(.vertical, TaskComposerPresentation.decisionAccentVerticalInset)
-                    .padding(.leading, 1)
-            }
+            .composerDockRowChrome(tone: presentation.tone)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("TaskDecisionDock")
     }
@@ -266,7 +257,7 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: detail.systemImage)
                 .font(Stanford.ui(11, weight: .semibold))
-                .foregroundStyle(metricColor(detail.tone))
+                .foregroundStyle(detail.tone.dockColor)
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 2) {
                 Text(detail.title)
@@ -327,13 +318,11 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
     }
 
     private var toneColor: Color {
-        metricColor(presentation.tone)
+        presentation.tone.dockColor
     }
 
-    /// The leading status glyph is non-tappable, so it never wears the interactive
-    /// accent: the running tone drops to the info tint instead of lagunita.
     private var statusIconColor: Color {
-        presentation.tone == .running ? Stanford.statusInfo : toneColor
+        presentation.tone.dockStatusIconColor
     }
 
     private func buttonForeground(_ action: TaskDecisionDockAction, isPrimary: Bool) -> Color {
@@ -391,21 +380,6 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
              .reopenTask,
              .switchRuntime:
             false
-        }
-    }
-
-    private func metricColor(_ tone: TaskDecisionDockTone) -> Color {
-        switch tone {
-        case .neutral:
-            Stanford.coolGrey
-        case .running:
-            Stanford.lagunita
-        case .attention:
-            Stanford.poppy
-        case .failed:
-            Stanford.failed
-        case .success, .verified, .closed:
-            Stanford.statusHealthy
         }
     }
 

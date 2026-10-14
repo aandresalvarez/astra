@@ -114,6 +114,93 @@ public enum SSHConnectionManager {
         try fileWriter.writeAtomically(data, to: URL(fileURLWithPath: path))
     }
 
+    /// What the connections file was before a change that may be rolled back.
+    public enum Snapshot: Equatable, Sendable {
+        case absent
+        case file(Data)
+        /// A link, as an externally managed connections file can be. Writing
+        /// replaces the link with a file, so a rollback recreates the link to
+        /// the same destination, dangling or not, and never writes through it.
+        case link(destination: String)
+    }
+
+    /// The connections file as it is now, so a caller whose change may be
+    /// rolled back can put it back. A file that exists but can't be read
+    /// throws, since restoring "no file" would delete it.
+    public static func snapshot(workspacePath: String) throws -> Snapshot {
+        guard !workspacePath.isEmpty else { return .absent }
+        let path = connectionsFilePath(for: workspacePath)
+        // Without following links: a link, even a dangling one, is recorded
+        // as itself. Only a confirmed missing file is absent; any other stat
+        // failure stops the change, since restoring "absent" would delete it.
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: path)
+        } catch {
+            if WorkspaceFileLayout.isMissingFile(error) { return .absent }
+            throw error
+        }
+        if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+            return .link(destination: try FileManager.default.destinationOfSymbolicLink(atPath: path))
+        }
+        return .file(try HostFileAccessBroker().readData(
+            at: URL(fileURLWithPath: path),
+            intent: .astraManagedStorage(root: URL(fileURLWithPath: workspacePath, isDirectory: true))
+        ))
+    }
+
+    /// Puts back a `snapshot`: its file, its link, or no file at all.
+    /// Throws when it couldn't be put back. No file is put back by removing
+    /// whatever is there, never by a stat that may fail for another reason
+    /// than a missing file.
+    public static func restore(
+        _ snapshot: Snapshot, workspacePath: String, fileWriter: any SSHConnectionFileWriting = defaultFileWriter
+    ) throws {
+        guard !workspacePath.isEmpty else { return }
+        let url = URL(fileURLWithPath: connectionsFilePath(for: workspacePath))
+        switch snapshot {
+        case .file(let data):
+            try fileWriter.writeAtomically(data, to: url)
+        case .absent:
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch where WorkspaceFileLayout.isMissingFile(error) {}
+        case .link(let destination):
+            // Only a file confirmed missing is nothing to replace; one that
+            // can't be checked stops the restore.
+            let current: [FileAttributeKey: Any]?
+            do {
+                current = try FileManager.default.attributesOfItem(atPath: url.path)
+            } catch where WorkspaceFileLayout.isMissingFile(error) {
+                current = nil
+            }
+            if current?[.type] as? FileAttributeType == .typeSymbolicLink,
+               (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) == destination { return }
+            if current != nil { try FileManager.default.removeItem(at: url) }
+            try FileManager.default.createSymbolicLink(atPath: url.path, withDestinationPath: destination)
+        }
+    }
+
+    /// Keeps a `snapshot` that `restore` couldn't put back beside the
+    /// connections file, under a dated name nothing loads, and returns its
+    /// path. It is never applied on its own: replaying it later could
+    /// overwrite edits made in between. Nil when there was no file to keep.
+    public static func preserveUnrestored(_ snapshot: Snapshot, workspacePath: String, now: Date = Date()) throws -> String? {
+        let file = connectionsFilePath(for: workspacePath)
+        guard !file.isEmpty else { return nil }
+        let stamp = ISO8601DateFormatter().string(from: now).replacingOccurrences(of: ":", with: "-")
+        let copy = file + ".unrestored-" + stamp
+        switch snapshot {
+        case .absent:
+            return nil
+        case .file(let data):
+            try data.write(to: URL(fileURLWithPath: copy), options: .withoutOverwriting)
+        case .link(let destination):
+            try FileManager.default.createSymbolicLink(atPath: copy, withDestinationPath: destination)
+        }
+        return copy
+    }
+
     private static func migrateLegacyConnectionsIfNeeded(workspacePath: String) {
         let canonical = WorkspaceFileLayout.sshConnectionsFile(for: workspacePath)
         let legacy = WorkspaceFileLayout.legacySSHConnectionsFile(for: workspacePath)

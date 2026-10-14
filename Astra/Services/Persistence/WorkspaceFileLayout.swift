@@ -2,6 +2,47 @@ import Foundation
 import ASTRACore
 
 public enum WorkspaceFileLayout {
+    /// The device and inode of the item at `path` itself, not following a
+    /// link. A rename within the same volume keeps it, so a mirror stays
+    /// recognizable after its workspace folder moves.
+    public static func itemIdentity(at path: String) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else { return nil }
+        return "\(device.uint64Value):\(inode.uint64Value)"
+    }
+
+    public struct ItemIdentityUnreadable: LocalizedError {
+        public let path: String
+        public var errorDescription: String? { "ASTRA could not read the identity of \(path)." }
+    }
+
+    /// `itemIdentity`, but nil only for an item confirmed missing; one that
+    /// can't be read, as behind a folder that can't be traversed, throws.
+    public static func itemIdentityConfirmingAbsence(at path: String) throws -> String? {
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: path)
+        } catch {
+            if isMissingFile(error) { return nil }
+            throw error
+        }
+        guard let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else { throw ItemIdentityUnreadable(path: path) }
+        return "\(device.uint64Value):\(inode.uint64Value)"
+    }
+
+    /// Whether `error` reports a missing file, as opposed to one that exists
+    /// but can't be read. A path through a file (`ENOTDIR`) can't exist
+    /// either.
+    public static func isMissingFile(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain,
+           [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(nsError.code) { return true }
+        if nsError.domain == NSPOSIXErrorDomain, [Int(ENOENT), Int(ENOTDIR)].contains(nsError.code) { return true }
+        return (nsError.userInfo[NSUnderlyingErrorKey] as? NSError).map(isMissingFile) ?? false
+    }
+
     public static let supportDirectoryName = ".astra"
     public static let workspaceConfigFileName = ".astra-workspace.json"
     public static let sshConnectionsFileName = "ssh-connections.json"

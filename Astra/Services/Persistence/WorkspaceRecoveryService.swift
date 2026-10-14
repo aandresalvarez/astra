@@ -514,37 +514,182 @@ public enum WorkspaceRecoveryService {
     @discardableResult
     public static func recoverMissingWorkspacesAfterLaunch(
         modelContext: ModelContext,
+        excludingConfigFiles excluded: Set<String> = [],
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        incompleteMarker: URL? = nil,
+        pendingCleanup: Bool = false,
+        excludingItemIdentities excludedIdentities: Set<String> = [],
+        excludedByIdentity: @escaping @MainActor ([URL]) -> Void = { _ in },
+        registeredFolders: [String]? = [],
+        itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
+        saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {}
-    ) -> Task<Void, Never> {
+    ) -> Task<Bool, Never> {
+        // True when the store reflects every mirror recovery could find:
+        // nothing needed recovering, or the scan finished and each discovered
+        // mirror loaded. Anything less may leave pins and credential owners
+        // only in mirrors, so destructive cleanup waits on false. A partial
+        // recovery leaves `incompleteMarker`, so the next launch rescans even
+        // though the store is no longer empty.
         Task { @MainActor in
-            if extraRoots.isEmpty,
-               includeDefaultRoots,
-               !fetchExistingWorkspaces(modelContext: modelContext).isEmpty {
-                return
+            let resumingPartialRecovery = incompleteMarker.map(incompleteMarkerPresent) ?? false
+            if storeVouchesWithoutScan(
+                extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots,
+                resumingPartialRecovery: resumingPartialRecovery,
+                pendingCleanup: pendingCleanup || !excluded.isEmpty || !excludedIdentities.isEmpty,
+                hasWorkspaces: !fetchExistingWorkspaces(modelContext: modelContext).isEmpty
+            ) {
+                return true
             }
-            let configs = await withTaskGroup(of: [URL].self, returning: [URL].self) { group in
+            let scan = await withTaskGroup(
+                of: (configs: [URL], complete: Bool).self, returning: (configs: [URL], complete: Bool).self
+            ) { group in
                 group.addTask(priority: .utility) {
-                    guard !Task.isCancelled else { return [] }
-                    return discoverWorkspaceConfigFiles(
+                    guard !Task.isCancelled else { return ([], false) }
+                    let scanned = discoverWorkspaceConfigFilesReportingCompleteness(
                         extraRoots: extraRoots,
                         includeDefaultRoots: includeDefaultRoots,
                         privacyHomeDirectory: privacyHomeDirectory
                     )
+                    // Folders a mirror was written into, wherever they are,
+                    // so a workspace imported outside the roots is found too.
+                    // A registry that can't be read leaves the scan incomplete.
+                    guard let registeredFolders else { return (scanned.configs, false) }
+                    let registered = discoverRegisteredMirrors(
+                        in: registeredFolders, privacyHomeDirectory: privacyHomeDirectory
+                    )
+                    let found = Set(scanned.configs.map { normalizePath($0.path) })
+                    return (
+                        scanned.configs + registered.configs.filter { !found.contains(normalizePath($0.path)) },
+                        scanned.complete && registered.complete
+                    )
                 }
-                return await group.next() ?? []
+                return await group.next() ?? ([], false)
             }
-            let loadedConfigs = await loadWorkspaceConfigs(configs)
-            guard !Task.isCancelled else { return }
-            if recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: loadedConfigs) > 0 {
+            let configs = scan.configs
+            // A pending deletion's mirror is recognized by the identity pinned
+            // at deletion, wherever it is now: left out, and, moved with its
+            // folder, reported for settlement to remove. A file at a pinned
+            // path with another identity is a replacement, a new workspace's
+            // mirror, and is imported, so settlement counts its owners. One
+            // whose identity can't be read may be either: it isn't imported,
+            // and recovery isn't trusted, so settlement waits.
+            var unidentified: [URL] = []
+            var deletionMirrors: [URL] = []
+            for config in configs {
+                let atPinnedPath = excluded.contains(WorkspacePathPresentation.resolvedPath(config.path))
+                guard atPinnedPath || !excludedIdentities.isEmpty else { continue }
+                do {
+                    if try itemIdentity(config.path).map(excludedIdentities.contains) == true { deletionMirrors.append(config) }
+                } catch {
+                    unidentified.append(config)
+                }
+            }
+            let moved = deletionMirrors.filter { !excluded.contains(WorkspacePathPresentation.resolvedPath($0.path)) }
+            if !unidentified.isEmpty {
+                AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "recover_workspaces", "reason": "mirror_identity_unreadable",
+                    "count": String(unidentified.count)
+                ], level: .error)
+            }
+            let candidates = configs.filter { !deletionMirrors.contains($0) && !unidentified.contains($0) }
+            if !moved.isEmpty { excludedByIdentity(moved) }
+            let loadedConfigs = await loadWorkspaceConfigs(
+                candidates,
+                roots: recoveryRoots(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots)
+                    + (registeredFolders ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
+            )
+            guard !Task.isCancelled else { return false }
+            // The marker goes down before anything is imported and comes off
+            // only once recovery is trusted, so imports never become durable
+            // while the incomplete state isn't. If it can't be written,
+            // nothing is imported this launch.
+            if let incompleteMarker {
+                do {
+                    try FileManager.default.createDirectory(
+                        at: incompleteMarker.deletingLastPathComponent(), withIntermediateDirectories: true
+                    )
+                    try Data().write(to: incompleteMarker, options: .atomic)
+                } catch {
+                    AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                        "operation": "recover_workspaces", "reason": "incomplete_marker_unwritable",
+                        "error_type": String(describing: type(of: error))
+                    ], level: .error)
+                    return false
+                }
+            }
+            let chosen = newestMirrorPerWorkspace(loadedConfigs)
+            let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: chosen.configs, save: saveImports)
+            if recovered.imported > 0 {
                 afterImport()
             }
+            // Owners and pins count only once the store holds them durably.
+            let trusted = scan.complete && unidentified.isEmpty && loadedConfigs.count == candidates.count
+                && !chosen.conflicting && recovered.durable
+            // A marker that can't be removed only costs a rescan next launch.
+            if trusted, let incompleteMarker { try? FileManager.default.removeItem(at: incompleteMarker) }
+            return trusted
         }
     }
 
-    private static func loadWorkspaceConfigs(_ configFiles: [URL]) async -> [LoadedWorkspaceConfig] {
+    /// Whether a partial recovery's marker is down. Only one confirmed
+    /// missing means the last recovery finished; one that can't be checked
+    /// is resumed like one there.
+    static func incompleteMarkerPresent(_ marker: URL) -> Bool {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: marker.path)
+            return true
+        } catch {
+            return !WorkspaceFileLayout.isMissingFile(error)
+        }
+    }
+
+    /// Whether a launch may trust a store that already holds workspaces
+    /// without scanning for mirrors. Never while cleanup is pending, a
+    /// workspace deletion or a worktree cleanup or creation: each decides
+    /// ownership from the store, and a workspace only a mirror holds, or a
+    /// deletion's mirror moved with its folder, is found only by the scan.
+    static func storeVouchesWithoutScan(
+        extraRoots: [String], includeDefaultRoots: Bool, resumingPartialRecovery: Bool,
+        pendingCleanup: Bool, hasWorkspaces: Bool
+    ) -> Bool {
+        extraRoots.isEmpty && includeDefaultRoots && !resumingPartialRecovery && !pendingCleanup && hasWorkspaces
+    }
+
+    /// The configured folders a recovery scans: the workspaces root the
+    /// user chose and the channel's default, then `extraRoots`.
+    static func recoveryRoots(extraRoots: [String], includeDefaultRoots: Bool) -> [URL] {
+        var roots: [String] = []
+        if includeDefaultRoots {
+            if let configured = UserDefaults.standard.string(forKey: "workspacesRoot"), !configured.isEmpty {
+                roots.append(configured)
+            }
+            roots.append(AppChannel.current.defaultWorkspacesRoot)
+        }
+        roots.append(contentsOf: extraRoots)
+        return roots.map { URL(fileURLWithPath: expandTilde($0)) }
+    }
+
+    /// How a discovered mirror is read: under the configured root it was
+    /// found in, as the scan read it, so a root inside a protected folder,
+    /// such as one on a volume under /Volumes, loads what it discovered.
+    static func loadIntent(for config: URL, roots: [URL]) -> HostFileAccessIntent {
+        let path = config.standardizedFileURL.path
+        let root = roots
+            .filter { path.hasPrefix($0.standardizedFileURL.path + "/") }
+            .max { $0.standardizedFileURL.path.count < $1.standardizedFileURL.path.count }
+        return .implicitScan(root: root)
+    }
+
+    /// Present while a launch's recovery left a mirror unloaded or a folder
+    /// unscanned. Startup passes it; other callers keep no marker.
+    public static var defaultIncompleteRecoveryMarker: URL {
+        AppChannelStoragePaths.applicationSupportDirectory().appendingPathComponent("WorkspaceRecoveryIncomplete")
+    }
+
+    private static func loadWorkspaceConfigs(_ configFiles: [URL], roots: [URL]) async -> [LoadedWorkspaceConfig] {
         await withTaskGroup(of: LoadedWorkspaceConfig?.self, returning: [LoadedWorkspaceConfig].self) { group in
             for configURL in configFiles {
                 group.addTask(priority: .utility) {
@@ -552,7 +697,7 @@ public enum WorkspaceRecoveryService {
                     do {
                         var config = try WorkspaceConfigManager.loadConfig(
                             from: configURL,
-                            accessIntent: .implicitScan(root: nil)
+                            accessIntent: loadIntent(for: configURL, roots: roots)
                         )
                         config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
                             .standardizedFileURL
@@ -582,6 +727,51 @@ public enum WorkspaceRecoveryService {
             }
             return loadedConfigs
         }
+    }
+
+    /// One mirror per workspace ID, the most recently exported, since an
+    /// import keeps the first it meets and skips the rest. Copies whose
+    /// contents match, as a duplicated folder leaves, are interchangeable.
+    /// Two exported at the same moment that differ can't be told apart, so
+    /// recovery isn't trusted: either may leave out owners the other holds.
+    private static func newestMirrorPerWorkspace(
+        _ loaded: [LoadedWorkspaceConfig]
+    ) -> (configs: [LoadedWorkspaceConfig], conflicting: Bool) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        func contents(_ config: WorkspaceConfigManager.WorkspaceConfig) -> Data? {
+            var config = config
+            config.primaryPath = ""
+            return try? encoder.encode(config)
+        }
+        var conflicting = false
+        var chosen: [String: LoadedWorkspaceConfig] = [:]
+        var order: [String] = []
+        var unidentified: [LoadedWorkspaceConfig] = []
+        for candidate in loaded.sorted(by: { $0.config.primaryPath < $1.config.primaryPath }) {
+            guard let id = candidate.config.id, !id.isEmpty else {
+                unidentified.append(candidate)
+                continue
+            }
+            guard let current = chosen[id] else {
+                chosen[id] = candidate
+                order.append(id)
+                continue
+            }
+            if candidate.config.exportedAt > current.config.exportedAt {
+                chosen[id] = candidate
+            } else if candidate.config.exportedAt == current.config.exportedAt {
+                let same = contents(candidate.config).map { $0 == contents(current.config) } ?? false
+                if !same { conflicting = true }
+            }
+        }
+        if conflicting {
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "recover_workspaces", "reason": "conflicting_mirrors"
+            ], level: .error)
+        }
+        return (order.compactMap { chosen[$0] } + unidentified, conflicting)
     }
 
     @discardableResult
@@ -614,6 +804,7 @@ public enum WorkspaceRecoveryService {
                 if !configPath.isEmpty, existingPaths.contains(configPath) {
                     continue
                 }
+                if refusesReservedRoot(of: config) { continue }
                 let workspace = WorkspaceConfigManager.importWorkspace(
                     from: config,
                     modelContext: modelContext,
@@ -637,13 +828,18 @@ public enum WorkspaceRecoveryService {
 
     @discardableResult
     @MainActor
+    /// What was imported, and whether the store now holds every loaded
+    /// mirror durably: false when the save failed or a mirror was skipped
+    /// for a later scan.
     private static func recoverMissingWorkspaces(
         modelContext: ModelContext,
-        loadedConfigs configs: [LoadedWorkspaceConfig]
-    ) -> Int {
-        guard !configs.isEmpty else { return 0 }
+        loadedConfigs configs: [LoadedWorkspaceConfig],
+        save: (ModelContext) throws -> Void
+    ) -> (imported: Int, durable: Bool) {
+        guard !configs.isEmpty else { return (0, true) }
 
         var imported = 0
+        var skippedForLater = false
         let existing = fetchExistingWorkspaces(modelContext: modelContext)
         var existingIDs = Set(existing.map { $0.id.uuidString })
         var existingPaths = Set(existing.map { normalizePath($0.primaryPath) })
@@ -658,6 +854,10 @@ public enum WorkspaceRecoveryService {
             if !configPath.isEmpty, existingPaths.contains(configPath) {
                 continue
             }
+            if refusesReservedRoot(of: config) {
+                skippedForLater = true
+                continue
+            }
             let workspace = WorkspaceConfigManager.importWorkspace(
                 from: config,
                 modelContext: modelContext,
@@ -669,26 +869,44 @@ public enum WorkspaceRecoveryService {
             imported += 1
         }
 
-        saveRecoveryImportCount(imported, modelContext: modelContext)
-        return imported
+        let saved = saveRecoveryImportCount(imported, modelContext: modelContext, save: save)
+        return (imported, saved && !skippedForLater)
     }
 
-    private static func saveRecoveryImportCount(_ imported: Int, modelContext: ModelContext) {
-        guard imported > 0 else { return }
+    /// A checkout that worktree cleanup is removing is skipped, not imported
+    /// as a root that is about to vanish; a later scan can recover it.
+    private static func refusesReservedRoot(of config: WorkspaceConfigManager.WorkspaceConfig) -> Bool {
+        guard let reserved = WorkspaceConfigManager.reservedRoot(of: config) else { return false }
+        AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+            "operation": "recover_workspace",
+            "reason": "workspace_root_being_removed",
+            "path": reserved
+        ], level: .warning)
+        return true
+    }
+
+    /// False when the imports couldn't be saved.
+    @discardableResult
+    private static func saveRecoveryImportCount(
+        _ imported: Int, modelContext: ModelContext, save: (ModelContext) throws -> Void = { try $0.save() }
+    ) -> Bool {
+        guard imported > 0 else { return true }
 
         do {
-            try modelContext.save()
+            try save(modelContext)
         } catch {
             AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "save_recovered_workspaces",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
+            return false
         }
         let message = "Recovered \(imported) workspace\(imported == 1 ? "" : "s") from \(WorkspaceFileLayout.workspaceConfigFileName)."
         UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
         AuditLoggingSeam.required.audit(.workspaceRecovered, category: "Persistence", fields: [
             "imported_count": String(imported)
         ])
+        return true
     }
 
     public static func discoverWorkspaceConfigFiles(
@@ -696,24 +914,29 @@ public enum WorkspaceRecoveryService {
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> [URL] {
-        var roots: [String] = []
-        if includeDefaultRoots {
-            if let configured = UserDefaults.standard.string(forKey: "workspacesRoot"), !configured.isEmpty {
-                roots.append(configured)
-            }
-            roots.append(AppChannel.current.defaultWorkspacesRoot)
-        }
-        roots.append(contentsOf: extraRoots)
+        discoverWorkspaceConfigFilesReportingCompleteness(
+            extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots, privacyHomeDirectory: privacyHomeDirectory
+        ).configs
+    }
 
+    /// The discovered mirrors, and whether the scan saw every folder it
+    /// meant to: false when a folder couldn't be listed, the directory
+    /// budget ran out, or the scan was cancelled.
+    public static func discoverWorkspaceConfigFilesReportingCompleteness(
+        extraRoots: [String] = [],
+        includeDefaultRoots: Bool = true,
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> (configs: [URL], complete: Bool) {
+        var complete = true
         var seen = Set<String>()
         var configs: [URL] = []
-        for root in roots {
-            guard !Task.isCancelled else { break }
-            let url = URL(fileURLWithPath: expandTilde(root))
+        for url in recoveryRoots(extraRoots: extraRoots, includeDefaultRoots: includeDefaultRoots) {
+            guard !Task.isCancelled else { complete = false; break }
             for config in scanForWorkspaceConfigs(
                 root: url,
                 maxDepth: 4,
-                privacyHomeDirectory: privacyHomeDirectory
+                privacyHomeDirectory: privacyHomeDirectory,
+                complete: &complete
             ) {
                 guard !Task.isCancelled else { break }
                 let path = normalizePath(config.path)
@@ -722,7 +945,55 @@ public enum WorkspaceRecoveryService {
                 configs.append(config)
             }
         }
-        return configs
+        if Task.isCancelled { complete = false }
+        return (configs, complete)
+    }
+
+    /// The mirror in each of `folders`, probed directly rather than scanned,
+    /// and whether every probe could tell. A folder that is gone holds none.
+    public static func discoverRegisteredMirrors(
+        in folders: [String],
+        privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> (configs: [URL], complete: Bool) {
+        let hostFileAccess = HostFileAccessBroker(homeDirectory: privacyHomeDirectory)
+        var complete = true
+        var configs: [URL] = []
+        for folder in folders {
+            guard !Task.isCancelled else { return (configs, false) }
+            let url = URL(fileURLWithPath: folder, isDirectory: true)
+            switch mirror(in: url, hostFileAccess: hostFileAccess, intent: .implicitScan(root: url)) {
+            case .found(let config): configs.append(config)
+            case .absent: break
+            case .unknown: complete = false
+            }
+        }
+        return (configs, complete)
+    }
+
+    private enum MirrorProbe {
+        case found(URL)
+        case absent
+        /// A probe failed for another reason than a missing file: the
+        /// current mirror may be there, so no legacy one is taken instead.
+        case unknown
+    }
+
+    private static func mirror(in folder: URL, hostFileAccess: HostFileAccessBroker, intent: HostFileAccessIntent) -> MirrorProbe {
+        func present(_ url: URL) -> Bool? {
+            do { return try hostFileAccess.itemType(at: url, intent: intent) != nil } catch { return nil }
+        }
+        let current = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        let legacy = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: folder.path))
+        switch present(current) {
+        case true?: return .found(current)
+        case nil: return .unknown
+        case false?:
+            switch present(legacy) {
+            case true?: return .found(legacy)
+            case nil: return .unknown
+            case false?: return .absent
+            }
+        }
     }
 
     private struct ActiveStorePointer: Codable {
@@ -957,76 +1228,120 @@ public enum WorkspaceRecoveryService {
     private static func scanForWorkspaceConfigs(
         root: URL,
         maxDepth: Int,
-        privacyHomeDirectory: URL
+        privacyHomeDirectory: URL,
+        complete: inout Bool
     ) -> [URL] {
         var remainingBudget = maxRecoveryScanDirectories
         let hostFileAccess = HostFileAccessBroker(homeDirectory: privacyHomeDirectory)
         return scanForWorkspaceConfigs(
             root: root,
+            scanRoot: root,
             maxDepth: maxDepth,
             remainingBudget: &remainingBudget,
-            hostFileAccess: hostFileAccess
+            hostFileAccess: hostFileAccess,
+            complete: &complete
         )
     }
 
+    /// `scanRoot` is the configured root the scan started from: one inside a
+    /// privacy-protected folder, such as a volume under /Volumes, is scanned
+    /// because it was configured, and one that is still skipped leaves the
+    /// scan incomplete, since mirrors beneath it went unseen.
     private static func scanForWorkspaceConfigs(
         root: URL,
+        scanRoot: URL,
         maxDepth: Int,
         remainingBudget: inout Int,
-        hostFileAccess: HostFileAccessBroker
+        hostFileAccess: HostFileAccessBroker,
+        complete: inout Bool
     ) -> [URL] {
-        guard !Task.isCancelled else { return [] }
+        guard !Task.isCancelled else { complete = false; return [] }
         guard maxDepth >= 0 else { return [] }
-        guard remainingBudget > 0 else { return [] }
-        let intent = HostFileAccessIntent.implicitScan(root: nil)
+        guard remainingBudget > 0 else { complete = false; return [] }
+        let intent = HostFileAccessIntent.implicitScan(root: scanRoot)
         guard !hostFileAccess.shouldSkip(root, intent: intent) else {
+            if root == scanRoot { complete = false }
             return []
         }
         remainingBudget -= 1
 
-        var isDirectory: ObjCBool = false
-        guard hostFileAccess.fileExists(at: root, isDirectory: &isDirectory, intent: intent),
-              isDirectory.boolValue else {
+        // Only a folder confirmed missing is empty; one that can't be
+        // checked, as behind an ACL, may hold the only mirrors of owners.
+        let type: FileAttributeType?
+        do {
+            type = try hostFileAccess.itemType(at: root, intent: intent)
+        } catch {
+            complete = false
             return []
         }
+        guard type == .typeDirectory else { return [] }
 
-        let directConfig = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
-        let legacyConfig = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root.path))
         var results: [URL] = []
-        if hostFileAccess.fileExists(at: directConfig, intent: intent) {
-            results.append(directConfig)
-        } else if hostFileAccess.fileExists(at: legacyConfig, intent: intent) {
-            results.append(legacyConfig)
+        // A probe that can't tell leaves the scan incomplete.
+        func appendMirror(of folder: URL) {
+            switch mirror(in: folder, hostFileAccess: hostFileAccess, intent: intent) {
+            case .found(let config): results.append(config)
+            case .absent: break
+            case .unknown: complete = false
+            }
         }
+        appendMirror(of: root)
 
-        guard maxDepth > 0,
-              let children = try? hostFileAccess.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey],
-                intent: intent
-              ) else {
+        // At the depth limit the children are still probed for their own
+        // mirrors, one level further, but not descended into: a workspace
+        // just below the limit is found rather than left out unnoticed.
+        let atDepthLimit = maxDepth == 0
+        guard let listing = try? hostFileAccess.contentsOfDirectoryReportingSkipped(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey],
+            intent: intent
+        ) else {
+            // A folder that exists but can't be listed may hold mirrors.
+            complete = false
             return results
         }
+        // A protected folder the policy leaves out of the listing, such as
+        // ~/Pictures under a home-folder root, may hold mirrors unseen.
+        if !listing.skipped.isEmpty { complete = false }
+        let children = listing.contents
 
         for child in children {
-            guard !Task.isCancelled else { break }
-            guard remainingBudget > 0 else { break }
-            guard !skippedRecoveryDirectoryNames.contains(child.lastPathComponent) else { continue }
+            guard !Task.isCancelled else { complete = false; break }
+            guard remainingBudget > 0 else { complete = false; break }
+            // A workspace may itself be named like a build folder: its own
+            // mirror is still found, only nothing beneath it is scanned.
+            if skippedRecoveryDirectoryNames.contains(child.lastPathComponent) {
+                appendMirror(of: child)
+                continue
+            }
             guard !hostFileAccess.shouldSkip(child, intent: intent) else {
                 continue
             }
-            let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey])
-            guard values?.isDirectory == true,
-                  values?.isHidden != true,
-                  values?.isPackage != true else {
+            // An entry whose kind can't be read may be a folder holding a
+            // mirror, so the scan is incomplete rather than skipping it.
+            guard let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey, .isPackageKey]) else {
+                complete = false
+                continue
+            }
+            guard values.isDirectory == true else { continue }
+            if atDepthLimit {
+                appendMirror(of: child)
+                continue
+            }
+            // A hidden or package folder isn't scanned beneath, but it may be
+            // a workspace itself, so its own mirror is still probed.
+            guard values.isHidden != true, values.isPackage != true else {
+                appendMirror(of: child)
                 continue
             }
             results.append(
                 contentsOf: scanForWorkspaceConfigs(
                     root: child,
+                    scanRoot: scanRoot,
                     maxDepth: maxDepth - 1,
                     remainingBudget: &remainingBudget,
-                    hostFileAccess: hostFileAccess
+                    hostFileAccess: hostFileAccess,
+                    complete: &complete
                 )
             )
         }

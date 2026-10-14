@@ -162,8 +162,10 @@ public final class AgentTask {
         self.unreadAt = nil
         // Pin the thread to the workspace's active code location at creation so
         // it always runs in the same checkout/repository, even if the workspace
-        // later switches its default.
-        self.executionRootPath = workspace?.isUsingWorktree == true ? workspace?.activeWorkingPath : nil
+        // later switches its default. A checkout that worktree cleanup is
+        // removing is never adopted.
+        let activeCheckout = workspace?.isUsingWorktree == true ? workspace?.activeWorkingPath : nil
+        self.executionRootPath = TaskWorktreeCheckoutReservation.isReserved(activeCheckout) ? nil : activeCheckout
         self.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
             ExecutionEnvironmentStore.decode(workspace?.activeExecutionEnvironmentJSON)
         )

@@ -98,6 +98,10 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
         KeychainService.deleteAll(facts: facts)
     }
 
+    static func deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts, sparing: Set<String>) -> Bool {
+        KeychainService.deleteAll(facts: facts, sparing: sparing)
+    }
+
     static func synchronizeCredentialNamespaces(keys: [String], facts: ConnectorSecretFacts) {
         KeychainService.synchronizeConnectorCredentialNamespaces(keys: keys, facts: facts)
     }
@@ -132,6 +136,10 @@ enum SkillSecretPersistence: SkillSecretPersisting {
     }
 
     static func deleteAllSecrets(skillID: UUID) {
+        KeychainService.deleteAll(skillID: skillID)
+    }
+
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool {
         KeychainService.deleteAll(skillID: skillID)
     }
 }

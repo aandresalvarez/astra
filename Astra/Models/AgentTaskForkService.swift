@@ -41,6 +41,7 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
     case historicalFileCopyUnavailable
     case fileCopiesRequireWorkspace
     case manifestWriteFailed
+    case sourceCheckoutReserved
 
     public var errorDescription: String? {
         switch self {
@@ -56,6 +57,8 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
             "Independent file copies need a workspace folder to copy into. Use shared files for this conversation."
         case .manifestWriteFailed:
             "ASTRA could not prepare the conversation checkpoint. No fork was created."
+        case .sourceCheckoutReserved:
+            "This conversation's worktree is being cleaned up. Try again once that finishes. No fork was created."
         }
     }
 }
@@ -128,8 +131,12 @@ public enum AgentTaskForkService {
         // newly constructed task. A conversation fork must never share an
         // operational provider session or task-scoped authorization.
         // A fork continues the source's line of work, so it stays in the same
-        // worktree the source was pinned to.
-        forked.executionRootPath = source.executionRootPath
+        // worktree the source was pinned to. One cleanup is removing can't be
+        // inherited, and a fork without it would carry the source's binding
+        // onto no checkout, so none is created, as for chained tasks.
+        guard TaskWorktreeCheckoutReservation.commit(source.executionRootPath, to: forked) else {
+            throw AgentTaskForkError.sourceCheckoutReserved
+        }
         forked.executionEnvironmentSnapshotJSON = source.executionEnvironmentSnapshotJSON
         forked.forkedAtRunIndex = cutoffIndex
 
@@ -283,7 +290,11 @@ public enum AgentTaskForkService {
         }
         var copiedEvents: [TaskEvent] = eventsToCopy.map { sourceEvent in
             let copiedRun = sourceEvent.run.flatMap { forkedRunsBySourceID[$0.id] }
-            let rewrittenPayload = TaskForkPathRewriter.rewrite(sourceEvent.payload, using: manifestPathMapping)
+            // The worktree binding must keep naming the exact checkout the fork
+            // stays pinned to, so its paths are never rewritten.
+            let rewrittenPayload = sourceEvent.hasType(TaskEventTypes.Task.worktreePrepared)
+                ? sourceEvent.payload
+                : TaskForkPathRewriter.rewrite(sourceEvent.payload, using: manifestPathMapping)
             let newEvent = TaskEvent(
                 task: forked,
                 type: sourceEvent.type,
@@ -297,6 +308,12 @@ public enum AgentTaskForkService {
             return newEvent
         }
         remapAttachmentRecords(from: eventsToCopy, into: copiedEvents, using: manifestPathMapping)
+        if let binding = TaskWorktreeBinding.eventForInheritance(from: source) {
+            TaskWorktreeBinding.applyIsolation(to: forked, for: binding)
+            if !eventsToCopy.contains(where: { $0.id == binding.id }) {
+                copiedEvents.append(TaskWorktreeBinding.copy(binding, to: forked))
+            }
+        }
 
         copiedEvents.append(TaskEvent(
             task: forked,

@@ -214,6 +214,7 @@ struct WorkspaceHomeView: View {
     @State private var newMemoryText = ""
     @State private var isMemoryComposerVisible = false
     @State private var pendingSetupDeletion: PendingWorkspaceSetupDeletion?
+    @State private var folderRefusal: String?
     @AppStorage("kanbanBoardDensity") private var densityRaw = KanbanBoardDensity.spacious.rawValue
 
     // The skill/connector/tool aggregators previously rendered by the
@@ -291,6 +292,7 @@ struct WorkspaceHomeView: View {
         } message: { deletion in
             Text(deletion.message)
         }
+        .workspaceFolderRefusalAlert($folderRefusal)
     }
 
     // MARK: - Section Tabs
@@ -841,11 +843,9 @@ struct WorkspaceHomeView: View {
         panel.message = "Choose a folder the agent can also read from or execute in"
         panel.prompt = "Add Folder"
         if panel.runModal() == .OK, let url = panel.url {
-            let path = url.path
-            if !workspace.additionalPaths.contains(path) {
-                workspace.additionalPaths.append(path)
-                markWorkspaceConfigurationChanged()
-            }
+            let outcome = WorkspaceConfiguredRoots.addAdditionalPaths([url.path], to: workspace)
+            folderRefusal = outcome.refusalMessage
+            if outcome == .updated { markWorkspaceConfigurationChanged() }
         }
     }
 

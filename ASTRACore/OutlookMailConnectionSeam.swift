@@ -96,6 +96,8 @@ public enum OutlookMailConnectionSeam {
 public protocol OutlookMailConnectionTesting: Sendable {
     static func testConnection(facts: ConnectorOutlookFacts) async throws -> OutlookConnectionResult
     /// Matches `StanfordOutlookMailRegistry.remove(connectorID:)`, already
-    /// primitive (`UUID`-only) in its real form.
-    static func removeFromRegistry(connectorID: UUID)
+    /// primitive (`UUID`-only) in its real form. False when the entry may
+    /// still be there, so a durable cleanup can retry it.
+    @discardableResult
+    static func removeFromRegistry(connectorID: UUID) -> Bool
 }

@@ -14,6 +14,9 @@ enum WorkspaceCommandService {
         let mainTask: AgentTask
         let beforeTask: AgentTask?
         let initialRequestSubmitted: Bool
+        /// True when the conversation's checkout was reserved by cleanup, so
+        /// nothing was created rather than running in another checkout.
+        var checkoutUnavailable = false
     }
 
     @discardableResult
@@ -140,10 +143,25 @@ enum WorkspaceCommandService {
         workspace: Workspace,
         modelContext: ModelContext,
         source: String,
+        checkoutSource: AgentTask? = nil,
         submitInitial: InitialExecutionSubmitter = { task, context in
             ExecutionRequestSubmissionService.submitInitial(for: task, into: context)
         }
     ) -> TemplateTaskCreation {
+        // The tasks run in the checkout of the conversation that chose the
+        // template, including its worktree; the after phase inherits it when
+        // it is chained.
+        let checkoutSource = checkoutSource?.workspace?.id == workspace.id ? checkoutSource : nil
+        // Set when the checkout is reserved by cleanup: the tasks are then
+        // dropped, never run in the workspace default instead.
+        var checkoutRefused = false
+        func inheritCheckout(_ task: AgentTask) {
+            guard let checkoutSource else { return }
+            switch TaskWorktreeBinding.inheritCheckout(from: checkoutSource, into: task) {
+            case .refused: checkoutRefused = true
+            case .inherited(let binding): if let binding { modelContext.insert(binding) }
+            }
+        }
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
         let normalizedDefaultModel = RuntimeModelAvailability.normalizedModel(
             defaultModel,
@@ -210,12 +228,23 @@ enum WorkspaceCommandService {
                 : mainGoal
             task.chainedGoal = chainedMainGoal
             modelContext.insert(task)
+            inheritCheckout(task)
             mainTask.chainedFromID = task.id
             TaskStateMachine.restoreDraftForEditing(mainTask, modelContext: modelContext)
             beforeTask = task
         }
 
         modelContext.insert(mainTask)
+        inheritCheckout(mainTask)
+        guard !checkoutRefused else {
+            for task in [beforeTask, mainTask].compactMap({ $0 }) { modelContext.delete(task) }
+            AppLogger.audit(.taskFailed, category: "UI", taskID: mainTask.id, fields: [
+                "operation": "template_task_creation", "reason": "checkout_reserved"
+            ], level: .error)
+            return TemplateTaskCreation(
+                mainTask: mainTask, beforeTask: beforeTask, initialRequestSubmitted: false, checkoutUnavailable: true
+            )
+        }
         let runnableTask = beforeTask ?? mainTask
         guard case .success = submitInitial(runnableTask, modelContext) else {
             TaskStateMachine.restoreExecutionSubmissionFailure(

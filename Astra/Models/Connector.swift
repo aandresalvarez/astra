@@ -374,14 +374,17 @@ public final class Connector {
 
     /// Delete all Keychain entries when connector is deleted.
     public func cleanupKeychain() {
-        if isStanfordOutlookMail {
-            OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
-        }
-        ConnectorSecretSeam.required.deleteAllCredentials(facts: secretFacts)
-        AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType
-        ])
+        keychainCleanup.run()
+    }
+
+    /// `cleanupKeychain()` as a value, so a deletion can record it durably
+    /// and run it once the connector's row is gone.
+    public var keychainCleanup: ConnectorKeychainCleanup {
+        ConnectorKeychainCleanup(
+            connectorID: id, name: name, serviceType: serviceType, baseURL: baseURL,
+            originPackageID: originPackageID, originComponentID: originComponentID,
+            isStanfordOutlookMail: isStanfordOutlookMail
+        )
     }
 
     // MARK: - Stanford Outlook Mail (pure members)
@@ -798,4 +801,39 @@ extension CharacterSet {
         cs.remove(charactersIn: "&=+")
         return cs
     }()
+}
+
+/// Everything deleting a connector's Keychain items needs, with no secret in
+/// it: the fields its stable credential namespace is derived from.
+public struct ConnectorKeychainCleanup: Codable, Equatable, Sendable {
+    public let connectorID: UUID
+    public let name: String
+    public let serviceType: String
+    public let baseURL: String
+    public let originPackageID: String?
+    public let originComponentID: String?
+    public let isStanfordOutlookMail: Bool
+
+    /// True when every credential namespace was cleared, so a caller with a
+    /// durable record can keep it for a retry otherwise. Namespaces in
+    /// `sparing` are still used by a live connector and are left alone, as
+    /// is the Outlook registry entry when `keepRegistryEntry` is set.
+    @discardableResult
+    public func run(sparing: Set<String> = [], keepRegistryEntry: Bool = false) -> Bool {
+        // The registry entry is cleanup too: a stale one is still handed to
+        // approved runs, so a failure to remove it keeps the cleanup owed.
+        var registryCleared = true
+        if isStanfordOutlookMail, !keepRegistryEntry {
+            registryCleared = OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: connectorID)
+        }
+        let cleared = ConnectorSecretSeam.required.deleteAllCredentialsReportingResult(facts: ConnectorSecretFacts(
+            id: connectorID, name: name, serviceType: serviceType, baseURL: baseURL,
+            originPackageID: originPackageID, originComponentID: originComponentID
+        ), sparing: sparing)
+        AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
+            "connector_id": connectorID.uuidString,
+            "service_type": serviceType
+        ])
+        return cleared && registryCleared
+    }
 }
