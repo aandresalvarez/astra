@@ -265,6 +265,16 @@ struct NewTaskWorktreeOwnStateTests {
             return
         }
         #expect(child.executionRootPath != discard.worktreePath)
+        // A fork isn't created either: it would carry the source's binding
+        // onto no checkout.
+        let run = TaskRun(task: draft)
+        run.status = .completed
+        context.insert(run)
+        let taskCount = try context.fetchCount(FetchDescriptor<AgentTask>())
+        #expect(throws: AgentTaskForkError.sourceCheckoutReserved) {
+            try AgentTaskForkService.fork(from: draft, upToRun: run, in: context)
+        }
+        #expect(try context.fetchCount(FetchDescriptor<AgentTask>()) == taskCount)
         // Both derived-task paths stop on a refusal rather than continuing.
         let base = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         for file in ["Astra/Services/Tasks/ChainedTaskSubmissionService.swift", "Astra/Services/Validation/TaskCorrectiveWorkService.swift"] {
@@ -581,5 +591,64 @@ struct NewTaskWorktreeOwnStateTests {
         ))
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: linkCopy) == target)
         #expect(try SSHConnectionManager.preserveUnrestored(.absent, workspacePath: fixture.storage.path) == nil)
+    }
+
+    @Test("A reftable probe that fails counts as the worktree's own refs")
+    func failedReftableProbeCountsAsOwnRefs() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let store = try Fixture.container()
+        let (_, discard) = try await prepare(repository: repository, context: store.mainContext, fixture: fixture)
+        // Neither a table nor a refs folder: nothing of its own.
+        #expect(TaskWorktreeBinding.registeredWorktreeHasOwnRefs(
+            repositoryPath: discard.repositoryPath, worktreePath: discard.worktreePath
+        ) == false)
+        // A table that can't be checked may hold them.
+        #expect(TaskWorktreeBinding.registeredWorktreeHasOwnRefs(
+            repositoryPath: discard.repositoryPath, worktreePath: discard.worktreePath,
+            attributes: { path in
+                if (path as NSString).lastPathComponent == "reftable" { throw CocoaError(.fileReadNoPermission) }
+                return try FileManager.default.attributesOfItem(atPath: path)
+            }
+        ) == true)
+    }
+
+    @Test("A newest worktree request that can't be read turns creation off until a newer choice")
+    func unreadableNewestRequestTurnsCreationOff() throws {
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let workspace = Workspace(name: "App", primaryPath: "/repos/app")
+        context.insert(workspace)
+        let draft = AgentTask(title: "Draft", goal: "Explore", workspace: workspace)
+        context.insert(draft)
+        var selection = NewTaskWorktreeSelection()
+        selection.repositories = [GitRepositoryInfo(name: "App", path: "/repos/app")]
+        selection.repositoryPath = "/repos/app"
+        selection.isEnabled = true
+        selection.base = .currentBranch
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        let readable = try #require(draft.events.first { $0.hasType(TaskEventTypes.Task.worktreeRequested) })
+        readable.timestamp = Date(timeIntervalSince1970: 1_000)
+        // An older damaged request changes nothing.
+        let damaged = TaskEvent(task: draft, eventType: TaskEventTypes.Task.worktreeRequested, payload: "{")
+        damaged.timestamp = Date(timeIntervalSince1970: 500)
+        context.insert(damaged)
+        #expect(TaskWorktreeService.latestRequest(for: draft)?.enabled == true)
+        #expect(NewTaskWorktreeComposerFlow.launchRequest(selection, recordedOn: draft) != nil)
+
+        // A newer one may have turned it off: the earlier choice isn't used.
+        damaged.timestamp = Date(timeIntervalSince1970: 2_000)
+        #expect(TaskWorktreeService.latestRequest(for: draft) == TaskWorktreeRequestPayload(enabled: false, base: .currentBranch))
+        #expect(selection.request != nil)
+        #expect(NewTaskWorktreeComposerFlow.launchRequest(selection, recordedOn: draft) == nil)
+        var reopened = NewTaskWorktreeSelection()
+        reopened.isEnabled = true
+        NewTaskWorktreeComposerFlow.restoreChoice(&reopened, from: draft)
+        #expect(!reopened.isEnabled)
+
+        // Choosing again records a newer request, which wins.
+        NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
+        #expect(TaskWorktreeService.latestRequest(for: draft)?.enabled == true)
     }
 }
