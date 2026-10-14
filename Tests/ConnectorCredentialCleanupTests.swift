@@ -622,7 +622,8 @@ struct ConnectorCredentialCleanupTests {
             try Data(#"{"connectors":[{"id":"\#(deleted.id.uuidString)"}]}"#.utf8).write(to: mirror)
             _ = try connectorOutbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
             connectorOutbox.markCommitted([deleted.keychainCleanup])
-            #expect(ConnectorCredentialCleanup.unconfirmedOwners(modelContext: context, store: connectorOutbox) == [deleted.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.unconfirmedOwners(modelContext: context, store: connectorOutbox)?
+                .contains(deleted.keychainCleanup) == true)
             // A saved workspace deletion sharing the namespace spares it.
             #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
             let sibling = WorkspaceDeletionCleanupRecord(
@@ -716,6 +717,91 @@ struct ConnectorCredentialCleanupTests {
         #expect(app.contains("(paths, Set(deletionStore.pending().map(\\.workspaceID.uuidString)))"))
         #expect(!app.contains("launchDeletionIDs"))
         #expect(app.contains("loadedMirrors: { WorkspaceRecoveryTrust.recordLoadedMirrors($0.map(\\.path)) }"))
+    }
+
+    @Test("Every loaded mirror's connectors and skills are owners, its own deletion's aside, and an unidentified store waits")
+    func loadedMirrorsOwnEverythingTheyList() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-mirror-listing-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let connectorOutbox = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Connectors"))
+        let outbox = WorkspaceDeletionCleanupStore(directory: root.appendingPathComponent("Workspaces"))
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let other = recreation(of: deleted)
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: deleted))
+            let skillID = UUID()
+            let skillService = KeychainSecretStore.skillEntityID(for: skillID)
+            for (service, value) in [(own, "own"), (stable, "shared")] {
+                #expect(AstraSecureKeychainStore.save(service: service, account: "TOKEN", value: value, label: nil))
+            }
+            #expect(AstraSecureKeychainStore.save(service: skillService, account: "KEY", value: "skill", label: nil))
+            // An old copy of another workspace lists a connector, by a valid
+            // ID, sharing the namespace, and a skill.
+            let copy = root.appendingPathComponent("Copy/.astra/.astra-workspace.json")
+            try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(#"""
+            {"id":"\#(UUID().uuidString)","connectors":[{"id":"\#(other.id.uuidString)","name":"Jira","serviceType":"jira","baseURL":"https://jira.example.invalid"}],"skills":[{"id":"\#(skillID.uuidString)"}]}
+            """#.utf8).write(to: copy)
+
+            // A saved connector deletion spares the shared namespace.
+            _ = try connectorOutbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            connectorOutbox.markCommitted([deleted.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: connectorOutbox, extraMirrors: [copy.path]) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+
+            // A saved workspace deletion spares the skill the copy lists...
+            let record = WorkspaceDeletionCleanupRecord(
+                workspaceID: UUID(), primaryPath: root.appendingPathComponent("Gone").path, connectors: [],
+                skills: [try JSONDecoder().decode(SkillKeychainCleanup.self, from: Data(#"{"skillID":"\#(skillID.uuidString)"}"#.utf8))]
+            )
+            try outbox.write(record)
+            try outbox.markCommitted(record)
+            #expect(WorkspaceDeletionCleanupService.resumePending(
+                modelContext: context, store: outbox, connectorOutbox: connectorOutbox, extraMirrors: [copy.path]
+            ) == 1)
+            #expect(AstraSecureKeychainStore.load(service: skillService, account: "KEY") == "skill")
+            // ...but a copy of the workspace being deleted names nothing.
+            let ownCopy = root.appendingPathComponent("OwnCopy.json")
+            try Data(#"{"id":"\#(record.workspaceID.uuidString)","skills":[{"id":"\#(skillID.uuidString)"}]}"#.utf8).write(to: ownCopy)
+            #expect(ConnectorCredentialCleanup.connectorsInStoredMirrors(
+                modelContext: context, extraMirrors: [ownCopy.path], excludingWorkspaceIDs: [record.workspaceID]
+            )?.skillIDs.isEmpty == true)
+        }
+
+        // An unidentifiable active store: unmarked records wait, and a
+        // mutation with no connector cleanup still saves.
+        let storeURL = root.appendingPathComponent("Store/default.store")
+        try FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let disk = try ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(url: storeURL)])
+        try disk.mainContext.save()
+        try FileManager.default.removeItem(at: storeURL)
+        let unmarked = WorkspaceDeletionCleanupRecord(
+            workspaceID: UUID(), primaryPath: root.appendingPathComponent("Unmarked").path, connectors: [], skills: []
+        )
+        try outbox.write(unmarked)
+        try outbox.markStore(unmarked, identity: "some-store")
+        #expect(WorkspaceDeletionCleanupService.classify(store: outbox, modelContext: context) { _ in nil }?
+            .first { $0.record == unmarked }?.disposition == .wait)
+        #expect(WorkspaceDeletionCleanupService.classify(store: outbox, modelContext: context)?
+            .first { $0.record == unmarked }?.disposition == .unconfirmed)
+        var saved = false
+        #expect(ConnectorCredentialCleanup.deleteThenClean([], modelContext: disk.mainContext, store: connectorOutbox) {
+            saved = true
+            return true
+        })
+        #expect(saved)
+        withExtendedLifetime(disk) {}
+
+        // Deleting a workspace removes the loaded copies of it too.
+        let coordinator = try String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/Services/Tasks/TaskLifecycleCoordinator.swift"), encoding: .utf8
+        )
+        #expect(coordinator.contains("movedMirrors: WorkspaceRecoveryTrust.loadedMirrors"))
     }
 
     @Test("A connector intent whose store mark can't be read waits")

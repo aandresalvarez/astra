@@ -546,13 +546,22 @@ enum WorkspaceDeletionCleanupService {
         movedMirrors: [String] = [],
         connectorOutbox: ConnectorCredentialCleanupStore? = nil,
         dropsUnconfirmed: Bool = true,
-        rescanMarker: URL? = nil
+        rescanMarker: URL? = nil,
+        extraMirrors: [String]? = nil
     ) -> Int {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
         // What other deletions and unconfirmed connector intents hold is
         // spared, so every record of both must read.
+        // Mirrors of workspaces this outbox is deleting name nothing; every
+        // other recoverable mirror keeps the connectors and skills it lists.
+        let deleting = Set(store.pending().map(\.workspaceID))
         guard store.pendingConnectors() != nil,
-              let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(modelContext: modelContext, store: connectorOutbox),
+              let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(
+                  modelContext: modelContext, store: connectorOutbox, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting
+              ),
+              let mirrored = ConnectorCredentialCleanup.connectorsInStoredMirrors(
+                  modelContext: modelContext, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting
+              ),
               let classified = classify(store: store, modelContext: modelContext) else { return 0 }
         // Every record holds what it names until it is settled as a saved
         // deletion: one unconfirmed, or kept for later, holds it all batch.
@@ -573,7 +582,8 @@ enum WorkspaceDeletionCleanupService {
                 guard settle(
                     record, modelContext: ModelContext(modelContext.container),
                     retained: others.flatMap(\.connectors) + intentOwners,
-                    retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }), movedMirrors: movedMirrors
+                    retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }).union(mirrored.skillIDs),
+                    movedMirrors: movedMirrors
                 ) else { continue }
                 store.remove(record)
                 held = others
@@ -646,11 +656,12 @@ enum WorkspaceDeletionCleanupService {
     /// before this store was created, as by a recovery, can't be told apart
     /// and is kept, along with what it holds. Nil when the store can't be read.
     static func classify(
-        store: WorkspaceDeletionCleanupStore, modelContext: ModelContext
+        store: WorkspaceDeletionCleanupStore, modelContext: ModelContext,
+        storeIdentity: (ModelContext) -> String? = PersistentStoreIdentity.current(for:)
     ) -> [(record: WorkspaceDeletionCleanupRecord, disposition: Disposition)]? {
         guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Workspace>()))
             .map({ Set($0.map(\.id)) }) else { return nil }
-        let currentStore = PersistentStoreIdentity.current(for: modelContext)
+        let currentStore = storeIdentity(modelContext)
         let storeCreated = PersistentStoreIdentity.createdAt(for: modelContext)
         return store.pending().map { record in
             guard let marked = store.isCommitted(record) else { return (record, .wait) }
@@ -663,7 +674,10 @@ enum WorkspaceDeletionCleanupService {
                 guard let storeCreated, let written = store.writtenAt(record), written >= storeCreated else { return (record, .wait) }
                 return (record, gone ? .committed : .unconfirmed)
             case .recorded(let recorded):
-                return (record, marked || (recorded == currentStore && gone) ? .committed : .unconfirmed)
+                if marked { return (record, .committed) }
+                // Which store this is can't be told for now: it may be that one.
+                guard let currentStore else { return (record, .wait) }
+                return (record, recorded == currentStore && gone ? .committed : .unconfirmed)
             }
         }
     }

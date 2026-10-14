@@ -855,13 +855,23 @@ final class TaskLifecycleCoordinator {
             // otherwise the trusted launch's retry settles it. What other
             // pending deletions and unconfirmed connector intents hold is
             // spared, and while any of those can't be read, the retry does it.
+            // Every mirror the launch's recovery loaded is passed too: a copy
+            // of this workspace's goes with it, and any other one keeps the
+            // connectors and skills it lists.
+            let deleting = Set(store.pending().map(\.workspaceID))
             if WorkspaceRecoveryTrust.allowsCleanup,
                let others = store.records(pendingBesides: pinned),
-               let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(modelContext: modelContext),
+               let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(
+                   modelContext: modelContext, excludingWorkspaceIDs: deleting
+               ),
+               let mirrored = ConnectorCredentialCleanup.connectorsInStoredMirrors(
+                   modelContext: modelContext, excludingWorkspaceIDs: deleting
+               ),
                WorkspaceDeletionCleanupService.settle(
                    pinned, modelContext: modelContext, committed: true,
                    retained: others.flatMap(\.connectors) + intentOwners,
-                   retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) })
+                   retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }).union(mirrored.skillIDs),
+                   movedMirrors: WorkspaceRecoveryTrust.loadedMirrors
                ) {
                 store.remove(pinned)
             }
