@@ -723,8 +723,12 @@ enum TaskWorktreeService {
             undoAdoption = {
                 if let draft = adoptingDraft {
                     // Restoring nil, the usual case, always succeeds; a prior
-                    // pin that cleanup has since reserved is not readopted.
-                    TaskWorktreeCheckoutReservation.commit(previousPin, to: draft)
+                    // pin that cleanup has since reserved is not readopted,
+                    // and the adopted one, whose binding goes below, is
+                    // cleared rather than left unbound.
+                    if !TaskWorktreeCheckoutReservation.commit(previousPin, to: draft) {
+                        TaskWorktreeCheckoutReservation.commit(nil, to: draft)
+                    }
                     if let previousIsolation { draft.isolationStrategy = previousIsolation }
                     if let copiedBinding {
                         draft.events.removeAll { $0 === copiedBinding }
@@ -766,9 +770,12 @@ enum TaskWorktreeService {
             .filter { !$0.isDeleted && $0.hasType(TaskEventTypes.Task.worktreePrepared) }
             .sorted { $0.timestamp > $1.timestamp }
             .compactMap { event -> TaskWorktreeDiscard? in
+                // A path is taken once, by its newest incarnation this install
+                // owns: one that isn't owned, as an older or replaced event
+                // with the same timestamp, doesn't hide the one that is.
                 guard case .success(let binding) = event.decodePayload(as: TaskWorktreePayload.self),
                       let baseCommit = binding.baseCommit, !baseCommit.isEmpty,
-                      seen.insert(WorkspacePathPresentation.standardizedPath(binding.worktreePath)).inserted else {
+                      !seen.contains(WorkspacePathPresentation.standardizedPath(binding.worktreePath)) else {
                     return nil
                 }
                 let discard = TaskWorktreeDiscard(
@@ -792,6 +799,7 @@ enum TaskWorktreeService {
                     ])
                     return nil
                 }
+                seen.insert(WorkspacePathPresentation.standardizedPath(binding.worktreePath))
                 return discard
             }
     }

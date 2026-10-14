@@ -576,7 +576,21 @@ enum DockerExecutionPlanner {
             // Sibling worktrees of the same repository too: the run holds no
             // claim on them, so a saved mount of one, or of a folder holding
             // them such as the worktrees root, is read-only.
-            let siblings = taskAccess.runtimeWorktreeGitMetadataPaths.flatMap(TaskWorktreeBinding.registeredCheckouts)
+            // The primary checkout is no registered sibling: it is found from
+            // the shared Git directory, and where that doesn't name it, every
+            // saved mount is kept read-only, since any may reach it.
+            var siblingPaths = taskAccess.runtimeWorktreeGitMetadataPaths.flatMap(TaskWorktreeBinding.registeredCheckouts)
+            var primaryUnknown = false
+            if let common = taskAccess.runtimeWorktreeGitMetadataPaths.first {
+                switch TaskWorktreeBinding.primaryCheckout(
+                    commonDirectory: common, candidates: taskAccess.protectedSourceCheckouts + mounts.map(\.hostPath)
+                ) {
+                case .known(let primary): siblingPaths.append(primary)
+                case .bare: break
+                case .unknown: primaryUnknown = true
+                }
+            }
+            let siblings = siblingPaths
                 .map { ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0) }
             let protected = sources + (taskAccess.runtimeWorktreeGitMetadataPaths + siblings).map {
                 ExecutionSandbox.canonicalize($0) ?? WorkspacePathPresentation.standardizedPath($0)
@@ -615,9 +629,15 @@ enum DockerExecutionPlanner {
                     host == source || source.hasPrefix(host + "/") || host.hasPrefix(source + "/")
                 }
                 guard touchesSource else {
-                    guard mount.containerPath == checkoutContainerPath else { return mount }
+                    // Where the primary checkout is unknown, it may be here.
+                    let access = primaryUnknown ? .readOnly : mount.access
+                    guard mount.containerPath == checkoutContainerPath else {
+                        return ExecutionEnvironmentMount(
+                            hostPath: mount.hostPath, containerPath: mount.containerPath, access: access, role: mount.role
+                        )
+                    }
                     return ExecutionEnvironmentMount(
-                        hostPath: mount.hostPath, containerPath: relocatedWorkdir, access: mount.access, role: mount.role
+                        hostPath: mount.hostPath, containerPath: relocatedWorkdir, access: access, role: mount.role
                     )
                 }
                 if sources.contains(where: { host.hasPrefix($0 + "/") }), writableNestedRepositories.contains(host) {

@@ -247,6 +247,49 @@ struct NewTaskWorktreeOwnStateTests {
             return
         }
         #expect(event.id == current.id)
+        // Deleting the draft queues the incarnation this install owns, not
+        // nothing because the newer one at its path isn't owned.
+        #expect(TaskWorktreeService.discardSnapshots(for: draft, ownership: fixture.ownership).map(\.identity)
+            == [identity(of: current)])
+    }
+
+    private func identity(of event: TaskEvent) -> String? {
+        guard case .success(let payload) = event.decodePayload(as: TaskWorktreePayload.self) else { return nil }
+        return payload.identity
+    }
+
+    @Test("A failed adoption whose draft's earlier checkout is now reserved leaves the draft unpinned, not on the worktree")
+    func failedAdoptionClearsPinWhenPreviousIsReserved() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let other = fixture.root.appendingPathComponent("App-other", isDirectory: true)
+        try fixture.git(["worktree", "add", "--quiet", "-b", "other", other.path], at: repository)
+        let store = try Fixture.container()
+        let context = store.mainContext
+        let (task, _) = try await prepare(repository: repository, context: context, fixture: fixture)
+        let worktree = try #require(task.executionRootPath)
+        let draft = AgentTask(title: "Chat", goal: "Explore", workspace: task.workspace)
+        draft.executionRootPath = other.path
+        context.insert(draft)
+        try context.save()
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: context)
+        var reservation: TaskWorktreeCheckoutReservation.Token?
+        defer { reservation.map(TaskWorktreeCheckoutReservation.release) }
+        #expect(throws: TaskWorktreeCreationError.self) {
+            _ = try TaskWorktreeService.recoverFailedSubmission(
+                task: task, existingDraft: draft, modelContext: context,
+                persist: { _, _, _ in
+                    // Cleanup reserves the draft's earlier checkout meanwhile.
+                    reservation = TaskWorktreeCheckoutReservation.acquire(other.path)
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            )
+        }
+        #expect(reservation != nil)
+        #expect(draft.executionRootPath != worktree)
+        #expect(draft.executionRootPath == nil)
+        #expect(TaskWorktreeBinding.eventForInheritance(from: draft) == nil)
     }
 
     @Test("A derived task isn't created onto another checkout when its source's is reserved")
@@ -650,5 +693,56 @@ struct NewTaskWorktreeOwnStateTests {
         // Choosing again records a newer request, which wins.
         NewTaskWorktreeComposerFlow.recordChoice(selection, on: draft, modelContext: context)
         #expect(TaskWorktreeService.latestRequest(for: draft)?.enabled == true)
+    }
+
+    @Test("Recovery probes every folder a mirror was written into, even outside the scanned roots")
+    func recoveryProbesRegisteredMirrorFolders() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        // The registry lives beside an on-disk store, never in App Support,
+        // and an in-memory store has none.
+        let memory = try Fixture.container()
+        #expect(WorkspaceMirrorRegistry(for: memory.mainContext) == nil)
+        let storeURL = fixture.root.appendingPathComponent("Store/default.store")
+        try FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let disk = try ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(url: storeURL)])
+        let registry = try #require(WorkspaceMirrorRegistry(for: disk.mainContext))
+        #expect(registry.directory.deletingLastPathComponent().standardizedFileURL.path
+            == storeURL.deletingLastPathComponent().standardizedFileURL.path)
+
+        // Exporting a workspace's mirror records its folder.
+        let imported = fixture.root.appendingPathComponent("Elsewhere/Imported", isDirectory: true)
+        try FileManager.default.createDirectory(at: imported, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Imported", primaryPath: imported.path)
+        disk.mainContext.insert(workspace)
+        try disk.mainContext.save()
+        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: disk.mainContext)
+        #expect(registry.folders() == [WorkspacePathPresentation.standardizedPath(imported.path)])
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace, modelContext: disk.mainContext,
+            url: URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: imported.path))
+        )
+
+        // After the store is lost, a scan of an unrelated root finds nothing,
+        // but the registered folder's mirror is recovered.
+        let emptyRoot = fixture.root.appendingPathComponent("Workspaces", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
+        let lost = try Fixture.container()
+        let trusted = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: lost.mainContext, extraRoots: [emptyRoot.path], includeDefaultRoots: false,
+            registeredFolders: registry.folders()
+        ).value
+        #expect(trusted)
+        #expect(try lost.mainContext.fetch(FetchDescriptor<Workspace>()).map(\.name) == ["Imported"])
+
+        // A registry that can't be read leaves recovery untrusted.
+        let unread = try Fixture.container()
+        #expect(await !WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: unread.mainContext, extraRoots: [emptyRoot.path], includeDefaultRoots: false,
+            registeredFolders: nil
+        ).value)
+        try Data([0xFF]).write(to: registry.directory.appendingPathComponent("broken.folder"))
+        #expect(registry.folders() == nil)
+        withExtendedLifetime((memory, disk, lost, unread)) {}
     }
 }
