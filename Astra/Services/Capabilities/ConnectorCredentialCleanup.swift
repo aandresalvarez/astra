@@ -223,20 +223,36 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return 0
         }
+        guard let workspaceRetained = retainedByPendingWorkspaceDeletions(modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "connector_cleanup", "reason": "workspace_deletion_unreadable"
+            ], level: .error)
+            return 0
+        }
         let currentStore = PersistentStoreIdentity.current(for: modelContext)
-        var cleared = 0
-        for record in pending.records {
+        // Every record is classified first: one that can't be confirmed, its
+        // connector maybe still in an earlier store, keeps what it uses while
+        // the others run.
+        let classified = pending.records.map { record in
             let stored = storedIDs.contains(record.cleanup.connectorID)
             let sameStore = record.storeIdentity != nil && record.storeIdentity == currentStore
-            if !record.committed, !stored, !sameStore {
+            let committed = record.committed || (!stored && sameStore)
+            return (record: record, committed: committed, unconfirmed: !committed && !stored && !sameStore)
+        }
+        let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup)
+        var cleared = 0
+        for entry in classified {
+            if entry.unconfirmed {
                 AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                     "scope": "connector_cleanup", "reason": "intent_unconfirmed_after_store_change",
-                    "connector_id": record.cleanup.connectorID.uuidString
+                    "connector_id": entry.record.cleanup.connectorID.uuidString
                 ], level: .error)
             }
-            let committed = record.committed || (!stored && sameStore)
-            guard run([record.cleanup], modelContext: ModelContext(modelContext.container), committed: committed) else { continue }
-            store.remove([record.url])
+            guard run(
+                [entry.record.cleanup], modelContext: ModelContext(modelContext.container),
+                retained: workspaceRetained + unconfirmed, committed: entry.committed
+            ) else { continue }
+            store.remove([entry.record.url])
             cleared += 1
         }
         return cleared
@@ -318,6 +334,8 @@ struct ConnectorCredentialCleanupStore: Sendable {
                     _ = try FileManager.default.attributesOfItem(atPath: url.path)
                     guard try JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) == cleanup
                     else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path]) }
+                    // Reused for this attempt, so it names this attempt's store.
+                    if let storeIdentity { try Data(storeIdentity.utf8).write(to: Self.storeMark(for: url), options: .atomic) }
                     continue
                 } catch where WorkspaceFileLayout.isMissingFile(error) {}
                 try data.write(to: url, options: .atomic)

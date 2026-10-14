@@ -319,6 +319,11 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         }
     }
 
+    /// When `record` was last written; nil when that can't be read.
+    func writtenAt(_ record: WorkspaceDeletionCleanupRecord) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: recordURL(for: record).path))?[.modificationDate] as? Date
+    }
+
     /// The connectors every other pending deletion holds, which `record`'s
     /// settlement must spare: a mirror one of them keeps may yet be
     /// recovered. Nil when a record can't be read.
@@ -516,6 +521,7 @@ enum WorkspaceDeletionCleanupService {
         // What other deletions hold is spared, so every record must read.
         guard store.pendingConnectors() != nil else { return 0 }
         let currentStore = PersistentStoreIdentity.current(for: modelContext)
+        let storeCreated = PersistentStoreIdentity.createdAt(for: modelContext)
         var remaining = store.pending()
         var settled = 0
         for record in remaining {
@@ -523,12 +529,19 @@ enum WorkspaceDeletionCleanupService {
             // a quit left unwritten is implied by the same store no longer
             // holding the workspace: only the saved deletion removed it. A
             // record from before store marks existed, most often one whose
-            // saved deletion's cleanup failed, is judged by that alone.
+            // saved deletion's cleanup failed, is judged by that alone, and
+            // only against the store it was written for: one written before
+            // this store was created, as by a recovery, can't be told apart
+            // and is kept, along with what it holds.
             guard let marked = store.isCommitted(record) else { continue }
             let committed: Bool
             switch store.storeMark(of: record) {
             case .unreadable: continue
-            case .absent: committed = marked || !storedIDs.contains(record.workspaceID)
+            case .absent:
+                if !marked {
+                    guard let storeCreated, let written = store.writtenAt(record), written >= storeCreated else { continue }
+                }
+                committed = marked || !storedIDs.contains(record.workspaceID)
             case .recorded(let recorded):
                 committed = marked || (recorded == currentStore && !storedIDs.contains(record.workspaceID))
             }

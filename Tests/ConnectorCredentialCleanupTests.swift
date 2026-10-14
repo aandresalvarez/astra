@@ -423,6 +423,67 @@ struct ConnectorCredentialCleanupTests {
         #expect(FileManager.default.fileExists(atPath: try #require(urls.first).path))
     }
 
+    @Test("An unconfirmed intent keeps what it uses while others run, and a reused intent names its new store")
+    func unconfirmedIntentsStayOwners() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        try withTemporaryCredentialKeychain {
+            let earlier = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let later = recreation(of: earlier)
+            let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: earlier))
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            // One intent from a store since replaced, unconfirmed; one saved.
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store")
+            _ = try outbox.record([later.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([later.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 2)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+
+            // Recorded again for a new attempt, an intent names that attempt's store.
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store")
+            _ = try outbox.record([earlier.keychainCleanup], storeIdentity: "this-store")
+            #expect(outbox.pending()?.records.map(\.storeIdentity) == ["this-store"])
+        }
+    }
+
+    @Test("A pre-mark workspace deletion written before this store existed is kept, not settled")
+    func legacyDeletionBeforeStoreIsKept() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-legacy-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("Store/default.store")
+        try FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let disk = try ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(url: storeURL)])
+        let context = disk.mainContext
+        try context.save()
+        let outbox = WorkspaceDeletionCleanupStore(directory: root.appendingPathComponent("Outbox"))
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            let record = WorkspaceDeletionCleanupRecord(
+                workspaceID: UUID(), primaryPath: root.appendingPathComponent("Gone").path,
+                connectors: [deleted.keychainCleanup], skills: []
+            )
+            try outbox.write(record)
+            // Written before this store was created, as before a recovery.
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 0)], ofItemAtPath: outbox.recordURL(for: record).path
+            )
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 0)
+            #expect(outbox.pending() == [record])
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            // Written for this store, it settles as a saved deletion.
+            try outbox.write(record)
+            #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == nil)
+        }
+        withExtendedLifetime(disk) {}
+    }
+
     @Test("A launch that trusts the store without scanning lets no credential cleanup run")
     func cleanupWaitsWhenStoreVouchesWithoutScan() async throws {
         #expect(!WorkspaceRecoveryTrust.allowsCleanup(in: .vouchedWithoutScan))
@@ -495,6 +556,9 @@ struct ConnectorCredentialCleanupTests {
         // nonempty store without scanning, as worktree cleanup does.
         #expect(app.contains("let connectorCleanup = ConnectorCredentialCleanupStore(for: modelContext).map"))
         #expect(app.contains("|| connectorCleanup"))
+        // A launch that skipped the scan resumes no connector cleanup either.
+        #expect(app.contains("if WorkspaceRecoveryTrust.allowsCleanup { ConnectorCredentialCleanup.resumePending(modelContext: modelContext) }"))
+        #expect(!app.contains("\n                ConnectorCredentialCleanup.resumePending(modelContext: modelContext)\n"))
         #expect(vouched.upperBound <= trusted.lowerBound)
         #expect(WorkspaceRecoveryTrust.state == .notTracked)
     }

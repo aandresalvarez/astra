@@ -954,7 +954,9 @@ public struct ASTRAApp: App {
                 // the next launch scan.
                 WorkspaceRecoveryTrust.set(recoveryVouchedWithoutScan ? .vouchedWithoutScan : .trusted)
                 WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext, movedMirrors: movedDeletionMirrors)
-                ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                // Only a scan vouches for connector owners: on a launch that
+                // skipped it, even an intent recorded meanwhile waits.
+                if WorkspaceRecoveryTrust.allowsCleanup { ConnectorCredentialCleanup.resumePending(modelContext: modelContext) }
             }
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()

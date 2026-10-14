@@ -16,4 +16,13 @@ public enum PersistentStoreIdentity {
         guard let identity = try? WorkspaceFileLayout.itemIdentityConfirmingAbsence(at: path) else { return nil }
         return path + "|" + identity
     }
+
+    /// When the store's file was created: distant past for a store kept
+    /// only in memory, which no recovery replaces, and nil when unreadable.
+    public static func createdAt(for modelContext: ModelContext) -> Date? {
+        guard let configuration = modelContext.container.configurations.first(where: { !$0.isStoredInMemoryOnly }) else {
+            return .distantPast
+        }
+        return (try? FileManager.default.attributesOfItem(atPath: configuration.url.path))?[.creationDate] as? Date
+    }
 }
