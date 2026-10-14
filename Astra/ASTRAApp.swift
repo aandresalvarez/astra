@@ -897,6 +897,7 @@ public struct ASTRAApp: App {
         let deletionStore = WorkspaceDeletionCleanupStore(for: modelContext)
         let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
         let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
+        let launchDeletionIDs = Set(deletionStore.pending().map(\.workspaceID.uuidString))
         if unsettledDeletionMirrors == nil || unsettledDeletionMirrorIDs == nil {
             AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
@@ -935,8 +936,15 @@ public struct ASTRAApp: App {
                 vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
                 afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
-                // A deletion made while recovery loads keeps its mirror out too.
-                deletionMirrorsNow: { deletionStore.pendingMirrorPaths() }
+                // A deletion made while recovery loads keeps its mirror out
+                // too, by path or, wherever that mirror is now, by ID. Only
+                // those new since launch go by ID: one already pending keeps
+                // the identity rules above.
+                deletionMirrorsNow: {
+                    deletionStore.pendingMirrorPaths().map { paths in
+                        (paths, Set(deletionStore.pending().map(\.workspaceID.uuidString)).subtracting(launchDeletionIDs))
+                    }
+                }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
                 // Only a recovery that loaded every mirror it found vouches

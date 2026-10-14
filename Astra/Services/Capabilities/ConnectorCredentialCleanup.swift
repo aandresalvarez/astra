@@ -143,9 +143,10 @@ enum ConnectorCredentialCleanup {
     ) -> Bool {
         let cleansNow = cleansNow ?? (WorkspaceRecoveryTrust.state == .notTracked)
         let store = store ?? ConnectorCredentialCleanupStore(for: modelContext)
-        let recorded: [URL]
+        let recorded: ConnectorCredentialCleanupStore.Recording
         do {
-            recorded = try store?.record(cleanups, storeIdentity: PersistentStoreIdentity.current(for: modelContext)) ?? []
+            recorded = try store?.begin(cleanups, storeIdentity: PersistentStoreIdentity.current(for: modelContext))
+                ?? ConnectorCredentialCleanupStore.Recording()
         } catch {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "intent_unwritable",
@@ -154,7 +155,7 @@ enum ConnectorCredentialCleanup {
             return false
         }
         guard save() else {
-            store?.remove(recorded)
+            store?.undo(recorded)
             return false
         }
         // Marked saved, so a retry tells this deletion from an intent whose
@@ -165,7 +166,7 @@ enum ConnectorCredentialCleanup {
         // Once it has, the matching records go, including one an earlier
         // identical deletion left, which this run has just settled.
         if cleansNow || store == nil, run(cleanups, modelContext: modelContext) {
-            store?.remove(store?.recordURLs(for: cleanups) ?? recorded)
+            store?.remove(store?.recordURLs(for: cleanups) ?? recorded.added)
         }
         return true
     }
@@ -234,7 +235,7 @@ enum ConnectorCredentialCleanup {
             return 0
         }
         let classified = classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
-        let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup)
+        let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup) + pending.heldBack
         var cleared = 0
         for entry in classified {
             if entry.unconfirmed {
@@ -286,6 +287,7 @@ enum ConnectorCredentialCleanup {
               let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>()))
                 .map({ Set($0.map(\.id)) }) else { return nil }
         return classify(pending.records, storedIDs: storedIDs, modelContext: modelContext).filter(\.unconfirmed).map(\.record.cleanup)
+            + pending.heldBack
     }
 }
 
@@ -351,11 +353,23 @@ struct ConnectorCredentialCleanupStore: Sendable {
     /// kept beside each new record: a retry against that same store can then
     /// tell a deletion saved just before a quit from one never saved.
     func record(_ cleanups: [ConnectorKeychainCleanup], storeIdentity: String? = nil) throws -> [URL] {
-        guard !cleanups.isEmpty else { return [] }
+        try begin(cleanups, storeIdentity: storeIdentity).added
+    }
+
+    /// What one `begin` changed: the records it added, and the store marks
+    /// of reused records it rewrote, with what they held before.
+    struct Recording {
+        var added: [URL] = []
+        var replacedStoreMarks: [(record: URL, previous: Data?)] = []
+    }
+
+    /// `record`, returning what a failed save must take back with `undo`.
+    func begin(_ cleanups: [ConnectorKeychainCleanup], storeIdentity: String? = nil) throws -> Recording {
+        var recording = Recording()
+        guard !cleanups.isEmpty else { return recording }
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
         )
-        var added: [URL] = []
         do {
             for cleanup in cleanups {
                 let data = try Self.encode(cleanup)
@@ -364,20 +378,44 @@ struct ConnectorCredentialCleanupStore: Sendable {
                     _ = try FileManager.default.attributesOfItem(atPath: url.path)
                     guard try JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) == cleanup
                     else { throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: url.path]) }
-                    // Reused for this attempt, so it names this attempt's store.
-                    if let storeIdentity { try Data(storeIdentity.utf8).write(to: Self.storeMark(for: url), options: .atomic) }
+                    // Reused for this attempt, so it names this attempt's store;
+                    // a failed save puts the earlier one back.
+                    if let storeIdentity {
+                        let mark = Self.storeMark(for: url)
+                        let previous: Data?
+                        do {
+                            previous = try Data(contentsOf: mark)
+                        } catch where WorkspaceFileLayout.isMissingFile(error) {
+                            previous = nil
+                        }
+                        try Data(storeIdentity.utf8).write(to: mark, options: .atomic)
+                        recording.replacedStoreMarks.append((url, previous))
+                    }
                     continue
                 } catch where WorkspaceFileLayout.isMissingFile(error) {}
                 try data.write(to: url, options: .atomic)
-                added.append(url)
+                recording.added.append(url)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
                 if let storeIdentity { try Data(storeIdentity.utf8).write(to: Self.storeMark(for: url), options: .atomic) }
             }
         } catch {
-            remove(added)
+            undo(recording)
             throw error
         }
-        return added
+        return recording
+    }
+
+    /// Takes back what `begin` changed, for a deletion that wasn't saved.
+    func undo(_ recording: Recording) {
+        remove(recording.added)
+        for (record, previous) in recording.replacedStoreMarks {
+            let mark = Self.storeMark(for: record)
+            if let previous {
+                try? previous.write(to: mark, options: .atomic)
+            } else {
+                try? FileManager.default.removeItem(at: mark)
+            }
+        }
     }
 
     func remove(_ urls: [URL]) {
@@ -427,16 +465,19 @@ struct ConnectorCredentialCleanupStore: Sendable {
             urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         } catch {
             guard WorkspaceFileLayout.isMissingFile(error) else { return nil }
-            return Pending(records: [], complete: true)
+            return Pending(records: [], heldBack: [], complete: true)
         }
         var records: [Pending.Record] = []
+        var heldBack: [ConnectorKeychainCleanup] = []
         var complete = true
         for url in urls.filter({ $0.pathExtension == "json" }).sorted(by: { $0.path < $1.path }) {
             guard let cleanup = try? JSONDecoder().decode(ConnectorKeychainCleanup.self, from: Data(contentsOf: url)) else {
                 complete = false
                 continue
             }
-            // A mark that can't be checked leaves the record for later.
+            // A mark that can't be checked leaves the record for later, and
+            // its cleanup held back as an owner of what it names meanwhile:
+            // the store it names may still hold that connector.
             let committed: Bool
             do {
                 _ = try FileManager.default.attributesOfItem(atPath: Self.commitMark(for: url).path)
@@ -444,23 +485,22 @@ struct ConnectorCredentialCleanupStore: Sendable {
             } catch where WorkspaceFileLayout.isMissingFile(error) {
                 committed = false
             } catch {
-                complete = false
+                heldBack.append(cleanup)
                 continue
             }
-            // Only a store mark confirmed missing is unknown; one that can't
-            // be read leaves the record for later too.
+            // Only a store mark confirmed missing is unknown.
             let storeIdentity: String?
             do {
                 storeIdentity = String(decoding: try Data(contentsOf: Self.storeMark(for: url)), as: UTF8.self)
             } catch where WorkspaceFileLayout.isMissingFile(error) {
                 storeIdentity = nil
             } catch {
-                complete = false
+                heldBack.append(cleanup)
                 continue
             }
             records.append(Pending.Record(url: url, cleanup: cleanup, committed: committed, storeIdentity: storeIdentity))
         }
-        return Pending(records: records, complete: complete)
+        return Pending(records: records, heldBack: heldBack, complete: complete)
     }
 
     struct Pending {
@@ -473,6 +513,9 @@ struct ConnectorCredentialCleanupStore: Sendable {
             let storeIdentity: String?
         }
         let records: [Record]
+        /// Readable cleanups whose marks can't be read: not run, but owners
+        /// of what they name until they can be.
+        let heldBack: [ConnectorKeychainCleanup]
         /// False when a record couldn't be read and was left out.
         let complete: Bool
     }

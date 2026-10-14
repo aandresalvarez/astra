@@ -529,7 +529,7 @@ public enum WorkspaceRecoveryService {
         itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
         afterImport: @escaping @MainActor () -> Void = {},
-        deletionMirrorsNow: @escaping @MainActor () -> Set<String>? = { [] }
+        deletionMirrorsNow: @escaping @MainActor () -> (paths: Set<String>, workspaceIDs: Set<String>)? = { ([], []) }
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
         // nothing needed recovering, or the scan finished and each discovered
@@ -635,9 +635,12 @@ public enum WorkspaceRecoveryService {
                 ], level: .error)
                 return false
             }
+            // By the deleted workspace's ID too, as for a mirror found away
+            // from its pinned path, its folder moved before the deletion.
             let current = loadedConfigs.filter { loaded in
-                !deletedNow.contains(loaded.mirrorFile.path)
-                    && !deletedNow.contains(WorkspacePathPresentation.resolvedPath(loaded.mirrorFile.path))
+                !deletedNow.paths.contains(loaded.mirrorFile.path)
+                    && !deletedNow.paths.contains(WorkspacePathPresentation.resolvedPath(loaded.mirrorFile.path))
+                    && !(loaded.config.id.map(deletedNow.workspaceIDs.contains) ?? false)
             }
             let chosen = newestMirrorPerWorkspace(current)
             let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: chosen.configs, save: saveImports)

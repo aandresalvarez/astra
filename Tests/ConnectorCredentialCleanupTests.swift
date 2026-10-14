@@ -493,7 +493,7 @@ struct ConnectorCredentialCleanupTests {
         try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: source.mainContext, url: mirror)
         let emptyRoot = root.appendingPathComponent("Workspaces", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyRoot, withIntermediateDirectories: true)
-        func recover(_ deletedNow: Set<String>?) async throws -> (trusted: Bool, names: [String]) {
+        func recover(_ deletedNow: (paths: Set<String>, workspaceIDs: Set<String>)?) async throws -> (trusted: Bool, names: [String]) {
             let lost = try credentialCleanupContainer()
             let trusted = await WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
                 modelContext: lost.mainContext, extraRoots: [emptyRoot.path], includeDefaultRoots: false,
@@ -501,11 +501,15 @@ struct ConnectorCredentialCleanupTests {
             ).value
             return (trusted, try lost.mainContext.fetch(FetchDescriptor<Workspace>()).map(\.name))
         }
-        #expect(try await recover([]).names == ["Deleted"])
+        #expect(try await recover(([], [])).names == ["Deleted"])
         // Deleted after the scan began: the mirror is pending deletion now.
-        let deleted = try await recover([WorkspacePathPresentation.resolvedPath(mirror.path)])
+        let deleted = try await recover(([WorkspacePathPresentation.resolvedPath(mirror.path)], []))
         #expect(deleted.trusted)
         #expect(deleted.names.isEmpty)
+        // Its folder moved before the deletion: matched by its ID instead.
+        let moved = try await recover(([], [workspace.id.uuidString]))
+        #expect(moved.trusted)
+        #expect(moved.names.isEmpty)
         // Pending deletions that can't be read import nothing.
         let unread = try await recover(nil)
         #expect(!unread.trusted)
@@ -526,9 +530,46 @@ struct ConnectorCredentialCleanupTests {
         let mark = try #require(urls.first).appendingPathExtension("store").path
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mark)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: mark) }
-        #expect(outbox.pending()?.complete == false)
+        // Held back: not run, but an owner of what it names meanwhile.
+        #expect(outbox.pending()?.records.isEmpty == true)
+        #expect(outbox.pending()?.heldBack == [connector.keychainCleanup])
+        #expect(ConnectorCredentialCleanup.unconfirmedOwners(modelContext: context, store: outbox) == [connector.keychainCleanup])
         #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 0)
         #expect(FileManager.default.fileExists(atPath: try #require(urls.first).path))
+    }
+
+    @Test("A held-back intent keeps its namespace from a saved sibling, and a failed save restores a reused intent's store mark")
+    func heldBackAndReusedIntentsKeepOwnership() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let outbox = ConnectorCredentialCleanupStore(
+            directory: FileManager.default.temporaryDirectory.appendingPathComponent("astra-connector-cleanup-\(UUID().uuidString)")
+        )
+        defer { try? FileManager.default.removeItem(at: outbox.directory) }
+        try withTemporaryCredentialKeychain {
+            let earlier = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let later = recreation(of: earlier)
+            let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: earlier))
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            let held = try #require(try outbox.record([earlier.keychainCleanup], storeIdentity: "another-store").first)
+            let mark = held.appendingPathExtension("store").path
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mark)
+            _ = try outbox.record([later.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([later.keychainCleanup])
+            #expect(ConnectorCredentialCleanup.resumePending(modelContext: context, store: outbox) == 1)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: mark)
+
+            // Deleted again, but the save fails: the intent names its earlier
+            // store again, not this one.
+            context.insert(earlier)
+            try context.save()
+            context.delete(earlier)
+            #expect(!ConnectorCredentialCleanup.deleteThenClean(
+                [earlier.keychainCleanup], modelContext: context, store: outbox, cleansNow: false
+            ) { false })
+            #expect(outbox.pending()?.records.map(\.storeIdentity) == ["another-store"])
+        }
     }
 
     @Test("An unconfirmed intent keeps what it uses while others run, and a reused intent names its new store")
