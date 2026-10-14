@@ -84,9 +84,10 @@ final class BrokeredExternalActionHandler {
         guard let task = task() else { return .awaitingReview }
         guard !ExternalActionPolicy.asksUser(for: .githubReviewPublication, level: policyLevel) else {
             // The reply tells the agent the user will see this exact review,
-            // so the sheet is pointed at it. Nothing is posted; a record that
-            // cannot be saved leaves the sheet offering the review files it
-            // would have offered anyway.
+            // so the sheet is pointed at it. Nothing is posted. That promise
+            // holds only once the file and its digest are recorded: without the
+            // record the sheet could offer whatever the file holds later, so a
+            // request that cannot be saved is refused rather than promised.
             do {
                 try makeReviewService(modelContext).recordReviewRequest(
                     task: task,
@@ -96,6 +97,8 @@ final class BrokeredExternalActionHandler {
                 )
             } catch {
                 audit("github_review_request_unrecorded", error: error, uncertain: false)
+                return .refused(message: "ASTRA could not record which review you asked to post, so it is not "
+                    + "offered to the user as that review (\(error.localizedDescription)). Ask again.")
             }
             return .awaitingReview
         }
@@ -135,10 +138,12 @@ final class BrokeredExternalActionHandler {
 
     /// The caller's timeout, kept inside the broker's wait: a send that
     /// outlived it would answer "not known yet" for a write that finished.
+    /// Below, only the broker's own one-second floor: a caller that asked for
+    /// two seconds is not kept waiting on a write for five.
     static let longestSendSeconds = BrokeredExternalActionBridge.defaultTimeoutSeconds - 30
 
     nonisolated static func sendTimeout(_ requested: TimeInterval) -> TimeInterval {
-        min(max(requested, 5), longestSendSeconds)
+        min(max(requested, 1), longestSendSeconds)
     }
 
     private func task() -> AgentTask? {

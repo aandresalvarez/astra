@@ -341,7 +341,7 @@ struct ConnectorMutationSendWhenProposedTests {
         let fixture = try Fixture()
         let sender = Sender()
         let handler = fixture.handler(level: .autonomous, sender: sender)
-        for timeout in [nil, 90, 100_000] as [TimeInterval?] {
+        for timeout in [nil, 2, 90, 100_000] as [TimeInterval?] {
             let staged = try fixture.stage(summary: "Timeout \(String(describing: timeout))")
             _ = await handler.sendStagedConnectorMutation(StagedConnectorMutationRequest(
                 stagedPath: staged.staged.path, requestDigest: staged.staged.digest,
@@ -351,7 +351,7 @@ struct ConnectorMutationSendWhenProposedTests {
         }
 
         #expect(sender.requests.map(\.timeoutSeconds) == [
-            URLSessionConnectorMutationSender.timeoutSeconds, 90, BrokeredExternalActionHandler.longestSendSeconds
+            URLSessionConnectorMutationSender.timeoutSeconds, 2, 90, BrokeredExternalActionHandler.longestSendSeconds
         ])
         #expect(BrokeredExternalActionHandler.longestSendSeconds < BrokeredExternalActionBridge.defaultTimeoutSeconds)
     }
