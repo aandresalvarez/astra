@@ -396,7 +396,7 @@ struct ConnectorCredentialCleanupTests {
                 try outbox.markCommitted(pending)
             }
             #expect(WorkspaceDeletionCleanupService.settle(
-                first, modelContext: context, retained: try #require(outbox.connectors(pendingBesides: first))
+                first, modelContext: context, retained: try #require(outbox.records(pendingBesides: first)).flatMap(\.connectors)
             ))
             #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
             outbox.remove(first)
@@ -422,6 +422,61 @@ struct ConnectorCredentialCleanupTests {
             #expect(WorkspaceDeletionCleanupService.resumePending(modelContext: context, store: outbox) == 2)
             #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
         }
+    }
+
+    @Test("Workspace cleanup spares unconfirmed connector intents and sibling skills, and drops unconfirmed records only when told")
+    func workspaceCleanupSparesOtherQueuesOwners() throws {
+        let container = try credentialCleanupContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("astra-deletion-outbox-\(UUID().uuidString)")
+        let connectorOutbox = ConnectorCredentialCleanupStore(directory: folder.appendingPathComponent("Connectors"))
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let outbox = WorkspaceDeletionCleanupStore(directory: folder.appendingPathComponent("Workspaces"))
+        try withTemporaryCredentialKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://jira.example.invalid")
+            let stable = try #require(KeychainSecretStore.stableConnectorEntityID(for: deleted))
+            let skillID = UUID()
+            let skillCleanup = try JSONDecoder().decode(
+                SkillKeychainCleanup.self, from: Data(#"{"skillID":"\#(skillID.uuidString)"}"#.utf8)
+            )
+            let skillService = KeychainSecretStore.skillEntityID(for: skillID)
+            #expect(AstraSecureKeychainStore.save(service: stable, account: "TOKEN", value: "shared", label: nil))
+            #expect(AstraSecureKeychainStore.save(service: skillService, account: "KEY", value: "skill", label: nil))
+            // An unconfirmed connector intent shares the namespace.
+            _ = try connectorOutbox.record([recreation(of: deleted).keychainCleanup], storeIdentity: "another-store")
+            // An unconfirmed workspace deletion shares the skill.
+            let unconfirmed = WorkspaceDeletionCleanupRecord(
+                workspaceID: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000002")),
+                primaryPath: folder.appendingPathComponent("Unconfirmed").path, connectors: [],
+                skills: [skillCleanup]
+            )
+            try outbox.write(unconfirmed)
+            try outbox.markStore(unconfirmed, identity: "another-store")
+            let saved = WorkspaceDeletionCleanupRecord(
+                workspaceID: try #require(UUID(uuidString: "FFFFFFFF-0000-0000-0000-000000000002")),
+                primaryPath: folder.appendingPathComponent("Saved").path, connectors: [deleted.keychainCleanup],
+                skills: [skillCleanup]
+            )
+            try outbox.write(saved)
+            try outbox.markCommitted(saved)
+
+            #expect(WorkspaceDeletionCleanupService.resumePending(
+                modelContext: context, store: outbox, connectorOutbox: connectorOutbox, dropsUnconfirmed: false
+            ) == 1)
+            #expect(AstraSecureKeychainStore.load(service: stable, account: "TOKEN") == "shared")
+            #expect(AstraSecureKeychainStore.load(service: skillService, account: "KEY") == "skill")
+            // Kept until the connector pass has run, then dropped.
+            #expect(outbox.pending() == [unconfirmed])
+            #expect(WorkspaceDeletionCleanupService.dropUnconfirmed(modelContext: context, store: outbox) == 1)
+            #expect(outbox.pending().isEmpty)
+        }
+        // Deleting a workspace or a connector in the app cleans up only once
+        // a trusted launch's recovery has run.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let coordinator = try String(contentsOf: root.appendingPathComponent("Astra/Services/Tasks/TaskLifecycleCoordinator.swift"), encoding: .utf8)
+        #expect(coordinator.contains("if WorkspaceRecoveryTrust.allowsCleanup,\n               let others = store.records(pendingBesides: pinned)"))
+        let cleanup = try String(contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/ConnectorCredentialCleanup.swift"), encoding: .utf8)
+        #expect(cleanup.contains("let cleansNow = cleansNow ?? (WorkspaceRecoveryTrust.state == .notTracked)"))
     }
 
     @Test("A connector intent whose store mark can't be read waits")
@@ -590,9 +645,13 @@ struct ConnectorCredentialCleanupTests {
         // nonempty store without scanning, as worktree cleanup does.
         #expect(app.contains("let connectorCleanup = ConnectorCredentialCleanupStore(for: modelContext).map"))
         #expect(app.contains("|| connectorCleanup"))
-        // A launch that skipped the scan resumes no connector cleanup either.
-        #expect(app.contains("if WorkspaceRecoveryTrust.allowsCleanup { ConnectorCredentialCleanup.resumePending(modelContext: modelContext) }"))
-        #expect(!app.contains("\n                ConnectorCredentialCleanup.resumePending(modelContext: modelContext)\n"))
+        // A launch that skipped the scan resumes no credential cleanup, and
+        // an unconfirmed workspace deletion is dropped only after both passes.
+        let gate = try #require(app.range(of: "if WorkspaceRecoveryTrust.allowsCleanup {\n                    WorkspaceDeletionCleanupService.resumePending("))
+        let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: gate.upperBound..<app.endIndex))
+        let drop = try #require(app.range(of: "WorkspaceDeletionCleanupService.dropUnconfirmed(modelContext: modelContext)", range: connectors.upperBound..<app.endIndex))
+        #expect(app[gate.upperBound..<drop.lowerBound].contains("dropsUnconfirmed: false"))
+        #expect(app.components(separatedBy: "ConnectorCredentialCleanup.resumePending(").count == 2)
         #expect(vouched.upperBound <= trusted.lowerBound)
         #expect(WorkspaceRecoveryTrust.state == .notTracked)
     }

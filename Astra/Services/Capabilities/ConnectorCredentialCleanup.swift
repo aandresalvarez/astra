@@ -125,10 +125,14 @@ enum ConnectorCredentialCleanup {
     /// store, for `resumePending`. False, with nothing recorded, when the
     /// deletion wasn't saved; the caller rolls it back.
     ///
-    /// The cleanup runs at once only while `cleansNow`, by default whenever
-    /// launch recovery vouches for the store: before that, a connector that
-    /// exists only in a mirror not yet imported could share a namespace, so
-    /// the intent waits for the trusted launch's `resumePending`.
+    /// The cleanup runs at once only while `cleansNow`. In the app it never
+    /// does by default: a connector only a mirror not yet imported holds
+    /// could share a namespace, and the workspace mirrors this deletion
+    /// rewrites are exported after the save, off this path, so one may still
+    /// name the connector. The intent waits for the next trusted launch's
+    /// `resumePending`, by which time an export that landed has dropped it
+    /// and one that didn't restores a connector that then owns what it uses.
+    /// A process that doesn't track recovery, as a test, cleans at once.
     @discardableResult
     static func deleteThenClean(
         _ cleanups: [ConnectorKeychainCleanup],
@@ -137,7 +141,7 @@ enum ConnectorCredentialCleanup {
         cleansNow: Bool? = nil,
         save: () -> Bool
     ) -> Bool {
-        let cleansNow = cleansNow ?? WorkspaceRecoveryTrust.allowsCleanup
+        let cleansNow = cleansNow ?? (WorkspaceRecoveryTrust.state == .notTracked)
         let store = store ?? ConnectorCredentialCleanupStore(for: modelContext)
         let recorded: [URL]
         do {
@@ -229,17 +233,7 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return 0
         }
-        let currentStore = PersistentStoreIdentity.current(for: modelContext)
-        // Every record is classified first: one from a store since replaced
-        // that can't be confirmed keeps what it uses while the others run,
-        // even when a connector with its ID is stored now, since that one
-        // may resolve elsewhere than the earlier store's.
-        let classified = pending.records.map { record in
-            let stored = storedIDs.contains(record.cleanup.connectorID)
-            let sameStore = record.storeIdentity != nil && record.storeIdentity == currentStore
-            let committed = record.committed || (!stored && sameStore)
-            return (record: record, committed: committed, unconfirmed: !committed && !sameStore)
-        }
+        let classified = classify(pending.records, storedIDs: storedIDs, modelContext: modelContext)
         let unconfirmed = classified.filter(\.unconfirmed).map(\.record.cleanup)
         var cleared = 0
         for entry in classified {
@@ -257,6 +251,41 @@ enum ConnectorCredentialCleanup {
             cleared += 1
         }
         return cleared
+    }
+
+    private struct Classified {
+        let record: ConnectorCredentialCleanupStore.Pending.Record
+        let committed: Bool
+        /// From a store since replaced and not confirmed saved: its
+        /// connector may still be in that store, so it keeps what it uses
+        /// while the others run, even when a connector with its ID is stored
+        /// now, since that one may resolve elsewhere.
+        let unconfirmed: Bool
+    }
+
+    private static func classify(
+        _ records: [ConnectorCredentialCleanupStore.Pending.Record], storedIDs: Set<UUID>, modelContext: ModelContext
+    ) -> [Classified] {
+        let currentStore = PersistentStoreIdentity.current(for: modelContext)
+        return records.map { record in
+            let stored = storedIDs.contains(record.cleanup.connectorID)
+            let sameStore = record.storeIdentity != nil && record.storeIdentity == currentStore
+            let committed = record.committed || (!stored && sameStore)
+            return Classified(record: record, committed: committed, unconfirmed: !committed && !sameStore)
+        }
+    }
+
+    /// The pending intents that can't be confirmed, which every other
+    /// credential cleanup, a workspace deletion's included, must spare. Nil
+    /// when the outbox, a record in it, or the store can't be read.
+    static func unconfirmedOwners(
+        modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil
+    ) -> [ConnectorKeychainCleanup]? {
+        guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return [] }
+        guard let pending = store.pending(), pending.complete,
+              let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>()))
+                .map({ Set($0.map(\.id)) }) else { return nil }
+        return classify(pending.records, storedIDs: storedIDs, modelContext: modelContext).filter(\.unconfirmed).map(\.record.cleanup)
     }
 }
 

@@ -324,13 +324,13 @@ struct WorkspaceDeletionCleanupStore: Sendable {
         (try? FileManager.default.attributesOfItem(atPath: recordURL(for: record).path))?[.modificationDate] as? Date
     }
 
-    /// The connectors every other pending deletion holds, which `record`'s
+    /// Every other pending deletion, whose connectors and skills `record`'s
     /// settlement must spare: a mirror one of them keeps may yet be
     /// recovered. Nil when a record can't be read.
-    func connectors(pendingBesides record: WorkspaceDeletionCleanupRecord) -> [ConnectorKeychainCleanup]? {
+    func records(pendingBesides record: WorkspaceDeletionCleanupRecord) -> [WorkspaceDeletionCleanupRecord]? {
         guard pendingConnectors() != nil else { return nil }
         let own = recordURL(for: record)
-        return pending().filter { recordURL(for: $0) != own }.flatMap(\.connectors)
+        return pending().filter { recordURL(for: $0) != own }
     }
 
     private func storeMarkURL(for record: WorkspaceDeletionCleanupRecord) -> URL {
@@ -426,7 +426,7 @@ enum WorkspaceDeletionCleanupService {
     /// of one that isn't are left alone: nothing proves it happened.
     static func settle(
         _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext, committed: Bool = true,
-        retained: [ConnectorKeychainCleanup] = [], movedMirrors: [String] = [],
+        retained: [ConnectorKeychainCleanup] = [], retainedSkillIDs: Set<UUID> = [], movedMirrors: [String] = [],
         identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:)
     ) -> Bool {
         // A deletion not known to be saved removes nothing at all: its
@@ -496,7 +496,7 @@ enum WorkspaceDeletionCleanupService {
         var cleared = ConnectorCredentialCleanup.run(
             record.connectors, ownership: ConnectorCredentialCleanup.Ownership(connectors, retained: retained)
         )
-        for skill in record.skills where !liveSkills.contains(skill.skillID) {
+        for skill in record.skills where !liveSkills.contains(skill.skillID) && !retainedSkillIDs.contains(skill.skillID) {
             cleared = skill.run() && cleared
         }
         if !cleared {
@@ -513,51 +513,94 @@ enum WorkspaceDeletionCleanupService {
     static func resumePending(
         modelContext: ModelContext,
         store: WorkspaceDeletionCleanupStore? = nil,
-        movedMirrors: [String] = []
+        movedMirrors: [String] = [],
+        connectorOutbox: ConnectorCredentialCleanupStore? = nil,
+        dropsUnconfirmed: Bool = true
     ) -> Int {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
-        guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Workspace>()))
-            .map({ Set($0.map(\.id)) }) else { return 0 }
-        // What other deletions hold is spared, so every record must read.
-        guard store.pendingConnectors() != nil else { return 0 }
-        let currentStore = PersistentStoreIdentity.current(for: modelContext)
-        let storeCreated = PersistentStoreIdentity.createdAt(for: modelContext)
-        var remaining = store.pending()
+        // What other deletions and unconfirmed connector intents hold is
+        // spared, so every record of both must read.
+        guard store.pendingConnectors() != nil,
+              let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(modelContext: modelContext, store: connectorOutbox),
+              let classified = classify(store: store, modelContext: modelContext) else { return 0 }
+        // Every record holds what it names until it is settled as a saved
+        // deletion: one unconfirmed, or kept for later, holds it all batch.
+        var held = classified.map(\.record)
         var settled = 0
-        for record in remaining {
-            // A mark that can't be checked leaves the record for later. One
-            // a quit left unwritten is implied by the same store no longer
-            // holding the workspace: only the saved deletion removed it. A
-            // record from before store marks existed, most often one whose
-            // saved deletion's cleanup failed, is judged by that alone, and
-            // only against the store it was written for: one written before
-            // this store was created, as by a recovery, can't be told apart
-            // and is kept, along with what it holds.
-            guard let marked = store.isCommitted(record) else { continue }
-            let committed: Bool
-            switch store.storeMark(of: record) {
-            case .unreadable: continue
-            case .absent:
-                if !marked {
-                    guard let storeCreated, let written = store.writtenAt(record), written >= storeCreated else { continue }
-                }
-                committed = marked || !storedIDs.contains(record.workspaceID)
-            case .recorded(let recorded):
-                committed = marked || (recorded == currentStore && !storedIDs.contains(record.workspaceID))
+        for (record, disposition) in classified {
+            switch disposition {
+            case .wait:
+                continue
+            case .unconfirmed:
+                // Nothing is removed for it. Dropped here, or once every other
+                // cleanup has run, so its mirror can be recovered again.
+                guard dropsUnconfirmed else { continue }
+                store.remove(record)
+                settled += 1
+            case .committed:
+                let others = held.filter { store.recordURL(for: $0) != store.recordURL(for: record) }
+                guard settle(
+                    record, modelContext: ModelContext(modelContext.container),
+                    retained: others.flatMap(\.connectors) + intentOwners,
+                    retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }), movedMirrors: movedMirrors
+                ) else { continue }
+                store.remove(record)
+                held = others
+                settled += 1
             }
-            let others = remaining.filter { store.recordURL(for: $0) != store.recordURL(for: record) }
-            guard settle(
-                record, modelContext: ModelContext(modelContext.container), committed: committed,
-                retained: others.flatMap(\.connectors), movedMirrors: movedMirrors
-            ) else { continue }
-            store.remove(record)
-            // Only a settled saved deletion stops holding what it names. An
-            // unconfirmed one keeps its connectors for the rest of the batch,
-            // whichever order the records come in.
-            if committed { remaining = others }
-            settled += 1
         }
         return settled
+    }
+
+    /// Drops the records `resumePending` left with `dropsUnconfirmed` off,
+    /// once the cleanups that had to spare what they hold have run.
+    @discardableResult
+    static func dropUnconfirmed(modelContext: ModelContext, store: WorkspaceDeletionCleanupStore? = nil) -> Int {
+        let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
+        guard let classified = classify(store: store, modelContext: modelContext) else { return 0 }
+        let unconfirmed = classified.filter { $0.disposition == .unconfirmed }.map(\.record)
+        for record in unconfirmed { store.remove(record) }
+        return unconfirmed.count
+    }
+
+    enum Disposition: Equatable {
+        /// A mark can't be read, or a record from before store marks was
+        /// written before this store existed: kept for later.
+        case wait
+        /// Not known to be saved: nothing is removed for it.
+        case unconfirmed
+        case committed
+    }
+
+    /// Each pending record's disposition. A mark that can't be checked
+    /// leaves the record for later. One a quit left unwritten is implied by
+    /// the same store no longer holding the workspace: only the saved
+    /// deletion removed it. A record from before store marks existed, most
+    /// often one whose saved deletion's cleanup failed, is judged by that
+    /// alone, and only against the store it was written for: one written
+    /// before this store was created, as by a recovery, can't be told apart
+    /// and is kept, along with what it holds. Nil when the store can't be read.
+    static func classify(
+        store: WorkspaceDeletionCleanupStore, modelContext: ModelContext
+    ) -> [(record: WorkspaceDeletionCleanupRecord, disposition: Disposition)]? {
+        guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Workspace>()))
+            .map({ Set($0.map(\.id)) }) else { return nil }
+        let currentStore = PersistentStoreIdentity.current(for: modelContext)
+        let storeCreated = PersistentStoreIdentity.createdAt(for: modelContext)
+        return store.pending().map { record in
+            guard let marked = store.isCommitted(record) else { return (record, .wait) }
+            let gone = !storedIDs.contains(record.workspaceID)
+            switch store.storeMark(of: record) {
+            case .unreadable:
+                return (record, .wait)
+            case .absent:
+                if marked { return (record, .committed) }
+                guard let storeCreated, let written = store.writtenAt(record), written >= storeCreated else { return (record, .wait) }
+                return (record, gone ? .committed : .unconfirmed)
+            case .recorded(let recorded):
+                return (record, marked || (recorded == currentStore && gone) ? .committed : .unconfirmed)
+            }
+        }
     }
 
     /// False when a mirror that exists couldn't be removed. Existence is

@@ -953,10 +953,16 @@ public struct ASTRAApp: App {
                 // namespace: credential cleanups wait, and their records make
                 // the next launch scan.
                 WorkspaceRecoveryTrust.set(recoveryVouchedWithoutScan ? .vouchedWithoutScan : .trusted)
-                WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext, movedMirrors: movedDeletionMirrors)
-                // Only a scan vouches for connector owners: on a launch that
-                // skipped it, even an intent recorded meanwhile waits.
-                if WorkspaceRecoveryTrust.allowsCleanup { ConnectorCredentialCleanup.resumePending(modelContext: modelContext) }
+                // Only a scan vouches for credential owners: on a launch that
+                // skipped it, even a cleanup recorded meanwhile waits. Each
+                // pass spares what the other's pending records hold, so an
+                // unconfirmed workspace deletion is dropped only after both.
+                if WorkspaceRecoveryTrust.allowsCleanup {
+                    WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
+                                                                  movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
+                    ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                    WorkspaceDeletionCleanupService.dropUnconfirmed(modelContext: modelContext)
+                }
             }
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()

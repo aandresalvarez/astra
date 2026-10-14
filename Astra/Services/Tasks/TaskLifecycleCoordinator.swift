@@ -842,10 +842,18 @@ final class TaskLifecycleCoordinator {
                     "error": error.localizedDescription
                 ], level: .error)
             }
-            // Connectors other pending deletions hold are spared; while any
-            // of those can't be read, the retry at launch settles this one.
-            if let retained = store.connectors(pendingBesides: pinned),
-               WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext, committed: true, retained: retained) {
+            // Settled now only while recovery vouches for the store's owners;
+            // otherwise the trusted launch's retry settles it. What other
+            // pending deletions and unconfirmed connector intents hold is
+            // spared, and while any of those can't be read, the retry does it.
+            if WorkspaceRecoveryTrust.allowsCleanup,
+               let others = store.records(pendingBesides: pinned),
+               let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(modelContext: modelContext),
+               WorkspaceDeletionCleanupService.settle(
+                   pinned, modelContext: modelContext, committed: true,
+                   retained: others.flatMap(\.connectors) + intentOwners,
+                   retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) })
+               ) {
                 store.remove(pinned)
             }
         } else {
