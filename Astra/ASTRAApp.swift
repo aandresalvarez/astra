@@ -893,6 +893,7 @@ public struct ASTRAApp: App {
         // launch that skips recovery, or meets an unreadable record, settles
         // nothing: the owners it would have rebuilt are unknown, so the
         // records wait for a launch that recovers.
+        WorkspaceRecoveryTrust.set(.pending)
         let deletionStore = WorkspaceDeletionCleanupStore(for: modelContext)
         let unsettledDeletionMirrors = deletionStore.pendingMirrorPaths()
         let unsettledDeletionMirrorIDs = deletionStore.pendingMirrorIdentities()
@@ -905,11 +906,17 @@ public struct ASTRAApp: App {
             // A store rebuilt from workspace mirrors imports its runs after
             // the settling below, so what it imported in flight is settled
             // again as soon as it lands, before snapshot recovery compares it.
-            // Worktree cleanup and interrupted creations read pins from the
-            // store too, so while any is pending recovery scans for mirrors.
+            // Worktree cleanup, interrupted creations, and connector credential
+            // cleanup read owners from the store too, so while any is pending
+            // recovery scans for mirrors.
             let worktreeCleanup = TaskWorktreeCleanupStore()
+            // An outbox that can't be listed counts as pending.
+            let connectorCleanup = ConnectorCredentialCleanupStore(for: modelContext).map { outbox in
+                outbox.pending().map { !$0.records.isEmpty || !$0.complete } ?? true
+            } ?? false
             let pendingWorktreeCleanup = ((try? worktreeCleanup.pendingURLs()).map { !$0.isEmpty } ?? true)
                 || ((try? worktreeCleanup.ownership.creationJournal.pendingURLs()).map { !$0.isEmpty } ?? true)
+                || connectorCleanup
             // Every folder a mirror was written into is probed too, wherever
             // it is. The store's own workspaces are recorded first, so ones
             // imported before the registry existed are covered from now on.
@@ -925,21 +932,51 @@ public struct ASTRAApp: App {
                 pendingCleanup: pendingWorktreeCleanup,
                 excludingItemIdentities: unsettledDeletionMirrorIDs,
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
+                vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
-                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) }
+                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
+                // A pending deletion, one made while recovery loads included,
+                // keeps its mirror out by path or, wherever a copy of it is
+                // now, as across volumes where its identity doesn't follow,
+                // by ID.
+                deletionMirrorsNow: {
+                    deletionStore.pendingMirrorPaths().map { paths in
+                        (paths, Set(deletionStore.pending().map(\.workspaceID.uuidString)))
+                    }
+                },
+                // Settlement removes those wherever they are.
+                excludedByWorkspaceID: { movedDeletionMirrors += $0.map(\.path) },
+                loadedMirrors: { WorkspaceRecoveryTrust.recordLoadedMirrors($0.map(\.path)) }
             )
             workspaceRecoveryAfterLaunch = Task { @MainActor in
                 // Only a recovery that loaded every mirror it found vouches
                 // for the store's owners and pins; otherwise destructive
                 // cleanup waits for a launch whose recovery does.
                 guard await recovery.value else {
+                    WorkspaceRecoveryTrust.set(.untrusted)
                     AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                         "operation": "recover_workspaces", "reason": "mirror_unloadable_cleanup_deferred"
                     ], level: .error)
                     return
                 }
                 workspaceRecoveryTrusted = true
-                WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext, movedMirrors: movedDeletionMirrors)
+                // Trusted without a scan, the store vouches for its pins, but
+                // a workspace only a mirror holds could share a connector's
+                // namespace: credential cleanups wait, and their records make
+                // the next launch scan.
+                WorkspaceRecoveryTrust.set(recoveryVouchedWithoutScan ? .vouchedWithoutScan : .trusted)
+                // Only a scan vouches for credential owners: on a launch that
+                // skipped it, even a cleanup recorded meanwhile waits. Each
+                // pass spares what the other's pending records hold, so an
+                // unconfirmed workspace deletion is dropped only after both.
+                if WorkspaceRecoveryTrust.allowsCleanup {
+                    WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
+                                                                  movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
+                    ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                    WorkspaceDeletionCleanupService.dropUnconfirmed(
+                        modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
+                    )
+                }
             }
         }
         // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
@@ -1034,6 +1071,7 @@ public struct ASTRAApp: App {
     /// Pending deletions' mirrors recovery found away from their pinned
     /// paths, matched by identity, for settlement to remove.
     @MainActor private static var movedDeletionMirrors: [String] = []
+    @MainActor private static var recoveryVouchedWithoutScan = false
 
     /// Compares every task-folder baseline a run left behind — interrupted by
     /// a crash, or cancelled by a quit before its worker compared — after

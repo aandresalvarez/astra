@@ -777,15 +777,34 @@ final class TaskLifecycleCoordinator {
             ], level: .error)
             return (false, nil, nil)
         }
+        // The store mark a reused record had before this attempt, put back
+        // with the record if the deletion isn't saved.
+        var previousStoreMark: Data?
         func restoreRecord() {
             do {
                 try store.restore(previousRecord, replacing: cleanupRecord)
+                if previousRecord != nil { store.restoreStoreMark(cleanupRecord, previous: previousStoreMark) }
             } catch {
                 AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                     "operation": "delete_workspace", "reason": "deletion_cleanup_restore_failed",
                     "error": error.localizedDescription
                 ], level: .error)
             }
+        }
+        do {
+            // Without the store's identity a retry couldn't tell this deletion
+            // saved, so one that can't be identified isn't deleted.
+            guard let identity = PersistentStoreIdentity.current(for: modelContext) else {
+                throw CocoaError(.fileReadUnknown)
+            }
+            previousStoreMark = try store.markStore(cleanupRecord, identity: identity)
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "delete_workspace", "reason": "deletion_cleanup_record_failed",
+                "error": error.localizedDescription
+            ], level: .error)
+            restoreRecord()
+            return (false, nil, nil)
         }
         guard let requests = cancelDurably(ws.tasks) else {
             restoreRecord()
@@ -821,7 +840,39 @@ final class TaskLifecycleCoordinator {
         // Cancellation exports mirrors, so they are removed only after it and
         // the deletion are saved. An unsaved deletion owes nothing new.
         if result.persisted {
-            if WorkspaceDeletionCleanupService.settle(pinned, modelContext: modelContext) {
+            // Marked saved before anything is removed, so a retry after a quit
+            // knows the deletion happened. Without the mark, as after a quit
+            // just before it, a retry against the same store still knows.
+            do {
+                try store.markCommitted(pinned)
+            } catch {
+                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "delete_workspace", "reason": "commit_mark_unwritable",
+                    "error": error.localizedDescription
+                ], level: .error)
+            }
+            // Settled now only while recovery vouches for the store's owners;
+            // otherwise the trusted launch's retry settles it. What other
+            // pending deletions and unconfirmed connector intents hold is
+            // spared, and while any of those can't be read, the retry does it.
+            // Every mirror the launch's recovery loaded is passed too: a copy
+            // of this workspace's goes with it, and any other one keeps the
+            // connectors and skills it lists.
+            let deleting = Set(store.pending().map(\.workspaceID))
+            if WorkspaceRecoveryTrust.allowsCleanup,
+               let others = store.records(pendingBesides: pinned),
+               let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(
+                   modelContext: modelContext, excludingWorkspaceIDs: deleting
+               ),
+               let mirrored = ConnectorCredentialCleanup.connectorsInStoredMirrors(
+                   modelContext: modelContext, excludingWorkspaceIDs: deleting
+               ),
+               WorkspaceDeletionCleanupService.settle(
+                   pinned, modelContext: modelContext, committed: true,
+                   retained: others.flatMap(\.connectors) + intentOwners,
+                   retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }).union(mirrored.skillIDs),
+                   movedMirrors: WorkspaceRecoveryTrust.loadedMirrors
+               ) {
                 store.remove(pinned)
             }
         } else {

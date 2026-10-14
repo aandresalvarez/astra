@@ -34,6 +34,8 @@ public enum WorkspaceRecoveryService {
 
     private struct LoadedWorkspaceConfig: @unchecked Sendable {
         public var config: WorkspaceConfigManager.WorkspaceConfig
+        /// The mirror file it was read from.
+        public var mirrorFile: URL
     }
 
     public struct LegacyStoreRepairResult: Equatable {
@@ -522,10 +524,14 @@ public enum WorkspaceRecoveryService {
         pendingCleanup: Bool = false,
         excludingItemIdentities excludedIdentities: Set<String> = [],
         excludedByIdentity: @escaping @MainActor ([URL]) -> Void = { _ in },
+        vouchedWithoutScan: @escaping @MainActor () -> Void = {},
         registeredFolders: [String]? = [],
         itemIdentity: @escaping @MainActor (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         saveImports: @escaping @MainActor (ModelContext) throws -> Void = { try $0.save() },
-        afterImport: @escaping @MainActor () -> Void = {}
+        afterImport: @escaping @MainActor () -> Void = {},
+        deletionMirrorsNow: @escaping @MainActor () -> (paths: Set<String>, workspaceIDs: Set<String>)? = { ([], []) },
+        excludedByWorkspaceID: @escaping @MainActor ([URL]) -> Void = { _ in },
+        loadedMirrors: @escaping @MainActor ([URL]) -> Void = { _ in }
     ) -> Task<Bool, Never> {
         // True when the store reflects every mirror recovery could find:
         // nothing needed recovering, or the scan finished and each discovered
@@ -541,6 +547,7 @@ public enum WorkspaceRecoveryService {
                 pendingCleanup: pendingCleanup || !excluded.isEmpty || !excludedIdentities.isEmpty,
                 hasWorkspaces: !fetchExistingWorkspaces(modelContext: modelContext).isEmpty
             ) {
+                vouchedWithoutScan()
                 return true
             }
             let scan = await withTaskGroup(
@@ -602,6 +609,8 @@ public enum WorkspaceRecoveryService {
                     + (registeredFolders ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
             )
             guard !Task.isCancelled else { return false }
+            // Every mirror loaded, imported or not, for cleanup to reconcile.
+            loadedMirrors(loadedConfigs.map(\.mirrorFile))
             // The marker goes down before anything is imported and comes off
             // only once recovery is trusted, so imports never become durable
             // while the incomplete state isn't. If it can't be written,
@@ -620,7 +629,36 @@ public enum WorkspaceRecoveryService {
                     return false
                 }
             }
-            let chosen = newestMirrorPerWorkspace(loadedConfigs)
+            // A workspace deleted while its mirror was loading is left out:
+            // the pending deletions are read again in the same main-actor
+            // step as the import, so no deletion can land in between. One
+            // that can't be read imports nothing.
+            guard let deletedNow = deletionMirrorsNow() else {
+                AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                    "operation": "recover_workspaces", "reason": "deletion_record_unreadable"
+                ], level: .error)
+                return false
+            }
+            // By the deleted workspace's ID too, as for a mirror found away
+            // from its pinned path, its folder moved before the deletion.
+            // One left out by ID alone lies away from the deletion's pinned
+            // path, so it is reported for settlement to remove too.
+            // IDs compared as UUIDs, as the importer reads them, so no
+            // spelling of the deleted workspace's ID slips past.
+            let deletedIDs = Set(deletedNow.workspaceIDs.compactMap(UUID.init(uuidString:)))
+            var current: [LoadedWorkspaceConfig] = []
+            var movedByID: [URL] = []
+            for loaded in loadedConfigs {
+                if deletedNow.paths.contains(loaded.mirrorFile.path)
+                    || deletedNow.paths.contains(WorkspacePathPresentation.resolvedPath(loaded.mirrorFile.path)) { continue }
+                if loaded.config.id.flatMap(UUID.init(uuidString:)).map(deletedIDs.contains) ?? false {
+                    movedByID.append(loaded.mirrorFile)
+                    continue
+                }
+                current.append(loaded)
+            }
+            if !movedByID.isEmpty { excludedByWorkspaceID(movedByID) }
+            let chosen = newestMirrorPerWorkspace(current)
             let recovered = recoverMissingWorkspaces(modelContext: modelContext, loadedConfigs: chosen.configs, save: saveImports)
             if recovered.imported > 0 {
                 afterImport()
@@ -702,7 +740,7 @@ public enum WorkspaceRecoveryService {
                         config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
                             .standardizedFileURL
                             .path
-                        return LoadedWorkspaceConfig(config: config)
+                        return LoadedWorkspaceConfig(config: config, mirrorFile: configURL)
                     } catch {
                         AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                             "config_file": configURL.lastPathComponent,
