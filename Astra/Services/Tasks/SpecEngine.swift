@@ -137,17 +137,39 @@ enum AsyncProcessRunner {
     /// `terminate()`'s group signal; once the wrapper dies it is no longer
     /// the wrapper's child for a later walk to find.
     private static func stopProcessTree(rootedAt root: pid_t) -> [pid_t] {
-        kill(root, SIGSTOP)
+        stopProcess(root)
         var descendants: [pid_t] = []
         var parents = [root]
         while let parent = parents.popLast() {
             for child in childPIDs(of: parent) {
-                kill(child, SIGSTOP)
+                stopProcess(child)
                 descendants.append(child)
                 parents.append(child)
             }
         }
         return descendants
+    }
+
+    /// Sends SIGSTOP and polls until `pid` reports itself stopped. POSIX
+    /// `kill` only promises the signal was sent, and a process that is still
+    /// running can fork after its children are listed. XNU stops the target
+    /// before `kill` returns, so the first check normally passes.
+    private static func stopProcess(_ pid: pid_t) {
+        guard kill(pid, SIGSTOP) == 0 else { return }
+        var polls = 0
+        while !hasStoppedOrExited(pid), polls < 1_000 {
+            usleep(100)
+            polls += 1
+        }
+    }
+
+    private static func hasStoppedOrExited(_ pid: pid_t) -> Bool {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return true }
+        return info.pbi_status == UInt32(SSTOP)
+            || info.pbi_status == UInt32(SZOMB)
+            || info.pbi_flags & UInt32(PROC_FLAG_INEXIT) != 0
     }
 
     private static func childPIDs(of pid: pid_t) -> [pid_t] {
