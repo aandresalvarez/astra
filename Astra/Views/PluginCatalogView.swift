@@ -927,7 +927,7 @@ struct PluginCatalogView: View {
             "tools_count": String(state.toolIDStrings.count),
             "removed_workspace_skills_count": String(result.removedWorkspaceSkillIDs.count),
             "removed_workspace_connectors_count": String(result.removedWorkspaceConnectorIDs.count),
-            "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
+            "enabled_capability_ids": CapabilityAudit.compactNames(workspace.capabilityActivation.capabilityIDs)
         ])
     }
 
@@ -1132,7 +1132,7 @@ struct PluginCatalogView: View {
         traceID: String
     ) {
         guard status == .approved,
-              workspace.enabledCapabilityIDs.contains(package.id) else { return }
+              workspace.capabilityActivation.capabilityIDs.contains(package.id) else { return }
         do {
             _ = try CapabilityCatalogActionService().enable(
                 package,

@@ -5,12 +5,12 @@ import ASTRAModels
 struct CapabilityRailSnapshotSignature: Hashable {
     let workspaceID: UUID
     let workspaceName: String
-    let enabledCapabilityIDs: [String]
-    let installedPluginIDs: [String]
-    let installedPluginVersions: [String]
-    let enabledGlobalSkillIDs: [String]
-    let enabledGlobalConnectorIDs: [String]
-    let enabledGlobalToolIDs: [String]
+    let capabilityIDs: [String]
+    let pluginIDs: [String]
+    let pluginVersions: [String]
+    let globalSkillIDs: [String]
+    let globalConnectorIDs: [String]
+    let globalToolIDs: [String]
     let workspaceSkills: [CapabilityRailResourceSignature]
     let workspaceConnectors: [CapabilityRailResourceSignature]
     let workspaceTools: [CapabilityRailResourceSignature]
@@ -34,22 +34,22 @@ struct CapabilityRailSnapshotSignature: Hashable {
     ) {
         workspaceID = workspace.id
         workspaceName = workspace.name
-        enabledCapabilityIDs = workspace.enabledCapabilityIDs.sorted()
+        capabilityIDs = workspace.capabilityActivation.capabilityIDs.sorted()
         var installedPlugins: [(id: String, version: String)] = []
-        for (index, id) in workspace.installedPluginIDs.enumerated() {
-            let version = index < workspace.installedPluginVersions.count
-                ? workspace.installedPluginVersions[index]
+        for (index, id) in workspace.capabilityActivation.pluginIDs.enumerated() {
+            let version = index < workspace.capabilityActivation.pluginVersions.count
+                ? workspace.capabilityActivation.pluginVersions[index]
                 : ""
             installedPlugins.append((id: id, version: version))
         }
         installedPlugins.sort { lhs, rhs in
             lhs.id == rhs.id ? lhs.version < rhs.version : lhs.id < rhs.id
         }
-        installedPluginIDs = installedPlugins.map { $0.id }
-        installedPluginVersions = installedPlugins.map { $0.version }
-        enabledGlobalSkillIDs = workspace.enabledGlobalSkillIDs.sorted()
-        enabledGlobalConnectorIDs = workspace.enabledGlobalConnectorIDs.sorted()
-        enabledGlobalToolIDs = workspace.enabledGlobalToolIDs.sorted()
+        pluginIDs = installedPlugins.map { $0.id }
+        pluginVersions = installedPlugins.map { $0.version }
+        globalSkillIDs = workspace.capabilityActivation.globalSkillIDs.sorted()
+        globalConnectorIDs = workspace.capabilityActivation.globalConnectorIDs.sorted()
+        globalToolIDs = workspace.capabilityActivation.globalToolIDs.sorted()
         workspaceSkills = workspace.skills.map(CapabilityRailResourceSignature.init(skill:)).sorted()
         workspaceConnectors = workspace.connectors.map(CapabilityRailResourceSignature.init(connector:)).sorted()
         workspaceTools = workspace.localTools.map(CapabilityRailResourceSignature.init(tool:)).sorted()
@@ -355,10 +355,10 @@ struct CapabilityRailSnapshotCache {
 }
 
 struct CapabilityRailWorkspaceResourceIndex {
-    let enabledCapabilityIDs: Set<String>
-    let enabledGlobalSkillIDs: Set<String>
-    let enabledGlobalConnectorIDs: Set<String>
-    let enabledGlobalToolIDs: Set<String>
+    let capabilityIDs: Set<String>
+    let globalSkillIDs: Set<String>
+    let globalConnectorIDs: Set<String>
+    let globalToolIDs: Set<String>
     let workspaceSkillIDs: Set<UUID>
     let workspaceConnectorIDs: Set<UUID>
     let workspaceToolIDs: Set<UUID>
@@ -371,10 +371,10 @@ struct CapabilityRailWorkspaceResourceIndex {
     let availableGlobalTools: [LocalTool]
 
     init(workspace: Workspace, capabilities: WorkspaceCapabilities) {
-        enabledCapabilityIDs = Set(workspace.enabledCapabilityIDs)
-        enabledGlobalSkillIDs = Set(workspace.enabledGlobalSkillIDs)
-        enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs)
-        enabledGlobalToolIDs = Set(workspace.enabledGlobalToolIDs)
+        capabilityIDs = Set(workspace.capabilityActivation.capabilityIDs)
+        globalSkillIDs = Set(workspace.capabilityActivation.globalSkillIDs)
+        globalConnectorIDs = Set(workspace.capabilityActivation.globalConnectorIDs)
+        globalToolIDs = Set(workspace.capabilityActivation.globalToolIDs)
         workspaceSkills = capabilities.workspaceSkills
         availableGlobalSkills = capabilities.availableGlobalSkills
         workspaceConnectors = capabilities.workspaceConnectors
@@ -498,7 +498,7 @@ struct CapabilityRailPackageSnapshotState {
         linkedTools: [LocalTool],
         index: CapabilityRailWorkspaceResourceIndex
     ) -> Bool {
-        if index.enabledCapabilityIDs.contains(package.id) {
+        if index.capabilityIDs.contains(package.id) {
             return true
         }
 
@@ -539,19 +539,19 @@ struct CapabilityRailPackageSnapshotState {
 
     private static func isSkillEnabled(_ skill: Skill, index: CapabilityRailWorkspaceResourceIndex) -> Bool {
         skill.isGlobal
-            ? index.enabledGlobalSkillIDs.contains(skill.id.uuidString)
+            ? index.globalSkillIDs.contains(skill.id.uuidString)
             : index.workspaceSkillIDs.contains(skill.id)
     }
 
     private static func isConnectorEnabled(_ connector: Connector, index: CapabilityRailWorkspaceResourceIndex) -> Bool {
         connector.isGlobal
-            ? index.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+            ? index.globalConnectorIDs.contains(connector.id.uuidString)
             : index.workspaceConnectorIDs.contains(connector.id)
     }
 
     private static func isToolEnabled(_ tool: LocalTool, index: CapabilityRailWorkspaceResourceIndex) -> Bool {
         tool.isGlobal
-            ? index.enabledGlobalToolIDs.contains(tool.id.uuidString)
+            ? index.globalToolIDs.contains(tool.id.uuidString)
             : index.workspaceToolIDs.contains(tool.id)
     }
 

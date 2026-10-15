@@ -280,7 +280,7 @@ struct WorkspacePersistenceTests {
             "browser": true,
             "query": false
         ])
-        #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
+        #expect(imported.capabilityActivation.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.isPinned == true)
         #expect(imported.tasks.first?.isDone == true)

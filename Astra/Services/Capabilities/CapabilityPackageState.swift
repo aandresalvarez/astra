@@ -36,7 +36,7 @@ struct CapabilityPackageState {
     }
 
     var isEnabled: Bool {
-        if workspace.enabledCapabilityIDs.contains(package.id) {
+        if workspace.capabilityActivation.capabilityIDs.contains(package.id) {
             return true
         }
 
@@ -120,7 +120,7 @@ struct CapabilityPackageState {
 
     private func isSkillEnabled(_ skill: Skill) -> Bool {
         skill.isGlobal
-            ? workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString)
+            ? workspace.capabilityActivation.globalSkillIDs.contains(skill.id.uuidString)
             : workspace.skills.contains { $0.id == skill.id }
     }
 
@@ -176,13 +176,13 @@ struct CapabilityPackageState {
 
     private func isConnectorEnabled(_ connector: Connector) -> Bool {
         connector.isGlobal
-            ? workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+            ? workspace.capabilityActivation.globalConnectorIDs.contains(connector.id.uuidString)
             : workspace.connectors.contains { $0.id == connector.id }
     }
 
     private func isToolEnabled(_ tool: LocalTool) -> Bool {
         tool.isGlobal
-            ? workspace.enabledGlobalToolIDs.contains(tool.id.uuidString)
+            ? workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString)
             : workspace.localTools.contains { $0.id == tool.id }
     }
 

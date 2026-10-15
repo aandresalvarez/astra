@@ -107,7 +107,7 @@ struct CapabilityInstallerTests {
         #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
         #expect(workspace.enabledGlobalToolIDs.isEmpty)
         #expect(workspace.enabledCapabilityIDs == [package.id])
-        #expect(workspace.installedVersion(of: package.id) == package.version)
+        #expect(workspace.capabilityActivation.installedVersion(of: package.id) == package.version)
 
         let skill = try #require(skills.first)
         #expect(globalConnectors.isEmpty)

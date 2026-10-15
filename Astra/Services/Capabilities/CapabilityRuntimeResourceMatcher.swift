@@ -46,7 +46,7 @@ enum CapabilityRuntimeResourceMatcher {
         packPolicy: PackResolvedPolicy? = nil
     ) -> [PluginPackage] {
         guard let workspace else { return [] }
-        let enabledIDs = Set(workspace.enabledCapabilityIDs)
+        let enabledIDs = Set(workspace.capabilityActivation.capabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
         return packPolicyAllowedPackages(
             packageDefinitions(library: library).filter { enabledIDs.contains($0.id) },
@@ -71,7 +71,7 @@ enum CapabilityRuntimeResourceMatcher {
         packPolicy: PackResolvedPolicy? = nil
     ) -> [PluginPackage] {
         guard let workspace else { return [] }
-        let enabledIDs = Set(workspace.enabledCapabilityIDs)
+        let enabledIDs = Set(workspace.capabilityActivation.capabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
         return packPolicyAllowedPackages(
             uniquePackages(definitions + PluginCatalog.builtInPackages)

@@ -23,7 +23,7 @@ struct CapabilitySetupCopier {
     }
 
     func copyablePackageIDs(from workspace: Workspace) -> Set<String> {
-        Set(workspace.enabledCapabilityIDs).intersection(OnboardingCapabilitySetup.installablePackageIDs)
+        Set(workspace.capabilityActivation.capabilityIDs).intersection(OnboardingCapabilitySetup.installablePackageIDs)
     }
 
     func copySetup(
@@ -145,7 +145,7 @@ struct CapabilitySetupCopier {
         in workspace: Workspace,
         globalConnectors: [Connector]
     ) -> [Connector] {
-        let enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs.map(Self.normalizedID))
+        let enabledGlobalConnectorIDs = Set(workspace.capabilityActivation.globalConnectorIDs.map(Self.normalizedID))
         let enabledGlobalConnectors = globalConnectors.filter { connector in
             enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))
         }
@@ -235,7 +235,7 @@ struct CapabilitySetupCopier {
             uniquingKeysWith: { first, _ in first }
         )
 
-        for rawID in workspace.enabledGlobalConnectorIDs {
+        for rawID in workspace.capabilityActivation.globalConnectorIDs {
             guard let connectorID = UUID(uuidString: rawID) else { continue }
             let keyCandidates: [String]
             if let source = connectorsByID[Self.normalizedID(rawID)] {

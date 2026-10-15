@@ -8,10 +8,9 @@ import Testing
 /// Seven stored arrays on `Workspace` record what a workspace has turned on.
 /// They were written from more than twenty places, views included, with no
 /// agreement on rollback (one snapshot skipped packs) or on what an import may
-/// trust. Writes now go through the owner, and this scan fails on a direct
-/// write anywhere else. Reads are frozen per file: a new reader, or more reads
-/// in an existing one, fails here, so phase 1 can move them behind the owner
-/// without the list growing in the meantime.
+/// trust. Writes go through the owner and reads through
+/// `workspace.capabilityActivation`; this scan fails on a direct write or read
+/// anywhere else, apart from the two files that read the config file format.
 ///
 /// This target has no package dependencies, so it is a source scan; the
 /// owner's behaviour lives in `Tests/WorkspaceCapabilityActivationTests.swift`.
@@ -36,47 +35,11 @@ struct CapabilityActivationOwnerFitnessTests {
     /// that way.
     private let pendingWriters: Set<String> = []
 
-    /// Per-file count of reads of the stored arrays. Lower an entry when a
-    /// reader moves behind the owner; never raise one.
-    private let readRegistry: [String: Int] = [
-        "Astra/Services/Browser/ShelfQuerySession.swift": 4,
-        "Astra/Services/Capabilities/CapabilityActivationDisabler.swift": 1,
-        "Astra/Services/Capabilities/CapabilityAudit.swift": 5,
-        "Astra/Services/Capabilities/CapabilityCatalogPolicy.swift": 2,
-        "Astra/Services/Capabilities/CapabilityDefinitionRepairService.swift": 3,
-        "Astra/Services/Capabilities/CapabilityInstaller.swift": 4,
-        "Astra/Services/Capabilities/CapabilityPackageState.swift": 4,
-        "Astra/Services/Capabilities/CapabilityRuntimeIntegrityService.swift": 1,
-        "Astra/Services/Capabilities/CapabilityRuntimeResourceMatcher.swift": 2,
-        "Astra/Services/Capabilities/CapabilitySetupCopier.swift": 3,
-        "Astra/Services/Capabilities/CapabilityUninstaller.swift": 7,
-        "Astra/Services/Capabilities/MCPRuntimeProjection.swift": 1,
-        "Astra/Services/Capabilities/PluginCatalogPresentation.swift": 1,
-        "Astra/Services/Capabilities/TaskCapabilityResolver.swift": 7,
-        "Astra/Services/Capabilities/WorkspaceCapabilities.swift": 4,
-        "Astra/Services/Packs/AstraPackProfileResolver.swift": 1,
-        "Astra/Services/Packs/PackWorkspacePolicyProvider.swift": 1,
-        "Astra/Services/Persistence/WorkspaceConfigManager+CapabilityImportTrust.swift": 5,
-        "Astra/Services/Persistence/WorkspaceConfigManager.swift": 3,
-        "Astra/Services/Runtime/AgentRuntimeCapabilityLaunchAudit.swift": 5,
-        "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": 1,
-        "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift": 1,
-        "Astra/Services/WorkspacePackage/WorkspacePackageExporter.swift": 1,
-        "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift": 2,
-        "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift": 2,
-        "Astra/Views/ComposerCapabilitySnapshot.swift": 7,
-        "Astra/Views/ConfigureView.swift": 11,
-        "Astra/Views/ConnectorsManagerView.swift": 1,
-        "Astra/Views/ContentView.swift": 7,
-        "Astra/Views/ContentViewBrowserSessionPolicyCache.swift": 4,
-        "Astra/Views/PluginCatalogView.swift": 2,
-        "Astra/Views/ScheduleEditorView.swift": 1,
-        "Astra/Views/ToolsManagerView.swift": 1,
-        "Astra/Views/WorkspaceAppStudioChatView.swift": 1,
-        "Astra/Views/WorkspaceHomeView.swift": 1,
-        "Astra/Views/WorkspacePackSettingsSection.swift": 5,
-        "Astra/Views/WorkspaceRightRailCapabilitySnapshotCache.swift": 15,
-        "Astra/Views/WorkspaceRightRailView.swift": 2
+    /// Files that read the config file format, whose fields share the stored
+    /// arrays' names. Everything else reads through `capabilityActivation`.
+    private let formatReaders: Set<String> = [
+        "Astra/Services/Persistence/WorkspaceConfigManager+CapabilityImportTrust.swift",
+        "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift"
     ]
 
     @Test("Capability enablement is written only through WorkspaceCapabilityActivation")
@@ -105,31 +68,27 @@ struct CapabilityActivationOwnerFitnessTests {
         )
     }
 
-    @Test("Reads of the enablement arrays stay frozen per file")
-    func readsStayFrozenPerFile() throws {
+    @Test("Enablement is read only through the owner")
+    func enablementIsReadOnlyThroughTheOwner() throws {
         let root = repositoryRoot()
-        var actual: [String: Int] = [:]
+        var readers: [String] = []
+        var unused: [String] = []
         for (relative, source) in try appSources(root: root) where !isExempt(relative) {
             let count = readCount(in: source)
-            if count > 0 { actual[relative] = count }
+            if formatReaders.contains(relative) {
+                if count == 0 { unused.append(relative) }
+                continue
+            }
+            if count > 0 { readers.append("\(relative): \(count)") }
         }
-        let grew = actual.filter { (readRegistry[$0.key] ?? 0) < $0.value }
-        let shrank = readRegistry.filter { (actual[$0.key] ?? 0) < $0.value }
         #expect(
-            grew.isEmpty,
+            readers.isEmpty,
             """
-            New or more reads of the Workspace enablement arrays. Read through \
-            `WorkspaceCapabilityActivation.state(of:)` instead: \
-            \(grew.sorted { $0.key < $1.key }.map { "\"\($0.key)\": \($0.value)" })
+            Read capability enablement through `workspace.capabilityActivation` \
+            (or `WorkspaceCapabilityActivation.state(of:)`), not the Workspace arrays: \(readers.sorted())
             """
         )
-        #expect(
-            shrank.isEmpty,
-            """
-            Fewer reads than registered; lower these entries in `readRegistry`: \
-            \(shrank.sorted { $0.key < $1.key }.map { "\"\($0.key)\": \(actual[$0.key] ?? 0)" })
-            """
-        )
+        #expect(unused.isEmpty, "These no longer read the config format; remove them from `formatReaders`: \(unused.sorted())")
     }
 
     /// `importWorkspace` defaults to restoring a config as recorded, which is
@@ -215,6 +174,7 @@ struct CapabilityActivationOwnerFitnessTests {
         #expect(readCount(in: "        .onChange(of: workspace.enabledPackIDs) {") == 1)
         #expect(readCount(in: "        workspace.enabledPackIDs = nextPackIDs") == 0)
         #expect(readCount(in: "            self.enabledPackIDs = enabledPackIDs") == 0)
+        #expect(readCount(in: "        let next = WorkspacePackSelectionPolicy.enabledPackIDs(current: x)") == 0)
     }
 
     // MARK: - Scanning
@@ -236,7 +196,7 @@ struct CapabilityActivationOwnerFitnessTests {
     ].map { try! NSRegularExpression(pattern: $0) }
 
     private static let readPattern = try! NSRegularExpression(
-        pattern: #"(?<!self)\.(\#(fieldAlternation))\b|\.installedVersion\(of:|\.installedPluginIDSet\b"#
+        pattern: #"(?<!self)\.(\#(fieldAlternation))\b(?!\s*\()|\.installedVersion\(of:|\.installedPluginIDSet\b"#
     )
 
     /// Non-comment lines that name one of the arrays or their read helpers;

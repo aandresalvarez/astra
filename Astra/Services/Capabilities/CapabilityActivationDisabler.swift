@@ -133,7 +133,7 @@ struct CapabilityActivationDisabler {
         capabilities: WorkspaceCapabilities,
         availablePackages: [PluginPackage]
     ) -> [PluginPackage] {
-        let enabledIDs = Set(workspace.enabledCapabilityIDs).subtracting([package.id])
+        let enabledIDs = Set(workspace.capabilityActivation.capabilityIDs).subtracting([package.id])
         let enabledCatalogPackages = availablePackages.filter { enabledIDs.contains($0.id) }
         // Only the synthetic standalone-skill projections. Catalog packages
         // count as remaining solely via explicit enablement above — a

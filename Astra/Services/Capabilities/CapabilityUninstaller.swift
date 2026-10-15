@@ -107,8 +107,8 @@ struct CapabilityUninstaller {
 
         for workspace in workspaces {
             let remainingWorkspacePackages = remainingPackages.filter {
-                workspace.enabledCapabilityIDs.contains($0.id) ||
-                workspace.installedPluginIDSet.contains($0.id)
+                workspace.capabilityActivation.capabilityIDs.contains($0.id) ||
+                workspace.capabilityActivation.pluginIDSet.contains($0.id)
             }
             let removableGlobalSkillIDs = Set(matchedGlobalSkills
                 .filter { skill in !remainingWorkspacePackages.contains(where: { claims(skill, package: $0) }) }
@@ -120,12 +120,12 @@ struct CapabilityUninstaller {
                 .filter { tool in !remainingWorkspacePackages.contains(where: { claims(tool, package: $0) }) }
                 .map { $0.id.uuidString })
 
-            let wasPackageEnabled = workspace.enabledCapabilityIDs.contains(package.id)
-            let wasPackageRecorded = workspace.installedPluginIDSet.contains(package.id)
+            let wasPackageEnabled = workspace.capabilityActivation.capabilityIDs.contains(package.id)
+            let wasPackageRecorded = workspace.capabilityActivation.pluginIDSet.contains(package.id)
             let hadPackageGlobals =
-                workspace.enabledGlobalSkillIDs.contains { removableGlobalSkillIDs.contains($0) } ||
-                workspace.enabledGlobalConnectorIDs.contains { removableGlobalConnectorIDs.contains($0) } ||
-                workspace.enabledGlobalToolIDs.contains { removableGlobalToolIDs.contains($0) }
+                workspace.capabilityActivation.globalSkillIDs.contains { removableGlobalSkillIDs.contains($0) } ||
+                workspace.capabilityActivation.globalConnectorIDs.contains { removableGlobalConnectorIDs.contains($0) } ||
+                workspace.capabilityActivation.globalToolIDs.contains { removableGlobalToolIDs.contains($0) }
 
             WorkspaceCapabilityActivation.mutate(workspace) {
                 $0.capabilityIDs.removeAll { $0 == package.id }

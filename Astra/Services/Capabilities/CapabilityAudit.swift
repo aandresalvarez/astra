@@ -133,11 +133,11 @@ enum CapabilityAudit {
     static func workspaceFields(_ workspace: Workspace?) -> [String: String] {
         [
             "workspace_id": workspace?.id.uuidString ?? "none",
-            "workspace_enabled_capabilities_count": String(workspace?.enabledCapabilityIDs.count ?? 0),
-            "workspace_enabled_capability_ids": compactNames(workspace?.enabledCapabilityIDs ?? []),
-            "workspace_enabled_global_skills_count": String(workspace?.enabledGlobalSkillIDs.count ?? 0),
-            "workspace_enabled_global_connectors_count": String(workspace?.enabledGlobalConnectorIDs.count ?? 0),
-            "workspace_enabled_global_tools_count": String(workspace?.enabledGlobalToolIDs.count ?? 0)
+            "workspace_enabled_capabilities_count": String(workspace?.capabilityActivation.capabilityIDs.count ?? 0),
+            "workspace_enabled_capability_ids": compactNames(workspace?.capabilityActivation.capabilityIDs ?? []),
+            "workspace_enabled_global_skills_count": String(workspace?.capabilityActivation.globalSkillIDs.count ?? 0),
+            "workspace_enabled_global_connectors_count": String(workspace?.capabilityActivation.globalConnectorIDs.count ?? 0),
+            "workspace_enabled_global_tools_count": String(workspace?.capabilityActivation.globalToolIDs.count ?? 0)
         ]
     }
 

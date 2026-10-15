@@ -282,7 +282,7 @@ enum AstraPackWorkspaceProfileProvider {
             return EnabledPackResolution(entries: [], unresolvedPackIDs: [])
         }
         let enabledPackIDs = Set(
-            workspace.enabledPackIDs
+            workspace.capabilityActivation.packIDs
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )

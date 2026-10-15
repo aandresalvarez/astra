@@ -231,3 +231,12 @@ public struct WorkspaceCapabilityActivationState: Equatable, Sendable {
         ids.append(id)
     }
 }
+
+public extension Workspace {
+    /// The workspace's capability enablement state, read through its owner.
+    /// Every read of the stored arrays outside `WorkspaceCapabilityActivation`
+    /// goes through here (`CapabilityActivationOwnerFitnessTests`).
+    var capabilityActivation: WorkspaceCapabilityActivationState {
+        WorkspaceCapabilityActivation.state(of: self)
+    }
+}

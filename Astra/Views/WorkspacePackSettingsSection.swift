@@ -12,7 +12,7 @@ struct WorkspacePackSettingsSection: View {
     private var presentation: WorkspacePackSettingsPresentation {
         WorkspacePackSettingsPresentation.make(
             snapshot: snapshot,
-            enabledPackIDs: workspace.enabledPackIDs
+            enabledPackIDs: workspace.capabilityActivation.packIDs
         )
     }
 
@@ -77,16 +77,16 @@ struct WorkspacePackSettingsSection: View {
     }
 
     private func isPackEnabled(_ packID: String) -> Bool {
-        Set(WorkspacePackSelectionPolicy.normalized(workspace.enabledPackIDs)).contains(packID)
+        Set(WorkspacePackSelectionPolicy.normalized(workspace.capabilityActivation.packIDs)).contains(packID)
     }
 
     private func setPack(_ packID: String, enabled: Bool) {
         let nextPackIDs = WorkspacePackSelectionPolicy.enabledPackIDs(
-            current: workspace.enabledPackIDs,
+            current: workspace.capabilityActivation.packIDs,
             setting: packID,
             isEnabled: enabled
         )
-        guard workspace.enabledPackIDs != nextPackIDs else { return }
+        guard workspace.capabilityActivation.packIDs != nextPackIDs else { return }
         WorkspaceCapabilityActivation.mutate(workspace) { $0.packIDs = nextPackIDs }
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)

@@ -17,7 +17,7 @@ struct BrowserSessionPolicySignature: Equatable {
     var taskID: UUID?
     var workspaceID: UUID?
     var environmentRevision: String
-    var enabledCapabilityIDs: [String]
+    var capabilityIDs: [String]
     var approvalRevision: String
     var packageDefinitionFingerprint: String
     var taskEventRevision: String
@@ -27,7 +27,7 @@ struct BrowserSessionPolicySignature: Equatable {
         taskID: UUID?,
         workspaceID: UUID? = nil,
         environmentRevision: String = "host",
-        enabledCapabilityIDs: [String],
+        capabilityIDs: [String],
         approvalRevision: String,
         packageDefinitionFingerprint: String,
         taskEventRevision: String,
@@ -36,7 +36,7 @@ struct BrowserSessionPolicySignature: Equatable {
         self.taskID = taskID
         self.workspaceID = workspaceID
         self.environmentRevision = environmentRevision
-        self.enabledCapabilityIDs = enabledCapabilityIDs
+        self.capabilityIDs = capabilityIDs
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .sorted()
@@ -51,7 +51,7 @@ struct BrowserSessionPolicySignature: Equatable {
             taskID?.uuidString ?? "no-task",
             workspaceID?.uuidString ?? "no-workspace",
             environmentRevision,
-            enabledCapabilityIDs.joined(separator: ","),
+            capabilityIDs.joined(separator: ","),
             approvalRevision,
             packageDefinitionFingerprint,
             taskEventRevision,
@@ -93,7 +93,7 @@ struct BrowserSessionPolicySource {
         packages: [PluginPackage],
         approvalRecords: [CapabilityApprovalRecord]
     ) -> [String] {
-        let enabledPackageIDs = Set(signature.enabledCapabilityIDs)
+        let enabledPackageIDs = Set(signature.capabilityIDs)
         guard !enabledPackageIDs.isEmpty else { return [] }
 
         var seen = Set<String>()
@@ -242,7 +242,7 @@ struct BrowserSessionPolicyRefreshAudit: Equatable {
 struct BrowserSessionPolicyRefreshTrigger: Equatable {
     var taskID: UUID?
     var workspaceID: UUID?
-    var enabledCapabilityIDs: [String]
+    var capabilityIDs: [String]
     var taskCanvasRevision: String
     var taskRevision: String
     var workspaceRevision: String
@@ -252,7 +252,7 @@ struct BrowserSessionPolicyRefreshTrigger: Equatable {
         [
             taskID?.uuidString ?? "no-task",
             workspaceID?.uuidString ?? "no-workspace",
-            enabledCapabilityIDs.joined(separator: ","),
+            capabilityIDs.joined(separator: ","),
             taskCanvasRevision,
             taskRevision,
             workspaceRevision,
@@ -294,20 +294,20 @@ enum BrowserSessionPolicyContext {
     struct CatalogPolicyInput: Sendable {
         let installedPackageIDs: Set<String>
         let enabledPackageIDs: Set<String>
-        let enabledPackIDs: [String]
+        let packIDs: [String]
 
         @MainActor
         init(workspace: Workspace) {
-            installedPackageIDs = workspace.installedPluginIDSet
-            enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
-            enabledPackIDs = workspace.enabledPackIDs
+            installedPackageIDs = workspace.capabilityActivation.pluginIDSet
+            enabledPackageIDs = Set(workspace.capabilityActivation.capabilityIDs)
+            packIDs = workspace.capabilityActivation.packIDs
         }
 
         func resolve() -> CapabilityCatalogPolicyContext {
             CapabilityCatalogPolicyContext(
                 installedPackageIDs: installedPackageIDs,
                 enabledPackageIDs: enabledPackageIDs,
-                packPolicy: PackWorkspacePolicyProvider.resolvedPolicy(enabledPackIDs: enabledPackIDs)
+                packPolicy: PackWorkspacePolicyProvider.resolvedPolicy(enabledPackIDs: packIDs)
             )
         }
 
@@ -315,7 +315,7 @@ enum BrowserSessionPolicyContext {
             [
                 installedPackageIDs.sorted().joined(separator: ","),
                 enabledPackageIDs.sorted().joined(separator: ","),
-                enabledPackIDs.sorted().joined(separator: ",")
+                packIDs.sorted().joined(separator: ",")
             ].joined(separator: "|")
         }
     }

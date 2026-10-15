@@ -35,6 +35,21 @@ struct ConnectorAccountResolutionTests {
         #expect(resolution.excludedConnectorIDs.isEmpty)
     }
 
+    @Test("Naming both accounts keeps both, even when one name's words are adjacent")
+    func namingBothAccountsKeepsBoth() {
+        let eng = jira(name: "Eng Jira")
+        let ops = jira(name: "Ops Jira")
+        let resolution = ConnectorAccountResolver.resolve(
+            [eng, ops], contextText: "Compare ENG and OPS Jira work queues", activation: nil
+        )
+        #expect(resolution.connectors.map(\.id) == [eng.id, ops.id])
+
+        let onlyOps = ConnectorAccountResolver.resolve(
+            [eng, ops], contextText: "List the OPS Jira queue", activation: nil
+        )
+        #expect(onlyOps.connectors.map(\.id) == [ops.id])
+    }
+
     @Test("Without a name in the task, the workspace default decides")
     func workspaceDefaultDecides() {
         let (stanford, personal) = twoJiraAccounts()

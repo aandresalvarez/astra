@@ -11,7 +11,7 @@ import ASTRAModels
 struct WorkspaceAppStudioChatView: View {
     @ObservedObject var session: WorkspaceAppStudioSession
     let workspace: Workspace
-    let enabledPackIDs: Set<String>
+    let packIDs: Set<String>
     let onPublish: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancel: () -> Void
@@ -19,14 +19,14 @@ struct WorkspaceAppStudioChatView: View {
     init(
         session: WorkspaceAppStudioSession,
         workspace: Workspace,
-        enabledPackIDs: Set<String>,
+        packIDs: Set<String>,
         onPublish: @escaping (_ seedSampleData: Bool) -> Void,
         onDraftChanged: @escaping () -> Void,
         onCancel: @escaping () -> Void
     ) {
         self._session = ObservedObject(wrappedValue: session)
         self.workspace = workspace
-        self.enabledPackIDs = enabledPackIDs
+        self.packIDs = packIDs
         self.onPublish = onPublish
         self.onDraftChanged = onDraftChanged
         self.onCancel = onCancel
@@ -343,7 +343,7 @@ struct WorkspaceAppStudioChatView: View {
     }
 
     private var templatePackLoadingSource: WorkspaceAppStudioTemplatePackLoadingSource {
-        WorkspaceAppStudioTemplatePackLoadingSource(enabledPackIDs: enabledPackIDs)
+        WorkspaceAppStudioTemplatePackLoadingSource(packIDs: packIDs)
     }
 
     private func refreshTemplatePacks(loadSignature: String) async {
@@ -352,7 +352,7 @@ struct WorkspaceAppStudioChatView: View {
         }
         guard !Task.isCancelled else { return }
         let source = templatePackLoadingSource
-        guard !source.enabledPackIDs.isEmpty else {
+        guard !source.packIDs.isEmpty else {
             await MainActor.run {
                 session.configureTemplatePacks(
                     [],

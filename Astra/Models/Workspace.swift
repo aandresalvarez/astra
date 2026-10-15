@@ -124,16 +124,6 @@ public final class Workspace: Identifiable {
         return active != primaryPath
     }
 
-    public func installedVersion(of pluginID: String) -> String? {
-        guard let idx = installedPluginIDs.firstIndex(of: pluginID),
-              idx < installedPluginVersions.count else { return nil }
-        return installedPluginVersions[idx]
-    }
-
-    public var installedPluginIDSet: Set<String> {
-        Set(installedPluginIDs)
-    }
-
     public var displayPath: String {
         URL(fileURLWithPath: primaryPath).lastPathComponent
     }

@@ -169,6 +169,6 @@ struct CapabilityUpdateRoundTripTests {
         let skills = try context.fetch(FetchDescriptor<Skill>())
         #expect(skills.count == 1)
         #expect(skills.first?.behaviorInstructions == "v2 behavior")
-        #expect(workspace.installedVersion(of: v1.id) == "2.0.0")
+        #expect(workspace.capabilityActivation.installedVersion(of: v1.id) == "2.0.0")
     }
 }

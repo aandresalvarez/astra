@@ -202,7 +202,7 @@ struct WorkspacePackageExporter {
         var entries: [WorkspacePackageCapabilityEntry] = []
         var capabilitiesRootCreated = false
 
-        for capabilityID in workspace.enabledCapabilityIDs {
+        for capabilityID in workspace.capabilityActivation.capabilityIDs {
             guard let package = capabilityLibrary.installedPackage(id: capabilityID) else { continue }
             // Mirrors CapabilityGovernance.defaultGovernance's own branch
             // condition exactly, so "what gets embedded" and "what

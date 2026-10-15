@@ -275,8 +275,8 @@ final class ShelfQuerySession: ObservableObject {
         let projectID = config["GCP_PROJECT"] ?? config["PROJECT_ID"]
         let namespace = config["BQ_DATASET"] ?? config["DATASET"] ?? config["GCP_DATASET"]
 
-        if workspace.enabledCapabilityIDs.contains("gcloud-workflow") ||
-            workspace.installedPluginIDSet.contains("gcloud-workflow") ||
+        if workspace.capabilityActivation.capabilityIDs.contains("gcloud-workflow") ||
+            workspace.capabilityActivation.pluginIDSet.contains("gcloud-workflow") ||
             connectors.contains(where: isBigQueryConnector) ||
             tools.contains(where: isBigQueryTool) {
             connections.append(DatabaseConnection(
@@ -295,7 +295,7 @@ final class ShelfQuerySession: ObservableObject {
         for workspace: Workspace,
         globalConnectors: [Connector]
     ) -> [Connector] {
-        let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs)
+        let enabledGlobalIDs = Set(workspace.capabilityActivation.globalConnectorIDs)
         return uniqueConnectors(
             workspace.connectors +
             workspace.skills.flatMap(\.connectors) +
@@ -307,7 +307,7 @@ final class ShelfQuerySession: ObservableObject {
         for workspace: Workspace,
         globalTools: [LocalTool]
     ) -> [LocalTool] {
-        let enabledGlobalIDs = Set(workspace.enabledGlobalToolIDs)
+        let enabledGlobalIDs = Set(workspace.capabilityActivation.globalToolIDs)
         return uniqueTools(
             workspace.localTools +
             workspace.skills.flatMap(\.localTools) +

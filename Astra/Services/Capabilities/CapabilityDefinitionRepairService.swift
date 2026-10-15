@@ -119,7 +119,7 @@ enum CapabilityDefinitionRepairService {
         }
 
         var updated = 0
-        for workspace in workspaces where workspace.enabledCapabilityIDs.contains(package.id) {
+        for workspace in workspaces where workspace.capabilityActivation.capabilityIDs.contains(package.id) {
             let changed = WorkspaceCapabilityActivation.mutate(workspace) { state -> Bool in
                 let before = state
                 state.globalSkillIDs.removeAll { staleOwnedSkillIDs.contains($0) }
@@ -156,7 +156,7 @@ enum CapabilityDefinitionRepairService {
         if skill.isGlobal { return true }
 
         guard let workspace = skill.workspace else { return false }
-        if workspace.enabledCapabilityIDs.contains(package.id) || workspace.installedPluginIDSet.contains(package.id) {
+        if workspace.capabilityActivation.capabilityIDs.contains(package.id) || workspace.capabilityActivation.pluginIDSet.contains(package.id) {
             return true
         }
 

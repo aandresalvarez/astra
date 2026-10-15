@@ -75,8 +75,8 @@ struct CapabilityCatalogPolicyContext: Equatable {
             workspaceTags: workspaceTags,
             isAdmin: isAdmin,
             currentAppVersion: currentAppVersion,
-            installedPackageIDs: workspace.installedPluginIDSet,
-            enabledPackageIDs: Set(workspace.enabledCapabilityIDs),
+            installedPackageIDs: workspace.capabilityActivation.pluginIDSet,
+            enabledPackageIDs: Set(workspace.capabilityActivation.capabilityIDs),
             approvalRecords: approvalRecords,
             packPolicy: packPolicy ?? packPolicyResolver(workspace)
         )

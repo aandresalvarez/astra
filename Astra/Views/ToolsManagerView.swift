@@ -122,7 +122,7 @@ struct LocalToolEditorView: View {
                                 Toggle(isOn: Binding(
                                     get: {
                                         guard let workspace else { return false }
-                                        return workspace.enabledGlobalToolIDs.contains(tool.id.uuidString)
+                                        return workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString)
                                     },
                                     set: { enabled in
                                         guard let workspace else { return }

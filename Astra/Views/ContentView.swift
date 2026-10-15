@@ -332,7 +332,7 @@ struct ContentView: View {
             ?? "host"
         return BrowserSessionPolicyRefreshTrigger(
             taskID: selectedTask?.id, workspaceID: workspace?.id,
-            enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: selectedTask),
+            capabilityIDs: normalizedEnabledCapabilityIDs(for: selectedTask),
             taskCanvasRevision: selectedTaskCanvasSignature,
             taskRevision: String(selectedTask?.updatedAt.timeIntervalSince1970 ?? 0),
             workspaceRevision: [workspaceSelectionSignature, String(workspace?.updatedAt.timeIntervalSince1970 ?? 0)]
@@ -341,7 +341,7 @@ struct ContentView: View {
         ).rawValue
     }
     private func normalizedEnabledCapabilityIDs(for task: AgentTask?) -> [String] {
-        (task?.workspace?.enabledCapabilityIDs ?? [])
+        (task?.workspace?.capabilityActivation.capabilityIDs ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .sorted()
@@ -390,7 +390,7 @@ struct ContentView: View {
 
     private var shelfAvailabilityPolicyRefreshSignature: String {
         guard let workspace = effectiveWorkspace else { return "no-workspace" }
-        let enabledPacks = workspace.enabledPackIDs
+        let enabledPacks = workspace.capabilityActivation.packIDs
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .sorted()
@@ -407,7 +407,7 @@ struct ContentView: View {
     }
 
     private var shelfAvailabilityPolicyWorkspaceHasEnabledPacks: Bool {
-        effectiveWorkspace?.enabledPackIDs.contains {
+        effectiveWorkspace?.capabilityActivation.packIDs.contains {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } ?? false
     }
@@ -1681,8 +1681,8 @@ struct ContentView: View {
 
     private func workspaceHasQueryCapability(_ workspace: Workspace?) -> Bool {
         guard let workspace else { return false }
-        return workspace.enabledCapabilityIDs.contains("gcloud-workflow")
-            || workspace.installedPluginIDSet.contains("gcloud-workflow")
+        return workspace.capabilityActivation.capabilityIDs.contains("gcloud-workflow")
+            || workspace.capabilityActivation.pluginIDSet.contains("gcloud-workflow")
             || workspace.connectors.contains { connector in
                 let serviceType = connector.serviceType.lowercased()
                 return serviceType == "gcloud" || serviceType == "bigquery" || serviceType == "database"
@@ -1857,7 +1857,7 @@ struct ContentView: View {
             let environmentRevision = diskSnapshot.environment.signatureFingerprint
             let signature = BrowserSessionPolicySignature(
                 taskID: taskID, workspaceID: workspaceID, environmentRevision: environmentRevision,
-                enabledCapabilityIDs: enabledCapabilityIDs, approvalRevision: diskSnapshot.approvalRevision,
+                capabilityIDs: enabledCapabilityIDs, approvalRevision: diskSnapshot.approvalRevision,
                 packageDefinitionFingerprint: diskSnapshot.packageFingerprint, taskEventRevision: taskEventRevision,
                 catalogPolicyRevision: catalogPolicyInput?.signature ?? "no-policy")
             let policy = browserSessionPolicyCache.policy(
@@ -1871,7 +1871,7 @@ struct ContentView: View {
                         guard var policyContext = diskSnapshot.policyContext else { return [] }
                         policyContext.approvalRecords = approvalRecords
                         return packages.filter {
-                            signature.enabledCapabilityIDs.contains($0.id)
+                            signature.capabilityIDs.contains($0.id)
                                 && CapabilityCatalogPolicy.decision(for: $0, context: policyContext).canRun
                         }
                             .flatMap(\.browserAdapters)
@@ -3543,7 +3543,7 @@ private struct ContentDetailContentView: View {
                 WorkspaceAppStudioChatView(
                     session: studioSession,
                     workspace: workspace,
-                    enabledPackIDs: WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace).enabledPackIDs,
+                    packIDs: WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace).packIDs,
                     onPublish: onPublishApp,
                     onDraftChanged: onDraftChanged,
                     onCancel: onCancelStudio

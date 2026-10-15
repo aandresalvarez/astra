@@ -71,13 +71,28 @@ enum ConnectorAccountResolver {
         return fallback
     }
 
-    /// The words that name this account. The service word itself ("jira") and
-    /// anything empty are dropped: every account of the service shares them.
+    /// The words that name this account, with the service's own words removed:
+    /// every account of the service shares those, so "Eng Jira" names the
+    /// account by "eng". Without that, "compare ENG and OPS Jira" read as
+    /// naming "ops jira" alone, because those two words happen to be adjacent.
     static func names(of connector: Connector, service: String) -> [String] {
-        [connector.accountAlias ?? "", connector.name]
-            .map(normalized)
-            .filter { !$0.isEmpty && $0 != service && $0 != normalized(connector.serviceType) }
+        let serviceWords = Set(normalized(connector.serviceType).split(separator: " ").map(String.init))
+            .union(service.split(separator: " ").map(String.init))
+            .union(serviceSynonyms[service] ?? [])
+        return [connector.accountAlias ?? "", connector.name]
+            .map { name in
+                normalized(name).split(separator: " ").map(String.init)
+                    .filter { !serviceWords.contains($0) }
+                    .joined(separator: " ")
+            }
+            .filter { !$0.isEmpty }
     }
+
+    private static let serviceSynonyms: [String: Set<String>] = [
+        "jira": ["atlassian"],
+        "redcap": ["red", "cap"],
+        "github": ["gh"]
+    ]
 
     private static func mentions(_ normalizedText: String, _ phrase: String) -> Bool {
         " \(normalizedText) ".contains(" \(phrase) ")

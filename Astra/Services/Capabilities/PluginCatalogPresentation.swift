@@ -837,7 +837,7 @@ final class PluginCatalogPresentationSourceRevision {
             catalogRevision: catalog.revision,
             approvalRevision: approvalRevision,
             persistenceRevision: persistenceRevision,
-            packPolicyRevision: workspace.enabledPackIDs.sorted().joined(separator: "|")
+            packPolicyRevision: workspace.capabilityActivation.packIDs.sorted().joined(separator: "|")
         )
     }
 }

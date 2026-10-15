@@ -53,16 +53,16 @@ struct WorkspaceAppStudioTemplateContext: Equatable, Sendable {
 
 struct WorkspaceAppTemplatePackCatalog: Equatable {
     var snapshot: AstraPackCatalogSnapshot
-    var enabledPackIDs: Set<String>
+    var packIDs: Set<String>
 
-    init(snapshot: AstraPackCatalogSnapshot, enabledPackIDs: Set<String> = []) {
+    init(snapshot: AstraPackCatalogSnapshot, packIDs: Set<String> = []) {
         self.snapshot = snapshot
-        self.enabledPackIDs = Self.normalizedPackIDs(enabledPackIDs)
+        self.packIDs = Self.normalizedPackIDs(packIDs)
     }
 
     var templates: [WorkspaceAppTemplatePackDescriptor] {
         snapshot.entries.flatMap { entry -> [WorkspaceAppTemplatePackDescriptor] in
-            guard enabledPackIDs.contains(entry.manifest.id) else { return [] }
+            guard packIDs.contains(entry.manifest.id) else { return [] }
             return entry.manifest.appTemplates.compactMap { template in
                 guard template.contributionKind == "workspaceApp" else { return nil }
                 return WorkspaceAppTemplatePackDescriptor(
@@ -89,27 +89,27 @@ struct WorkspaceAppTemplatePackCatalog: Equatable {
 }
 
 struct WorkspaceAppStudioTemplatePackLoadingSource: Equatable, Sendable {
-    var enabledPackIDs: Set<String>
+    var packIDs: Set<String>
 
-    init(enabledPackIDs: Set<String> = []) {
-        self.enabledPackIDs = WorkspaceAppTemplatePackCatalog.normalizedPackIDs(enabledPackIDs)
+    init(packIDs: Set<String> = []) {
+        self.packIDs = WorkspaceAppTemplatePackCatalog.normalizedPackIDs(packIDs)
     }
 
     @MainActor
     init(workspace: Workspace) {
-        self.enabledPackIDs = WorkspaceAppTemplatePackCatalog.normalizedPackIDs(Set(workspace.enabledPackIDs))
+        self.packIDs = WorkspaceAppTemplatePackCatalog.normalizedPackIDs(Set(workspace.capabilityActivation.packIDs))
     }
 
     func loadSignature(workspaceID: UUID) -> String {
-        ([workspaceID.uuidString] + enabledPackIDs.sorted()).joined(separator: "|")
+        ([workspaceID.uuidString] + packIDs.sorted()).joined(separator: "|")
     }
 
     func loadSignature(workspaceID: UUID, refreshRevision: Int) -> String {
-        ([workspaceID.uuidString, String(refreshRevision)] + enabledPackIDs.sorted()).joined(separator: "|")
+        ([workspaceID.uuidString, String(refreshRevision)] + packIDs.sorted()).joined(separator: "|")
     }
 
     func templates(in snapshot: AstraPackCatalogSnapshot) -> [WorkspaceAppTemplatePackDescriptor] {
-        WorkspaceAppTemplatePackCatalog(snapshot: snapshot, enabledPackIDs: enabledPackIDs).templates
+        WorkspaceAppTemplatePackCatalog(snapshot: snapshot, packIDs: packIDs).templates
     }
 }
 

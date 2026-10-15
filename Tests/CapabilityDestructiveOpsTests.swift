@@ -140,7 +140,7 @@ struct CapabilityResourceKindParityTests {
 
         for workspace in [first, second] {
             #expect(!workspace.enabledCapabilityIDs.contains(package.id))
-            #expect(!workspace.installedPluginIDSet.contains(package.id))
+            #expect(!workspace.capabilityActivation.pluginIDSet.contains(package.id))
             #expect(workspace.templates.isEmpty)
             #expect(MCPRuntimeProjection.enabledServers(
                 for: workspace, packages: [package], approvalRecords: []

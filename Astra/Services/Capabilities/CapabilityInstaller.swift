@@ -289,7 +289,7 @@ struct CapabilityInstaller {
                 "connectors_count": String(connectorIDs.count),
                 "tools_count": String(localToolIDs.count),
                 "templates_count": String(templateIDs.count),
-                "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
+                "enabled_capability_ids": CapabilityAudit.compactNames(workspace.capabilityActivation.capabilityIDs)
             ]
             enabledFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
             if let traceID { enabledFields["trace_id"] = traceID }
@@ -656,7 +656,7 @@ struct CapabilityInstaller {
         from workspace: Workspace,
         modelContext: ModelContext
     ) throws {
-        guard !workspace.enabledGlobalConnectorIDs.isEmpty else { return }
+        guard !workspace.capabilityActivation.globalConnectorIDs.isEmpty else { return }
         let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })
         let globalConnectors = try modelContext.fetch(descriptor)
         let matchingIDs = Set(
@@ -816,7 +816,7 @@ struct CapabilityInstaller {
     ) -> [String] {
         let dependencyMessages = package.installBlockers(
             appVersion: appVersion,
-            installedPluginIDs: workspace.installedPluginIDSet.union(Set(workspace.enabledCapabilityIDs))
+            installedPluginIDs: workspace.capabilityActivation.pluginIDSet.union(Set(workspace.capabilityActivation.capabilityIDs))
         ).map { blocker in
             switch blocker {
             case .appTooOld(let required, let current):

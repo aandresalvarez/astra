@@ -43,7 +43,7 @@ struct WorkspaceCapabilities {
     }
 
     var enabledGlobalSkills: [Skill] {
-        let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
+        let enabledIDs = Set(workspace.capabilityActivation.globalSkillIDs)
         return sortedSkills(globalSkills.filter {
             enabledIDs.contains($0.id.uuidString) && !$0.isSystemBuiltIn
         })
@@ -65,7 +65,7 @@ struct WorkspaceCapabilities {
     }
 
     var enabledGlobalConnectors: [Connector] {
-        let enabledIDs = Set(workspace.enabledGlobalConnectorIDs)
+        let enabledIDs = Set(workspace.capabilityActivation.globalConnectorIDs)
         return sortedConnectors(globalConnectors.filter {
             enabledIDs.contains($0.id.uuidString)
         })
@@ -78,7 +78,7 @@ struct WorkspaceCapabilities {
     }
 
     var activeConnectors: [Connector] {
-        let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs)
+        let enabledGlobalIDs = Set(workspace.capabilityActivation.globalConnectorIDs)
         let attached = activeSkills.flatMap(\.connectors).filter { connector in
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
@@ -96,7 +96,7 @@ struct WorkspaceCapabilities {
     }
 
     var enabledGlobalTools: [LocalTool] {
-        let enabledIDs = Set(workspace.enabledGlobalToolIDs)
+        let enabledIDs = Set(workspace.capabilityActivation.globalToolIDs)
         return sortedTools(globalTools.filter {
             enabledIDs.contains($0.id.uuidString)
         })

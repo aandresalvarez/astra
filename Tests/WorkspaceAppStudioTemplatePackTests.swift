@@ -71,7 +71,7 @@ struct WorkspaceAppStudioTemplatePackTests {
 
         let catalog = WorkspaceAppTemplatePackCatalog(
             snapshot: snapshot,
-            enabledPackIDs: ["astra.pack.devops"]
+            packIDs: ["astra.pack.devops"]
         )
 
         let descriptor = try #require(catalog.templates.first)
@@ -102,12 +102,12 @@ struct WorkspaceAppStudioTemplatePackTests {
         let source = WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace)
         let catalog = WorkspaceAppTemplatePackCatalog(
             snapshot: snapshot,
-            enabledPackIDs: [" astra.pack.devops ", "   "]
+            packIDs: [" astra.pack.devops ", "   "]
         )
 
-        #expect(source.enabledPackIDs == ["astra.pack.devops"])
+        #expect(source.packIDs == ["astra.pack.devops"])
         #expect(source.templates(in: snapshot).map(\.packID) == ["astra.pack.devops"])
-        #expect(catalog.enabledPackIDs == ["astra.pack.devops"])
+        #expect(catalog.packIDs == ["astra.pack.devops"])
         #expect(catalog.templates.map(\.packID) == ["astra.pack.devops"])
     }
 
@@ -115,7 +115,7 @@ struct WorkspaceAppStudioTemplatePackTests {
     func devOpsPackTemplateAppearsWhenEnabled() throws {
         let catalog = WorkspaceAppTemplatePackCatalog(
             snapshot: AstraPackCatalog(localStorageRoot: nil).load(),
-            enabledPackIDs: ["astra.pack.devops"]
+            packIDs: ["astra.pack.devops"]
         )
 
         let descriptor = try #require(catalog.templates.first { $0.templateContributionID == "pr-ci-review" })
@@ -144,7 +144,7 @@ struct WorkspaceAppStudioTemplatePackTests {
 
         let catalog = WorkspaceAppTemplatePackCatalog(
             snapshot: snapshot,
-            enabledPackIDs: ["astra.pack.research"]
+            packIDs: ["astra.pack.research"]
         )
 
         #expect(catalog.templates.map(\.packID) == ["astra.pack.research"])
@@ -208,7 +208,7 @@ struct WorkspaceAppStudioTemplatePackTests {
         #expect(defaultSource.templates(in: snapshot).isEmpty)
 
         let explicitPackSource = WorkspaceAppStudioTemplatePackLoadingSource(
-            enabledPackIDs: [capabilityIDThatMatchesAPackID]
+            packIDs: [capabilityIDThatMatchesAPackID]
         )
         #expect(explicitPackSource.loadSignature(workspaceID: workspace.id).contains(capabilityIDThatMatchesAPackID))
         #expect(try #require(explicitPackSource.templates(in: snapshot).first).packID == capabilityIDThatMatchesAPackID)
@@ -233,7 +233,7 @@ struct WorkspaceAppStudioTemplatePackTests {
 
         let source = WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace)
 
-        #expect(source.enabledPackIDs == ["astra.pack.devops"])
+        #expect(source.packIDs == ["astra.pack.devops"])
         #expect(source.templates(in: snapshot).map(\.packID) == ["astra.pack.devops"])
     }
 
@@ -252,7 +252,7 @@ struct WorkspaceAppStudioTemplatePackTests {
                     ]
                 )
             ]),
-            enabledPackIDs: ["astra.pack.private"]
+            packIDs: ["astra.pack.private"]
         ).templates.first)
         #expect(descriptor.capabilityPackageIDs == ["private-workflow"])
 
@@ -482,7 +482,7 @@ struct WorkspaceAppStudioTemplatePackTests {
                     branding: branding
                 )
             ]),
-            enabledPackIDs: [packID]
+            packIDs: [packID]
         ).templates.first)
     }
 

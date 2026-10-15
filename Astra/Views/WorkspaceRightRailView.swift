@@ -559,7 +559,7 @@ struct WorkspaceRightRailView: View {
             checkGitRepositories()
             checkDockerEnvironments()
         }
-        .onChange(of: workspace.enabledPackIDs) {
+        .onChange(of: workspace.capabilityActivation.packIDs) {
             refreshApprovedCapabilities()
             rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
         }
@@ -1240,7 +1240,7 @@ struct WorkspaceRightRailView: View {
 
     private func refreshApprovedCapabilities() {
         let refreshID = UUID()
-        let enabledPackIDs = workspace.enabledPackIDs
+        let enabledPackIDs = workspace.capabilityActivation.packIDs
         approvedCapabilityRefreshID = refreshID
 
         Task { @MainActor in

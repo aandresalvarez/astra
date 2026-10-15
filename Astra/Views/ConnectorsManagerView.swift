@@ -637,7 +637,7 @@ struct ConnectorEditorView: View {
                             Toggle(isOn: Binding(
                                 get: {
                                     guard let workspace else { return false }
-                                    return workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+                                    return workspace.capabilityActivation.globalConnectorIDs.contains(connector.id.uuidString)
                                 },
                                 set: { enabled in
                                     guard let workspace else { return }

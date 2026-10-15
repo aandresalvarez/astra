@@ -1285,7 +1285,7 @@ enum AgentRuntimeLaunchPreflight {
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
     ) async -> [String: HealthStatus] {
         let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
-        let enabledPackageIDs = Set(task.workspace?.enabledCapabilityIDs ?? [])
+        let enabledPackageIDs = Set(task.workspace?.capabilityActivation.capabilityIDs ?? [])
         let resolvedScope = capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))
         let selectedSkillNames = Set(
             resolvedScope.behaviorSkills.map(\.name)

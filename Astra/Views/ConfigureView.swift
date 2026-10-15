@@ -75,7 +75,7 @@ struct ConfigureView: View {
     }
 
     private var enabledCapabilityCount: Int {
-        var activeIDs = Set(workspace.enabledCapabilityIDs)
+        var activeIDs = Set(workspace.capabilityActivation.capabilityIDs)
         for package in configureCapabilityPackages where packageState(package).isEnabled {
             activeIDs.insert(package.id)
         }
@@ -1242,7 +1242,7 @@ struct ConnectorsTabContent: View {
                         if !sharedLibraryConnectors.isEmpty {
                             ConfigureSelectionSection("Shared Library") {
                                 ForEach(sharedLibraryConnectors) { connector in
-                                    let enabled = workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString)
+                                    let enabled = workspace.capabilityActivation.globalConnectorIDs.contains(connector.id.uuidString)
 
                                     ConfigureSelectionCard {
                                         HStack(spacing: 12) {
@@ -1401,7 +1401,7 @@ struct ConnectorsTabContent: View {
     }
 
     private func toggleGlobalConnector(_ connector: Connector) {
-        if workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString) {
+        if workspace.capabilityActivation.globalConnectorIDs.contains(connector.id.uuidString) {
             CapabilitySharing.disableShared(connector, in: workspace)
         } else {
             CapabilitySharing.enableShared(connector, in: workspace)
@@ -1411,7 +1411,7 @@ struct ConnectorsTabContent: View {
         AppLogger.audit(.connectorUpdated, category: "UI", fields: [
             "connector_id": connector.id.uuidString,
             "workspace_id": workspace.id.uuidString,
-            "enabled_global": String(workspace.enabledGlobalConnectorIDs.contains(connector.id.uuidString))
+            "enabled_global": String(workspace.capabilityActivation.globalConnectorIDs.contains(connector.id.uuidString))
         ])
     }
 
@@ -1532,7 +1532,7 @@ struct ToolsTabContent: View {
                         if !sharedLibraryTools.isEmpty {
                             ConfigureSelectionSection("Shared Library") {
                                 ForEach(sharedLibraryTools) { tool in
-                                    let enabled = workspace.enabledGlobalToolIDs.contains(tool.id.uuidString)
+                                    let enabled = workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString)
                                     ConfigureSelectionCard {
                                         HStack(spacing: 12) {
                                             Button {
@@ -1646,7 +1646,7 @@ struct ToolsTabContent: View {
                 if !tool.command.isEmpty {
                     ConfigureCardChip(title: "Configured")
                 }
-                if tool.isGlobal, workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) {
+                if tool.isGlobal, workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString) {
                     ConfigureCardChip(title: "Enabled here")
                 }
             }
@@ -1681,7 +1681,7 @@ struct ToolsTabContent: View {
     }
 
     private func toggleGlobalTool(_ tool: LocalTool) {
-        if workspace.enabledGlobalToolIDs.contains(tool.id.uuidString) {
+        if workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString) {
             CapabilitySharing.disableShared(tool, in: workspace)
         } else {
             CapabilitySharing.enableShared(tool, in: workspace)
@@ -1691,7 +1691,7 @@ struct ToolsTabContent: View {
         AppLogger.audit(.localToolUpdated, category: "UI", fields: [
             "tool_id": tool.id.uuidString,
             "workspace_id": workspace.id.uuidString,
-            "enabled_global": String(workspace.enabledGlobalToolIDs.contains(tool.id.uuidString))
+            "enabled_global": String(workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString))
         ])
     }
 
@@ -1808,7 +1808,7 @@ struct SkillsTabContent: View {
                         if !sharedLibrarySkills.isEmpty {
                             ConfigureSelectionSection("Shared Library") {
                                 ForEach(sharedLibrarySkills) { skill in
-                                    let enabled = workspace.enabledGlobalSkillIDs.contains(skill.id.uuidString)
+                                    let enabled = workspace.capabilityActivation.globalSkillIDs.contains(skill.id.uuidString)
 
                                     ConfigureSelectionCard {
                                         HStack(spacing: 12) {
@@ -1948,7 +1948,7 @@ struct SkillsTabContent: View {
         AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [
             "skill_id": skill.id.uuidString,
             "workspace_id": workspace.id.uuidString,
-            "enabled_global": String(workspace.enabledGlobalSkillIDs.contains(idString))
+            "enabled_global": String(workspace.capabilityActivation.globalSkillIDs.contains(idString))
         ])
     }
 
@@ -2166,7 +2166,7 @@ struct TemplateEditorView: View {
 
     private var availableSkills: [Skill] {
         let workspaceSkills = template.workspace?.skills ?? []
-        let enabledIDs = Set(template.workspace?.enabledGlobalSkillIDs ?? [])
+        let enabledIDs = Set(template.workspace?.capabilityActivation.globalSkillIDs ?? [])
         let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) }
         return (workspaceSkills.filter { !$0.isGlobal } + enabledGlobals).sorted { $0.name < $1.name }
     }

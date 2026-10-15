@@ -188,7 +188,7 @@ struct TaskCapabilityResolver {
     }
 
     var allConnectors: [Connector] {
-        let enabledGlobalIDs = Set(task.workspace?.enabledGlobalConnectorIDs ?? [])
+        let enabledGlobalIDs = Set(task.workspace?.capabilityActivation.globalConnectorIDs ?? [])
         let workspaceID = task.workspace?.id
         let packageSkills = enabledPackageSkills()
         let fromSkills = (task.skills + packageSkills).flatMap(\.connectors).filter { connector in
@@ -201,8 +201,8 @@ struct TaskCapabilityResolver {
         let standalone = task.workspace?.connectors.filter { $0.skill == nil && !$0.isGlobal } ?? []
         var all = fromSkills + standalone + enabledPackageConnectors()
 
-        if let ws = task.workspace, !ws.enabledGlobalConnectorIDs.isEmpty {
-            let enabledIDs = Set(ws.enabledGlobalConnectorIDs)
+        if let ws = task.workspace, !ws.capabilityActivation.globalConnectorIDs.isEmpty {
+            let enabledIDs = Set(ws.capabilityActivation.globalConnectorIDs)
             all += globalConnectors().filter { enabledIDs.contains($0.id.uuidString) }
         }
 
@@ -224,8 +224,8 @@ struct TaskCapabilityResolver {
         let standalone = task.workspace?.localTools.filter { $0.skill == nil && !$0.isGlobal } ?? []
         var all = fromSkills + standalone + enabledPackageLocalTools()
 
-        if let ws = task.workspace, !ws.enabledGlobalToolIDs.isEmpty {
-            let enabledIDs = Set(ws.enabledGlobalToolIDs)
+        if let ws = task.workspace, !ws.capabilityActivation.globalToolIDs.isEmpty {
+            let enabledIDs = Set(ws.capabilityActivation.globalToolIDs)
             all += globalLocalTools().filter { enabledIDs.contains($0.id.uuidString) }
         }
 
@@ -425,7 +425,7 @@ struct TaskCapabilityResolver {
         approvalRecords: [CapabilityApprovalRecord] = []
     ) -> [String] {
         guard let workspace else { return [] }
-        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        let enabledPackageIDs = Set(workspace.capabilityActivation.capabilityIDs)
         guard !enabledPackageIDs.isEmpty else { return [] }
         let context = CapabilityCatalogPolicyContext.workspaceUser(
             workspace: workspace,
@@ -452,7 +452,7 @@ struct TaskCapabilityResolver {
         approvalRecords: [CapabilityApprovalRecord] = []
     ) -> [RunPermissionManifest.MCPServer] {
         guard let workspace else { return [] }
-        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        let enabledPackageIDs = Set(workspace.capabilityActivation.capabilityIDs)
         guard !enabledPackageIDs.isEmpty else { return [] }
         // Single-user admin model: the manifest reflects what actually runs,
         // so it uses the same currentUser context as MCPRuntimeProjection.

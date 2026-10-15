@@ -441,7 +441,7 @@ struct WorkspacePackageImportCoordinator {
         // workspace hide pack-addressable shelves and applies an unresolved
         // policy. Missing packs are surfaced in the pre-import review.
         let availablePackIDs = Set(AstraPackCatalog().load().entries.map { $0.manifest.id })
-        let packsUnavailable = workspace.enabledPackIDs.filter { !availablePackIDs.contains($0) }
+        let packsUnavailable = workspace.capabilityActivation.packIDs.filter { !availablePackIDs.contains($0) }
         WorkspaceCapabilityActivation.mutate(workspace) { $0.packIDs.removeAll { !availablePackIDs.contains($0) } }
 
         // Every enable-intent capability that the reconciliation stripped and that
@@ -452,7 +452,7 @@ struct WorkspacePackageImportCoordinator {
         // approved here AND an embedded capability whose ID already existed
         // locally but lacks effective approval (recorded as already-installed,
         // yet stripped from the enabled set).
-        let enabledAfterReconcile = Set(workspace.enabledCapabilityIDs)
+        let enabledAfterReconcile = Set(workspace.capabilityActivation.capabilityIDs)
         let otherwiseDisclosed = Set(capabilitiesInstalledAsDraft).union(capabilitiesSkippedForConflict)
         let capabilitiesUnavailable = document.capabilityIDs.filter {
             !enabledAfterReconcile.contains($0) && !otherwiseDisclosed.contains($0)

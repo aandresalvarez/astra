@@ -8,7 +8,7 @@ enum PackWorkspacePolicyProvider {
     ) -> PackResolvedPolicy {
         guard let workspace else { return .empty }
         return resolvedPolicy(
-            enabledPackIDs: workspace.enabledPackIDs,
+            enabledPackIDs: workspace.capabilityActivation.packIDs,
             catalogSnapshot: catalogSnapshot
         )
     }

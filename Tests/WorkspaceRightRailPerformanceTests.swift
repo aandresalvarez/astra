@@ -320,7 +320,7 @@ struct WorkspaceRightRailPerformanceTests {
         let stable = BrowserSessionPolicyRefreshTrigger(
             taskID: taskID,
             workspaceID: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!,
-            enabledCapabilityIDs: ["github"],
+            capabilityIDs: ["github"],
             taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
@@ -330,7 +330,7 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(BrowserSessionPolicyRefreshTrigger(
             taskID: taskID,
             workspaceID: stable.workspaceID,
-            enabledCapabilityIDs: ["github"],
+            capabilityIDs: ["github"],
             taskCanvasRevision: "canvas:1",
             taskRevision: "task:3",
             workspaceRevision: "workspace:1",
@@ -339,7 +339,7 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(BrowserSessionPolicyRefreshTrigger(
             taskID: taskID,
             workspaceID: stable.workspaceID,
-            enabledCapabilityIDs: ["github", "jira"],
+            capabilityIDs: ["github", "jira"],
             taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
@@ -348,7 +348,7 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(BrowserSessionPolicyRefreshTrigger(
             taskID: taskID,
             workspaceID: UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")!,
-            enabledCapabilityIDs: ["github"],
+            capabilityIDs: ["github"],
             taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:2",
@@ -357,7 +357,7 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(BrowserSessionPolicyRefreshTrigger(
             taskID: taskID,
             workspaceID: stable.workspaceID,
-            enabledCapabilityIDs: ["github"],
+            capabilityIDs: ["github"],
             taskCanvasRevision: "canvas:1",
             taskRevision: "task:2",
             workspaceRevision: "workspace:1",
@@ -393,7 +393,7 @@ struct WorkspaceRightRailPerformanceTests {
             taskID: taskID,
             workspaceID: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!,
             environmentRevision: "host:1",
-            enabledCapabilityIDs: ["github-workflow"],
+            capabilityIDs: ["github-workflow"],
             approvalRevision: "approval:1",
             packageDefinitionFingerprint: "packages:v1",
             taskEventRevision: "events:v1"
@@ -413,7 +413,7 @@ struct WorkspaceRightRailPerformanceTests {
                 taskID: taskID,
                 workspaceID: UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")!,
                 environmentRevision: "docker:2",
-                enabledCapabilityIDs: ["github-workflow"],
+                capabilityIDs: ["github-workflow"],
                 approvalRevision: "approval:1",
                 packageDefinitionFingerprint: "packages:v1",
                 taskEventRevision: "events:v1"
@@ -440,7 +440,7 @@ struct WorkspaceRightRailPerformanceTests {
         _ = cache.policy(
             for: BrowserSessionPolicySignature(
                 taskID: taskID,
-                enabledCapabilityIDs: ["github-workflow"],
+                capabilityIDs: ["github-workflow"],
                 approvalRevision: "approval:2",
                 packageDefinitionFingerprint: "packages:v1",
                 taskEventRevision: "events:v1"
@@ -455,7 +455,7 @@ struct WorkspaceRightRailPerformanceTests {
         _ = cache.policy(
             for: BrowserSessionPolicySignature(
                 taskID: taskID,
-                enabledCapabilityIDs: ["github-workflow"],
+                capabilityIDs: ["github-workflow"],
                 approvalRevision: "approval:2",
                 packageDefinitionFingerprint: "packages:v2",
                 taskEventRevision: "events:v1"
@@ -470,7 +470,7 @@ struct WorkspaceRightRailPerformanceTests {
         _ = cache.policy(
             for: BrowserSessionPolicySignature(
                 taskID: taskID,
-                enabledCapabilityIDs: ["github-workflow"],
+                capabilityIDs: ["github-workflow"],
                 approvalRevision: "approval:2",
                 packageDefinitionFingerprint: "packages:v2",
                 taskEventRevision: "events:v1",
@@ -487,7 +487,7 @@ struct WorkspaceRightRailPerformanceTests {
         let policy = cache.policy(
             for: BrowserSessionPolicySignature(
                 taskID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
-                enabledCapabilityIDs: ["github-workflow"],
+                capabilityIDs: ["github-workflow"],
                 approvalRevision: "approval:1",
                 packageDefinitionFingerprint: "packages:v1",
                 taskEventRevision: "events:v1"
@@ -688,8 +688,8 @@ struct WorkspaceRightRailPerformanceTests {
             prerequisiteStatuses: [:]
         )
 
-        #expect(firstWorkspace.installedVersion(of: "plugin-a") == "1.0.0")
-        #expect(secondWorkspace.installedVersion(of: "plugin-a") == "2.0.0")
+        #expect(firstWorkspace.capabilityActivation.installedVersion(of: "plugin-a") == "1.0.0")
+        #expect(secondWorkspace.capabilityActivation.installedVersion(of: "plugin-a") == "2.0.0")
         #expect(firstSignature != secondSignature)
     }
 

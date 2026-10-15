@@ -112,7 +112,7 @@ struct CapabilityUninstallSaveFailureTests {
         #expect(try context.fetch(FetchDescriptor<Connector>()).count == connectorsBefore)
         #expect(library.installedPackage(id: package.id) != nil)
         // Membership arrays restored: the package is not left half-removed.
-        #expect(workspace.installedPluginIDSet.contains(package.id))
+        #expect(workspace.capabilityActivation.pluginIDSet.contains(package.id))
     }
 }
 

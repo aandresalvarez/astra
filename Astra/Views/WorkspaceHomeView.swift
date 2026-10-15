@@ -1250,7 +1250,7 @@ struct WorkspaceHomeView: View {
     }
 
     private var capabilityCount: Int {
-        max(workspace.enabledCapabilityIDs.count, capabilityRowCount)
+        max(workspace.capabilityActivation.capabilityIDs.count, capabilityRowCount)
     }
 
     private var capabilitySubtitle: String {

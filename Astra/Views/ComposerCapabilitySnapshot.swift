@@ -115,7 +115,7 @@ struct ComposerCapabilitySnapshotLoader: View {
             liveWorkspace?.id.uuidString ?? "none",
             // A same-id replacement is a different model with its own catalog.
             liveWorkspace.map { String(describing: $0.persistentModelID) } ?? "none",
-            Self.joinFields(liveWorkspace?.enabledPackIDs ?? []),
+            Self.joinFields(liveWorkspace?.capabilityActivation.packIDs ?? []),
             approvalRefreshID.uuidString
         ].joined(separator: "|")
     }
@@ -135,7 +135,7 @@ struct ComposerCapabilitySnapshotLoader: View {
     @MainActor
     private func refreshCatalogSnapshot() async {
         let refreshID = UUID()
-        let enabledPackIDs = liveWorkspace?.enabledPackIDs ?? []
+        let enabledPackIDs = liveWorkspace?.capabilityActivation.packIDs ?? []
         let refreshWorkspaceModelID = liveWorkspace?.persistentModelID
         catalogRefreshID = refreshID
 
@@ -220,11 +220,11 @@ private enum ComposerCapabilitySnapshotSignature {
         return joinFields([
             workspace.id.uuidString,
             String(workspace.updatedAt.timeIntervalSince1970),
-            joinFields(workspace.enabledGlobalSkillIDs),
-            joinFields(workspace.enabledGlobalConnectorIDs),
-            joinFields(workspace.enabledGlobalToolIDs),
-            joinFields(workspace.enabledCapabilityIDs),
-            joinFields(workspace.enabledPackIDs),
+            joinFields(workspace.capabilityActivation.globalSkillIDs),
+            joinFields(workspace.capabilityActivation.globalConnectorIDs),
+            joinFields(workspace.capabilityActivation.globalToolIDs),
+            joinFields(workspace.capabilityActivation.capabilityIDs),
+            joinFields(workspace.capabilityActivation.packIDs),
             joinFields(workspace.skills.map(Self.revisionSignature(for:))),
             joinFields(workspace.connectors.map(Self.revisionSignature(for:))),
             joinFields(workspace.localTools.map(Self.revisionSignature(for:))),

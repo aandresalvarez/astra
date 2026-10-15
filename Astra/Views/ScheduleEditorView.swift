@@ -50,7 +50,7 @@ struct ScheduleEditorView: View {
 
     private var availableSkills: [Skill] {
         let workspaceSkills = workspace.skills.filter { !$0.isGlobal }
-        let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
+        let enabledIDs = Set(workspace.capabilityActivation.globalSkillIDs)
         let enabledGlobals = globalSkills.filter { enabledIDs.contains($0.id.uuidString) }
         return (workspaceSkills + enabledGlobals).sorted { $0.name < $1.name }
     }

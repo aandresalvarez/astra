@@ -92,7 +92,7 @@ enum MCPRuntimeProjection {
         packPolicy: PackResolvedPolicy? = nil
     ) -> [ResolvedServer] {
         guard let workspace else { return [] }
-        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        let enabledPackageIDs = Set(workspace.capabilityActivation.capabilityIDs)
         guard !enabledPackageIDs.isEmpty else { return [] }
         // The run executes on behalf of the local user, who is the admin of
         // their own catalog (single-user model). A non-admin context would

@@ -1584,7 +1584,7 @@ public enum WorkspaceConfigManager {
     }
 
     private static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
-        let enabledGlobalIDs = Set(workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
+        let enabledGlobalIDs = Set(workspace.capabilityActivation.globalSkillIDs.compactMap(UUID.init(uuidString:)))
         let taskSkills = workspace.tasks.flatMap(\.skills)
         let enabledGlobals = globalSkills.filter { enabledGlobalIDs.contains($0.id) }
         let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals) { $0.id }
@@ -1596,7 +1596,7 @@ public enum WorkspaceConfigManager {
         skills: [Skill],
         globalConnectors: [Connector]
     ) -> [Connector] {
-        let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
+        let enabledGlobalIDs = Set(workspace.capabilityActivation.globalConnectorIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalConnectors.filter { enabledGlobalIDs.contains($0.id) }
         let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
@@ -1607,7 +1607,7 @@ public enum WorkspaceConfigManager {
         skills: [Skill],
         globalTools: [LocalTool]
     ) -> [LocalTool] {
-        let enabledGlobalIDs = Set(workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
+        let enabledGlobalIDs = Set(workspace.capabilityActivation.globalToolIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalTools.filter { enabledGlobalIDs.contains($0.id) }
         let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }

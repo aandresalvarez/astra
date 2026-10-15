@@ -64,7 +64,7 @@ struct CapabilityPackageRoundTripE2ETests {
         #expect(installedPackage.id == package.id)
         #expect(approvalRecord.sourceDigest == storedApproval.sourceDigest)
         #expect(workspace.enabledCapabilityIDs == [package.id])
-        #expect(workspace.installedVersion(of: package.id) == package.version)
+        #expect(workspace.capabilityActivation.installedVersion(of: package.id) == package.version)
         #expect(skills.contains { $0.originPackageID == package.id && $0.name == package.name })
         #expect(tools.contains { $0.originPackageID == package.id && $0.name == "jq" })
 
