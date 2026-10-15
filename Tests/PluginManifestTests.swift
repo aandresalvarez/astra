@@ -53,13 +53,30 @@ struct PluginManifestTests {
         let connector = try #require(jira.components.first { $0.kind == .connector })
         #expect(connector.setup.connect?.kind == .credentialForm)
         #expect(connector.setup.connect?.fields?.isEmpty == false)
-        #expect(jira.worksOn["cursor"] == .full)
+        #expect(jira.worksOn["cursor_cli"] == .full)
 
         let workspace = PluginManifestConverter.manifest(from: try builtIn("google-workspace"))
         #expect(workspace.components.filter { $0.kind == .mcp }.count == 3)
         #expect(workspace.worksOn["claude_code"] == .full)
-        #expect(workspace.worksOn["cursor"] == .shellOnly)
-        #expect(workspace.worksOn["antigravity"] == .shellOnly)
+        #expect(workspace.worksOn["copilot_cli"] == .fullWithRecentCLI)
+        #expect(workspace.worksOn["cursor_cli"] == .shellOnly)
+        #expect(workspace.worksOn["antigravity_cli"] == .shellOnly)
+    }
+
+    @Test("worksOn names every registered runtime and agrees with the MCP delivery matrix")
+    func worksOnMatchesTheRuntimeMatrix() {
+        let declared = PluginManifestConverter.mcpRuntimes
+            .union(PluginManifestConverter.conditionalMCPRuntimes)
+            .union(PluginManifestConverter.shellOnlyRuntimes)
+        #expect(declared == Set(AgentRuntimeAdapterRegistry.descriptors.map(\.id.rawValue)))
+        for profile in MCPRuntimeSupportMatrix.defaultProfiles() {
+            let id = profile.runtimeID.rawValue
+            if PluginManifestConverter.mcpRuntimes.contains(id) {
+                #expect(profile.supportsDelivery, "\(id) is declared full but gets no MCP")
+            } else if PluginManifestConverter.shellOnlyRuntimes.contains(id) {
+                #expect(!profile.supportsDelivery, "\(id) is declared shell-only but gets MCP")
+            }
+        }
     }
 
     @Test("Importing a manifest file reads it through the ordinary capability reader")

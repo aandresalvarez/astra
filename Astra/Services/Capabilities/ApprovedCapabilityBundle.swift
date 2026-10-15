@@ -13,17 +13,29 @@ enum ApprovedCapabilityBundle {
                 guard let data = try? HostFileAccessBroker().readData(
                     at: url,
                     intent: .astraManagedStorage(root: url.deletingLastPathComponent())
-                ),
-                      var package = try? decoder.decode(PluginPackage.self, from: data) else {
+                ) else { return nil }
+                // Built-ins ship as Plugins 2.0 manifests; packages still read.
+                // A file that decodes as neither is a broken build, not an empty
+                // catalog, so it is logged rather than skipped in silence.
+                let package: PluginPackage
+                do {
+                    package = try PluginManifestConverter.decodePackage(from: data, decoder: decoder)
+                } catch {
+                    AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                        "source": "built_in_bundle_decode",
+                        "file": url.lastPathComponent,
+                        "error_type": String(describing: type(of: error))
+                    ], level: .error)
                     return nil
                 }
-                if package.sourceMetadata == nil {
-                    package.sourceMetadata = .builtIn()
+                var builtIn = package
+                if builtIn.sourceMetadata == nil {
+                    builtIn.sourceMetadata = .builtIn()
                 }
-                if package.iconDescriptor.kind == .asset {
-                    package.sourceMetadata?.url = url
+                if builtIn.iconDescriptor.kind == .asset {
+                    builtIn.sourceMetadata?.url = url
                 }
-                return package
+                return builtIn
             }
             .sorted { lhs, rhs in
                 lhs.category.localizedCaseInsensitiveCompare(rhs.category) == .orderedAscending ||

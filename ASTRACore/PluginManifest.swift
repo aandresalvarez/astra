@@ -90,6 +90,9 @@ public struct PluginManifest: Codable, Sendable, Equatable {
 /// and (when its CLI supports it) Copilot; the others get the shell relay only.
 public enum PluginRuntimeSupport: String, Codable, Sendable, Equatable {
     case full
+    /// Copilot receives MCP servers only when its installed CLI accepts
+    /// `--additional-mcp-config`.
+    case fullWithRecentCLI = "full-with-recent-cli"
     case shellOnly = "shell-only"
     case unsupported
 }
@@ -231,8 +234,11 @@ public struct PluginSetupStep: Codable, Sendable, Equatable {
 /// Converts between `PluginManifest` and today's `PluginPackage`.
 public enum PluginManifestConverter {
     /// Runtimes that receive MCP servers directly; the rest get the shell relay.
-    public static let mcpRuntimes: Set<String> = ["claude_code", "codex", "copilot"]
-    public static let shellOnlyRuntimes: Set<String> = ["cursor", "opencode", "antigravity"]
+    public static let mcpRuntimes: Set<String> = [AgentRuntimeID.claudeCode.rawValue, AgentRuntimeID.codexCLI.rawValue]
+    public static let conditionalMCPRuntimes: Set<String> = [AgentRuntimeID.copilotCLI.rawValue]
+    public static let shellOnlyRuntimes: Set<String> = [
+        AgentRuntimeID.cursorCLI.rawValue, AgentRuntimeID.openCodeCLI.rawValue, AgentRuntimeID.antigravityCLI.rawValue
+    ]
 
     public static func manifest(from package: PluginPackage) -> PluginManifest {
         var components: [PluginComponent] = []
@@ -330,6 +336,7 @@ public enum PluginManifestConverter {
     public static func defaultWorksOn(hasMCP: Bool) -> [String: PluginRuntimeSupport] {
         var support: [String: PluginRuntimeSupport] = [:]
         for runtime in mcpRuntimes { support[runtime] = .full }
+        for runtime in conditionalMCPRuntimes { support[runtime] = hasMCP ? .fullWithRecentCLI : .full }
         for runtime in shellOnlyRuntimes { support[runtime] = hasMCP ? .shellOnly : .full }
         return support
     }
