@@ -172,25 +172,23 @@ enum AsyncProcessRunner {
             || info.pbi_flags & UInt32(PROC_FLAG_INEXIT) != 0
     }
 
+    /// Lists `pid`'s children with one syscall rather than a `pgrep` run, so
+    /// a child that is still running gets a few microseconds, not the life of
+    /// a subprocess, to fork a detached grandchild and exit before it is
+    /// stopped. That grandchild moves to launchd and no walk can find it;
+    /// macOS has no subreaper to keep it in the tree.
     private static func childPIDs(of pid: pid_t) -> [pid_t] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-P", String(pid)]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output
-                .split(whereSeparator: \.isNewline)
-                .compactMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } catch {
-            return []
+        var capacity = 64
+        while true {
+            var children = [pid_t](repeating: 0, count: capacity)
+            let count = Int(children.withUnsafeMutableBytes { buffer in
+                proc_listchildpids(pid, buffer.baseAddress, Int32(buffer.count))
+            })
+            // A full buffer may have cut the list short.
+            guard count >= capacity, capacity < 1 << 16 else {
+                return Array(children.prefix(max(0, count)))
+            }
+            capacity *= 2
         }
     }
 }
