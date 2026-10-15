@@ -111,42 +111,84 @@ enum AsyncProcessRunner {
     static func terminateProcessTree(_ process: Process) {
         guard process.isRunning else { return }
         let pid = process.processIdentifier
-        terminateDescendants(of: pid, signal: SIGTERM)
+        let descendants = stopProcessTree(rootedAt: pid)
+        for child in descendants.reversed() {
+            kill(child, SIGTERM)
+        }
         process.terminate()
+        // A stopped process holds its SIGTERM until it is continued.
+        for stopped in descendants.reversed() + [pid] {
+            kill(stopped, SIGCONT)
+        }
 
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2) {
             guard process.isRunning else { return }
-            terminateDescendants(of: pid, signal: SIGKILL)
+            for child in stopProcessTree(rootedAt: pid).reversed() {
+                kill(child, SIGKILL)
+            }
             kill(pid, SIGKILL)
         }
     }
 
-    private static func terminateDescendants(of pid: pid_t, signal: Int32) {
-        for child in childPIDs(of: pid) {
-            terminateDescendants(of: child, signal: signal)
-            kill(child, signal)
+    /// Stops `root` and every descendant, each one before its children are
+    /// listed, and returns the descendants, parents before children. A tree
+    /// that is still running can fork after the list is taken, and a child
+    /// that leaves the wrapper's process group then escapes both the walk and
+    /// `terminate()`'s group signal; once the wrapper dies it is no longer
+    /// the wrapper's child for a later walk to find.
+    private static func stopProcessTree(rootedAt root: pid_t) -> [pid_t] {
+        stopProcess(root)
+        var descendants: [pid_t] = []
+        var parents = [root]
+        while let parent = parents.popLast() {
+            for child in childPIDs(of: parent) {
+                stopProcess(child)
+                descendants.append(child)
+                parents.append(child)
+            }
+        }
+        return descendants
+    }
+
+    /// Sends SIGSTOP and polls until `pid` reports itself stopped. POSIX
+    /// `kill` only promises the signal was sent, and a process that is still
+    /// running can fork after its children are listed. XNU stops the target
+    /// before `kill` returns, so the first check normally passes.
+    private static func stopProcess(_ pid: pid_t) {
+        guard kill(pid, SIGSTOP) == 0 else { return }
+        var polls = 0
+        while !hasStoppedOrExited(pid), polls < 1_000 {
+            usleep(100)
+            polls += 1
         }
     }
 
+    private static func hasStoppedOrExited(_ pid: pid_t) -> Bool {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return true }
+        return info.pbi_status == UInt32(SSTOP)
+            || info.pbi_status == UInt32(SZOMB)
+            || info.pbi_flags & UInt32(PROC_FLAG_INEXIT) != 0
+    }
+
+    /// Lists `pid`'s children with one syscall rather than a `pgrep` run, so
+    /// a child that is still running gets a few microseconds, not the life of
+    /// a subprocess, to fork a detached grandchild and exit before it is
+    /// stopped. That grandchild moves to launchd and no walk can find it;
+    /// macOS has no subreaper to keep it in the tree.
     private static func childPIDs(of pid: pid_t) -> [pid_t] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-P", String(pid)]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return output
-                .split(whereSeparator: \.isNewline)
-                .compactMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } catch {
-            return []
+        var capacity = 64
+        while true {
+            var children = [pid_t](repeating: 0, count: capacity)
+            let count = Int(children.withUnsafeMutableBytes { buffer in
+                proc_listchildpids(pid, buffer.baseAddress, Int32(buffer.count))
+            })
+            // A full buffer may have cut the list short.
+            guard count >= capacity, capacity < 1 << 16 else {
+                return Array(children.prefix(max(0, count)))
+            }
+            capacity *= 2
         }
     }
 }

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 import Testing
 @testable import ASTRA
 
@@ -28,12 +29,20 @@ struct AgentExecutionScopedProcessTests {
     @Test("terminate kills background child process")
     func terminateKillsBackgroundChildProcess() async throws {
         let directory = temporaryDirectory()
-        let pidFile = directory.appendingPathComponent("child.pid")
         let script = directory.appendingPathComponent("runaway.sh")
+        // The child's pid is printed only once the TERM trap is set, so the
+        // test waits for the script to get there, not for a deadline. Signalled
+        // as a group, the child dies of SIGTERM while the shell's trap is alive
+        // to report it; signalled alone, the shell's trap waits on a live child
+        // and is killed before it can report anything. run() is called from a
+        // worker thread that blocks SIGTERM, so this also pins the spawn's
+        // empty signal mask: inherit that block and no SIGTERM lands at all.
         try """
         #!/bin/sh
         /bin/sleep 30 &
-        echo $! > "\(pidFile.path)"
+        child=$!
+        trap 'wait "$child"; echo "child exited $?"; exit 0' TERM
+        echo "$child"
         wait
         """.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
@@ -44,24 +53,21 @@ struct AgentExecutionScopedProcessTests {
             currentDirectory: directory.path,
             environment: ["PATH": "/bin:/usr/bin"]
         )
+        var output = stdoutLines(of: process).makeAsyncIterator()
 
         let completion = Task { await runAndWait(process) }
 
-        let wrotePID = await waitUntil(timeout: 2) {
-            FileManager.default.fileExists(atPath: pidFile.path)
-        }
-        #expect(wrotePID)
-
-        let childPID = try readPID(from: pidFile)
-        #expect(isProcessAlive(childPID))
+        let pidLine = await output.next()
+        let childPID = try #require(pidLine.flatMap { pid_t($0) }, "script never printed its child's pid")
+        #expect(processIsRunning(childPID))
 
         process.terminate()
         _ = await completion.value
 
-        let childExited = await waitUntil(timeout: 3) {
-            !isProcessAlive(childPID)
-        }
-        #expect(childExited)
+        // 143 is 128 + SIGTERM, delivered before the shell exited: terminate()
+        // reached the child itself, not the residual cleanup after the reap.
+        let report = await output.next()
+        #expect(report == "child exited 143")
     }
 
     @Test("provider exit cleans residual background child")
@@ -94,7 +100,7 @@ struct AgentExecutionScopedProcessTests {
 
         let childPID = try readPID(from: pidFile)
         let childExited = await waitUntil(timeout: 2) {
-            !isProcessAlive(childPID)
+            !processIsRunning(childPID)
         }
         #expect(childExited)
     }
@@ -133,10 +139,31 @@ struct AgentExecutionScopedProcessTests {
         return condition()
     }
 
-    private func isProcessAlive(_ pid: pid_t) -> Bool {
-        guard pid > 0 else { return false }
-        if kill(pid, 0) == 0 { return true }
-        return errno == EPERM
+    /// The lines `process` writes to stdout, each as soon as the child writes
+    /// it. The stream ends at EOF: once every holder of the pipe, background
+    /// children included, has exited.
+    private func stdoutLines(of process: AgentExecutionScopedProcess) -> AsyncStream<String> {
+        AsyncStream { continuation in
+            let pending = OSAllocatedUnfairLock(initialState: Data())
+            process.stdoutFileHandle.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else {
+                    handle.readabilityHandler = nil
+                    continuation.finish()
+                    return
+                }
+                let lines = pending.withLock { buffer in
+                    buffer.append(chunk)
+                    var lines: [String] = []
+                    while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                        lines.append(String(decoding: buffer[..<newline], as: UTF8.self))
+                        buffer.removeSubrange(...newline)
+                    }
+                    return lines
+                }
+                lines.forEach { continuation.yield($0) }
+            }
+        }
     }
 
     private func canonicalPath(_ path: String) -> String {

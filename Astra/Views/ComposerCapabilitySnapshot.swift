@@ -100,19 +100,34 @@ struct ComposerCapabilitySnapshotLoader: View {
             }
     }
 
+    /// The workspace, or `nil` once it has been deleted. Deleting a workspace
+    /// re-runs this view's body (its `@Query`s and the parent both move) while
+    /// `workspace` still points at the dead model, and reading a persisted
+    /// property that was not already faulted in off it traps inside SwiftData.
+    /// A persisted deletion can leave the model detached with `isDeleted` still
+    /// false, hence the context check as well.
+    private var liveWorkspace: Workspace? {
+        Self.live(workspace)
+    }
+
+    static func live(_ workspace: Workspace?) -> Workspace? {
+        guard let workspace, !workspace.isDeleted, workspace.modelContext != nil else { return nil }
+        return workspace
+    }
+
     private var catalogRefreshSignature: String {
         [
-            workspace?.id.uuidString ?? "none",
+            liveWorkspace?.id.uuidString ?? "none",
             // A same-id replacement is a different model with its own catalog.
-            workspace.map { String(describing: $0.persistentModelID) } ?? "none",
-            Self.joinFields(workspace?.enabledPackIDs ?? []),
+            liveWorkspace.map { String(describing: $0.persistentModelID) } ?? "none",
+            Self.joinFields(liveWorkspace?.enabledPackIDs ?? []),
             approvalRefreshID.uuidString
         ].joined(separator: "|")
     }
 
     private var capabilityRefreshSignature: String {
         ComposerCapabilitySnapshotSignature.make(
-            workspace: workspace,
+            workspace: liveWorkspace,
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
             globalTools: globalTools,
@@ -125,8 +140,8 @@ struct ComposerCapabilitySnapshotLoader: View {
     @MainActor
     private func refreshCatalogSnapshot() async {
         let refreshID = UUID()
-        let enabledPackIDs = workspace?.enabledPackIDs ?? []
-        let refreshWorkspaceModelID = workspace?.persistentModelID
+        let enabledPackIDs = liveWorkspace?.enabledPackIDs ?? []
+        let refreshWorkspaceModelID = liveWorkspace?.persistentModelID
         catalogRefreshID = refreshID
 
         let loadTask = Task.detached(priority: .userInitiated) {
@@ -156,7 +171,7 @@ struct ComposerCapabilitySnapshotLoader: View {
     @MainActor
     private func emitSnapshot() {
         var snapshot = ComposerCapabilitySnapshotBuilder.make(
-            workspace: workspace,
+            workspace: liveWorkspace,
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
             globalTools: globalTools,

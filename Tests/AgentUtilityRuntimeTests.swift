@@ -299,6 +299,11 @@ struct AgentUtilityRuntimeTests {
 
     // MARK: - Stdin + utility helper regressions
 
+    private func recordedPID(at url: URL) -> pid_t? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
     private func writeExecutableScript(at url: URL, contents: String) throws {
         try contents.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
@@ -551,57 +556,69 @@ struct AgentUtilityRuntimeTests {
     func utilityTimeoutAwaitsProcessReaping() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-utility-timeout-reap-\(UUID().uuidString)", isDirectory: true)
-        let helper = root.appendingPathComponent("helper")
-        let pidFile = root.appendingPathComponent("provider.pid")
-        let childPIDFile = root.appendingPathComponent("provider-child.pid")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let script = """
-        #!/bin/sh
-        printf '%s' "$$" > '\(pidFile.path)'
-        sleep \(Self.longRunningHelperSleepSeconds) &
-        printf '%s' "$!" > '\(childPIDFile.path)'
-        wait
-        """
-        try writeExecutableScript(at: helper, contents: script)
+        // Only a timeout that fires after the helper recorded both pids can
+        // show a leak, and no deadline guarantees /bin/sh gets that far under
+        // full-suite load: a SIGTERM that lands first kills it before its first
+        // line. Such an attempt proves nothing, so it is retried with double
+        // the timeout, and only one that recorded both pids is checked.
+        for (attempt, timeoutSeconds) in [0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8].enumerated() {
+            let attemptRoot = root.appendingPathComponent("attempt-\(attempt)", isDirectory: true)
+            try FileManager.default.createDirectory(at: attemptRoot, withIntermediateDirectories: true)
+            let helper = attemptRoot.appendingPathComponent("helper")
+            let pidFile = attemptRoot.appendingPathComponent("provider.pid")
+            let childPIDFile = attemptRoot.appendingPathComponent("provider-child.pid")
+            let script = """
+            #!/bin/sh
+            printf '%s' "$$" > '\(pidFile.path)'
+            sleep \(Self.longRunningHelperSleepSeconds) &
+            printf '%s' "$!" > '\(childPIDFile.path)'
+            wait
+            """
+            try writeExecutableScript(at: helper, contents: script)
 
-        // Exercise the lower-level owner directly with sandbox wrapping off so
-        // the pid and TERM trap belong to AgentExecutionScopedProcess itself,
-        // not an intermediate sandbox-exec wrapper.
-        let runner = AgentRuntimeProcessRunner { _ in
-            ExecutionSandboxSettings(enforcement: .off)
-        }
-        let result = await runner.runUtilityProcess(
-            AgentUtilityLaunchPlan(
-                process: AgentRuntimeProcessLaunchPlan(
-                    runtime: .claudeCode,
-                    executablePath: helper.path,
-                    arguments: [],
-                    currentDirectory: root.path,
-                    environment: RuntimeProcessEnvironment.enriched(),
-                    browserShimDirectory: nil,
-                    providerVersion: nil,
-                    parsesJSONLines: false
-                ),
-                providerHomeDirectory: "",
-                permissionPolicy: .restricted,
-                timeoutSeconds: 0.2
+            // Exercise the lower-level owner directly with sandbox wrapping off so
+            // the pid and TERM trap belong to AgentExecutionScopedProcess itself,
+            // not an intermediate sandbox-exec wrapper.
+            let runner = AgentRuntimeProcessRunner { _ in
+                ExecutionSandboxSettings(enforcement: .off)
+            }
+            let result = await runner.runUtilityProcess(
+                AgentUtilityLaunchPlan(
+                    process: AgentRuntimeProcessLaunchPlan(
+                        runtime: .claudeCode,
+                        executablePath: helper.path,
+                        arguments: [],
+                        currentDirectory: attemptRoot.path,
+                        environment: RuntimeProcessEnvironment.enriched(),
+                        browserShimDirectory: nil,
+                        providerVersion: nil,
+                        parsesJSONLines: false
+                    ),
+                    providerHomeDirectory: "",
+                    permissionPolicy: .restricted,
+                    timeoutSeconds: timeoutSeconds
+                )
             )
-        )
 
-        #expect(result.exitCode == -1)
-        #expect(result.error.contains("timed out"))
-        let pidText = try String(contentsOf: pidFile, encoding: .utf8)
-        let pid = try #require(pid_t(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
-        errno = 0
-        #expect(kill(pid, 0) == -1 && errno == ESRCH,
-                "Await returned while provider pid \(pid) was still alive")
-        let childPIDText = try String(contentsOf: childPIDFile, encoding: .utf8)
-        let childPID = try #require(pid_t(childPIDText.trimmingCharacters(in: .whitespacesAndNewlines)))
-        errno = 0
-        #expect(kill(childPID, 0) == -1 && errno == ESRCH,
-                "Await returned while provider child pid \(childPID) was still alive")
+            #expect(result.exitCode == -1)
+            #expect(result.error.contains("timed out"))
+            guard let pid = recordedPID(at: pidFile), let childPID = recordedPID(at: childPIDFile) else {
+                continue
+            }
+            // The provider is ours to reap, so it must be gone outright. Its
+            // child was reparented to launchd, which reaps on its own time;
+            // that one only has to be dead.
+            errno = 0
+            #expect(kill(pid, 0) == -1 && errno == ESRCH,
+                    "Await returned while provider pid \(pid) was still alive")
+            #expect(!processIsRunning(childPID),
+                    "Await returned while provider child pid \(childPID) was still alive")
+            return
+        }
+        Issue.record("The helper never recorded its pids before the timeout, even at 12.8s")
     }
 
     @Test("Copilot utility returns after completed stream output even if wrapper stays alive")

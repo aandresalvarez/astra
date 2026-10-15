@@ -234,40 +234,50 @@ struct ProcessBinaryRunnerTests {
             .appendingPathComponent("astra-process-group-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let pidFile = directory.appendingPathComponent("child.pid")
-        let script = """
-        (trap '' TERM; while true; do sleep 1; done) &
-        printf "%s" "$!" > "\(pidFile.path)"
-        wait
-        """
 
-        let result = await ProcessBinaryRunner().run(
-            path: "/bin/sh",
-            args: ["-c", script],
-            timeout: 0.1,
-            environment: nil,
-            currentDirectory: nil,
-            terminateProcessGroup: true
-        )
+        // The shell must record the descendant's pid before the timeout's
+        // SIGTERM kills it, and no deadline guarantees that under full-suite
+        // load. An attempt that never recorded the pid proves nothing (its
+        // descendant, if any, is still in the group the SIGKILL reaches), so it
+        // is retried with double the timeout.
+        for (attempt, timeout) in [0.1, 0.2, 0.4, 0.8, 1.6, 3.2].enumerated() {
+            let pidFile = directory.appendingPathComponent("child-\(attempt).pid")
+            let script = """
+            (trap '' TERM; while true; do sleep 1; done) &
+            printf "%s" "$!" > "\(pidFile.path)"
+            wait
+            """
 
-        #expect(result.outcome == .timedOut)
+            let result = await ProcessBinaryRunner().run(
+                path: "/bin/sh",
+                args: ["-c", script],
+                timeout: timeout,
+                environment: nil,
+                currentDirectory: nil,
+                terminateProcessGroup: true
+            )
 
-        // `run` returns the moment the timeout is stamped, before the group has
-        // even been signalled: the runner then sends SIGTERM, waits 500 ms for
-        // the grace period, and SIGKILLs. Waiting that out with one fixed sleep
-        // measured how busy the machine was, so poll for the descendant to go
-        // away instead — same reasoning as `hangBreakerTimeout` above, and the
-        // poll floor in `waitUntil` covers a starved cooperative pool that has
-        // not yet run the runner's own kill task.
-        guard let childPID = await waitForValue({ readPID(from: pidFile) }) else {
-            Issue.record("Expected child PID to be captured")
+            #expect(result.outcome == .timedOut)
+
+            // `run` returns the moment the timeout is stamped, before the group has
+            // even been signalled: the runner then sends SIGTERM, waits 500 ms for
+            // the grace period, and SIGKILLs. Waiting that out with one fixed sleep
+            // measured how busy the machine was, so poll for the descendant to go
+            // away instead — same reasoning as `hangBreakerTimeout` above, and the
+            // poll floor in `waitUntil` covers a starved cooperative pool that has
+            // not yet run the runner's own kill task. The pid wait is short: the
+            // SIGTERM that follows the stamp ends a shell that hasn't written it.
+            guard let childPID = await waitForValue(timeout: 1, { readPID(from: pidFile) }) else {
+                continue
+            }
+            let descendantIsGone = await waitUntil { !isAlive(childPID) }
+            if !descendantIsGone {
+                kill(childPID, SIGKILL)
+                Issue.record("Timed-out process group left descendant process \(childPID) alive")
+            }
             return
         }
-        let descendantIsGone = await waitUntil { !isAlive(childPID) }
-        if !descendantIsGone {
-            kill(childPID, SIGKILL)
-            Issue.record("Timed-out process group left descendant process \(childPID) alive")
-        }
+        Issue.record("Expected child PID to be captured, even with a 3.2s timeout")
     }
 
     @Test("Process group mode is active before executable code runs")
