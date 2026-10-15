@@ -293,11 +293,6 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 }
 
                 process.terminationHandler = { proc in
-                    if let timedOutAfter = state.claimReap() {
-                        finishTimedOut(timedOutAfter)
-                        return
-                    }
-                    cleanupPipes()
                     // Classify the outcome (and stamp elapsed time) from the
                     // moment the process actually exited, before draining
                     // what's left — the drain below can block on a lock a
@@ -305,9 +300,11 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     // is holding, and that wait must not get misread as the
                     // subprocess itself having run past the timeout.
                     let elapsed = Date().timeIntervalSince(startedAt)
-                    let outcome: RunResult.Outcome = timeout > 0 && elapsed >= timeout
-                        ? .timedOut
-                        : .exited(code: proc.terminationStatus)
+                    if let timedOutAfter = state.claimReap(elapsed: elapsed, deadline: timeout) {
+                        finishTimedOut(timedOutAfter)
+                        return
+                    }
+                    cleanupPipes()
                     // The read itself (not just the append) is inside the
                     // collector's lock so it can't race a concurrently
                     // in-flight readabilityHandler invocation — see
@@ -319,7 +316,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
                         stderrCollector.appendLocked(stderrPipe.fileHandleForReading.readDataToEndOfFile())
                     }
                     state.finish(
-                        outcome: outcome,
+                        outcome: .exited(code: proc.terminationStatus),
                         stdout: stdoutCollector.string,
                         stderr: stderrCollector.string,
                         elapsedTime: elapsed,
@@ -534,8 +531,12 @@ public struct ProcessBinaryRunner: BinaryRunner {
                             return
                         }
                     }
-                    if let timedOutAfter = state.claimReap() {
-                        finishTimedOut(timedOutAfter)
+                    let reapedAfter = Date().timeIntervalSince(startedAt)
+                    if let timedOut = state.claimReap(elapsed: reapedAfter, deadline: timeout) {
+                        if timedOut.needsTeardown {
+                            state.terminateRemainingProcessGroup()
+                        }
+                        finishTimedOut(timedOut.elapsed)
                         return
                     }
                     cleanupPipes()
@@ -817,12 +818,19 @@ private final class ProcessRunState: @unchecked Sendable {
         return true
     }
 
-    /// Claims the reap for the termination handler, returning the timeout
-    /// stamp when the deadline got there first.
-    public func claimReap() -> TimeInterval? {
+    /// Claims the reap for the termination handler. It returns the timeout
+    /// stamp when the run timed out: either the timeout task stamped it, or
+    /// the child was reaped past its deadline before that task got to run.
+    /// Either way the run finishes as a timeout, without waiting on the pipes.
+    /// Otherwise the handler's drain to EOF waits on any orphan holding them,
+    /// and nothing is left to stop it.
+    public func claimReap(elapsed: TimeInterval, deadline: TimeInterval) -> TimeInterval? {
         lock.lock()
         defer { lock.unlock() }
         didReap = true
+        if timedOutElapsed == nil, deadline > 0, elapsed >= deadline {
+            timedOutElapsed = elapsed
+        }
         return timedOutElapsed
     }
 
@@ -986,11 +994,35 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
     }
 
     /// See `ProcessRunState.claimReap`; here the reaper is the `waitpid` task.
-    public func claimReap() -> TimeInterval? {
+    /// `needsTeardown` is true when this reap is what decided the timeout. The
+    /// timeout task then never signals the group, so whatever the leader left
+    /// running in it still has to be stopped.
+    public func claimReap(
+        elapsed: TimeInterval,
+        deadline: TimeInterval
+    ) -> (elapsed: TimeInterval, needsTeardown: Bool)? {
         lock.lock()
         defer { lock.unlock() }
         didReap = true
-        return timedOutElapsed
+        if let timedOutElapsed {
+            return (timedOutElapsed, false)
+        }
+        guard deadline > 0, elapsed >= deadline else { return nil }
+        timedOutElapsed = elapsed
+        return (elapsed, true)
+    }
+
+    /// SIGTERM, then SIGKILL after the grace period, to what is left of the
+    /// group after its leader was reaped. No backstop: the run is already
+    /// finishing.
+    public func terminateRemainingProcessGroup() {
+        let processGroupID: pid_t?
+        lock.lock()
+        processGroupID = self.processGroupID
+        lock.unlock()
+        if let processGroupID {
+            terminate(processGroupID: processGroupID)
+        }
     }
 
     /// See `ProcessRunState.terminateTimedOutProcess`. Reaping the leader

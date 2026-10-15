@@ -303,6 +303,69 @@ struct ProcessBinaryRunnerTests {
         #expect(returnedWhileOrphanHeldPipes, "The runner waited for an orphan to close the child's pipes")
     }
 
+    @Test(
+        "A child reaped just past its deadline is a timeout that does not wait on its orphans",
+        arguments: [false, true]
+    )
+    func childReapedJustPastDeadlineDoesNotWaitOnOrphans(terminateProcessGroup: Bool) async throws {
+        // The child exits on its own just after its 0.1 s deadline, so its reap
+        // races the timeout task. If the reap lands first, the run is still a
+        // timeout, and it must not wait on the orphan holding the pipes. That
+        // orphan ignores SIGTERM, and outside process-group mode nothing kills
+        // it, so it lasts until its `hold` file goes. Neither ordering is
+        // guaranteed in one run, so the test repeats it. Load can only change
+        // which side wins, and every iteration passes either way unless the
+        // runner is wrong.
+        //
+        // In process-group mode the timed-out group is torn down whichever side
+        // decided the timeout, so there the orphan has to die while `hold` still
+        // exists.
+        let directory = try makeTemporaryDirectory("astra-timeout-reap-race")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = #"""
+        (trap '' TERM; while [ -e "$1" ]; do sleep 0.05; done) &
+        printf '%s' "$!" > "$2"
+        sleep 0.1
+        """#
+
+        for iteration in 0..<20 {
+            let hold = directory.appendingPathComponent("hold-\(iteration)")
+            let orphanPIDFile = directory.appendingPathComponent("orphan-\(iteration).pid")
+            try Data().write(to: hold)
+            let watchdog = Task {
+                try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                try? FileManager.default.removeItem(at: hold)
+            }
+            defer {
+                watchdog.cancel()
+                try? FileManager.default.removeItem(at: hold)
+            }
+            let result = await ProcessBinaryRunner().run(
+                path: "/bin/sh",
+                args: ["-c", script, "sh", hold.path, orphanPIDFile.path],
+                timeout: 0.1,
+                environment: nil,
+                currentDirectory: nil,
+                terminateProcessGroup: terminateProcessGroup
+            )
+            let returnedWhileOrphanHeldPipes = FileManager.default.fileExists(atPath: hold.path)
+
+            #expect(result.outcome == .timedOut, "iteration \(iteration): \(result.outcome)")
+            guard returnedWhileOrphanHeldPipes else {
+                Issue.record("iteration \(iteration): the runner waited for an orphan to close the child's pipes")
+                return
+            }
+            if terminateProcessGroup, let orphan = readPID(from: orphanPIDFile) {
+                guard await waitUntil({ !processIsRunning(orphan) }) else {
+                    kill(orphan, SIGKILL)
+                    Issue.record("iteration \(iteration): the timed-out group left orphan \(orphan) alive")
+                    return
+                }
+            }
+        }
+    }
+
     @Test("Process group timeout terminates descendant processes")
     func processGroupTimeoutTerminatesDescendants() async throws {
         // The leader marks `forked` once the descendant's PID is on disk, and
