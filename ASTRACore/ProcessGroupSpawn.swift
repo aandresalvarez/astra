@@ -9,12 +9,15 @@ import Darwin
 /// `posix_spawnattr_setflags(POSIX_SPAWN_SETPGROUP)` + `kill(-pgid, ...)`
 /// sequence. This type factors out only the parts that are safe to share
 /// without touching any caller's file-action wiring, stdin handling, output
-/// streaming, or scheduling: the process-group spawn attribute and the
-/// self-guarded group-kill primitive. Timeout policy, grace periods, and
-/// concurrency style (async `Task.sleep` vs `DispatchQueue.asyncAfter` vs
-/// synchronous `usleep`) intentionally stay with each caller — they differ
-/// across the three stacks and folding them together would be a behavior
-/// change, not a dedup.
+/// streaming, or scheduling: the process-group spawn attribute, the child's
+/// signal-state reset, and the self-guarded group-kill primitive.
+/// `HostControlToolSupport` cannot import this module, so it keeps its own
+/// copies.
+///
+/// Timeout policy, grace periods, and concurrency style (async `Task.sleep`
+/// vs `DispatchQueue.asyncAfter` vs synchronous `usleep`) intentionally stay
+/// with each caller. They differ across the three stacks, and folding them
+/// together would be a behavior change, not a dedup.
 public enum ProcessGroupSpawn {
     /// Configures `attr` so `posix_spawn` places the child in a new process
     /// group headed by itself (`setpgid(child, 0)` semantics via
@@ -26,12 +29,43 @@ public enum ProcessGroupSpawn {
     /// without process-group isolation.
     @discardableResult
     public static func configureNewProcessGroup(_ attr: inout posix_spawnattr_t?) -> Bool {
-        let flags = Int16(POSIX_SPAWN_SETPGROUP)
-        guard posix_spawnattr_setflags(&attr, flags) == 0,
+        guard addFlags(Int16(POSIX_SPAWN_SETPGROUP), to: &attr) == 0,
               posix_spawnattr_setpgroup(&attr, 0) == 0 else {
             return false
         }
         return true
+    }
+
+    /// Configures `attr` so the child starts with an empty signal mask and
+    /// every signal at its default disposition, the way `Process` does.
+    ///
+    /// Without this, `posix_spawn` gives the child the spawning thread's mask
+    /// and every disposition the parent ignores. GCD worker threads, including
+    /// the Swift concurrency pool, block asynchronous signals. A child spawned
+    /// from one starts with SIGTERM blocked: it can neither exit on SIGTERM nor
+    /// trap it, so every graceful stop ends in SIGKILL.
+    ///
+    /// Returns 0, or the error number of the attribute call that failed.
+    public static func configureDefaultSignalState(_ attr: inout posix_spawnattr_t?) -> Int32 {
+        var result = addFlags(Int16(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF), to: &attr)
+        guard result == 0 else { return result }
+        var noSignals = sigset_t()
+        sigemptyset(&noSignals)
+        result = posix_spawnattr_setsigmask(&attr, &noSignals)
+        guard result == 0 else { return result }
+        var allSignals = sigset_t()
+        sigfillset(&allSignals)
+        return posix_spawnattr_setsigdefault(&attr, &allSignals)
+    }
+
+    /// `posix_spawnattr_setflags` replaces the whole flag set, so each
+    /// configuration step above adds to it instead. That way neither can undo
+    /// the other, whichever order a caller applies them in.
+    private static func addFlags(_ flags: Int16, to attr: inout posix_spawnattr_t?) -> Int32 {
+        var existing: Int16 = 0
+        let result = posix_spawnattr_getflags(&attr, &existing)
+        guard result == 0 else { return result }
+        return posix_spawnattr_setflags(&attr, existing | flags)
     }
 
     /// Sends `signal` to every process in `processGroupID`, unless that group
