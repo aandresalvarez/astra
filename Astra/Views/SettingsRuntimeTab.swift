@@ -521,7 +521,8 @@ struct SettingsRuntimeTab: View {
             vertexOpusModel: claudeVertexOpusModel,
             vertexSonnetModel: claudeVertexSonnetModel,
             vertexHaikuModel: claudeVertexHaikuModel,
-            antigravityAuthMode: AntigravityAuthMode(rawValue: antigravityAuthModeRaw) ?? .consumer
+            antigravityAuthMode: AntigravityAuthMode(rawValue: antigravityAuthModeRaw) ?? .consumer,
+            antigravityADCProject: AntigravityADCProjectStore.load()
         )
     }
 

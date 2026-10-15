@@ -486,7 +486,8 @@ final class RuntimeSetupModel: ObservableObject {
             vertexHaikuModel: defaults.string(forKey: AppStorageKeys.claudeVertexHaikuModel) ?? "",
             antigravityAuthMode: AntigravityAuthMode(
                 rawValue: defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? ""
-            ) ?? .consumer
+            ) ?? .consumer,
+            antigravityADCProject: AntigravityADCProjectStore.load(defaults: defaults)
         )
     }
 

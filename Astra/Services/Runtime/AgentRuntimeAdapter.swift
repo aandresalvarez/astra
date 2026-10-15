@@ -2489,6 +2489,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                     executable: executable ?? "",
                     providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id),
                     authMode: configuration.antigravityAuthMode,
+                    adcProject: configuration.antigravityADCProject,
                     probes: probes
                 ))
             }
@@ -2509,11 +2510,13 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         AntigravityCLIRuntime.refreshStructuredOutputSupport(
             executablePath: executable,
             authMode: configuration.antigravityAuthMode,
+            adcProject: configuration.antigravityADCProject,
             providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
         )
         let options = AntigravityCLIRuntime.modelOptions(
             executablePath: executable,
             authMode: configuration.antigravityAuthMode,
+            adcProject: configuration.antigravityADCProject,
             providerHomeDirectory: configuration.providerSettings.homeDirectory(for: id)
         )
             ?? AntigravityCLIRuntime.availableModelNames().map {

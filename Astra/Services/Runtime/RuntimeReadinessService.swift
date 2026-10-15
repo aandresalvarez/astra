@@ -63,6 +63,8 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
     var vertexSonnetModel: String
     var vertexHaikuModel: String
     var antigravityAuthMode: AntigravityAuthMode
+    /// Billing project for the ADC route; see `AntigravityADCProjectStore`.
+    var antigravityADCProject: String
 
     init(
         runtime: AgentRuntimeID,
@@ -75,7 +77,8 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
         vertexOpusModel: String,
         vertexSonnetModel: String,
         vertexHaikuModel: String,
-        antigravityAuthMode: AntigravityAuthMode = .consumer
+        antigravityAuthMode: AntigravityAuthMode = .consumer,
+        antigravityADCProject: String = ""
     ) {
         self.init(
             runtime: runtime,
@@ -95,7 +98,8 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
             vertexHaikuModel: vertexHaikuModel,
-            antigravityAuthMode: antigravityAuthMode
+            antigravityAuthMode: antigravityAuthMode,
+            antigravityADCProject: antigravityADCProject
         )
     }
 
@@ -109,7 +113,8 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
         vertexOpusModel: String,
         vertexSonnetModel: String,
         vertexHaikuModel: String,
-        antigravityAuthMode: AntigravityAuthMode = .consumer
+        antigravityAuthMode: AntigravityAuthMode = .consumer,
+        antigravityADCProject: String = ""
     ) {
         self.runtime = runtime
         self.scope = scope
@@ -121,6 +126,7 @@ struct RuntimeReadinessConfiguration: Sendable, Equatable {
         self.vertexSonnetModel = vertexSonnetModel
         self.vertexHaikuModel = vertexHaikuModel
         self.antigravityAuthMode = antigravityAuthMode
+        self.antigravityADCProject = antigravityADCProject
     }
 
     var claudePath: String {
