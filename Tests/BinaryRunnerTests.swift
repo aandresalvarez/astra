@@ -399,6 +399,41 @@ struct ProcessBinaryRunnerTests {
         #expect(returnedWhileHoldExisted, "Nothing stopped the group's descendant, so the runner waited on it")
     }
 
+    @Test("Process group timeout returns even when the leader's leftovers escape the group")
+    func processGroupTimeoutBackstopsAnEscapedDescendant() async throws {
+        // The leader exits at once. `set -m` first puts its background loop in
+        // a process group of its own, so tearing down the leader's group never
+        // reaches it. The loop ignores SIGTERM and holds the leader's pipes for
+        // as long as `hold` exists, so only the deadline's backstop can end the
+        // run, one grace period after SIGKILL. A runner that waited for EOF
+        // would hold out until the watchdog removes `hold`. If load keeps the
+        // leader alive until the deadline instead, its own timeout path ends
+        // the run, so either ordering passes.
+        let directory = try makeTemporaryDirectory("astra-group-escaped-descendant")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hold = directory.appendingPathComponent("hold")
+        try Data().write(to: hold)
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            try? FileManager.default.removeItem(at: hold)
+        }
+        defer { watchdog.cancel() }
+
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/sh",
+            args: ["-c", #"set -m; (trap '' TERM; while [ -e "$1" ]; do sleep 0.05; done) & exit 0"#, "sh", hold.path],
+            timeout: 1,
+            environment: nil,
+            currentDirectory: nil,
+            terminateProcessGroup: true
+        )
+        let returnedWhileHoldExisted = FileManager.default.fileExists(atPath: hold.path)
+
+        #expect(result.outcome == .timedOut)
+        #expect(returnedWhileHoldExisted, "The runner waited on a descendant outside the group it tore down")
+    }
+
     @Test("Process group timeout terminates descendant processes")
     func processGroupTimeoutTerminatesDescendants() async throws {
         // The leader marks `forked` once the descendant's PID is on disk, and
