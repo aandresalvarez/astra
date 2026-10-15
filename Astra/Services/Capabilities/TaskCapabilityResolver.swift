@@ -581,19 +581,30 @@ struct TaskCapabilityResolver {
 
         let matchedConnectors = connectors.filter { connector in
             Self.matchesConnector(connector, taskText: searchableText)
+                || Self.namesAccount(connector, taskText: searchableText)
         }
-        let relevantConnectors = ConnectorPreflightService.preferredRuntimeConnectors(
-            from: matchedConnectors,
-            contextText: searchableText
-        ) + connectors.filter { connector in
+        // With two accounts of one service, the one the task names (or the
+        // workspace default) is the only one narrated; the others stay out
+        // even when an earlier grant or a shared skill would bring them back.
+        let accountResolution = ConnectorAccountResolver.resolve(
+            ConnectorPreflightService.preferredRuntimeConnectors(
+                from: matchedConnectors,
+                contextText: searchableText
+            ),
+            contextText: searchableText,
+            activation: task.workspace.map(WorkspaceCapabilityActivation.state(of:))
+        )
+        let relevantConnectors = accountResolution.connectors + connectors.filter { connector in
             approvedConnectorIDs.contains(connector.id)
                 && !matchedConnectors.contains { $0.id == connector.id }
+                && !accountResolution.excludedConnectorIDs.contains(connector.id)
         }
         for connector in relevantConnectors {
             includeSkill(connector.skill)
         }
 
         let includedConnectors = connectors.filter { connector in
+            if accountResolution.excludedConnectorIDs.contains(connector.id) { return false }
             if relevantConnectors.contains(where: { $0.id == connector.id }) {
                 return true
             }
@@ -1083,6 +1094,14 @@ struct TaskCapabilityResolver {
             return normalizedSearchText(currentTurn)
         }
         return normalizedSearchText(TaskContextStateManager.activeObjectiveText(for: task))
+    }
+
+    /// The task names this account by its alias or name (not just the service).
+    private static func namesAccount(_ connector: Connector, taskText: String) -> Bool {
+        let normalizedTask = normalizedSearchText(taskText)
+        let service = WorkspaceCapabilityActivationState.normalizedService(connector.serviceType)
+        return ConnectorAccountResolver.names(of: connector, service: service)
+            .contains { containsTokenPhrase(normalizedTask, phrase: $0) }
     }
 
     private static func containsTokenPhrase(_ normalizedText: String, phrase: String) -> Bool {

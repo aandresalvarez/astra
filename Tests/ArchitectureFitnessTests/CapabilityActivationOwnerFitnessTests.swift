@@ -57,7 +57,7 @@ struct CapabilityActivationOwnerFitnessTests {
         "Astra/Services/Packs/AstraPackProfileResolver.swift": 1,
         "Astra/Services/Packs/PackWorkspacePolicyProvider.swift": 1,
         "Astra/Services/Persistence/WorkspaceConfigManager+CapabilityImportTrust.swift": 5,
-        "Astra/Services/Persistence/WorkspaceConfigManager.swift": 11,
+        "Astra/Services/Persistence/WorkspaceConfigManager.swift": 3,
         "Astra/Services/Runtime/AgentRuntimeCapabilityLaunchAudit.swift": 5,
         "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": 1,
         "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift": 1,

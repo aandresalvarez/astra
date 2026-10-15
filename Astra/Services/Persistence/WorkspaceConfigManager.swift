@@ -276,6 +276,8 @@ public enum WorkspaceConfigManager {
         public var workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil
         public var googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil
         public var installedPlugins: [InstalledPluginRef]?
+        /// Default account per service type (connector UUID string).
+        public var defaultAccounts: [String: String]? = nil
         public var exportedAt: Date
     }
 
@@ -381,6 +383,8 @@ public enum WorkspaceConfigManager {
         public var originComponentID: String? = nil
         public var originComponentKind: String? = nil
         public var originSourceKind: String? = nil
+        /// The account name a person and the agent use; nil uses `name`.
+        public var accountAlias: String? = nil
         public var createdAt: Date?
         public var updatedAt: Date?
     }
@@ -984,14 +988,10 @@ public enum WorkspaceConfigManager {
             .map(workspaceAppAutomationStateConfig)
         let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
-        var pluginRefs: [InstalledPluginRef] = []
-        for (idx, pluginID) in workspace.installedPluginIDs.enumerated() {
-            let ver = idx < workspace.installedPluginVersions.count
-                ? workspace.installedPluginVersions[idx] : "0.0.0"
-            pluginRefs.append(InstalledPluginRef(id: pluginID, version: ver))
-        }
+        let activation = WorkspaceCapabilityActivation.state(of: workspace)
+        let pluginRefs = activation.installedPlugins.map { InstalledPluginRef(id: $0.id, version: $0.version ?? "0.0.0") }
 
-        return WorkspaceConfig(
+        var config = WorkspaceConfig(
             id: workspace.id.uuidString,
             name: workspace.name,
             primaryPath: workspace.primaryPath,
@@ -1002,11 +1002,11 @@ public enum WorkspaceConfigManager {
             activeWorkingPath: workspace.activeWorkingPath,
             activeExecutionEnvironmentJSON: workspace.activeExecutionEnvironmentJSON,
             lastUsedSkillNames: workspace.lastUsedSkillNames,
-            enabledGlobalSkillIDs: workspace.enabledGlobalSkillIDs,
-            enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
-            enabledGlobalToolIDs: workspace.enabledGlobalToolIDs,
-            enabledCapabilityIDs: workspace.enabledCapabilityIDs,
-            enabledPackIDs: workspace.enabledPackIDs,
+            enabledGlobalSkillIDs: activation.globalSkillIDs,
+            enabledGlobalConnectorIDs: activation.globalConnectorIDs,
+            enabledGlobalToolIDs: activation.globalToolIDs,
+            enabledCapabilityIDs: activation.capabilityIDs,
+            enabledPackIDs: activation.packIDs,
             shelfVisibilityOverrides: workspace.shelfVisibilityOverrides,
             memories: workspace.memories,
             createdAt: workspace.createdAt,
@@ -1027,6 +1027,8 @@ public enum WorkspaceConfigManager {
             installedPlugins: pluginRefs.isEmpty ? nil : pluginRefs,
             exportedAt: Date()
         )
+        config.defaultAccounts = activation.defaultAccountsByService.isEmpty ? nil : activation.defaultAccountsByService
+        return config
     }
 
     public static func exportToFile(workspace: Workspace, modelContext: ModelContext, url: URL) throws {
@@ -1643,7 +1645,7 @@ public enum WorkspaceConfigManager {
     private static func connectorConfig(_ connector: Connector) -> ConnectorConfig? {
         guard !connector.isDeleted, connector.modelContext != nil else { return nil }
         guard ConnectorSecurityPolicy.isRuntimeSafe(connector) else { return nil }
-        return ConnectorConfig(
+        var config = ConnectorConfig(
             id: connector.id.uuidString,
             name: connector.name,
             serviceType: connector.serviceType,
@@ -1664,6 +1666,8 @@ public enum WorkspaceConfigManager {
             createdAt: connector.createdAt,
             updatedAt: connector.updatedAt
         )
+        config.accountAlias = connector.accountAlias
+        return config
     }
 
     private static func localToolConfig(_ tool: LocalTool) -> LocalToolConfig? {
@@ -2062,6 +2066,7 @@ public enum WorkspaceConfigManager {
         connector.originComponentID = config.originComponentID
         connector.originComponentKind = config.originComponentKind
         connector.originSourceKind = config.originSourceKind
+        connector.accountAlias = config.accountAlias
         connector.createdAt = config.createdAt ?? connector.createdAt
         connector.updatedAt = config.updatedAt ?? connector.updatedAt
         return connector

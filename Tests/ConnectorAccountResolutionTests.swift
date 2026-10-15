@@ -1,0 +1,164 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRAModels
+import ASTRAPersistence
+@testable import ASTRA
+
+/// Two accounts of one service in a workspace: the task or the workspace picks
+/// one, and only that one is narrated to the agent (Plugins 2.0 phase 1).
+@Suite("Connector account resolution")
+@MainActor
+struct ConnectorAccountResolutionTests {
+    @Test("An alias named in the task picks that account")
+    func aliasInTextPicksAccount() {
+        let (stanford, personal) = twoJiraAccounts()
+        let resolution = ConnectorAccountResolver.resolve(
+            [stanford, personal],
+            contextText: "Download the SS tickets from the Stanford Jira",
+            activation: nil
+        )
+        #expect(resolution.connectors.map(\.id) == [stanford.id])
+        #expect(resolution.excludedConnectorIDs == [personal.id])
+    }
+
+    @Test("The service word alone names no account, so both stay in scope")
+    func serviceWordNamesNothing() {
+        let first = jira(name: "Jira")
+        let second = jira(name: "Jira-new")
+        let resolution = ConnectorAccountResolver.resolve(
+            [first, second],
+            contextText: "Download the SS tickets from Jira",
+            activation: nil
+        )
+        #expect(resolution.connectors.map(\.id) == [first.id, second.id])
+        #expect(resolution.excludedConnectorIDs.isEmpty)
+    }
+
+    @Test("Without a name in the task, the workspace default decides")
+    func workspaceDefaultDecides() {
+        let (stanford, personal) = twoJiraAccounts()
+        var activation = WorkspaceCapabilityActivationState()
+        activation.setDefaultAccount(personal.id.uuidString, forService: "jira")
+        let resolution = ConnectorAccountResolver.resolve(
+            [stanford, personal],
+            contextText: "Summarise this week's Jira tickets",
+            activation: activation
+        )
+        #expect(resolution.connectors.map(\.id) == [personal.id])
+    }
+
+    @Test("A named account beats the default, and the default breaks a tie between named accounts")
+    func namedBeatsDefaultAndDefaultBreaksTies() {
+        let (stanford, personal) = twoJiraAccounts()
+        var activation = WorkspaceCapabilityActivationState()
+        activation.setDefaultAccount(personal.id.uuidString, forService: "jira")
+
+        let named = ConnectorAccountResolver.resolve(
+            [stanford, personal], contextText: "Use the stanford account", activation: activation
+        )
+        #expect(named.connectors.map(\.id) == [stanford.id])
+
+        let both = ConnectorAccountResolver.resolve(
+            [stanford, personal], contextText: "Compare stanford and personal", activation: activation
+        )
+        #expect(both.connectors.map(\.id) == [personal.id])
+    }
+
+    @Test("With no name and no default every account stays in scope")
+    func noSignalKeepsEveryAccount() {
+        let (stanford, personal) = twoJiraAccounts()
+        let resolution = ConnectorAccountResolver.resolve(
+            [stanford, personal], contextText: "Read Jira", activation: WorkspaceCapabilityActivationState()
+        )
+        #expect(resolution.connectors.count == 2)
+    }
+
+    @Test("A two-account Jira workspace launches with the chosen account only")
+    func twoAccountWorkspaceLaunchesWithChosenAccount() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Two Jira Accounts", primaryPath: "/tmp/two-jira-accounts")
+        context.insert(workspace)
+        let (stanford, personal) = twoJiraAccounts()
+        for connector in [stanford, personal] {
+            connector.workspace = workspace
+            context.insert(connector)
+        }
+        let task = AgentTask(title: "Export", goal: "Export the SS tickets", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let named = TaskCapabilityResolver(task: task).promptScope(contextText: "Export the SS tickets from Stanford")
+        #expect(named.connectors.map(\.id) == [stanford.id])
+
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.setDefaultAccount(personal.id.uuidString, forService: "jira")
+        }
+        let defaulted = TaskCapabilityResolver(task: task).promptScope(contextText: "Export the SS tickets from Jira")
+        #expect(defaulted.connectors.map(\.id) == [personal.id])
+        #expect(Set(defaulted.reachableConnectors.map(\.id)) == [stanford.id, personal.id])
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("An account alias becomes the agent's alias and survives a rename")
+    func accountAliasDrivesRuntimeAlias() {
+        let (stanford, personal) = twoJiraAccounts()
+        let before = ConnectorRuntimeProjection.aliasesByConnectorID(for: [stanford, personal])
+        stanford.name = "Renamed connector"
+        let after = ConnectorRuntimeProjection.aliasesByConnectorID(for: [stanford, personal])
+        #expect(before[stanford.id] == "stanford")
+        #expect(after[stanford.id] == "stanford")
+        #expect(after[personal.id] == "personal")
+    }
+
+    @Test("Account alias and default account survive the workspace mirror")
+    func accountChoicesSurviveTheMirror() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Mirror", primaryPath: "/tmp/account-mirror-\(UUID().uuidString)")
+        context.insert(workspace)
+        let (stanford, personal) = twoJiraAccounts()
+        for connector in [stanford, personal] {
+            connector.workspace = workspace
+            context.insert(connector)
+        }
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.setDefaultAccount(personal.id.uuidString, forService: "jira")
+        }
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        context.delete(workspace)
+        try context.save()
+        let restored = WorkspaceConfigManager.importWorkspace(
+            from: config, modelContext: context, capabilityTrust: .preserveRecordedState
+        )
+
+        #expect(Set(restored.connectors.compactMap(\.accountAlias)) == ["Stanford", "Personal"])
+        #expect(WorkspaceCapabilityActivation.state(of: restored).defaultAccountID(forService: "jira") == personal.id.uuidString)
+        withExtendedLifetime(container) {}
+    }
+
+    // MARK: - Fixtures
+
+    private func twoJiraAccounts() -> (Connector, Connector) {
+        let stanford = jira(name: "Jira (work)")
+        stanford.accountAlias = "Stanford"
+        let personal = jira(name: "Jira (home)")
+        personal.accountAlias = "Personal"
+        return (stanford, personal)
+    }
+
+    private func jira(name: String) -> Connector {
+        Connector(name: name, serviceType: "jira", baseURL: "https://\(UUID().uuidString.prefix(8)).atlassian.net/", authMethod: "none")
+    }
+}

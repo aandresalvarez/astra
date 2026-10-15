@@ -538,7 +538,9 @@ struct ConnectorRuntimeProjection {
     }
 
     private static func aliasBase(for connector: Connector) -> String {
-        let preferred = slug(connector.name)
+        // An explicit account alias wins over the display name, so renaming a
+        // connector does not change what the agent and broker call it.
+        let preferred = slug(connector.accountAlias.flatMap { $0.isEmpty ? nil : $0 } ?? connector.name)
         let fallback = slug(connector.serviceType)
         let alias = preferred.isEmpty ? fallback : preferred
         let normalized = alias.isEmpty ? "connector" : alias

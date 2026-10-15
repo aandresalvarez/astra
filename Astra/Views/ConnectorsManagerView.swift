@@ -205,6 +205,33 @@ struct ConnectorEditorView: View {
                         TextField("Base URL", text: $connector.baseURL)
                             .textFieldStyle(.roundedBorder)
                             .font(Stanford.ui(14, design: .monospaced))
+
+                        TextField("Account alias (optional)", text: Binding(
+                            get: { connector.accountAlias ?? "" },
+                            set: { connector.accountAlias = $0.isEmpty ? nil : $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .help("The name you and the agent use to pick this account when the workspace has more than one, like Stanford or Personal.")
+
+                        if let workspace {
+                            Toggle(isOn: Binding(
+                                get: {
+                                    WorkspaceCapabilityActivation.state(of: workspace)
+                                        .defaultAccountID(forService: connector.serviceType) == connector.id.uuidString
+                                },
+                                set: { isDefault in
+                                    WorkspaceCapabilityActivation.mutate(workspace) {
+                                        $0.setDefaultAccount(isDefault ? connector.id.uuidString : nil, forService: connector.serviceType)
+                                    }
+                                    workspace.updatedAt = Date()
+                                    saveSharingChange()
+                                }
+                            )) {
+                                Text("Default \(Self.serviceLabel(connector.serviceType)) account in this workspace")
+                                    .font(Stanford.body(13))
+                            }
+                            .help("Used when a request doesn't name which account to use.")
+                        }
                     }
                     .padding(.vertical, 4)
                 }

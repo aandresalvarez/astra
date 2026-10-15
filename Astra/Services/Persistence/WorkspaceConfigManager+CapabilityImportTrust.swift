@@ -69,7 +69,8 @@ extension WorkspaceConfigManager {
             globalConnectorIDs: config.enabledGlobalConnectorIDs ?? [],
             globalToolIDs: config.enabledGlobalToolIDs ?? [],
             pluginIDs: config.installedPlugins?.map(\.id) ?? [],
-            pluginVersions: config.installedPlugins?.map(\.version) ?? []
+            pluginVersions: config.installedPlugins?.map(\.version) ?? [],
+            defaultAccountsByService: config.defaultAccounts ?? [:]
         )
     }
 
