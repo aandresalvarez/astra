@@ -477,17 +477,6 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     )
                     return
                 }
-                let signalResult = ProcessGroupSpawn.configureDefaultSignalState(&spawnAttributes)
-                guard signalResult == 0 else {
-                    cleanupPipes()
-                    state.finish(
-                        outcome: .launchFailed(Self.posixErrorDescription(signalResult)),
-                        stdout: "",
-                        stderr: "",
-                        elapsedTime: Date().timeIntervalSince(startedAt)
-                    )
-                    return
-                }
 
                 var pid = pid_t()
                 let argv = CStringArray([path] + args)
