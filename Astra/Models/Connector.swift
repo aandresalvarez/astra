@@ -31,6 +31,10 @@ public final class Connector {
     public var originComponentID: String?
     public var originComponentKind: String?
     public var originSourceKind: String?
+    /// The name a person and the agent use to pick this account when a
+    /// workspace has more than one of the same service ("Stanford", "Personal").
+    /// Nil falls back to `name`. Added in schema V20.
+    public var accountAlias: String?
     public var createdAt: Date
     public var updatedAt: Date
 

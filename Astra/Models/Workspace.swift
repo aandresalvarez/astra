@@ -20,6 +20,11 @@ public final class Workspace: Identifiable {
     public var memories: [String] = []
     public var installedPluginIDs: [String] = []
     public var installedPluginVersions: [String] = []
+    /// The default account per service type, as parallel arrays (service type,
+    /// connector UUID string). Written only through
+    /// `WorkspaceCapabilityActivation`. Added in schema V20.
+    public var defaultAccountServiceTypes: [String] = []
+    public var defaultAccountConnectorIDs: [String] = []
     public var isStarred: Bool = false
     /// The code location new chats default to. `nil` means the primary path; a
     /// non-nil value is the absolute path of the active configured repository or

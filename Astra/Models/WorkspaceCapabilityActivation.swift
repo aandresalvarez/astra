@@ -2,9 +2,9 @@ import Foundation
 
 /// The single owner of a workspace's capability enablement state.
 ///
-/// Seven stored arrays on `Workspace` record which capability packages, packs
-/// and shared (global) skills, connectors and tools a workspace has turned on,
-/// plus the plugin versions it installed. They used to be written from more
+/// Stored arrays on `Workspace` record which capability packages, packs and
+/// shared (global) skills, connectors and tools a workspace has turned on, the
+/// plugin versions it installed, and its default account per service. They used to be written from more
 /// than twenty places, views included. Every write now goes through
 /// `mutate`/`apply`/`restore` here, and `CapabilityActivationOwnerFitnessTests`
 /// fails on a direct write anywhere else, so moving this state into its own
@@ -23,8 +23,20 @@ public enum WorkspaceCapabilityActivation {
             globalConnectorIDs: workspace.enabledGlobalConnectorIDs,
             globalToolIDs: workspace.enabledGlobalToolIDs,
             pluginIDs: workspace.installedPluginIDs,
-            pluginVersions: workspace.installedPluginVersions
+            pluginVersions: workspace.installedPluginVersions,
+            defaultAccountsByService: defaultAccounts(
+                serviceTypes: workspace.defaultAccountServiceTypes,
+                connectorIDs: workspace.defaultAccountConnectorIDs
+            )
         )
+    }
+
+    private static func defaultAccounts(serviceTypes: [String], connectorIDs: [String]) -> [String: String] {
+        var accounts: [String: String] = [:]
+        for (serviceType, connectorID) in zip(serviceTypes, connectorIDs) {
+            accounts[WorkspaceCapabilityActivationState.normalizedService(serviceType)] = connectorID
+        }
+        return accounts
     }
 
     /// Writes `state` back, touching only the arrays that changed. Assigning
@@ -51,6 +63,12 @@ public enum WorkspaceCapabilityActivation {
         }
         if workspace.installedPluginVersions != state.pluginVersions {
             workspace.installedPluginVersions = state.pluginVersions
+        }
+        let services = state.defaultAccountsByService.keys.sorted()
+        let connectorIDs = services.map { state.defaultAccountsByService[$0] ?? "" }
+        if workspace.defaultAccountServiceTypes != services || workspace.defaultAccountConnectorIDs != connectorIDs {
+            workspace.defaultAccountServiceTypes = services
+            workspace.defaultAccountConnectorIDs = connectorIDs
         }
     }
 
@@ -102,6 +120,9 @@ public struct WorkspaceCapabilityActivationState: Equatable, Sendable {
     /// Installed plugin IDs and their versions, paired by index.
     public var pluginIDs: [String]
     public var pluginVersions: [String]
+    /// The account (connector UUID string) a workspace uses for a service when
+    /// it has more than one, keyed by lowercased service type.
+    public var defaultAccountsByService: [String: String]
 
     public init(
         capabilityIDs: [String] = [],
@@ -110,7 +131,8 @@ public struct WorkspaceCapabilityActivationState: Equatable, Sendable {
         globalConnectorIDs: [String] = [],
         globalToolIDs: [String] = [],
         pluginIDs: [String] = [],
-        pluginVersions: [String] = []
+        pluginVersions: [String] = [],
+        defaultAccountsByService: [String: String] = [:]
     ) {
         self.capabilityIDs = capabilityIDs
         self.packIDs = packIDs
@@ -119,6 +141,38 @@ public struct WorkspaceCapabilityActivationState: Equatable, Sendable {
         self.globalToolIDs = globalToolIDs
         self.pluginIDs = pluginIDs
         self.pluginVersions = pluginVersions
+        self.defaultAccountsByService = defaultAccountsByService
+    }
+
+    public var pluginIDSet: Set<String> { Set(pluginIDs) }
+
+    /// The version recorded for `id`, or nil when it is not installed or its
+    /// version slot is missing.
+    public func installedVersion(of id: String) -> String? {
+        guard let index = pluginIDs.firstIndex(of: id), index < pluginVersions.count else { return nil }
+        return pluginVersions[index]
+    }
+
+    /// Installed plugins with their versions, paired by index; a missing
+    /// version slot reads as nil rather than shifting the pairs.
+    public var installedPlugins: [(id: String, version: String?)] {
+        pluginIDs.enumerated().map { index, id in
+            (id, index < pluginVersions.count ? pluginVersions[index] : nil)
+        }
+    }
+
+    public func defaultAccountID(forService serviceType: String) -> String? {
+        defaultAccountsByService[Self.normalizedService(serviceType)]
+    }
+
+    /// Makes `connectorID` the account this workspace uses for `serviceType`;
+    /// nil clears the choice.
+    public mutating func setDefaultAccount(_ connectorID: String?, forService serviceType: String) {
+        defaultAccountsByService[Self.normalizedService(serviceType)] = connectorID
+    }
+
+    public static func normalizedService(_ serviceType: String) -> String {
+        serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     public mutating func enableCapability(_ id: String) {

@@ -119,6 +119,36 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("A default account per service round-trips through the workspace and ignores case")
+    @MainActor
+    func defaultAccountRoundTrips() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.setDefaultAccount("jira-stanford", forService: "Jira")
+            $0.setDefaultAccount("redcap-a", forService: "redcap")
+        }
+        #expect(workspace.defaultAccountServiceTypes == ["jira", "redcap"])
+        #expect(workspace.defaultAccountConnectorIDs == ["jira-stanford", "redcap-a"])
+
+        let state = WorkspaceCapabilityActivation.state(of: workspace)
+        #expect(state.defaultAccountID(forService: "JIRA") == "jira-stanford")
+        #expect(state.defaultAccountID(forService: "github") == nil)
+
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.setDefaultAccount(nil, forService: "jira") }
+        #expect(workspace.defaultAccountServiceTypes == ["redcap"])
+        #expect(workspace.defaultAccountConnectorIDs == ["redcap-a"])
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Installed plugin reads pair versions by index and report a missing slot as nil")
+    func installedPluginReads() {
+        let state = WorkspaceCapabilityActivationState(pluginIDs: ["a", "b"], pluginVersions: ["1.0"])
+        #expect(state.pluginIDSet == ["a", "b"])
+        #expect(state.installedVersion(of: "a") == "1.0")
+        #expect(state.installedVersion(of: "b") == nil)
+        #expect(state.installedPlugins.map(\.version) == ["1.0", nil])
+    }
+
     @MainActor
     private func makeManagedWorkspace() throws -> (ModelContainer, Workspace) {
         let container = try ModelContainer(

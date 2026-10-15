@@ -19,7 +19,8 @@ import Testing
 struct CapabilityActivationOwnerFitnessTests {
     static let fields = [
         "enabledGlobalSkillIDs", "enabledGlobalConnectorIDs", "enabledGlobalToolIDs",
-        "enabledCapabilityIDs", "enabledPackIDs", "installedPluginIDs", "installedPluginVersions"
+        "enabledCapabilityIDs", "enabledPackIDs", "installedPluginIDs", "installedPluginVersions",
+        "defaultAccountServiceTypes", "defaultAccountConnectorIDs"
     ]
 
     /// Files that may touch the stored arrays directly: the model, the owner,
