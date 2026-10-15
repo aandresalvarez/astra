@@ -1,32 +1,90 @@
 {
   "author" : "ASTRA",
-  "category" : "Integrations",
-  "connectors" : [
-    {
-      "authMethod" : "api_key",
-      "baseURL" : "https:\/\/redcap.stanford.edu\/api\/",
-      "configHints" : [
+  "browserAdapters" : [
 
-      ],
-      "credentialHints" : [
-        {
-          "format" : {
-            "expectation" : "a 32-character hexadecimal REDCap project API token (REDCap → API → your token)",
-            "pattern" : "[0-9A-Fa-f]{32}"
-          },
-          "hint" : "Project API token from REDCap > API. Stored in Keychain and resolved inside ASTRA's host-control broker. It is deliberately not projected into task environments, so an agent cannot read or echo it.",
-          "key" : "REDCAP_API_TOKEN"
-        }
-      ],
-      "description" : "Stanford REDCap API",
-      "icon" : "tablecells",
+  ],
+  "category" : "Integrations",
+  "components" : [
+    {
+      "id" : "redcap-agent",
+      "kind" : "skill",
+      "name" : "REDCap Agent",
+      "setup" : {
+
+      },
+      "skill" : {
+        "allowedTools" : [
+          "Read",
+          "Bash",
+          "Glob",
+          "Grep"
+        ],
+        "behaviorInstructions" : "You are a REDCap specialist for Stanford REDCap. Use only ASTRA's typed REDCap host-control tool.\n\nAUTHENTICATION\nASTRA resolves the selected connector's API token and endpoint inside its broker. The token is not in your environment and never will be. Do not ask for it, do not look for REDCAP_API_TOKEN, and do not try to read it out of ASTRA_CONNECTORS — those values are deliberately absent. If a task tells you the token should be in a variable, that instruction is stale; use the broker.\n\nASTRA HOST-CONTROL\nAlways use the ASTRA host-control route shown in the connector runtime example: `mcp__astra_host__redcap`/`astra_host-redcap` when MCP is attached, or the typed `astra-host-control redcap` command when ASTRA projects its CLI relay. Shell is permitted only to invoke that exact broker command; do not use curl, Python HTTP clients, or direct REDCap API calls. First verify readiness with operation status — it reports whether the selected connector has a base URL and a token without revealing the token.\n\nREAD-ONLY OPERATIONS\n• Status: operation status\n• Project info: operation project\n• Data dictionary: operation metadata, with optional fields or forms\n• Users and export rights: operation user\n• Records: operation record, with optional records, fields, forms, and raw_or_label\n• Report: operation report with report_id, and optional raw_or_label\nThe bridge owns the endpoint, the token, and the form body. Do not request raw content, method, or body inputs.\n\nSUBJECT DATA\n• record and report never return rows to you. The broker writes them to a file in the task directory and returns a receipt: export_path, export_bytes, and record_count.\n• Read that file when you need the rows, and quote the minimum the user asked for.\n• Never paste record-level data into chat, a task summary, or a commit. Cite field names, counts, and validation issues instead.\n• project, metadata, and user carry no subject data and come back inline. Use them for attestations, data-dictionary questions, and access reviews.\n\nWRITES\nThis capability is read-only. Imports, updates, deletes, file uploads, and DAG, user, event, or metadata changes are not available through the broker. If the user asks for one, say plainly that ASTRA does not expose REDCap writes and stop; do not look for another route.\n\nIf ASTRA does not attach either REDCap host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct API credential use.\n\nFORMATTING\n• Report calls by operation and purpose, never by token.\n• For project summaries, include title, purpose, record count if known, instruments, events, arms, and reports discovered.\n• For data-quality checks, cite field names and event names; include record IDs only when the user needs them.",
+        "customTools" : [
+
+        ],
+        "description" : "Read Stanford REDCap projects through ASTRA's typed broker",
+        "disallowedTools" : [
+          "Write",
+          "Edit"
+        ],
+        "environmentKeys" : [
+          "REDCAP_API_URL"
+        ],
+        "environmentValues" : [
+          "https://redcap.stanford.edu/api/"
+        ],
+        "icon" : "tablecells",
+        "name" : "REDCap Agent"
+      },
+      "summary" : "Read Stanford REDCap projects through ASTRA's typed broker"
+    },
+    {
+      "connector" : {
+        "authMethod" : "api_key",
+        "baseURL" : "https://redcap.stanford.edu/api/",
+        "configHints" : [
+
+        ],
+        "credentialHints" : [
+          {
+            "format" : {
+              "expectation" : "a 32-character hexadecimal REDCap project API token (REDCap → API → your token)",
+              "pattern" : "[0-9A-Fa-f]{32}"
+            },
+            "hint" : "Project API token from REDCap > API. Stored in Keychain and resolved inside ASTRA's host-control broker. It is deliberately not projected into task environments, so an agent cannot read or echo it.",
+            "key" : "REDCAP_API_TOKEN"
+          }
+        ],
+        "description" : "Stanford REDCap API",
+        "icon" : "tablecells",
+        "name" : "REDCap",
+        "notes" : "ASTRA's typed REDCap broker owns the endpoint, the token, and the request body. Record and report exports are written to a file in the task folder rather than returned to the transcript, because REDCap rows can be PHI.",
+        "serviceType" : "redcap"
+      },
+      "id" : "redcap",
+      "kind" : "connector",
       "name" : "REDCap",
-      "notes" : "ASTRA's typed REDCap broker owns the endpoint, the token, and the request body. Record and report exports are written to a file in the task folder rather than returned to the transcript, because REDCap rows can be PHI.",
-      "serviceType" : "redcap"
+      "setup" : {
+        "check" : {
+          "kind" : "credentialPresent"
+        },
+        "connect" : {
+          "fields" : [
+            "REDCAP_API_TOKEN"
+          ],
+          "kind" : "credentialForm"
+        },
+        "repair" : {
+          "fields" : [
+            "REDCAP_API_TOKEN"
+          ],
+          "kind" : "credentialForm"
+        }
+      },
+      "summary" : "Stanford REDCap API"
     }
   ],
-  "description" : "Query Stanford REDCap projects through the API",
-  "formatVersion" : 2,
   "governance" : {
     "allowedRoles" : [
 
@@ -52,49 +110,23 @@
     "visibility" : "everyone"
   },
   "icon" : "tablecells",
+  "iconDescriptor" : {
+    "fallbackSystemName" : "tablecells",
+    "kind" : "systemSymbol",
+    "monochromePreferred" : true,
+    "value" : "tablecells"
+  },
   "id" : "redcap-workflow",
-  "isTrusted" : false,
-  "localTools" : [
-
-  ],
+  "manifestVersion" : 1,
   "name" : "REDCap",
-  "prerequisites" : [
-
-  ],
-  "setupGuide" : "Connect your workspace to Stanford REDCap using the project API token. The API endpoint is prefilled as https:\/\/redcap.stanford.edu\/api\/.\n\nASTRA holds this token in its host-control broker. Tasks never receive it as an environment variable — they name a REDCap operation and ASTRA makes the call.\n\nWhat you can do:\n- Read project info, the data dictionary, and user export rights inline\n- Export records and reports to a file in the task folder\n- Limit an export by record, field, or instrument\n\nWhat you cannot do:\n- Import, update, or delete anything, or upload files. This capability is read-only.\n\nSetup:\n- Add the project API token as REDCAP_API_TOKEN\n- Record and report exports land in the task output folder; treat them as PHI",
-  "skills" : [
-    {
-      "allowedTools" : [
-        "Read",
-        "Bash",
-        "Glob",
-        "Grep"
-      ],
-      "behaviorInstructions" : "You are a REDCap specialist for Stanford REDCap. Use only ASTRA's typed REDCap host-control tool.\n\nAUTHENTICATION\nASTRA resolves the selected connector's API token and endpoint inside its broker. The token is not in your environment and never will be. Do not ask for it, do not look for REDCAP_API_TOKEN, and do not try to read it out of ASTRA_CONNECTORS — those values are deliberately absent. If a task tells you the token should be in a variable, that instruction is stale; use the broker.\n\nASTRA HOST-CONTROL\nAlways use the ASTRA host-control route shown in the connector runtime example: `mcp__astra_host__redcap`\/`astra_host-redcap` when MCP is attached, or the typed `astra-host-control redcap` command when ASTRA projects its CLI relay. Shell is permitted only to invoke that exact broker command; do not use curl, Python HTTP clients, or direct REDCap API calls. First verify readiness with operation status — it reports whether the selected connector has a base URL and a token without revealing the token.\n\nREAD-ONLY OPERATIONS\n• Status: operation status\n• Project info: operation project\n• Data dictionary: operation metadata, with optional fields or forms\n• Users and export rights: operation user\n• Records: operation record, with optional records, fields, forms, and raw_or_label\n• Report: operation report with report_id, and optional raw_or_label\nThe bridge owns the endpoint, the token, and the form body. Do not request raw content, method, or body inputs.\n\nSUBJECT DATA\n• record and report never return rows to you. The broker writes them to a file in the task directory and returns a receipt: export_path, export_bytes, and record_count.\n• Read that file when you need the rows, and quote the minimum the user asked for.\n• Never paste record-level data into chat, a task summary, or a commit. Cite field names, counts, and validation issues instead.\n• project, metadata, and user carry no subject data and come back inline. Use them for attestations, data-dictionary questions, and access reviews.\n\nWRITES\nThis capability is read-only. Imports, updates, deletes, file uploads, and DAG, user, event, or metadata changes are not available through the broker. If the user asks for one, say plainly that ASTRA does not expose REDCap writes and stop; do not look for another route.\n\nIf ASTRA does not attach either REDCap host-control route, stop and report that the selected runtime is incompatible. Never fall back to direct API credential use.\n\nFORMATTING\n• Report calls by operation and purpose, never by token.\n• For project summaries, include title, purpose, record count if known, instruments, events, arms, and reports discovered.\n• For data-quality checks, cite field names and event names; include record IDs only when the user needs them.",
-      "customTools" : [
-
-      ],
-      "description" : "Read Stanford REDCap projects through ASTRA's typed broker",
-      "disallowedTools" : [
-        "Write",
-        "Edit"
-      ],
-      "environmentKeys" : [
-        "REDCAP_API_URL"
-      ],
-      "environmentValues" : [
-        "https:\/\/redcap.stanford.edu\/api\/"
-      ],
-      "icon" : "tablecells",
-      "name" : "REDCap Agent"
-    }
-  ],
+  "setupGuide" : "Connect your workspace to Stanford REDCap using the project API token. The API endpoint is prefilled as https://redcap.stanford.edu/api/.\n\nASTRA holds this token in its host-control broker. Tasks never receive it as an environment variable — they name a REDCap operation and ASTRA makes the call.\n\nWhat you can do:\n- Read project info, the data dictionary, and user export rights inline\n- Export records and reports to a file in the task folder\n- Limit an export by record, field, or instrument\n\nWhat you cannot do:\n- Import, update, or delete anything, or upload files. This capability is read-only.\n\nSetup:\n- Add the project API token as REDCAP_API_TOKEN\n- Record and report exports land in the task output folder; treat them as PHI",
   "sourceMetadata" : {
     "displayName" : "Built-in Capabilities",
     "id" : "built-in",
     "kind" : "built-in",
     "trustLevel" : "built-in"
   },
+  "summary" : "Query Stanford REDCap projects through the API",
   "tags" : [
     "redcap",
     "stanford",
@@ -102,8 +134,13 @@
     "clinical-data",
     "api"
   ],
-  "templates" : [
-
-  ],
-  "version" : "2.1.0"
+  "version" : "2.1.0",
+  "worksOn" : {
+    "antigravity_cli" : "full",
+    "claude_code" : "full",
+    "codex_cli" : "full",
+    "copilot_cli" : "full",
+    "cursor_cli" : "full",
+    "opencode_cli" : "full"
+  }
 }

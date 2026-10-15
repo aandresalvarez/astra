@@ -2,7 +2,9 @@
 
 This folder is the repo-maintained source for ASTRA's approved built-in capability catalog.
 
-Each JSON file is a `PluginPackage` v2 capability package. Capabilities can include skills, connector profiles, local tools, MCP servers, browser adapters, prerequisites, templates, and setup text needed to enable that capability in a workspace.
+Each JSON file is a Plugins 2.0 manifest (`manifestVersion: 1`, see `ASTRACore/PluginManifest.swift`): one `components` list in which every skill, connector, CLI tool, MCP server, template and setup step carries the same setup contract (`check`, `verify`, `connect`, `repair`, `install`), plus `worksOn` per runtime. Component payloads are the `PluginPackage` v2 types, so a manifest converts to the package the library stores without loss; a file in the older package shape still loads.
+
+Regenerate a file from a package with `PluginManifestConverter.manifest(from:)` rather than editing the shape by hand, and check it with `./script/capability_package.sh validate <file>`.
 
 Every built-in package must include explicit `governance` metadata. ASTRA treats local or legacy packages without this block as draft, admin-only packages that require explicit review.
 

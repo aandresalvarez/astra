@@ -7,27 +7,36 @@ import ASTRACore
 /// library, installer and runtime keep working unchanged underneath it.
 @Suite("Plugin manifest")
 struct PluginManifestTests {
-    @Test("Every built-in capability survives package → manifest → package unchanged")
+    @Test("Every built-in ships as a manifest that survives manifest → package → manifest unchanged")
     func builtInsRoundTripLosslessly() throws {
         let files = try builtInFiles()
         #expect(files.count >= 10)
         for file in files {
-            let original = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
-            let manifest = PluginManifestConverter.manifest(from: original)
-            let restored = PluginManifestConverter.package(from: manifest)
-            #expect(try canonical(restored) == canonical(original), "\(file.lastPathComponent) changed in the round trip")
+            let data = try Data(contentsOf: file)
+            #expect(PluginManifestConverter.isManifest(data), "\(file.lastPathComponent) is not a manifest")
+            let shipped = try JSONDecoder().decode(PluginManifest.self, from: data)
+            let package = PluginManifestConverter.package(from: shipped)
+            let again = PluginManifestConverter.manifest(from: package)
+            #expect(again == shipped, "\(file.lastPathComponent) changed in the round trip")
+            #expect(try canonical(PluginManifestConverter.package(from: again)) == canonical(package))
         }
+    }
+
+    @Test("Every built-in file loads from the bundle; none is dropped for failing to decode")
+    func everyBuiltInFileLoads() throws {
+        let shipped = Set(try builtInFiles().map { $0.deletingPathExtension().lastPathComponent })
+        #expect(Set(ApprovedCapabilityBundle.packages().map(\.id)) == shipped)
     }
 
     @Test("A manifest survives JSON and decodes back into the same package")
     func manifestJSONRoundTrips() throws {
         for file in try builtInFiles() {
-            let original = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
+            let original = try PluginManifestConverter.decodePackage(from: Data(contentsOf: file))
             let data = try JSONEncoder().encode(PluginManifestConverter.manifest(from: original))
             #expect(PluginManifestConverter.isManifest(data))
             #expect(try canonical(PluginManifestConverter.decodePackage(from: data)) == canonical(original))
         }
-        let packageData = try Data(contentsOf: try builtInFiles()[0])
+        let packageData = try JSONEncoder().encode(try builtIn("jira-workflow"))
         #expect(!PluginManifestConverter.isManifest(packageData))
     }
 
@@ -113,7 +122,7 @@ struct PluginManifestTests {
 
     private func builtIn(_ id: String) throws -> PluginPackage {
         let file = try #require(try builtInFiles().first { $0.deletingPathExtension().lastPathComponent == id })
-        return try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
+        return try PluginManifestConverter.decodePackage(from: Data(contentsOf: file))
     }
 
     private func canonical(_ package: PluginPackage) throws -> String {

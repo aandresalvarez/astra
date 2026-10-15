@@ -1,34 +1,204 @@
 {
   "author" : "ASTRA",
-  "category" : "Integrations",
-  "connectors" : [
-    {
-      "authMethod" : "none",
-      "baseURL" : "",
-      "configHints" : [
-        {
-          "hint" : "Default GCP project ID",
-          "isList" : false,
-          "key" : "GCP_PROJECT"
-        },
-        {
-          "hint" : "Default region (e.g. us-central1)",
-          "isList" : false,
-          "key" : "GCP_REGION"
-        }
-      ],
-      "credentialHints" : [
+  "browserAdapters" : [
 
-      ],
-      "description" : "GCP via gcloud CLI (must be installed locally)",
-      "icon" : "cloud",
+  ],
+  "category" : "Integrations",
+  "components" : [
+    {
+      "id" : "gcloud-agent",
+      "kind" : "skill",
+      "name" : "GCloud Agent",
+      "setup" : {
+
+      },
+      "skill" : {
+        "allowedTools" : [
+          "Read",
+          "Bash",
+          "Glob",
+          "Grep"
+        ],
+        "behaviorInstructions" : "You are a Google Cloud Platform specialist. Use the gcloud and bq CLI tools to interact with GCP resources.\n\nTOOLS AVAILABLE\n• gcloud — main CLI for GCP resource management\n• bq — BigQuery command-line tool\n• gsutil / gcloud storage — Cloud Storage operations\n\nCOMMON OPERATIONS\n• List projects: gcloud projects list\n• Set project: gcloud config set project PROJECT_ID\n• BigQuery query: bq query --use_legacy_sql=false 'SELECT ...'\n• List BQ datasets: bq ls\n• List BQ tables: bq ls dataset_name\n• Cloud Run services: gcloud run services list\n• Deploy Cloud Run: gcloud run deploy SERVICE --image IMAGE\n• GCS: gcloud storage ls gs://bucket/\n• Logs: gcloud logging read \"resource.type=...\" --limit=20\n• IAM: gcloud projects get-iam-policy PROJECT_ID\n\nRULES\n• Use the projected project and region env vars shown in Available Connectors / ASTRA_CONNECTORS when set\n• Always confirm with the user before deploying or deleting resources\n• Use --format=json for structured output when parsing results\n• Default to --quiet flag for non-interactive commands\n• For BigQuery, prefer Standard SQL over Legacy SQL",
+        "customTools" : [
+
+        ],
+        "description" : "Manage GCP resources using gcloud and bq CLI tools",
+        "disallowedTools" : [
+          "Write",
+          "Edit"
+        ],
+        "environmentKeys" : [
+          "GCP_PROJECT"
+        ],
+        "environmentValues" : [
+          ""
+        ],
+        "icon" : "cloud",
+        "name" : "GCloud Agent"
+      },
+      "summary" : "Manage GCP resources using gcloud and bq CLI tools"
+    },
+    {
+      "connector" : {
+        "authMethod" : "none",
+        "baseURL" : "",
+        "configHints" : [
+          {
+            "hint" : "Default GCP project ID",
+            "isList" : false,
+            "key" : "GCP_PROJECT"
+          },
+          {
+            "hint" : "Default region (e.g. us-central1)",
+            "isList" : false,
+            "key" : "GCP_REGION"
+          }
+        ],
+        "credentialHints" : [
+
+        ],
+        "description" : "GCP via gcloud CLI (must be installed locally)",
+        "icon" : "cloud",
+        "name" : "Google Cloud",
+        "notes" : "Uses locally installed gcloud CLI. Run `gcloud auth login` to authenticate.",
+        "serviceType" : "gcloud"
+      },
+      "id" : "google-cloud",
+      "kind" : "connector",
       "name" : "Google Cloud",
-      "notes" : "Uses locally installed gcloud CLI. Run `gcloud auth login` to authenticate.",
-      "serviceType" : "gcloud"
+      "setup" : {
+        "connect" : {
+          "fields" : [
+            "GCP_PROJECT",
+            "GCP_REGION"
+          ],
+          "kind" : "credentialForm"
+        },
+        "repair" : {
+          "fields" : [
+            "GCP_PROJECT",
+            "GCP_REGION"
+          ],
+          "kind" : "credentialForm"
+        }
+      },
+      "summary" : "GCP via gcloud CLI (must be installed locally)"
+    },
+    {
+      "id" : "gcloud",
+      "kind" : "tool",
+      "name" : "gcloud",
+      "setup" : {
+
+      },
+      "summary" : "Google Cloud CLI — manage GCP resources",
+      "tool" : {
+        "arguments" : "",
+        "command" : "gcloud",
+        "description" : "Google Cloud CLI — manage GCP resources",
+        "icon" : "terminal",
+        "name" : "gcloud",
+        "toolType" : "cli"
+      }
+    },
+    {
+      "id" : "bq-bigquery-cli",
+      "kind" : "tool",
+      "name" : "bq — BigQuery CLI",
+      "setup" : {
+
+      },
+      "summary" : "Query and manage BigQuery datasets and tables",
+      "tool" : {
+        "arguments" : "",
+        "command" : "bq",
+        "description" : "Query and manage BigQuery datasets and tables",
+        "icon" : "terminal",
+        "name" : "bq — BigQuery CLI",
+        "toolType" : "cli"
+      }
+    },
+    {
+      "id" : "gsutil",
+      "kind" : "tool",
+      "name" : "gsutil",
+      "setup" : {
+
+      },
+      "summary" : "Cloud Storage operations (upload, download, list)",
+      "tool" : {
+        "arguments" : "storage",
+        "command" : "gcloud",
+        "description" : "Cloud Storage operations (upload, download, list)",
+        "icon" : "terminal",
+        "name" : "gsutil",
+        "toolType" : "cli"
+      }
+    },
+    {
+      "id" : "google-cloud-cli",
+      "kind" : "setup",
+      "name" : "Google Cloud CLI",
+      "setup" : {
+        "check" : {
+          "arguments" : [
+            "--version"
+          ],
+          "binary" : "gcloud",
+          "kind" : "exec"
+        },
+        "connect" : {
+          "command" : "gcloud auth login",
+          "hint" : "Run `gcloud auth login` to sign in.",
+          "kind" : "terminal"
+        },
+        "install" : {
+          "hint" : "Install via Homebrew: `brew install --cask google-cloud-sdk`",
+          "kind" : "url",
+          "url" : "https://cloud.google.com/sdk/docs/install"
+        },
+        "repair" : {
+          "command" : "gcloud auth login",
+          "hint" : "Run `gcloud auth login` to sign in.",
+          "kind" : "terminal"
+        }
+      },
+      "summary" : "Invokes GCP APIs for the Google Cloud skill."
+    },
+    {
+      "id" : "google-cloud-login",
+      "kind" : "setup",
+      "name" : "Google Cloud login",
+      "setup" : {
+        "check" : {
+          "arguments" : [
+            "config",
+            "config-helper",
+            "--format=value(credential.token_expiry)"
+          ],
+          "binary" : "gcloud",
+          "expect" : "stdoutNonEmpty",
+          "kind" : "exec"
+        },
+        "connect" : {
+          "command" : "gcloud auth login",
+          "hint" : "Run `gcloud auth login` to sign in.",
+          "kind" : "terminal"
+        },
+        "install" : {
+          "hint" : "",
+          "kind" : "url"
+        },
+        "repair" : {
+          "command" : "gcloud auth login",
+          "hint" : "Run `gcloud auth login` to sign in.",
+          "kind" : "terminal"
+        }
+      },
+      "summary" : "A signed-in account whose credentials still refresh is required for API calls."
     }
   ],
-  "description" : "Manage GCP resources, BigQuery, and deployments",
-  "formatVersion" : 2,
   "governance" : {
     "allowedRoles" : [
 
@@ -63,94 +233,16 @@
     "value" : "assets/google-cloud.svg"
   },
   "id" : "gcloud-workflow",
-  "isTrusted" : false,
-  "localTools" : [
-    {
-      "arguments" : "",
-      "command" : "gcloud",
-      "description" : "Google Cloud CLI — manage GCP resources",
-      "icon" : "terminal",
-      "name" : "gcloud",
-      "toolType" : "cli"
-    },
-    {
-      "arguments" : "",
-      "command" : "bq",
-      "description" : "Query and manage BigQuery datasets and tables",
-      "icon" : "terminal",
-      "name" : "bq — BigQuery CLI",
-      "toolType" : "cli"
-    },
-    {
-      "arguments" : "storage",
-      "command" : "gcloud",
-      "description" : "Cloud Storage operations (upload, download, list)",
-      "icon" : "terminal",
-      "name" : "gsutil",
-      "toolType" : "cli"
-    }
-  ],
+  "manifestVersion" : 1,
   "name" : "Google Cloud",
-  "prerequisites" : [
-    {
-      "authHint" : "Run `gcloud auth login` to sign in.",
-      "binary" : "gcloud",
-      "displayName" : "Google Cloud CLI",
-      "installHint" : "Install via Homebrew: `brew install --cask google-cloud-sdk`",
-      "installURL" : "https:\/\/cloud.google.com\/sdk\/docs\/install",
-      "livenessArgs" : [
-        "--version"
-      ],
-      "purpose" : "Invokes GCP APIs for the Google Cloud skill."
-    },
-    {
-      "authHint" : "Run `gcloud auth login` to sign in.",
-      "binary" : "gcloud",
-      "displayName" : "Google Cloud login",
-      "installHint" : "",
-      "livenessArgs" : [
-        "config",
-        "config-helper",
-        "--format=value(credential.token_expiry)"
-      ],
-      "purpose" : "A signed-in account whose credentials still refresh is required for API calls.",
-      "semantic" : "stdoutNonEmpty"
-    }
-  ],
-  "setupGuide" : "Connect your workspace to Google Cloud Platform using the gcloud CLI. Requires gcloud to be installed and authenticated on your machine (run `gcloud auth login` first).\n\nWhat you can do:\n• Query BigQuery datasets and tables\n• Manage Cloud Run services and deployments\n• List and manage GCS buckets and objects\n• Check IAM permissions and service accounts\n• Monitor logs and resource usage\n• Deploy and manage Cloud Functions\n\nSetup:\n• Install gcloud CLI: https:\/\/cloud.google.com\/sdk\/docs\/install\n• Authenticate: `gcloud auth login`\n• Set project: configure your default GCP project ID",
-  "skills" : [
-    {
-      "allowedTools" : [
-        "Read",
-        "Bash",
-        "Glob",
-        "Grep"
-      ],
-      "behaviorInstructions" : "You are a Google Cloud Platform specialist. Use the gcloud and bq CLI tools to interact with GCP resources.\n\nTOOLS AVAILABLE\n• gcloud — main CLI for GCP resource management\n• bq — BigQuery command-line tool\n• gsutil / gcloud storage — Cloud Storage operations\n\nCOMMON OPERATIONS\n• List projects: gcloud projects list\n• Set project: gcloud config set project PROJECT_ID\n• BigQuery query: bq query --use_legacy_sql=false 'SELECT ...'\n• List BQ datasets: bq ls\n• List BQ tables: bq ls dataset_name\n• Cloud Run services: gcloud run services list\n• Deploy Cloud Run: gcloud run deploy SERVICE --image IMAGE\n• GCS: gcloud storage ls gs://bucket/\n• Logs: gcloud logging read \"resource.type=...\" --limit=20\n• IAM: gcloud projects get-iam-policy PROJECT_ID\n\nRULES\n• Use the projected project and region env vars shown in Available Connectors / ASTRA_CONNECTORS when set\n• Always confirm with the user before deploying or deleting resources\n• Use --format=json for structured output when parsing results\n• Default to --quiet flag for non-interactive commands\n• For BigQuery, prefer Standard SQL over Legacy SQL",
-      "customTools" : [
-
-      ],
-      "description" : "Manage GCP resources using gcloud and bq CLI tools",
-      "disallowedTools" : [
-        "Write",
-        "Edit"
-      ],
-      "environmentKeys" : [
-        "GCP_PROJECT"
-      ],
-      "environmentValues" : [
-        ""
-      ],
-      "icon" : "cloud",
-      "name" : "GCloud Agent"
-    }
-  ],
+  "setupGuide" : "Connect your workspace to Google Cloud Platform using the gcloud CLI. Requires gcloud to be installed and authenticated on your machine (run `gcloud auth login` first).\n\nWhat you can do:\n• Query BigQuery datasets and tables\n• Manage Cloud Run services and deployments\n• List and manage GCS buckets and objects\n• Check IAM permissions and service accounts\n• Monitor logs and resource usage\n• Deploy and manage Cloud Functions\n\nSetup:\n• Install gcloud CLI: https://cloud.google.com/sdk/docs/install\n• Authenticate: `gcloud auth login`\n• Set project: configure your default GCP project ID",
   "sourceMetadata" : {
     "displayName" : "Built-in Capabilities",
     "id" : "built-in",
     "kind" : "built-in",
     "trustLevel" : "built-in"
   },
+  "summary" : "Manage GCP resources, BigQuery, and deployments",
   "tags" : [
     "gcp",
     "google-cloud",
@@ -158,8 +250,13 @@
     "cloud-run",
     "devops"
   ],
-  "templates" : [
-
-  ],
-  "version" : "1.0.0"
+  "version" : "1.0.0",
+  "worksOn" : {
+    "antigravity_cli" : "full",
+    "claude_code" : "full",
+    "codex_cli" : "full",
+    "copilot_cli" : "full",
+    "cursor_cli" : "full",
+    "opencode_cli" : "full"
+  }
 }

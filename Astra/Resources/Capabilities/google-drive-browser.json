@@ -4,11 +4,9 @@
     "googleDrive"
   ],
   "category" : "Browser",
-  "connectors" : [
+  "components" : [
 
   ],
-  "description" : "Adds Google Drive-specific browser open semantics to the Shelf browser",
-  "formatVersion" : 2,
   "governance" : {
     "allowedRoles" : [
 
@@ -39,32 +37,29 @@
     "value" : "assets/google-drive.svg"
   },
   "id" : "google-drive-browser",
-  "isTrusted" : false,
-  "localTools" : [
-
-  ],
+  "manifestVersion" : 1,
   "name" : "Google Drive Browser",
-  "prerequisites" : [
-
-  ],
   "setupGuide" : "Enable this capability when a task needs to operate on Google Drive in the Shelf browser. It does not grant account access or store credentials; the user remains signed in directly in the browser.\n\nWhat it adds:\n- Google Drive file controls expose open-oriented analysis outcomes\n- `astra-browser google-drive-open` opens a file by visible name and verifies editor navigation\n- Drive row clicks are treated as selection unless an editor actually opens",
-  "skills" : [
-
-  ],
   "sourceMetadata" : {
     "displayName" : "Built-in Capabilities",
     "id" : "built-in",
     "kind" : "built-in",
     "trustLevel" : "built-in"
   },
+  "summary" : "Adds Google Drive-specific browser open semantics to the Shelf browser",
   "tags" : [
     "browser",
     "google-drive",
     "automation",
     "site-adapter"
   ],
-  "templates" : [
-
-  ],
-  "version" : "1.0.0"
+  "version" : "1.0.0",
+  "worksOn" : {
+    "antigravity_cli" : "full",
+    "claude_code" : "full",
+    "codex_cli" : "full",
+    "copilot_cli" : "full",
+    "cursor_cli" : "full",
+    "opencode_cli" : "full"
+  }
 }

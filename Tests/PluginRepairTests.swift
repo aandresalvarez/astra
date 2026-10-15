@@ -100,7 +100,7 @@ struct PluginRepairTests {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Astra/Resources/Capabilities/\(id).json")
-        return try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: url))
+        return try PluginManifestConverter.decodePackage(from: Data(contentsOf: url))
     }
 }
 

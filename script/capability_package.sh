@@ -80,6 +80,63 @@ def issue(severity: str, code: str, message: str) -> dict:
     return {"severity": severity, "code": code, "message": message}
 
 
+def manifest_to_package(manifest):
+    """A Plugins 2.0 manifest (`components`) in today's package shape, as
+    PluginManifestConverter.package(from:) does; the library stores packages."""
+    components = manifest.get("components") or []
+    def payloads(key):
+        return [c[key] for c in components if isinstance(c, dict) and isinstance(c.get(key), dict)]
+    prerequisites = []
+    for c in components:
+        if not isinstance(c, dict) or c.get("kind") != "setup" or c.get("requirement") is not None:
+            continue
+        setup = c.get("setup") or {}
+        check = setup.get("check") or {}
+        if check.get("kind") != "exec" or not check.get("binary"):
+            continue
+        install = setup.get("install") or {}
+        connect = setup.get("connect") or {}
+        prerequisite = {
+            "binary": check["binary"],
+            "livenessArgs": check.get("arguments") or ["--version"],
+            "displayName": c.get("name", ""),
+            "purpose": c.get("summary", ""),
+            "installHint": install.get("hint", ""),
+        }
+        for source, target in (("expect", "semantic"), ("context", "contextualCheck")):
+            if check.get(source):
+                prerequisite[target] = check[source]
+        if install.get("url"):
+            prerequisite["installURL"] = install["url"]
+        if connect.get("hint"):
+            prerequisite["authHint"] = connect["hint"]
+        prerequisites.append(prerequisite)
+    package = {
+        "formatVersion": 2,
+        "id": manifest.get("id"),
+        "name": manifest.get("name"),
+        "icon": manifest.get("icon"),
+        "description": manifest.get("summary", ""),
+        "author": manifest.get("author"),
+        "category": manifest.get("category"),
+        "tags": manifest.get("tags") or [],
+        "version": manifest.get("version"),
+        "setupGuide": manifest.get("setupGuide", ""),
+        "skills": payloads("skill"),
+        "connectors": payloads("connector"),
+        "localTools": payloads("tool"),
+        "mcpServers": payloads("mcp"),
+        "templates": payloads("template"),
+        "setupRequirements": payloads("requirement"),
+        "browserAdapters": manifest.get("browserAdapters") or [],
+        "prerequisites": prerequisites,
+    }
+    for key in ("iconDescriptor", "minAppVersion", "requires", "conflicts", "sourceMetadata", "governance"):
+        if manifest.get(key) is not None:
+            package[key] = manifest[key]
+    return package
+
+
 def list_field(package, key, issues):
     value = package.get(key)
     if value is None:
@@ -216,6 +273,8 @@ def validate_package(path: Path) -> dict:
 
     try:
         package = json.loads(raw)
+        if isinstance(package, dict) and "components" in package and "manifestVersion" in package:
+            package = manifest_to_package(package)
     except json.JSONDecodeError as exc:
         return {
             "path": path,

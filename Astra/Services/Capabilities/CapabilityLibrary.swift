@@ -238,7 +238,7 @@ struct CapabilityLibrary {
             let approved = approvedPackage(package)
             let url = packageStorageURL(for: package.id)
             if let data = readLibraryData(at: url),
-               let existing = try? decoder.decode(PluginPackage.self, from: data),
+               let existing = try? PluginManifestConverter.decodePackage(from: data, decoder: decoder),
                shouldPreserveExistingPackage(existing, insteadOf: approved, storageURL: url) {
                 continue
             }
@@ -275,7 +275,7 @@ struct CapabilityLibrary {
             }
 
             guard let data = readLibraryData(at: manifestURL),
-                  let package = try? decoder.decode(PluginPackage.self, from: data),
+                  let package = try? PluginManifestConverter.decodePackage(from: data, decoder: decoder),
                   package.sourceMetadata?.kind == "built-in",
                   !approvedIDs.contains(package.id) else {
                 continue
@@ -300,7 +300,7 @@ struct CapabilityLibrary {
             throw RemovalError.notInstalled(id)
         }
 
-        var package = try JSONDecoder().decode(PluginPackage.self, from: data)
+        var package = try PluginManifestConverter.decodePackage(from: data)
         if package.sourceMetadata == nil {
             package.sourceMetadata = .localLibrary()
         }
@@ -473,7 +473,7 @@ struct CapabilityLibrary {
         trustedBuiltInIDs: Set<String>
     ) -> PluginPackage? {
         guard let data = readLibraryData(at: url) else { return nil }
-        guard var package = try? JSONDecoder().decode(PluginPackage.self, from: data) else { return nil }
+        guard var package = try? PluginManifestConverter.decodePackage(from: data) else { return nil }
         if package.sourceMetadata == nil {
             package.sourceMetadata = .localLibrary()
         }
