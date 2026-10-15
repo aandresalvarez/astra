@@ -399,6 +399,38 @@ struct ProcessBinaryRunnerTests {
         #expect(returnedWhileHoldExisted, "Nothing stopped the group's descendant, so the runner waited on it")
     }
 
+    @Test("Timeout bounds the run after the child exits, while an orphan still holds its pipes")
+    func timeoutBoundsTheDrainAfterTheChildExits() async throws {
+        // The child exits at once, leaving an orphan that ignores SIGTERM and
+        // holds its pipes for as long as `hold` exists. Outside process-group
+        // mode nothing signals that orphan, so its drain to EOF never ends on
+        // its own. The deadline has to end the run instead, and the run is
+        // then a timeout. If load keeps the child alive until the deadline,
+        // the timeout path ends the run the same way, so either ordering
+        // passes.
+        let directory = try makeTemporaryDirectory("astra-child-exits-orphan-holds")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hold = directory.appendingPathComponent("hold")
+        try Data().write(to: hold)
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            try? FileManager.default.removeItem(at: hold)
+        }
+        defer { watchdog.cancel() }
+
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/sh",
+            args: ["-c", #"(trap '' TERM; while [ -e "$1" ]; do sleep 0.05; done) & exit 0"#, "sh", hold.path],
+            timeout: 0.3,
+            environment: nil
+        )
+        let returnedWhileHoldExisted = FileManager.default.fileExists(atPath: hold.path)
+
+        #expect(result.outcome == .timedOut)
+        #expect(returnedWhileHoldExisted, "The runner waited on an orphan nothing will stop")
+    }
+
     @Test("Process group timeout returns even when the leader's leftovers escape the group")
     func processGroupTimeoutBackstopsAnEscapedDescendant() async throws {
         // The leader exits at once. `set -m` first puts its background loop in
