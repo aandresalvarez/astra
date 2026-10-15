@@ -15,6 +15,7 @@ extension AntigravityCLIRuntimeAdapter {
         executable: String,
         providerHomeDirectory: String,
         authMode: AntigravityAuthMode,
+        adcProject: String,
         probes: RuntimeReadinessProbeContext
     ) async -> RuntimeReadinessCheck {
         let title = "Antigravity account"
@@ -33,6 +34,7 @@ extension AntigravityCLIRuntimeAdapter {
         extraVars["TERM"] = parentTerm ?? "xterm-256color"
         let environment = AntigravityCLIRuntime.probeEnvironment(
             mode: authMode,
+            adcProject: adcProject,
             providerHomeDirectory: providerHomeDirectory,
             extraVariables: extraVars
         )

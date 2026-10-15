@@ -1194,7 +1194,8 @@ final class AgentRuntimeWorker {
             vertexOpusModel: providerSnapshot.vertexOpusModel,
             vertexSonnetModel: providerSnapshot.vertexSonnetModel,
             vertexHaikuModel: providerSnapshot.vertexHaikuModel,
-            antigravityAuthMode: providerSnapshot.antigravityAuthMode
+            antigravityAuthMode: providerSnapshot.antigravityAuthMode,
+            antigravityADCProject: providerSnapshot.antigravityADCProject
         )
     }
 

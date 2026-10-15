@@ -73,17 +73,19 @@ struct AntigravityADCSetupPanel: View {
 
     @ViewBuilder
     private var statusLine: some View {
-        switch model.credentialStatus {
+        switch model.statusSummary {
         case .none:
             EmptyView()
         case .gcloudMissing:
             statusLabel("gcloud not found. Install the Google Cloud CLI to use this route.", symbol: "exclamationmark.triangle", color: Stanford.errorRed)
         case .notSignedIn:
             statusLabel("No Google Cloud credentials yet. Enter a project and sign in.", symbol: "person.crop.circle.badge.questionmark", color: Stanford.coolGrey)
-        case .signedIn(let project?):
-            statusLabel("Credentials found · billing \(project)", symbol: "checkmark.circle.fill", color: Stanford.statusHealthy)
-        case .signedIn(nil):
-            statusLabel("Credentials found, but no quota project is set.", symbol: "exclamationmark.circle", color: Stanford.errorRed)
+        case .billing(let project):
+            statusLabel("Credentials found · ASTRA bills \(project)", symbol: "checkmark.circle.fill", color: Stanford.statusHealthy)
+        case .unsavedGcloudProject(let project):
+            statusLabel("Credentials found · gcloud bills \(project). Click Use This Project so ASTRA keeps it if gcloud's credentials change.", symbol: "exclamationmark.circle", color: Stanford.errorRed)
+        case .noProject:
+            statusLabel("Credentials found, but no project is set.", symbol: "exclamationmark.circle", color: Stanford.errorRed)
         case .unreadable(let detail):
             statusLabel(detail, symbol: "exclamationmark.triangle", color: Stanford.errorRed)
         }
@@ -109,7 +111,7 @@ struct AntigravityADCSetupPanel: View {
                 if model.needsOnlyQuotaProject {
                     Button("Use This Project") { model.applyQuotaProject() }
                         .disabled(!model.canSubmit)
-                        .help("Runs gcloud auth application-default set-quota-project.")
+                        .help("Runs gcloud auth application-default set-quota-project, then saves the project for ASTRA's Antigravity launches.")
                 }
                 Button {
                     model.signIn()
@@ -120,7 +122,7 @@ struct AntigravityADCSetupPanel: View {
                     )
                 }
                 .disabled(!model.canSubmit)
-                .help("Opens Terminal with gcloud auth application-default login, then sets the quota project.")
+                .help("Opens Terminal with gcloud auth application-default login, then sets and saves the quota project.")
             }
         }
     }

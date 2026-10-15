@@ -14,6 +14,7 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
     var vertexSonnetModel: String
     var vertexHaikuModel: String
     var antigravityAuthMode: AntigravityAuthMode
+    var antigravityADCProject: String = ""
 
     var availabilityConfiguration: RuntimeProviderAvailabilityConfiguration {
         RuntimeProviderAvailabilityConfiguration(
@@ -24,7 +25,8 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
             vertexOpusModel: vertexOpusModel,
             vertexSonnetModel: vertexSonnetModel,
             vertexHaikuModel: vertexHaikuModel,
-            antigravityAuthMode: antigravityAuthMode
+            antigravityAuthMode: antigravityAuthMode,
+            antigravityADCProject: antigravityADCProject
         )
     }
 
@@ -40,7 +42,8 @@ struct ProviderSettingsSnapshot: Equatable, Sendable {
             vertexOpusModel,
             vertexSonnetModel,
             vertexHaikuModel,
-            antigravityAuthMode.rawValue
+            antigravityAuthMode.rawValue,
+            antigravityADCProject
         ].joined(separator: "|")
     }
 
@@ -157,6 +160,7 @@ enum RuntimeSettingsSnapshotStore {
             vertexSonnetModel: defaults.string(forKey: AppStorageKeys.claudeVertexSonnetModel) ?? "",
             vertexHaikuModel: defaults.string(forKey: AppStorageKeys.claudeVertexHaikuModel) ?? "",
             antigravityAuthModeRaw: defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? AntigravityAuthMode.consumer.rawValue,
+            antigravityADCProject: AntigravityADCProjectStore.load(defaults: defaults),
             defaults: defaults,
             runtimes: runtimes
         )
@@ -173,6 +177,7 @@ enum RuntimeSettingsSnapshotStore {
         vertexSonnetModel: String,
         vertexHaikuModel: String,
         antigravityAuthModeRaw: String? = nil,
+        antigravityADCProject: String? = nil,
         defaults: UserDefaults = .standard,
         runtimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs
     ) -> ProviderSettingsSnapshot {
@@ -197,7 +202,10 @@ enum RuntimeSettingsSnapshotStore {
             // provider-settings revision when it changes, which re-keys them.
             antigravityAuthMode: AntigravityAuthMode(
                 rawValue: antigravityAuthModeRaw ?? defaults.string(forKey: AppStorageKeys.antigravityAuthMode) ?? ""
-            ) ?? .consumer
+            ) ?? .consumer,
+            // Read from the store for the same reason as the route above.
+            antigravityADCProject: antigravityADCProject.map(AntigravityADCProjectStore.sanitized)
+                ?? AntigravityADCProjectStore.load(defaults: defaults)
         )
     }
 
