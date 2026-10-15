@@ -23,6 +23,18 @@ import ASTRACore
 /// kinds of budget back together.
 private let hangBreakerTimeout: TimeInterval = 120
 
+/// Budgets, shortest first, for the timeout tests that also check what the
+/// child printed. See `timedOutRunPastMarkers`.
+///
+/// Classification needs no escalation, but output does. A timed-out result
+/// carries everything the child wrote before it died, and a 0.1 s budget can
+/// expire under contention while the shell is still starting, before it has
+/// printed anything. A one-shot assertion on that output measured how busy the
+/// machine was (it failed once on 2026-10-12 with stdout empty). A child that
+/// has not printed within the last budget means the machine is wedged, and the
+/// test fails.
+private let outputTimeouts: [TimeInterval] = [0.1, 0.4, 1.6, 6.4, 25.6]
+
 @Suite("ProcessBinaryRunner")
 struct ProcessBinaryRunnerTests {
     @Test("Hardened process executor provides synchronous PATH lookup and stdin")
@@ -42,14 +54,19 @@ struct ProcessBinaryRunnerTests {
     }
 
     @Test("Hardened process executor classifies synchronous timeouts")
-    func hardenedProcessExecutorClassifiesSynchronousTimeouts() {
-        let result = HardenedProcessExecutor().runSynchronously(
-            HardenedProcessRequest(
-                executable: "/bin/sh",
-                arguments: ["-c", "printf started; sleep 5"],
-                timeout: 0.1
+    func hardenedProcessExecutorClassifiesSynchronousTimeouts() async throws {
+        // `exec` makes the sleeper the child itself, so the timeout kills it
+        // instead of orphaning a `sleep` that outlives every budget.
+        let result = try await timedOutRunPastMarkers(["printed"]) { timeout, markers in
+            HardenedProcessExecutor().runSynchronously(
+                HardenedProcessRequest(
+                    executable: "/bin/sh",
+                    arguments: ["-c", #"printf started; : > "$1/printed"; exec sleep 600"#, "sh", markers],
+                    timeout: timeout
+                )
             )
-        )
+        }
+        guard let result else { return }
 
         #expect(result.exitCode == nil)
         #expect(result.timedOut == true)
@@ -209,13 +226,16 @@ struct ProcessBinaryRunnerTests {
     }
 
     @Test("Timeout is classified without an exit code")
-    func timeoutClassification() async {
-        let result = await ProcessBinaryRunner().run(
-            path: "/bin/sh",
-            args: ["-c", "printf out; printf err >&2; sleep 5"],
-            timeout: 0.1,
-            environment: nil
-        )
+    func timeoutClassification() async throws {
+        let result = try await timedOutRunPastMarkers(["printed"]) { timeout, markers in
+            await ProcessBinaryRunner().run(
+                path: "/bin/sh",
+                args: ["-c", #"printf out; printf err >&2; : > "$1/printed"; exec sleep 600"#, "sh", markers],
+                timeout: timeout,
+                environment: nil
+            )
+        }
+        guard let result else { return }
 
         #expect(result.exitCode == nil)
         #expect(result.launchError == nil)
@@ -228,56 +248,237 @@ struct ProcessBinaryRunnerTests {
         #expect(result.outcome == .timedOut)
     }
 
-    @Test("Process group timeout terminates descendant processes")
-    func processGroupTimeoutTerminatesDescendants() async throws {
-        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-process-group-\(UUID().uuidString)", isDirectory: true)
+    @Test(
+        "A timed-out result keeps the child's last words without waiting on its orphans",
+        arguments: [false, true]
+    )
+    func timedOutResultKeepsLastWordsWithoutWaitingOnOrphans(terminateProcessGroup: Bool) async throws {
+        // The child answers SIGTERM by printing and exiting 0, so it writes
+        // `late` only after the deadline. A result snapshotted at the timeout
+        // instant cannot contain it, and a status read off the reap would call
+        // the run a success. In process-group mode it also needs a child that
+        // can receive SIGTERM at all. That used to fail: the child inherited
+        // the spawning GCD thread's mask with SIGTERM blocked.
+        //
+        // Its background loop inherits stdout and stderr and keeps them open
+        // for as long as `hold` exists. The loop ignores SIGTERM, which
+        // `Process.terminate()` sends to the child's whole process group.
+        // Outside process-group mode the runner's SIGKILL reaches the child
+        // alone, so the loop lasts until the test removes `hold`. A runner that
+        // drained the pipes to EOF would never return, and the watchdog is what
+        // ends that hang. The `holding` marker proves the loop survived SIGTERM.
+        let directory = try makeTemporaryDirectory("astra-timeout-orphans")
         defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let hold = directory.appendingPathComponent("hold")
+        try Data().write(to: hold)
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            try? FileManager.default.removeItem(at: hold)
+        }
+        defer { watchdog.cancel() }
+        let script = """
+        trap 'printf late; : > "$1/late"; exit 0' TERM
+        (trap '' TERM; : > "$1/holding"; while [ -e "$2" ]; do sleep 0.05; done) &
+        printf early
+        : > "$1/early"
+        wait
+        """
 
-        // The shell must record the descendant's pid before the timeout's
-        // SIGTERM kills it, and no deadline guarantees that under full-suite
-        // load. An attempt that never recorded the pid proves nothing (its
-        // descendant, if any, is still in the group the SIGKILL reaches), so it
-        // is retried with double the timeout.
-        for (attempt, timeout) in [0.1, 0.2, 0.4, 0.8, 1.6, 3.2].enumerated() {
-            let pidFile = directory.appendingPathComponent("child-\(attempt).pid")
-            let script = """
-            (trap '' TERM; while true; do sleep 1; done) &
-            printf "%s" "$!" > "\(pidFile.path)"
-            wait
-            """
+        let result = try await timedOutRunPastMarkers(["early", "late", "holding"]) { timeout, markers in
+            await ProcessBinaryRunner().run(
+                path: "/bin/sh",
+                args: ["-c", script, "sh", markers, hold.path],
+                timeout: timeout,
+                environment: nil,
+                currentDirectory: nil,
+                terminateProcessGroup: terminateProcessGroup
+            )
+        }
+        let returnedWhileOrphanHeldPipes = FileManager.default.fileExists(atPath: hold.path)
+        guard let result else { return }
 
+        #expect(result.exitCode == nil)
+        #expect(result.stdout == "earlylate")
+        #expect(returnedWhileOrphanHeldPipes, "The runner waited for an orphan to close the child's pipes")
+    }
+
+    @Test(
+        "A child reaped just past its deadline is a timeout that does not wait on its orphans",
+        arguments: [false, true]
+    )
+    func childReapedJustPastDeadlineDoesNotWaitOnOrphans(terminateProcessGroup: Bool) async throws {
+        // The child exits on its own just after its 0.1 s deadline, so its reap
+        // races the timeout task. If the reap lands first, the run is still a
+        // timeout, and it must not wait on the orphan holding the pipes. That
+        // orphan ignores SIGTERM, and outside process-group mode nothing kills
+        // it, so it lasts until its `hold` file goes. Neither ordering is
+        // guaranteed in one run, so the test repeats it. Load can only change
+        // which side wins, and every iteration passes either way unless the
+        // runner is wrong.
+        //
+        // In process-group mode the timed-out group is torn down whichever side
+        // decided the timeout, so there the orphan has to die while `hold` still
+        // exists.
+        let directory = try makeTemporaryDirectory("astra-timeout-reap-race")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = #"""
+        (trap '' TERM; while [ -e "$1" ]; do sleep 0.05; done) &
+        printf '%s' "$!" > "$2"
+        sleep 0.1
+        """#
+
+        for iteration in 0..<20 {
+            let hold = directory.appendingPathComponent("hold-\(iteration)")
+            let orphanPIDFile = directory.appendingPathComponent("orphan-\(iteration).pid")
+            try Data().write(to: hold)
+            let watchdog = Task {
+                try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                try? FileManager.default.removeItem(at: hold)
+            }
+            defer {
+                watchdog.cancel()
+                try? FileManager.default.removeItem(at: hold)
+            }
             let result = await ProcessBinaryRunner().run(
                 path: "/bin/sh",
-                args: ["-c", script],
+                args: ["-c", script, "sh", hold.path, orphanPIDFile.path],
+                timeout: 0.1,
+                environment: nil,
+                currentDirectory: nil,
+                terminateProcessGroup: terminateProcessGroup
+            )
+            let returnedWhileOrphanHeldPipes = FileManager.default.fileExists(atPath: hold.path)
+
+            #expect(result.outcome == .timedOut, "iteration \(iteration): \(result.outcome)")
+            guard returnedWhileOrphanHeldPipes else {
+                Issue.record("iteration \(iteration): the runner waited for an orphan to close the child's pipes")
+                return
+            }
+            if terminateProcessGroup, let orphan = readPID(from: orphanPIDFile) {
+                guard await waitUntil({ !processIsRunning(orphan) }) else {
+                    kill(orphan, SIGKILL)
+                    Issue.record("iteration \(iteration): the timed-out group left orphan \(orphan) alive")
+                    return
+                }
+            }
+        }
+    }
+
+    @Test("Process group timeout still tears the group down after its leader exits")
+    func processGroupTimeoutOutlivesItsLeader() async throws {
+        // The leader exits at once, leaving a descendant that ignores SIGTERM
+        // and holds the leader's pipes for as long as `hold` exists. The reap's
+        // drain then waits on that descendant, so the deadline still has to
+        // tear the group down to end the wait, and the run is a timeout. If
+        // load keeps the leader alive until the deadline instead, the run ends
+        // the same way, so either ordering passes.
+        let directory = try makeTemporaryDirectory("astra-group-leader-exits")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hold = directory.appendingPathComponent("hold")
+        try Data().write(to: hold)
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            try? FileManager.default.removeItem(at: hold)
+        }
+        defer { watchdog.cancel() }
+
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/sh",
+            args: ["-c", #"(trap '' TERM; while [ -e "$1" ]; do sleep 0.05; done) & exit 0"#, "sh", hold.path],
+            timeout: 0.3,
+            environment: nil,
+            currentDirectory: nil,
+            terminateProcessGroup: true
+        )
+        let returnedWhileHoldExisted = FileManager.default.fileExists(atPath: hold.path)
+
+        #expect(result.outcome == .timedOut)
+        #expect(returnedWhileHoldExisted, "Nothing stopped the group's descendant, so the runner waited on it")
+    }
+
+    @Test("Process group timeout returns even when the leader's leftovers escape the group")
+    func processGroupTimeoutBackstopsAnEscapedDescendant() async throws {
+        // The leader exits at once. `set -m` first puts its background loop in
+        // a process group of its own, so tearing down the leader's group never
+        // reaches it. The loop ignores SIGTERM and holds the leader's pipes for
+        // as long as `hold` exists, so only the deadline's backstop can end the
+        // run, one grace period after SIGKILL. A runner that waited for EOF
+        // would hold out until the watchdog removes `hold`. If load keeps the
+        // leader alive until the deadline instead, its own timeout path ends
+        // the run, so either ordering passes.
+        let directory = try makeTemporaryDirectory("astra-group-escaped-descendant")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hold = directory.appendingPathComponent("hold")
+        try Data().write(to: hold)
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            try? FileManager.default.removeItem(at: hold)
+        }
+        defer { watchdog.cancel() }
+
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/sh",
+            args: ["-c", #"set -m; (trap '' TERM; while [ -e "$1" ]; do sleep 0.05; done) & exit 0"#, "sh", hold.path],
+            timeout: 1,
+            environment: nil,
+            currentDirectory: nil,
+            terminateProcessGroup: true
+        )
+        let returnedWhileHoldExisted = FileManager.default.fileExists(atPath: hold.path)
+
+        #expect(result.outcome == .timedOut)
+        #expect(returnedWhileHoldExisted, "The runner waited on a descendant outside the group it tore down")
+    }
+
+    @Test("Process group timeout terminates descendant processes")
+    func processGroupTimeoutTerminatesDescendants() async throws {
+        // The leader marks `forked` once the descendant's PID is on disk, and
+        // the descendant marks `ignoring` once SIGTERM can no longer stop it.
+        // Those markers need the escalating budgets for the same reason output
+        // does. The leader now dies on SIGTERM at the deadline, so a 0.1 s
+        // budget can end it before it forks. That used to be hidden: the child
+        // inherited a blocked SIGTERM, which gave the leader until the SIGKILL.
+        let script = """
+        (trap '' TERM; : > "$1/ignoring"; while true; do sleep 1; done) &
+        printf "%s" "$!" > "$1/pid"
+        : > "$1/forked"
+        wait
+        """
+        var childPID: Int32?
+        let result = try await timedOutRunPastMarkers(["forked", "ignoring"]) { timeout, markers in
+            let result = await ProcessBinaryRunner().run(
+                path: "/bin/sh",
+                args: ["-c", script, "sh", markers],
                 timeout: timeout,
                 environment: nil,
                 currentDirectory: nil,
                 terminateProcessGroup: true
             )
-
-            #expect(result.outcome == .timedOut)
-
-            // `run` returns the moment the timeout is stamped, before the group has
-            // even been signalled: the runner then sends SIGTERM, waits 500 ms for
-            // the grace period, and SIGKILLs. Waiting that out with one fixed sleep
-            // measured how busy the machine was, so poll for the descendant to go
-            // away instead — same reasoning as `hangBreakerTimeout` above, and the
-            // poll floor in `waitUntil` covers a starved cooperative pool that has
-            // not yet run the runner's own kill task. The pid wait is short: the
-            // SIGTERM that follows the stamp ends a shell that hasn't written it.
-            guard let childPID = await waitForValue(timeout: 1, { readPID(from: pidFile) }) else {
-                continue
-            }
-            let descendantIsGone = await waitUntil { !isAlive(childPID) }
-            if !descendantIsGone {
-                kill(childPID, SIGKILL)
-                Issue.record("Timed-out process group left descendant process \(childPID) alive")
-            }
+            childPID = readPID(from: URL(fileURLWithPath: markers).appendingPathComponent("pid"))
+            return result
+        }
+        guard result != nil else { return }
+        guard let childPID else {
+            Issue.record("The leader marked the descendant's PID as written, but it is unreadable")
             return
         }
-        Issue.record("Expected child PID to be captured, even with a 3.2s timeout")
+
+        // `run` returns once the group leader is reaped, and SIGTERM alone does
+        // that. The descendant ignores SIGTERM and lives until the SIGKILL the
+        // runner sends the group 500 ms later. Waiting that out with one fixed sleep
+        // measured how busy the machine was, so poll for the descendant to go
+        // away instead — same reasoning as `hangBreakerTimeout` above, and the
+        // poll floor in `waitUntil` covers a starved cooperative pool that has
+        // not yet run the runner's own kill task.
+        let descendantIsGone = await waitUntil { !isAlive(childPID) }
+        if !descendantIsGone {
+            kill(childPID, SIGKILL)
+            Issue.record("Timed-out process group left descendant process \(childPID) alive")
+        }
     }
 
     @Test("Process group mode is active before executable code runs")
@@ -322,6 +523,54 @@ struct ProcessBinaryRunnerTests {
         #expect(result.outcome == .cancelled)
     }
 
+    // MARK: - Timed-out output
+
+    /// Runs `attempt` under each of `outputTimeouts` until its child provably
+    /// got far enough to print what the test asserts, and returns that run.
+    ///
+    /// The child's script creates each of `markers` in the directory it is
+    /// handed, right after the output that marker vouches for. The runner
+    /// returns a timed-out result only once the child can no longer write, so
+    /// a marker that exists afterwards was created before then, and so was the
+    /// output ahead of it. A missing marker shows only that the child was
+    /// killed first. That attempt is inconclusive, and the next budget is longer.
+    private func timedOutRunPastMarkers(
+        _ markers: [String],
+        _ attempt: (_ timeout: TimeInterval, _ markerDirectory: String) async -> RunResult
+    ) async throws -> RunResult? {
+        let root = try makeTemporaryDirectory("astra-timeout-output")
+        defer { try? FileManager.default.removeItem(at: root) }
+        for (index, timeout) in outputTimeouts.enumerated() {
+            let directory = root.appendingPathComponent("attempt-\(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let result = await attempt(timeout, directory.path)
+            // Every child here outlives every budget, so each attempt is a
+            // timeout, however far the child got.
+            #expect(result.outcome == .timedOut, "\(timeout) s attempt: \(result.outcome)")
+            let reachedMarkers = markers.allSatisfy {
+                FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
+            }
+            if reachedMarkers { return result }
+        }
+        // Several causes look the same from here: a machine too wedged to run
+        // a shell in 25.6 s, a runner that returned while its child could still
+        // write (its markers then appear after the fact), or a child that never
+        // received the SIGTERM a marker waits for.
+        Issue.record("""
+            No attempt saw the child reach \(markers) before the runner returned \
+            (last budget \(outputTimeouts.last ?? 0) s): the machine is wedged, the runner \
+            returned while its child could still write, or the child never got SIGTERM
+            """)
+        return nil
+    }
+
+    private func makeTemporaryDirectory(_ prefix: String) throws -> URL {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
     // MARK: - Waiting
 
     /// Polls rather than sleeping a fixed amount, so a slow machine waits
@@ -336,8 +585,7 @@ struct ProcessBinaryRunnerTests {
         await waitForValue(timeout: timeout) { () -> Bool? in predicate() ? true : nil } ?? false
     }
 
-    /// `waitUntil` for a value that does not exist yet — here, a PID file the
-    /// child may not have written by the time the parent was killed.
+    /// `waitUntil` for a value that may not exist yet.
     private func waitForValue<Value>(
         timeout: TimeInterval = 30,
         _ produce: () -> Value?
