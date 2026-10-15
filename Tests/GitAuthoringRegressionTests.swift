@@ -495,18 +495,18 @@ struct GitAuthoringRegressionTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
-        // Commit budget is intentionally too short (1s) and the helper takes 2s.
-        // If PR drafting wrongly reused the commit budget it would time out; the
-        // PR budget (60s) must govern instead. Keep this comfortably above the
-        // helper delay so full-suite process scheduling load cannot win the race.
+        // Commit budget is intentionally too short (1s) and the helper sleeps 2s,
+        // so a draft on the commit budget always times out and throws. Getting a
+        // suggestion back is the whole proof; there is no elapsed bound, since
+        // full-suite load once stretched this call to 88s with the helper fine.
+        // The PR budget only has to never fire here, so it is far from 2s.
         let service = try makeFakeCopilotService(
             root: root,
             script: slowCopilotPRScript(seconds: 2),
             timeoutSeconds: 1,
-            pullRequestTimeoutSeconds: 60
+            pullRequestTimeoutSeconds: 600
         )
 
-        let start = Date()
         let suggestion = try await service.suggestPullRequest(
             repoPath: root.path,
             branch: "feature/x",
@@ -514,10 +514,8 @@ struct GitAuthoringRegressionTests {
             log: "- did a thing",
             diffStat: " 1 file changed"
         )
-        let elapsed = Date().timeIntervalSince(start)
 
         #expect(suggestion.title == "Slow PR")
-        #expect(elapsed < 60, "PR draft took \(elapsed)s — expected the PR-specific budget to win")
     }
 
     @Test("suggestPullRequest honors its own deadline when helper is slow")
