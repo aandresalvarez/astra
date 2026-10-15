@@ -673,6 +673,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             if Self.isSuccessfulGoogleDocsVisiblePageRead(content) {
                 sawGoogleDocsVisiblePageRead = true
             }
+            if let expiry = CLISessionExpiryClassifier.stop(content: content, command: toolContext(for: toolID)?.summary) { return recordRuntimeStop(reason: expiry.reason, message: expiry.message, process: process, source: "tool_session_expired") }
             if let stop = Self.browserTerminalStop(content: content, isKnownBrowserTool: isKnownBrowserTool) {
                 if stop.reason == "google_docs_controlled_browser_required",
                    sawGoogleDocsVisiblePageRead,

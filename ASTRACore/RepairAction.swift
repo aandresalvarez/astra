@@ -1,0 +1,105 @@
+import Foundation
+
+/// One thing a person does to get a plugin component working again, and how
+/// ASTRA checks it worked (Plugins 2.0 health and repair).
+///
+/// Built from a component's setup contract for the rail, and from a stopped
+/// run for the task view, so both render the same verb and run the same
+/// strategy.
+public struct RepairAction: Codable, Sendable, Equatable {
+    public enum Strategy: String, Codable, Sendable, Equatable {
+        /// Run `command` in Terminal, then re-check until the check passes.
+        case terminal
+        /// Open `url`, then re-check when ASTRA comes back to the front.
+        case url
+        /// Sign in with a device code inside ASTRA.
+        case deviceCode
+        /// Enter credentials in the connector editor.
+        case credentialForm
+    }
+
+    public var strategy: Strategy
+    /// The component this repairs, e.g. "Google Cloud login".
+    public var componentName: String
+    /// What the dock or row says, e.g. "Sign in to Google Cloud".
+    public var title: String
+    /// The button, e.g. "Sign in".
+    public var verb: String
+    /// One sentence on what happens next, e.g. "Run `gcloud auth login`, then resume."
+    public var detail: String
+    public var command: String?
+    public var url: URL?
+    /// How to re-check: the binary and arguments of the component's check.
+    public var checkBinary: String?
+    public var checkArguments: [String]?
+
+    public init(
+        strategy: Strategy,
+        componentName: String,
+        title: String,
+        verb: String,
+        detail: String,
+        command: String? = nil,
+        url: URL? = nil,
+        checkBinary: String? = nil,
+        checkArguments: [String]? = nil
+    ) {
+        self.strategy = strategy
+        self.componentName = componentName
+        self.title = title
+        self.verb = verb
+        self.detail = detail
+        self.command = command
+        self.url = url
+        self.checkBinary = checkBinary
+        self.checkArguments = checkArguments
+    }
+
+    /// The repair a component's setup contract offers: its `repair` step,
+    /// else `connect`, else `install`. Nil when none can be acted on.
+    public static func from(_ component: PluginComponent) -> RepairAction? {
+        let setup = component.setup
+        let check = setup.check
+        for (step, verb) in [(setup.repair, "Fix"), (setup.connect, "Connect"), (setup.install, "Install")] {
+            guard let step else { continue }
+            switch step.kind {
+            case .terminal:
+                guard let command = step.command else { continue }
+                return RepairAction(
+                    strategy: .terminal, componentName: component.name,
+                    title: component.name, verb: verb == "Install" ? verb : "Sign in",
+                    detail: "Run `\(command)`, then ASTRA checks again.",
+                    command: command, checkBinary: check?.binary, checkArguments: check?.arguments
+                )
+            case .url:
+                guard let url = step.url else { continue }
+                return RepairAction(
+                    strategy: .url, componentName: component.name, title: component.name, verb: verb,
+                    detail: step.hint ?? "Open the page, then come back to ASTRA.",
+                    url: url, checkBinary: check?.binary, checkArguments: check?.arguments
+                )
+            case .credentialForm:
+                return RepairAction(
+                    strategy: .credentialForm, componentName: component.name, title: component.name,
+                    verb: "Add key", detail: "Enter the account's credentials."
+                )
+            case .deviceCode:
+                return RepairAction(
+                    strategy: .deviceCode, componentName: component.name, title: component.name,
+                    verb: "Sign in", detail: step.hint ?? "Sign in with a code."
+                )
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    public func encoded() -> String {
+        (try? JSONEncoder().encode(self)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+    }
+
+    public static func decode(from payload: String) -> RepairAction? {
+        try? JSONDecoder().decode(RepairAction.self, from: Data(payload.utf8))
+    }
+}
