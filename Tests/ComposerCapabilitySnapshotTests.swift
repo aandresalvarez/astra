@@ -57,7 +57,7 @@ struct ComposerCapabilitySnapshotTests {
         #expect(snapshot.selectedSkills(excluding: []).map(\.name) == ["Composer Agent"])
     }
 
-    @Test("Loader treats a deleted or detached workspace as no workspace")
+    @Test("Loader treats a deleted workspace as no workspace, saved or not")
     @MainActor
     func loaderTreatsDeletedWorkspaceAsNone() throws {
         let container = try ModelContainer(
@@ -67,8 +67,9 @@ struct ComposerCapabilitySnapshotTests {
         )
         let context = container.mainContext
 
-        let detached = Workspace(name: "Detached", primaryPath: "/tmp/composer-detached")
-        #expect(ComposerCapabilitySnapshotLoader.live(detached) == nil)
+        // Never inserted: its values are in memory, so it reads safely.
+        let unmanaged = Workspace(name: "Unmanaged", primaryPath: "/tmp/composer-unmanaged")
+        #expect(ComposerCapabilitySnapshotLoader.live(unmanaged) === unmanaged)
         #expect(ComposerCapabilitySnapshotLoader.live(nil) == nil)
 
         let workspace = Workspace(name: "Live", primaryPath: "/tmp/composer-live")

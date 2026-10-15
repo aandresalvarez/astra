@@ -325,6 +325,10 @@ struct WorkspaceRightRailView: View {
     }
 
     var body: some View {
+        if workspace.isLive { liveBody } else { Color.clear }
+    }
+
+    private var liveBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
 
