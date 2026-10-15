@@ -366,6 +366,39 @@ struct ProcessBinaryRunnerTests {
         }
     }
 
+    @Test("Process group timeout still tears the group down after its leader exits")
+    func processGroupTimeoutOutlivesItsLeader() async throws {
+        // The leader exits at once, leaving a descendant that ignores SIGTERM
+        // and holds the leader's pipes for as long as `hold` exists. The reap's
+        // drain then waits on that descendant, so the deadline still has to
+        // tear the group down to end the wait, and the run is a timeout. If
+        // load keeps the leader alive until the deadline instead, the run ends
+        // the same way, so either ordering passes.
+        let directory = try makeTemporaryDirectory("astra-group-leader-exits")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hold = directory.appendingPathComponent("hold")
+        try Data().write(to: hold)
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(hangBreakerTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            try? FileManager.default.removeItem(at: hold)
+        }
+        defer { watchdog.cancel() }
+
+        let result = await ProcessBinaryRunner().run(
+            path: "/bin/sh",
+            args: ["-c", #"(trap '' TERM; while [ -e "$1" ]; do sleep 0.05; done) & exit 0"#, "sh", hold.path],
+            timeout: 0.3,
+            environment: nil,
+            currentDirectory: nil,
+            terminateProcessGroup: true
+        )
+        let returnedWhileHoldExisted = FileManager.default.fileExists(atPath: hold.path)
+
+        #expect(result.outcome == .timedOut)
+        #expect(returnedWhileHoldExisted, "Nothing stopped the group's descendant, so the runner waited on it")
+    }
+
     @Test("Process group timeout terminates descendant processes")
     func processGroupTimeoutTerminatesDescendants() async throws {
         // The leader marks `forked` once the descendant's PID is on disk, and
