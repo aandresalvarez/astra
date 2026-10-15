@@ -83,7 +83,7 @@ enum CapabilityPackageValidator {
         let decoder = JSONDecoder()
         let decoded: PluginPackage
         do {
-            decoded = try decoder.decode(PluginPackage.self, from: data)
+            decoded = try PluginManifestConverter.decodePackage(from: data, decoder: decoder)
         } catch {
             return CapabilityPackageValidationReport(
                 package: nil,

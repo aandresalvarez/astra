@@ -62,7 +62,7 @@ enum CapabilityPackageSourceReader {
         }
 
         do {
-            let package = try JSONDecoder().decode(PluginPackage.self, from: data)
+            let package = try PluginManifestConverter.decodePackage(from: data)
             return CapabilityPackageSource(
                 package: package,
                 manifestURL: manifestURL,
