@@ -168,6 +168,11 @@ public extension BinaryRunner {
 /// open indefinitely, and the timeout exists so that nothing waits on it. A
 /// child that not even SIGKILL can reap (an uninterruptible wait) gets one
 /// more grace period, and then the run finishes without it.
+///
+/// The deadline also bounds a run whose child exited in time but left
+/// something holding its pipes: the drain to EOF stops there, and the run is
+/// a timeout. In process-group mode the group is torn down first, which
+/// usually ends that drain on its own.
 public struct ProcessBinaryRunner: BinaryRunner {
     public init() {}
 
@@ -293,33 +298,33 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 }
 
                 process.terminationHandler = { proc in
-                    // Classify the outcome (and stamp elapsed time) from the
-                    // moment the process actually exited, before draining
-                    // what's left — the drain below can block on a lock a
-                    // concurrently in-flight readabilityHandler invocation
-                    // is holding, and that wait must not get misread as the
-                    // subprocess itself having run past the timeout.
+                    // Stamp elapsed time from the moment the process actually
+                    // exited, before draining what's left. A drain the
+                    // scheduler is slow to run must not read as the child
+                    // itself running past the timeout. Only a drain the
+                    // deadline has to cut short makes the run a timeout.
                     let elapsed = Date().timeIntervalSince(startedAt)
                     if let timedOutAfter = state.claimReap(elapsed: elapsed, deadline: timeout) {
                         finishTimedOut(timedOutAfter)
                         return
                     }
                     cleanupPipes()
-                    // The read itself (not just the append) is inside the
-                    // collector's lock so it can't race a concurrently
-                    // in-flight readabilityHandler invocation — see
-                    // PipeCollector.
-                    stdoutCollector.synchronized {
-                        stdoutCollector.appendLocked(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
-                    }
-                    stderrCollector.synchronized {
-                        stderrCollector.appendLocked(stderrPipe.fileHandleForReading.readDataToEndOfFile())
-                    }
+                    // An orphan that inherited the pipes can put EOF off
+                    // forever, and nothing in this mode signals it. So the
+                    // drain waits outside the collectors' locks and stops once
+                    // the run is over, which leaves the deadline free to end
+                    // the run without it (`markTimedOut` → `.stopDraining`).
+                    Self.drainToEOF(
+                        [(stdoutCollector, stdoutPipe.fileHandleForReading),
+                         (stderrCollector, stderrPipe.fileHandleForReading)],
+                        until: { state.isFinished }
+                    )
+                    let timedOutAfter = state.claimDrainedResult()
                     state.finish(
-                        outcome: .exited(code: proc.terminationStatus),
+                        outcome: timedOutAfter == nil ? .exited(code: proc.terminationStatus) : .timedOut,
                         stdout: stdoutCollector.string,
                         stderr: stderrCollector.string,
-                        elapsedTime: elapsed,
+                        elapsedTime: timedOutAfter ?? elapsed,
                         stdoutTruncated: stdoutCollector.wasTruncated,
                         stderrTruncated: stderrCollector.wasTruncated
                     )
@@ -354,14 +359,20 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 let timeoutTask = Task {
                     try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                     guard !Task.isCancelled else { return }
-                    guard process.isRunning else { return }
-                    // Stamp timeout before terminating so a fast SIGTERM exit
-                    // cannot be misclassified as a normal status-15 exit. The
-                    // reap then finishes the run (see terminationHandler), so
-                    // what the child writes on its way out is not lost.
                     let elapsed = Date().timeIntervalSince(startedAt)
-                    guard state.markTimedOut(elapsed: elapsed) else { return }
-                    state.terminateTimedOutProcess(process) { finishTimedOut(elapsed) }
+                    switch state.markTimedOut(elapsed: elapsed) {
+                    case .terminateChild:
+                        // Stamp timeout before terminating so a fast SIGTERM
+                        // exit cannot be misclassified as a normal status-15
+                        // exit. The reap then finishes the run (see
+                        // terminationHandler), so what the child writes on its
+                        // way out is not lost.
+                        state.terminateTimedOutProcess(process) { finishTimedOut(elapsed) }
+                    case .stopDraining:
+                        finishTimedOut(elapsed)
+                    case nil:
+                        return
+                    }
                 }
                 state.setTimeoutTask(timeoutTask)
             }
@@ -554,7 +565,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     // while this drain waited on what it left behind, the
                     // timeout task tore the group down to end the wait, and the
                     // run is a timeout.
-                    let timedOutAfter = state.timedOutWhileDraining
+                    let timedOutAfter = state.claimDrainedResult()
                     state.finish(
                         outcome: timedOutAfter == nil ? .exited(code: Self.exitCode(fromWaitStatus: status)) : .timedOut,
                         stdout: stdoutCollector.string,
@@ -679,28 +690,26 @@ public struct ProcessBinaryRunner: BinaryRunner {
 // MARK: - Private helpers
 
 /// Thread-safe byte collector. Pipe readability handlers fire on a
-/// background queue, so appends need synchronization.
+/// background queue, and the reap drains the same pipes, so every read goes
+/// through `drainAvailable`, which reads and appends under one lock.
 ///
-/// `synchronized`/`appendLocked` let a caller fold a raw pipe read
-/// (`availableData`/`readDataToEndOfFile`) and the resulting append into one
-/// atomic step. `Process` delivers "stdout is readable" (via
-/// `readabilityHandler`, on a GCD-managed queue) and "the child exited" (via
-/// `terminationHandler`, which does its own final drain) as two independent,
-/// unordered signals. Locking only around the append (as this used to) still
-/// lets a reader that already consumed bytes via its own `read()` call lose
-/// the CPU before reaching the lock; a concurrently running drain then finds
-/// the fd AND the buffer both empty and finalizes the result before the
-/// first reader's bytes were ever folded in — silently dropping output that
-/// was read but not yet processed. Locking around the read itself closes
-/// that window: whichever side reaches the lock first fully reads-and-
-/// appends before the other side can even perform its own read.
+/// The read itself, not just the append, has to be inside the lock. `Process`
+/// delivers "stdout is readable" (via `readabilityHandler`, on a GCD-managed
+/// queue) and "the child exited" (via `terminationHandler`, which does its own
+/// final drain) as two independent, unordered signals. Locking only around the
+/// append (as this used to) still lets a reader that already consumed bytes
+/// via its own `read()` call lose the CPU before reaching the lock; a
+/// concurrently running drain then finds the fd AND the buffer both empty and
+/// finalizes the result before the first reader's bytes were ever folded in —
+/// silently dropping output that was read but not yet processed. With the
+/// read inside the lock, whichever side reaches the lock first fully reads
+/// and appends before the other side can even perform its own read.
 ///
-/// Every read except the `Process` path's final drain after a clean exit
-/// goes through `drainAvailable`, which never waits. A timed-out run drains the pipes
-/// while an orphan may still hold them open. Once that drain has emptied a
-/// pipe, a readability event already queued for it would block in
-/// `availableData` while holding this lock, and the run's result would then
-/// wait on the orphan.
+/// `drainAvailable` never waits for more data, either. An orphan may hold
+/// these pipes open, and once a drain has emptied one, a readability event
+/// already queued for it would block in a waiting read while holding this
+/// lock, so the run's result would wait on the orphan. Waiting happens only in
+/// `drainToEOF`, outside the lock.
 private final class PipeCollector: @unchecked Sendable {
     private var buffer = Data()
     private var truncated = false
@@ -808,6 +817,7 @@ private final class ProcessRunState: @unchecked Sendable {
     private var timeoutTask: Task<Void, Never>?
     private var didFinish = false
     private var didReap = false
+    private var didDrain = false
     private var timedOutElapsed: TimeInterval?
 
     public func setContinuation(_ continuation: CheckedContinuation<RunResult, Never>) -> Bool {
@@ -843,15 +853,37 @@ private final class ProcessRunState: @unchecked Sendable {
         }
     }
 
-    /// Records that the deadline passed, so the reap finishes the run as a
-    /// timeout. False when the run is already over or the child was reaped
-    /// first: the reap then owns the run, including its drain to EOF.
-    public func markTimedOut(elapsed: TimeInterval) -> Bool {
+    /// What the timeout task has to do once the deadline passes.
+    enum TimeoutAction {
+        /// The child is still running: terminate it, and its reap finishes
+        /// the run.
+        case terminateChild
+        /// The child exited in time, but its reap is still draining pipes an
+        /// orphan holds open. Nothing in this mode signals that orphan, so
+        /// the deadline ends the run itself.
+        case stopDraining
+    }
+
+    /// Records that the deadline passed and says what is left to do. Nil when
+    /// the run is over, its drain already reached EOF, or the reap itself
+    /// already decided the timeout.
+    public func markTimedOut(elapsed: TimeInterval) -> TimeoutAction? {
         lock.lock()
         defer { lock.unlock() }
-        guard !didFinish, !didReap else { return false }
+        guard !didFinish, !didDrain, timedOutElapsed == nil else { return nil }
         timedOutElapsed = elapsed
-        return true
+        return didReap ? .stopDraining : .terminateChild
+    }
+
+    /// Claims the result of a reap whose drain reached EOF. It returns the
+    /// timeout stamp when the deadline got there first. Otherwise
+    /// `markTimedOut` refuses from here on, so a deadline that lands now
+    /// cannot act on a run this result reports as a clean exit.
+    public func claimDrainedResult() -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        didDrain = true
+        return timedOutElapsed
     }
 
     /// Claims the reap for the termination handler. It returns the timeout
@@ -956,6 +988,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
     private var timeoutTask: Task<Void, Never>?
     private var didFinish = false
     private var didReap = false
+    private var didDrain = false
     private var timedOutElapsed: TimeInterval?
 
     public func setContinuation(_ continuation: CheckedContinuation<RunResult, Never>) -> Bool {
@@ -1023,21 +1056,21 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
     /// See `ProcessRunState.markTimedOut`. Unlike the `Process` path, a reap
     /// does not close the window: the run is not over until the reap's drain
     /// is, so the deadline still applies to that drain. False once the run is
-    /// over, or when the reap itself already decided the timeout and tore the
-    /// group down.
+    /// over, its drain already reached EOF, or the reap itself already decided
+    /// the timeout and tore the group down.
     public func markTimedOut(elapsed: TimeInterval) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard !didFinish, timedOutElapsed == nil else { return false }
+        guard !didFinish, !didDrain, timedOutElapsed == nil else { return false }
         timedOutElapsed = elapsed
         return true
     }
 
-    /// The deadline the timeout task stamped while the reap's drain was still
-    /// waiting, if it did.
-    public var timedOutWhileDraining: TimeInterval? {
+    /// See `ProcessRunState.claimDrainedResult`.
+    public func claimDrainedResult() -> TimeInterval? {
         lock.lock()
         defer { lock.unlock() }
+        didDrain = true
         return timedOutElapsed
     }
 
