@@ -117,6 +117,7 @@ struct AppSemanticFitnessTests {
             "role.profile.changed": .lifecycle,
             "role.profile.selected": .lifecycle,
             "runtime.launch_blocked": .system,
+            "runtime.repair_required": .system,
             "runtime.sensitive_data_risk_acknowledged": .system,
             "runtime.settlement.started": .system,
             "runtime.outcome.prepared": .system,
