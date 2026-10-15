@@ -1669,7 +1669,7 @@ struct ToolsTabContent: View {
         if selectedTool?.id == tool.id {
             selectedTool = nil
         }
-        workspace.enabledGlobalToolIDs.removeAll { $0 == tool.id.uuidString }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalToolIDs.removeAll { $0 == tool.id.uuidString } }
         let wasGlobal = tool.isGlobal
         modelContext.delete(tool)
         CapabilityPersistence.saveResourceMutation(
@@ -1942,11 +1942,7 @@ struct SkillsTabContent: View {
 
     private func toggleGlobalSkill(_ skill: Skill) {
         let idString = skill.id.uuidString
-        if let idx = workspace.enabledGlobalSkillIDs.firstIndex(of: idString) {
-            workspace.enabledGlobalSkillIDs.remove(at: idx)
-        } else {
-            workspace.enabledGlobalSkillIDs.append(idString)
-        }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.toggleGlobalSkill(idString) }
         workspace.updatedAt = Date()
         CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [

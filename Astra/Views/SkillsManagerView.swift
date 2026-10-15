@@ -125,15 +125,12 @@ struct SkillEditorView: View {
                                     // Detach from workspace so cascade delete won't remove it
                                     skill.workspace = nil
                                     if let ws = workspace {
-                                        let idString = skill.id.uuidString
-                                        if !ws.enabledGlobalSkillIDs.contains(idString) {
-                                            ws.enabledGlobalSkillIDs.append(idString)
-                                        }
+                                        WorkspaceCapabilityActivation.mutate(ws) { $0.enableGlobalSkill(skill.id.uuidString) }
                                         ws.updatedAt = Date()
                                     }
                                 } else if let ws = workspace {
                                     skill.workspace = ws
-                                    ws.enabledGlobalSkillIDs.removeAll { $0 == skill.id.uuidString }
+                                    WorkspaceCapabilityActivation.mutate(ws) { $0.globalSkillIDs.removeAll { $0 == skill.id.uuidString } }
                                     ws.updatedAt = Date()
                                 }
                                 skill.updatedAt = Date()

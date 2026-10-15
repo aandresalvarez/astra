@@ -31,12 +31,9 @@ struct CapabilityActivationOwnerFitnessTests {
             || (relative.hasPrefix("Astra/Models/ASTRASchemaV") && relative.hasSuffix(".swift"))
     }
 
-    /// Writers not yet routed through the owner. Shrinks to empty within phase 0.
-    private let pendingWriters: Set<String> = [
-        "Astra/Views/ConfigureView.swift",
-        "Astra/Views/SkillsManagerView.swift",
-        "Astra/Views/WorkspacePackSettingsSection.swift"
-    ]
+    /// Writers not yet routed through the owner. Empty since phase 0; keep it
+    /// that way.
+    private let pendingWriters: Set<String> = []
 
     /// Per-file count of reads of the stored arrays. Lower an entry when a
     /// reader moves behind the owner; never raise one.
@@ -67,13 +64,12 @@ struct CapabilityActivationOwnerFitnessTests {
         "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift": 2,
         "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift": 2,
         "Astra/Views/ComposerCapabilitySnapshot.swift": 7,
-        "Astra/Views/ConfigureView.swift": 12,
+        "Astra/Views/ConfigureView.swift": 11,
         "Astra/Views/ConnectorsManagerView.swift": 1,
         "Astra/Views/ContentView.swift": 7,
         "Astra/Views/ContentViewBrowserSessionPolicyCache.swift": 4,
         "Astra/Views/PluginCatalogView.swift": 2,
         "Astra/Views/ScheduleEditorView.swift": 1,
-        "Astra/Views/SkillsManagerView.swift": 1,
         "Astra/Views/ToolsManagerView.swift": 1,
         "Astra/Views/WorkspaceAppStudioChatView.swift": 1,
         "Astra/Views/WorkspaceHomeView.swift": 1,
