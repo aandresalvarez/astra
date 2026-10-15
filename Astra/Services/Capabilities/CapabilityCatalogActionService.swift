@@ -132,6 +132,64 @@ struct CapabilityCatalogActionService {
         try uninstaller.remove(package, modelContext: modelContext)
     }
 
+    /// Plugins 2.0 one-step Add: install, approve and enable in this workspace.
+    /// When the policy holds the package for review, the person adding it is
+    /// the reviewer, so the approval record is written first and the enable
+    /// runs against it. Connector sign-ins are left for later: adding never
+    /// asks for credentials.
+    @discardableResult
+    func add(
+        _ package: PluginPackage,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        policyContext: CapabilityCatalogPolicyContext,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        traceID: String
+    ) throws -> CapabilityInstaller.InstallationResult {
+        var context = policyContext
+        if let record = try CapabilityApprovalGrant.pendingRecord(
+            for: package,
+            context: policyContext,
+            approvedBy: "user",
+            reviewNotes: "Added in Plugins."
+        ) {
+            let saved = try approvalStore.save(
+                package: package,
+                status: record.status,
+                approvedBy: record.approvedBy,
+                reviewNotes: record.reviewNotes,
+                approvedAt: record.approvedAt
+            )
+            context.approvalRecords.append(saved)
+        }
+        return try enable(
+            package,
+            workspace: workspace,
+            modelContext: modelContext,
+            policyContext: context,
+            source: "plugins_add",
+            traceID: traceID
+        )
+    }
+
+    /// Turns a package off in one workspace, leaving it installed.
+    @discardableResult
+    func disable(
+        _ package: PluginPackage,
+        workspace: Workspace,
+        capabilities: WorkspaceCapabilities,
+        modelContext: ModelContext
+    ) -> CapabilityActivationDisabler.Result {
+        let result = CapabilityActivationDisabler().disable(
+            package,
+            in: workspace,
+            capabilities: capabilities,
+            modelContext: modelContext
+        )
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+        return result
+    }
+
     private func failureFields(
         package: PluginPackage,
         workspace: Workspace,

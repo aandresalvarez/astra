@@ -24,6 +24,7 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.logRetentionDays) private var logRetentionDays = LoggingPreferences.defaultLogRetentionDays
     @AppStorage(AppStorageKeys.browserAutoPromoteGoogleWorkspace) private var browserAutoPromoteGoogleWorkspace = false
     @AppStorage(AppStorageKeys.objectiveDriftDetectionEnabled) private var objectiveDriftDetectionEnabled = false
+    @State private var pluginsSurfaceEnabled = PluginsSurfacePreferences.isEnabled()
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
@@ -266,6 +267,12 @@ struct SettingsView: View {
 
                 Toggle("Objective Drift Detection", isOn: $objectiveDriftDetectionEnabled)
                 Text("Experimental. Periodically asks the Utility Model, in the background, whether the task's original goal is still the right thing to keep working on. Never awaited on the UI path; failures leave existing behavior unchanged.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("New Plugins screen", isOn: $pluginsSurfaceEnabled)
+                    .onChange(of: pluginsSurfaceEnabled) { _, enabled in PluginsSurfacePreferences.setEnabled(enabled) }
+                Text("Preview. Configure → Capabilities shows one list with one-step Add and repair buttons. On by default in development builds.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 

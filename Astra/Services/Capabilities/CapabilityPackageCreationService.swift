@@ -129,28 +129,12 @@ struct CapabilityPackageCreationService {
             workspace: workspace,
             approvalRecords: approvalStore.records()
         )
-        if CapabilityCatalogPolicy.decision(for: package, context: existingContext).canEnable {
-            return nil
-        }
-
-        let approvedAt = Date()
-        let pendingRecord = CapabilityApprovalRecord(
-            packageID: package.id,
-            packageVersion: package.version,
-            status: .approved,
+        return try CapabilityApprovalGrant.pendingRecord(
+            for: package,
+            context: existingContext,
             approvedBy: "ASTRA Create",
-            approvedAt: approvedAt,
-            reviewNotes: "Created in ASTRA and approved for immediate workspace enablement.",
-            sourceDigest: try CapabilityApprovalDigest.digest(for: package)
+            reviewNotes: "Created in ASTRA and approved for immediate workspace enablement."
         )
-        var reviewedContext = existingContext
-        reviewedContext.approvalRecords.append(pendingRecord)
-        let decision = CapabilityCatalogPolicy.decision(for: package, context: reviewedContext)
-        guard decision.canEnable else {
-            throw CapabilityInstaller.InstallationError.blocked(decision.blockerMessages)
-        }
-
-        return pendingRecord
     }
 
     private func saveApprovalRecordIfNeeded(
