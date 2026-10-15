@@ -33,10 +33,6 @@ struct CapabilityActivationOwnerFitnessTests {
 
     /// Writers not yet routed through the owner. Shrinks to empty within phase 0.
     private let pendingWriters: Set<String> = [
-        "Astra/Services/Persistence/WorkspaceConfigManager.swift",
-        "Astra/Services/Tasks/TaskExecutionLaunchSnapshotApplicator.swift",
-        "Astra/Services/WorkspacePackage/WorkspacePackageImportCoordinator.swift",
-        "Astra/Services/WorkspacePackage/WorkspaceShareProjection.swift",
         "Astra/Views/ConfigureView.swift",
         "Astra/Views/SkillsManagerView.swift",
         "Astra/Views/WorkspacePackSettingsSection.swift"
@@ -62,6 +58,7 @@ struct CapabilityActivationOwnerFitnessTests {
         "Astra/Services/Capabilities/WorkspaceCapabilities.swift": 4,
         "Astra/Services/Packs/AstraPackProfileResolver.swift": 1,
         "Astra/Services/Packs/PackWorkspacePolicyProvider.swift": 1,
+        "Astra/Services/Persistence/WorkspaceConfigManager+CapabilityImportTrust.swift": 5,
         "Astra/Services/Persistence/WorkspaceConfigManager.swift": 11,
         "Astra/Services/Runtime/AgentRuntimeCapabilityLaunchAudit.swift": 5,
         "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": 1,
@@ -136,6 +133,52 @@ struct CapabilityActivationOwnerFitnessTests {
             \(shrank.sorted { $0.key < $1.key }.map { "\"\($0.key)\": \(actual[$0.key] ?? 0)" })
             """
         )
+    }
+
+    /// `importWorkspace` defaults to restoring a config as recorded, which is
+    /// right for the workspace's own mirror and wrong for a file the user
+    /// picked. Production callers must say which one they mean.
+    @Test("Production config imports state their capability trust")
+    func productionConfigImportsStateTheirCapabilityTrust() throws {
+        let root = repositoryRoot()
+        var missing: [String] = []
+        for (relative, source) in try appSources(root: root) {
+            missing += importCallsMissingTrust(in: source).map { "\(relative):\($0)" }
+        }
+        #expect(
+            missing.isEmpty,
+            """
+            Pass `capabilityTrust:` explicitly: `.validate(.live())` for a file the user \
+            chose, `.preserveRecordedState` for the workspace's own mirror: \(missing.sorted())
+            """
+        )
+        #expect(importCallsMissingTrust(in: "WorkspaceConfigManager.importWorkspace(from: config, modelContext: ctx)") == [1])
+        #expect(importCallsMissingTrust(in: """
+            WorkspaceConfigManager.importWorkspaceResult(
+                from: config, modelContext: ctx,
+                capabilityTrust: .validate(.live())
+            )
+            """).isEmpty)
+    }
+
+    /// Line numbers of `WorkspaceConfigManager.importWorkspace(Result)(` calls
+    /// whose balanced argument list has no `capabilityTrust:`.
+    private func importCallsMissingTrust(in source: String) -> [Int] {
+        let pattern = try! NSRegularExpression(pattern: #"WorkspaceConfigManager\.importWorkspace(?:Result)?\("#)
+        let text = source as NSString
+        return pattern.matches(in: source, range: NSRange(location: 0, length: text.length)).compactMap { match in
+            var depth = 0
+            var end = match.range.location + match.range.length - 1
+            while end < text.length {
+                let character = text.character(at: end)
+                if character == 40 { depth += 1 }
+                if character == 41 { depth -= 1; if depth == 0 { break } }
+                end += 1
+            }
+            let call = text.substring(with: NSRange(location: match.range.location, length: min(end, text.length - 1) - match.range.location + 1))
+            guard !call.contains("capabilityTrust:") else { return nil }
+            return text.substring(to: match.range.location).components(separatedBy: "\n").count
+        }
     }
 
     /// The scan is text-based, so it is only worth what it catches. Each shape

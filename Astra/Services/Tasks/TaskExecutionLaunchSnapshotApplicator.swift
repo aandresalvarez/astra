@@ -252,16 +252,10 @@ enum TaskExecutionLaunchSnapshotApplicator {
         )
         workspace.id = source.id
         workspace.lastUsedSkillNames = source.lastUsedSkillNames
-        workspace.enabledGlobalSkillIDs = source.enabledGlobalSkillIDs
-        workspace.enabledGlobalConnectorIDs = source.enabledGlobalConnectorIDs
-        workspace.enabledGlobalToolIDs = source.enabledGlobalToolIDs
-        workspace.enabledCapabilityIDs = source.enabledCapabilityIDs
-        workspace.enabledPackIDs = source.enabledPackIDs
+        WorkspaceCapabilityActivation.apply(WorkspaceCapabilityActivation.state(of: source), to: workspace)
         workspace.shelfVisibilityOverrideIDs = source.shelfVisibilityOverrideIDs
         workspace.shelfVisibilityOverrideValues = source.shelfVisibilityOverrideValues
         workspace.memories = source.memories
-        workspace.installedPluginIDs = source.installedPluginIDs
-        workspace.installedPluginVersions = source.installedPluginVersions
         workspace.isStarred = source.isStarred
         workspace.activeWorkingPath = source.activeWorkingPath
         workspace.activeExecutionEnvironmentJSON = source.activeExecutionEnvironmentJSON

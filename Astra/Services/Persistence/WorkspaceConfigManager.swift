@@ -144,7 +144,8 @@ public enum WorkspaceConfigManager {
     }
 
     public struct WorkspaceConfigImportResult {
-        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int, droppedAdditionalPaths: [String] = []) {
+        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int, droppedAdditionalPaths: [String] = [], capabilityTrust: CapabilityImportTrustReport = .init()) {
+            self.capabilityTrust = capabilityTrust
             self.status = status
             self.workspace = workspace
             self.workspaceID = workspaceID
@@ -175,6 +176,8 @@ public enum WorkspaceConfigManager {
         /// Configured additional folders left out because worktree cleanup
         /// was removing them when the import ran. Callers tell the user.
         public var droppedAdditionalPaths: [String]
+        /// What `.validate` capability trust removed; empty otherwise.
+        public var capabilityTrust: CapabilityImportTrustReport
 
         public var didImport: Bool {
             status == .imported
@@ -192,7 +195,7 @@ public enum WorkspaceConfigManager {
                 "skipped_connector_count": String(skippedConnectorCount),
                 "skipped_local_tool_count": String(skippedLocalToolCount),
                 "dropped_additional_path_count": String(droppedAdditionalPaths.count)
-            ]
+            ].merging(capabilityTrust.isEmpty ? [:] : capabilityTrust.auditFields) { $1 }
         }
     }
 
@@ -1212,13 +1215,15 @@ public enum WorkspaceConfigManager {
         from config: WorkspaceConfig,
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
-        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
+        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState
     ) -> Workspace {
         importWorkspaceResult(
             from: config,
             modelContext: modelContext,
             scheduleTrustPolicy: scheduleTrustPolicy,
-            taskRecoveryTrustPolicy: taskRecoveryTrustPolicy
+            taskRecoveryTrustPolicy: taskRecoveryTrustPolicy,
+            capabilityTrust: capabilityTrust
         ).workspace
     }
 
@@ -1233,7 +1238,8 @@ public enum WorkspaceConfigManager {
         from config: WorkspaceConfig,
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
-        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine
+        taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
         let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
@@ -1256,11 +1262,6 @@ public enum WorkspaceConfigManager {
             workspace.id = id
         }
         workspace.lastUsedSkillNames = config.lastUsedSkillNames ?? []
-        workspace.enabledGlobalSkillIDs = config.enabledGlobalSkillIDs ?? []
-        workspace.enabledGlobalConnectorIDs = config.enabledGlobalConnectorIDs ?? []
-        workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
-        workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
-        workspace.enabledPackIDs = config.enabledPackIDs ?? []
         workspace.shelfVisibilityOverrides = config.shelfVisibilityOverrides ?? [:]
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
@@ -1270,26 +1271,25 @@ public enum WorkspaceConfigManager {
             primaryPath: config.primaryPath,
             additionalPaths: config.additionalPaths
         )
-        if let refs = config.installedPlugins {
-            workspace.installedPluginIDs = refs.map(\.id)
-            workspace.installedPluginVersions = refs.map(\.version)
-        }
         workspace.createdAt = config.createdAt ?? workspace.createdAt
         workspace.updatedAt = config.updatedAt ?? workspace.updatedAt
         modelContext.insert(workspace)
+        var activation = requestedActivation(from: config)
+        var trustReport = CapabilityImportTrustReport()
+        reconcile(&activation, trust: capabilityTrust, modelContext: modelContext, report: &trustReport)
 
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
         var skippedConnectorCount = 0
         for cc in config.connectors ?? [] {
-            guard let connector = reusedGlobalConnector(for: cc, modelContext: modelContext) ?? makeConnector(from: cc) else {
+            let reused = reusedGlobalConnector(for: cc, modelContext: modelContext)
+            guard let connector = reused ?? makeConnector(from: cc) else {
                 skippedConnectorCount += 1
                 continue
             }
+            if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
             connector.workspace = (connector.isGlobal ? nil : workspace)
-            if connector.isGlobal {
-                appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
-            }
+            if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
             if connector.modelContext == nil {
                 modelContext.insert(connector)
             }
@@ -1303,14 +1303,14 @@ public enum WorkspaceConfigManager {
         var toolsByName: [String: LocalTool] = [:]
         var skippedLocalToolCount = 0
         for tc in config.localTools ?? [] {
-            guard let tool = reusedGlobalTool(for: tc, modelContext: modelContext) ?? makeLocalTool(from: tc) else {
+            let reused = reusedGlobalTool(for: tc, modelContext: modelContext)
+            guard let tool = reused ?? makeLocalTool(from: tc) else {
                 skippedLocalToolCount += 1
                 continue
             }
+            if reused == nil { sanitizeCreated(tool, trust: capabilityTrust, report: &trustReport) }
             tool.workspace = (tool.isGlobal ? nil : workspace)
-            if tool.isGlobal {
-                appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
-            }
+            if tool.isGlobal { activation.enableGlobalTool(tool.id.uuidString) }
             if tool.modelContext == nil {
                 modelContext.insert(tool)
             }
@@ -1323,14 +1323,14 @@ public enum WorkspaceConfigManager {
         var skillsByID: [String: Skill] = [:]
         var skillsByName: [String: Skill] = [:]
         for sc in config.skills {
-            let skill = reusedGlobalSkill(for: sc, modelContext: modelContext) ?? makeSkill(from: sc)
+            let reused = reusedGlobalSkill(for: sc, modelContext: modelContext)
+            let skill = reused ?? makeSkill(from: sc)
+            if reused == nil { sanitizeCreated(skill, trust: capabilityTrust, report: &trustReport) }
             if skill.modelContext == nil {
                 modelContext.insert(skill)
             }
             skill.workspace = (skill.isGlobal ? nil : workspace)
-            if skill.isGlobal {
-                appendUnique(skill.id.uuidString, to: &workspace.enabledGlobalSkillIDs)
-            }
+            if skill.isGlobal { activation.enableGlobalSkill(skill.id.uuidString) }
             linkResources(
                 skill: skill,
                 connectorIDs: sc.connectorIDs,
@@ -1348,8 +1348,11 @@ public enum WorkspaceConfigManager {
             }
         }
 
+        WorkspaceCapabilityActivation.apply(activation, to: workspace)
+
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
+            sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }
 
@@ -1409,7 +1412,8 @@ public enum WorkspaceConfigManager {
             quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount,
-            droppedAdditionalPaths: droppedAdditionalPaths
+            droppedAdditionalPaths: droppedAdditionalPaths,
+            capabilityTrust: trustReport
         )
         AuditLoggingSeam.required.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
         return result
@@ -2970,10 +2974,6 @@ public enum WorkspaceConfigManager {
         skills.append(skill)
     }
 
-    private static func appendUnique(_ value: String, to values: inout [String]) {
-        guard !values.contains(value) else { return }
-        values.append(value)
-    }
 
     private static func importedActiveWorkingPath(
         _ activeWorkingPath: String?,
