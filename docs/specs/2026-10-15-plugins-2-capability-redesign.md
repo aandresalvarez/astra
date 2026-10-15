@@ -326,8 +326,8 @@ Each phase ships on its own PR and leaves `main` working.
 
 | Phase | Work | Exit criterion |
 | --- | --- | --- |
-| 0 | Single owner for enablement (`PluginActivation`), config import validates against the library, rail reads guarded | the 2026-10-13 review's high item closed; no view reads `enabled*IDs` directly |
-| 1 | Manifest + converter that projects a plugin into today's rows; `Account` entity (schema `Vn+1`); alias/default-account resolution replaces keyword ranking | runtime tests unchanged and green; a two-account Jira workspace launches with the chosen account |
+| 0 | Single owner for enablement as a service (`WorkspaceCapabilityActivation`, no schema change), config import validates against the library, workspace views guarded against a deleted model. **Shipped in `aandresalvarez/astra#506`.** | the 2026-10-13 review's high item closed; zero writes to the enablement arrays outside the owner, and reads frozen per file by a registry that only ratchets down |
+| 1 | Manifest + converter that projects a plugin into today's rows; `PluginActivation` and `Account` entities together in one schema `Vn+1`, behind the phase 0 owner; reads move behind the owner; alias/default-account resolution replaces keyword ranking | runtime tests unchanged and green; the read registry is empty; a two-account Jira workspace launches with the chosen account |
 | 2 | New Plugins surface behind a dev flag; health loop with the three repair strategies; typed `repairAction` rendered in rail and task view | a `gcloud` session expired mid-task pauses, repairs from the task view, resumes |
 | 3 | Built-ins migrated to the manifest; git sources; startup repair retired; `worksOn` shown at add | all 12 built-ins add in one step on a fresh dev store |
 | 4 | Delete the old install/approve/enable path and `PluginCatalogView` | `Astra/Services/Capabilities` install side under half its current size |
