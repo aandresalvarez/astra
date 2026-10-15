@@ -125,21 +125,6 @@ public final class Workspace: Identifiable {
         return installedPluginVersions[idx]
     }
 
-    public func recordInstalledPlugin(id: String, version: String) {
-        if let idx = installedPluginIDs.firstIndex(of: id) {
-            // Repair a desynced versions array instead of silently dropping
-            // the write, which would freeze the recorded version forever.
-            while installedPluginVersions.count <= idx {
-                installedPluginVersions.append("")
-            }
-            installedPluginVersions[idx] = version
-        } else {
-            installedPluginIDs.append(id)
-            installedPluginVersions.append(version)
-        }
-        updatedAt = Date()
-    }
-
     public var installedPluginIDSet: Set<String> {
         Set(installedPluginIDs)
     }

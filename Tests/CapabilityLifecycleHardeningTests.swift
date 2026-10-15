@@ -186,7 +186,7 @@ struct WorkspaceInstalledPluginRecordTests {
         workspace.installedPluginIDs = ["a", "b"]
         workspace.installedPluginVersions = ["1.0.0"]
 
-        workspace.recordInstalledPlugin(id: "b", version: "2.0.0")
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.recordInstalledPlugin(id: "b", version: "2.0.0") }
 
         #expect(workspace.installedPluginVersions.count == 2)
         #expect(workspace.installedVersion(of: "b") == "2.0.0")

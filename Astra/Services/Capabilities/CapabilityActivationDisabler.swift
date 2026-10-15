@@ -27,7 +27,7 @@ struct CapabilityActivationDisabler {
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
         connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
     ) -> Result {
-        let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
+        let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         let state = CapabilityPackageState(
             package: package,
             workspace: workspace,
@@ -41,7 +41,7 @@ struct CapabilityActivationDisabler {
         )
         var result = Result(packageID: package.id)
 
-        workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == package.id } }
 
         let removableGlobalSkillIDs = Set(state.linkedSkills
             .filter { skill in
@@ -49,8 +49,8 @@ struct CapabilityActivationDisabler {
             }
             .map { $0.id.uuidString })
         result.disabledSkillIDs = removableGlobalSkillIDs.compactMap(UUID.init(uuidString:))
-        workspace.enabledGlobalSkillIDs.removeAll { id in
-            removableGlobalSkillIDs.contains(id)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.globalSkillIDs.removeAll { removableGlobalSkillIDs.contains($0) }
         }
 
         let removableGlobalConnectorIDs = Set(state.linkedConnectors
@@ -59,8 +59,8 @@ struct CapabilityActivationDisabler {
             }
             .map { $0.id.uuidString })
         result.disabledConnectorIDs = removableGlobalConnectorIDs.compactMap(UUID.init(uuidString:))
-        workspace.enabledGlobalConnectorIDs.removeAll { id in
-            removableGlobalConnectorIDs.contains(id)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.globalConnectorIDs.removeAll { removableGlobalConnectorIDs.contains($0) }
         }
 
         let removableGlobalToolIDs = Set(state.linkedTools
@@ -69,8 +69,8 @@ struct CapabilityActivationDisabler {
             }
             .map { $0.id.uuidString })
         result.disabledToolIDs = removableGlobalToolIDs.compactMap(UUID.init(uuidString:))
-        workspace.enabledGlobalToolIDs.removeAll { id in
-            removableGlobalToolIDs.contains(id)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.globalToolIDs.removeAll { removableGlobalToolIDs.contains($0) }
         }
 
         // Keychain entries are wiped only after the SwiftData deletes are
@@ -115,7 +115,7 @@ struct CapabilityActivationDisabler {
             // package reads as still enabled (truthful) and no keychain
             // credential is orphaned by a later unrelated save.
             modelContext.rollback()
-            membershipSnapshot.restore(to: workspace)
+            WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "package_disable",
                 "package_id": package.id,

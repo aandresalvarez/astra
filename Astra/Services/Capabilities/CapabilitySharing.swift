@@ -9,19 +9,19 @@ enum CapabilitySharing {
         connector.isGlobal = true
         connector.workspace = nil
         if let workspace {
-            appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
+            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalConnector(connector.id.uuidString) }
             workspace.updatedAt = Date()
         }
         connector.updatedAt = Date()
     }
 
     static func enableShared(_ connector: Connector, in workspace: Workspace) {
-        appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalConnector(connector.id.uuidString) }
         workspace.updatedAt = Date()
     }
 
     static func disableShared(_ connector: Connector, in workspace: Workspace) {
-        workspace.enabledGlobalConnectorIDs.removeAll { $0 == connector.id.uuidString }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { $0 == connector.id.uuidString } }
         workspace.updatedAt = Date()
     }
 
@@ -55,19 +55,19 @@ enum CapabilitySharing {
         tool.isGlobal = true
         tool.workspace = nil
         if let workspace {
-            appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
+            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalTool(tool.id.uuidString) }
             workspace.updatedAt = Date()
         }
         tool.updatedAt = Date()
     }
 
     static func enableShared(_ tool: LocalTool, in workspace: Workspace) {
-        appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalTool(tool.id.uuidString) }
         workspace.updatedAt = Date()
     }
 
     static func disableShared(_ tool: LocalTool, in workspace: Workspace) {
-        workspace.enabledGlobalToolIDs.removeAll { $0 == tool.id.uuidString }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalToolIDs.removeAll { $0 == tool.id.uuidString } }
         workspace.updatedAt = Date()
     }
 
@@ -84,12 +84,6 @@ enum CapabilitySharing {
         copy.isGlobal = false
         disableShared(tool, in: workspace)
         return copy
-    }
-
-    private static func appendUnique(_ value: String, to values: inout [String]) {
-        if !values.contains(value) {
-            values.append(value)
-        }
     }
 
     private static func copyCredentials(

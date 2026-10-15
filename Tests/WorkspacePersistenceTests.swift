@@ -42,7 +42,7 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
         "query": false
     ]
     workspace.isStarred = true
-    workspace.recordInstalledPlugin(id: "stanford.builder", version: "1.0.0")
+    WorkspaceCapabilityActivation.mutate(workspace) { $0.recordInstalledPlugin(id: "stanford.builder", version: "1.0.0") }
     context.insert(workspace)
 
     let connector = Connector(

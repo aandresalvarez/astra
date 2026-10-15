@@ -120,27 +120,12 @@ enum CapabilityDefinitionRepairService {
 
         var updated = 0
         for workspace in workspaces where workspace.enabledCapabilityIDs.contains(package.id) {
-            var changed = false
-            let retainedSkillIDs = workspace.enabledGlobalSkillIDs.filter {
-                !staleOwnedSkillIDs.contains($0)
-            }
-            if retainedSkillIDs != workspace.enabledGlobalSkillIDs {
-                workspace.enabledGlobalSkillIDs = retainedSkillIDs
-                changed = true
-            }
-            for skill in packageSkills {
-                let id = skill.id.uuidString
-                if !workspace.enabledGlobalSkillIDs.contains(id) {
-                    workspace.enabledGlobalSkillIDs.append(id)
-                    changed = true
-                }
-            }
-            for connector in linkedGlobalConnectors {
-                let id = connector.id.uuidString
-                if !workspace.enabledGlobalConnectorIDs.contains(id) {
-                    workspace.enabledGlobalConnectorIDs.append(id)
-                    changed = true
-                }
+            let changed = WorkspaceCapabilityActivation.mutate(workspace) { state -> Bool in
+                let before = state
+                state.globalSkillIDs.removeAll { staleOwnedSkillIDs.contains($0) }
+                packageSkills.forEach { state.enableGlobalSkill($0.id.uuidString) }
+                linkedGlobalConnectors.forEach { state.enableGlobalConnector($0.id.uuidString) }
+                return state != before
             }
             if changed {
                 workspace.updatedAt = Date()
