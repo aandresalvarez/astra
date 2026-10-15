@@ -39,6 +39,12 @@ enum PluginsSurfacePresentation {
         /// Hidden or blocked by policy; such packages are not listed.
         var isVisible: Bool
         var isRemovable: Bool
+        /// The source a not-yet-added plugin comes from; nil for the catalog.
+        var sourceName: String? = nil
+        /// Parts of a source plugin ASTRA does not run ("1 agent", "hooks").
+        var unsupported: [String] = []
+        /// Why it cannot be added, when it cannot.
+        var problem: String? = nil
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -55,7 +61,7 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.isEnabled ? nil : .add
+                verb: input.isEnabled || input.problem != nil ? nil : .add
             )
             if !input.isEnabled {
                 state.available.append(row)
@@ -71,7 +77,13 @@ enum PluginsSurfacePresentation {
     /// "1 step pending · 1 skill, 3 tools" for an added plugin with work left;
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
+        if let problem = input.problem { return problem }
         let contents = input.package.contentParts.joined(separator: ", ")
+        if !input.isEnabled, let sourceName = input.sourceName {
+            var parts = [contents.isEmpty ? input.package.description : contents, "from \(sourceName)"]
+            if !input.unsupported.isEmpty { parts.append("without " + input.unsupported.joined(separator: ", ")) }
+            return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+        }
         guard input.isEnabled, input.pendingSteps > 0 else {
             return contents.isEmpty ? input.package.description : contents
         }

@@ -836,6 +836,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Capabilities/CapabilityRuntimeResourceMatcher.swift",
             "Astra/Services/Capabilities/BundledToolInstaller.swift",
             "Astra/Services/Capabilities/MCPRuntimeProjection.swift",
+            "Astra/Services/Capabilities/PluginSources.swift",
             "Astra/Services/Capabilities/StanfordOutlookMail.swift"
         ]
         let forbiddenPatterns = [

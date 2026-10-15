@@ -29,6 +29,23 @@ struct PluginsSurfaceTests {
         #expect(state.available.allSatisfy { $0.verb == .add })
     }
 
+    @Test("A source plugin says where it comes from and what it leaves out; one that cannot be added says why")
+    func sourcePluginRows() {
+        var fromSource = input(package("notes", name: "Team Notes"), isEnabled: false)
+        fromSource.sourceName = "org/plugins"
+        fromSource.unsupported = ["1 agent", "hooks"]
+        var blocked = input(package("jira-workflow", name: "Jira copy"), isEnabled: false)
+        blocked.sourceName = "org/plugins"
+        blocked.problem = "Uses the ID of a built-in plugin, so it cannot replace it."
+        let state = PluginsSurfacePresentation.makeState([fromSource, blocked], query: "")
+        let notes = state.available.first { $0.id == "notes" }
+        #expect(notes?.subtitle == "1 skill · from org/plugins · without 1 agent, hooks")
+        #expect(notes?.verb == .add)
+        let copy = state.available.first { $0.id == "jira-workflow" }
+        #expect(copy?.verb == nil)
+        #expect(copy?.subtitle.contains("built-in") == true)
+    }
+
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
     func searchReachesComponents() throws {
         let gcloud = try builtIn("gcloud-workflow")

@@ -27,6 +27,11 @@ struct PluginsSurfaceView: View {
     @State private var statuses: [String: HealthStatus] = [:]
     @State private var errorMessage: String?
     @StateObject private var repairs = PluginRepairCoordinator()
+    @State private var sources: [PluginSource] = []
+    @State private var sourced: [SourcedPlugin] = []
+    @State private var fetchingSourceIDs: Set<String> = []
+    @State private var isAddingSource = false
+    @State private var sourceInput = ""
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -53,7 +58,14 @@ struct PluginsSurfaceView: View {
     private var state: PluginsSurfaceState {
         let context = policyContext
         let currentCapabilities = capabilities
-        return PluginsSurfacePresentation.makeState(packages.map { package in
+        let known = Set(packages.map(\.id))
+        let fromSources = sourced.filter { !known.contains($0.package.id) }.map { plugin in
+            PluginsSurfacePresentation.Input(
+                package: plugin.package, isEnabled: false, pendingSteps: 0, isVisible: true, isRemovable: false,
+                sourceName: plugin.source.displayName, unsupported: plugin.unsupported, problem: plugin.problem
+            )
+        }
+        return PluginsSurfacePresentation.makeState(fromSources + packages.map { package in
             let packageState = CapabilityPackageState(package: package, workspace: workspace, capabilities: currentCapabilities)
             let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
             return PluginsSurfacePresentation.Input(
@@ -75,6 +87,17 @@ struct PluginsSurfaceView: View {
                 TextField("Search: jira, gmail, bigquery", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
+                Button("Add source") { isAddingSource.toggle() }
+                    .controlSize(.small)
+            }
+            if isAddingSource {
+                HStack {
+                    TextField("https://github.com/org/plugins, org/plugins, or a folder path", text: $sourceInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(addSource)
+                    Button("Choose folder…", action: chooseSourceFolder).controlSize(.small)
+                    Button("Add", action: addSource).controlSize(.small)
+                }
             }
             if let errorMessage {
                 Text(errorMessage)
@@ -87,6 +110,7 @@ struct PluginsSurfaceView: View {
                     group("Action needed", current.actionNeeded)
                     group("Ready", current.ready)
                     group("Available", current.available)
+                    sourcesSection
                     if current.isEmpty {
                         Text(query.isEmpty ? "No plugins yet." : "Nothing matches \u{201C}\(query)\u{201D}.")
                             .font(Stanford.caption(12))
@@ -104,6 +128,7 @@ struct PluginsSurfaceView: View {
                 onCatalogChanged()
             }
             refreshStatuses()
+            loadSources()
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
             refreshApprovalRecords()
@@ -278,10 +303,105 @@ struct PluginsSurfaceView: View {
         }
     }
 
+    // MARK: - Sources
+
+    @ViewBuilder
+    private var sourcesSection: some View {
+        if !sources.isEmpty {
+            Text("Sources")
+                .font(Stanford.ui(12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 10)
+            ForEach(sources) { source in
+                HStack(spacing: 8) {
+                    Image(systemName: source.kind == .git ? "arrow.triangle.branch" : "folder")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(source.displayName).font(Stanford.ui(13, weight: .semibold))
+                        Text(source.location)
+                            .font(Stanford.caption(11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    if fetchingSourceIDs.contains(source.id) {
+                        Text("Fetching…").font(Stanford.caption(11)).foregroundStyle(.secondary)
+                    } else if source.kind == .git {
+                        Button("Update") { fetch(source) }.controlSize(.small)
+                    }
+                    Button("Remove", role: .destructive) { removeSource(source) }.controlSize(.small)
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func loadSources() {
+        let store = PluginSourceStore()
+        sources = store.sources()
+        sourced = sources.flatMap { PluginSourceCatalog.plugins(in: $0, store: store) }
+    }
+
+    private func addSource() {
+        guard let source = PluginSource.make(from: sourceInput) else {
+            errorMessage = "Enter an https or ssh git URL, owner/repo, or a folder path."
+            return
+        }
+        errorMessage = nil
+        let store = PluginSourceStore()
+        do {
+            try store.save(store.sources().filter { $0.id != source.id } + [source])
+        } catch {
+            errorMessage = "Couldn't save the source: \(error.localizedDescription)"
+            return
+        }
+        sourceInput = ""
+        isAddingSource = false
+        loadSources()
+        if source.kind == .git { fetch(source) }
+    }
+
+    private func chooseSourceFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        sourceInput = url.path
+        addSource()
+    }
+
+    private func fetch(_ source: PluginSource) {
+        fetchingSourceIDs.insert(source.id)
+        Task { @MainActor in
+            defer { fetchingSourceIDs.remove(source.id) }
+            do {
+                let store = PluginSourceStore()
+                try await PluginSourceFetcher().fetch(source, store: store)
+                var updated = store.sources()
+                if let index = updated.firstIndex(where: { $0.id == source.id }) {
+                    updated[index].lastFetchedAt = Date()
+                    try? store.save(updated)
+                }
+                loadSources()
+            } catch {
+                errorMessage = "Couldn't fetch \(source.displayName): \(error)"
+            }
+        }
+    }
+
+    private func removeSource(_ source: PluginSource) {
+        try? PluginSourceStore().remove(source)
+        loadSources()
+    }
+
     // MARK: - Actions
 
     private func add(_ packageID: String) {
-        guard let package = packages.first(where: { $0.id == packageID }) else { return }
+        guard let package = packages.first(where: { $0.id == packageID })
+            ?? sourced.first(where: { $0.package.id == packageID && $0.problem == nil })?.package
+        else { return }
         errorMessage = nil
         do {
             try CapabilityCatalogActionService().add(
