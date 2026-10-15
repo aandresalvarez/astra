@@ -155,6 +155,8 @@ struct RailCapabilityItem: Identifiable {
     let templateNames: [String]
     let requirementNames: [String]
     var runtimePermissionAttention: CapabilityRuntimePermissionAttention? = nil
+    /// What gets this capability working again, when a check failed.
+    var repair: RepairAction? = nil
 
     /// The recognizable brand the capability integrates with, if any, so its row
     /// can lead with the real mark instead of a stand-in SF Symbol.
@@ -172,9 +174,31 @@ struct CapabilityRailRow: View {
     let statusColor: Color
     let isEnabled: Bool
     var isCompact = false
+    /// A separate verb ("Sign in", "Install") beside the row, never the row's
+    /// own tap target, per the lean UI system.
+    var repairVerb: String? = nil
+    var repairStatus: String? = nil
+    var onRepair: (() -> Void)? = nil
     let onOpen: () -> Void
 
     var body: some View {
+        HStack(spacing: 8) {
+            rowButton
+            if let repairStatus {
+                Text(repairStatus)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
+            } else if let repairVerb, let onRepair {
+                Button(repairVerb, action: onRepair)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
+                    .accessibilityIdentifier("CapabilityRailRepairButton")
+            }
+        }
+    }
+
+    private var rowButton: some View {
         Button(action: onOpen) {
             HStack(spacing: CapabilityRailLayout.leadingIconSpacing) {
                 CapabilityLeadingIcon(

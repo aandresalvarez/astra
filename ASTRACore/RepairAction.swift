@@ -32,6 +32,8 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// How to re-check: the binary and arguments of the component's check.
     public var checkBinary: String?
     public var checkArguments: [String]?
+    /// The check's semantic test (`SemanticCheck` raw value), if any.
+    public var checkExpect: String?
 
     public init(
         strategy: Strategy,
@@ -42,7 +44,8 @@ public struct RepairAction: Codable, Sendable, Equatable {
         command: String? = nil,
         url: URL? = nil,
         checkBinary: String? = nil,
-        checkArguments: [String]? = nil
+        checkArguments: [String]? = nil,
+        checkExpect: String? = nil
     ) {
         self.strategy = strategy
         self.componentName = componentName
@@ -53,14 +56,19 @@ public struct RepairAction: Codable, Sendable, Equatable {
         self.url = url
         self.checkBinary = checkBinary
         self.checkArguments = checkArguments
+        self.checkExpect = checkExpect
     }
 
     /// The repair a component's setup contract offers: its `repair` step,
-    /// else `connect`, else `install`. Nil when none can be acted on.
-    public static func from(_ component: PluginComponent) -> RepairAction? {
+    /// else `connect`, else `install`; or `install` first when the component's
+    /// binary is missing. Nil when none can be acted on.
+    public static func from(_ component: PluginComponent, needsInstall: Bool = false) -> RepairAction? {
         let setup = component.setup
         let check = setup.check
-        for (step, verb) in [(setup.repair, "Fix"), (setup.connect, "Connect"), (setup.install, "Install")] {
+        let order = needsInstall
+            ? [(setup.install, "Install")]
+            : [(setup.repair, "Fix"), (setup.connect, "Connect"), (setup.install, "Install")]
+        for (step, verb) in order {
             guard let step else { continue }
             switch step.kind {
             case .terminal:
@@ -69,14 +77,16 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     strategy: .terminal, componentName: component.name,
                     title: component.name, verb: verb == "Install" ? verb : "Sign in",
                     detail: "Run `\(command)`, then ASTRA checks again.",
-                    command: command, checkBinary: check?.binary, checkArguments: check?.arguments
+                    command: command, checkBinary: check?.binary, checkArguments: check?.arguments,
+                    checkExpect: check?.expect
                 )
             case .url:
                 guard let url = step.url else { continue }
                 return RepairAction(
                     strategy: .url, componentName: component.name, title: component.name, verb: verb,
                     detail: step.hint ?? "Open the page, then come back to ASTRA.",
-                    url: url, checkBinary: check?.binary, checkArguments: check?.arguments
+                    url: url, checkBinary: check?.binary, checkArguments: check?.arguments,
+                    checkExpect: check?.expect
                 )
             case .credentialForm:
                 return RepairAction(

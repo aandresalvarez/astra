@@ -36,7 +36,8 @@ enum CLISessionExpiryClassifier {
                 detail: "Run `\(signInCommand)` in Terminal, then resume the task.",
                 command: signInCommand,
                 checkBinary: checkBinary,
-                checkArguments: checkArguments
+                checkArguments: checkArguments,
+                checkExpect: checkBinary == "gcloud" ? SemanticCheck.stdoutNonEmpty.rawValue : nil
             )
         }
     }
