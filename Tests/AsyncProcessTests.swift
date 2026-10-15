@@ -126,8 +126,8 @@ struct AsyncProcessRunnerTests {
                   recordedAt < start.addingTimeInterval(timeoutSeconds) else {
                 continue
             }
-            #expect(!processIsRunning(childPID),
-                    "Timeout returned while wrapper child pid \(childPID) was still alive")
+            #expect(await processExits(childPID),
+                    "Wrapper child pid \(childPID) outlived the timeout")
             #expect(!FileManager.default.fileExists(atPath: finishedMarker.path),
                     "Timeout returned only after the wrapper child finished on its own")
             return
@@ -138,6 +138,18 @@ struct AsyncProcessRunnerTests {
     private func recordedPID(at url: URL) -> pid_t? {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The walk only sends SIGTERM, and a loaded child may not have run its
+    /// exit yet when the wrapper is reaped, so one sample can catch it alive.
+    /// The bound is a poll count; a child that instead lives out its sleep
+    /// writes the finished marker, which fails the test on its own.
+    private func processExits(_ pid: pid_t, polls: Int = 200) async -> Bool {
+        for _ in 0..<polls {
+            if !processIsRunning(pid) { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return !processIsRunning(pid)
     }
 
     private func modificationDate(of url: URL) -> Date? {
