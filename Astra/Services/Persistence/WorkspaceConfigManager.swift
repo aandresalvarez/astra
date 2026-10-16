@@ -1281,8 +1281,11 @@ public enum WorkspaceConfigManager {
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
         var skippedConnectorCount = 0
+        // A picked file may not re-parent a shared row this machine already has.
+        var reusedRowIDs = Set<String>()
         for cc in config.connectors ?? [] {
             let reused = reusedGlobalConnector(for: cc, modelContext: modelContext)
+            if let reused, case .validate = capabilityTrust { reusedRowIDs.insert(reused.id.uuidString) }
             guard let connector = reused ?? makeConnector(from: cc) else {
                 skippedConnectorCount += 1
                 continue
@@ -1304,6 +1307,7 @@ public enum WorkspaceConfigManager {
         var skippedLocalToolCount = 0
         for tc in config.localTools ?? [] {
             let reused = reusedGlobalTool(for: tc, modelContext: modelContext)
+            if let reused, case .validate = capabilityTrust { reusedRowIDs.insert(reused.id.uuidString) }
             guard let tool = reused ?? makeLocalTool(from: tc) else {
                 skippedLocalToolCount += 1
                 continue
@@ -1337,10 +1341,10 @@ public enum WorkspaceConfigManager {
                 connectorNames: sc.connectorNames,
                 localToolIDs: sc.localToolIDs,
                 localToolNames: sc.localToolNames,
-                connectorsByID: connectorsByID,
-                connectorsByName: connectorsByName,
-                toolsByID: toolsByID,
-                toolsByName: toolsByName
+                connectorsByID: connectorsByID.filter { !reusedRowIDs.contains($0.key) },
+                connectorsByName: connectorsByName.filter { !reusedRowIDs.contains($0.value.id.uuidString) },
+                toolsByID: toolsByID.filter { !reusedRowIDs.contains($0.key) },
+                toolsByName: toolsByName.filter { !reusedRowIDs.contains($0.value.id.uuidString) }
             )
             skillsByID[skill.id.uuidString] = skill
             if skillsByName[skill.name] == nil {

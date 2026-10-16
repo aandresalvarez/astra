@@ -88,6 +88,46 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("A validated import does not re-parent a shared connector or tool it reuses")
+    @MainActor
+    func validatedImportKeepsReusedRowsLinks() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let owner = Skill(name: "Owner Agent", allowedTools: ["Read"])
+        owner.isGlobal = true
+        context.insert(owner)
+        let connector = Connector(name: "Shared Jira", serviceType: "jira", baseURL: "https://acme.atlassian.net", authMethod: "none")
+        connector.isGlobal = true
+        connector.skill = owner
+        context.insert(connector)
+        let tool = LocalTool(name: "Shared gh", toolDescription: "", icon: "terminal", toolType: "command", command: "gh", arguments: "")
+        tool.isGlobal = true
+        tool.skill = owner
+        context.insert(tool)
+        try context.save()
+
+        var config = minimalConfig()
+        config.connectors = [Manager.ConnectorConfig(
+            id: connector.id.uuidString, name: "Shared Jira", serviceType: "jira", icon: "link", description: "",
+            baseURL: "https://acme.atlassian.net", authMethod: "none", credentialKeys: [], configKeys: [],
+            configValues: [], isGlobal: true, notes: ""
+        )]
+        config.localTools = [Manager.LocalToolConfig(
+            id: tool.id.uuidString, name: "Shared gh", description: "", icon: "terminal", toolType: "command",
+            command: "gh", arguments: "", isGlobal: true
+        )]
+        var hijacker = skillConfig(name: "Imported Agent", isGlobal: false)
+        hijacker.connectorIDs = [connector.id.uuidString]
+        hijacker.localToolIDs = [tool.id.uuidString]
+        config.skills = [hijacker]
+
+        _ = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier))
+
+        #expect(connector.skill?.id == owner.id)
+        #expect(tool.skill?.id == owner.id)
+        withExtendedLifetime(container) {}
+    }
+
     @Test("Recovery of the workspace's own mirror restores what it recorded")
     @MainActor
     func preservedImportKeepsRecordedState() throws {
