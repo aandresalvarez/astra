@@ -3,9 +3,11 @@ import CoreGraphics
 /// Resolves the Files shelf browser without coupling its interaction policy to
 /// SwiftUI view state. Reading remains the default surface; browsing floats
 /// above it unless the user explicitly pins the navigator and there is enough
-/// room to keep both panes readable.
+/// room to keep both panes readable. With nothing to preview, browsing owns
+/// the pane instead of covering part of an empty-state message.
 enum ShelfFileNavigatorLayout: Equatable {
     case hidden
+    case navigatorOnly
     case floating
     case docked
 
@@ -13,9 +15,11 @@ enum ShelfFileNavigatorLayout: Equatable {
         isPresented: Bool,
         isPinned: Bool,
         availableWidth: CGFloat,
-        navigatorWidth: CGFloat = ShelfWidthMetrics.filesNavigatorDefaultWidth
+        navigatorWidth: CGFloat = ShelfWidthMetrics.filesNavigatorDefaultWidth,
+        hasPreviewContent: Bool = true
     ) -> ShelfFileNavigatorLayout {
         guard isPresented else { return .hidden }
+        guard hasPreviewContent else { return .navigatorOnly }
         let minimumDockedWidth = navigatorWidth
             + ShelfWidthMetrics.filesResizeHandleWidth
             + ShelfWidthMetrics.filesMinimumPreviewWidth
@@ -26,7 +30,7 @@ enum ShelfFileNavigatorLayout: Equatable {
 
 enum ShelfFileNavigatorResizePolicy {
     static func showsResizeHandle(layout: ShelfFileNavigatorLayout, isPinned: Bool) -> Bool {
-        isPinned && layout != .hidden
+        isPinned && (layout == .floating || layout == .docked)
     }
 
     static func displayedWidth(
