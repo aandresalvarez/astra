@@ -202,7 +202,16 @@ struct SourcedPlugin: Identifiable {
 /// Lists a source's plugins: every in-repository entry of its marketplace
 /// file, or the source root as one plugin when it has no marketplace file.
 enum PluginSourceCatalog {
-    static func plugins(in source: PluginSource, store: PluginSourceStore = PluginSourceStore()) -> [SourcedPlugin] {
+    /// Every plugin also goes through the package validator against what is
+    /// installed, as an import does: an ID that differs from an installed one
+    /// only by case, or maps to the same library filename, or an unsafe
+    /// declaration, makes the plugin un-addable with the reason shown.
+    static func plugins(
+        in source: PluginSource,
+        store: PluginSourceStore = PluginSourceStore(),
+        installedPackages: [PluginPackage]? = nil
+    ) -> [SourcedPlugin] {
+        let installed = installedPackages ?? CapabilityLibrary().installedPackages()
         let directory = BrokeredPluginDirectory(root: store.contentRoot(for: source), kind: source.kind)
         let paths: [(name: String, path: String?)]
         if let marketplace = try? PluginMarketplace.read(from: directory) {
@@ -222,10 +231,28 @@ enum PluginSourceCatalog {
                 trustLevel: "unreviewed"
             )
             package.governance = .localDraft()
-            let problem = CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id)
-                ? "Uses the ID of a built-in plugin, so it cannot replace it."
-                : nil
+            let problem: String?
+            if CapabilityLibrary.trustedBuiltInPackageIDs.contains(where: { $0.lowercased() == package.id.lowercased() }) {
+                problem = "Uses the ID of a built-in plugin, so it cannot replace it."
+            } else {
+                problem = CapabilityPackageValidator.validate(
+                    package: package,
+                    installedPackages: installed,
+                    allowReplacingExistingPackageID: true,
+                    checkPrerequisites: false
+                ).blockers.first.map { "\($0.title): \($0.message)" }
+            }
             return SourcedPlugin(source: source, package: package, unsupported: plugin.unsupported, problem: problem)
         }
+    }
+
+    /// The fetched definition of an installed source plugin when the source
+    /// now offers a different version that can be added; nil otherwise.
+    static func updateCandidate(for installed: PluginPackage, among sourced: [SourcedPlugin]) -> PluginPackage? {
+        guard installed.sourceMetadata?.kind == "plugin-source",
+              let fetched = sourced.first(where: { $0.package.id == installed.id && $0.problem == nil }),
+              fetched.package.version != installed.version
+        else { return nil }
+        return fetched.package
     }
 }

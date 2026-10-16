@@ -61,6 +61,12 @@ struct PluginSourceFormatsTests {
         let package = PluginManifestConverter.package(from: manifest)
         #expect(package.skills.count == 1)
         #expect(package.mcpServers.count == 1)
+        // Its env keys are declared as an account to fill in, without the
+        // file's values, so the MCP key policy does not block Add.
+        let settings = try #require(package.connectors.first)
+        #expect(settings.credentialHints.map(\.key) == ["NOTES_TOKEN"])
+        #expect(!String(describing: package).contains("secret"))
+        #expect(MCPEnvironmentKeyPolicy.undeclaredKeys(server: try #require(package.mcpServers.first), package: package).isEmpty)
     }
 
     @Test("An ASTRA plugin in a source is read through its capability.json")

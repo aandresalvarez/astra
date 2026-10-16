@@ -53,7 +53,7 @@ struct CLISessionExpiryTests {
             process: nil
         )
         let resultKill = monitor.processEvent(
-            .toolResult(toolId: "toolu_gcloud", content: gcloudReauth),
+            .toolResult(toolId: "toolu_gcloud", content: gcloudReauth, isError: true),
             process: nil
         )
         #expect(commandKill == false)
@@ -61,6 +61,21 @@ struct CLISessionExpiryTests {
         #expect(monitor.runtimeStopReason == "capability_session_expired")
         #expect(AgentRuntimeWorker.isTerminalRuntimeStop("capability_session_expired"))
         #expect(CLISessionExpiryClassifier.family(forStopMessage: monitor.runtimeStopMessage) == CLISessionExpiryClassifier.googleCloud)
+    }
+
+    @Test("A successful command whose output quotes a sign-in error does not stop the run")
+    func successfulOutputQuotingTheErrorDoesNotStop() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(
+            .toolUse(name: "Bash", id: "toolu_gh", input: ["command": "gh issue view 12"]),
+            process: nil
+        )
+        let kill = monitor.processEvent(
+            .toolResult(toolId: "toolu_gh", content: "Bug: after rotating, gh says: You are not logged into any GitHub hosts.", isError: false),
+            process: nil
+        )
+        #expect(kill == false)
+        #expect(monitor.runtimeStopReason == nil)
     }
 
     @Test("The run's repair event reaches the dock, scoped to that run")

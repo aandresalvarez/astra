@@ -176,6 +176,24 @@ public enum ClaudePluginConverter {
                     setup: PluginComponentSetup(check: PluginSetupStep(kind: .processStarts)), mcp: mcp
                 ))
             }
+            // The servers' environment keys become an account the person fills
+            // in, so ASTRA declares them (an undeclared key blocks Add) and
+            // supplies them from the Keychain; the file's values are dropped.
+            let keys = Set(file.mcpServers.values.flatMap { ($0.env ?? [:]).keys }).sorted()
+            if !keys.isEmpty {
+                let name = "\(info.name) settings"
+                components.append(PluginComponent(
+                    kind: .connector, id: PluginManifestConverter.slug(name), name: name,
+                    summary: "Values the plugin's MCP servers read from the environment.",
+                    connector: PluginConnector(
+                        name: name, serviceType: "custom", icon: "key",
+                        description: "Values the plugin's MCP servers read from the environment.",
+                        baseURL: "", authMethod: "api_key",
+                        credentialHints: keys.map { PluginConnector.CredentialHint(key: $0, hint: "Used by the plugin's MCP server") },
+                        configHints: [], notes: ""
+                    )
+                ))
+            }
         }
         var unsupported: [String] = []
         for (folder, label) in [("agents", "agent"), ("commands", "command")] {

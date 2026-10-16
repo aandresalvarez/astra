@@ -70,6 +70,39 @@ struct PluginSourcesTests {
         #expect(plugins.last?.problem?.contains("built-in") == true)
     }
 
+    @Test("A source plugin whose ID collides with an installed one by case or filename cannot be added")
+    func sourceIDCollisionsAreRefused() throws {
+        let folder = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try write(folder, ".claude-plugin/plugin.json", #"{"name": "Team Notes", "version": "1.0.0"}"#)
+        try write(folder, "skills/sum/SKILL.md", "---\nname: Summarise\n---\nSummarise.")
+        let source = try #require(PluginSource.make(from: folder.path))
+        var installed = try #require(PluginCatalog.builtInPackages.first)
+        installed.id = "TEAM-NOTES"
+        installed.sourceMetadata = .localLibrary()
+        let plugins = PluginSourceCatalog.plugins(
+            in: source, store: PluginSourceStore(root: try temporaryDirectory()), installedPackages: [installed]
+        )
+        #expect(plugins.first?.problem != nil)
+    }
+
+    @Test("A newer version in a source becomes the Update for the installed source plugin")
+    func newerSourceVersionIsTheUpdate() throws {
+        let source = try #require(PluginSource.make(from: "/tmp/plugins"))
+        var installed = try #require(PluginCatalog.builtInPackages.first)
+        installed.id = "team-notes"
+        installed.version = "1.0.0"
+        installed.sourceMetadata = CapabilitySourceMetadata(id: "plugin-source:x", displayName: "x", kind: "plugin-source", trustLevel: "unreviewed")
+        var fetched = installed
+        fetched.version = "2.0.0"
+        let offered = SourcedPlugin(source: source, package: fetched, unsupported: [], problem: nil)
+        #expect(PluginSourceCatalog.updateCandidate(for: installed, among: [offered])?.version == "2.0.0")
+        #expect(PluginSourceCatalog.updateCandidate(for: fetched, among: [offered]) == nil)
+        var builtIn = installed
+        builtIn.sourceMetadata = .builtIn()
+        #expect(PluginSourceCatalog.updateCandidate(for: builtIn, among: [offered]) == nil)
+    }
+
     @Test("A symlink inside a source that points outside it is not read")
     func symlinksCannotEscape() throws {
         let root = try temporaryDirectory()
