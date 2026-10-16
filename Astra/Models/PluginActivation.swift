@@ -1,0 +1,118 @@
+import Foundation
+import SwiftData
+
+/// One installed plugin turned on (or kept off) in one workspace.
+///
+/// The plugin's definition lives in the capability library; this record owns
+/// only what belongs to the workspace: whether the plugin is on, the version
+/// and digest it was added at, its per-workspace settings, the components the
+/// person replaced with an authored row, and which accounts each connector
+/// component uses. The runtime derives the plugin's skills and tools from the
+/// library entry plus this record (`PluginRuntimeProjection`), so no other row
+/// carries a copy of these facts.
+///
+/// Every write goes through `WorkspaceCapabilityActivation`, which bumps
+/// `revision`; nothing else writes this model.
+@Model
+public final class PluginActivation {
+    public var id: UUID
+    public var pluginID: String
+    public var isEnabled: Bool
+    /// The plugin version and library digest this workspace last accepted.
+    /// Empty when unknown (a plugin whose library entry is missing).
+    public var recordedVersion: String
+    public var recordedDigest: String
+    /// Non-secret settings keyed `componentID.KEY`, paired by index. Secret
+    /// values are in the Keychain under the projected component's ID.
+    public var configKeys: [String]
+    public var configValues: [String]
+    /// Components the person replaced with an authored row; the projection
+    /// skips them so nothing is duplicated.
+    public var overriddenComponentIDs: [String]
+    public var revision: Int
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public var workspace: Workspace?
+
+    @Relationship(deleteRule: .cascade, inverse: \AccountBinding.activation)
+    public var bindings: [AccountBinding] = []
+
+    public init(
+        id: UUID = UUID(),
+        pluginID: String,
+        isEnabled: Bool = true,
+        recordedVersion: String = "",
+        recordedDigest: String = "",
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.pluginID = pluginID
+        self.isEnabled = isEnabled
+        self.recordedVersion = recordedVersion
+        self.recordedDigest = recordedDigest
+        self.configKeys = []
+        self.configValues = []
+        self.overriddenComponentIDs = []
+        self.revision = 0
+        self.createdAt = createdAt
+        self.updatedAt = createdAt
+    }
+
+    /// Settings keyed `componentID.KEY`.
+    public var configuration: [String: String] {
+        var values: [String: String] = [:]
+        for (index, key) in configKeys.enumerated() where index < configValues.count {
+            values[key] = configValues[index]
+        }
+        return values
+    }
+
+    /// Settings for one component, keyed by the bare `KEY`.
+    public func configuration(forComponent componentID: String) -> [String: String] {
+        let prefix = componentID + "."
+        var values: [String: String] = [:]
+        for (key, value) in configuration where key.hasPrefix(prefix) {
+            values[String(key.dropFirst(prefix.count))] = value
+        }
+        return values
+    }
+
+    /// The accounts bound to one connector component, default first.
+    public func accounts(forComponent componentID: String) -> [Connector] {
+        bindings
+            .filter { $0.componentID == componentID }
+            .sorted { lhs, rhs in
+                if lhs.isDefault != rhs.isDefault { return lhs.isDefault }
+                return lhs.createdAt < rhs.createdAt
+            }
+            .compactMap(\.account)
+    }
+}
+
+/// A connector component of an activation bound to the connector row that
+/// serves as its account. A component may bind several accounts (two Jira
+/// sites); one is the default. Deleting the account deletes its bindings, so
+/// no activation keeps a dangling reference.
+@Model
+public final class AccountBinding {
+    public var id: UUID
+    public var componentID: String
+    public var isDefault: Bool
+    public var createdAt: Date
+
+    public var activation: PluginActivation?
+    public var account: Connector?
+
+    public init(
+        id: UUID = UUID(),
+        componentID: String,
+        isDefault: Bool = false,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.componentID = componentID
+        self.isDefault = isDefault
+        self.createdAt = createdAt
+    }
+}

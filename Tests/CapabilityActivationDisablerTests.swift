@@ -58,7 +58,7 @@ struct CapabilityActivationDisablerTests {
             templates: [],
             governance: .builtInApproved(riskLevel: .medium)
         )
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         workspace.enabledGlobalSkillIDs = [legacySkill.id.uuidString, ownedSkill.id.uuidString]
 
         let result = CapabilityActivationDisabler().disable(

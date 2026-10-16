@@ -28,7 +28,7 @@ struct TaskCapabilityDuplicateSkillTests {
         let pluginSkill = try #require(package.skills.first)
 
         let workspace = Workspace(name: "GitHub Duplicate", primaryPath: "/tmp/github-duplicate")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         context.insert(workspace)
 
         let current = Skill(

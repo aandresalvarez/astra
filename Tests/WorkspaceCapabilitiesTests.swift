@@ -82,7 +82,7 @@ struct WorkspaceCapabilitiesTests {
     @MainActor
     func activeResourcesIncludeEnabledPackageDefinitions() {
         let workspace = Workspace(name: "Package Active", primaryPath: "/tmp/package-active")
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
 
         let jiraSkill = Skill(name: "Jira Agent", allowedTools: ["Read", "Bash"])
         jiraSkill.isGlobal = true
@@ -149,7 +149,7 @@ struct WorkspaceCapabilitiesTests {
     @MainActor
     func enabledPackageSkillsIncludeMatchedToolOwnerWhenPackageSkillNameChanges() {
         let workspace = Workspace(name: "Package Rename", primaryPath: "/tmp/package-rename")
-        workspace.enabledCapabilityIDs = ["stanford-healthcare-graph-mail"]
+        workspace.testEnabledCapabilityIDs = ["stanford-healthcare-graph-mail"]
 
         let legacySkill = Skill(
             name: "Stanford Graph Mail Agent",
@@ -393,7 +393,7 @@ struct WorkspaceCapabilitiesTests {
         ownedSkill.originComponentID = "skill:jira-agent"
         ownedSkill.originComponentKind = "skill"
 
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         workspace.enabledGlobalSkillIDs = [ownedSkill.id.uuidString]
 
         let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
@@ -584,7 +584,7 @@ struct WorkspaceCapabilitiesTests {
             workspace: workspace
         ).isEmpty)
 
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         #expect(CapabilityCatalogInventory.configuredPackages(
             catalogPackages: [jira, github],
             capabilities: capabilities,
@@ -708,7 +708,7 @@ struct WorkspaceCapabilitiesTests {
         context.insert(skill)
 
         let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
 
         let capabilities = WorkspaceCapabilities(workspace: workspace)
         #expect(CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
@@ -789,7 +789,7 @@ struct WorkspaceCapabilitiesTests {
         context.insert(ownedSkill)
 
         let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         workspace.enabledGlobalSkillIDs = [legacySkill.id.uuidString, ownedSkill.id.uuidString]
 
         let result = CapabilityActivationDisabler().disable(
@@ -818,7 +818,7 @@ struct WorkspaceCapabilitiesTests {
 
         let firstPackage = makeCapabilityPackage(id: "first-package", skillName: "Shared Analyst")
         let secondPackage = makeCapabilityPackage(id: "second-package", skillName: "Shared Analyst")
-        workspace.enabledCapabilityIDs = [firstPackage.id, secondPackage.id]
+        workspace.testEnabledCapabilityIDs = [firstPackage.id, secondPackage.id]
         workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
 
         let result = CapabilityActivationDisabler().disable(
@@ -880,7 +880,7 @@ struct WorkspaceCapabilitiesTests {
         let skill = Skill(name: "Pack Analyst", allowedTools: ["Read"])
         skill.isGlobal = true
         let package = makeCapabilityPackage(id: "local.test/pack-analyst", skillName: "Pack Analyst")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         workspace.enabledPackIDs = ["astra.pack.policy-test"]
         let packPolicy = makeCapabilityPackPolicy(restrictions: [
             AstraPackPolicyRestriction(

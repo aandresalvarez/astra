@@ -158,7 +158,7 @@ struct CapabilityDefinitionRepairServiceTests {
                 name: "\(package.name) Workspace",
                 primaryPath: "/tmp/\(package.id)-activation-repair"
             )
-            workspace.enabledCapabilityIDs = [package.id]
+            workspace.testEnabledCapabilityIDs = [package.id]
             context.insert(workspace)
 
             var globalSkills: [Skill] = []
@@ -255,7 +255,7 @@ struct CapabilityDefinitionRepairServiceTests {
         try library.syncApprovedPackages([package])
 
         let workspace = Workspace(name: "GitHub Repair", primaryPath: "/tmp/github-repair")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         context.insert(workspace)
 
         let current = Skill(

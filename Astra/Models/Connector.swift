@@ -37,6 +37,10 @@ public final class Connector {
     public var skill: Skill?
     public var workspace: Workspace?
 
+    /// Plugin connector components this row serves as the account for.
+    @Relationship(deleteRule: .cascade, inverse: \AccountBinding.account)
+    public var accountBindings: [AccountBinding] = []
+
     public init(
         name: String = "",
         serviceType: String = "custom",

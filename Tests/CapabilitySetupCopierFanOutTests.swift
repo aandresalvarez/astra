@@ -105,7 +105,7 @@ struct CapabilitySetupCopierFanOutTests {
 
         let workspace = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
         workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
-        workspace.enabledCapabilityIDs = ["redcap-workflow"]
+        workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -149,7 +149,7 @@ struct CapabilitySetupCopierFanOutTests {
 
         let workspace = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
         workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
-        workspace.enabledCapabilityIDs = ["redcap-workflow"]
+        workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -182,7 +182,7 @@ struct CapabilitySetupCopierFanOutTests {
         let danglingID = UUID()
         let workspace = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
         workspace.enabledGlobalConnectorIDs = [danglingID.uuidString]
-        workspace.enabledCapabilityIDs = ["redcap-workflow"]
+        workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(workspace)
         try context.save()
 
@@ -362,7 +362,7 @@ struct CopyableCapabilitySetupKeyTests {
         let destination = Workspace(name: "Destination", primaryPath: NSTemporaryDirectory())
         for workspace in [source, destination] {
             workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
-            workspace.enabledCapabilityIDs = ["redcap-workflow"]
+            workspace.testEnabledCapabilityIDs = ["redcap-workflow"]
             context.insert(workspace)
         }
         let empty = Workspace(name: "Empty", primaryPath: NSTemporaryDirectory())

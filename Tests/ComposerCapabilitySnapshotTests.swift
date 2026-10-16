@@ -11,7 +11,7 @@ struct ComposerCapabilitySnapshotTests {
     @MainActor
     func snapshotBuilderUsesPreloadedPackageDefinitions() {
         let workspace = Workspace(name: "Composer", primaryPath: "/tmp/composer")
-        workspace.enabledCapabilityIDs = ["composer-pack"]
+        workspace.testEnabledCapabilityIDs = ["composer-pack"]
 
         let globalSkill = Skill(name: "Composer Agent", allowedTools: ["Read"])
         globalSkill.isGlobal = true

@@ -105,7 +105,7 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
             name: "Production retry",
             primaryPath: "/tmp/production-retry"
         )
-        workspace.enabledCapabilityIDs = [githubPackage.id, gcloudPackage.id]
+        workspace.testEnabledCapabilityIDs = [githubPackage.id, gcloudPackage.id]
         context.insert(workspace)
 
         let githubSkill = Skill(

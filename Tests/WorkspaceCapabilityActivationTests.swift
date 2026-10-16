@@ -107,15 +107,73 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
-    @Test("Apply copies a desynced plugin pairing exactly")
+    @Test("Apply gives every plugin one activation, pairing a missing version with empty")
     @MainActor
-    func applyCopiesDesyncedPairingExactly() throws {
+    func applyPairsEveryPluginWithAVersion() throws {
         let (container, workspace) = try makeManagedWorkspace()
-        let source = WorkspaceCapabilityActivationState(pluginIDs: ["a", "b", "c"], pluginVersions: ["1"])
+        let source = WorkspaceCapabilityActivationState(
+            capabilityIDs: ["b", "d"],
+            pluginIDs: ["a", "b", "c", "a"],
+            pluginVersions: ["1"]
+        )
         WorkspaceCapabilityActivation.apply(source, to: workspace)
-        #expect(workspace.installedPluginIDs == ["a", "b", "c"])
-        #expect(workspace.installedPluginVersions == ["1"])
-        #expect(WorkspaceCapabilityActivation.state(of: workspace) == source)
+        #expect(workspace.installedPluginIDs == ["a", "b", "c", "d"])
+        #expect(workspace.installedPluginVersions == ["1", "", "", ""])
+        #expect(workspace.enabledCapabilityIDs == ["b", "d"])
+        #expect(workspace.pluginActivations.count == 4)
+
+        // Dropping a plugin from both lists deletes its activation; dropping it
+        // only from the enabled list turns it off and keeps it.
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.capabilityIDs = ["d"]
+            $0.pluginIDs = ["b", "c"]
+        }
+        #expect(workspace.installedPluginIDs == ["b", "c", "d"])
+        #expect(workspace.enabledCapabilityIDs == ["d"])
+        #expect(WorkspaceCapabilityActivation.activation(for: "b", in: workspace)?.isEnabled == false)
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Bindings, settings and overrides bump the revision and survive a snapshot restore")
+    @MainActor
+    func activationRecordRoundTrips() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let first = Connector(name: "Jira Stanford", serviceType: "jira")
+        let second = Connector(name: "Jira Coral", serviceType: "jira")
+        context.insert(first)
+        context.insert(second)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("jira-workflow") }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        let component = "connector:jira:jira"
+        let startRevision = activation.revision
+
+        WorkspaceCapabilityActivation.bind(first, toComponent: component, of: activation)
+        WorkspaceCapabilityActivation.bind(second, toComponent: component, of: activation, isDefault: true)
+        WorkspaceCapabilityActivation.setConfigValue("PROJ", forKey: "skill:jira agent.JIRA_PROJECT", on: activation)
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: "skill:jira agent", on: activation)
+        #expect(activation.revision > startRevision)
+        #expect(activation.accounts(forComponent: component).map(\.name) == ["Jira Coral", "Jira Stanford"])
+        #expect(activation.configuration(forComponent: "skill:jira agent") == ["JIRA_PROJECT": "PROJ"])
+        try context.save()
+
+        let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
+        WorkspaceCapabilityActivation.unbind(second, from: activation)
+        #expect(activation.accounts(forComponent: component).map(\.name) == ["Jira Stanford"])
+        #expect(activation.bindings.first?.isDefault == true)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0 = WorkspaceCapabilityActivationState() }
+        #expect(workspace.pluginActivations.isEmpty)
+
+        WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
+        let restored = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        #expect(PluginActivationRecord(restored) == snapshot.activations.first)
+        #expect(restored.accounts(forComponent: component).map(\.name) == ["Jira Coral", "Jira Stanford"])
+        #expect(restored.overriddenComponentIDs == ["skill:jira agent"])
+
+        // Deleting an account removes its bindings with it.
+        context.delete(second)
+        try context.save()
+        #expect(restored.accounts(forComponent: component).map(\.name) == ["Jira Stanford"])
         withExtendedLifetime(container) {}
     }
 

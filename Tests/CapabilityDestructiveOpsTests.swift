@@ -233,7 +233,7 @@ struct CapabilityLifecycleMatrixTests {
     ) -> CapabilityLifecycleSnapshot {
         var package = everyKindPackage(id: "matrix-pkg")
         package.governance = governance
-        workspace.enabledCapabilityIDs = enabled ? ["matrix-pkg"] : []
+        workspace.testEnabledCapabilityIDs = enabled ? ["matrix-pkg"] : []
         let context = CapabilityCatalogPolicyContext.workspaceUser(
             workspace: workspace,
             isAdmin: true,
