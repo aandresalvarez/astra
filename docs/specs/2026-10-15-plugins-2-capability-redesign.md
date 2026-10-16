@@ -107,7 +107,7 @@ support).
     { "kind": "connector", "id": "jira",
       "service": {
         "id": "jira",
-        "authMethods": ["api_token", "oauth"],
+        "authMethods": ["api_token"],
         "transport": "brokered",
         "aliasRequiredWhenMultiple": true
       },
@@ -141,7 +141,18 @@ An MCP server:
 
 Rules:
 
-- `check` never needs the user and runs on add and on every refresh.
+- `check` never needs the user and runs on add and on every refresh, but only
+  for a plugin whose installed digest matches its approval and whose catalog
+  decision is `canRun`. An `exec` check is a plugin-defined host subprocess,
+  so a tampered, unapproved or blocked manifest's checks never run; its row
+  shows the policy reason instead.
+- A connector lists only the auth methods it declares a complete setup for.
+  With more than one, the setup legs are keyed by method
+  (`"setup": { "api_token": { … }, "oauth": { … } }`) and the person picks the
+  method when connecting; an `oauth` method also names its authorization,
+  scopes and token exchange. *(As built, a connector carries one
+  `authMethod`, and ASTRA has no OAuth connector setup; a manifest whose setup
+  steps the package can't carry is refused at import.)*
 - `verify` may hit the network; runs on demand and in launch preflight.
 - `connect` needs the user; it is never run at add time.
 - `repair` is what the row's button does when `check` fails after the
@@ -216,8 +227,12 @@ What stays as a gate:
   preflight. Today a draft, blocked or digest-mismatched enabled package
   still resolves skills unless pack policy happens to apply
   (`CapabilityRuntimeResourceMatcher.swift:237`, *static read*).
-- `Approve`/`Deprecate`/`Block` move behind a managed-mode flag for team
-  deployments; they leave the single-user UI.
+- `Approve`/`Deprecate`/`Block` leave the single-user UI. There is no managed
+  mode yet; in the single-user app, revoking a plugin is Remove, and blocked or
+  deprecated approval records that already exist are still honored by the
+  policy. Phase 4 deleted the only screen that wrote those statuses, so a
+  managed mode must ship with its own admin control on the Plugins surface
+  (approve, deprecate, block, revoke) before it is offered to teams.
 
 ## Health and repair
 
@@ -316,7 +331,7 @@ Available
 | Approval | approval record written at add, same store | the view writing the store directly (`PluginCatalogView.swift:1153`, *static read*); `create(enableHere)` approving after enabling |
 | Enablement | one `PluginActivation` row per (plugin, workspace) | `enabledCapabilityIDs`, `enabledGlobalSkillIDs/ConnectorIDs/ToolIDs`, `enabledPackIDs`, `installedPluginIDs/Versions` on `Workspace` |
 | Accounts | `Account` rows under a service | the service/account conflation in `Connector` |
-| Workspace mirror | `.astra-workspace.json` keeps listing plugin ids and account aliases for recovery; on import they are validated against the installed library, as `WorkspacePackageImportCoordinator` already does | the verbatim copy of enablement arrays and origin stamps (`WorkspaceConfigManager.swift:2056`, *verified*) |
+| Workspace mirror | `.astra-workspace.json` keeps, per plugin, its id, the source it came from and the digest that was approved, plus account aliases; on import a plugin is enabled only when the installed one has the same source and digest, as `WorkspacePackageImportCoordinator` already validates against the installed library. *(Not built yet: the mirror keeps ids only. Installed IDs are unique case-insensitively and a source plugin can't reuse a built-in ID, which narrows a swapped plugin but doesn't close it.)* | the verbatim copy of enablement arrays and origin stamps (`WorkspaceConfigManager.swift:2056`, *verified*) |
 
 Derived caches (composer snapshot, rail snapshot, browser policy cache) keep
 existing but observe `PluginActivation` changes, and every read of a workspace
@@ -379,8 +394,9 @@ reference.
   presentation, and the compiled built-in fallback (the bundled manifests are
   the only copy). By the owner's decision, chat `/mcp` plugin creation and the
   custom Google Workspace sign-in sheet are removed too; `/mcp` is now an
-  ordinary message, Google Workspace adds in one step, and the Google OAuth
-  services remain with no screen calling them. Kept: "Import file…" (one plugin
+  ordinary message. Google Workspace stays listed but is not offered: a plugin
+  whose setup needs an OAuth account shows "Needs an account sign-in that
+  ASTRA can't do yet" instead of Add, until an OAuth `connect` leg exists. Kept: "Import file…" (one plugin
   JSON, through `CapabilityCatalogActionService.importFile`) and the catalog
   persistence events, which the surface observes.
   The Google OAuth services were deleted as well: nothing called them, and
