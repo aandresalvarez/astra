@@ -66,6 +66,13 @@ struct PluginsSurfaceTests {
         #expect(state.available.first?.verb == nil)
         #expect(state.available.first?.subtitle.contains("sign-in") == true)
         #expect(PluginsSurfacePresentation.unavailableReason(for: try builtIn("jira-workflow")) == nil)
+
+        // Added before sign-in went away: it needs action, not Ready.
+        var added = input(google, isEnabled: true, pendingSteps: 1)
+        added.problem = PluginsSurfacePresentation.unavailableReason(for: google)
+        let addedState = PluginsSurfacePresentation.makeState([added], query: "")
+        #expect(addedState.actionNeeded.first?.subtitle.contains("sign-in") == true)
+        #expect(addedState.ready.isEmpty)
     }
 
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")

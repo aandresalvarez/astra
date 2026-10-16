@@ -76,7 +76,8 @@ struct PluginsSurfaceView: View {
             return PluginsSurfacePresentation.Input(
                 package: package,
                 isEnabled: packageState.isEnabled,
-                pendingSteps: packageState.connectorsNeedingAttention.count + failingSetup(for: package).count,
+                pendingSteps: packageState.connectorsNeedingAttention.count + failingSetup(for: package).count
+                    + (PluginsSurfacePresentation.unavailableReason(for: package) == nil ? 0 : 1),
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
                 isRemovable: !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id),
                 problem: PluginsSurfacePresentation.unavailableReason(for: package),
@@ -322,10 +323,15 @@ struct PluginsSurfaceView: View {
         }
     }
 
+    /// Checks are plugin-defined host commands, so they run only for plugins
+    /// whose policy decision says they may run: a tampered, unapproved or
+    /// blocked manifest's checks never execute.
     private func refreshStatuses() {
+        let context = policyContext
         let enabled = packages.filter {
             !$0.prerequisites.isEmpty
                 && CapabilityPackageState(package: $0, workspace: workspace, capabilities: capabilities).isEnabled
+                && CapabilityCatalogPolicy.decision(for: $0, context: context).canRun
         }
         let directory = workspace.resolvedWorkingPath
         Task { @MainActor in
