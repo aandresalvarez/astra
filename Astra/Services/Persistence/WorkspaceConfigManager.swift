@@ -1281,8 +1281,12 @@ public enum WorkspaceConfigManager {
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
         var skippedConnectorCount = 0
-        // A picked file may not re-parent a shared row this machine already has.
+        // A picked file may not re-parent a shared row this machine already has,
+        // nor give a row it creates an ID it chose: secrets live under UUID
+        // namespaces, so a reused UUID would read another row's credentials.
+        // Created rows get fresh IDs; the maps stay keyed by the file's IDs.
         var reusedRowIDs = Set<String>()
+        let freshIDs: Bool = { if case .validate = capabilityTrust { return true } else { return false } }()
         for cc in config.connectors ?? [] {
             let reused = reusedGlobalConnector(for: cc, modelContext: modelContext)
             if let reused, case .validate = capabilityTrust { reusedRowIDs.insert(reused.id.uuidString) }
@@ -1291,12 +1295,14 @@ public enum WorkspaceConfigManager {
                 continue
             }
             if reused == nil { sanitizeCreated(connector, trust: capabilityTrust, report: &trustReport) }
+            if reused == nil, freshIDs { connector.id = UUID() }
             connector.workspace = (connector.isGlobal ? nil : workspace)
             if connector.isGlobal { activation.enableGlobalConnector(connector.id.uuidString) }
             if connector.modelContext == nil {
                 modelContext.insert(connector)
             }
             connectorsByID[connector.id.uuidString] = connector
+            if let fileID = cc.id { connectorsByID[fileID] = connector }
             if connectorsByName[connector.name] == nil {
                 connectorsByName[connector.name] = connector
             }
@@ -1313,12 +1319,14 @@ public enum WorkspaceConfigManager {
                 continue
             }
             if reused == nil { sanitizeCreated(tool, trust: capabilityTrust, report: &trustReport) }
+            if reused == nil, freshIDs { tool.id = UUID() }
             tool.workspace = (tool.isGlobal ? nil : workspace)
             if tool.isGlobal { activation.enableGlobalTool(tool.id.uuidString) }
             if tool.modelContext == nil {
                 modelContext.insert(tool)
             }
             toolsByID[tool.id.uuidString] = tool
+            if let fileID = tc.id { toolsByID[fileID] = tool }
             if toolsByName[tool.name] == nil {
                 toolsByName[tool.name] = tool
             }
@@ -1330,23 +1338,27 @@ public enum WorkspaceConfigManager {
             let reused = reusedGlobalSkill(for: sc, modelContext: modelContext)
             let skill = reused ?? makeSkill(from: sc)
             if reused == nil { sanitizeCreated(skill, trust: capabilityTrust, report: &trustReport) }
+            if reused == nil, freshIDs { skill.id = UUID() }
             if skill.modelContext == nil {
                 modelContext.insert(skill)
             }
             skill.workspace = (skill.isGlobal ? nil : workspace)
             if skill.isGlobal { activation.enableGlobalSkill(skill.id.uuidString) }
-            linkResources(
+            // A reused shared skill keeps its attachments: the file may not
+            // hang its own resources on a row other workspaces use.
+            if reused == nil || !freshIDs { linkResources(
                 skill: skill,
                 connectorIDs: sc.connectorIDs,
                 connectorNames: sc.connectorNames,
                 localToolIDs: sc.localToolIDs,
                 localToolNames: sc.localToolNames,
-                connectorsByID: connectorsByID.filter { !reusedRowIDs.contains($0.key) },
+                connectorsByID: connectorsByID.filter { !reusedRowIDs.contains($0.value.id.uuidString) },
                 connectorsByName: connectorsByName.filter { !reusedRowIDs.contains($0.value.id.uuidString) },
-                toolsByID: toolsByID.filter { !reusedRowIDs.contains($0.key) },
+                toolsByID: toolsByID.filter { !reusedRowIDs.contains($0.value.id.uuidString) },
                 toolsByName: toolsByName.filter { !reusedRowIDs.contains($0.value.id.uuidString) }
-            )
+            ) }
             skillsByID[skill.id.uuidString] = skill
+            if let fileID = sc.id { skillsByID[fileID] = skill }
             if skillsByName[skill.name] == nil {
                 skillsByName[skill.name] = skill
             }
@@ -1379,6 +1391,7 @@ public enum WorkspaceConfigManager {
                 importTask(
                     tc,
                     recoveryTrust: taskRecoveryTrustPolicy,
+                    freshIDs: freshIDs,
                     workspace: workspace,
                     modelContext: modelContext,
                     skillsByID: &skillsByID,
@@ -2422,6 +2435,7 @@ public enum WorkspaceConfigManager {
     private static func importTask(
         _ config: TaskConfig,
         recoveryTrust: TaskRecoveryImportTrustPolicy,
+        freshIDs: Bool = false,
         workspace: Workspace,
         modelContext: ModelContext,
         skillsByID: inout [String: Skill],
@@ -2530,6 +2544,7 @@ public enum WorkspaceConfigManager {
 
         linkSkills(
             to: task,
+            freshIDs: freshIDs,
             skillIDs: config.skillIDs,
             legacySkillNames: config.skillNames,
             snapshots: config.skillSnapshots ?? [],
@@ -2877,6 +2892,7 @@ public enum WorkspaceConfigManager {
 
     private static func linkSkills(
         to task: AgentTask,
+        freshIDs: Bool = false,
         skillIDs: [String]?,
         legacySkillNames: [String],
         snapshots: [SkillSnapshotConfig],
@@ -2906,6 +2922,7 @@ public enum WorkspaceConfigManager {
                 if let snapshot = snapshotsByID[id] {
                     let restored = restoreSkill(
                         from: snapshot,
+                        freshIDs: freshIDs,
                         workspace: workspace,
                         modelContext: modelContext,
                         connectorsByID: &connectorsByID,
@@ -2914,6 +2931,7 @@ public enum WorkspaceConfigManager {
                         toolsByName: &toolsByName
                     )
                     skillsByID[restored.id.uuidString] = restored
+                    skillsByID[id] = restored
                     if skillsByName[restored.name] == nil {
                         skillsByName[restored.name] = restored
                     }
@@ -2931,6 +2949,7 @@ public enum WorkspaceConfigManager {
 
     private static func restoreSkill(
         from snapshot: SkillSnapshotConfig,
+        freshIDs: Bool = false,
         workspace: Workspace,
         modelContext: ModelContext,
         connectorsByID: inout [String: Connector],
@@ -2941,8 +2960,10 @@ public enum WorkspaceConfigManager {
         for connectorSnapshot in snapshot.connectorSnapshots ?? [] {
             guard let id = connectorSnapshot.id, connectorsByID[id] == nil else { continue }
             guard let connector = makeConnector(from: connectorSnapshot, workspace: workspace) else { continue }
+            if freshIDs { connector.id = UUID() }
             modelContext.insert(connector)
             connectorsByID[connector.id.uuidString] = connector
+            connectorsByID[id] = connector
             if connectorsByName[connector.name] == nil {
                 connectorsByName[connector.name] = connector
             }
@@ -2950,14 +2971,17 @@ public enum WorkspaceConfigManager {
         for toolSnapshot in snapshot.localToolSnapshots ?? [] {
             guard let id = toolSnapshot.id, toolsByID[id] == nil else { continue }
             guard let tool = makeLocalTool(from: toolSnapshot, workspace: workspace) else { continue }
+            if freshIDs { tool.id = UUID() }
             modelContext.insert(tool)
             toolsByID[tool.id.uuidString] = tool
+            toolsByID[id] = tool
             if toolsByName[tool.name] == nil {
                 toolsByName[tool.name] = tool
             }
         }
 
         let skill = makeRestoredSkill(from: snapshot, workspace: workspace)
+        if freshIDs { skill.id = UUID() }
         modelContext.insert(skill)
         linkResources(
             skill: skill,
