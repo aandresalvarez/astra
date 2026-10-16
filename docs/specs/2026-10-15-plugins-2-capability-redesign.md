@@ -113,7 +113,10 @@ accounts) is not shipped and is superseded.
 - It emits the snapshot types the detached-launch path already runs from
   (`SkillSnapshotConfig`, `ConnectorSnapshotConfig`,
   `LocalToolSnapshotConfig`), so `SkillResolver` and the prompt builders keep
-  their inputs. `TaskCapabilityResolver` takes authored rows plus the
+  their inputs, plus everything else a manifest declares that the resolver
+  reads today from `PluginPackage`: browser adapters (`google-drive-browser`
+  is nothing else), MCP servers and setup requirements. R2's parity test runs
+  over every built-in, so a plugin that projects to nothing fails it. `TaskCapabilityResolver` takes authored rows plus the
   projection. A spike opens R2 to list what in the resolver still needs model
   objects.
 - `ConnectorAccountResolver` runs over the accounts this workspace's
@@ -152,8 +155,13 @@ reconciliation finishes or undoes what an exit interrupted:
 
 The dev store is backed up first; the stage is one-way.
 
-1. Each workspace's `enabledCapabilityIDs` become activations, with
-   `recordedVersion` from `installedPluginVersions`.
+1. Each workspace gets one activation per plugin in the union of
+   `enabledCapabilityIDs` and `installedPluginIDs`, with `enabled` set from
+   membership in `enabledCapabilityIDs`: turning a plugin off left it in the
+   installed list, and its settings must survive until it is turned back on.
+   `recordedVersion` comes from `installedPluginVersions`; `recordedDigest`
+   is the digest of the matching library entry, so a migrated plugin is not
+   shown as needing Update. The fixture asserts both.
 2. Each plugin-origin connector, global or workspace-owned, becomes an
    `Account` with the **same UUID**, so its UUID secret namespace resolves
    unchanged; its config values move with it to `Account.configValues`, and
@@ -161,7 +169,11 @@ The dev store is backed up first; the stage is one-way.
    where the workspace enabled it (global) or owned it; the workspace's
    default account for the service becomes the default binding.
 3. Environment values on plugin skills move to `activation.configValues`
-   under `componentID.key`.
+   under `componentID.key`. Secret ones are not in SwiftData (a skill keeps
+   them in the Keychain under its UUID), so they move to a Keychain namespace
+   owned by the activation and component, and the projection reads them from
+   there. They are copied in R1 and the old ones are deleted only in R2, with
+   the skill row.
 4. A plugin-origin skill or tool the person edited (instructions, tools,
    command differ from the manifest) becomes an authored row with its origin
    stamps cleared, and the migration logs it (owner decision).
