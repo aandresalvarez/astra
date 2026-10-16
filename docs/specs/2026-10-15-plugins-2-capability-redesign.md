@@ -385,7 +385,10 @@ reference.
   checks, gives up at 300 s). A mid-run expiry is detected by
   `CLISessionExpiryClassifier` on tool results (Google Cloud and GitHub
   families), stops the run with `capability_session_expired`, and records
-  `runtime.repair_required`; the task view offers the repair and Retry. The
+  `runtime.repair_required`; the task view offers the repair and Retry, which
+  resumes the provider session (the stop reason is resumable like a
+  cancellation), so work done before the expiry, external writes included,
+  isn't replayed. The
   `gcloud` check reads `config config-helper --format=value(credential.token_expiry)`
   so the health view never prints a token.
 - **Phase 3.** The ten built-in files (not twelve; the earlier count included
