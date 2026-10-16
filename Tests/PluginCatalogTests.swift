@@ -231,27 +231,6 @@ struct PluginCatalogBuiltInTests {
         #expect(skill.behaviorInstructions.contains("Do not delete tickets or change them any other way"))
     }
 
-    /// The catalog has two copies of every built-in — the bundled JSON and the
-    /// in-code fallback — and the fallback has silently drifted from the bundle
-    /// before. A Jira change edits both, so this is what says they still agree.
-    @Test("The bundled Jira package and its in-code fallback are the same package")
-    func jiraBundledAndFallbackAgree() throws {
-        let bundled = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
-        let fallback = try #require(PluginCatalog.fallbackBuiltInPackages.first { $0.id == "jira-workflow" })
-        let bundledSkill = try #require(bundled.skills.first)
-        let fallbackSkill = try #require(fallback.skills.first)
-
-        #expect(bundled.version == fallback.version)
-        #expect(bundled.description == fallback.description)
-        #expect(bundled.setupGuide == fallback.setupGuide)
-        #expect(bundled.governance.policyNotes == fallback.governance.policyNotes)
-        #expect(bundled.governance.externalEffects == fallback.governance.externalEffects)
-        #expect(bundledSkill.description == fallbackSkill.description)
-        #expect(bundledSkill.behaviorInstructions == fallbackSkill.behaviorInstructions)
-        #expect(bundledSkill.allowedTools == fallbackSkill.allowedTools)
-        #expect(bundledSkill.disallowedTools == fallbackSkill.disallowedTools)
-    }
-
     /// The failure this capability actually produced: the agent could not file a
     /// ticket, so it wrote the user a script that exported the API token. The
     /// guidance has to name both halves — the route that works, and the

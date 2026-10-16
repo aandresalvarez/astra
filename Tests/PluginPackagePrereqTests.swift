@@ -255,19 +255,14 @@ struct PluginPackagePrereqTests {
 /// a stale one is not a documentation problem — it is the app instructing the
 /// agent to work around its own broker, which is what produced the incident.
 ///
-/// Two copies of every built-in exist: the bundled JSON and
-/// `PluginCatalog.fallbackBuiltInPackages`, used when the resource bundle is
-/// unreadable. Only the first is exercised in normal runs, and that is exactly
-/// how the fallback kept shipping the pre-broker REDCap workflow — a `curl`
-/// local tool and instructions to read the token from the environment — for
-/// every release after the credential moved into the broker. Both sources are
-/// held to the same rules here.
+/// The bundled JSON is the only copy of the built-ins; the compiled fallback
+/// that once kept shipping the pre-broker REDCap workflow (a `curl` local tool
+/// and the token read from the environment) is gone.
 @Suite("Built-in capability broker parity")
 @MainActor
 struct BuiltInCapabilityBrokerParityTests {
     private static let sources: [(label: String, packages: [PluginPackage])] = [
-        ("bundled", ApprovedCapabilityBundle.packages()),
-        ("fallback", PluginCatalog.fallbackBuiltInPackages)
+        ("bundled", ApprovedCapabilityBundle.packages())
     ]
 
     /// The shape of an actual invocation, as opposed to the prohibition the
@@ -329,35 +324,6 @@ struct BuiltInCapabilityBrokerParityTests {
                 }
             }
             #expect(checked > 0, "No \(source.label) package declares a brokered connector")
-        }
-    }
-
-    /// The fallback drifting *behind* the bundled definition is the failure
-    /// mode: it is edited only when someone remembers it exists.
-    @Test("The fallback definition of a brokered package matches the bundled one")
-    func fallbackBrokeredPackagesMatchTheBundledDefinition() throws {
-        let bundled = ApprovedCapabilityBundle.packages()
-        try #require(!bundled.isEmpty)
-
-        for package in PluginCatalog.fallbackBuiltInPackages
-        where !Self.brokeredServices(in: package).isEmpty {
-            let match = bundled.first { $0.id == package.id }
-            let shipped = try #require(
-                match,
-                Comment(rawValue: "Fallback ships brokered package \(package.id) that the bundle does not.")
-            )
-            #expect(package.version == shipped.version, "\(package.id): fallback version is stale.")
-            #expect(
-                package.skills.map(\.behaviorInstructions) == shipped.skills.map(\.behaviorInstructions),
-                "\(package.id): fallback instructions differ from the bundled definition."
-            )
-            #expect(package.localTools.map(\.command) == shipped.localTools.map(\.command))
-            #expect(
-                package.governance.requiresExplicitUserConsent
-                    == shipped.governance.requiresExplicitUserConsent,
-                "\(package.id): fallback grants the capability more freely than the bundled one."
-            )
-            #expect(package.governance.riskLevel == shipped.governance.riskLevel)
         }
     }
 }
