@@ -1397,6 +1397,7 @@ public enum WorkspaceConfigManager {
                     tc,
                     recoveryTrust: taskRecoveryTrustPolicy,
                     freshIDs: freshIDs,
+                    protectedRowIDs: reusedRowIDs,
                     workspace: workspace,
                     modelContext: modelContext,
                     skillsByID: &skillsByID,
@@ -2441,6 +2442,7 @@ public enum WorkspaceConfigManager {
         _ config: TaskConfig,
         recoveryTrust: TaskRecoveryImportTrustPolicy,
         freshIDs: Bool = false,
+        protectedRowIDs: Set<String> = [],
         workspace: Workspace,
         modelContext: ModelContext,
         skillsByID: inout [String: Skill],
@@ -2550,6 +2552,7 @@ public enum WorkspaceConfigManager {
         linkSkills(
             to: task,
             freshIDs: freshIDs,
+            protectedRowIDs: protectedRowIDs,
             skillIDs: config.skillIDs,
             legacySkillNames: config.skillNames,
             snapshots: config.skillSnapshots ?? [],
@@ -2898,6 +2901,7 @@ public enum WorkspaceConfigManager {
     private static func linkSkills(
         to task: AgentTask,
         freshIDs: Bool = false,
+        protectedRowIDs: Set<String> = [],
         skillIDs: [String]?,
         legacySkillNames: [String],
         snapshots: [SkillSnapshotConfig],
@@ -2928,6 +2932,7 @@ public enum WorkspaceConfigManager {
                     let restored = restoreSkill(
                         from: snapshot,
                         freshIDs: freshIDs,
+                        protectedRowIDs: protectedRowIDs,
                         workspace: workspace,
                         modelContext: modelContext,
                         connectorsByID: &connectorsByID,
@@ -2955,6 +2960,7 @@ public enum WorkspaceConfigManager {
     private static func restoreSkill(
         from snapshot: SkillSnapshotConfig,
         freshIDs: Bool = false,
+        protectedRowIDs: Set<String> = [],
         workspace: Workspace,
         modelContext: ModelContext,
         connectorsByID: inout [String: Connector],
@@ -2987,16 +2993,17 @@ public enum WorkspaceConfigManager {
 
         let skill = makeRestoredSkill(from: snapshot, workspace: workspace, freshID: freshIDs)
         modelContext.insert(skill)
+        // Shared rows the import reused keep their owner here too.
         linkResources(
             skill: skill,
             connectorIDs: snapshot.connectorIDs,
             connectorNames: nil,
             localToolIDs: snapshot.localToolIDs,
             localToolNames: nil,
-            connectorsByID: connectorsByID,
-            connectorsByName: connectorsByName,
-            toolsByID: toolsByID,
-            toolsByName: toolsByName
+            connectorsByID: connectorsByID.filter { !protectedRowIDs.contains($0.value.id.uuidString) },
+            connectorsByName: connectorsByName.filter { !protectedRowIDs.contains($0.value.id.uuidString) },
+            toolsByID: toolsByID.filter { !protectedRowIDs.contains($0.value.id.uuidString) },
+            toolsByName: toolsByName.filter { !protectedRowIDs.contains($0.value.id.uuidString) }
         )
         return skill
     }
