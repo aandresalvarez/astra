@@ -672,9 +672,10 @@ enum TaskWorktreeService {
     /// cannot be saved, it is undone in memory and in the context: the draft
     /// gets its previous pin and isolation back, the copied binding is
     /// removed, and the temporary task's deletion is rolled back, so no later
-    /// unrelated save can commit half of a failed recovery. Restore before
-    /// rollback for SwiftData versions that leave model values stale, and
-    /// after it so rollback cannot reinstate a checkout cleanup reserved.
+    /// unrelated save can commit half of a failed recovery. Restore an
+    /// available prior pin before rollback for SwiftData versions that leave
+    /// cached values stale. Clearing a newly reserved pin is a separate,
+    /// durable correction and must happen only after rollback.
     static func recoverFailedSubmission(
         task: AgentTask,
         existingDraft: AgentTask?,
@@ -738,7 +739,15 @@ enum TaskWorktreeService {
                     draft.events.removeAll { $0 === copiedBinding }
                     modelContext.delete(copiedBinding)
                 }
-                restorePreviousDraft()
+                // A reserved prior checkout must be cleared only after
+                // rollback. Clearing it first lets macOS 26 discard the
+                // update while leaving a cached nil; the second restoration
+                // then sees no difference, and a later save keeps the old
+                // reserved path. Leave the adopted pin until rollback so
+                // clearing it afterwards remains a tracked durable change.
+                if !TaskWorktreeCheckoutReservation.isReserved(previousPin) {
+                    restorePreviousDraft()
+                }
                 modelContext.rollback()
                 restorePreviousDraft()
             }
