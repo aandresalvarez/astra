@@ -444,8 +444,12 @@ strategy with a fake terminal launcher (2); mid-run pause on an auth pattern
   catalog policy; it drops a confirmation the same user was giving.
 - `connectorMatches` on service type alone lets another workspace's Jira
   account become reachable *(static read,
-  `CapabilityRuntimeResourceMatcher.swift:114-124`)*. `PluginActivation` keyed
-  by workspace closes it.
+  `CapabilityRuntimeResourceMatcher.swift:114-124`)*. **Still open:** the
+  `PluginActivation` entity keyed by workspace that was meant to close it was
+  not built (phase 1 kept the activation arrays), and `connectorMatches` is
+  unchanged. Closing it needs workspace-scoped connector matching; until
+  then the account resolver only narrows which of the reachable accounts a
+  turn narrates.
 - A `tool` under a connector plugin runs under the shell policy, not the
   broker's read-only/proposal policy. The UI must never present it as an
   account.
