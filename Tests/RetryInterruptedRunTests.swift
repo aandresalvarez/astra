@@ -101,9 +101,9 @@ struct RetryInterruptedRunTests {
         })
     }
 
-    @Test("A run interrupted by an ASTRA restart or a queue stop resumes too")
+    @Test("A run interrupted by an ASTRA restart, a queue stop or an expired plugin sign-in resumes too")
     func restartAndQueueStopResume() async throws {
-        for reason in ["app_restarted", "queue_cancelled"] {
+        for reason in ["app_restarted", "queue_cancelled", "capability_session_expired"] {
             let submitted = try await retry(stopReason: reason)
             #expect(submitted.mode == .continuation, "\(reason)")
         }

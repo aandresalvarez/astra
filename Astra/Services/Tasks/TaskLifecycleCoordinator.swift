@@ -236,7 +236,9 @@ final class TaskLifecycleCoordinator {
               // drops it, so Retry must take the from-scratch path with its reset instead.
               latestRun.runtimeID == task.resolvedRuntimeID.rawValue,
               let stopReason = latestRun.typedStopReason,
-              [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason),
+              // A run stopped for an expired plugin sign-in resumes after the
+              // repair, so work it already did (external writes) isn't replayed.
+              [.cancelled, .appRestarted, "queue_cancelled", .capabilitySessionExpired].contains(stopReason),
               // A from-scratch run cut off before its init frame never learned a session, while
               // task.sessionId can still name an older run's: only a run that owns it can be resumed.
               let runSession = latestRun.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
