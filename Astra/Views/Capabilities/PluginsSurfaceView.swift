@@ -26,6 +26,7 @@ struct PluginsSurfaceView: View {
     @State private var approvalRecords: [CapabilityApprovalRecord] = []
     @State private var statuses: [String: HealthStatus] = [:]
     @State private var errorMessage: String?
+    @State private var confirming: PluginsSurfaceConfirmation?
     @StateObject private var repairs = PluginRepairCoordinator()
 
     private var capabilities: WorkspaceCapabilities {
@@ -177,18 +178,21 @@ struct PluginsSurfaceView: View {
             if row.isEnabled {
                 HStack {
                     Toggle("On in this workspace", isOn: Binding(
-                        get: { true },
-                        set: { if !$0 { disable(package) } }
+                        get: { confirming != .turnOff(packageID: package.id) },
+                        set: { if !$0 { confirming = .turnOff(packageID: package.id) } }
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     Spacer()
                     if row.isRemovable {
-                        Button("Remove", role: .destructive) { remove(package) }
+                        Button("Remove", role: .destructive) { confirming = .remove(packageID: package.id) }
                             .controlSize(.small)
                     }
                 }
                 .padding(.top, 4)
+                if let confirming, confirming.packageID == package.id {
+                    confirmationRow(confirming, package: package)
+                }
             }
         }
     }
@@ -207,6 +211,13 @@ struct PluginsSurfaceView: View {
                 if repairs.phase(for: repair) == .waiting {
                     Text("Checking…").font(Stanford.caption(11)).foregroundStyle(.secondary)
                 } else {
+                    // What the button runs is shown before it runs.
+                    if let command = repair.command {
+                        Text(command)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                     Button(repair.verb) { repairs.start(repair) { refreshStatuses() } }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -297,6 +308,28 @@ struct PluginsSurfaceView: View {
         } catch {
             errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
         }
+    }
+
+    private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, package: PluginPackage) -> some View {
+        let copy = confirmation.copy(name: package.name, hasAccounts: !package.connectors.isEmpty)
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(copy.message)
+                .font(Stanford.caption(12))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Cancel") { confirming = nil }
+                .controlSize(.small)
+            Button(copy.verb, role: .destructive) {
+                confirming = nil
+                switch confirmation {
+                case .turnOff: disable(package)
+                case .remove: remove(package)
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(8)
+        .background(Stanford.statusError.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func disable(_ package: PluginPackage) {

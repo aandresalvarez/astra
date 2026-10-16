@@ -42,7 +42,10 @@ enum RepairActionRunner {
         guard let repair else { return }
         switch repair.strategy {
         case .terminal:
-            guard let command = repair.command else { return }
+            // Checked again here: a repair can also arrive from a stored event.
+            guard let command = repair.command,
+                  RepairAction.isSafeTerminalCommand(command, binary: repair.checkBinary, allowsInstaller: repair.verb == "Install")
+            else { return }
             do {
                 try terminal.launchInTerminal(command: command)
             } catch {
