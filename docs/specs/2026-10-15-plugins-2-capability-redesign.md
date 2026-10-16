@@ -87,9 +87,11 @@ accounts) is not shipped and is superseded.
   in-memory projection for consumers not yet moved. The validator requires a
   unique `id` per component and a supported `manifestVersion`.
 - **`PluginActivation`** (`@Model`): `workspace`, `pluginID`, `enabled`,
-  `recordedVersion`, `recordedDigest`, and `configValues` keyed
+  `recordedVersion`, `recordedDigest`, `configValues` keyed
   `componentID.key` for settings that belong to the workspace, not to an
-  account (a skill's environment value).
+  account (a skill's environment value), `overriddenComponentIDs` (components
+  the person replaced with an authored row, which the projection skips), and
+  `revision`.
 - **`AccountBinding`** (`@Model`): `activation`, `componentID`, `account`
   (relationships), `isDefault`. A component can bind several accounts (two
   Jira sites), one of them the default; deleting an account cascades to its
@@ -98,8 +100,12 @@ accounts) is not shipped and is superseded.
   service among the accounts a workspace can see), `baseURL`, `authMethod`,
   `credentialKeys`, `configValues` (per-account settings such as Jira
   projects or a tenant), and an owner: one workspace unless shared
-  explicitly. `legacySecretNamespace` holds the stable entity ID a migrated
-  connector used, read as a fallback only.
+  explicitly. `revision`.
+- **Revisions.** `PluginActivation.revision` and `Account.revision` are
+  integers the owner service bumps on every mutation it makes: an
+  activation's settings, bindings or overrides; an account's alias, URL,
+  auth method, credential keys or settings. Nothing else writes these
+  models, so nothing can change them without a bump.
 - **Removed:** the plugin entries in the `Workspace` activation arrays, and
   every plugin-origin `Skill`, `Connector` and `LocalTool` row. What the
   person authored is unchanged.
@@ -108,8 +114,14 @@ accounts) is not shipped and is superseded.
 
 - `PluginRuntimeProjection` turns a workspace's enabled activations, their
   library manifests and their bound accounts into value types, cached by the
-  activation revision, the library digest and the revision of every bound
-  account, so editing an account's URL, alias or settings evicts it.
+  activation's `revision`, the library digest and the `revision` of every
+  bound account, so editing an account's URL, alias or settings evicts it.
+- The projection skips the components listed in the activation's
+  `overriddenComponentIDs`; the authored row that replaced each one is in the
+  inventory instead, so nothing is duplicated.
+- It also emits the plugin's templates as read-only templates. A template
+  the person edited is migrated to an authored one and overridden, like a
+  skill.
 - It emits the snapshot types the detached-launch path already runs from
   (`SkillSnapshotConfig`, `ConnectorSnapshotConfig`,
   `LocalToolSnapshotConfig`), so `SkillResolver` and the prompt builders keep
@@ -130,7 +142,7 @@ accounts) is not shipped and is superseded.
 | Add | approval for the digest, library entry, one activation | one save; no credential prompt |
 | Update | library entry (new digest, re-approved), and `recordedVersion`/`recordedDigest` on **every** activation of the plugin | the library holds one version, so an update is global: every workspace with the plugin on is checked first, and one that refuses it (a pack rule) blocks the update with its reason. Removed components disappear because nothing derives them. Settings and bindings keyed by a component ID survive a rename only when the component keeps its kind and, for a connector, its service; an ID reused for something else is a remove plus an add and starts empty |
 | Turn off | `activation.enabled = false` | deletes nothing, so it needs no confirmation |
-| Remove | library entry and its activations | confirmed, says it reaches every workspace; accounts stay, listed under Accounts |
+| Remove | library entry, its activations, and the activations' secret settings | confirmed, says it reaches every workspace; accounts stay, listed under Accounts. The activation-owned Keychain entries are recorded in the durable cleanup outbox before the activations are deleted |
 | Delete account | the `Account`, its bindings (cascade), then its secrets | confirmed, naming the workspaces that use it; the only path that clears credentials |
 
 The state lives in three stores (library and approval files, SwiftData,
@@ -146,10 +158,12 @@ reconciliation finishes or undoes what an exit interrupted:
 - **Remove:** activations first, then the library entry. An activation
   whose library entry is missing is shown as "missing, add it again" and
   never resolves.
-- **Delete account:** SwiftData first, then the secrets through the durable
-  connector-cleanup outbox that already retries at launch
-  (`ConnectorCredentialCleanupStore`), so a secret is never deleted for an
-  account that still exists.
+- **Delete account and Remove:** the Keychain entries they release are
+  recorded in the durable cleanup outbox first, then the SwiftData deletion
+  is saved, then the entries are cleaned, exactly as
+  `ConnectorCredentialCleanup.deleteThenClean` does today (the record is
+  undone if the save fails), so neither an orphaned secret nor a secret
+  deleted for a live owner is possible.
 
 ### Migration V19 → V20 (custom stage)
 
@@ -164,19 +178,26 @@ The dev store is backed up first; the stage is one-way.
    shown as needing Update. The fixture asserts both.
 2. Each plugin-origin connector, global or workspace-owned, becomes an
    `Account` with the **same UUID**, so its UUID secret namespace resolves
-   unchanged; its config values move with it to `Account.configValues`, and
-   its stable entity ID goes to `legacySecretNamespace`. A binding links it
-   where the workspace enabled it (global) or owned it; the workspace's
-   default account for the service becomes the default binding.
+   unchanged; its config values move with it to `Account.configValues`.
+   Credentials stored only under its stable entity ID are copied into the
+   account's UUID namespace in R1 (the stable entries are deleted in R2 with
+   the row), so the projection reads one namespace. Bindings come from
+   ownership, not from what is enabled now: a workspace-owned connector binds
+   to its workspace's activation of the plugin, and a global connector binds
+   to every activation of its plugin in a workspace that had it enabled or
+   installed, so a plugin that was turned off keeps its accounts. The
+   workspace's default account for the service becomes the default binding.
 3. Environment values on plugin skills move to `activation.configValues`
    under `componentID.key`. Secret ones are not in SwiftData (a skill keeps
    them in the Keychain under its UUID), so they move to a Keychain namespace
    owned by the activation and component, and the projection reads them from
    there. They are copied in R1 and the old ones are deleted only in R2, with
    the skill row.
-4. A plugin-origin skill or tool the person edited (instructions, tools,
-   command differ from the manifest) becomes an authored row with its origin
-   stamps cleared, and the migration logs it (owner decision).
+4. A plugin-origin skill, tool or template the person edited (it differs
+   from the manifest) becomes an authored row with its origin stamps cleared,
+   and its component ID is added to the activation's
+   `overriddenComponentIDs` so the projection does not add the original back.
+   The migration logs it (owner decision).
 
 The plugin rows themselves are **not deleted in R1**: the runtime still
 resolves them until the projection exists. R2 deletes the unedited ones and
