@@ -87,13 +87,19 @@ accounts) is not shipped and is superseded.
   in-memory projection for consumers not yet moved. The validator requires a
   unique `id` per component and a supported `manifestVersion`.
 - **`PluginActivation`** (`@Model`): `workspace`, `pluginID`, `enabled`,
-  `recordedVersion`, `recordedDigest`, `configValues` keyed
-  `componentID.key`, `accountBindings` (`componentID` → `Account.id`).
+  `recordedVersion`, `recordedDigest`, and `configValues` keyed
+  `componentID.key` for settings that belong to the workspace, not to an
+  account (a skill's environment value).
+- **`AccountBinding`** (`@Model`): `activation`, `componentID`, `account`
+  (relationships), `isDefault`. A component can bind several accounts (two
+  Jira sites), one of them the default; deleting an account cascades to its
+  bindings, so no activation keeps a dangling ID.
 - **`Account`** (`@Model`): `id` (UUID), `serviceType`, `alias` (unique per
   service among the accounts a workspace can see), `baseURL`, `authMethod`,
-  `credentialKeys`, `configValues`, and an owner: one workspace, or shared.
-  `legacySecretNamespace` holds the stable entity ID a migrated connector
-  used, read as a fallback only.
+  `credentialKeys`, `configValues` (per-account settings such as Jira
+  projects or a tenant), and an owner: one workspace unless shared
+  explicitly. `legacySecretNamespace` holds the stable entity ID a migrated
+  connector used, read as a fallback only.
 - **Removed:** the plugin entries in the `Workspace` activation arrays, and
   every plugin-origin `Skill`, `Connector` and `LocalTool` row. What the
   person authored is unchanged.
@@ -101,8 +107,9 @@ accounts) is not shipped and is superseded.
 ### Runtime
 
 - `PluginRuntimeProjection` turns a workspace's enabled activations, their
-  library manifests and their bound accounts into value types, cached by
-  activation revision and library digest.
+  library manifests and their bound accounts into value types, cached by the
+  activation revision, the library digest and the revision of every bound
+  account, so editing an account's URL, alias or settings evicts it.
 - It emits the snapshot types the detached-launch path already runs from
   (`SkillSnapshotConfig`, `ConnectorSnapshotConfig`,
   `LocalToolSnapshotConfig`), so `SkillResolver` and the prompt builders keep
@@ -118,13 +125,28 @@ accounts) is not shipped and is superseded.
 | Action | What changes | Notes |
 | --- | --- | --- |
 | Add | approval for the digest, library entry, one activation | one save; no credential prompt |
-| Update | library entry (new digest, re-approved), `recordedVersion` on the activations that accept it | removed components disappear because nothing derives them; settings keyed by component ID survive renames; every target is checked before anything is written |
+| Update | library entry (new digest, re-approved), and `recordedVersion`/`recordedDigest` on **every** activation of the plugin | the library holds one version, so an update is global: every workspace with the plugin on is checked first, and one that refuses it (a pack rule) blocks the update with its reason. Removed components disappear because nothing derives them. Settings and bindings keyed by a component ID survive a rename only when the component keeps its kind and, for a connector, its service; an ID reused for something else is a remove plus an add and starts empty |
 | Turn off | `activation.enabled = false` | deletes nothing, so it needs no confirmation |
 | Remove | library entry and its activations | confirmed, says it reaches every workspace; accounts stay, listed under Accounts |
-| Delete account | the `Account` and its secrets | confirmed; the only path that clears credentials |
+| Delete account | the `Account`, its bindings (cascade), then its secrets | confirmed, naming the workspaces that use it; the only path that clears credentials |
 
-Each is one save in one context. The library write keeps its existing
-snapshot and rollback.
+The state lives in three stores (library and approval files, SwiftData,
+Keychain), so no operation is one transaction. Each writes in a fixed order
+that leaves a recoverable state at every step, and a launch-time
+reconciliation finishes or undoes what an exit interrupted:
+
+- **Add:** approval file, library entry, then activation. An approved entry
+  with no activation is just an installed plugin; it shows under Available.
+- **Update:** library entry (the previous one kept as the rollback file the
+  library already writes), then the activations. An activation whose
+  `recordedDigest` differs from the library is shown as needing Update.
+- **Remove:** activations first, then the library entry. An activation
+  whose library entry is missing is shown as "missing, add it again" and
+  never resolves.
+- **Delete account:** SwiftData first, then the secrets through the durable
+  connector-cleanup outbox that already retries at launch
+  (`ConnectorCredentialCleanupStore`), so a secret is never deleted for an
+  account that still exists.
 
 ### Migration V19 → V20 (custom stage)
 
@@ -134,20 +156,26 @@ The dev store is backed up first; the stage is one-way.
    `recordedVersion` from `installedPluginVersions`.
 2. Each plugin-origin connector, global or workspace-owned, becomes an
    `Account` with the **same UUID**, so its UUID secret namespace resolves
-   unchanged. Its stable entity ID goes to `legacySecretNamespace`. An
-   activation binds it where the workspace enabled it (global) or owned it.
-3. A plugin-origin skill or tool that still matches its manifest is dropped.
-   One the person edited (instructions, tools, command differ) becomes an
-   authored row with its origin stamps cleared, and the migration logs it.
-4. Config and environment values on plugin rows move to
-   `activation.configValues` under `componentID.key`.
-5. The plugin rows and the plugin entries in the `Workspace` arrays go.
+   unchanged; its config values move with it to `Account.configValues`, and
+   its stable entity ID goes to `legacySecretNamespace`. A binding links it
+   where the workspace enabled it (global) or owned it; the workspace's
+   default account for the service becomes the default binding.
+3. Environment values on plugin skills move to `activation.configValues`
+   under `componentID.key`.
+4. A plugin-origin skill or tool the person edited (instructions, tools,
+   command differ from the manifest) becomes an authored row with its origin
+   stamps cleared, and the migration logs it (owner decision).
+
+The plugin rows themselves are **not deleted in R1**: the runtime still
+resolves them until the projection exists. R2 deletes the unedited ones and
+the plugin entries in the `Workspace` arrays in the same change that switches
+the runtime to the projection, so plugins never disappear between phases.
 
 Test fixture: a V19 store with two workspaces, two Jira accounts, a shared
 Google Cloud connector with a project ID, and an edited built-in skill. After
-migration the accounts keep their IDs and resolve their secrets, the
-activations match, the project ID sits on the activation, and the edited
-skill survives as an authored skill.
+migration the accounts keep their IDs and resolve their secrets, each
+account keeps its own settings, the bindings and defaults match, and the
+edited skill survives as an authored skill.
 
 ### Health and repair
 
@@ -186,20 +214,17 @@ count.
 | Phase | Work | Exit criterion |
 | --- | --- | --- |
 | R0 | Merge `#506`; rebase `#508` on `main` and merge it behind the preview flag | full suite green on `main` |
-| R1 | `PluginActivation`, `Account`, the migration; `WorkspaceCapabilityActivation` reads activations, behavior unchanged | the fixture migration test; the dev store migrates from a backup; runtime tests unchanged |
-| R2 | `PluginRuntimeProjection`; the installer stops materializing plugin rows | no plugin-origin row exists after Add; a task in workspace A never sees workspace B's accounts; prompt scope for each built-in matches the pre-R2 scope |
+| R1 | `PluginActivation`, `AccountBinding`, `Account` and the additive migration (plugin rows kept); `WorkspaceCapabilityActivation` reads activations, behavior unchanged | the fixture migration test; the dev store migrates from a backup; runtime tests unchanged |
+| R2 | `PluginRuntimeProjection`; the installer stops materializing plugin rows; the unedited plugin rows and array entries are deleted in the same change | no plugin-origin row exists after Add; a task in workspace A never sees workspace B's accounts; prompt scope for each built-in matches the pre-R2 scope |
 | R3 | Add, Update, Turn off, Remove and Delete account on the new model; `PluginRow` | renaming a component across an Update keeps its settings; a removed component is gone; Turn off leaves accounts and secrets |
 | R4 | Parity checklist, then retire the old catalog and the flag | every checklist item has a home or an owner's "dropped" |
 | R5 | Plugin sources, with their own threat model | written as its own spec first |
 
-### Open questions for the owner
+### Owner decisions (2026-10-16)
 
-1. On migration, keep edited plugin skills as authored skills (proposed), or
-   reset them to the manifest?
-2. Is an account workspace-owned unless shared explicitly (proposed), or
-   shared by default?
-3. Close `#507`, `#509` and `#510` as superseded (proposed), or keep any of
-   them open?
+1. Edited plugin skills survive the migration as authored skills.
+2. An account belongs to one workspace unless shared explicitly.
+3. `#507`, `#509` and `#510` are closed as superseded; R0 is under way.
 
 ## Problem
 
