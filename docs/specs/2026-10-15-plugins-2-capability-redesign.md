@@ -372,19 +372,23 @@ reference.
   built-in skill are no longer rewritten. Local-edit detection before an update
   is not built.
 - **Phase 3 PR:** `aandresalvarez/astra#509`.
-- **Phase 4 (`aandresalvarez/astra#510`).** The Plugins surface is the only capability screen. The preview
-  flag, `PluginCatalogView` and the code only it used are deleted: the generic
-  install sheet, the creation wizard (and "Create from MCP…" paste; `/mcp` in
-  chat still works), export source, the admin approve/revoke review, the
-  install-time copy-setup menu, and the old catalog presentation. Kept: Google
-  Workspace's sign-in sheet (Add opens it), import of a single plugin file
-  ("Import file…", through `CapabilityCatalogActionService.importFile`), and
-  the catalog persistence events, which the surface now observes.
-  **Exit criterion missed:** the install side (services plus UI) went from
-  about 13,200 lines on `main` to about 9,000, roughly 68%, not under half. The
-  remainder is the installer, validator, policy, catalog and credential
-  cleanup that the surface still calls; halving it means replacing those, not
-  deleting UI.
+- **Phase 4 (`aandresalvarez/astra#510`).** The Plugins surface is the only
+  capability screen. Deleted with `PluginCatalogView` and its preview flag:
+  the generic install sheet, the creation wizard, export source, the admin
+  approve/revoke review, the install-time copy-setup menu, the old catalog
+  presentation, and the compiled built-in fallback (the bundled manifests are
+  the only copy). By the owner's decision, chat `/mcp` plugin creation and the
+  custom Google Workspace sign-in sheet are removed too; `/mcp` is now an
+  ordinary message, Google Workspace adds in one step, and the Google OAuth
+  services remain with no screen calling them. Kept: "Import file…" (one plugin
+  JSON, through `CapabilityCatalogActionService.importFile`) and the catalog
+  persistence events, which the surface observes.
+  **Exit criterion, measured against `main`:** the install side, meaning the
+  install, approve, enable, review, catalog, gallery, import, create and
+  MCP-install services plus their UI, went from about 13,550 lines to about
+  6,070 (45%). Counting `Astra/Services/Capabilities` alone it went from 8,054
+  to 5,459 (68%). The rest is the installer, validator, policy and credential
+  cleanup the surface still calls.
 
 Tests to add, by phase: forged-origin config import (0); cross-workspace
 service-type reach (1); alias refusal and default-account selection (1); rail
