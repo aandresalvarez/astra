@@ -145,7 +145,15 @@ Rules:
   for a plugin whose installed digest matches its approval and whose catalog
   decision is `canRun`. An `exec` check is a plugin-defined host subprocess,
   so a tampered, unapproved or blocked manifest's checks never run; its row
-  shows the policy reason instead.
+  shows the policy reason instead. Because checks repeat (every refresh, and
+  every few seconds while a repair waits), an `exec` check must also be a
+  read-only probe: the component's own binary, no shell syntax
+  (`LocalToolSecurityPolicy`), and a status or version verb, never a command
+  that writes CLI, host or remote state. A check that isn't one is refused
+  at import like any other unrepresentable step. *(As built: the built-in
+  checks are read-only — `--version`, `auth status`, `config config-helper`;
+  checks from source plugins are gated by approval and `canRun` but the
+  read-only verb rule is not enforced yet.)*
 - A connector lists only the auth methods it declares a complete setup for.
   With more than one, the setup legs are keyed by method
   (`"setup": { "api_token": { … }, "oauth": { … } }`) and the person picks the
@@ -264,7 +272,13 @@ verify → detect**.
 - **A session that expires mid-task pauses the run instead of failing it.**
   `AgentRuntimePolicyGuard` already pauses, asks and resumes for permission
   prompts; an auth failure mapped to a component takes the same path, shows
-  the repair row in the task view, and `Retry` resumes once `check` passes.
+  the repair row in the task view, and `Retry` resumes once the component's
+  `verify` passes (`check` only detects the failure; a present but expired
+  token passes a shallow `check`). A component without a `verify` uses a
+  `check` that reads the session state itself. *(As built: the built-in CLI
+  checks read session state — `gcloud config config-helper` token expiry,
+  `gh auth status` — so they serve as verify; connector `verify` before
+  Retry is not built yet.)*
 - `repairAction` becomes a typed reference (component id + strategy), so a
   view can render it.
 
@@ -382,8 +396,11 @@ reference.
   `worksOn` is keyed by `AgentRuntimeID` raw values (`claude_code`,
   `codex_cli`, …); phase 1 used display names by mistake. The startup repair is
   gone: an added plugin whose library version differs from the one the
-  workspace recorded shows **Update**, which re-runs Add and drops activations
-  of skills the plugin no longer ships. Workspace-local legacy copies of a
+  workspace recorded shows **Update**, which re-runs Add in every workspace
+  that has the plugin on and retires every component kind the new version
+  dropped: skills, shared accounts and tools are deactivated and unlinked,
+  workspace accounts and templates are deleted, and configured values are
+  kept for keys that remain. Workspace-local legacy copies of a
   built-in skill are no longer rewritten. Local-edit detection before an update
   is not built.
 - **Phase 3 PR:** `aandresalvarez/astra#509`.
