@@ -136,6 +136,7 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         gcloudConnector.isGlobal = true
         gcloudConnector.configKeys = ["GCP_PROJECT"]
         gcloudConnector.configValues = ["astra-test-project"]
+        gcloudConnector.accountAlias = "Research"
         gcloudConnector.skill = gcloudSkill
         context.insert(gcloudConnector)
 
@@ -224,6 +225,9 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         let detachedProviderToolIDs = Set(detachedProviderScope.localTools.map { $0.id })
 
         #expect(detached.modelContext == nil)
+        // The account alias names the account at the broker; a detached
+        // launch that dropped it would fall back to the connector name.
+        #expect(detachedFullScope.connectors.first { $0.id == gcloudConnector.id }?.accountAlias == "Research")
         #expect(liveFullSkillIDs == detachedFullSkillIDs)
         #expect(liveFullConnectorIDs == detachedFullConnectorIDs)
         #expect(liveFullToolIDs == detachedFullToolIDs)

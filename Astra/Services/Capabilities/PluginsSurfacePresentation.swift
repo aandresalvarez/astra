@@ -148,3 +148,34 @@ enum PluginsSurfacePresentation {
         return haystack.contains { $0.lowercased().contains(needle) }
     }
 }
+
+/// The second tap before a destructive row action: it names what goes and
+/// what stays (`docs/design-system/lean-ui-system.md`, Interaction Rules).
+enum PluginsSurfaceConfirmation: Equatable {
+    /// Turning a plugin off here removes the accounts and keys it created in
+    /// this workspace.
+    case turnOff(packageID: String)
+    /// Removing it from ASTRA turns it off in every workspace.
+    case remove(packageID: String)
+
+    var packageID: String {
+        switch self {
+        case .turnOff(let id), .remove(let id): id
+        }
+    }
+
+    func copy(name: String, hasAccounts: Bool) -> (message: String, verb: String) {
+        switch self {
+        case .turnOff:
+            let detail = hasAccounts
+                ? " Its accounts and saved keys in this workspace are deleted; turning it on again asks for them."
+                : " Turning it on again restores it."
+            return ("Turn off \(name) in this workspace?" + detail, "Turn off")
+        case .remove:
+            return (
+                "Remove \(name) from ASTRA? It turns off in every workspace, and the accounts and saved keys it created there are deleted. You can add it again later.",
+                "Remove"
+            )
+        }
+    }
+}

