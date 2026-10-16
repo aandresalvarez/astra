@@ -8,13 +8,19 @@ import ASTRAModels
 public enum SwiftDataDeletionPreparation {
     public static func prepare(_ workspace: Workspace) {
         let tasks = workspace.tasks
-        let skills = workspace.skills
-        for connector in workspace.connectors { _ = (connector.id, connector.workspace?.id, connector.skill?.id) }
-        for tool in workspace.localTools { _ = (tool.id, tool.workspace?.id, tool.skill?.id) }
+        let connectors = workspace.connectors
+        let tools = workspace.localTools
+        // Surviving global skills also own inverse arrays modified by this
+        // deletion, even though they are outside workspace.skills.
+        let skills = workspace.skills + tasks.flatMap(\.skills)
+            + connectors.compactMap(\.skill) + tools.compactMap(\.skill)
+        for connector in connectors { _ = (connector.id, connector.workspace?.id, connector.skill?.id) }
+        for tool in tools { _ = (tool.id, tool.workspace?.id, tool.skill?.id) }
         for template in workspace.templates { _ = (template.id, template.workspace?.id) }
         for schedule in workspace.schedules { _ = (schedule.id, schedule.workspace?.id) }
         for task in tasks { prepare(task) }
-        for skill in skills {
+        var preparedSkills: Set<ObjectIdentifier> = []
+        for skill in skills where preparedSkills.insert(ObjectIdentifier(skill)).inserted {
             _ = (skill.id, skill.workspace?.id)
             for task in skill.tasks { _ = task.id }
             for connector in skill.connectors { _ = connector.id }
@@ -27,6 +33,9 @@ public enum SwiftDataDeletionPreparation {
         for run in task.runs { _ = (run.id, run.task?.id) }
         for event in task.events { _ = (event.id, event.task?.id, event.run?.id) }
         for artifact in task.artifacts { _ = (artifact.id, artifact.task?.id) }
-        for skill in task.skills { _ = skill.id }
+        for skill in task.skills {
+            _ = skill.id
+            for related in skill.tasks { _ = related.id }
+        }
     }
 }

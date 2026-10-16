@@ -29,6 +29,7 @@ struct SidebarTaskStoreSignalIntegrationTests {
             return Color.clear
                 .frame(width: 10, height: 10)
                 .onAppear { store.loadIfNeeded(context: modelContext) }
+                .background { SidebarTaskLegacyChangeSignal(store: store) }
         }
     }
 

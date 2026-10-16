@@ -87,6 +87,7 @@ struct TaskSidebarContainerView: View {
         )
         .onAppear { taskStore.loadIfNeeded(context: modelContext) }
         .onChange(of: modelContext) { taskStore.refreshNow(context: modelContext) }
+        .background { SidebarTaskLegacyChangeSignal(store: taskStore) }
     }
 
     /// Wraps the two handlers that can change *which* tasks exist so the rail

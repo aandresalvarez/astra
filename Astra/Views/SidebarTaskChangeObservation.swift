@@ -21,7 +21,11 @@ final class SidebarTaskChangeObservation {
                 let membershipChanged = [ModelContext.NotificationKey.insertedIdentifiers, .deletedIdentifiers].contains { key in
                     Self.taskIdentifiers(for: key, in: notification).isEmpty == false
                 }
-                let externalUpdates = source === context ? [] : Self.taskIdentifiers(for: .updatedIdentifiers, in: notification)
+                let taskUpdates = Self.taskIdentifiers(for: .updatedIdentifiers, in: notification)
+                guard membershipChanged || !taskUpdates.isEmpty else { return }
+                // Own-context task saves also release any foreign refreshes
+                // deferred while the local task was dirty.
+                let externalUpdates = source === context ? [] : taskUpdates
                 onChange(membershipChanged, externalUpdates)
             }
         }

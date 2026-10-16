@@ -92,6 +92,7 @@ final class SidebarTaskStore {
     @ObservationIgnored private var lastMembershipProbeAt = Date.distantPast
     @ObservationIgnored private let coalesceInterval: TimeInterval
     @ObservationIgnored private let membershipProbeInterval: TimeInterval
+    @ObservationIgnored private let refetchExternalRows: @MainActor (ModelContext, [PersistentIdentifier]) throws -> Void
 
     /// How many full reads this store has performed. The point of the type is
     /// that this stays near-flat while a task streams, which is not observable
@@ -107,10 +108,12 @@ final class SidebarTaskStore {
 
     init(
         coalesceInterval: TimeInterval = SidebarTaskStoreDefaults.coalesceInterval,
-        membershipProbeInterval: TimeInterval = SidebarTaskStoreDefaults.membershipProbeInterval
+        membershipProbeInterval: TimeInterval = SidebarTaskStoreDefaults.membershipProbeInterval,
+        refetchExternalRows: @escaping @MainActor (ModelContext, [PersistentIdentifier]) throws -> Void = SidebarTaskExternalRefresh.fetch
     ) {
         self.coalesceInterval = coalesceInterval
         self.membershipProbeInterval = membershipProbeInterval
+        self.refetchExternalRows = refetchExternalRows
     }
 
     /// First read, on appear. Synchronous so the sidebar never renders an empty
@@ -292,13 +295,9 @@ final class SidebarTaskStore {
         let pendingIDs = Set(pending.map(\.persistentModelID))
         let identifiers = Array(externalUpdates.subtracting(pendingIDs))
         guard !identifiers.isEmpty else { return }
-        externalUpdates.subtract(identifiers)
-        var descriptor = FetchDescriptor<AgentTask>(
-            predicate: #Predicate { identifiers.contains($0.persistentModelID) }
-        )
-        descriptor.includePendingChanges = false
         do {
-            _ = try context.fetch(descriptor)
+            try refetchExternalRows(context, identifiers)
+            externalUpdates.subtract(identifiers)
         } catch {
             PerformanceTelemetry.log("sidebar_external_refresh_failed", level: .warning)
         }

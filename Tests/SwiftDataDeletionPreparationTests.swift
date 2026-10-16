@@ -113,4 +113,49 @@ struct SwiftDataDeletionPreparationTests {
         }
     }
 
+    @Test("Workspace rollback preserves inverse relationships owned by a global skill", arguments: [false, true])
+    func globalSkillOwners(onDisk: Bool) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-global-skill-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            configurations: onDisk ? ModelConfiguration(url: root.appendingPathComponent("test.store"))
+                : ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let seed = ModelContext(container)
+        let workspace = Workspace(name: "Delete workspace", primaryPath: root.path)
+        let skill = Skill(name: "Global owner")
+        skill.isGlobal = true
+        let connector = Connector(name: "Workspace connector")
+        let tool = LocalTool(name: "Workspace tool")
+        workspace.connectors = [connector]
+        workspace.localTools = [tool]
+        skill.connectors = [connector]
+        skill.localTools = [tool]
+        seed.insert(workspace)
+        seed.insert(skill)
+        try seed.save()
+        let context = ModelContext(container)
+        let stored = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        for _ in 0..<3 {
+            SwiftDataDeletionPreparation.prepare(stored)
+            context.delete(stored)
+            context.rollback()
+            stored.name = "Restored workspace"
+            try context.save()
+            let owner = try #require(try context.fetch(FetchDescriptor<Skill>()).first)
+            #expect(owner.workspace == nil)
+            #expect(owner.connectors.first?.workspace === stored)
+            #expect(owner.localTools.first?.workspace === stored)
+        }
+        SwiftDataDeletionPreparation.prepare(stored)
+        context.delete(stored)
+        try context.save()
+        let durable = ModelContext(container)
+        let surviving = try #require(try durable.fetch(FetchDescriptor<Skill>()).first)
+        #expect(surviving.connectors.isEmpty)
+        #expect(surviving.localTools.isEmpty)
+    }
+
 }

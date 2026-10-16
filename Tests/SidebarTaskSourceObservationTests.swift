@@ -5,7 +5,10 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
-@Suite("Sidebar source observation")
+@Suite("Sidebar source observation", .enabled(
+    if: ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 15,
+    "Modern SwiftData save signals; Sonoma uses the hosted legacy signal integration test"
+))
 @MainActor
 struct SidebarTaskSourceObservationTests {
     private func context() throws -> ModelContext {
@@ -177,5 +180,42 @@ struct SidebarTaskSourceObservationTests {
         #expect(durable.count == 2)
         #expect(durable.first { $0.id == task.id }?.isPinned == true)
         #expect(durable.first { $0.id == task.id }?.title == "Local edit")
+    }
+
+    @Test("A failed foreign refetch retries on the next reconciliation")
+    func failedForeignRefetchRetries() async throws {
+        let context = try context()
+        context.insert(AgentTask(title: "Original", goal: "goal"))
+        try context.save()
+        var attempts = 0
+        let store = SidebarTaskStore(coalesceInterval: 0, refetchExternalRows: { context, identifiers in
+            attempts += 1
+            if attempts == 1 { throw CocoaError(.fileReadUnknown) }
+            try SidebarTaskExternalRefresh.fetch(context, identifiers)
+        })
+        store.loadIfNeeded(context: context)
+        let writer = ModelContext(context.container)
+        let task = try #require(try writer.fetch(FetchDescriptor<AgentTask>()).first)
+        task.title = "Foreign update"
+        try writer.save()
+        #expect(await settle { attempts == 1 })
+        store.refreshNow(context: context)
+        #expect(attempts == 2)
+        #expect(store.tasks.first?.title == "Foreign update")
+        #expect(store.fetchCountForTesting == 1)
+    }
+
+    @Test("Saves without task changes do not invalidate the sidebar")
+    func unrelatedSavesDoNotSignal() throws {
+        let context = try context()
+        var signals = 0
+        let observation = SidebarTaskChangeObservation(context: context) { _, _ in signals += 1 }
+        context.insert(TaskTemplate(name: "Unrelated", mainGoal: "goal"))
+        try context.save()
+        let writer = ModelContext(context.container)
+        writer.insert(TaskSchedule(name: "Unrelated"))
+        try writer.save()
+        #expect(signals == 0)
+        withExtendedLifetime(observation) {}
     }
 }
