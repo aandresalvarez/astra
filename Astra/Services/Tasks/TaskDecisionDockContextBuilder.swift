@@ -88,6 +88,7 @@ enum TaskDecisionDockContextBuilder {
         var hasProviderSession: Bool
         var failureReason: String?
         var launchBlock: TaskRunLaunchBlockPayload?
+        var repair: RepairAction? = nil
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail]
     }
@@ -161,6 +162,7 @@ enum TaskDecisionDockContextBuilder {
             hasProviderSession: input.hasProviderSession,
             failureReason: input.failureReason,
             launchBlock: input.launchBlock,
+            repair: input.repair,
             artifactPaths: input.artifactPaths,
             extraDetails: input.extraDetails,
             visibleThreadAffordances: visibleThreadAffordances(

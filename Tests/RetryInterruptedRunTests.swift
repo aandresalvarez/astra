@@ -101,9 +101,9 @@ struct RetryInterruptedRunTests {
         })
     }
 
-    @Test("A run interrupted by an ASTRA restart or a queue stop resumes too")
+    @Test("A run interrupted by an ASTRA restart, a queue stop or an expired plugin sign-in resumes too")
     func restartAndQueueStopResume() async throws {
-        for reason in ["app_restarted", "queue_cancelled"] {
+        for reason in ["app_restarted", "queue_cancelled", "capability_session_expired"] {
             let submitted = try await retry(stopReason: reason)
             #expect(submitted.mode == .continuation, "\(reason)")
         }
@@ -146,6 +146,13 @@ struct RetryInterruptedRunTests {
         #expect(scheduled.task.tokensUsed == 0)
         let chained = try await retry(stopReason: "cancelled", chainedFromID: UUID())
         #expect(chained.mode == .initial)
+    }
+
+    @Test("After an expired plugin sign-in a follow-up turn resumes instead of being resent")
+    func expiredFollowUpResumes() async throws {
+        let submitted = try await retry(stopReason: "capability_session_expired", followUp: "now also file the tickets")
+        #expect(submitted.mode == .continuation)
+        #expect(submitted.message != "now also file the tickets")
     }
 
     @Test("A pending user follow-up still wins over the generic resume message")

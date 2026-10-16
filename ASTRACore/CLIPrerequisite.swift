@@ -184,12 +184,17 @@ public enum CommonCLIPrerequisites {
     /// Second spec for the auth state — separate entry so the catalog
     /// renders "installed ✓, not authenticated ⚠" as two distinct lines
     /// and each has its own remediation link.
+    ///
+    /// `auth list` passed even when reauthentication was required, because
+    /// the expired account is still listed. `config-helper` refreshes the
+    /// credential and fails when it cannot; it prints only the expiry time,
+    /// never the token (the checker shows stdout as the "version").
     public static let gcloudAuth = CLIPrerequisite(
         binary: "gcloud",
-        livenessArgs: ["auth", "list", "--format=value(account)"],
+        livenessArgs: ["config", "config-helper", "--format=value(credential.token_expiry)"],
         semantic: .stdoutNonEmpty,
         displayName: "Google Cloud login",
-        purpose: "At least one active account is required for API calls.",
+        purpose: "A signed-in account whose credentials still refresh is required for API calls.",
         installURL: nil,
         installHint: "",
         authHint: "Run `gcloud auth login` to sign in."

@@ -178,10 +178,15 @@ final class TaskLifecycleCoordinator {
         // A first run the user (or an ASTRA restart) cut short still has a
         // provider session. Retry continues it rather than relaunching the
         // initial prompt into a brand-new session.
-        let interruptedResumeMessage = retryFollowUpMessage == nil
-            ? interruptedRunResumeMessage(for: task, retryTurn: retryTurn)
+        // After an expired plugin sign-in the turn, follow-up or not, resumes
+        // where it stopped: resending the follow-up would repeat its writes.
+        let afterExpiry = task.runs.max(by: { $0.startedAt < $1.startedAt })?.typedStopReason == .capabilitySessionExpired
+        let interruptedResumeMessage = retryFollowUpMessage == nil || afterExpiry
+            ? interruptedRunResumeMessage(for: task, retryTurn: retryTurn, acceptsFollowUp: afterExpiry)
             : nil
-        let launchMessage = retryFollowUpMessage ?? interruptedResumeMessage
+        let launchMessage = afterExpiry
+            ? interruptedResumeMessage ?? retryFollowUpMessage
+            : retryFollowUpMessage ?? interruptedResumeMessage
         let retryMode = interruptedResumeMessage != nil
             ? "interrupted_resume"
             : (launchMessage == nil ? "initial_task" : "continuation")
@@ -228,7 +233,7 @@ final class TaskLifecycleCoordinator {
     /// path, and a runtime without native resume would only get a thinner
     /// prompt than the initial one. Whether the session is actually resumable
     /// is the worker's call; if not, it falls back to a history-carrying prompt.
-    private func interruptedRunResumeMessage(for task: AgentTask, retryTurn: TaskTurnRequest?) -> String? {
+    private func interruptedRunResumeMessage(for task: AgentTask, retryTurn: TaskTurnRequest?, acceptsFollowUp: Bool = false) -> String? {
         guard task.hasProviderSession,
               AgentRuntimeAdapterRegistry.supportsNativeContinuation(for: task.resolvedRuntimeID),
               let latestRun = task.runs.max(by: { $0.startedAt < $1.startedAt }),
@@ -236,7 +241,9 @@ final class TaskLifecycleCoordinator {
               // drops it, so Retry must take the from-scratch path with its reset instead.
               latestRun.runtimeID == task.resolvedRuntimeID.rawValue,
               let stopReason = latestRun.typedStopReason,
-              [.cancelled, .appRestarted, "queue_cancelled"].contains(stopReason),
+              // A run stopped for an expired plugin sign-in resumes after the
+              // repair, so work it already did (external writes) isn't replayed.
+              [.cancelled, .appRestarted, "queue_cancelled", .capabilitySessionExpired].contains(stopReason),
               // A from-scratch run cut off before its init frame never learned a session, while
               // task.sessionId can still name an older run's: only a run that owns it can be resumed.
               let runSession = latestRun.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -245,10 +252,11 @@ final class TaskLifecycleCoordinator {
         // Scheduled, chained and approved-plan launches keep their own relaunch path.
         guard task.originScheduleID == nil, task.chainedFromID == nil else { return nil }
         if let retryTurn {
-            guard retryTurn.kind == .initial || retryTurn.kind == .retry else { return nil }
+            guard retryTurn.kind == .initial || retryTurn.kind == .retry || (acceptsFollowUp && retryTurn.kind == .followUp)
+            else { return nil }
             if let sourceEvent = task.events.first(where: { $0.id == retryTurn.sourceEventID }),
                let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent),
-               source.launchMode != .initial || source.planSnapshot != nil
+               (source.launchMode != .initial && !(acceptsFollowUp && retryTurn.kind == .followUp)) || source.planSnapshot != nil
                 || source.scheduleID != nil || source.sourceTaskID != nil {
                 return nil
             }

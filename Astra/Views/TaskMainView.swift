@@ -3554,16 +3554,6 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
-    /// The structured launch-block payload for the latest run, if any was
-    /// recorded — scoped to that specific run via `TaskEventSnapshot.runID`,
-    /// not the whole thread's error history.
-    private var latestRunLaunchBlock: TaskRunLaunchBlockPayload? {
-        guard let runID = latestRun?.id else { return nil }
-        return sortedEvents
-            .last { $0.runID == runID && $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue }
-            .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
-    }
-
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
@@ -3607,7 +3597,8 @@ struct TaskMainView: View {
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
-            launchBlock: latestRunLaunchBlock,
+            launchBlock: TaskRunStopEvidence.launchBlock(events: sortedEvents, runID: latestRun?.id),
+            repair: TaskRunStopEvidence.repair(events: sortedEvents, runID: latestRun?.id),
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -3971,6 +3962,8 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .resume:
             onResumeTask?(task)
+        case .runRepair:
+            RepairActionRunner.run(TaskRunStopEvidence.repair(events: sortedEvents, runID: latestRun?.id))
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:

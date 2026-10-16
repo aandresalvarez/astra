@@ -270,6 +270,7 @@ struct WorkspaceRightRailView: View {
     @State private var capabilityError: String?
     @State private var folderRefusal: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
+    @StateObject private var repairs = PluginRepairCoordinator()
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
     @State private var isReadyCapabilitiesExpanded = false
@@ -920,6 +921,9 @@ struct WorkspaceRightRailView: View {
             statusColor: capabilityBadgeColor(for: item),
             isEnabled: item.isEnabled,
             isCompact: isCompact,
+            repairVerb: item.repair?.verb,
+            repairStatus: item.repair.flatMap(repairs.phase(for:)) == .waiting ? "Checking…" : nil,
+            onRepair: { if let repair = item.repair { repairs.start(repair) { refreshCapabilityPrerequisiteStatuses() } } },
             onOpen: { openCapabilityConfiguration(item) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1147,10 +1151,8 @@ struct WorkspaceRightRailView: View {
         let workspaceResourceCount = state.linkedSkills.filter { !$0.isGlobal }.count
             + state.linkedConnectors.filter { !$0.isGlobal }.count
             + state.linkedTools.filter { !$0.isGlobal }.count
-        let readiness = readiness(
-            for: package,
-            stateReadiness: state.readiness,
-            prerequisiteStatuses: prerequisiteStatuses
+        let readiness = CapabilityRailRepair.readiness(
+            for: package, stateReadiness: state.readiness, prerequisiteStatuses: prerequisiteStatuses
         )
         let presentation = CapabilityRailPackagePresentation.make(
             isEnabled: state.isEnabled,
@@ -1178,25 +1180,8 @@ struct WorkspaceRightRailView: View {
             mcpServerNames: packageSummary.mcpServerNames,
             browserAdapterNames: RailStringList.uniqueSorted(package.browserAdapters.map(browserAdapterDisplayName)),
             templateNames: RailStringList.uniqueSorted(package.templates.map(\.name)),
-            requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName))
-        )
-    }
-
-    private func readiness(
-        for package: PluginPackage,
-        stateReadiness: CapabilityReadiness,
-        prerequisiteStatuses: [String: HealthStatus]
-    ) -> CapabilityReadiness {
-        guard stateReadiness.level != .inactive else { return stateReadiness }
-        let prerequisiteMessages = CapabilityHealthService.readinessMessages(
-            for: package,
-            statuses: prerequisiteStatuses
-        )
-        guard !prerequisiteMessages.isEmpty else { return stateReadiness }
-        let existingMessages = stateReadiness.level == .ready ? [] : stateReadiness.messages
-        return CapabilityReadiness(
-            level: .needsAttention,
-            messages: existingMessages + prerequisiteMessages
+            requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName)),
+            repair: CapabilityRailRepair.repair(for: package, statuses: prerequisiteStatuses)
         )
     }
 
