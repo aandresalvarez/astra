@@ -332,7 +332,7 @@ Each phase ships on its own PR and leaves `main` working.
 | 1 | Manifest + converter that projects a plugin into today's rows; `PluginActivation` and `Account` entities together in one schema `Vn+1`, behind the phase 0 owner; reads move behind the owner; alias/default-account resolution replaces keyword ranking | runtime tests unchanged and green; the read registry is empty; a two-account Jira workspace launches with the chosen account |
 | 2 | New Plugins surface behind a dev flag; health loop with the three repair strategies; typed `repairAction` rendered in rail and task view | a `gcloud` session expired mid-task pauses, repairs from the task view, resumes |
 | 3 | Built-ins migrated to the manifest; git sources; startup repair retired; `worksOn` shown at add | all 12 built-ins add in one step on a fresh dev store |
-| 4 | Delete the old install/approve/enable path and `PluginCatalogView` | `Astra/Services/Capabilities` install side under half its current size |
+| 4 | Delete the old install/approve/enable path and `PluginCatalogView` | the install side (install, approve, enable, review, catalog, gallery, import, create and MCP-install services plus their UI) under half its size on `main` *(revised 2026-10-16 by the owner from "`Astra/Services/Capabilities` install side"; see below)* |
 
 ### How the phases landed
 
@@ -383,12 +383,19 @@ reference.
   services remain with no screen calling them. Kept: "Import file…" (one plugin
   JSON, through `CapabilityCatalogActionService.importFile`) and the catalog
   persistence events, which the surface observes.
-  **Exit criterion, measured against `main`:** the install side, meaning the
-  install, approve, enable, review, catalog, gallery, import, create and
-  MCP-install services plus their UI, went from about 13,550 lines to about
-  6,070 (45%). Counting `Astra/Services/Capabilities` alone it went from 8,054
-  to 5,459 (68%). The rest is the installer, validator, policy and credential
-  cleanup the surface still calls.
+  The Google OAuth services were deleted as well: nothing called them, and
+  even on `main` the one reader of the stored tokens
+  (`GoogleWorkspaceRemoteMCPRuntimeService`) had no caller, so a sign-in never
+  reached a run. The build script no longer writes `ASTRAGoogleOAuthClientID`.
+  Dead code that a periphery scan found in the remaining install services was
+  removed.
+  **Exit criterion, measured against `main`:** the install side (services plus
+  UI) went from 13,554 lines to 6,017 (44%), which meets the criterion as the
+  owner revised it. Counting `Astra/Services/Capabilities` alone, the original
+  wording, it went from 8,054 to 5,410 (67%). The rest is the installer,
+  validator, catalog policy and credential cleanup the surface still calls;
+  the owner chose not to rewrite those security checks to reach a
+  services-only half.
 
 Tests to add, by phase: forged-origin config import (0); cross-workspace
 service-type reach (1); alias refusal and default-account selection (1); rail
