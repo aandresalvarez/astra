@@ -906,21 +906,6 @@ struct MCPRuntimeProjectionTests {
 @MainActor
 struct MCPRuntimeParityTests {
 
-    @Test("Claude Code and Codex declare static MCP support")
-    func claudeAndCodexDeclareStaticMCPSupport() {
-        let descriptors = CapabilityRuntimeSupportPresentation.allRuntimeDescriptors()
-        let supporting = CapabilityRuntimeSupportPresentation.mcpSupportingRuntimes(descriptors: descriptors)
-        #expect(supporting.map(\.id) == [.claudeCode, .codexCLI])
-    }
-
-    @Test("Catalog subtitle names the delivering runtimes")
-    func catalogSubtitleNamesRuntimes() {
-        let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle()
-        #expect(subtitle.contains("Claude Code"))
-        #expect(!subtitle.contains("GitHub Copilot CLI"))
-        #expect(subtitle.contains("skip"))
-    }
-
     @Test("MCP-only package counts as having runtime payload")
     func mcpOnlyPackageHasPayload() throws {
         let package = mcpPackage(servers: [stdioServer(id: "solo")])

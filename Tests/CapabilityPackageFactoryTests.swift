@@ -207,51 +207,6 @@ struct CapabilityPackageFactoryTests {
             .standardizedFileURL)
     }
 
-    @Test("capability creation waits for source directory resolution before create")
-    func capabilityCreationWaitsForSourceDirectoryResolutionBeforeCreate() {
-        #expect(!CapabilityCreationSourceExportPolicy.canCreate(
-            hasRequiredContent: true,
-            sourceState: .resolving
-        ))
-        #expect(CapabilityCreationSourceExportPolicy.canCreate(
-            hasRequiredContent: true,
-            sourceState: .unavailable
-        ))
-        #expect(CapabilityCreationSourceExportPolicy.canCreate(
-            hasRequiredContent: true,
-            sourceState: .resolved(URL(fileURLWithPath: "/tmp/capabilities/local", isDirectory: true))
-        ))
-        #expect(!CapabilityCreationSourceExportPolicy.canCreate(
-            hasRequiredContent: false,
-            sourceState: .unavailable
-        ))
-    }
-
-    @Test("capability creation wizard construction defers source directory resolver")
-    @MainActor
-    func capabilityCreationWizardConstructionDefersSourceDirectoryResolver() {
-        final class ResolverProbe {
-            var invoked = false
-
-            func resolve() async -> URL? {
-                invoked = true
-                return nil
-            }
-        }
-
-        let probe = ResolverProbe()
-        let workspace = Workspace(name: "Test Workspace", primaryPath: NSTemporaryDirectory())
-        _ = CapabilityCreationWizardView(
-            workspace: workspace,
-            onCreated: { _, _, _ in },
-            sourceExportDirectoryResolver: {
-                await probe.resolve()
-            }
-        )
-
-        #expect(probe.invoked == false)
-    }
-
     @Test("source exporter writes normalized draft package JSON")
     @MainActor
     func sourceExporterWritesNormalizedDraftPackageJSON() throws {

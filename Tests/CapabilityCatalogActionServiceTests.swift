@@ -96,7 +96,7 @@ struct CapabilityCatalogActionServiceTests {
         #expect(workspace.enabledGlobalSkillIDs == result.skillIDs.map(\.uuidString))
     }
 
-    @Test("enable publishes one global event to both windows and one scoped workspace event")
+    @Test("enable publishes one global event and one scoped workspace event")
     func enablePublishesExactlyOnceAndReloadsEveryWindow() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
@@ -114,69 +114,6 @@ struct CapabilityCatalogActionServiceTests {
             policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
             source: "test",
             traceID: "trace-two-window"
-        )
-
-        #expect(recorder.changes == [.global, .workspace(workspace.id)])
-        let firstWindow = PluginCatalogPresentationSourceRevision()
-        let secondWindow = PluginCatalogPresentationSourceRevision()
-        var firstReloads = 0
-        var secondReloads = 0
-        for change in recorder.changes {
-            _ = firstWindow.receive(change, workspaceID: workspace.id) { firstReloads += 1 }
-            _ = secondWindow.receive(change, workspaceID: UUID()) { secondReloads += 1 }
-        }
-        #expect(firstReloads == 1)
-        #expect(secondReloads == 1)
-        #expect(firstWindow.persistenceRevision == 2)
-        #expect(secondWindow.persistenceRevision == 1)
-    }
-
-    @Test("create action installs draft package without enabling workspace")
-    func createActionInstallsDraftPackageWithoutEnablingWorkspace() throws {
-        let container = try makeCapabilityActionContainer()
-        let context = container.mainContext
-        let workspace = Workspace(name: "Actions", primaryPath: "/tmp/action-create")
-        context.insert(workspace)
-        let (library, root) = makeCapabilityActionLibrary()
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let package = makeActionPackage(id: "created-action-package")
-        let result = try CapabilityCatalogActionService(library: library).create(
-            package,
-            enableHere: false,
-            sourceURL: nil,
-            workspace: workspace,
-            modelContext: context,
-            policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
-            traceID: "trace-create"
-        )
-
-        #expect(result.package.id == package.id)
-        #expect(!result.approvalRecordChanged)
-        #expect(result.installedPackage == nil)
-        #expect(library.installedPackages().map(\.id) == [package.id])
-        #expect(workspace.enabledCapabilityIDs.isEmpty)
-    }
-
-    @Test("create and enable emits one global mutation followed by scoped workspace enablement")
-    func createAndEnableEmitsGlobalAndWorkspaceEvents() throws {
-        let container = try makeCapabilityActionContainer()
-        let context = container.mainContext
-        let workspace = Workspace(name: "Actions", primaryPath: "/tmp/action-create-enable")
-        context.insert(workspace)
-        let (library, root) = makeCapabilityActionLibrary()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let recorder = CapabilityPersistenceEventRecorder()
-        recorder.start()
-
-        _ = try CapabilityCatalogActionService(library: library).create(
-            makeActionPackage(id: "created-enabled-action-package"),
-            enableHere: true,
-            sourceURL: nil,
-            workspace: workspace,
-            modelContext: context,
-            policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
-            traceID: "trace-create-enable"
         )
 
         #expect(recorder.changes == [.global, .workspace(workspace.id)])

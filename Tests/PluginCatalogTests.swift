@@ -28,7 +28,6 @@ private final class ProductionCatalogReloadHandler: @unchecked Sendable {
     let catalog: PluginCatalog
     let library: CapabilityLibrary
     let workspaceID: UUID
-    let sourceRevision = PluginCatalogPresentationSourceRevision()
     private var token: NSObjectProtocol?
 
     init(catalog: PluginCatalog, library: CapabilityLibrary, workspaceID: UUID = UUID()) {
@@ -46,12 +45,12 @@ private final class ProductionCatalogReloadHandler: @unchecked Sendable {
             MainActor.assumeIsolated {
                 guard let self,
                       let change = notification.object as? CapabilityCatalogPersistenceChange else { return }
-                self.sourceRevision.receive(change, workspaceID: self.workspaceID) {
-                    self.catalog.loadApprovedCapabilities(
-                        library: self.library,
-                        announceLibraryMutations: false
-                    )
-                }
+                // Same rule as PluginsSurfaceView: a library change reloads.
+                guard change.workspaceID == nil else { return }
+                self.catalog.loadApprovedCapabilities(
+                    library: self.library,
+                    announceLibraryMutations: false
+                )
             }
         }
     }
@@ -91,8 +90,8 @@ struct PluginCatalogSearchTests {
         )
 
         #expect(package.contentSummary == "1 browser adapter")
-        #expect(PluginCatalogSearch.matches(package, query: " BROWSER ADAPTER "))
-        #expect(!PluginCatalogSearch.matches(package, query: "jira"))
+        #expect(PluginsSurfacePresentation.matches(package, query: " BROWSER ADAPTER "))
+        #expect(!PluginsSurfacePresentation.matches(package, query: "jira"))
     }
 }
 
@@ -169,7 +168,6 @@ struct PluginCatalogLoadTests {
         // The repair event is delivered synchronously while the original load
         // is active. Its centralized handler must not assign a second snapshot.
         #expect(catalog.revision == 1)
-        #expect(reloadHandler.sourceRevision.persistenceRevision == 1)
     }
 
     @Test("typed persistence handler reloads once globally and never for workspace-only changes")
@@ -189,15 +187,12 @@ struct PluginCatalogLoadTests {
 
         CapabilityCatalogPersistenceEvents.post(.global)
         #expect(catalog.revision == 1)
-        #expect(handler.sourceRevision.persistenceRevision == 1)
 
         CapabilityCatalogPersistenceEvents.post(.workspace(workspaceID))
         #expect(catalog.revision == 1)
-        #expect(handler.sourceRevision.persistenceRevision == 2)
 
         CapabilityCatalogPersistenceEvents.post(.workspace(UUID()))
         #expect(catalog.revision == 1)
-        #expect(handler.sourceRevision.persistenceRevision == 2)
     }
 }
 

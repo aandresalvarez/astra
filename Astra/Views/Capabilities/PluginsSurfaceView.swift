@@ -1,18 +1,21 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
 
 /// Plugins 2.0: one card, status carried by group headings, one verb per row,
 /// rows that expand in place (`docs/design-system/lean-ui-system.md`).
 ///
-/// Shown in Configure → Capabilities when `PluginsSurfacePreferences` is on.
-/// Every capability side effect goes through `CapabilityCatalogActionService`
-/// (`PluginsSurfaceFitnessTests`); copy and grouping live in
-/// `PluginsSurfacePresentation`.
+/// Configure → Capabilities. Every capability side effect goes through
+/// `CapabilityCatalogActionService` (`PluginsSurfaceFitnessTests`), except
+/// Google Workspace, whose Add opens the Google sign-in sheet; copy and
+/// grouping live in `PluginsSurfacePresentation`.
 struct PluginsSurfaceView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
+    /// A plugin to open on arrival (the rail's plugin links); cleared once shown.
+    @Binding var selectedPackageID: String?
     var onCatalogChanged: () -> Void = {}
     var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
 
@@ -32,6 +35,7 @@ struct PluginsSurfaceView: View {
     @State private var fetchingSourceIDs: Set<String> = []
     @State private var isAddingSource = false
     @State private var sourceInput = ""
+    @State private var googleSignInPackage: PluginPackage?
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -43,7 +47,7 @@ struct PluginsSurfaceView: View {
     }
 
     private var policyContext: CapabilityCatalogPolicyContext {
-        PluginCatalogApprovalState.policyContext(workspace: workspace, approvalRecords: approvalRecords)
+        CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: approvalRecords)
     }
 
     private var packages: [PluginPackage] {
@@ -103,6 +107,7 @@ struct PluginsSurfaceView: View {
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(addSource)
                     Button("Choose folder…", action: chooseSourceFolder).controlSize(.small)
+                    Button("Import file…", action: importPluginFile).controlSize(.small)
                     Button("Add", action: addSource).controlSize(.small)
                 }
             }
@@ -136,10 +141,39 @@ struct PluginsSurfaceView: View {
             }
             refreshStatuses()
             loadSources()
+            revealSelectedPackage()
         }
+        .onChange(of: selectedPackageID) { _, _ in revealSelectedPackage() }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
             refreshApprovalRecords()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityCatalogPersistenceChanged)) { notification in
+            // A library change (an install from chat's /mcp, a removal) needs
+            // a reload; a workspace-scoped change is already observed through
+            // the model.
+            guard (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil else { return }
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+        }
+        .sheet(item: $googleSignInPackage) { package in
+            GoogleWorkspaceCapabilityInstallSheet(
+                package: package,
+                workspace: workspace,
+                policyContext: policyContext,
+                onDismiss: { googleSignInPackage = nil },
+                onInstalled: { _ in
+                    googleSignInPackage = nil
+                    expanded.insert(package.id)
+                    onCatalogChanged()
+                    refreshStatuses()
+                }
+            )
+        }
+    }
+
+    private func revealSelectedPackage() {
+        guard let id = selectedPackageID else { return }
+        expanded.insert(id)
+        selectedPackageID = nil
     }
 
     @ViewBuilder
@@ -215,6 +249,10 @@ struct PluginsSurfaceView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     Spacer()
+                    if GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup(package) {
+                        Button("Google account…") { googleSignInPackage = package }
+                            .controlSize(.small)
+                    }
                     if row.isRemovable {
                         Button("Remove", role: .destructive) { remove(package) }
                             .controlSize(.small)
@@ -379,6 +417,29 @@ struct PluginsSurfaceView: View {
         addSource()
     }
 
+    /// One plugin JSON file rather than a source: it goes into the library as
+    /// a draft and then shows under Available.
+    private func importPluginFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        errorMessage = nil
+        do {
+            let package = try CapabilityCatalogActionService().importFile(
+                at: url, workspace: workspace, traceID: AuditTrace.make("plugins-import")
+            )
+            isAddingSource = false
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            expanded.insert(package.id)
+            onCatalogChanged()
+        } catch {
+            errorMessage = "Couldn't import \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
     private func fetch(_ source: PluginSource) {
         fetchingSourceIDs.insert(source.id)
         Task { @MainActor in
@@ -410,6 +471,12 @@ struct PluginsSurfaceView: View {
             ?? sourced.first(where: { $0.package.id == packageID && $0.problem == nil })?.package
         else { return }
         errorMessage = nil
+        // Google Workspace is only useful signed in, and its sheet signs in
+        // before it enables.
+        if GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup(package) {
+            googleSignInPackage = package
+            return
+        }
         do {
             try CapabilityCatalogActionService().add(
                 package,

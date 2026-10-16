@@ -79,8 +79,6 @@ public enum AppStorageKeys {
     // Opt-in Tier 2 (utility-model) objective drift detection. Default OFF --
     // this is new/unproven; see ObjectiveAssessmentService.
     public static let objectiveDriftDetectionEnabled = "astra.objectiveAssessment.driftDetectionEnabled.v1"
-    /// Plugins 2.0 surface preview. Unset means on in development builds only.
-    public static let pluginsSurfaceEnabled = "astra.plugins.surfaceEnabled.v1"
     public static let defaultTokenBudget = "defaultTokenBudget"
     public static let budgetEnforcementMode = "astra.budget.enforcementMode.v1"
     public static let claudePath = "claudePath"

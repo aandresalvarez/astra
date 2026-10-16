@@ -24,17 +24,6 @@ struct CopyableCapabilitySetup: Identifiable {
     }
 }
 
-/// A workspace whose saved setup can be copied into one package being
-/// installed, carrying the already-computed inputs.
-///
-/// Same reason as `CopyableCapabilitySetup`: producing the inputs costs a
-/// Keychain sweep, and the menu row and the copy action both need them.
-struct CopyableCapabilityInstallSource: Identifiable {
-    let id: UUID
-    let name: String
-    let inputs: OnboardingCapabilityInstallationInputs
-}
-
 /// Builds the "reuse setup from another workspace" list, and the cheap key that
 /// says when it needs rebuilding.
 ///
@@ -84,53 +73,6 @@ enum CopyableCapabilitySetupResolver {
         let revisions = connectors.map { "\($0.id.uuidString)@\($0.updatedAt.timeIntervalSince1970)" }
         let parts = prefix.isEmpty ? workspaces + revisions : [prefix] + workspaces + revisions
         return parts.joined(separator: "|")
-    }
-
-    /// The install sheet's half: which workspaces have setup worth copying into
-    /// *this* package.
-    ///
-    /// Same fault and same fix as `resolve`. In `PluginInstallSheet` this was a
-    /// computed property evaluated three times per body pass — the section's
-    /// `isEmpty` check, the summary line's `count`, and the menu's `ForEach` —
-    /// each running `installationInputs` for every workspace, and `body` re-runs
-    /// on every keystroke into the credential fields below it.
-    @MainActor
-    static func installSources(
-        for package: PluginPackage,
-        excluding excludedWorkspaceID: UUID,
-        sources: [Workspace],
-        connectors: [Connector],
-        copier: CapabilitySetupCopier = CapabilitySetupCopier()
-    ) -> [CopyableCapabilityInstallSource] {
-        // Narrowed here rather than by the caller's query, so that the caller
-        // observes every connector — which is what `key` needs — while the
-        // sweep still sees only the globals it is defined over.
-        let globalConnectors = connectors.filter(\.isGlobal)
-        // This sweep is the app's heaviest batch of credential reads, so it is
-        // also where an unopenable keychain shows up first. Drain the pending
-        // failure here as well as at startup: a keychain that breaks *while the
-        // app is running* — a rebuilt binary, a relocked keychain, a declined
-        // prompt — would otherwise never reach the log, which is the exact
-        // blindness this reporting was added to remove.
-        defer { AstraSecureKeychainStore.logPendingKeychainFailure(scope: "capability_install") }
-        return sources.compactMap { sourceWorkspace in
-            guard sourceWorkspace.id != excludedWorkspaceID else { return nil }
-            let inputs = copier.installationInputs(
-                for: package,
-                from: sourceWorkspace,
-                globalConnectors: globalConnectors
-            )
-            guard !inputs.credentialInputs.isEmpty
-                    || !inputs.configInputs.isEmpty
-                    || !inputs.baseURLOverrides.isEmpty else {
-                return nil
-            }
-            return CopyableCapabilityInstallSource(
-                id: sourceWorkspace.id,
-                name: sourceWorkspace.name,
-                inputs: inputs
-            )
-        }
     }
 
     /// Stays on the main actor: `copySetup` walks `Workspace.connectors` and the

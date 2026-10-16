@@ -338,49 +338,6 @@ struct CopyableCapabilitySetupKeyTests {
     /// The list the key protects. Offering the workspace being set up as a
     /// source to copy from is offering it its own values back, and a workspace
     /// with nothing saved is a menu row that does nothing.
-    @Test("Install sources exclude the destination and anything with nothing to copy")
-    func installSourcesExcludeTheDestinationAndTheEmpty() throws {
-        let container = try makeContainer()
-        let context = container.mainContext
-        let store = CountingSecretStore()
-
-        let global = Connector(
-            name: "REDCap", serviceType: "redcap",
-            baseURL: "https://redcap.example.edu/api/", authMethod: "api_key")
-        global.isGlobal = true
-        global.credentialKeys = ["REDCAP_API_TOKEN"]
-        context.insert(global)
-        store.save(
-            key: "REDCAP_API_TOKEN",
-            value: "tok-abc",
-            entityID: KeychainSecretStore.connectorEntityID(for: global.id),
-            label: nil
-        )
-
-        // Configured identically, so only the exclusion can tell them apart.
-        let source = Workspace(name: "Source", primaryPath: NSTemporaryDirectory())
-        let destination = Workspace(name: "Destination", primaryPath: NSTemporaryDirectory())
-        for workspace in [source, destination] {
-            workspace.enabledGlobalConnectorIDs = [global.id.uuidString]
-            workspace.enabledCapabilityIDs = ["redcap-workflow"]
-            context.insert(workspace)
-        }
-        let empty = Workspace(name: "Empty", primaryPath: NSTemporaryDirectory())
-        context.insert(empty)
-        try context.save()
-
-        let resolved = CopyableCapabilitySetupResolver.installSources(
-            for: makeRedcapPackage(),
-            excluding: destination.id,
-            sources: [source, destination, empty],
-            connectors: [global],
-            copier: CapabilitySetupCopier(secretStore: store)
-        )
-
-        #expect(resolved.map(\.name) == ["Source"])
-        #expect(resolved.first?.inputs.credentialInputs["REDCAP_API_TOKEN"] == "tok-abc")
-    }
-
     /// Two callers keying on the same rows for different packages must not
     /// share a key, or installing one would reuse the other's resolved list.
     @Test("A prefix separates callers that key on something else as well")

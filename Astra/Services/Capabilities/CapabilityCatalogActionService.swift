@@ -4,16 +4,9 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
-struct CapabilityCatalogCreateActionResult {
-    var package: PluginPackage
-    var approvalRecordChanged: Bool
-    var installedPackage: PluginPackage?
-}
-
 @MainActor
 struct CapabilityCatalogActionService {
     let installer: CapabilityInstaller
-    let creationService: CapabilityPackageCreationService
     let uninstaller: CapabilityUninstaller
 
     init(
@@ -21,23 +14,7 @@ struct CapabilityCatalogActionService {
         appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0)
     ) {
         self.installer = CapabilityInstaller(library: library, appVersion: appVersion)
-        self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion)
         self.uninstaller = CapabilityUninstaller(library: library)
-    }
-
-    /// Writes the package's shareable source JSON to `url`. The exported
-    /// form resets governance to draft, so a recipient's import always goes
-    /// through their own review — sharing a capability never shares its
-    /// approval.
-    @discardableResult
-    func exportSource(_ package: PluginPackage, to url: URL) throws -> URL {
-        let destination = try CapabilityPackageSourceExporter().export(package, to: url)
-        AppLogger.audit(.workspaceExported, category: "Capabilities", fields: [
-            "source": "capability_source_export",
-            "package_id": package.id,
-            "package_version": package.version
-        ])
-        return destination
     }
 
     @discardableResult
@@ -79,48 +56,36 @@ struct CapabilityCatalogActionService {
         }
     }
 
-    func create(
-        _ package: PluginPackage,
-        enableHere: Bool,
-        sourceURL: URL?,
+    /// Imports a plugin file (a manifest or package JSON) into the library as
+    /// a local draft. It is listed under Available afterwards and added like
+    /// any other plugin; importing enables nothing.
+    @discardableResult
+    func importFile(
+        at url: URL,
         workspace: Workspace,
-        modelContext: ModelContext,
-        policyContext: CapabilityCatalogPolicyContext,
-        allowCredentialUserInteraction: Bool = false,
+        importer: CapabilityPackageImporter? = nil,
         traceID: String
-    ) throws -> CapabilityCatalogCreateActionResult {
-        let source = enableHere ? "create_and_enable" : "create_install_only"
+    ) throws -> PluginPackage {
+        let importer = importer ?? CapabilityPackageImporter(library: installer.library)
+        let report = importer.validateFile(at: url)
         do {
-            let result = try creationService.create(
-                package,
-                enableHere: enableHere,
-                sourceURL: sourceURL,
-                workspace: workspace,
-                modelContext: modelContext,
-                allowCredentialUserInteraction: allowCredentialUserInteraction,
-                policyContext: policyContext,
-                traceID: traceID
-            )
-            // Creation always changes the global library. The creation service
-            // owns that event; this additional scoped event represents only
-            // the optional workspace enablement.
-            if enableHere {
-                CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
-            }
-            return CapabilityCatalogCreateActionResult(
-                package: result.package,
-                approvalRecordChanged: result.approvalRecord != nil,
-                installedPackage: enableHere ? result.package : nil
-            )
+            let result = try importer.importValidatedPackage(report)
+            AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
+                "source": "import_json",
+                "trace_id": traceID,
+                "package_id": result.package.id,
+                "package_name": result.package.name,
+                "package_version": result.package.version,
+                "workspace_id": workspace.id.uuidString
+            ])
+            return result.package
         } catch {
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: failureFields(
-                package: package,
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: CapabilityAudit.importJSONFailureFields(
+                report: report,
                 workspace: workspace,
-                source: source,
                 traceID: traceID,
-                sourceURL: sourceURL,
-                error: error
-            ), level: .error)
+                result: report.canInstall ? "import_failed" : "validation_blocked"
+            ), level: .warning)
             throw error
         }
     }

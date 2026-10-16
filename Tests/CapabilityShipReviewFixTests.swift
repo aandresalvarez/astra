@@ -275,65 +275,6 @@ struct RuntimeSupportSubtitleTests {
         )
     }
 
-    @Test("No supporting runtimes yields the not-delivered subtitle")
-    func noneSupporting() {
-        let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(
-            descriptors: [descriptor(id: .codexCLI, mcp: false)]
-        )
-        #expect(subtitle == "Not delivered to any installed runtime yet")
-    }
-
-    @Test("All runtimes supporting yields the all-runtimes subtitle")
-    func allSupporting() {
-        let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(
-            descriptors: [descriptor(id: .claudeCode, mcp: true)]
-        )
-        #expect(subtitle == "Delivered on all runtimes")
-    }
-
-    @Test("Package-specific subtitle does not claim skipped connector-bound remotes are delivered")
-    func packageSpecificSubtitleDoesNotClaimSkippedConnectorBoundRemotesAreDelivered() {
-        let remote = PluginMCPServer(
-            id: "google_drive",
-            displayName: "Google Drive",
-            transport: .http,
-            url: URL(string: "https://mcp.example.com/google")!,
-            connectorBindings: ["google-workspace"]
-        )
-        let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(
-            for: [remote],
-            descriptors: [
-                descriptor(id: .claudeCode, mcp: true),
-                descriptor(id: .codexCLI, mcp: true)
-            ]
-        )
-
-        #expect(subtitle == "Not delivered to any installed runtime yet")
-    }
-
-    @Test("Package-specific subtitle reports partial delivery")
-    func packageSpecificSubtitleReportsPartialDelivery() {
-        let local = PluginMCPServer(
-            id: "local_files",
-            displayName: "Local Files",
-            transport: .stdio,
-            command: "/bin/cat"
-        )
-        let remote = PluginMCPServer(
-            id: "google_drive",
-            displayName: "Google Drive",
-            transport: .http,
-            url: URL(string: "https://mcp.example.com/google")!,
-            connectorBindings: ["google-workspace"]
-        )
-        let subtitle = CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(
-            for: [local, remote],
-            descriptors: [descriptor(id: .claudeCode, mcp: true)]
-        )
-
-        #expect(subtitle.contains("Partially delivered"))
-        #expect(subtitle.contains("some servers are skipped"))
-    }
 }
 
 @Suite("Update Flow Version Parsing Edge")
