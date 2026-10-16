@@ -110,6 +110,21 @@ target_for_path() {
       add_target "ShelfMarkdownPanelLayoutTests"
       add_target "ShelfChromeTests"
       ;;
+    Astra/Views/SidebarTask*.swift|Astra/Views/TaskSidebarView.swift|Tests/SidebarTaskStore*.swift|Tests/SidebarTaskSourceObservationTests.swift)
+      add_target "SidebarTaskStoreTests"
+      add_target "SidebarTaskStoreSignalIntegrationTests"
+      add_target "SidebarTaskSourceObservationTests"
+      ;;
+    Astra/Services/Settings/AppUpdateSafety.swift|Tests/RunningTaskCountPredicateTests.swift)
+      add_target "RunningTaskCountPredicateTests"
+      ;;
+    Astra/Services/Persistence/OrphanedV12StoreMigrator.swift|Tests/OrphanedV12StoreMigratorTests.swift)
+      add_target "OrphanedV12StoreMigratorTests"
+      ;;
+    Astra/Services/Persistence/SwiftDataDeletionPreparation.swift|Astra/Services/Tasks/TaskWorktreeService.swift|Astra/Services/Tasks/TaskLifecycleCoordinator.swift|Tests/SwiftDataDeletionPreparationTests.swift|Tests/NewTaskWorktree*.swift)
+      add_target "SwiftDataDeletionPreparationTests"
+      add_target "NewTaskWorktree"
+      ;;
     Tests/FeedbackEvidencePrivacyTests.swift|Astra/Services/Feedback/*)
       add_target "FeedbackEvidencePrivacyTests"
       ;;

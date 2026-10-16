@@ -2244,8 +2244,8 @@ struct ArchitectureFitnessTests {
     /// `@Query`. An unfiltered `@Query private var tasks: [AgentTask]` in the
     /// container re-read all 726 rows — ~64 ms on the main thread, inside the
     /// view transaction — on every mutation to any task, which meant on every
-    /// streamed token of any running task. The store keeps a one-row query for
-    /// the invalidation signal and pays for the full read only when membership
+    /// streamed token of any running task. The store observes saves and its held models for
+    /// change signals and pays for the full read only when membership
     /// actually changed.
     ///
     /// Reintroducing the query would restore the stall silently: the sidebar
@@ -2258,8 +2258,8 @@ struct ArchitectureFitnessTests {
         #expect(!text.isEmpty, "TaskSidebarView.swift is empty; the guard would pass vacuously")
 
         #expect(
-            text.contains("SidebarTaskFetch.invalidationSignalDescriptor()"),
-            "The sidebar container must subscribe through the one-row signal query, not an unfiltered fetch"
+            text.contains("taskStore.loadIfNeeded(context: modelContext)"),
+            "The sidebar must start the observed store without an AgentTask query"
         )
         #expect(
             !text.contains("@Query private var tasks: [AgentTask]"),
