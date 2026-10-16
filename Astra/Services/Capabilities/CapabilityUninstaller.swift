@@ -66,7 +66,6 @@ struct CapabilityUninstaller {
         ))
 
         let packageSkillNames = Set(package.skills.map(\.name))
-        let packageConnectorNames = Set(package.connectors.map(\.name))
         let packageTemplateNames = Set(package.templates.map(\.name))
 
         let matchedGlobalSkills = ownedOrLegacyMatches(
@@ -101,9 +100,9 @@ struct CapabilityUninstaller {
         let membershipSnapshots = workspaces.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         // Wiped only after the SwiftData deletes are saved — see below.
         var pendingKeychainCleanups: [() -> Void] = []
-        // Snapshotted before the delete; run after the save, against the
-        // connectors that remain.
-        var pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
+        // Remove never deletes a connector, so no connector namespace is
+        // released here.
+        let pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
 
         for workspace in workspaces {
             let remainingWorkspacePackages = remainingPackages.filter {
@@ -127,6 +126,19 @@ struct CapabilityUninstaller {
                 workspace.enabledGlobalConnectorIDs.contains { removableGlobalConnectorIDs.contains($0) } ||
                 workspace.enabledGlobalToolIDs.contains { removableGlobalToolIDs.contains($0) }
 
+            // The activation's secret settings live under its projected
+            // skills' IDs; they go once the activation's deletion is saved.
+            if let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
+                let projectedSkillIDs = package.skills.map {
+                    PluginRuntimeProjection.derivedID(
+                        activationID: activation.id,
+                        componentID: CapabilityResourceOrigin.componentID(for: $0)
+                    )
+                }
+                pendingKeychainCleanups.append {
+                    projectedSkillIDs.forEach { SkillSecretSeam.required.deleteAllSecrets(skillID: $0) }
+                }
+            }
             WorkspaceCapabilityActivation.mutate(workspace) {
                 $0.capabilityIDs.removeAll { $0 == package.id }
                 $0.globalSkillIDs.removeAll { removableGlobalSkillIDs.contains($0) }
@@ -135,21 +147,9 @@ struct CapabilityUninstaller {
                 $0.removeInstalledPlugin(id: package.id)
             }
 
-            let workspaceConnectors = ownedOrLegacyMatches(
-                workspace.connectors,
-                packageID: package.id,
-                hasOrigin: CapabilityResourceOrigin.hasOrigin,
-                isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-                legacyMatches: { packageConnectorNames.contains($0.name) }
-            )
-            .filter { connector in
-                !remainingWorkspacePackages.contains(where: { claims(connector, package: $0) })
-            }
-            for connector in workspaceConnectors {
-                pendingConnectorCleanups.append(connector.keychainCleanup)
-                result.removedConnectorIDs.append(connector.id)
-                modelContext.delete(connector)
-            }
+            // Connectors are accounts: removing a plugin deletes its
+            // activations (and with them the bindings), never the accounts or
+            // their credentials. Deleting an account is its own action.
 
             let workspaceTemplates = ownedOrLegacyMatches(
                 workspace.templates,
@@ -166,16 +166,10 @@ struct CapabilityUninstaller {
                 modelContext.delete(template)
             }
 
-            if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceConnectors.isEmpty || !workspaceTemplates.isEmpty {
+            if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceTemplates.isEmpty {
                 workspace.updatedAt = Date()
                 result.disabledWorkspaceIDs.append(workspace.id)
             }
-        }
-
-        for connector in matchedGlobalConnectors where !remainingPackages.contains(where: { claims(connector, package: $0) }) {
-            pendingConnectorCleanups.append(connector.keychainCleanup)
-            result.removedConnectorIDs.append(connector.id)
-            modelContext.delete(connector)
         }
 
         for tool in matchedGlobalTools where !remainingPackages.contains(where: { claims(tool, package: $0) }) {

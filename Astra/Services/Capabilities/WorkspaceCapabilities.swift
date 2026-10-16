@@ -82,13 +82,24 @@ struct WorkspaceCapabilities {
         let attached = activeSkills.flatMap(\.connectors).filter { connector in
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
-                    || enabledPackageConnectorSpecs.contains {
-                        CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector)
-                    }
             }
             return connector.workspace?.id == workspace.id
         }
-        return uniqueConnectors(workspaceConnectors + attached + enabledGlobalConnectors + enabledPackageConnectors)
+        // An account bound to one of this workspace's plugins is in scope only
+        // through its binding, so turning the plugin off takes it out.
+        let boundAccountIDs = boundAccountIDs
+        let authored = (workspaceConnectors + attached + enabledGlobalConnectors)
+            .filter { !boundAccountIDs.contains($0.id) }
+        return uniqueConnectors(authored + projection.connectors)
+    }
+
+    /// Connector rows bound as accounts to any of this workspace's
+    /// activations, on or off.
+    var boundAccountIDs: Set<UUID> {
+        Set(WorkspaceCapabilityActivation.activations(of: workspace)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap { $0.account?.id })
     }
 
     var workspaceTools: [LocalTool] {
@@ -110,7 +121,7 @@ struct WorkspaceCapabilities {
 
     var activeTools: [LocalTool] {
         let attached = activeSkills.flatMap(\.localTools)
-        return uniqueTools(workspaceTools + attached + enabledGlobalTools + enabledPackageTools)
+        return uniqueTools(workspaceTools + attached + enabledGlobalTools + projection.tools)
     }
 
     private var enabledPackages: [PluginPackage] {
@@ -129,45 +140,14 @@ struct WorkspaceCapabilities {
         )
     }
 
-    private var enabledPackageSkillSpecs: [PluginSkill] {
-        enabledPackages.flatMap(\.skills)
-    }
-
-    private var enabledPackageConnectorSpecs: [PluginConnector] {
-        enabledPackages.flatMap(\.connectors)
-    }
-
-    private var enabledPackageToolSpecs: [PluginLocalTool] {
-        enabledPackages.flatMap(\.localTools)
+    /// The enabled plugins' skills, tools and bound accounts, derived from
+    /// this workspace's activations.
+    var projection: PluginRuntimeProjection {
+        PluginRuntimeProjection.project(workspace: workspace, packages: enabledPackages)
     }
 
     private var enabledPackageSkills: [Skill] {
-        let specs = enabledPackageSkillSpecs
-        let candidates = workspaceSkills + availableGlobalSkills
-        let directlyMatched = specs.isEmpty ? [] : candidates.filter { skill in
-            specs.contains { CapabilityRuntimeResourceMatcher.skillMatches($0, skill: skill) }
-        }
-        let resourceOwners = (enabledPackageConnectors.compactMap(\.skill) + enabledPackageTools.compactMap(\.skill))
-            .filter { skill in
-                candidates.contains { $0.id == skill.id }
-            }
-        return uniqueSkills(directlyMatched + resourceOwners)
-    }
-
-    private var enabledPackageConnectors: [Connector] {
-        let specs = enabledPackageConnectorSpecs
-        guard !specs.isEmpty else { return [] }
-        return sortedConnectors((workspaceConnectors + availableGlobalConnectors).filter { connector in
-            specs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
-        })
-    }
-
-    private var enabledPackageTools: [LocalTool] {
-        let specs = enabledPackageToolSpecs
-        guard !specs.isEmpty else { return [] }
-        return sortedTools((workspaceTools + availableGlobalTools).filter { tool in
-            specs.contains { CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool) }
-        })
+        projection.skills
     }
 
     private func uniqueSkills(_ skills: [Skill]) -> [Skill] {

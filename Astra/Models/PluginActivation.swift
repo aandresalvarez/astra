@@ -26,9 +26,12 @@ public final class PluginActivation {
     /// values are in the Keychain under the projected component's ID.
     public var configKeys: [String]
     public var configValues: [String]
-    /// Components the person replaced with an authored row; the projection
-    /// skips them so nothing is duplicated.
+    /// Components the person replaced with an authored row, and that row's
+    /// UUID string (paired by index; empty when the row is gone). The
+    /// projection skips the component and brings in the row instead, so
+    /// nothing is duplicated and nothing is found by name.
     public var overriddenComponentIDs: [String]
+    public var overridingRowIDs: [String]
     public var revision: Int
     public var createdAt: Date
     public var updatedAt: Date
@@ -54,6 +57,7 @@ public final class PluginActivation {
         self.configKeys = []
         self.configValues = []
         self.overriddenComponentIDs = []
+        self.overridingRowIDs = []
         self.revision = 0
         self.createdAt = createdAt
         self.updatedAt = createdAt
@@ -76,6 +80,13 @@ public final class PluginActivation {
             values[String(key.dropFirst(prefix.count))] = value
         }
         return values
+    }
+
+    /// The authored row that replaced `componentID`, if one is recorded.
+    public func overridingRowID(forComponent componentID: String) -> UUID? {
+        guard let index = overriddenComponentIDs.firstIndex(of: componentID),
+              index < overridingRowIDs.count else { return nil }
+        return UUID(uuidString: overridingRowIDs[index])
     }
 
     /// The accounts bound to one connector component, default first.

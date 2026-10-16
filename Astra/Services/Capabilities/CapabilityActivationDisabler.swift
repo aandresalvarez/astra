@@ -28,6 +28,9 @@ struct CapabilityActivationDisabler {
         connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
     ) -> Result {
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
+        if WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) != nil {
+            return turnOff(package, in: workspace, snapshot: membershipSnapshot, modelContext: modelContext, persist: persist)
+        }
         let state = CapabilityPackageState(
             package: package,
             workspace: workspace,
@@ -125,6 +128,31 @@ struct CapabilityActivationDisabler {
             return Result(packageID: package.id, persisted: false)
         }
         return result
+    }
+
+    /// Turning an installed plugin off deletes nothing: its accounts, their
+    /// bindings, its settings and secrets stay with the activation, so turning
+    /// it back on restores exactly what the workspace had.
+    private func turnOff(
+        _ package: PluginPackage,
+        in workspace: Workspace,
+        snapshot: WorkspaceCapabilityActivation.Snapshot,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool
+    ) -> Result {
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == package.id } }
+        workspace.updatedAt = Date()
+        guard persist(workspace, modelContext) else {
+            modelContext.rollback()
+            WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "package_disable",
+                "package_id": package.id,
+                "result": "save_failed_disable_rolled_back"
+            ], level: .error)
+            return Result(packageID: package.id, persisted: false)
+        }
+        return Result(packageID: package.id)
     }
 
     private func remainingEnabledPackages(

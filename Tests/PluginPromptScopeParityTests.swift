@@ -91,6 +91,14 @@ struct PluginPromptScopeParityTests {
         let installer = CapabilityInstaller(library: CapabilityLibrary(directory: root))
         _ = try installer.install(package, into: workspace, modelContext: context, announceCatalogMutation: false)
 
+        // R1: Add stores no row for a plugin's skills or tools, and every
+        // connector component gets an account bound to the activation.
+        #expect(try context.fetch(FetchDescriptor<Skill>()).isEmpty, "\(package.id) stored a skill row")
+        #expect(try context.fetch(FetchDescriptor<LocalTool>()).isEmpty, "\(package.id) stored a tool row")
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        #expect(activation.bindings.count == package.connectors.count)
+        #expect(!activation.recordedDigest.isEmpty)
+
         let task = AgentTask(
             title: package.name,
             goal: ([package.name] + package.skills.map(\.name) + package.connectors.map(\.name)).joined(separator: " "),

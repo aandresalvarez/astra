@@ -177,16 +177,28 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
-    /// Marks a component as replaced by an authored row (or restores it).
-    public static func setOverridden(_ overridden: Bool, componentID: String, on activation: PluginActivation) {
+    /// Marks a component as replaced by the authored row `rowID` (or, with
+    /// `overridden` false, gives the component back to the plugin).
+    public static func setOverridden(
+        _ overridden: Bool,
+        componentID: String,
+        rowID: UUID? = nil,
+        on activation: PluginActivation
+    ) {
         var ids = activation.overriddenComponentIDs
-        if overridden, !ids.contains(componentID) {
-            ids.append(componentID)
-        } else if !overridden {
-            ids.removeAll { $0 == componentID }
+        var rows = activation.overridingRowIDs
+        while rows.count < ids.count { rows.append("") }
+        if let index = ids.firstIndex(of: componentID) {
+            ids.remove(at: index)
+            rows.remove(at: index)
         }
-        guard ids != activation.overriddenComponentIDs else { return }
+        if overridden {
+            ids.append(componentID)
+            rows.append(rowID?.uuidString ?? "")
+        }
+        guard ids != activation.overriddenComponentIDs || rows != activation.overridingRowIDs else { return }
         activation.overriddenComponentIDs = ids
+        activation.overridingRowIDs = rows
         touch(activation)
     }
 
@@ -338,6 +350,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
     public let configKeys: [String]
     public let configValues: [String]
     public let overriddenComponentIDs: [String]
+    public let overridingRowIDs: [String]
     public let revision: Int
     public let createdAt: Date
     public let updatedAt: Date
@@ -352,6 +365,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         configKeys = activation.configKeys
         configValues = activation.configValues
         overriddenComponentIDs = activation.overriddenComponentIDs
+        overridingRowIDs = activation.overridingRowIDs
         revision = activation.revision
         createdAt = activation.createdAt
         updatedAt = activation.updatedAt
@@ -379,6 +393,9 @@ public struct PluginActivationRecord: Equatable, Sendable {
         if activation.configValues != configValues { activation.configValues = configValues }
         if activation.overriddenComponentIDs != overriddenComponentIDs {
             activation.overriddenComponentIDs = overriddenComponentIDs
+        }
+        if activation.overridingRowIDs != overridingRowIDs {
+            activation.overridingRowIDs = overridingRowIDs
         }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }

@@ -329,7 +329,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return artifact
     }
 
-    private static func detachedSkill(_ source: Skill) -> Skill {
+    nonisolated static func detachedSkill(_ source: Skill) -> Skill {
         let skill = Skill(
             name: source.name,
             icon: source.icon,
@@ -354,7 +354,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return skill
     }
 
-    private static func detachedConnector(
+    nonisolated static func detachedConnector(
         _ source: Connector,
         workspace: Workspace? = nil,
         skill: Skill? = nil
@@ -387,7 +387,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return connector
     }
 
-    private static func detachedLocalTool(
+    nonisolated static func detachedLocalTool(
         _ source: LocalTool,
         workspace: Workspace? = nil,
         skill: Skill? = nil
