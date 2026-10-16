@@ -586,15 +586,24 @@ struct TaskCapabilityResolver {
         // With two accounts of one service, the one the task names (or the
         // workspace default) is the only one narrated; the others stay out
         // even when an earlier grant or a shared skill would bring them back.
+        // The choice is made over every account of each mentioned service, not
+        // only the matched ones: a task naming one alias matches that account
+        // alone, and its siblings must still be ruled out.
+        let mentionedServices = Set(matchedConnectors.map {
+            WorkspaceCapabilityActivationState.normalizedService($0.serviceType)
+        })
         let accountResolution = ConnectorAccountResolver.resolve(
-            ConnectorPreflightService.preferredRuntimeConnectors(
-                from: matchedConnectors,
-                contextText: searchableText
-            ),
+            connectors.filter {
+                mentionedServices.contains(WorkspaceCapabilityActivationState.normalizedService($0.serviceType))
+            },
             contextText: searchableText,
             activation: task.workspace.map(WorkspaceCapabilityActivation.state(of:))
         )
-        let relevantConnectors = accountResolution.connectors + connectors.filter { connector in
+        let chosenConnectors = ConnectorPreflightService.preferredRuntimeConnectors(
+            from: matchedConnectors,
+            contextText: searchableText
+        ).filter { !accountResolution.excludedConnectorIDs.contains($0.id) }
+        let relevantConnectors = chosenConnectors + connectors.filter { connector in
             approvedConnectorIDs.contains(connector.id)
                 && !matchedConnectors.contains { $0.id == connector.id }
                 && !accountResolution.excludedConnectorIDs.contains(connector.id)

@@ -120,6 +120,35 @@ struct ConnectorAccountResolutionTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Naming one account excludes its siblings even when a shared skill would bring them back")
+    func namingOneAccountExcludesSkillSiblings() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Shared Jira Skill", primaryPath: "/tmp/shared-jira-skill")
+        context.insert(workspace)
+        let skill = Skill(name: "Jira Agent", icon: "ticket", skillDescription: "", behaviorInstructions: "Help.")
+        skill.workspace = workspace
+        context.insert(skill)
+        let (stanford, personal) = twoJiraAccounts()
+        for connector in [stanford, personal] {
+            connector.workspace = workspace
+            connector.skill = skill
+            context.insert(connector)
+        }
+        let task = AgentTask(title: "Export", goal: "Export the SS tickets", workspace: workspace)
+        context.insert(task)
+        task.skills = [skill]
+        try context.save()
+
+        let named = TaskCapabilityResolver(task: task).promptScope(contextText: "Export the SS tickets from Stanford")
+        #expect(named.connectors.map(\.id) == [stanford.id])
+        withExtendedLifetime(container) {}
+    }
+
     @Test("An account alias becomes the agent's alias and survives a rename")
     func accountAliasDrivesRuntimeAlias() {
         let (stanford, personal) = twoJiraAccounts()
