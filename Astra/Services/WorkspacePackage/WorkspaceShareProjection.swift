@@ -204,7 +204,8 @@ enum WorkspaceShareProjection {
                 // Key NAMES only; values (which may hold sensitive data) do not
                 // travel — the recipient re-enters them.
                 configKeys: c.configKeys,
-                notes: c.notes
+                notes: c.notes,
+                accountAlias: c.accountAlias
             )
         }
 
@@ -353,6 +354,7 @@ enum WorkspaceShareImporter {
             connector.configValues = Array(repeating: "", count: share.configKeys.count)
             connector.isGlobal = false
             connector.notes = share.notes
+            connector.accountAlias = share.accountAlias
             connector.workspace = workspace
             modelContext.insert(connector)
             connectorsByName[share.name] = connector

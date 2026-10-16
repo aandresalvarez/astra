@@ -17,7 +17,8 @@ extension ConnectorSnapshotConfig {
             isGlobal: connector.isGlobal,
             notes: connector.notes,
             createdAt: connector.createdAt,
-            updatedAt: connector.updatedAt
+            updatedAt: connector.updatedAt,
+            accountAlias: connector.accountAlias
         )
     }
 }

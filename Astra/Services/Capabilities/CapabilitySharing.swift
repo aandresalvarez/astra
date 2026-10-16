@@ -44,10 +44,19 @@ enum CapabilitySharing {
         copy.configValues = connector.configValues
         copy.testHTTPMethod = connector.testHTTPMethod
         copy.notes = connector.notes
+        copy.accountAlias = connector.accountAlias
         copy.workspace = workspace
         copy.isGlobal = false
         copyCredentials(from: connector, to: copy, secretStore: secretStore)
         disableShared(connector, in: workspace)
+        // The copy takes the shared account's place, including as the
+        // workspace's default for its service.
+        WorkspaceCapabilityActivation.mutate(workspace) { state in
+            let service = WorkspaceCapabilityActivationState.normalizedService(connector.serviceType)
+            if state.defaultAccountID(forService: service) == connector.id.uuidString {
+                state.setDefaultAccount(copy.id.uuidString, forService: service)
+            }
+        }
         return copy
     }
 

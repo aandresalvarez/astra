@@ -2099,6 +2099,7 @@ public enum WorkspaceConfigManager {
         connector.notes = snapshot.notes
         connector.createdAt = snapshot.createdAt ?? connector.createdAt
         connector.updatedAt = snapshot.updatedAt ?? connector.updatedAt
+        connector.accountAlias = snapshot.accountAlias
         connector.workspace = workspace
         return connector
     }
