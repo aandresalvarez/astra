@@ -124,6 +124,15 @@ assert_targets ""
 assert_targets "" \
   "Astra/Services/Runtime/AgentRuntimeAdapter.swift"
 
+assert_targets $'CodexMCPConfigRendererTests\nMCPRuntimeProjectionTests' \
+  "Astra/Services/Runtime/CodexMCPLaunchProjection.swift" \
+  "Tests/CodexMCPConfigRendererTests.swift"
+
+assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests' \
+  "Astra/Views/ShelfFileNavigatorPresentation.swift" \
+  "Astra/Views/ShelfMarkdownPanelView.swift" \
+  "Tests/ShelfMarkdownPanelLayoutTests.swift"
+
 assert_targets $'ReleaseBuildNumberDerivationTests\nReleaseUpdateScriptTests\nAppBundlePackagingTests' \
   ".github/workflows/release.yml" \
   "script/build_and_run.sh" \

@@ -6,6 +6,34 @@ import ASTRAPersistence
 
 @Suite("Shelf Markdown Panel Layout")
 struct ShelfMarkdownPanelLayoutTests {
+    @Test("Browsing without preview content gives the navigator the whole pane", arguments: [200.0, 620.0, 1_000.0])
+    func emptyShelfDoesNotOverlayPlaceholder(availableWidth: Double) {
+        for isPinned in [false, true] {
+            #expect(ShelfFileNavigatorLayout.resolve(
+                isPresented: true,
+                isPinned: isPinned,
+                availableWidth: availableWidth,
+                hasPreviewContent: false
+            ) == .navigatorOnly)
+        }
+    }
+
+    @Test("Closing the empty browser restores the unobscured placeholder")
+    func closedEmptyBrowserShowsPlaceholder() {
+        #expect(ShelfFileNavigatorLayout.resolve(
+            isPresented: false,
+            isPinned: false,
+            availableWidth: 620,
+            hasPreviewContent: false
+        ) == .hidden)
+    }
+
+    @Test("A navigator using the whole empty pane has no preview resize handle")
+    func emptyBrowserHasNoPreviewResizeHandle() {
+        #expect(!ShelfFileNavigatorResizePolicy.showsResizeHandle(layout: .navigatorOnly, isPinned: true))
+        #expect(!ShelfFileNavigatorResizePolicy.showsResizeHandle(layout: .navigatorOnly, isPinned: false))
+    }
+
     @Test("document reader hides the file navigator by default")
     func documentReaderHidesFileNavigatorByDefault() {
         let layout = ShelfFileNavigatorLayout.resolve(

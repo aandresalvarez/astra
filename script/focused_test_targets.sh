@@ -102,6 +102,14 @@ target_for_path() {
       add_target "AgentRuntimeAdapterTests"
       add_target "FeedbackReportPresentationTests"
       ;;
+    Astra/Services/Runtime/CodexMCPLaunchProjection.swift|Tests/CodexMCPConfigRendererTests.swift)
+      add_target "CodexMCPConfigRendererTests"
+      add_target "MCPRuntimeProjectionTests"
+      ;;
+    Astra/Views/ShelfFileNavigatorPresentation.swift|Astra/Views/ShelfMarkdownPanelView.swift|Tests/ShelfMarkdownPanelLayoutTests.swift)
+      add_target "ShelfMarkdownPanelLayoutTests"
+      add_target "ShelfChromeTests"
+      ;;
     Tests/FeedbackEvidencePrivacyTests.swift|Astra/Services/Feedback/*)
       add_target "FeedbackEvidencePrivacyTests"
       ;;

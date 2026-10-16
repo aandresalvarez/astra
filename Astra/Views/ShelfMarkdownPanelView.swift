@@ -338,12 +338,15 @@ struct ShelfMarkdownPanelView: View {
                 isPresented: isFileNavigatorPresented,
                 isPinned: isFileNavigatorPinned,
                 availableWidth: proxy.size.width,
-                navigatorWidth: fileNavigatorWidth
+                navigatorWidth: fileNavigatorWidth,
+                hasPreviewContent: session.hasFile || session.isLoadingDocument || session.errorMessage != nil
             )
 
             switch layout {
             case .hidden:
                 viewerPane
+            case .navigatorOnly:
+                fileNavigator
             case .floating:
                 ZStack(alignment: .leading) {
                     viewerPane
