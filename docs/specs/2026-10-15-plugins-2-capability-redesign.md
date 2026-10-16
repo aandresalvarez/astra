@@ -210,10 +210,12 @@ The dev store is backed up first; the stage is one-way.
    `overriddenComponentIDs` so the projection does not add the original back.
    The migration logs it (owner decision).
 
-The plugin rows themselves are **not deleted in R1**: the runtime still
-resolves them until the projection exists. R2 deletes the unedited ones and
-the plugin entries in the `Workspace` arrays in the same change that switches
-the runtime to the projection, so plugins never disappear between phases.
+The migration and the switch of the runtime to the projection ship together
+(phase R1): the unedited plugin rows and the plugin entries in the
+`Workspace` arrays are deleted in the same release that starts reading the
+projection. There is never a release in which a setting lives in both the
+old row and the new model, so an edit can't land on a copy that is about to
+be discarded, and plugins never disappear between phases.
 
 Test fixture: a V19 store with two workspaces, two Jira accounts, a shared
 Google Cloud connector with a project ID, and an edited built-in skill. After
@@ -258,6 +260,18 @@ Each is a decision R1 implements and its fixture tests.
    that pointed at a deleted plugin template row to the projected template's
    stable ID (`plugin:<pluginID>:<componentID>`), and the scheduler resolves
    projected templates as well as `workspace.templates`.
+10. **Missing entry, deferred mapping.** For a plugin whose library entry is
+    missing, settings and bindings are kept under their legacy component IDs
+    with the activation marked as pending a mapping; the next Add maps them
+    through the manifest it supplies, item 9's rule.
+11. **Approvals follow the conversion.** Converting a V19 library entry to the
+    authored manifest changes its digest, so the migration issues an approval
+    record for the converted digest with the old record's status (approved,
+    deprecated or blocked), only when the old record matched the old digest.
+12. **The mirror carries activation settings.** `.astra-workspace.json` keeps
+    each activation's non-secret `configValues`; a validated import restores
+    them for components the installed manifest still declares.
+
 9. **Legacy component IDs.** Rows made by the current installer carry
    `originComponentID` values from `CapabilityResourceOrigin.componentID(for:)`
    (`skill:<name>`, `connector:<service>:<name>`). The converter records that
@@ -266,9 +280,11 @@ Each is a decision R1 implements and its fixture tests.
 
 ### Health and repair
 
-- Expiry: when a call to a known CLI fails, run that component's check. If
-  the check fails, stop with its repair. Text patterns only pick which
-  component to check.
+- Expiry: when a call to a known CLI fails, or a brokered connector call
+  returns an authentication failure (the broker reports it as a structured
+  result, not text), run that component's `verify` (a network check for a
+  connector; for a CLI, its session-reading check). If it fails, stop with
+  the component's repair. Text patterns only pick which component to check.
 - Checks are read-only probes gated by approval and `canRun` (see Rules).
 - Retry after a repair resumes the provider session (already on `#508`).
 
@@ -301,8 +317,8 @@ count.
 | Phase | Work | Exit criterion |
 | --- | --- | --- |
 | R0 | Merge `#506`; rebase `#508` on `main` and merge it behind the preview flag | full suite green on `main` |
-| R1 | `PluginActivation`, `AccountBinding`, `Account` and the additive migration (plugin rows kept); `WorkspaceCapabilityActivation` reads activations, behavior unchanged | the fixture migration test; the dev store migrates from a backup; runtime tests unchanged |
-| R2 | `PluginRuntimeProjection`; the installer stops materializing plugin rows; the unedited plugin rows and array entries are deleted in the same change | no plugin-origin row exists after Add; a task in workspace A never sees workspace B's accounts; prompt scope for each built-in matches the pre-R2 scope |
+| R1 | `PluginActivation`, `AccountBinding`, `Account`, the migration, and `PluginRuntimeProjection`, in one release: the installer stops materializing plugin rows and the migrated rows are deleted as the runtime switches | the fixture migration test; the dev store migrates from a backup; no plugin-origin row exists after Add; a task in workspace A never sees workspace B's accounts; prompt scope for each built-in matches the pre-R1 scope |
+| R2 | (merged into R1 so no release has two owners of a setting) | — |
 | R3 | Add, Update, Turn off, Remove and Delete account on the new model; `PluginRow` | renaming a component across an Update keeps its settings; a removed component is gone; Turn off leaves accounts and secrets |
 | R4 | Parity checklist, then retire the old catalog and the flag | every checklist item has a home or an owner's "dropped" |
 | R5 | Plugin sources, with their own threat model | written as its own spec first |
