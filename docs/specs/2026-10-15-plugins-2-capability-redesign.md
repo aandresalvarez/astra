@@ -125,7 +125,10 @@ accounts) is not shipped and is superseded.
 - It emits the snapshot types the detached-launch path already runs from
   (`SkillSnapshotConfig`, `ConnectorSnapshotConfig`,
   `LocalToolSnapshotConfig`), so `SkillResolver` and the prompt builders keep
-  their inputs, plus everything else a manifest declares that the resolver
+  their inputs. `ConnectorSnapshotConfig` gains the account's ID and alias
+  (non-secret), so a detached or resumed run still names the account the task
+  chose and the broker resolves the same tenant. The projection also emits
+  everything else a manifest declares that the resolver
   reads today from `PluginPackage`: browser adapters (`google-drive-browser`
   is nothing else), MCP servers and setup requirements. R2's parity test runs
   over every built-in, so a plugin that projects to nothing fails it. `TaskCapabilityResolver` takes authored rows plus the
@@ -155,9 +158,17 @@ reconciliation finishes or undoes what an exit interrupted:
 - **Update:** library entry (the previous one kept as the rollback file the
   library already writes), then the activations. An activation whose
   `recordedDigest` differs from the library is shown as needing Update.
-- **Remove:** activations first, then the library entry. An activation
-  whose library entry is missing is shown as "missing, add it again" and
-  never resolves.
+  Components the new version dropped are removed from each activation like a
+  Remove of that component, in the same save that advances its digest: their
+  bindings and `configValues` are deleted and their activation-owned secrets
+  go through the cleanup outbox, so a later version that reintroduces the ID
+  starts empty.
+- **Remove:** a Remove intent for the plugin is written to the operation
+  journal first, then the activations are deleted, then the library entry,
+  then the intent is cleared. An intent found at launch finishes the Remove,
+  which tells it apart from an installed plugin that was never turned on. An
+  activation whose library entry is missing with no intent is shown as
+  "missing, add it again" and never resolves.
 - **Delete account and Remove:** the Keychain entries they release are
   recorded in the durable cleanup outbox first, then the SwiftData deletion
   is saved, then the entries are cleaned, exactly as
