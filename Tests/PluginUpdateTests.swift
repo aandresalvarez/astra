@@ -110,7 +110,7 @@ struct PluginUpdateTests {
         #expect(PluginsSurfacePresentation.worksOnSummary(PluginManifestConverter.defaultWorksOn(hasMCP: false))
             == "works on every provider")
         #expect(PluginsSurfacePresentation.worksOnSummary(PluginManifestConverter.defaultWorksOn(hasMCP: true))
-            == "full on Claude Code, Codex CLI, GitHub Copilot CLI (recent); shell tools elsewhere")
+            == "full on Claude, Codex, Copilot (recent); shell tools elsewhere")
         #expect(PluginsSurfacePresentation.worksOnSummary([:]) == nil)
     }
 

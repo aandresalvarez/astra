@@ -128,9 +128,22 @@ enum PluginsSurfacePresentation {
         if full.count == known.count { return "works on every provider" }
         if full.isEmpty { return "shell tools only on every provider" }
         let names = full.map { runtime in
-            worksOn[runtime.rawValue] == .fullWithRecentCLI ? "\(runtime.displayName) (recent)" : runtime.displayName
+            worksOn[runtime.rawValue] == .fullWithRecentCLI ? "\(shortName(runtime)) (recent)" : shortName(runtime)
         }
         return "full on \(names.joined(separator: ", ")); shell tools elsewhere"
+    }
+
+    /// Row subtitles are one line, so providers go by their short names.
+    private static func shortName(_ runtime: AgentRuntimeID) -> String {
+        switch runtime {
+        case .claudeCode: "Claude"
+        case .codexCLI: "Codex"
+        case .copilotCLI: "Copilot"
+        case .cursorCLI: "Cursor"
+        case .openCodeCLI: "OpenCode"
+        case .antigravityCLI: "Antigravity"
+        default: runtime.displayName
+        }
     }
 
     /// Name, summary and tags, plus what is inside: skill names, tool names and
