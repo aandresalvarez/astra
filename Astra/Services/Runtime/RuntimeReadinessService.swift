@@ -147,6 +147,7 @@ struct RuntimeReadinessService {
     private let timeout: TimeInterval
     private let detectExecutable: @Sendable (String) -> String
     private let isExecutable: @Sendable (String) -> Bool
+    private let copilotStateHome: String
 
     init(
         runner: BinaryRunner = ProcessBinaryRunner(),
@@ -156,12 +157,14 @@ struct RuntimeReadinessService {
         },
         isExecutable: @escaping @Sendable (String) -> Bool = {
             FileManager.default.isExecutableFile(atPath: $0)
-        }
+        },
+        copilotStateHome: String = CopilotCLIRuntime.defaultHome()
     ) {
         self.runner = runner
         self.timeout = timeout
         self.detectExecutable = detectExecutable
         self.isExecutable = isExecutable
+        self.copilotStateHome = copilotStateHome
     }
 
     func check(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessReport {
@@ -169,7 +172,8 @@ struct RuntimeReadinessService {
             runner: runner,
             timeout: timeout,
             detectExecutable: detectExecutable,
-            isExecutable: isExecutable
+            isExecutable: isExecutable,
+            copilotStateHome: copilotStateHome
         )
         return await AgentRuntimeAdapterRegistry
             .descriptorReadiness(for: configuration.runtime)

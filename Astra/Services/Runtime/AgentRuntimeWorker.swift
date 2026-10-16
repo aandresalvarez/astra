@@ -1104,7 +1104,8 @@ final class AgentRuntimeWorker {
             stream: streamSnapshot,
             timedOut: result.timedOut,
             budgetExceeded: result.budgetExceeded,
-            maxTurnsExceeded: result.maxTurnsExceeded
+            maxTurnsExceeded: result.maxTurnsExceeded,
+            copilotHomeAccess: selectedRuntime == .copilotCLI ? { CopilotHomeAccessCheck.inspect() } : nil
         )
         if let failureDiagnostic {
             AppLogger.audit(
