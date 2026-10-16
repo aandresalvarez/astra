@@ -1,6 +1,8 @@
 # Plugins 2.0: one way to add, configure, and keep capabilities working
 
-Status: **proposal, 2026-10-15. Nothing implemented.** Written after a
+Status: **phases 0–4 implemented on stacked draft PRs, 2026-10-15** (see
+*How the phases landed* under Phasing for where the code departs from this
+text). Originally written after a
 read-only review of the capability code on `main` at `19bb27e6`, a comparison
 with the plugin models of Claude Cowork, Claude Code and OpenAI Codex, and a
 design conversation with the repository owner. Claims marked *(verified)* were
@@ -326,11 +328,63 @@ Each phase ships on its own PR and leaves `main` working.
 
 | Phase | Work | Exit criterion |
 | --- | --- | --- |
-| 0 | Single owner for enablement as a service (`WorkspaceCapabilityActivation`, no schema change), config import validates against the library, workspace views guarded against a deleted model. **Shipped in `aandresalvarez/astra#506`.** | the 2026-10-13 review's high item closed; zero writes to the enablement arrays outside the owner, and reads frozen per file by a registry that only ratchets down |
+| 0 | Single owner for enablement as a service (`WorkspaceCapabilityActivation`, no schema change), config import validates against the library, workspace views guarded against a deleted model. **`aandresalvarez/astra#506`.** | the 2026-10-13 review's high item closed; zero writes to the enablement arrays outside the owner, and reads frozen per file by a registry that only ratchets down |
 | 1 | Manifest + converter that projects a plugin into today's rows; `PluginActivation` and `Account` entities together in one schema `Vn+1`, behind the phase 0 owner; reads move behind the owner; alias/default-account resolution replaces keyword ranking | runtime tests unchanged and green; the read registry is empty; a two-account Jira workspace launches with the chosen account |
 | 2 | New Plugins surface behind a dev flag; health loop with the three repair strategies; typed `repairAction` rendered in rail and task view | a `gcloud` session expired mid-task pauses, repairs from the task view, resumes |
 | 3 | Built-ins migrated to the manifest; git sources; startup repair retired; `worksOn` shown at add | all 12 built-ins add in one step on a fresh dev store |
 | 4 | Delete the old install/approve/enable path and `PluginCatalogView` | `Astra/Services/Capabilities` install side under half its current size |
+
+### How the phases landed
+
+The code departs from the plan above in these places; the code is the
+reference.
+
+- **Phase 1 (`aandresalvarez/astra#507`).** No `PluginActivation` entity and
+  no separate `Account` entity. Schema V20 (V19 frozen with its digest pinned)
+  adds `Connector.accountAlias` and the workspace's default account per
+  service (`Workspace.defaultAccountServiceTypes/ConnectorIDs`); the activation
+  arrays stay on `Workspace`, and every read and write goes through
+  `WorkspaceCapabilityActivation` (`workspace.capabilityActivation`), with the
+  read registry empty apart from the two config-format files. An account is a
+  connector with an alias. `ConnectorAccountResolver` picks the account a turn
+  names (alias, or the connector's name minus the service's own words), then
+  the workspace default; with neither it keeps every account in scope rather
+  than blocking the launch. `connectorMatches` on service type is unchanged, so
+  the cross-workspace reach under *Security considerations* is still open.
+- **Phase 2 (`aandresalvarez/astra#508`).** The health loop is
+  `PluginRepairCoordinator` (polls the check every 5 s, needs two passing
+  checks, gives up at 300 s). A mid-run expiry is detected by
+  `CLISessionExpiryClassifier` on tool results (Google Cloud and GitHub
+  families), stops the run with `capability_session_expired`, and records
+  `runtime.repair_required`; the task view offers the repair and Retry. The
+  `gcloud` check reads `config config-helper --format=value(credential.token_expiry)`
+  so the health view never prints a token.
+- **Phase 3.** The ten built-in files (not twelve; the earlier count included
+  assets) are manifests, and the bundle reader accepts both shapes. Sources are
+  a git URL, `owner/repo` or a folder, cloned shallow with `file:` transport
+  refused and read through `HostFileAccessBroker`, which refuses symlinks that
+  leave the source; a source plugin reusing a built-in ID cannot be added.
+  `worksOn` is keyed by `AgentRuntimeID` raw values (`claude_code`,
+  `codex_cli`, …); phase 1 used display names by mistake. The startup repair is
+  gone: an added plugin whose library version differs from the one the
+  workspace recorded shows **Update**, which re-runs Add and drops activations
+  of skills the plugin no longer ships. Workspace-local legacy copies of a
+  built-in skill are no longer rewritten. Local-edit detection before an update
+  is not built.
+- **Phase 3 PR:** `aandresalvarez/astra#509`.
+- **Phase 4 (`aandresalvarez/astra#510`).** The Plugins surface is the only capability screen. The preview
+  flag, `PluginCatalogView` and the code only it used are deleted: the generic
+  install sheet, the creation wizard (and "Create from MCP…" paste; `/mcp` in
+  chat still works), export source, the admin approve/revoke review, the
+  install-time copy-setup menu, and the old catalog presentation. Kept: Google
+  Workspace's sign-in sheet (Add opens it), import of a single plugin file
+  ("Import file…", through `CapabilityCatalogActionService.importFile`), and
+  the catalog persistence events, which the surface now observes.
+  **Exit criterion missed:** the install side (services plus UI) went from
+  about 13,200 lines on `main` to about 9,000, roughly 68%, not under half. The
+  remainder is the installer, validator, policy, catalog and credential
+  cleanup that the surface still calls; halving it means replacing those, not
+  deleting UI.
 
 Tests to add, by phase: forged-origin config import (0); cross-workspace
 service-type reach (1); alias refusal and default-account selection (1); rail
