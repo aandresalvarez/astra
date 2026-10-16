@@ -28,15 +28,31 @@ extension CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
+        let others = try modelContext.fetch(FetchDescriptor<Workspace>()).filter {
+            $0.id != workspace.id && $0.isLive && $0.capabilityActivation.capabilityIDs.contains(package.id)
+        }
+        // Every workspace the update will reach must accept the new version
+        // before any of them changes: a pack rule in one of them would
+        // otherwise stop the fan-out after the shared records were rewritten.
+        // (A save that fails later puts that workspace's old version back, so
+        // it still offers Update.)
+        _ = try CapabilityApprovalGrant.pendingRecord(
+            for: package, context: policyContext, approvedBy: "user", reviewNotes: ""
+        )
+        for other in others {
+            _ = try CapabilityApprovalGrant.pendingRecord(
+                for: package,
+                context: .currentUser(workspace: other, approvalRecords: approvalStore.records()),
+                approvedBy: "user",
+                reviewNotes: ""
+            )
+        }
         // Shared values are read once, before the first re-add resets them.
         let shared = try PluginUpdateSetup.captureShared(package, modelContext: modelContext)
         let result = try updateOne(
             package, in: workspace, shared: shared, modelContext: modelContext,
             policyContext: policyContext, approvalStore: approvalStore, traceID: traceID
         )
-        let others = try modelContext.fetch(FetchDescriptor<Workspace>()).filter {
-            $0.id != workspace.id && $0.isLive && $0.capabilityActivation.capabilityIDs.contains(package.id)
-        }
         for other in others {
             try updateOne(
                 package, in: other, shared: shared, modelContext: modelContext,

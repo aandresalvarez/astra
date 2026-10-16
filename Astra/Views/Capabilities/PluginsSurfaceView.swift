@@ -365,12 +365,12 @@ struct PluginsSurfaceView: View {
     private func loadSources() {
         let store = PluginSourceStore()
         sources = store.sources()
-        sourced = sources.flatMap { PluginSourceCatalog.plugins(in: $0, store: store) }
+        sourced = PluginSourceCatalog.firstPerID(sources.flatMap { PluginSourceCatalog.plugins(in: $0, store: store) })
     }
 
     private func addSource() {
         guard let source = PluginSource.make(from: sourceInput) else {
-            errorMessage = "Enter an https or ssh git URL, owner/repo, or a folder path."
+            errorMessage = "Enter an https or ssh git URL without a user name or token in it, owner/repo, or a folder path."
             return
         }
         errorMessage = nil

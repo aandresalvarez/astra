@@ -19,8 +19,11 @@ struct PluginSource: Codable, Identifiable, Equatable, Sendable {
 
     /// Accepts `https://…`, `ssh://…`, `git@host:owner/repo`, the GitHub
     /// shorthand `owner/repo`, or an absolute folder path. Anything else —
-    /// local `file://` URLs, a leading `-` that git would read as an option —
-    /// is refused.
+    /// local `file://` URLs, a leading `-` that git would read as an option,
+    /// a URL carrying a user, password, query or fragment (where a token would
+    /// sit, to be saved in `sources.json` and shown on screen) — is refused.
+    /// Private repositories authenticate through git's own credential helper
+    /// or SSH agent.
     static func make(from input: String, now: Date = Date()) -> PluginSource? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.hasPrefix("-") else { return nil }
@@ -31,7 +34,14 @@ struct PluginSource: Codable, Identifiable, Equatable, Sendable {
             )
         }
         let location: String
-        if trimmed.hasPrefix("https://") || trimmed.hasPrefix("ssh://") || trimmed.hasPrefix("git@") {
+        if trimmed.hasPrefix("https://") || trimmed.hasPrefix("ssh://") {
+            guard let components = URLComponents(string: trimmed), components.host?.isEmpty == false,
+                  components.password == nil, components.query == nil, components.fragment == nil,
+                  trimmed.hasPrefix("ssh://") || components.user == nil
+            else { return nil }
+            location = trimmed
+        } else if trimmed.hasPrefix("git@") {
+            guard !trimmed.contains(where: { $0 == "?" || $0 == "#" }) else { return nil }
             location = trimmed
         } else if trimmed.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil {
             location = "https://github.com/\(trimmed).git"
@@ -278,5 +288,13 @@ enum PluginSourceCatalog {
               fetched.package.version != installed.version
         else { return nil }
         return fetched.package
+    }
+
+    /// One row per plugin ID: when two sources offer the same ID, the first
+    /// source keeps it and the others are left out, so a row (and its Add)
+    /// always means one source's definition.
+    static func firstPerID(_ plugins: [SourcedPlugin]) -> [SourcedPlugin] {
+        var seen = Set<String>()
+        return plugins.filter { seen.insert($0.package.id.lowercased()).inserted }
     }
 }

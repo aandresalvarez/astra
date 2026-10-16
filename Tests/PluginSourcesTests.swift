@@ -17,7 +17,11 @@ struct PluginSourcesTests {
         #expect(PluginSource.make(from: "org/plugins")?.location == "https://github.com/org/plugins.git")
         #expect(PluginSource.make(from: "org/plugins")?.displayName == "org/plugins")
         #expect(PluginSource.make(from: "/Users/me/plugins")?.kind == .folder)
-        for refused in ["", "-uexploit", "file:///tmp/repo", "relative/path/three", "ftp://host/repo"] {
+        for refused in [
+            "", "-uexploit", "file:///tmp/repo", "relative/path/three", "ftp://host/repo",
+            "https://user:ghp_secret@github.com/org/repo.git", "https://ghp_secret@github.com/org/repo.git",
+            "https://github.com/org/repo.git?access_token=ghp_secret", "ssh://git:secret@host/org/repo.git"
+        ] {
             #expect(PluginSource.make(from: refused) == nil, "accepted \(refused)")
         }
     }
@@ -95,6 +99,21 @@ struct PluginSourcesTests {
         copycat.localTools = [try #require(gcloud.localTools.first)]
         #expect(PluginSourceCatalog.ownershipCollision(copycat, installed: [gcloud])?.contains("Google Cloud") == true)
         #expect(PluginSourceCatalog.ownershipCollision(gcloud, installed: [gcloud]) == nil)
+    }
+
+    @Test("Two sources offering one plugin ID show one row, from the first source")
+    func duplicateIDsKeepTheFirstSource() throws {
+        let first = try #require(PluginSource.make(from: "org/one"))
+        let second = try #require(PluginSource.make(from: "org/two"))
+        var package = try #require(PluginCatalog.builtInPackages.first)
+        package.id = "team-notes"
+        var other = package
+        other.id = "TEAM-NOTES"
+        let rows = PluginSourceCatalog.firstPerID([
+            SourcedPlugin(source: first, package: package, unsupported: [], problem: nil),
+            SourcedPlugin(source: second, package: other, unsupported: [], problem: nil)
+        ])
+        #expect(rows.map(\.source.id) == [first.id])
     }
 
     @Test("A newer version in a source becomes the Update for the installed source plugin")
