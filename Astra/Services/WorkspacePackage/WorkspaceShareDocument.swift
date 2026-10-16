@@ -144,6 +144,9 @@ struct ShareConnector: Codable, Sendable, Equatable {
     /// isn't shown as immediately Ready.
     var configKeys: [String]
     var notes: String
+    /// The account's alias: not a secret, and it is what tells two accounts
+    /// of one service apart for the recipient's agent and broker.
+    var accountAlias: String? = nil
 }
 
 /// A local tool definition. Command/arguments are re-checked against

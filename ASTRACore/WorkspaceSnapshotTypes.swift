@@ -15,6 +15,9 @@ public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
     public var notes: String
     public var createdAt: Date?
     public var updatedAt: Date?
+    /// The account's alias, so a task recovered from its snapshot names the
+    /// same account at the broker.
+    public var accountAlias: String?
 
     public init(
         id: String?,
@@ -30,8 +33,10 @@ public struct ConnectorSnapshotConfig: Codable, Equatable, Sendable {
         isGlobal: Bool?,
         notes: String,
         createdAt: Date?,
-        updatedAt: Date?
+        updatedAt: Date?,
+        accountAlias: String? = nil
     ) {
+        self.accountAlias = accountAlias
         self.id = id
         self.name = name
         self.serviceType = serviceType
