@@ -1726,6 +1726,62 @@ struct CopilotWorkerExecutionTests {
         #expect(run.fileChanges.contains { $0.path.hasSuffix("copilot-output.txt") })
     }
 
+    @Test("A Copilot follow-up inside the readiness window asks again instead of launching on a timed-out probe")
+    func copilotFollowUpReprobesInsideReadinessWindow() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+        let release = harness.rootURL.appendingPathComponent("release")
+        let help = #"echo "--output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR""#
+        func copilotScript(help helpBody: String, answer: String, inputTokens: Int) -> String {
+            """
+            #!/bin/sh
+            if [ "$1" = "help" ]; then
+            \(helpBody)
+              exit 0
+            fi
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\(answer)"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":\(inputTokens),"output_tokens":1},"duration_ms":1,"turns":1}'
+            exit 0
+            """
+        }
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: copilotScript(help: "  \(help)", answer: "first answer", inputTokens: 2)
+        )
+        defer { CopilotCLIRuntime.invalidateCapabilitiesCache(executablePath: copilotPath) }
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Say hello", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        // A hang guard only: two launches took 147 s in one loaded full-suite run.
+        worker.timeoutSeconds = 600
+        // Production hands the worker the shared verdict cache, so a follow-up inside the
+        // window skips the readiness check, and the re-probe that check would make.
+        worker.launchReadinessCache = RuntimeLaunchReadinessCache()
+        _ = await harness.execute(task: task, worker: worker)
+        try #require(task.runs.first?.status == .completed)
+
+        // An in-place upgrade leaves the verdict fresh but changes the binary's identity,
+        // and the new `help` cannot answer the main actor's read before the release.
+        _ = try harness.writeExecutable(
+            named: "copilot",
+            script: copilotScript(
+                help: CopilotCLICapabilityProbeTests.helpWaitingFor(release, then: help),
+                answer: "second answer",
+                inputTokens: 5
+            )
+        )
+        #expect(await CopilotCLICapabilityProbeTests.briefCapabilitiesOffMain(executablePath: copilotPath) == .conservative)
+        try Data().write(to: release)
+
+        // Launched on that fallback, the follow-up would lose the JSON flags: the usage line
+        // would go unparsed and the stream would land as raw JSON.
+        _ = await harness.continueTask(task: task, message: "Say it again", worker: worker)
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.output.contains("second answer"))
+        #expect(!run.output.contains("sessionUpdate"))
+        #expect(run.inputTokens == 5)
+    }
+
     @Test("Worker records Copilot data message deltas as visible output")
     func fakeCopilotDataMessageDeltasRecordOutput() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

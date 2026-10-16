@@ -347,6 +347,7 @@ final class AgentRuntimeWorker {
         }
 
         await CodexMCPPolicyService.warmBeforeLaunch(configuration: runtimeConfiguration)
+        await CopilotCLIRuntime.warmBeforeLaunch(runtime: selectedRuntime, executablePath: launchSettings.executablePath)
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: launchTask,
             requestedRuntime: selectedRuntime,
