@@ -652,7 +652,8 @@ struct TaskCapabilityResolver {
             reachableConnectors: connectors,
             reachableLocalTools: tools,
             reachablePackageIDs: enabledPackageIDs,
-            reachableBehaviorSkills: skills
+            reachableBehaviorSkills: skills,
+            unchosenAccountIDs: accountResolution.excludedConnectorIDs
         )
     }
 
@@ -744,7 +745,8 @@ struct TaskCapabilityResolver {
         reachableConnectors: [Connector]? = nil,
         reachableLocalTools: [LocalTool]? = nil,
         reachablePackageIDs: [String]? = nil,
-        reachableBehaviorSkills: [Skill]? = nil
+        reachableBehaviorSkills: [Skill]? = nil,
+        unchosenAccountIDs: Set<UUID> = []
     ) -> TaskCapabilityPromptScope {
         let effectiveReachableConnectors = reachableConnectors ?? connectors
         let effectiveReachableLocalTools = reachableLocalTools ?? localTools
@@ -835,7 +837,8 @@ struct TaskCapabilityResolver {
             reachableConnectors: effectiveReachableConnectors,
             reachableLocalTools: reachableLocalTools ?? scopedTools,
             reachablePackageIDs: Self.uniqueStrings(reachablePackageIDs ?? enabledPackageIDs),
-            reachableBehaviorInstructions: reachableBehaviorInstructions
+            reachableBehaviorInstructions: reachableBehaviorInstructions,
+            unchosenAccountIDs: unchosenAccountIDs
         )
     }
 
@@ -1377,6 +1380,10 @@ struct TaskCapabilityPromptScope {
     /// skill, which is the same reachability-follows-narration bug one layer
     /// down.
     let reachableBehaviorInstructions: [String]
+    /// Accounts of a service the turn chose another account of. They stay
+    /// reachable (the broker still refuses an unaliased call), but the prompt
+    /// never offers them, so the agent can't reach for the wrong one.
+    var unchosenAccountIDs: Set<UUID> = []
 
     /// The browser bridge is wired for this run. Reachability-wide, because
     /// attaching a route the turn never named costs nothing.
@@ -1397,7 +1404,7 @@ struct TaskCapabilityPromptScope {
     /// silent prompt that it has no access.
     var reachableButNotNarratedConnectors: [Connector] {
         let narrated = Set(connectors.map(\.id))
-        return reachableConnectors.filter { !narrated.contains($0.id) }
+        return reachableConnectors.filter { !narrated.contains($0.id) && !unchosenAccountIDs.contains($0.id) }
     }
 }
 

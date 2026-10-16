@@ -147,6 +147,9 @@ struct ConnectorAccountResolutionTests {
 
         let named = TaskCapabilityResolver(task: task).promptScope(contextText: "Export the SS tickets from Stanford")
         #expect(named.connectors.map(\.id) == [stanford.id])
+        // Still reachable, but not offered to the agent as "also connected".
+        #expect(named.reachableConnectors.contains { $0.id == personal.id })
+        #expect(!named.reachableButNotNarratedConnectors.contains { $0.id == personal.id })
         withExtendedLifetime(container) {}
     }
 
