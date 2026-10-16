@@ -160,6 +160,29 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Templates and schedules follow the fresh IDs of the skills a validated import creates")
+    @MainActor
+    func validatedImportRemapsTemplateAndScheduleSkills() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let fileSkillID = UUID().uuidString
+        var config = minimalConfig()
+        config.skills = [skillConfig(id: fileSkillID, name: "Routine Agent", isGlobal: false)]
+        config.templates = [Manager.TemplateConfig(
+            name: "T", icon: "doc", description: "", beforeGoal: "", mainGoal: "Do it", afterGoal: "",
+            beforeBudget: 0, mainBudget: 1000, afterBudget: 0, beforeModel: "", mainModel: "", afterModel: "",
+            variablesJSON: "[]", hooksJSON: "[]", passContextToMain: false, passContextToAfter: false,
+            defaultSkillIDs: [fileSkillID]
+        )]
+
+        let result = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier))
+
+        let skill = try #require(result.workspace.skills.first)
+        #expect(skill.id.uuidString != fileSkillID)
+        #expect(result.workspace.templates.first?.defaultSkillIDs == [skill.id.uuidString])
+        withExtendedLifetime(container) {}
+    }
+
     @Test("A validated import does not hang its own tools on a shared skill it reuses")
     @MainActor
     func validatedImportDoesNotAttachToReusedSkill() throws {
