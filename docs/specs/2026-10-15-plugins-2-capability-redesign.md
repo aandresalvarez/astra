@@ -221,6 +221,49 @@ migration the accounts keep their IDs and resolve their secrets, each
 account keeps its own settings, the bindings and defaults match, and the
 edited skill survives as an authored skill.
 
+### Migration requirements found in review
+
+Each is a decision R1 implements and its fixture tests.
+
+1. **Aliases.** A migrated account's alias is its connector name with the
+   service's own words removed (the rule `ConnectorAccountResolver.names`
+   already applies), falling back to the connector name. Same-service
+   collisions get " 2", " 3" in creation order. The two-Jira fixture asserts
+   two distinct aliases.
+2. **Plaintext credentials.** Before the schema stage, launch runs the
+   existing `StartupCredentialMigrationService` against the V19 store. If any
+   connector still holds a plaintext credential afterwards, the store stays on
+   V19 and the failure is reported; the stage never runs with a credential it
+   would drop.
+3. **Edited components keep their settings.** An edited skill that survives
+   as an authored row keeps its environment values on the row and its secrets
+   under its own UUID; only unedited plugin skills move settings to the
+   activation.
+4. **Missing library entry.** A plugin installed in V19 whose library entry is
+   missing or unreadable still gets its activation, with `recordedDigest`
+   empty and the "missing, add it again" state; its bindings and settings
+   are kept for when it is added again.
+5. **Cleanup ownership.** `ConnectorCredentialCleanup.Ownership` counts the
+   namespaces accounts own, so deleting a migrated connector row in R2 never
+   cleans the account's UUID namespace; R2 enqueues only the obsolete stable
+   namespace.
+6. **Accounts and workspace deletion.** A workspace-owned account is deleted
+   with its workspace through the existing deletion outbox
+   (`WorkspaceDeletionCleanupRecord` gains the account's namespaces). A shared
+   account has no owning workspace and is untouched by it.
+7. **Old snapshots still decode.** The fields added to
+   `ConnectorSnapshotConfig` (account ID, alias) are optional, and an
+   old-snapshot fixture decodes unchanged.
+8. **Schedules keep their templates.** R2 rewrites a schedule's `templateID`
+   that pointed at a deleted plugin template row to the projected template's
+   stable ID (`plugin:<pluginID>:<componentID>`), and the scheduler resolves
+   projected templates as well as `workspace.templates`.
+9. **Legacy component IDs.** Rows made by the current installer carry
+   `originComponentID` values from `CapabilityResourceOrigin.componentID(for:)`
+   (`skill:<name>`, `connector:<service>:<name>`). The converter records that
+   legacy ID on each manifest component, and the migration maps through it to
+   the manifest's component ID; a test covers every built-in.
+
 ### Health and repair
 
 - Expiry: when a call to a known CLI fails, run that component's check. If
