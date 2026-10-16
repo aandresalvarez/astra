@@ -62,7 +62,8 @@ struct PluginsSurfaceView: View {
         let fromSources = sourced.filter { !known.contains($0.package.id) }.map { plugin in
             PluginsSurfacePresentation.Input(
                 package: plugin.package, isEnabled: false, pendingSteps: 0, isVisible: true, isRemovable: false,
-                sourceName: plugin.source.displayName, unsupported: plugin.unsupported, problem: plugin.problem
+                sourceName: plugin.source.displayName, unsupported: plugin.unsupported, problem: plugin.problem,
+                worksOn: worksOn(plugin.package)
             )
         }
         return PluginsSurfacePresentation.makeState(fromSources + packages.map { package in
@@ -73,9 +74,15 @@ struct PluginsSurfaceView: View {
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + failingSetup(for: package).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
-                isRemovable: !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id)
+                isRemovable: !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id),
+                recordedVersion: workspace.capabilityActivation.installedVersion(of: package.id),
+                worksOn: worksOn(package)
             )
         }, query: query)
+    }
+
+    private func worksOn(_ package: PluginPackage) -> String? {
+        PluginsSurfacePresentation.worksOnSummary(PluginManifestConverter.manifest(from: package).worksOn)
     }
 
     var body: some View {
@@ -174,8 +181,8 @@ struct PluginsSurfaceView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                if row.verb == .add {
-                    Button("Add") { add(row.id) }
+                if let verb = row.verb {
+                    Button(verb == .add ? "Add" : "Update") { verb == .add ? add(row.id) : update(row.id) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
@@ -416,6 +423,24 @@ struct PluginsSurfaceView: View {
             refreshStatuses()
         } catch {
             errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
+        }
+    }
+
+    private func update(_ packageID: String) {
+        guard let package = packages.first(where: { $0.id == packageID }) else { return }
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().update(
+                package,
+                workspace: workspace,
+                modelContext: modelContext,
+                policyContext: policyContext,
+                traceID: AuditTrace.make("plugins-update")
+            )
+            onCatalogChanged()
+            refreshStatuses()
+        } catch {
+            errorMessage = "Couldn't update \(package.name): \(error.localizedDescription)"
         }
     }
 

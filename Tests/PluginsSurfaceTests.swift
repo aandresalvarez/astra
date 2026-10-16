@@ -106,7 +106,8 @@ struct PluginsSurfaceTests {
     ) -> PluginsSurfacePresentation.Input {
         PluginsSurfacePresentation.Input(
             package: package, isEnabled: isEnabled, pendingSteps: pendingSteps,
-            isVisible: isVisible, isRemovable: true
+            isVisible: isVisible, isRemovable: true,
+            recordedVersion: isEnabled ? package.version : nil
         )
     }
 

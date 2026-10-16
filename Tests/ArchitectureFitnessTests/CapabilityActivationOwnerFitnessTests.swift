@@ -195,21 +195,22 @@ struct CapabilityActivationOwnerFitnessTests {
         #"\$[A-Za-z_][\w.]*\.(\#(fieldAlternation))\b"#
     ].map { try! NSRegularExpression(pattern: $0) }
 
+    /// The arrays only: the Workspace read helpers (`installedVersion(of:)`,
+    /// `installedPluginIDSet`) are gone, so the compiler already refuses them,
+    /// and the same names on the owner's state are the sanctioned reads.
     private static let readPattern = try! NSRegularExpression(
-        pattern: #"(?<!self)\.(\#(fieldAlternation))\b(?!\s*\()|\.installedVersion\(of:|\.installedPluginIDSet\b"#
+        pattern: #"(?<!self)\.(\#(fieldAlternation))\b(?!\s*\()"#
     )
 
-    /// Non-comment lines that name one of the arrays or their read helpers;
-    /// every other line is skipped before any regex runs.
+    /// Non-comment lines that name one of the arrays; every other line is
+    /// skipped before any regex runs.
     private func candidateLines(in source: String) -> [Line] {
         source
             .split(separator: "\n", omittingEmptySubsequences: false)
             .enumerated()
             .compactMap { index, raw in
                 let text = String(raw)
-                guard Self.fields.contains(where: { text.contains($0) })
-                    || text.contains(".installedVersion(of:")
-                    || text.contains(".installedPluginIDSet") else { return nil }
+                guard Self.fields.contains(where: { text.contains($0) }) else { return nil }
                 if text.trimmingCharacters(in: .whitespaces).hasPrefix("//") { return nil }
                 return Line(number: index + 1, text: text)
             }

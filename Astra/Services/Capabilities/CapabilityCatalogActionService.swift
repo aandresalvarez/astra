@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct CapabilityCatalogCreateActionResult {
     var package: PluginPackage
@@ -170,6 +171,60 @@ struct CapabilityCatalogActionService {
             source: "plugins_add",
             traceID: traceID
         )
+    }
+
+    /// Plugins 2.0 Update: re-runs Add with the library's definition, which
+    /// rewrites the plugin's skills, connectors and tools and records the new
+    /// version, then drops this workspace's activations of skills the plugin
+    /// no longer ships. This visible step replaces the startup repair that
+    /// rewrote definitions silently on every launch.
+    @discardableResult
+    func update(
+        _ package: PluginPackage,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        policyContext: CapabilityCatalogPolicyContext,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
+        traceID: String
+    ) throws -> CapabilityInstaller.InstallationResult {
+        let previousVersion = workspace.capabilityActivation.installedVersion(of: package.id)
+        let result = try add(
+            package,
+            workspace: workspace,
+            modelContext: modelContext,
+            policyContext: policyContext,
+            approvalStore: approvalStore,
+            traceID: traceID
+        )
+        let current = Set(result.skillIDs.map(\.uuidString))
+        let packageID = package.id
+        let skillKind = CapabilityResourceComponentKind.skill.rawValue
+        let stale = Set(try modelContext.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal }))
+            .filter { $0.originPackageID == packageID && $0.originComponentKind == skillKind }
+            .map(\.id.uuidString)
+            .filter { !current.contains($0) })
+        let pruned = WorkspaceCapabilityActivation.mutate(workspace) { state -> Bool in
+            let before = state.globalSkillIDs.count
+            state.globalSkillIDs.removeAll { stale.contains($0) }
+            return state.globalSkillIDs.count != before
+        }
+        if pruned, !WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace,
+            modelContext: modelContext,
+            auditFields: ["source": "plugins_update", "package_id": package.id]
+        ) {
+            throw CapabilityInstaller.InstallationError.persistenceFailed(packageID: package.id)
+        }
+        AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
+            "source": "plugins_update",
+            "package_id": package.id,
+            "package_version": package.version,
+            "previous_version": previousVersion ?? "",
+            "workspace_id": workspace.id.uuidString,
+            "pruned_skill_count": String(pruned ? stale.count : 0),
+            "trace_id": traceID
+        ])
+        return result
     }
 
     /// Turns a package off in one workspace, leaving it installed.

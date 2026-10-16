@@ -979,18 +979,9 @@ public struct ASTRAApp: App {
                 }
             }
         }
-        // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
-        // (runtime.loadPluginCatalog()), which runs synchronously in
-        // ContentView.handleAppear BEFORE this deferred Task. By the time we get
-        // here the Capabilities directory is already seeded/pruned, so the repair
-        // pass below sees a populated directory and its installedIDs early-out works.
-        // Re-syncing here would just rewrite every built-in JSON a second time.
-        let capabilityLibrary = CapabilityLibrary()
-        CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
-            modelContext: modelContext,
-            library: capabilityLibrary,
-            approvedPackages: PluginCatalog.builtInPackages
-        )
+        // Definition changes to installed plugins arrive through the Plugins
+        // screen's Update verb (CapabilityCatalogActionService.update), not a
+        // silent rewrite here (Plugins 2.0 spec, Sources).
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
         settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
     }
