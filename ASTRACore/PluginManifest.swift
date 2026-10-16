@@ -147,6 +147,18 @@ public struct PluginComponent: Codable, Sendable {
 /// runs on add and on refresh; `verify` may use the network; `connect` needs the
 /// user and is never run at add time; `repair` is what a broken component's
 /// button does; `install` gets a missing dependency.
+public enum PluginManifestError: Error, Equatable, LocalizedError {
+    /// A component declares setup steps ASTRA cannot run yet.
+    case unrepresentableSetup(component: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unrepresentableSetup(let component):
+            "\(component) declares setup steps ASTRA can't run yet, so the plugin can't be installed."
+        }
+    }
+}
+
 public struct PluginComponentSetup: Codable, Sendable, Equatable {
     public var check: PluginSetupStep?
     public var verify: PluginSetupStep?
@@ -317,9 +329,27 @@ public enum PluginManifestConverter {
     /// converted, anything else decodes as a package.
     public static func decodePackage(from data: Data, decoder: JSONDecoder = JSONDecoder()) throws -> PluginPackage {
         if isManifest(data) {
-            return package(from: try decoder.decode(PluginManifest.self, from: data))
+            return try checkedPackage(from: decoder.decode(PluginManifest.self, from: data))
         }
         return try decoder.decode(PluginPackage.self, from: data)
+    }
+
+    /// `package(from:)`, refusing a manifest whose setup steps the package
+    /// cannot carry. The package keeps setup only as CLI prerequisites and
+    /// connector credential hints, so a declared check, verify, connect,
+    /// repair or install step that does not come back out of the package
+    /// unchanged would be dropped, and the plugin would read as ready without
+    /// that step ever running. Such a manifest is refused instead.
+    public static func checkedPackage(from manifest: PluginManifest) throws -> PluginPackage {
+        let package = package(from: manifest)
+        let carried = self.manifest(from: package).components
+        for component in manifest.components where !component.setup.isEmpty {
+            let kept = carried.first { $0.kind == component.kind && $0.name == component.name }?.setup
+            guard kept == component.setup else {
+                throw PluginManifestError.unrepresentableSetup(component: component.name)
+            }
+        }
+        return package
     }
 
     public static func isManifest(_ data: Data) -> Bool {

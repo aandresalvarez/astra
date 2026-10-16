@@ -375,6 +375,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         connector.isGlobal = source.isGlobal
         connector.testHTTPMethod = source.testHTTPMethod
         connector.notes = source.notes
+        connector.accountAlias = source.accountAlias
         connector.originPackageID = source.originPackageID
         connector.originPackageVersion = source.originPackageVersion
         connector.originComponentID = source.originComponentID
