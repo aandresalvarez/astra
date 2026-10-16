@@ -49,18 +49,34 @@ extension CapabilityCatalogActionService {
         }
         // Shared values are read once, before the first re-add resets them.
         let shared = try PluginUpdateSetup.captureShared(package, modelContext: modelContext)
-        let result = try updateOne(
-            package, in: workspace, shared: shared, modelContext: modelContext,
-            policyContext: policyContext, approvalStore: approvalStore, traceID: traceID
-        )
-        for other in others {
-            try updateOne(
-                package, in: other, shared: shared, modelContext: modelContext,
-                policyContext: .currentUser(workspace: other, approvalRecords: approvalStore.records()),
-                approvalStore: approvalStore, traceID: traceID
+        // If any workspace fails, the ones already done get their previous
+        // version back too, so every workspace still offers Update and one
+        // retry finishes all of them. The shared records keep the new
+        // definition, which is what the library now holds; re-running Update
+        // over them is idempotent.
+        let previousVersions = ([workspace] + others).map { ($0, $0.capabilityActivation.installedVersion(of: package.id)) }
+        var done: [Workspace] = []
+        do {
+            let result = try updateOne(
+                package, in: workspace, shared: shared, modelContext: modelContext,
+                policyContext: policyContext, approvalStore: approvalStore, traceID: traceID
             )
+            done.append(workspace)
+            for other in others {
+                try updateOne(
+                    package, in: other, shared: shared, modelContext: modelContext,
+                    policyContext: .currentUser(workspace: other, approvalRecords: approvalStore.records()),
+                    approvalStore: approvalStore, traceID: traceID
+                )
+                done.append(other)
+            }
+            return result
+        } catch {
+            for (updated, previous) in previousVersions where done.contains(where: { $0.id == updated.id }) {
+                PluginUpdateSetup.recordVersion(previous, of: package.id, in: updated, modelContext: modelContext)
+            }
+            throw error
         }
-        return result
     }
 
     @discardableResult
@@ -103,18 +119,7 @@ extension CapabilityCatalogActionService {
             // cleanup, rather than reading as done.
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(activation, to: workspace)
-            WorkspaceCapabilityActivation.mutate(workspace) { state in
-                if let previousVersion {
-                    state.recordInstalledPlugin(id: package.id, version: previousVersion)
-                } else {
-                    state.removeInstalledPlugin(id: package.id)
-                }
-            }
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: workspace,
-                modelContext: modelContext,
-                auditFields: ["source": "plugins_update", "package_id": package.id, "result": "update_rolled_back"]
-            )
+            PluginUpdateSetup.recordVersion(previousVersion, of: package.id, in: workspace, modelContext: modelContext)
             throw CapabilityInstaller.InstallationError.persistenceFailed(packageID: package.id)
         }
         AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
@@ -184,6 +189,23 @@ struct PluginUpdateSetup {
             guard let values = sharedSkillValues[skill.id] else { continue }
             skill.environmentValues = zip(skill.environmentKeys, skill.environmentValues).map { values[$0.0] ?? $0.1 }
         }
+    }
+
+    /// Puts a workspace's recorded version back (or removes the record) and
+    /// saves, so a failed Update stays offered there.
+    static func recordVersion(_ version: String?, of packageID: String, in workspace: Workspace, modelContext: ModelContext) {
+        WorkspaceCapabilityActivation.mutate(workspace) { state in
+            if let version {
+                state.recordInstalledPlugin(id: packageID, version: version)
+            } else {
+                state.removeInstalledPlugin(id: packageID)
+            }
+        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace,
+            modelContext: modelContext,
+            auditFields: ["source": "plugins_update", "package_id": packageID, "result": "update_rolled_back"]
+        )
     }
 
     struct Pruned {
