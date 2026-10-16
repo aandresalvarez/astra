@@ -6,7 +6,8 @@ import ASTRAModels
 /// whole table on every streamed token.
 ///
 /// **The problem this replaces.** `TaskSidebarContainerView` held an unfiltered
-/// `@Query`. SwiftData invalidates a query on *any* mutation to its model type,
+/// `@Query`. On earlier SwiftData versions, query invalidation included writes outside
+/// the result window,
 /// and `AgentEventRecorder` writes `updatedAt` / `tokensUsed` / `costUSD` on the
 /// streaming task for every event it records. So each token re-ran the
 /// container's body, and each body eval re-read all 726 rows — measured at
@@ -43,11 +44,9 @@ import ASTRAModels
 /// question without materialising a single object, so the expensive read now
 /// happens only when membership has actually moved.
 ///
-/// The view keeps a one-row `@Query` (`SidebarTaskFetch.invalidationSignalDescriptor`)
-/// purely to receive the invalidation signal, so SwiftUI still owns *when* to
-/// look; this type only owns *how much* to read. Nothing here hand-rolls change
-/// notification: `AgentEventRecorder` inserts without saving, so save-based
-/// notifications would miss those writes entirely.
+/// Save notifications signal membership changes. Observation of the held
+/// models' index fields also signals unsaved writes, including streamed events.
+/// Neither depends on SwiftUI invalidating an unchanged query result set.
 /// Outside the actor so they can be default arguments; see `SidebarTaskStore`.
 enum SidebarTaskStoreDefaults {
     /// Trailing window on the invalidation signal. Long enough that a burst of
@@ -68,8 +67,7 @@ enum SidebarTaskStoreDefaults {
 @Observable
 final class SidebarTaskStore {
     /// The sidebar's snapshot. Replaced only when membership actually changed,
-    /// because assigning it re-runs the view body — and the view body is what
-    /// signals this store, so publishing unconditionally would spin.
+    /// because assigning it unnecessarily re-runs the view body.
     private(set) var tasks: [AgentTask] = []
 
     /// Fingerprint of the snapshot's index-relevant fields, for the view to
@@ -83,10 +81,11 @@ final class SidebarTaskStore {
     /// off the view-update path, and the view observes one `Int`.
     private(set) var tasksVersion = 0
 
-    // Scheduling state is deliberately unobserved. If reading or writing any of
-    // it invalidated the view, `noteChanged(context:)` — which the body calls —
-    // would invalidate the very body that called it.
+    // Scheduling and source subscriptions are not presentation state.
     @ObservationIgnored private var context: ModelContext?
+    @ObservationIgnored private var changes: SidebarTaskChangeObservation?
+    @ObservationIgnored private var probeAfterSave = false
+    @ObservationIgnored private var externalUpdates: Set<PersistentIdentifier> = []
     @ObservationIgnored private var pendingReconcile: Task<Void, Never>?
     @ObservationIgnored private var hasLoaded = false
     @ObservationIgnored private var lastReconcileAt = Date.distantPast
@@ -119,26 +118,30 @@ final class SidebarTaskStore {
     func loadIfNeeded(context: ModelContext) {
         guard !hasLoaded else { return }
         hasLoaded = true
-        self.context = context
+        bind(context)
         fetch(reason: "initial")
     }
 
-    /// Called from the view body when the signal query reports that some
-    /// `AgentTask` changed. Only ever schedules work — it must not touch
-    /// observed state, and it must stay cheap enough to run per body eval.
-    func noteChanged(context: ModelContext) {
+    /// Called by source observation. Coalesces saves and unsaved field writes
+    /// without forcing the sidebar to fetch or render on every event.
+    func noteChanged(
+        context: ModelContext, membershipMayHaveChanged: Bool = false,
+        externallyUpdated: [PersistentIdentifier] = []
+    ) {
         // A different context means a different store — the app can swap in a
         // recovery store underneath a live view. The snapshot then belongs to
         // something that is no longer being displayed, and no count or
         // isDeleted test would notice if the two happened to line up.
         if let existing = self.context, existing !== context {
-            self.context = context
+            bind(context)
             pendingReconcile?.cancel()
             pendingReconcile = nil
             fetch(reason: "context_changed")
             return
         }
-        self.context = context
+        if self.context == nil { bind(context) }
+        probeAfterSave = probeAfterSave || membershipMayHaveChanged
+        externalUpdates.formUnion(externallyUpdated)
         guard hasLoaded, pendingReconcile == nil else { return }
         // A signal arriving after a quiet stretch is a user action, not a
         // stream: pin, mark done, rename. Those regroup the rail, so making
@@ -170,7 +173,13 @@ final class SidebarTaskStore {
             loadIfNeeded(context: context)
             return
         }
-        self.context = context
+        if self.context !== context {
+            bind(context)
+            pendingReconcile?.cancel()
+            pendingReconcile = nil
+            fetch(reason: "context_changed")
+            return
+        }
         pendingReconcile?.cancel()
         pendingReconcile = nil
         reconcile()
@@ -179,6 +188,9 @@ final class SidebarTaskStore {
     /// Decides whether the expensive read is warranted, then does it.
     private func reconcile() {
         guard let context else { return }
+        let forceProbe = probeAfterSave
+        probeAfterSave = false
+        refreshExternallyUpdatedRows(in: context)
         lastReconcileAt = Date()
         if tasks.contains(where: \.isDeleted) {
             fetch(reason: "deleted_row")
@@ -189,13 +201,23 @@ final class SidebarTaskStore {
             return
         }
 
+        // A save from another context can replace a row without marking this
+        // context's held instance deleted. Check IDs before reading its fields.
+        if forceProbe {
+            lastMembershipProbeAt = Date()
+            if membershipChanged(in: context) {
+                fetch(reason: "saved_membership_changed")
+                return
+            }
+        }
+
         // Membership is intact, but fields on the held rows may not be — a
         // status landing, an unread badge clearing. That is what the sidebar
         // index is keyed on, so it is republished on every reconcile, whether
         // or not the probe below runs.
         republishVersion()
 
-        guard Date().timeIntervalSince(lastMembershipProbeAt) >= membershipProbeInterval else { return }
+        guard !forceProbe, Date().timeIntervalSince(lastMembershipProbeAt) >= membershipProbeInterval else { return }
         lastMembershipProbeAt = Date()
         guard membershipChanged(in: context) else { return }
         fetch(reason: "membership_changed")
@@ -239,18 +261,52 @@ final class SidebarTaskStore {
 
     /// Recomputes the index fingerprint and publishes it only when it moved.
     ///
-    /// The guard is load-bearing, not an optimisation: `@Observable` notifies on
-    /// assignment regardless of equality, so republishing an unchanged value
-    /// would re-run the view body, which calls `noteChanged`, which schedules
-    /// the next reconcile — a spin that never settles.
+    /// `@Observable` notifies on assignment regardless of equality. Suppress
+    /// unchanged versions so a save that changed nothing does not rebuild UI.
     private func republishVersion() {
-        let version = SidebarTaskIndexInvalidation.signature(for: tasks)
+        let version = changes?.track { SidebarTaskIndexInvalidation.signature(for: tasks) }
+            ?? SidebarTaskIndexInvalidation.signature(for: tasks)
         guard version != tasksVersion else { return }
         tasksVersion = version
     }
 
+    private func bind(_ context: ModelContext) {
+        self.context = context
+        probeAfterSave = false
+        externalUpdates.removeAll()
+        changes = SidebarTaskChangeObservation(context: context) { [weak self, weak context] membershipChanged, updated in
+            guard let self, let context, self.context === context else { return }
+            self.noteChanged(context: context, membershipMayHaveChanged: membershipChanged, externallyUpdated: updated)
+        }
+    }
+
+    /// A manual snapshot needs an explicit refetch for writes from another
+    /// context. Read just those rows; local streams never enter this path, and
+    /// pending inserts/deletes remain owned by the UI context's normal fetch.
+    private func refreshExternallyUpdatedRows(in context: ModelContext) {
+        guard !externalUpdates.isEmpty else { return }
+        // A committed refetch overwrites pending properties in SwiftData.
+        // Defer dirty rows until their owner's next save; never discard edits
+        // or implicitly save domain state merely to refresh presentation.
+        let pending = context.changedModelsArray + context.insertedModelsArray + context.deletedModelsArray
+        let pendingIDs = Set(pending.map(\.persistentModelID))
+        let identifiers = Array(externalUpdates.subtracting(pendingIDs))
+        guard !identifiers.isEmpty else { return }
+        externalUpdates.subtract(identifiers)
+        var descriptor = FetchDescriptor<AgentTask>(
+            predicate: #Predicate { identifiers.contains($0.persistentModelID) }
+        )
+        descriptor.includePendingChanges = false
+        do {
+            _ = try context.fetch(descriptor)
+        } catch {
+            PerformanceTelemetry.log("sidebar_external_refresh_failed", level: .warning)
+        }
+    }
+
     private func fetch(reason: String) {
         guard let context else { return }
+        probeAfterSave = false
         // A read is the strongest membership check there is, so it resets both
         // schedules — including the one taken by `loadIfNeeded`, which reaches
         // `fetch` without going through `reconcile`.

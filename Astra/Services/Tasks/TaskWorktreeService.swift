@@ -672,9 +672,9 @@ enum TaskWorktreeService {
     /// cannot be saved, it is undone in memory and in the context: the draft
     /// gets its previous pin and isolation back, the copied binding is
     /// removed, and the temporary task's deletion is rolled back, so no later
-    /// unrelated save can commit half of a failed recovery. SwiftData's
-    /// `rollback()` drops pending changes but leaves model properties stale,
-    /// which is why the draft's fields are restored explicitly first.
+    /// unrelated save can commit half of a failed recovery. Restore the pin
+    /// after rollback, which can otherwise overwrite it with a saved checkout
+    /// that cleanup has since reserved.
     static func recoverFailedSubmission(
         task: AgentTask,
         existingDraft: AgentTask?,
@@ -718,24 +718,29 @@ enum TaskWorktreeService {
                 modelContext.insert(copy)
                 copiedBinding = copy
             }
+            SwiftDataDeletionPreparation.prepare(task)
             modelContext.delete(task)
             recovered = adoptingDraft
             undoAdoption = {
+                if let draft = adoptingDraft, let copiedBinding {
+                    draft.events.removeAll { $0 === copiedBinding }
+                    modelContext.delete(copiedBinding)
+                }
+                modelContext.rollback()
                 if let draft = adoptingDraft {
                     // Restoring nil, the usual case, always succeeds; a prior
                     // pin that cleanup has since reserved is not readopted,
                     // and the adopted one, whose binding goes below, is
                     // cleared rather than left unbound.
-                    if !TaskWorktreeCheckoutReservation.commit(previousPin, to: draft) {
-                        TaskWorktreeCheckoutReservation.commit(nil, to: draft)
+                    if draft.executionRootPath != previousPin || TaskWorktreeCheckoutReservation.isReserved(previousPin) {
+                        if !TaskWorktreeCheckoutReservation.commit(previousPin, to: draft) {
+                            TaskWorktreeCheckoutReservation.commit(nil, to: draft)
+                        }
                     }
-                    if let previousIsolation { draft.isolationStrategy = previousIsolation }
-                    if let copiedBinding {
-                        draft.events.removeAll { $0 === copiedBinding }
-                        modelContext.delete(copiedBinding)
+                    if let previousIsolation, draft.isolationStrategy != previousIsolation {
+                        draft.isolationStrategy = previousIsolation
                     }
                 }
-                modelContext.rollback()
             }
         }
         do {

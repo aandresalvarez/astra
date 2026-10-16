@@ -137,3 +137,15 @@ assert_targets $'ReleaseBuildNumberDerivationTests\nReleaseUpdateScriptTests\nAp
   ".github/workflows/release.yml" \
   "script/build_and_run.sh" \
   "Tests/ReleaseBuildNumberDerivationTests.swift"
+
+assert_targets $'SidebarTaskStoreTests\nSidebarTaskStoreSignalIntegrationTests\nSidebarTaskSourceObservationTests' \
+  "Astra/Views/SidebarTaskChangeObservation.swift" \
+  "Tests/SidebarTaskSourceObservationTests.swift"
+
+assert_targets "RunningTaskCountPredicateTests" \
+  "Astra/Services/Settings/AppUpdateSafety.swift"
+
+assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree' \
+  "Astra/Services/Persistence/SwiftDataDeletionPreparation.swift" \
+  "Astra/Services/Tasks/TaskWorktreeService.swift" \
+  "Astra/Services/Tasks/TaskLifecycleCoordinator.swift"

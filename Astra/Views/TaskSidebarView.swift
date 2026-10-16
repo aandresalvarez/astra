@@ -6,14 +6,6 @@ import ASTRAPersistence
 import ASTRACore
 
 struct TaskSidebarContainerView: View {
-    // Not the task list — just the subscription to it. SwiftData invalidates a
-    // `@Query` on any mutation to its model type, so this one-row fetch gets
-    // exactly the same signal an unfiltered one would, for a `LIMIT 1` instead
-    // of a 726-row, ~64 ms read on the main thread inside the view transaction.
-    // `SidebarTaskStore` decides what that signal costs; see its doc comment
-    // for why most invalidations need no refetch at all.
-    @Query(SidebarTaskFetch.invalidationSignalDescriptor())
-    private var taskChangeSignal: [AgentTask]
     @Query(sort: \WorkspaceApp.name) private var workspaceApps: [WorkspaceApp]
     // Only active (non-terminal) requests drive sidebar activity counts. The
     // table is append-only and never pruned, so an unfiltered query would grow
@@ -65,13 +57,7 @@ struct TaskSidebarContainerView: View {
     }
 
     var body: some View {
-        // Reading the signal query is the subscription. `noteChanged` only
-        // schedules; it never writes observed state, so calling it from `body`
-        // cannot re-enter this update.
-        let _ = taskChangeSignal.count
-        taskStore.noteChanged(context: modelContext)
-
-        return TaskSidebarView(
+        TaskSidebarView(
             appUpdateController: appUpdateController,
             tasks: taskStore.tasks,
             tasksVersion: taskStore.tasksVersion,
@@ -100,6 +86,7 @@ struct TaskSidebarContainerView: View {
             selectedWorkspaceApp: selectedWorkspaceApp
         )
         .onAppear { taskStore.loadIfNeeded(context: modelContext) }
+        .onChange(of: modelContext) { taskStore.refreshNow(context: modelContext) }
     }
 
     /// Wraps the two handlers that can change *which* tasks exist so the rail

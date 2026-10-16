@@ -7,14 +7,9 @@ import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
-/// Wires the sidebar's snapshot the way `TaskSidebarContainerView` wires it —
-/// a one-row `@Query` for the signal, `SidebarTaskStore` for the read — and
-/// asks the only question that matters: does a task created while the sidebar
-/// is on screen reach the rail?
-///
-/// `SidebarTaskStoreTests` calls `noteChanged` by hand, so it proves what the
-/// store does *given* a signal. This proves the signal arrives at all, through
-/// a real hosted view and a real container.
+/// Exercises the same store lifecycle as the sidebar in a real hosted view.
+/// Signals come from the store's source observers, never from a test calling
+/// `noteChanged` or an assumed SwiftUI query invalidation.
 @Suite("Sidebar task store signal integration")
 @MainActor
 struct SidebarTaskStoreSignalIntegrationTests {
@@ -24,16 +19,12 @@ struct SidebarTaskStoreSignalIntegrationTests {
 
     /// The container view's body, reduced to the parts that carry the signal.
     private struct SidebarSignalProbe: View {
-        @Query(SidebarTaskFetch.invalidationSignalDescriptor())
-        private var taskChangeSignal: [AgentTask]
         @Environment(\.modelContext) private var modelContext
 
         let store: SidebarTaskStore
         let counter: BodyCounter
 
         var body: some View {
-            let _ = taskChangeSignal.count
-            store.noteChanged(context: modelContext)
             counter.count += 1
             return Color.clear
                 .frame(width: 10, height: 10)
@@ -57,20 +48,6 @@ struct SidebarTaskStoreSignalIntegrationTests {
             }
             .frame(width: 10, height: 10)
             .modelContainer(container)
-        }
-    }
-
-    /// Retains the probe's container, host and window for the life of the
-    /// process. A `@Query`'s notification observer outlives the view that
-    /// declared it in a test binary, and one that outlives its `ModelContainer`
-    /// traps inside an unrelated suite's save. See
-    /// `SwiftDataQueryInvalidationBreadthTests.ProbeLifetime`.
-    @MainActor
-    private enum ProbeLifetime {
-        private static var retained: [Any] = []
-
-        static func keepAlive(_ values: Any...) {
-            retained.append(contentsOf: values)
         }
     }
 
@@ -129,7 +106,6 @@ struct SidebarTaskStoreSignalIntegrationTests {
         )
         window.contentView = host
         window.orderFront(nil)
-        ProbeLifetime.keepAlive(container, host, window, store)
         defer {
             root.showsProbe = false
             host.rootView = root

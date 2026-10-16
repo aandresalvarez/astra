@@ -298,6 +298,10 @@ struct NewTaskWorktreeOwnStateTests {
         #expect(draft.executionRootPath != worktree)
         #expect(draft.executionRootPath == nil)
         #expect(TaskWorktreeBinding.eventForInheritance(from: draft) == nil)
+        // An unrelated later save must not put the reserved checkout back.
+        try context.save()
+        let durable = try #require(try ModelContext(store).fetch(FetchDescriptor<AgentTask>()).first { $0.id == draft.id })
+        #expect(durable.executionRootPath == nil)
     }
 
     @Test("A derived task isn't created onto another checkout when its source's is reserved")

@@ -689,6 +689,7 @@ final class TaskLifecycleCoordinator {
             cleanupStore: worktreeCleanupStore,
             delete: {
                 willDelete()
+                SwiftDataDeletionPreparation.prepare(task)
                 // Removed inside the deletion, so a failed save rolls it back.
                 for request in requests { modelContext.delete(request) }
                 modelContext.delete(task)
@@ -828,6 +829,7 @@ final class TaskLifecycleCoordinator {
             WorkspaceConfigManager.autoExport(workspace: ws, modelContext: modelContext)
             return (false, nil, nil)
         }
+        SwiftDataDeletionPreparation.prepare(ws)
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: ws), workspace: next, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
@@ -919,6 +921,7 @@ final class TaskLifecycleCoordinator {
         settleAfterUnsavedDeletion(existing.tasks)
         afterCancellation()
         let existingID = existing.id.uuidString
+        SwiftDataDeletionPreparation.prepare(existing)
         let result = TaskWorktreeService.saveDeletionThenDiscard(
             unusedDraftWorktrees(in: existing), workspace: nil, modelContext: modelContext, resourceQueue: taskQueue,
             cleanupStore: worktreeCleanupStore,
