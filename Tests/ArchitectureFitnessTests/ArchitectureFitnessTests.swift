@@ -1063,20 +1063,12 @@ struct ArchitectureFitnessTests {
         let root = try repositoryRoot()
         let configure = try String(
             contentsOf: root.appendingPathComponent("Astra/Views/ConfigureView.swift"), encoding: .utf8)
-        let creation = try String(
-            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/CapabilityPackageCreationService.swift"),
-            encoding: .utf8)
 
         #expect(configure.contains("CapabilityPersistence.saveResourceMutation"))
         let resourcesStart = try #require(configure.range(of: "struct ConnectorsTabContent"))
         let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
         #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
             "WorkspacePersistenceCoordinator.saveAndAutoExport"))
-        let suppressedInstall = try #require(creation.range(of: "announceCatalogMutation: false"))
-        let approvalSave = try #require(creation.range(of: "let approvalRecord = try saveApprovalRecordIfNeeded"))
-        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: approvalSave.lowerBound..<creation.endIndex))
-        #expect(suppressedInstall.lowerBound < approvalSave.lowerBound)
-        #expect(approvalSave.lowerBound < globalPost.lowerBound)
     }
 
     @Test("Admin policy contexts come only from the currentUser factory")

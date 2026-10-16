@@ -8,8 +8,7 @@ import ASTRAModels
 /// rows that expand in place (`docs/design-system/lean-ui-system.md`).
 ///
 /// Configure → Capabilities. Every capability side effect goes through
-/// `CapabilityCatalogActionService` (`PluginsSurfaceFitnessTests`), except
-/// Google Workspace, whose Add opens the Google sign-in sheet; copy and
+/// `CapabilityCatalogActionService` (`PluginsSurfaceFitnessTests`); copy and
 /// grouping live in `PluginsSurfacePresentation`.
 struct PluginsSurfaceView: View {
     var workspace: Workspace
@@ -35,7 +34,6 @@ struct PluginsSurfaceView: View {
     @State private var fetchingSourceIDs: Set<String> = []
     @State private var isAddingSource = false
     @State private var sourceInput = ""
-    @State private var googleSignInPackage: PluginPackage?
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -148,25 +146,11 @@ struct PluginsSurfaceView: View {
             refreshApprovalRecords()
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityCatalogPersistenceChanged)) { notification in
-            // A library change (an install from chat's /mcp, a removal) needs
+            // A library change (an import, a removal elsewhere) needs
             // a reload; a workspace-scoped change is already observed through
             // the model.
             guard (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil else { return }
             catalog.loadApprovedCapabilities(announceLibraryMutations: false)
-        }
-        .sheet(item: $googleSignInPackage) { package in
-            GoogleWorkspaceCapabilityInstallSheet(
-                package: package,
-                workspace: workspace,
-                policyContext: policyContext,
-                onDismiss: { googleSignInPackage = nil },
-                onInstalled: { _ in
-                    googleSignInPackage = nil
-                    expanded.insert(package.id)
-                    onCatalogChanged()
-                    refreshStatuses()
-                }
-            )
         }
     }
 
@@ -249,10 +233,6 @@ struct PluginsSurfaceView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     Spacer()
-                    if GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup(package) {
-                        Button("Google account…") { googleSignInPackage = package }
-                            .controlSize(.small)
-                    }
                     if row.isRemovable {
                         Button("Remove", role: .destructive) { remove(package) }
                             .controlSize(.small)
@@ -471,12 +451,6 @@ struct PluginsSurfaceView: View {
             ?? sourced.first(where: { $0.package.id == packageID && $0.problem == nil })?.package
         else { return }
         errorMessage = nil
-        // Google Workspace is only useful signed in, and its sheet signs in
-        // before it enables.
-        if GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup(package) {
-            googleSignInPackage = package
-            return
-        }
         do {
             try CapabilityCatalogActionService().add(
                 package,

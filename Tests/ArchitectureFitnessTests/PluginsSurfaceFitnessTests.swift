@@ -13,7 +13,7 @@ struct PluginsSurfaceFitnessTests {
         let source = try String(contentsOf: repositoryRoot().appendingPathComponent(viewFile), encoding: .utf8)
         #expect(source.contains("CapabilityCatalogActionService()"))
         for forbidden in [
-            "CapabilityInstaller(", "CapabilityUninstaller(", "CapabilityPackageCreationService(",
+            "CapabilityInstaller(", "CapabilityUninstaller(", "CapabilityPackageImporter(",
             "CapabilityActivationDisabler(", ".save(package:", "WorkspaceCapabilityActivation.mutate"
         ] {
             #expect(!source.contains(forbidden), "\(viewFile) calls \(forbidden) directly; go through CapabilityCatalogActionService")

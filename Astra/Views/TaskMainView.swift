@@ -293,7 +293,6 @@ struct TaskMainView: View {
     var onForkTask: ((AgentTask) -> Void)?
     var onOpenGeneratedFile: ((String) -> Void)?
     var canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool = { _ in true }
-    var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
     var onReportProblem: ((FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?) -> Void)?
 
     private var availableSkills: [Skill] {
@@ -4719,8 +4718,7 @@ struct TaskMainView: View {
     private func sendMessage() {
         let sendAction = TaskComposerCoordinator.sendAction(
             messageText: messageText,
-            attachedFiles: attachedFiles,
-            hasWorkspace: task.workspace != nil
+            attachedFiles: attachedFiles
         )
         guard sendAction != .none else { return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task),
@@ -4757,38 +4755,11 @@ struct TaskMainView: View {
                 showScheduleEditor = true
             }
             return
-        case .mcpInstall(let request):
-            recordMCPInstallCommand(messageText, assistantMessage: "I found an MCP install target. Review it before ASTRA saves or enables anything.")
-            onStartMCPInstallReview?(request)
-            return
-        case .mcpInstallFailure(let message):
-            recordMCPInstallCommand(messageText, assistantMessage: message)
-            return
         case .message:
             // Recomposed once the send is certain, naming durable copies of pastes and image drops.
             let attachments = TaskInputMaterializer.durableAttachmentPaths(attachedFiles, for: task)
             sendConversationMessage(TaskComposerCoordinator.composedMessage(messageText: messageText, attachedFiles: attachments), attachmentPaths: attachments)
         }
-    }
-
-    private func recordMCPInstallCommand(_ input: String, assistantMessage: String) {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        messageText = ""
-        if !trimmed.isEmpty {
-            TaskEventInsertionService.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.Conversation.userMessage,
-                payload: trimmed
-            ), into: modelContext)
-        }
-        modelContext.insert(TaskEvent(
-            task: task,
-            eventType: TaskEventTypes.System.info,
-            payload: assistantMessage
-        ))
-        task.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        threadViewModel.refreshSnapshot(for: task)
     }
 
     private var selectedComposerRuntimeCanExecuteRequest: Bool {

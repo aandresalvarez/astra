@@ -12,26 +12,10 @@ struct MCPInstallServerSpec: Equatable {
     var installSource: PluginMCPInstallSource?
 }
 
-struct MCPInstallSetupCommand: Equatable {
-    enum Purpose: Equatable {
-        case generateConfig
-        case importConfig
-        case guidedSetup
-    }
-
-    var purpose: Purpose
-    var command: String
-    var arguments: [String]
-    var installSource: PluginMCPInstallSource?
-    var guidance: String
-}
-
 struct MCPInstallIntent: Equatable {
     enum Kind: Equatable {
         case stdioCommand
         case remoteURL
-        case configJSON
-        case setupCommand
     }
 
     var rawInput: String
@@ -44,7 +28,6 @@ struct MCPInstallIntent: Equatable {
     var url: URL?
     var installSource: PluginMCPInstallSource?
     var serverSpecs: [MCPInstallServerSpec]
-    var setupCommand: MCPInstallSetupCommand?
 
     init(
         rawInput: String,
@@ -56,8 +39,7 @@ struct MCPInstallIntent: Equatable {
         arguments: [String],
         url: URL?,
         installSource: PluginMCPInstallSource?,
-        serverSpecs: [MCPInstallServerSpec]? = nil,
-        setupCommand: MCPInstallSetupCommand? = nil
+        serverSpecs: [MCPInstallServerSpec]? = nil
     ) {
         self.rawInput = rawInput
         self.kind = kind
@@ -68,7 +50,6 @@ struct MCPInstallIntent: Equatable {
         self.arguments = arguments
         self.url = url
         self.installSource = installSource
-        self.setupCommand = setupCommand
         self.serverSpecs = serverSpecs ?? Self.inferredServerSpecs(
             kind: kind,
             serverID: serverID,
@@ -91,7 +72,6 @@ struct MCPInstallIntent: Equatable {
         url: URL?,
         installSource: PluginMCPInstallSource?
     ) -> [MCPInstallServerSpec] {
-        guard kind != .setupCommand else { return [] }
         let normalizedID = serverID ?? installSource?.identifier ?? "mcp"
         switch transport {
         case .stdio:

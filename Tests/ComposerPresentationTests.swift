@@ -403,31 +403,9 @@ struct ComposerPresentationTests {
         #expect(TaskComposerCoordinator.sendAction(messageText: "/recap please", attachedFiles: []) == .recap)
         #expect(TaskComposerCoordinator.sendAction(messageText: "/routine every morning", attachedFiles: []) == .routine(instructions: "every morning"))
         #expect(TaskComposerCoordinator.sendAction(messageText: "/schedule", attachedFiles: []) == .routine(instructions: nil))
-        guard case .mcpInstall(let request) = TaskComposerCoordinator.sendAction(
-            messageText: "/mcp npx -y @acme/mcp@1.0.0",
-            attachedFiles: []
-        ) else {
-            Issue.record("Expected /mcp to route to MCP install review")
-            return
-        }
-        #expect(request.intent.installSource?.identifier == "@acme/mcp")
-        guard case .mcpInstallFailure(let missingWorkspaceMessage) = TaskComposerCoordinator.sendAction(
-            messageText: "/mcp npx -y @acme/mcp@1.0.0",
-            attachedFiles: [],
-            hasWorkspace: false
-        ) else {
-            Issue.record("Expected /mcp to require a workspace before review")
-            return
-        }
-        #expect(missingWorkspaceMessage == "Select a workspace first - MCP capabilities are workspace-scoped.")
-        guard case .mcpInstallFailure(let parseMessage) = TaskComposerCoordinator.sendAction(
-            messageText: "/mcp",
-            attachedFiles: []
-        ) else {
-            Issue.record("Expected invalid /mcp input to return the parser failure")
-            return
-        }
-        #expect(parseMessage.contains("Supported MCP install target formats"))
+        // `/mcp` no longer creates plugins from chat; it is an ordinary message.
+        #expect(TaskComposerCoordinator.sendAction(messageText: "/mcp npx -y @acme/mcp@1.0.0", attachedFiles: [])
+            == .message("/mcp npx -y @acme/mcp@1.0.0"))
         #expect(TaskComposerCoordinator.sendAction(messageText: "Review this", attachedFiles: ["/tmp/a.txt", "/tmp/b.png"]) == .message("""
         Review this
 

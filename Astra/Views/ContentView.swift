@@ -53,7 +53,6 @@ struct ContentView: View {
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
     @State private var configureFocusCapabilityPackageID: String?
-    @State private var pendingMCPInstallRequest: MCPInstallChatRequest?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
     @State private var showingSSHEditor = false
@@ -661,7 +660,6 @@ struct ContentView: View {
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: workspaceAppStudioSession,
             onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
-            onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
             onReportProblem: presentTaskFeedback,
             onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
             onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
@@ -1035,11 +1033,6 @@ struct ContentView: View {
                 )
             }
         }
-        .mcpInstallReviewSheet(
-            request: $pendingMCPInstallRequest,
-            workspace: effectiveWorkspace,
-            onInstalled: openCapabilityPackage
-        )
         .sheet(isPresented: $showingWorkspaceEditor) {
             if let ws = effectiveWorkspace {
                 WorkspaceDetailView(workspace: ws, onDelete: {
@@ -2954,7 +2947,6 @@ private struct ContentDetailAreaView: View {
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
-    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
     let onReportProblem: (
         AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?
     ) -> Void
@@ -3342,7 +3334,6 @@ private struct ContentDetailAreaView: View {
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
-            onStartMCPInstallReview: onStartMCPInstallReview,
             onReportProblem: onReportProblem,
             onPublishApp: onPublishApp,
             onDraftChanged: onDraftChanged,
@@ -3443,7 +3434,6 @@ private struct ContentDetailContentView: View {
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
-    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
     let onReportProblem: (
         AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?
     ) -> Void
@@ -3471,8 +3461,7 @@ private struct ContentDetailContentView: View {
                     onManageSkills: onManageSkills,
                     isPlanCanvasVisible: isPlanCanvasVisible,
                     onOpenPlan: onOpenPlan,
-                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
-                    onStartMCPInstallReview: onStartMCPInstallReview
+                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
                 )
                 .id(task.id)
             }
@@ -3496,7 +3485,6 @@ private struct ContentDetailContentView: View {
                     onForkTask: onForkTask,
                     onOpenGeneratedFile: onOpenGeneratedFile,
                     canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
-                    onStartMCPInstallReview: onStartMCPInstallReview,
                     onReportProblem: { prefill, runID, evidence, failureOccurredAt in
                         onReportProblem(task, prefill, runID, evidence, failureOccurredAt)
                     }
@@ -3514,8 +3502,7 @@ private struct ContentDetailContentView: View {
                 onManageSkills: onManageSkills,
                 isPlanCanvasVisible: isPlanCanvasVisible,
                 onOpenPlan: onOpenPlan,
-                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
-                onStartMCPInstallReview: onStartMCPInstallReview
+                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio
             )
         case .workspaceHome:
             if let workspace = effectiveWorkspace {

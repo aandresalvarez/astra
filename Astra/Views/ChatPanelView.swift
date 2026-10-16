@@ -43,7 +43,6 @@ struct ChatPanelView: View {
     var isPlanCanvasVisible = false
     var onOpenPlan: ((AgentTask) -> Void)?
     var onStartWorkspaceAppStudio: ((String?) -> Void)?
-    var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     @Environment(\.modelContext) var modelContext
     @Environment(\.newTaskWorkspaceSwitcher) private var workspaceSwitcher
@@ -1253,12 +1252,6 @@ struct ChatPanelView: View {
             // will be injected into the system prompt
         }
 
-        if let mcpTurn = MCPInstallChatCommand.installTurnOutcome(input: input, hasWorkspace: workspace != nil) {
-            messages.append(ChatMessage(role: "user", content: input)); messageText = ""
-            messages.append(ChatMessage(role: "assistant", content: mcpTurn.assistantMessage))
-            if let request = mcpTurn.request { onStartMCPInstallReview?(request) }
-            return
-        }
         if let appStudioRequest = WorkspaceAppChatCommand.launchRequest(input: input) {
             messages.append(ChatMessage(role: "user", content: input)); messageText = ""
             guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first — Workspace Apps are workspace-scoped.")); return }

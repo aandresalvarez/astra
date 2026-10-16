@@ -119,28 +119,6 @@ struct CapabilityCatalogActionServiceTests {
         #expect(recorder.changes == [.global, .workspace(workspace.id)])
     }
 
-    @Test("direct creation used by MCP review emits the global mutation event")
-    func directCreationEmitsGlobalEvent() throws {
-        let container = try makeCapabilityActionContainer()
-        let context = container.mainContext
-        let workspace = Workspace(name: "MCP", primaryPath: "/tmp/mcp-create")
-        context.insert(workspace)
-        let (library, root) = makeCapabilityActionLibrary()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let recorder = CapabilityPersistenceEventRecorder()
-        recorder.start()
-
-        _ = try CapabilityPackageCreationService(library: library).create(
-            makeActionPackage(id: "direct-mcp-package"),
-            enableHere: false,
-            sourceURL: nil,
-            workspace: workspace,
-            modelContext: context
-        )
-
-        #expect(recorder.changes == [.global])
-    }
-
     @Test("validated import emits the global mutation event")
     func validatedImportEmitsGlobalEvent() throws {
         let (library, root) = makeCapabilityActionLibrary()

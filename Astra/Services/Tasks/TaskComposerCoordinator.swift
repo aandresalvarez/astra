@@ -23,15 +23,13 @@ enum TaskComposerSendAction: Equatable, Sendable {
     case remember(String)
     case recap
     case routine(instructions: String?)
-    case mcpInstall(MCPInstallChatRequest)
-    case mcpInstallFailure(String)
     case message(String)
 
     var launchesProviderWork: Bool {
         switch self {
         case .recap, .routine, .message:
             true
-        case .none, .remember, .mcpInstall, .mcpInstallFailure:
+        case .none, .remember:
             false
         }
     }
@@ -78,8 +76,7 @@ enum TaskComposerCoordinator {
 
     static func sendAction(
         messageText: String,
-        attachedFiles: [String],
-        hasWorkspace: Bool = true
+        attachedFiles: [String]
     ) -> TaskComposerSendAction {
         guard hasInput(messageText: messageText, attachedFiles: attachedFiles) else { return .none }
 
@@ -101,17 +98,6 @@ enum TaskComposerCoordinator {
                 ? ""
                 : String(trimmed.dropFirst(commandLength)).trimmingCharacters(in: .whitespaces)
             return .routine(instructions: instructions.isEmpty ? nil : instructions)
-        }
-
-        if lower == "/mcp" || lower.hasPrefix("/mcp ") {
-            let outcome = MCPInstallChatCommand.explicitInstallTurnOutcome(
-                input: trimmed,
-                hasWorkspace: hasWorkspace
-            )
-            if let request = outcome.request {
-                return .mcpInstall(request)
-            }
-            return .mcpInstallFailure(outcome.assistantMessage)
         }
 
         return .message(composedMessage(messageText: messageText, attachedFiles: attachedFiles))

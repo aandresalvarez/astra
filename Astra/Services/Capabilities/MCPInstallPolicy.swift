@@ -6,11 +6,6 @@ struct MCPInstallPolicyDecision: Equatable {
     var warnings: [String]
     var riskLevel: CapabilityRiskLevel
     var summary: String
-    var requiresGuidedSetup: Bool
-
-    var canReview: Bool {
-        blockers.isEmpty && !requiresGuidedSetup
-    }
 }
 
 enum MCPInstallPolicy {
@@ -18,17 +13,6 @@ enum MCPInstallPolicy {
         var blockers: [String] = []
         var warnings: [String] = []
         let source = intent.installSource
-
-        if let setupCommand = intent.setupCommand {
-            blockers.append(setupCommand.guidance)
-            return decision(
-                blockers,
-                warnings,
-                source,
-                requiresGuidedSetup: true,
-                summary: "Guided setup required for \(source?.identifier ?? setupCommand.command)"
-            )
-        }
 
         for spec in serverSpecs(for: intent) {
             guard spec.transport == .stdio, let command = spec.command else { continue }
@@ -113,24 +97,8 @@ enum MCPInstallPolicy {
         _ warnings: [String],
         _ source: PluginMCPInstallSource?
     ) -> MCPInstallPolicyDecision {
-        decision(
-            blockers,
-            warnings,
-            source,
-            requiresGuidedSetup: false,
-            summary: nil
-        )
-    }
-
-    private static func decision(
-        _ blockers: [String],
-        _ warnings: [String],
-        _ source: PluginMCPInstallSource?,
-        requiresGuidedSetup: Bool,
-        summary explicitSummary: String?
-    ) -> MCPInstallPolicyDecision {
         let risk: CapabilityRiskLevel
-        if !blockers.isEmpty || requiresGuidedSetup {
+        if !blockers.isEmpty {
             risk = .restricted
         } else if warnings.isEmpty {
             risk = source?.kind == .remoteHTTP ? .medium : .high
@@ -142,8 +110,7 @@ enum MCPInstallPolicy {
             blockers: blockers,
             warnings: warnings,
             riskLevel: risk,
-            summary: explicitSummary ?? "Review MCP install source: \(label)",
-            requiresGuidedSetup: requiresGuidedSetup
+            summary: "Review MCP install source: \(label)"
         )
     }
 
