@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -157,6 +158,47 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         #expect(victim.workspace?.id == victimWorkspace.id)
         // References inside the file still resolve to the new row.
         #expect(imported.skill?.name == "Imported Agent")
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("A task's restored skill snapshot can't re-parent a shared row the import reused either")
+    @MainActor
+    func validatedImportKeepsReusedRowsThroughTaskSnapshots() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let owner = Skill(name: "Owner Agent", allowedTools: ["Read"])
+        owner.isGlobal = true
+        context.insert(owner)
+        let connector = Connector(name: "Shared Jira", serviceType: "jira", baseURL: "https://acme.atlassian.net", authMethod: "none")
+        connector.isGlobal = true
+        connector.skill = owner
+        context.insert(connector)
+        try context.save()
+
+        var config = minimalConfig()
+        config.connectors = [Manager.ConnectorConfig(
+            id: connector.id.uuidString, name: "Shared Jira", serviceType: "jira", icon: "link", description: "",
+            baseURL: "https://acme.atlassian.net", authMethod: "none", credentialKeys: [], configKeys: [],
+            configValues: [], isGlobal: true, notes: ""
+        )]
+        let snapshotID = UUID().uuidString
+        let now = Date()
+        config.tasks = [Manager.TaskConfig(
+            title: "Old task", goal: "Export", status: "completed", inputs: [], constraints: [],
+            acceptanceCriteria: [], tokenBudget: 1000, tokensUsed: 0, model: "m", costUSD: 0, maxTurns: 5,
+            createdAt: now, updatedAt: now, runs: [], events: [],
+            skillIDs: [snapshotID], skillNames: [],
+            skillSnapshots: [SkillSnapshotConfig(
+                id: snapshotID, name: "Snapshot Agent", icon: "sparkles", description: "", allowedTools: [],
+                disallowedTools: [], customTools: [], behaviorInstructions: "Help.", environmentKeys: [],
+                environmentValues: [], isGlobal: false, connectorIDs: [connector.id.uuidString], localToolIDs: [],
+                connectorSnapshots: [], localToolSnapshots: [], createdAt: now, updatedAt: now
+            )]
+        )]
+
+        _ = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier))
+
+        #expect(connector.skill?.id == owner.id)
         withExtendedLifetime(container) {}
     }
 
