@@ -147,19 +147,6 @@ enum CapabilityCatalogWarning: Equatable {
     case highRisk(CapabilityRiskLevel)
     case explicitUserConsentRequired
     case packPolicyWarning(String)
-
-    var message: String {
-        switch self {
-        case .deprecated:
-            return "Capability is deprecated. Existing use may continue, but new enablement is discouraged."
-        case .highRisk(let risk):
-            return "Capability is marked \(risk.rawValue) risk."
-        case .explicitUserConsentRequired:
-            return "Capability requires explicit user consent before use."
-        case .packPolicyWarning(let message):
-            return message
-        }
-    }
 }
 
 struct CapabilityCatalogDecision: Equatable {
@@ -177,22 +164,6 @@ struct CapabilityCatalogDecision: Equatable {
         blockers.map(\.message)
     }
 
-    /// Blockers that prevent enablement for reasons other than pending review.
-    /// Draft / admin-approval / digest-mismatch gating is surfaced as
-    /// "Needs attention" (an actionable approval step), so it must not be
-    /// treated as a hard block. Any remaining blocker (explicitly blocked
-    /// status, visibility scoping, unsafe tooling, version conflicts, etc.)
-    /// genuinely prevents the user from acting and belongs in "Blocked".
-    var hasNonApprovalBlockers: Bool {
-        blockers.contains { blocker in
-            switch blocker {
-            case .draftRequiresApproval, .adminApprovalRequired, .approvalDigestMismatch, .packPolicyReviewRequired:
-                return false
-            default:
-                return true
-            }
-        }
-    }
 }
 
 enum CapabilityCatalogPolicy {

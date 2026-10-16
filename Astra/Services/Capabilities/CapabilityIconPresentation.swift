@@ -1,6 +1,5 @@
 import Foundation
 import ASTRACore
-import ASTRAModels
 
 enum CapabilityBrandIcon: String, Equatable, CaseIterable {
     case github
@@ -72,7 +71,7 @@ struct CapabilityIconPresentation: Equatable {
         browserAdapters: [String] = []
     ) -> CapabilityIconPresentation {
         let fallback = cleanSystemName(fallbackSystemName)
-        if let descriptorPresentation = presentation(for: descriptor, fallback: fallback, sourceURL: sourceURL) {
+        if let descriptorPresentation = presentation(for: descriptor, sourceURL: sourceURL) {
             return descriptorPresentation
         }
 
@@ -145,7 +144,6 @@ struct CapabilityIconPresentation: Equatable {
 
     private static func presentation(
         for descriptor: CapabilityIconDescriptor?,
-        fallback: String,
         sourceURL: URL?
     ) -> CapabilityIconPresentation? {
         guard let descriptor else { return nil }

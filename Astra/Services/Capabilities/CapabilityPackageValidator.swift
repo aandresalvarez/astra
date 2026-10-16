@@ -566,8 +566,6 @@ enum CapabilityPackageValidator {
         guard server.installSource != nil else { return }
         let name = displayName(server.displayName, fallback: server.id)
         let intent = MCPInstallIntent(
-            rawInput: server.installSource?.identifier ?? server.id,
-            kind: server.transport == .stdio ? .stdioCommand : .remoteURL,
             serverID: server.id,
             displayName: server.displayName,
             transport: server.transport,

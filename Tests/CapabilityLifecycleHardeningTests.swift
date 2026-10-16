@@ -122,29 +122,6 @@ struct CapabilityLibraryGovernanceClampTests {
 @MainActor
 struct CapabilityInstallRollbackTests {
 
-    @Test("Fresh-install compensation removes the orphaned library file")
-    func freshInstallCompensationRemovesFile() throws {
-        let root = try hardeningTempDirectory(named: "astra-rollback-fresh")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent("pkg.json")
-        try Data("{}".utf8).write(to: url)
-
-        CapabilityInstaller.restoreLibraryFile(previousData: nil, fileExistedBefore: false, at: url)
-        #expect(!FileManager.default.fileExists(atPath: url.path))
-    }
-
-    @Test("Re-install compensation restores the previous package bytes")
-    func reinstallCompensationRestoresPreviousBytes() throws {
-        let root = try hardeningTempDirectory(named: "astra-rollback-reinstall")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent("pkg.json")
-        let previous = Data(#"{"version":"1.0.0"}"#.utf8)
-        try Data(#"{"version":"2.0.0"}"#.utf8).write(to: url)
-
-        CapabilityInstaller.restoreLibraryFile(previousData: previous, fileExistedBefore: true, at: url)
-        #expect(try Data(contentsOf: url) == previous)
-    }
-
     @Test("Failed library install leaves no package file behind")
     func failedLibraryInstallLeavesNoFile() throws {
         let root = try hardeningTempDirectory(named: "astra-rollback-blocked")

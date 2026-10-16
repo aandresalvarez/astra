@@ -246,37 +246,6 @@ struct BuiltInGovernanceFromDefinitionTests {
     }
 }
 
-@Suite("Install Rollback Existence Awareness")
-@MainActor
-struct InstallRollbackExistenceTests {
-
-    @Test("A failed pre-install read of an existing file never deletes it")
-    func readFailureDoesNotDelete() throws {
-        let root = try fixBatchTempDirectory(named: "astra-rollback-existence")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent("pkg.json")
-        try Data(#"{"version":"2.0.0"}"#.utf8).write(to: url)
-
-        // nil snapshot + file existed: read failed, deletion would destroy
-        // the user's previous package. The file must survive.
-        CapabilityInstaller.restoreLibraryFile(previousData: nil, fileExistedBefore: true, at: url)
-        #expect(FileManager.default.fileExists(atPath: url.path))
-    }
-}
-
-@Suite("Runtime Support Subtitle Branches")
-struct RuntimeSupportSubtitleTests {
-
-    private func descriptor(id: AgentRuntimeID, mcp: Bool) -> AgentRuntimeDescriptor {
-        AgentRuntimeDescriptor(
-            id: id, displayName: id.rawValue, executableName: id.rawValue,
-            installHint: "", authHint: "", defaultModels: ["default"],
-            supportsAstraRunProtocol: false, supportsMCPServers: mcp
-        )
-    }
-
-}
-
 @Suite("Update Flow Version Parsing Edge")
 struct UpdateFlowVersionParsingTests {
 

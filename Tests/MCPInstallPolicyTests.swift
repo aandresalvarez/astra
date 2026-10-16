@@ -48,7 +48,7 @@ struct MCPInstallPolicyTests {
     func remoteHTTPNonLoopbackBlocked() {
         let url = URL(string: "http://example.com/mcp")!
         let decision = MCPInstallPolicy.decision(for: MCPInstallIntent(
-            rawInput: url.absoluteString, kind: .remoteURL, serverID: "example", displayName: nil,
+            serverID: "example", displayName: nil,
             transport: .http, command: nil, arguments: [], url: url,
             installSource: PluginMCPInstallSource(kind: .remoteHTTP, identifier: url.absoluteString, installMode: .remote)
         ))
@@ -76,7 +76,6 @@ struct MCPInstallPolicyTests {
 
     private func stdio(_ command: String, _ arguments: [String], source: PluginMCPInstallSource?) -> MCPInstallIntent {
         MCPInstallIntent(
-            rawInput: ([command] + arguments).joined(separator: " "), kind: .stdioCommand,
             serverID: source?.identifier ?? "mcp", displayName: nil, transport: .stdio,
             command: command, arguments: arguments, url: nil, installSource: source
         )

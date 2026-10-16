@@ -319,21 +319,6 @@ struct CapabilityInstaller {
         }
     }
 
-    /// Compensation for a failed enable after the library file was written:
-    /// restore the pre-install bytes, or remove the file if this was a fresh
-    /// install, so the catalog never shows an installed-but-never-enabled
-    /// package.
-    static func restoreLibraryFile(previousData: Data?, fileExistedBefore: Bool, at url: URL) {
-        if let previousData {
-            try? previousData.write(to: url, options: [.atomic])
-        } else if !fileExistedBefore {
-            // Only a genuinely fresh install removes the file. A nil snapshot
-            // of a file that DID exist means the pre-install read failed —
-            // deleting then would destroy the user's previous package.
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
-
     private func capabilityFields(
         for package: PluginPackage,
         workspace: Workspace,

@@ -13,13 +13,6 @@ struct MCPInstallServerSpec: Equatable {
 }
 
 struct MCPInstallIntent: Equatable {
-    enum Kind: Equatable {
-        case stdioCommand
-        case remoteURL
-    }
-
-    var rawInput: String
-    var kind: Kind
     var serverID: String?
     var displayName: String?
     var transport: PluginMCPServer.Transport
@@ -30,8 +23,6 @@ struct MCPInstallIntent: Equatable {
     var serverSpecs: [MCPInstallServerSpec]
 
     init(
-        rawInput: String,
-        kind: Kind,
         serverID: String?,
         displayName: String?,
         transport: PluginMCPServer.Transport,
@@ -41,8 +32,6 @@ struct MCPInstallIntent: Equatable {
         installSource: PluginMCPInstallSource?,
         serverSpecs: [MCPInstallServerSpec]? = nil
     ) {
-        self.rawInput = rawInput
-        self.kind = kind
         self.serverID = serverID
         self.displayName = displayName
         self.transport = transport
@@ -51,7 +40,6 @@ struct MCPInstallIntent: Equatable {
         self.url = url
         self.installSource = installSource
         self.serverSpecs = serverSpecs ?? Self.inferredServerSpecs(
-            kind: kind,
             serverID: serverID,
             displayName: displayName,
             transport: transport,
@@ -63,7 +51,6 @@ struct MCPInstallIntent: Equatable {
     }
 
     private static func inferredServerSpecs(
-        kind: Kind,
         serverID: String?,
         displayName: String?,
         transport: PluginMCPServer.Transport,
