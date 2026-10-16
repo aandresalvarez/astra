@@ -1,14 +1,205 @@
 # Plugins 2.0: one way to add, configure, and keep capabilities working
 
-Status: **phases 0–4 implemented on stacked draft PRs, 2026-10-15** (see
-*How the phases landed* under Phasing for where the code departs from this
-text). Originally written after a
+Status: **redesign proposed, 2026-10-16.** Phases 0–4 were built on stacked
+draft PRs (`aandresalvarez/astra#506`–`#510`), and review of them showed the
+data model under phases 1–4 was the wrong one. Read **Redesign: one owner per
+plugin fact** first; it supersedes the parts of this text it names. The rest
+is the original proposal, kept for its reasoning. Originally written after a
 read-only review of the capability code on `main` at `19bb27e6`, a comparison
 with the plugin models of Claude Cowork, Claude Code and OpenAI Codex, and a
 design conversation with the repository owner. Claims marked *(verified)* were
 checked against the cited lines; claims marked *(static read)* come from a
 code-reading pass that executed nothing; *(unverified)* means the spec relies
 on it and nobody has confirmed it yet.
+
+## Redesign: one owner per plugin fact (2026-10-16)
+
+### Why the first build has to change
+
+Review of the five implementation PRs produced 112 findings, 39 of them P1,
+and the count did not converge: each fix to Update or plugin sources drew new
+findings in the next round. Grouped by what produces them rather than by
+symptom:
+
+| Root cause | P1s | Typical findings |
+| --- | --- | --- |
+| No record owns an installed plugin. Add copies a plugin's skills, connectors and tools into shared global rows matched by name, service and base URL; each workspace keeps lists of IDs | ~10 | Update changes other workspaces; fan-out rollback; collisions with another plugin's rows; configured values lost; removed components left behind; cross-workspace reach |
+| An account is a field copied inside `Connector`, not an entity | 4 | The alias lost in detached launches, shares, recovery snapshots, workspace copies; unchosen accounts still offered |
+| Plugin sources (git and folders) are a package manager with untrusted input, added inside phase 3 | ~8 | Secrets in URLs, ID and filename collisions, provenance, duplicate IDs, rollback versions |
+| The old catalog was replaced without an inventory of what it did | ~7 | Confirmations, Google OAuth, admin approval, the repair path while the preview flag is off |
+| Session expiry detected from tool-output text; plugin-defined checks executed | ~7 | Failed calls only, executable positions, repair commands, resume vs replay |
+| The manifest converted to `PluginPackage` with loss | ~3 | `worksOn`, setup contracts, component IDs |
+
+The first two rows account for most of the findings that kept recurring, and
+they come from one deviation. Phase 0's owner decision was "a service now,
+the entity in phase 1"; this spec's phase 1 was to add `PluginActivation`
+and `Account` in one schema version. Phase 1 as built added neither: it kept
+the activation arrays on `Workspace` and put the account alias on
+`Connector`. Every Add, Update and Remove therefore stayed a multi-row,
+multi-workspace mutation with no transaction and identity by display fields,
+and each patch to it (fan-out, compensation, preflight) opened the next edge.
+
+Mechanics, *(verified 2026-10-16)*:
+
+- **Add materializes.** `CapabilityInstaller` upserts global `Skill`,
+  `Connector` and `LocalTool` rows for each manifest component, finding an
+  existing one by name, service type and base URL
+  (`existingGlobalConnector`, `existingGlobalTool`,
+  `CapabilityRuntimeResourceMatcher.preferredPackageSkill`).
+- **The runtime re-finds the copies.** `TaskCapabilityResolver` reads the
+  enabled packages' definitions from the library, then matches them against
+  every workspace and global row (`enabledPackageSkills`,
+  `enabledPackageConnectors` through `connectorMatches`, which matches on
+  service type alone). That match is where another workspace's account
+  becomes reachable.
+- **Enablement is parallel ID arrays** on `Workspace`, behind
+  `WorkspaceCapabilityActivation`.
+- **Connector secrets have two namespaces**: the connector's UUID, and a
+  "stable" entity ID derived from service type, base URL and origin package
+  and component (`KeychainSecretStore.connectorEntityIDs`). The stable one is
+  shared by every connector that derives it.
+
+### Principles
+
+1. **One owner per fact.** A plugin's definition is its library entry (the
+   manifest as authored, keyed by ID, version and digest). Whether it is on in
+   a workspace, and that workspace's settings for it, is a `PluginActivation`.
+   An account is an `Account`. Everything else is derived, not copied.
+2. **Identity is (plugin ID, component ID)**, never a name, a service type or
+   a URL.
+3. **The runtime derives plugin resources from the manifest at launch.** No
+   SwiftData row exists for a plugin's skill, connector or tool. Rows remain
+   only for what the person authored.
+4. **Turning a plugin off deletes nothing the person owns.** Accounts and
+   their secrets outlive activations; deleting an account is its own action.
+5. **Untrusted input comes after the model.** Plugin sources return once the
+   model exists, with their own threat model.
+
+### Model (one new schema version on `main`)
+
+`main` is at V19 (phase 0 changed no schema), so this is V20 on `main`; the
+V20 on the stacked branches (`Connector.accountAlias`, workspace default
+accounts) is not shipped and is superseded.
+
+- **Library entry = installation.** `CapabilityLibrary` keeps one entry per
+  plugin. It stores the manifest as authored, so `worksOn`, setup steps,
+  component IDs and `manifestVersion` survive; `PluginPackage` remains an
+  in-memory projection for consumers not yet moved. The validator requires a
+  unique `id` per component and a supported `manifestVersion`.
+- **`PluginActivation`** (`@Model`): `workspace`, `pluginID`, `enabled`,
+  `recordedVersion`, `recordedDigest`, `configValues` keyed
+  `componentID.key`, `accountBindings` (`componentID` → `Account.id`).
+- **`Account`** (`@Model`): `id` (UUID), `serviceType`, `alias` (unique per
+  service among the accounts a workspace can see), `baseURL`, `authMethod`,
+  `credentialKeys`, `configValues`, and an owner: one workspace, or shared.
+  `legacySecretNamespace` holds the stable entity ID a migrated connector
+  used, read as a fallback only.
+- **Removed:** the plugin entries in the `Workspace` activation arrays, and
+  every plugin-origin `Skill`, `Connector` and `LocalTool` row. What the
+  person authored is unchanged.
+
+### Runtime
+
+- `PluginRuntimeProjection` turns a workspace's enabled activations, their
+  library manifests and their bound accounts into value types, cached by
+  activation revision and library digest.
+- It emits the snapshot types the detached-launch path already runs from
+  (`SkillSnapshotConfig`, `ConnectorSnapshotConfig`,
+  `LocalToolSnapshotConfig`), so `SkillResolver` and the prompt builders keep
+  their inputs. `TaskCapabilityResolver` takes authored rows plus the
+  projection. A spike opens R2 to list what in the resolver still needs model
+  objects.
+- `ConnectorAccountResolver` runs over the accounts this workspace's
+  activations bind, so another workspace's account is unreachable by
+  construction, not by matching.
+
+### Operations
+
+| Action | What changes | Notes |
+| --- | --- | --- |
+| Add | approval for the digest, library entry, one activation | one save; no credential prompt |
+| Update | library entry (new digest, re-approved), `recordedVersion` on the activations that accept it | removed components disappear because nothing derives them; settings keyed by component ID survive renames; every target is checked before anything is written |
+| Turn off | `activation.enabled = false` | deletes nothing, so it needs no confirmation |
+| Remove | library entry and its activations | confirmed, says it reaches every workspace; accounts stay, listed under Accounts |
+| Delete account | the `Account` and its secrets | confirmed; the only path that clears credentials |
+
+Each is one save in one context. The library write keeps its existing
+snapshot and rollback.
+
+### Migration V19 → V20 (custom stage)
+
+The dev store is backed up first; the stage is one-way.
+
+1. Each workspace's `enabledCapabilityIDs` become activations, with
+   `recordedVersion` from `installedPluginVersions`.
+2. Each plugin-origin connector, global or workspace-owned, becomes an
+   `Account` with the **same UUID**, so its UUID secret namespace resolves
+   unchanged. Its stable entity ID goes to `legacySecretNamespace`. An
+   activation binds it where the workspace enabled it (global) or owned it.
+3. A plugin-origin skill or tool that still matches its manifest is dropped.
+   One the person edited (instructions, tools, command differ) becomes an
+   authored row with its origin stamps cleared, and the migration logs it.
+4. Config and environment values on plugin rows move to
+   `activation.configValues` under `componentID.key`.
+5. The plugin rows and the plugin entries in the `Workspace` arrays go.
+
+Test fixture: a V19 store with two workspaces, two Jira accounts, a shared
+Google Cloud connector with a project ID, and an edited built-in skill. After
+migration the accounts keep their IDs and resolve their secrets, the
+activations match, the project ID sits on the activation, and the edited
+skill survives as an authored skill.
+
+### Health and repair
+
+- Expiry: when a call to a known CLI fails, run that component's check. If
+  the check fails, stop with its repair. Text patterns only pick which
+  component to check.
+- Checks are read-only probes gated by approval and `canRun` (see Rules).
+- Retry after a repair resumes the provider session (already on `#508`).
+
+### UI
+
+- Each row is built once into a `PluginRow` (library entry, activation,
+  status). Expand, Add, Update and Remove all take that row; nothing resolves
+  a package again by ID.
+- Before the old catalog goes, a parity checklist: confirmations, deep links
+  from the rail, import of a plugin file, account sign-in flows (Google
+  OAuth), admin approve/deprecate/block, and removal of inactive plugins.
+  Each item gets a home on the new surface or an explicit "dropped" from the
+  owner.
+
+### What carries over
+
+| PR | Fate |
+| --- | --- |
+| `#506` phase 0 | Merge as is: the activation owner, config-import trust and deleted-model guards are independent of this change. |
+| `#508` phase 2 | Rebase on `main`: the repair loop, `RepairAction`, the expiry stop and resume, and the Plugins screen behind its flag are reused. The expiry classifier is reworked per *Health and repair*. |
+| `#507` phase 1 | Superseded. `ConnectorAccountResolver` and the manifest types move into R1; its V20 is not shipped. |
+| `#509` phase 3 | Superseded. The built-in manifests and the Update and `worksOn` presentation move into R3; plugin sources move to R5. |
+| `#510` phase 4 | Superseded by R4, which starts from the parity checklist. |
+
+### Phasing
+
+Each phase is one small PR with a behavioral exit criterion, not a line
+count.
+
+| Phase | Work | Exit criterion |
+| --- | --- | --- |
+| R0 | Merge `#506`; rebase `#508` on `main` and merge it behind the preview flag | full suite green on `main` |
+| R1 | `PluginActivation`, `Account`, the migration; `WorkspaceCapabilityActivation` reads activations, behavior unchanged | the fixture migration test; the dev store migrates from a backup; runtime tests unchanged |
+| R2 | `PluginRuntimeProjection`; the installer stops materializing plugin rows | no plugin-origin row exists after Add; a task in workspace A never sees workspace B's accounts; prompt scope for each built-in matches the pre-R2 scope |
+| R3 | Add, Update, Turn off, Remove and Delete account on the new model; `PluginRow` | renaming a component across an Update keeps its settings; a removed component is gone; Turn off leaves accounts and secrets |
+| R4 | Parity checklist, then retire the old catalog and the flag | every checklist item has a home or an owner's "dropped" |
+| R5 | Plugin sources, with their own threat model | written as its own spec first |
+
+### Open questions for the owner
+
+1. On migration, keep edited plugin skills as authored skills (proposed), or
+   reset them to the manifest?
+2. Is an account workspace-owned unless shared explicitly (proposed), or
+   shared by default?
+3. Close `#507`, `#509` and `#510` as superseded (proposed), or keep any of
+   them open?
 
 ## Problem
 
