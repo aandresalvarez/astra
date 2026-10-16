@@ -143,7 +143,7 @@ accounts) is not shipped and is superseded.
 | Action | What changes | Notes |
 | --- | --- | --- |
 | Add | approval for the digest, library entry, one activation | one save; no credential prompt |
-| Update | library entry (new digest, re-approved), and `recordedVersion`/`recordedDigest` on **every** activation of the plugin | the library holds one version, so an update is global: every workspace with the plugin on is checked first, and one that refuses it (a pack rule) blocks the update with its reason. Removed components disappear because nothing derives them. Settings and bindings keyed by a component ID survive a rename only when the component keeps its kind and, for a connector, its service; an ID reused for something else is a remove plus an add and starts empty |
+| Update | library entry (new digest, re-approved), and `recordedVersion`/`recordedDigest` on **every** activation of the plugin | the library holds one version, so an update is global: every workspace with the plugin on is checked first, and one that refuses it (a pack rule) blocks the update with its reason. Removed components disappear because nothing derives them. A rename is never inferred: a component that was renamed lists its earlier IDs in `"replaces": ["old-id"]`, and only then do the old ID's settings, bindings and secrets move to it, and only when the kind and, for a connector, the service match. Any other changed or reused ID is a remove plus an add and starts empty; a `replaces` naming a component of another kind or service, or claimed by two components, is refused at validation |
 | Turn off | `activation.enabled = false` | deletes nothing, so it needs no confirmation |
 | Remove | library entry, its activations, and the activations' secret settings | confirmed, says it reaches every workspace; accounts stay, listed under Accounts. The activation-owned Keychain entries are recorded in the durable cleanup outbox before the activations are deleted |
 | Delete account | the `Account`, its bindings (cascade), then its secrets | confirmed, naming the workspaces that use it; the only path that clears credentials |
@@ -186,7 +186,12 @@ The dev store is backed up first; the stage is one-way.
    installed list, and its settings must survive until it is turned back on.
    `recordedVersion` comes from `installedPluginVersions`; `recordedDigest`
    is the digest of the matching library entry, so a migrated plugin is not
-   shown as needing Update. The fixture asserts both.
+   shown as needing Update. The fixture asserts both. A workspace that
+   turned on one shared plugin row by itself (`enabledGlobal*IDs`, through
+   `CapabilitySharing`) without the plugin gets no activation, which would
+   widen it to the whole plugin: that row is kept for it as an authored row
+   and stays in its list, while workspaces that have the plugin use the
+   projection instead.
 2. Each plugin-origin connector, global or workspace-owned, becomes an
    `Account` with the **same UUID**, so its UUID secret namespace resolves
    unchanged; its config values move with it to `Account.configValues`.
@@ -397,8 +402,12 @@ stored.
    would insert it). Plugin skills reach a run through the activation, so
    the pin added nothing.
 8. **Remove keeps accounts; their deletion is R3's "Delete account".**
-   Remove deletes the activations and their projected skills' secrets after
-   the save (not yet through the durable outbox; R3).
+   Remove deletes the activations; their projected skills' secret
+   namespaces are written to `PluginSecretCleanupOutbox` before the save,
+   cleaned after it, taken back if it fails, and finished at the next launch
+   if a quit came between (only while nothing live names them). The
+   migration records the namespaces of the skill rows it deletes the same
+   way.
 9. **The startup definition repair is retired.** It rewrote plugin skill
    rows to the current definition; the projection always reads the current
    definition, and the repair would have reverted edited (authored) rows.
@@ -578,8 +587,10 @@ Rules:
   that writes CLI, host or remote state. A check that isn't one is refused
   at import like any other unrepresentable step. *(As built: the built-in
   checks are read-only — `--version`, `auth status`, `config config-helper`;
-  checks from source plugins are gated by approval and `canRun` but the
-  read-only verb rule is not enforced yet.)*
+  there are no source plugins in R1-R4, and R5 does not run a source
+  plugin's `exec` check, on refresh or in repair polling, until this
+  read-only rule is enforced against it; until then its checks show as
+  "not checked".)*
 - A connector lists only the auth methods it declares a complete setup for.
   With more than one, the setup legs are keyed by method
   (`"setup": { "api_token": { … }, "oauth": { … } }`) and the person picks the
