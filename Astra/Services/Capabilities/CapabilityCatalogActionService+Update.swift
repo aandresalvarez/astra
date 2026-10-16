@@ -10,12 +10,15 @@ extension CapabilityCatalogActionService {
     /// the new version. This visible step replaces the startup repair that
     /// rewrote definitions silently on every launch.
     ///
+    /// The shared skills, accounts and tools are the same records in every
+    /// workspace, so an Update reaches every workspace that has the plugin on,
+    /// starting with this one: each records the new version and retires what
+    /// the new version dropped, instead of one workspace changing what another
+    /// still records as the old version.
+    ///
     /// What the person configured survives: a workspace account keeps its
-    /// base URL and settings (and stays in this workspace), and a shared
-    /// account or skill keeps the values of every key the new version still
-    /// declares. What the new version no longer ships stops being available
-    /// here: its skills, shared accounts and tools are turned off and unlinked,
-    /// and its workspace accounts and templates are deleted.
+    /// base URL and settings (and stays in its workspace), and a shared account
+    /// or skill keeps the values of every key the new version still declares.
     @discardableResult
     func update(
         _ package: PluginPackage,
@@ -25,20 +28,49 @@ extension CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
+        // Shared values are read once, before the first re-add resets them.
+        let shared = try PluginUpdateSetup.captureShared(package, modelContext: modelContext)
+        let result = try updateOne(
+            package, in: workspace, shared: shared, modelContext: modelContext,
+            policyContext: policyContext, approvalStore: approvalStore, traceID: traceID
+        )
+        let others = try modelContext.fetch(FetchDescriptor<Workspace>()).filter {
+            $0.id != workspace.id && $0.isLive && $0.capabilityActivation.capabilityIDs.contains(package.id)
+        }
+        for other in others {
+            try updateOne(
+                package, in: other, shared: shared, modelContext: modelContext,
+                policyContext: .currentUser(workspace: other, approvalRecords: approvalStore.records()),
+                approvalStore: approvalStore, traceID: traceID
+            )
+        }
+        return result
+    }
+
+    @discardableResult
+    private func updateOne(
+        _ package: PluginPackage,
+        in workspace: Workspace,
+        shared: PluginUpdateSetup,
+        modelContext: ModelContext,
+        policyContext: CapabilityCatalogPolicyContext,
+        approvalStore: CapabilityApprovalStore,
+        traceID: String
+    ) throws -> CapabilityInstaller.InstallationResult {
         let previousVersion = workspace.capabilityActivation.installedVersion(of: package.id)
-        let kept = try PluginUpdateSetup.capture(package, workspace: workspace, modelContext: modelContext)
+        let inputs = PluginUpdateSetup.workspaceInputs(package, workspace: workspace)
         let result = try add(
             package,
             workspace: workspace,
             modelContext: modelContext,
             policyContext: policyContext,
             approvalStore: approvalStore,
-            configInputs: kept.workspaceConfigInputs,
-            baseURLOverrides: kept.workspaceBaseURLs,
+            configInputs: inputs.workspaceConfigInputs,
+            baseURLOverrides: inputs.workspaceBaseURLs,
             traceID: traceID
         )
         let activation = WorkspaceCapabilityActivation.snapshot(workspace)
-        try kept.restoreShared(modelContext: modelContext)
+        try shared.restoreShared(modelContext: modelContext)
         let pruned = try PluginUpdateSetup.prune(package, result: result, workspace: workspace, modelContext: modelContext)
         // Workspace accounts it retires are deleted the way a disable deletes
         // them: their saved keys are cleaned only once the deletion is saved.
@@ -50,8 +82,23 @@ extension CapabilityCatalogActionService {
             )
         }
         guard saved else {
+            // Add already saved the new definition and version. Put the old
+            // version back so Update stays offered and a retry finishes the
+            // cleanup, rather than reading as done.
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(activation, to: workspace)
+            WorkspaceCapabilityActivation.mutate(workspace) { state in
+                if let previousVersion {
+                    state.recordInstalledPlugin(id: package.id, version: previousVersion)
+                } else {
+                    state.removeInstalledPlugin(id: package.id)
+                }
+            }
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: workspace,
+                modelContext: modelContext,
+                auditFields: ["source": "plugins_update", "package_id": package.id, "result": "update_rolled_back"]
+            )
             throw CapabilityInstaller.InstallationError.persistenceFailed(packageID: package.id)
         }
         AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
@@ -76,7 +123,7 @@ struct PluginUpdateSetup {
     private var sharedConnectorValues: [UUID: [String: String]] = [:]
     private var sharedSkillValues: [UUID: [String: String]] = [:]
 
-    static func capture(_ package: PluginPackage, workspace: Workspace, modelContext: ModelContext) throws -> PluginUpdateSetup {
+    static func workspaceInputs(_ package: PluginPackage, workspace: Workspace) -> PluginUpdateSetup {
         var setup = PluginUpdateSetup()
         for spec in package.connectors {
             guard let existing = workspace.connectors.first(where: { $0.name == spec.name && $0.serviceType == spec.serviceType })
@@ -87,6 +134,11 @@ struct PluginUpdateSetup {
                 setup.workspaceConfigInputs[key] = value
             }
         }
+        return setup
+    }
+
+    static func captureShared(_ package: PluginPackage, modelContext: ModelContext) throws -> PluginUpdateSetup {
+        var setup = PluginUpdateSetup()
         let packageID = package.id
         for connector in try modelContext.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal }))
         where connector.originPackageID == packageID {

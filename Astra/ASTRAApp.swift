@@ -979,9 +979,17 @@ public struct ASTRAApp: App {
                 }
             }
         }
-        // Definition changes to installed plugins arrive through the Plugins
-        // screen's Update verb (CapabilityCatalogActionService.update), not a
-        // silent rewrite here (Plugins 2.0 spec, Sources).
+        // With the Plugins screen on, definition changes arrive through its
+        // Update verb (CapabilityCatalogActionService.update), not a silent
+        // rewrite here (Plugins 2.0 spec, Sources). The old catalog has no
+        // Update, so while it is the screen the startup repair still runs.
+        if !PluginsSurfacePreferences.isEnabled() {
+            CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
+                modelContext: modelContext,
+                library: CapabilityLibrary(),
+                approvedPackages: PluginCatalog.builtInPackages
+            )
+        }
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
         settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
     }
