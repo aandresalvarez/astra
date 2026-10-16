@@ -2640,7 +2640,7 @@ struct AgentRuntimeAdapterTests {
         for toolName in HostControlPlaneMCPProjection.toolNames {
             #expect(mcpConfig.contains("\"\(toolName)\""))
         }
-        #expect(mcpConfig.contains("default_tools_enabled=false"))
+        #expect(mcpConfig.contains("enabled_tools=["))
         #expect(mcpConfig.contains("default_tools_approval_mode=\"approve\""))
         let envVars = mcpConfig
         #expect(envVars.contains("ASTRA_WORKSPACE_DOCKER_IMAGE"))
