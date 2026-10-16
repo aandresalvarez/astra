@@ -57,6 +57,17 @@ struct PluginsSurfaceTests {
         #expect(remove.message.contains("every workspace"))
     }
 
+    @Test("A plugin that needs an account sign-in ASTRA can't do is listed but not offered")
+    func signInPluginsAreNotOffered() throws {
+        let google = try builtIn("google-workspace")
+        var row = input(google, isEnabled: false)
+        row.problem = PluginsSurfacePresentation.unavailableReason(for: google)
+        let state = PluginsSurfacePresentation.makeState([row], query: "")
+        #expect(state.available.first?.verb == nil)
+        #expect(state.available.first?.subtitle.contains("sign-in") == true)
+        #expect(PluginsSurfacePresentation.unavailableReason(for: try builtIn("jira-workflow")) == nil)
+    }
+
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
     func searchReachesComponents() throws {
         let gcloud = try builtIn("gcloud-workflow")

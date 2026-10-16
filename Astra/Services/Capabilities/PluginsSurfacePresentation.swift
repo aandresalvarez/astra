@@ -115,6 +115,14 @@ enum PluginsSurfacePresentation {
         return subtitle.isEmpty ? input.package.description : subtitle
     }
 
+    /// Why a plugin can't be added on this build whatever the policy says:
+    /// one that needs an OAuth account sign-in, which ASTRA no longer offers
+    /// (Google Workspace), would add and then never work.
+    static func unavailableReason(for package: PluginPackage) -> String? {
+        guard package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) else { return nil }
+        return "Needs an account sign-in that ASTRA can't do yet."
+    }
+
     private static let runtimeOrder: [AgentRuntimeID] = [
         .claudeCode, .codexCLI, .copilotCLI, .cursorCLI, .openCodeCLI, .antigravityCLI
     ]

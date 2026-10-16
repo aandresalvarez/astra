@@ -65,7 +65,8 @@ struct PluginsSurfaceView: View {
         let fromSources = sourced.filter { !known.contains($0.package.id) }.map { plugin in
             PluginsSurfacePresentation.Input(
                 package: plugin.package, isEnabled: false, pendingSteps: 0, isVisible: true, isRemovable: false,
-                sourceName: plugin.source.displayName, unsupported: plugin.unsupported, problem: plugin.problem,
+                sourceName: plugin.source.displayName, unsupported: plugin.unsupported,
+                problem: plugin.problem ?? PluginsSurfacePresentation.unavailableReason(for: plugin.package),
                 worksOn: worksOn(plugin.package)
             )
         }
@@ -78,6 +79,7 @@ struct PluginsSurfaceView: View {
                 pendingSteps: packageState.connectorsNeedingAttention.count + failingSetup(for: package).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
                 isRemovable: !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id),
+                problem: PluginsSurfacePresentation.unavailableReason(for: package),
                 recordedVersion: workspace.capabilityActivation.installedVersion(of: package.id),
                 worksOn: worksOn(package)
             )
