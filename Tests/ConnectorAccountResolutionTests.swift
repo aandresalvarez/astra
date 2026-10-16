@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -149,6 +150,42 @@ struct ConnectorAccountResolutionTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Copying an account keeps its alias, and a workspace copy takes over as the default")
+    func copiesKeepTheAccountIdentity() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Copies", primaryPath: "/tmp/account-copies")
+        context.insert(workspace)
+        let (shared, _) = twoJiraAccounts()
+        shared.isGlobal = true
+        context.insert(shared)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableGlobalConnector(shared.id.uuidString)
+            $0.setDefaultAccount(shared.id.uuidString, forService: "jira")
+        }
+
+        let copy = CapabilitySharing.duplicateForWorkspace(shared, in: workspace, secretStore: NoSecrets())
+        #expect(copy.accountAlias == "Stanford")
+        #expect(workspace.capabilityActivation.defaultAccountID(forService: "jira") == copy.id.uuidString)
+
+        let snapshot = ConnectorSnapshotConfig(connector: shared)
+        let decoded = try JSONDecoder().decode(ConnectorSnapshotConfig.self, from: JSONEncoder().encode(snapshot))
+        #expect(decoded.accountAlias == "Stanford")
+        let legacy = #"{"name":"Jira","serviceType":"jira","icon":"","description":"","baseURL":"","authMethod":"none","credentialKeys":[],"configKeys":[],"configValues":[],"notes":""}"#
+        #expect(try JSONDecoder().decode(ConnectorSnapshotConfig.self, from: Data(legacy.utf8)).accountAlias == nil)
+
+        let share = ShareConnector(
+            name: "Jira", serviceType: "jira", icon: "", description: "", baseURL: "", authMethod: "none",
+            credentialKeys: [], configKeys: [], notes: "", accountAlias: "Stanford"
+        )
+        #expect(try JSONDecoder().decode(ShareConnector.self, from: JSONEncoder().encode(share)).accountAlias == "Stanford")
+        withExtendedLifetime(container) {}
+    }
+
     @Test("An account alias becomes the agent's alias and survives a rename")
     func accountAliasDrivesRuntimeAlias() {
         let (stanford, personal) = twoJiraAccounts()
@@ -205,4 +242,12 @@ struct ConnectorAccountResolutionTests {
     private func jira(name: String) -> Connector {
         Connector(name: name, serviceType: "jira", baseURL: "https://\(UUID().uuidString.prefix(8)).atlassian.net/", authMethod: "none")
     }
+}
+
+private final class NoSecrets: SecretStore {
+    func load(key: String, entityID: String) -> String? { nil }
+    func save(key: String, value: String, entityID: String, label: String?) -> Bool { true }
+    func delete(key: String, entityID: String) -> Bool { true }
+    func deleteAll(entityID: String) {}
+    func exists(key: String, entityID: String) -> Bool { false }
 }

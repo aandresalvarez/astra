@@ -241,16 +241,40 @@ enum PluginSourceCatalog {
                     allowReplacingExistingPackageID: true,
                     checkPrerequisites: false
                 ).blockers.first.map { "\($0.title): \($0.message)" }
+                    ?? ownershipCollision(package, installed: installed)
             }
             return SourcedPlugin(source: source, package: package, unsupported: plugin.unsupported, problem: problem)
         }
     }
 
+    /// A shared account or tool matching another plugin's would be found and
+    /// rewritten by the installer, changing that plugin in every workspace.
+    static func ownershipCollision(_ package: PluginPackage, installed: [PluginPackage]) -> String? {
+        for other in installed where other.id.lowercased() != package.id.lowercased() {
+            if let connector = package.connectors.first(where: { mine in
+                other.connectors.contains { $0.name == mine.name && $0.serviceType == mine.serviceType && $0.baseURL == mine.baseURL }
+            }) {
+                return "Its account \(connector.name) is the same as one in \(other.name), so adding it would change that plugin."
+            }
+            if let tool = package.localTools.first(where: { mine in
+                other.localTools.contains { $0.name == mine.name && $0.toolType == mine.toolType && $0.command == mine.command }
+            }) {
+                return "Its tool \(tool.name) is the same as one in \(other.name), so adding it would change that plugin."
+            }
+        }
+        return nil
+    }
+
     /// The fetched definition of an installed source plugin when the source
     /// now offers a different version that can be added; nil otherwise.
     static func updateCandidate(for installed: PluginPackage, among sourced: [SourcedPlugin]) -> PluginPackage? {
+        // Only from the source it came from: another source publishing the
+        // same ID is a different plugin.
         guard installed.sourceMetadata?.kind == "plugin-source",
-              let fetched = sourced.first(where: { $0.package.id == installed.id && $0.problem == nil }),
+              let fetched = sourced.first(where: {
+                  $0.package.id == installed.id && $0.problem == nil
+                      && $0.package.sourceMetadata?.id == installed.sourceMetadata?.id
+              }),
               fetched.package.version != installed.version
         else { return nil }
         return fetched.package

@@ -86,6 +86,17 @@ struct PluginSourcesTests {
         #expect(plugins.first?.problem != nil)
     }
 
+    @Test("A source plugin whose shared tool or account matches another plugin's cannot be added")
+    func componentOwnershipCollisionIsRefused() throws {
+        let gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
+        var copycat = gcloud
+        copycat.id = "team-cloud"
+        copycat.connectors = []
+        copycat.localTools = [try #require(gcloud.localTools.first)]
+        #expect(PluginSourceCatalog.ownershipCollision(copycat, installed: [gcloud])?.contains("Google Cloud") == true)
+        #expect(PluginSourceCatalog.ownershipCollision(gcloud, installed: [gcloud]) == nil)
+    }
+
     @Test("A newer version in a source becomes the Update for the installed source plugin")
     func newerSourceVersionIsTheUpdate() throws {
         let source = try #require(PluginSource.make(from: "/tmp/plugins"))
@@ -98,6 +109,10 @@ struct PluginSourcesTests {
         let offered = SourcedPlugin(source: source, package: fetched, unsupported: [], problem: nil)
         #expect(PluginSourceCatalog.updateCandidate(for: installed, among: [offered])?.version == "2.0.0")
         #expect(PluginSourceCatalog.updateCandidate(for: fetched, among: [offered]) == nil)
+        var foreign = fetched
+        foreign.sourceMetadata?.id = "plugin-source:another"
+        let fromAnotherSource = SourcedPlugin(source: source, package: foreign, unsupported: [], problem: nil)
+        #expect(PluginSourceCatalog.updateCandidate(for: installed, among: [fromAnotherSource]) == nil)
         var builtIn = installed
         builtIn.sourceMetadata = .builtIn()
         #expect(PluginSourceCatalog.updateCandidate(for: builtIn, among: [offered]) == nil)

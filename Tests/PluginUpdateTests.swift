@@ -56,6 +56,10 @@ struct PluginUpdateTests {
         let policy = CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: [])
         try fixture.service.add(v1, workspace: workspace, modelContext: fixture.context, policyContext: policy,
                                 approvalStore: fixture.approvals, traceID: "v1")
+        let other = fixture.workspace("Update setup, other")
+        try fixture.service.add(v1, workspace: other, modelContext: fixture.context,
+                                policyContext: .currentUser(workspace: other, approvalRecords: fixture.approvals.records()),
+                                approvalStore: fixture.approvals, traceID: "v1-other")
         let shared = try #require(try fixture.context.fetch(FetchDescriptor<Connector>()).first { $0.isGlobal && $0.originPackageID == v1.id })
         let projectIndex = try #require(shared.configKeys.firstIndex(of: "GCP_PROJECT"))
         shared.configValues[projectIndex] = "my-project"
@@ -68,11 +72,14 @@ struct PluginUpdateTests {
                                    approvalStore: fixture.approvals, traceID: "v2")
 
         #expect(shared.configValues[projectIndex] == "my-project")
+        // The other workspace sharing those records is updated with it.
+        #expect(other.capabilityActivation.installedVersion(of: v1.id) == "2.0.0")
         let tool = try #require(try fixture.context.fetch(FetchDescriptor<LocalTool>()).first {
             $0.originPackageID == v1.id && $0.name == droppedTool.name
         })
         #expect(tool.skill == nil)
         #expect(!workspace.capabilityActivation.globalToolIDs.contains(tool.id.uuidString))
+        #expect(!other.capabilityActivation.globalToolIDs.contains(tool.id.uuidString))
         #expect(workspace.capabilityActivation.installedVersion(of: v1.id) == "2.0.0")
     }
 
