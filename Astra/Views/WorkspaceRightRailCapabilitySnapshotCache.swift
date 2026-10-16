@@ -8,6 +8,9 @@ struct CapabilityRailSnapshotSignature: Hashable {
     let enabledCapabilityIDs: [String]
     let installedPluginIDs: [String]
     let installedPluginVersions: [String]
+    /// Each activation's revision, so a settings, binding or override change
+    /// refreshes the rail.
+    let activationRevisions: [String]
     let enabledGlobalSkillIDs: [String]
     let enabledGlobalConnectorIDs: [String]
     let enabledGlobalToolIDs: [String]
@@ -47,6 +50,9 @@ struct CapabilityRailSnapshotSignature: Hashable {
         }
         installedPluginIDs = installedPlugins.map { $0.id }
         installedPluginVersions = installedPlugins.map { $0.version }
+        activationRevisions = WorkspaceCapabilityActivation.activations(of: workspace)
+            .map { "\($0.pluginID):\($0.isEnabled):\($0.revision)" }
+            .sorted()
         enabledGlobalSkillIDs = workspace.enabledGlobalSkillIDs.sorted()
         enabledGlobalConnectorIDs = workspace.enabledGlobalConnectorIDs.sorted()
         enabledGlobalToolIDs = workspace.enabledGlobalToolIDs.sorted()
@@ -369,6 +375,9 @@ struct CapabilityRailWorkspaceResourceIndex {
     let availableGlobalConnectors: [Connector]
     let workspaceTools: [LocalTool]
     let availableGlobalTools: [LocalTool]
+    /// Installed plugins' activations: whether each is on and the rows it
+    /// uses (projected skills and tools, bound accounts), by plugin ID.
+    let activations: [String: CapabilityRailActivationResources]
 
     init(workspace: Workspace, capabilities: WorkspaceCapabilities) {
         enabledCapabilityIDs = Set(workspace.enabledCapabilityIDs)
@@ -385,7 +394,25 @@ struct CapabilityRailWorkspaceResourceIndex {
         workspaceConnectorIDs = Set(workspaceConnectors.map(\.id))
         workspaceToolIDs = Set(workspaceTools.map(\.id))
         activeConnectorIDs = Set(capabilities.activeConnectors.map(\.id))
+        let projection = capabilities.projection
+        var activations: [String: CapabilityRailActivationResources] = [:]
+        for activation in WorkspaceCapabilityActivation.activations(of: workspace) {
+            activations[activation.pluginID] = CapabilityRailActivationResources(
+                isEnabled: activation.isEnabled,
+                skills: projection.skills.filter { $0.originPackageID == activation.pluginID },
+                tools: projection.tools.filter { $0.originPackageID == activation.pluginID },
+                accounts: activation.bindings.filter { !$0.isDeleted }.compactMap(\.account)
+            )
+        }
+        self.activations = activations
     }
+}
+
+struct CapabilityRailActivationResources {
+    let isEnabled: Bool
+    let skills: [Skill]
+    let tools: [LocalTool]
+    let accounts: [Connector]
 }
 
 struct CapabilityRailPackageSnapshotState {
@@ -396,9 +423,11 @@ struct CapabilityRailPackageSnapshotState {
     let readiness: CapabilityReadiness
 
     init(package: PluginPackage, index: CapabilityRailWorkspaceResourceIndex) {
-        let directSkills = Self.directlyLinkedSkills(for: package, index: index)
-        let directConnectors = Self.directlyLinkedConnectors(for: package, index: index)
-        let directTools = Self.directlyLinkedTools(for: package, index: index)
+        let activation = index.activations[package.id]
+        let directSkills = activation?.skills ?? Self.directlyLinkedSkills(for: package, index: index)
+        let directConnectors = activation.map { Self.uniqueConnectors($0.accounts) }
+            ?? Self.directlyLinkedConnectors(for: package, index: index)
+        let directTools = activation?.tools ?? Self.directlyLinkedTools(for: package, index: index)
         let resolvedLinkedSkills = Self.uniqueSkills(
             directSkills + directConnectors.compactMap(\.skill) + directTools.compactMap(\.skill)
         )
@@ -408,7 +437,7 @@ struct CapabilityRailPackageSnapshotState {
         let resolvedLinkedTools = Self.uniqueTools(
             directTools + resolvedLinkedSkills.flatMap(\.localTools)
         )
-        let resolvedIsEnabled = Self.isPackageEnabled(
+        let resolvedIsEnabled = activation?.isEnabled ?? Self.isPackageEnabled(
             package,
             linkedSkills: resolvedLinkedSkills,
             linkedConnectors: resolvedLinkedConnectors,
@@ -518,8 +547,10 @@ struct CapabilityRailPackageSnapshotState {
         index: CapabilityRailWorkspaceResourceIndex
     ) -> CapabilityReadiness {
         guard isEnabled else { return .inactive }
+        let hasActivation = index.activations[package.id] != nil
         let activeLinkedConnectors = linkedConnectors.filter { connector in
-            index.activeConnectorIDs.contains(connector.id) || isConnectorEnabled(connector, index: index)
+            index.activeConnectorIDs.contains(connector.id)
+                || (!hasActivation && isConnectorEnabled(connector, index: index))
         }
         let messages = missingPackageConnectorMessages(
             for: package,

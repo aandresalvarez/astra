@@ -65,7 +65,6 @@ struct CapabilityUninstaller {
             predicate: #Predicate { $0.isGlobal == true }
         ))
 
-        let packageSkillNames = Set(package.skills.map(\.name))
         let packageTemplateNames = Set(package.templates.map(\.name))
 
         let matchedGlobalSkills = ownedOrLegacyMatches(
@@ -73,25 +72,25 @@ struct CapabilityUninstaller {
             packageID: package.id,
             hasOrigin: CapabilityResourceOrigin.hasOrigin,
             isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-            legacyMatches: { packageSkillNames.contains($0.name) }
+            // Plugin skills, tools and connectors are no longer rows: only a
+            // leftover stamped row is the plugin's. A same-named row without a
+            // stamp is the person's (an authored skill, or an edited plugin
+            // skill the migration kept), never the plugin's to delete.
+            legacyMatches: { _ in false }
         )
         let matchedGlobalConnectors = ownedOrLegacyMatches(
             globalConnectors,
             packageID: package.id,
             hasOrigin: CapabilityResourceOrigin.hasOrigin,
             isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-            legacyMatches: { connector in
-                package.connectors.contains { matches(connector, pluginConnector: $0) }
-            }
+            legacyMatches: { _ in false }
         )
         let matchedGlobalTools = ownedOrLegacyMatches(
             globalTools,
             packageID: package.id,
             hasOrigin: CapabilityResourceOrigin.hasOrigin,
             isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-            legacyMatches: { tool in
-                package.localTools.contains { matches(tool, pluginTool: $0) }
-            }
+            legacyMatches: { _ in false }
         )
 
         var result = RemovalResult(packageID: package.id)

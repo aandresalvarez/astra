@@ -823,7 +823,7 @@ public struct ASTRAApp: App {
         if startupBlocker == nil {
             if !isUITesting {
                 LegacyWorkspaceCanvasItemPreferenceMigration.migrate(modelContainer: modelContainer)
-                PluginActivationMigration.migrateIfNeeded(modelContainer: modelContainer)
+                PluginActivationMigration.migrateIfNeeded(modelContext: modelContainer.mainContext)
             }
             StartupCredentialMigrationService.schedule(modelContainer: modelContainer)
         }
@@ -980,6 +980,9 @@ public struct ASTRAApp: App {
                 }
             }
         }
+        // Recovery may have re-created plugin rows from a mirror an older build
+        // wrote; fold them onto activations now rather than next launch.
+        PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
         settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
     }

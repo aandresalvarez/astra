@@ -279,18 +279,6 @@ public enum WorkspaceConfigManager {
         public var exportedAt: Date
     }
 
-    public struct InstalledPluginRef: Codable, Sendable {
-        public init(id: String, version: String, name: String? = nil) {
-            self.id = id
-            self.version = version
-            self.name = name
-        }
-
-        public var id: String
-        public var version: String
-        public var name: String?
-    }
-
     public struct SkillConfig: Codable, Sendable {
         public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
             self.id = id
@@ -984,12 +972,7 @@ public enum WorkspaceConfigManager {
             .map(workspaceAppAutomationStateConfig)
         let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
-        var pluginRefs: [InstalledPluginRef] = []
-        for (idx, pluginID) in workspace.installedPluginIDs.enumerated() {
-            let ver = idx < workspace.installedPluginVersions.count
-                ? workspace.installedPluginVersions[idx] : "0.0.0"
-            pluginRefs.append(InstalledPluginRef(id: pluginID, version: ver))
-        }
+        let pluginRefs = installedPluginRefs(for: workspace)
 
         return WorkspaceConfig(
             id: workspace.id.uuidString,
@@ -1366,6 +1349,8 @@ public enum WorkspaceConfigManager {
         }
 
         WorkspaceCapabilityActivation.apply(activation, to: workspace)
+        restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
+                                 skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust)
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
@@ -1619,7 +1604,8 @@ public enum WorkspaceConfigManager {
     ) -> [Connector] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalConnectors.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals) { $0.id }
+        let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals
+            + boundAccounts(of: workspace)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 

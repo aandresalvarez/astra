@@ -50,6 +50,7 @@ struct PluginActivationMigrationTests {
         let aAccounts = aJira.accounts(forComponent: jiraComponent)
         #expect(Set(aAccounts.map(\.id)) == [fixture.jiraAccount1ID, fixture.jiraAccount2ID])
         #expect(Set(aAccounts.map(\.name)) == ["Jira", "Jira 2"])
+        #expect(aJira.bindings.first { $0.isDefault }?.account?.id == fixture.jiraAccount1ID)
         let bJira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: b))
         #expect(bJira.accounts(forComponent: jiraComponent).map(\.id) == [fixture.jiraAccountBID])
         let cJira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: c))
@@ -127,6 +128,130 @@ struct PluginActivationMigrationTests {
         #expect(try context.fetch(FetchDescriptor<Connector>()).count == 4)
     }
 
+    @Test("A detached launch resolves the same plugin skills, accounts and settings as the live task")
+    func detachedLaunchKeepsProjection() throws {
+        let fixture = try Fixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let task = AgentTask(title: "A", goal: "Use Jira and Google Cloud", workspace: a)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        context.insert(request)
+        try context.save()
+
+        let live = TaskCapabilityResolver(task: task).resolvedScope(.fullInventory)
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let detachedScope = TaskCapabilityResolver(task: detached).resolvedScope(.fullInventory)
+        #expect(detached.modelContext == nil)
+        #expect(Set(detachedScope.behaviorSkills.map(\.id)) == Set(live.behaviorSkills.map(\.id)))
+        #expect(Set(detachedScope.connectors.map(\.id)) == Set(live.connectors.map(\.id)))
+        #expect(Set(detachedScope.localTools.map(\.id)) == Set(live.localTools.map(\.id)))
+        let detachedGCloud = try #require(detachedScope.behaviorSkills.first { $0.name == fixture.gcloud.skills[0].name })
+        #expect(detachedGCloud.environmentVariables["GCP_PROJECT"] == "skill-project")
+        #expect(detached.workspace?.pluginActivations.first { $0.pluginID == "jira-workflow" }?.bindings.count == 2)
+        // The launch copy never touched the store.
+        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).count == 5)
+    }
+
+    @Test("The workspace mirror carries activation settings, overrides and accounts")
+    func mirrorRoundTripsActivations() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let config = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(WorkspaceConfigManager.WorkspaceConfig.self, from: data)
+
+        // Launch recovery restores the activations exactly.
+        let target = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(target)
+        let restored = WorkspaceConfigManager.importWorkspaceResult(
+            from: decoded,
+            modelContext: target.mainContext,
+            capabilityTrust: .preserveRecordedState
+        ).workspace
+        let original = WorkspaceCapabilityActivation.activations(of: a).map(Summary.init)
+        #expect(WorkspaceCapabilityActivation.activations(of: restored).map(Summary.init) == original)
+
+        // A file the user picks keeps settings and bindings only for the
+        // components the installed plugin declares.
+        var forged = decoded
+        forged.id = UUID().uuidString
+        forged.installedPlugins = forged.installedPlugins?.map { ref in
+            var ref = ref
+            ref.settings = (ref.settings ?? [:]).merging(["skill:not-declared.TOKEN": "x"]) { first, _ in first }
+            return ref
+        }
+        let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+            approvedPackageIDs: ["jira-workflow", "gcloud-workflow"],
+            installedPackageIDs: ["jira-workflow", "gcloud-workflow"],
+            availablePackIDs: [],
+            declaredComponentIDs: [
+                "jira-workflow": Set(fixture.jira.connectors.map(CapabilityResourceOrigin.componentID(for:))),
+                "gcloud-workflow": Set(fixture.gcloud.skills.map(CapabilityResourceOrigin.componentID(for:)))
+            ]
+        )
+        let validated = WorkspaceConfigManager.importWorkspaceResult(
+            from: forged,
+            modelContext: target.mainContext,
+            capabilityTrust: .validate(verifier)
+        ).workspace
+        let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: validated))
+        #expect(jira.bindings.count == 2)
+        let boundIDs = Set(jira.bindings.compactMap { $0.account?.id })
+        let boundOwners = Set(jira.bindings.compactMap { $0.account?.workspace?.id })
+        #expect(boundIDs.isDisjoint(with: [fixture.jiraAccount1ID, fixture.jiraAccount2ID]))
+        #expect(boundOwners == [validated.id])
+        #expect(jira.overriddenComponentIDs.isEmpty)
+        let gcloud = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: validated))
+        #expect(gcloud.configKeys.count == 1)
+        #expect(gcloud.bindings.isEmpty)
+    }
+
+    private struct Summary: Equatable {
+        let id: UUID
+        let pluginID: String
+        let isEnabled: Bool
+        let version: String
+        let settings: [String: String]
+        let overrides: [String]
+        let accounts: Set<String>
+
+        init(_ activation: PluginActivation) {
+            id = activation.id
+            pluginID = activation.pluginID
+            isEnabled = activation.isEnabled
+            version = activation.recordedVersion
+            settings = activation.configuration
+            overrides = activation.overriddenComponentIDs
+            accounts = Set(activation.bindings.compactMap { binding in
+                binding.account.map { "\(binding.componentID)|\($0.id)|\(binding.isDefault)" }
+            })
+        }
+    }
+
+    private static var retained: [ModelContainer] = []
+
+    @Test("Deleting a workspace records its activations' secret namespaces for cleanup")
+    func workspaceDeletionCleansActivationSecrets() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let record = WorkspaceDeletionCleanupRecord(a)
+        let gcloud = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        let projectedID = PluginRuntimeProjection.derivedID(
+            activationID: gcloud.id,
+            componentID: CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        )
+        #expect(record.skills.contains { $0.skillID == projectedID })
+    }
+
     @Test("A plugin missing from the library keeps its activation and its rows")
     func missingLibraryEntryKeepsActivationAndRows() throws {
         let fixture = try Fixture()
@@ -170,6 +295,12 @@ struct PluginActivationMigrationTests {
                 )
                 #expect(persistence.loadSecretValue(key: "GCP_API_TOKEN", skillID: projectedID, store: KeychainSecretStore()) == "s3cret")
                 #expect(!activation.configKeys.contains { $0.hasSuffix(".GCP_API_TOKEN") })
+                // A projected skill's snapshot never carries the secret value.
+                let task = AgentTask(title: "A", goal: "Google Cloud", workspace: a)
+                fixture.context.insert(task)
+                let projected = try #require(TaskCapabilityResolver(task: task).allBehaviorSkills.first { $0.id == projectedID })
+                #expect(!SkillSnapshotConfig(skill: projected).environmentValues.contains("s3cret"))
+                #expect(projected.environmentVariables["GCP_API_TOKEN"] == "s3cret")
                 // The deleted row's own namespace is cleaned after the save.
                 #expect(!persistence.secretExists(key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID))
             }

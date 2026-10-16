@@ -1376,7 +1376,7 @@ struct ChatPanelView: View {
             runtime: runtime
         )
         task.inputs = attachedFiles
-        task.skills = taskSkills
+        task.skills = AgentTask.storableSkills(taskSkills)
         TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
@@ -1599,7 +1599,7 @@ struct ChatPanelView: View {
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
-        task.skills = taskSkills
+        task.skills = AgentTask.storableSkills(taskSkills)
         TaskCapabilitySnapshotter.capture(for: task)
         task.chainedGoal = chainedGoal
         task.useAgentTeam = useAgentTeam
@@ -2135,7 +2135,7 @@ struct ChatPanelView: View {
                 composerFlagged: composerRuntimeExplicitlySelected
             )
             draft.inputs = ComposerAttachments.inputs(draft.inputs, replacingPathsWith: attachedFiles)
-            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
+            draft.skills = AgentTask.storableSkills(scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles))
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
@@ -2183,7 +2183,7 @@ struct ChatPanelView: View {
             draft.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
             draft.draftMessages = json
             draft.inputs = attachedFiles
-            draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
+            draft.skills = AgentTask.storableSkills(scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles))
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize

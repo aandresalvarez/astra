@@ -50,8 +50,9 @@ struct CapabilityPackageRoundTripE2ETests {
         let installedPackage = try #require(library.installedPackage(id: package.id))
         let approvalRecord = try #require(result.approvalRecord)
         let storedApproval = try #require(approvalStore.record(for: installedPackage))
-        let skills = try context.fetch(FetchDescriptor<Skill>())
-        let tools = try context.fetch(FetchDescriptor<LocalTool>())
+        let projected = WorkspaceCapabilities(workspace: workspace, packageDefinitions: [installedPackage])
+        let skills = projected.activeSkills
+        let tools = projected.activeTools
 
         #expect(result.sourceURL == sourceURL)
         #expect(result.installationResult?.packageID == package.id)

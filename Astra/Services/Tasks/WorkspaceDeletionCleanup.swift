@@ -110,6 +110,26 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         )
     }
 
+    /// Secret plugin settings live under each activation's projected skill
+    /// IDs; they go with the workspace.
+    @MainActor
+    private static func activationSkillCleanups(_ workspace: Workspace) -> [SkillKeychainCleanup] {
+        let activations = WorkspaceCapabilityActivation.activations(of: workspace)
+        guard !activations.isEmpty else { return [] }
+        let packages = Dictionary(
+            CapabilityRuntimeResourceMatcher.packageDefinitions().map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return activations.flatMap { activation in
+            (packages[activation.pluginID]?.skills ?? []).map {
+                SkillKeychainCleanup(skillID: PluginRuntimeProjection.derivedID(
+                    activationID: activation.id,
+                    componentID: CapabilityResourceOrigin.componentID(for: $0)
+                ))
+            }
+        }
+    }
+
     @MainActor
     init(_ workspace: Workspace) {
         workspaceID = workspace.id
@@ -119,7 +139,7 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         mirrorFileIDs = []
         connectors = workspace.connectors.map(\.keychainCleanup)
             + workspace.skills.flatMap { $0.connectors.map(\.keychainCleanup) }
-        skills = workspace.skills.map(\.keychainCleanup)
+        skills = workspace.skills.map(\.keychainCleanup) + Self.activationSkillCleanups(workspace)
         folderWasResolvedOnRead = false
     }
 }

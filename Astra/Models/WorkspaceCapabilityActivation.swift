@@ -242,6 +242,45 @@ public enum WorkspaceCapabilityActivation {
         workspace.updatedAt = snapshot.updatedAt
     }
 
+    /// Copies every activation of `source` onto `target`, a never-inserted
+    /// launch copy, with the same IDs (so projected skills keep their IDs and
+    /// Keychain namespaces), settings and overrides. Bindings point at the
+    /// copies in `accountsByID`; an account without a copy is left out.
+    public static func copyActivations(
+        from source: Workspace,
+        to target: Workspace,
+        accountsByID: [UUID: Connector]
+    ) {
+        for record in activations(of: source).map(PluginActivationRecord.init) {
+            let activation = PluginActivation(
+                id: record.id,
+                pluginID: record.pluginID,
+                isEnabled: record.isEnabled,
+                recordedVersion: record.recordedVersion,
+                recordedDigest: record.recordedDigest,
+                createdAt: record.createdAt
+            )
+            activation.configKeys = record.configKeys
+            activation.configValues = record.configValues
+            activation.overriddenComponentIDs = record.overriddenComponentIDs
+            activation.overridingRowIDs = record.overridingRowIDs
+            activation.revision = record.revision
+            activation.updatedAt = record.updatedAt
+            activation.workspace = target
+            for bindingRecord in record.bindings {
+                guard let accountID = bindingRecord.accountID, let account = accountsByID[accountID] else { continue }
+                let binding = AccountBinding(
+                    id: bindingRecord.id,
+                    componentID: bindingRecord.componentID,
+                    isDefault: bindingRecord.isDefault,
+                    createdAt: bindingRecord.createdAt
+                )
+                binding.account = account
+                binding.activation = activation
+            }
+        }
+    }
+
     // MARK: - Private
 
     private static func reconcileActivations(with state: WorkspaceCapabilityActivationState, in workspace: Workspace) {

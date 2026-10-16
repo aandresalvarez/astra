@@ -45,8 +45,7 @@ enum PluginActivationMigration {
     }
 
     /// Runs the migration against the app's store when it has legacy state.
-    static func migrateIfNeeded(modelContainer: ModelContainer) {
-        let context = modelContainer.mainContext
+    static func migrateIfNeeded(modelContext context: ModelContext) {
         guard needsMigration(modelContext: context) else { return }
         do {
             let report = try migrate(
@@ -109,7 +108,9 @@ enum PluginActivationMigration {
                 return all.filter { $0.0.id == owner.id }
             }
 
-            for connector in connectors where isPluginOrigin(connector) {
+            // V19 stored no default account: binding in creation order makes
+            // each component's oldest account its default.
+            for connector in connectors.sorted(by: { $0.createdAt < $1.createdAt }) where isPluginOrigin(connector) {
                 let pluginID = trimmed(connector.originPackageID)
                 let componentID = connectorComponentID(connector, package: packagesByID[pluginID])
                 let bindTo = targets(pluginID: pluginID, owner: connector.isGlobal ? nil : connector.workspace)

@@ -4248,7 +4248,8 @@ struct TaskMainView: View {
                     },
                     onToggleSkill: { skill, enabled in
                         if enabled {
-                            if !task.skills.contains(where: { $0.id == skill.id }) {
+                            if !task.skills.contains(where: { $0.id == skill.id }),
+                               !AgentTask.storableSkills([skill]).isEmpty {
                                 task.skills.append(skill)
                             }
                         } else {

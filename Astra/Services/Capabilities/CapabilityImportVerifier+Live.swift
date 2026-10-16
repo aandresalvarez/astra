@@ -19,7 +19,17 @@ extension WorkspaceConfigManager.CapabilityImportVerifier {
                 .filter { WorkspacePackageCapabilityApproval.isEffectivelyApproved($0, records: approvalRecords) }
                 .map(\.id)),
             installedPackageIDs: Set(installed.map(\.id)),
-            availablePackIDs: Set(packCatalog.load().entries.map { $0.manifest.id })
+            availablePackIDs: Set(packCatalog.load().entries.map { $0.manifest.id }),
+            declaredComponentIDs: Dictionary(
+                installed.map { package in
+                    (package.id, Set(
+                        package.skills.map(CapabilityResourceOrigin.componentID(for:))
+                            + package.connectors.map(CapabilityResourceOrigin.componentID(for:))
+                            + package.localTools.map(CapabilityResourceOrigin.componentID(for:))
+                    ))
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
         )
     }
 }

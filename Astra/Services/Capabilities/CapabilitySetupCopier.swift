@@ -149,7 +149,14 @@ struct CapabilitySetupCopier {
         let enabledGlobalConnectors = globalConnectors.filter { connector in
             enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))
         }
-        let candidates = workspace.connectors + enabledGlobalConnectors
+        // Shared accounts reach a workspace through its activations' bindings.
+        let boundAccounts = WorkspaceCapabilityActivation.activations(of: workspace)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap(\.account)
+        var seen = Set<UUID>()
+        let candidates = (workspace.connectors + enabledGlobalConnectors + boundAccounts)
+            .filter { seen.insert($0.id).inserted }
         return candidates.filter { connector in
             CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: connector)
         }

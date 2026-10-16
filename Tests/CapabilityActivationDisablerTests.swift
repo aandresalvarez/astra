@@ -13,7 +13,7 @@ private func makeCapabilityActivationDisablerContainer() throws -> ModelContaine
 @Suite("CapabilityActivationDisablerTests")
 @MainActor
 struct CapabilityActivationDisablerTests {
-    @Test("disabling package uses origin metadata before legacy name matching")
+    @Test("turning an installed plugin off leaves shared rows enabled, owned or not")
     func disablingPackageUsesOriginMetadataBeforeLegacyNameMatching() throws {
         let container = try makeCapabilityActivationDisablerContainer()
         let context = container.mainContext
@@ -69,8 +69,11 @@ struct CapabilityActivationDisablerTests {
             availablePackages: [package]
         )
 
-        #expect(result.disabledSkillIDs == [ownedSkill.id])
-        #expect(workspace.enabledGlobalSkillIDs == [legacySkill.id.uuidString])
+        // The activation alone records that the plugin is off; legacy shared
+        // rows, stamped or not, are no longer how a plugin reaches a run.
+        #expect(result.disabledSkillIDs.isEmpty)
+        #expect(workspace.enabledGlobalSkillIDs == [legacySkill.id.uuidString, ownedSkill.id.uuidString])
         #expect(workspace.enabledCapabilityIDs.isEmpty)
+        #expect(workspace.installedPluginIDs == [package.id])
     }
 }

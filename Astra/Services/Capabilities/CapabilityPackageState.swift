@@ -35,7 +35,21 @@ struct CapabilityPackageState {
         uniqueTools(directlyLinkedTools + linkedSkills.flatMap(\.localTools))
     }
 
+    /// The workspace's activation of this package. When there is one, it
+    /// alone says whether the package is on and which rows it uses: its
+    /// projection and its bound accounts, never rows matched by name.
+    private var activation: PluginActivation? {
+        WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+    }
+
+    private var projection: PluginRuntimeProjection {
+        PluginRuntimeProjection.project(workspace: workspace, packages: [package])
+    }
+
     var isEnabled: Bool {
+        if let activation {
+            return activation.isEnabled
+        }
         if workspace.enabledCapabilityIDs.contains(package.id) {
             return true
         }
@@ -113,8 +127,9 @@ struct CapabilityPackageState {
 
     private var activeLinkedConnectors: [Connector] {
         let activeConnectorIDs = Set(capabilities.activeConnectors.map(\.id))
+        let hasActivation = activation != nil
         return linkedConnectors.filter { connector in
-            activeConnectorIDs.contains(connector.id) || isConnectorEnabled(connector)
+            activeConnectorIDs.contains(connector.id) || (!hasActivation && isConnectorEnabled(connector))
         }
     }
 
@@ -125,6 +140,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedSkills: [Skill] {
+        if activation != nil { return projection.skills }
         let candidates = capabilities.workspaceSkills + capabilities.availableGlobalSkills
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
@@ -143,6 +159,9 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedConnectors: [Connector] {
+        if let activation {
+            return uniqueConnectors(activation.bindings.filter { !$0.isDeleted }.compactMap(\.account))
+        }
         let candidates = capabilities.workspaceConnectors + capabilities.availableGlobalConnectors
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
@@ -159,6 +178,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedTools: [LocalTool] {
+        if activation != nil { return projection.tools }
         let candidates = capabilities.workspaceTools + capabilities.availableGlobalTools
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)

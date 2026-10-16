@@ -29,11 +29,20 @@ extension WorkspaceConfigManager {
         public var approvedPackageIDs: Set<String>
         public var installedPackageIDs: Set<String>
         public var availablePackIDs: Set<String>
+        /// Each installed package's component IDs; an imported activation
+        /// keeps settings, bindings and overrides only for these.
+        public var declaredComponentIDs: [String: Set<String>]
 
-        public init(approvedPackageIDs: Set<String>, installedPackageIDs: Set<String>, availablePackIDs: Set<String>) {
+        public init(
+            approvedPackageIDs: Set<String>,
+            installedPackageIDs: Set<String>,
+            availablePackIDs: Set<String>,
+            declaredComponentIDs: [String: Set<String>] = [:]
+        ) {
             self.approvedPackageIDs = approvedPackageIDs
             self.installedPackageIDs = installedPackageIDs
             self.availablePackIDs = availablePackIDs
+            self.declaredComponentIDs = declaredComponentIDs
         }
     }
 

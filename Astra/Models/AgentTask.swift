@@ -255,4 +255,14 @@ public final class AgentTask {
         TaskStatusPresentation.color(for: status.rawValue)
     }
 
+
+    /// The skills a stored task may keep in `skills`: stored rows only. A
+    /// skill with no model context is derived (a plugin's projected skill or a
+    /// launch copy); relating it to a stored task would make SwiftData insert
+    /// it as a phantom row. Plugin skills reach a run through the workspace's
+    /// activation, so leaving them out of the pin list loses nothing.
+    public static func storableSkills(_ skills: [Skill]) -> [Skill] {
+        skills.filter { $0.modelContext != nil }
+    }
+
 }

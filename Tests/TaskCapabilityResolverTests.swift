@@ -109,8 +109,9 @@ struct TaskCapabilityResolverTests {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
 
+        // The skill under test is pinned as an authored row; turning the
+        // built-in Jira plugin on would project its own skill beside it.
         let workspace = Workspace(name: "Jira REST", primaryPath: "/tmp/jira-rest")
-        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
 
         let jiraSkill = Skill(
@@ -898,7 +899,7 @@ struct TaskCapabilityResolverTests {
         #expect(!gcloudInstructions.contains("Use the GCP_PROJECT environment variable when set"))
     }
 
-    @Test("Enabled package IDs resolve runtime resources even when activation IDs drift")
+    @Test("An enabled plugin reaches the account bound to it, whatever its name")
     func enabledPackageIDResolvesResourcesWhenActivationIDsDrift() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
@@ -906,14 +907,6 @@ struct TaskCapabilityResolverTests {
         let workspace = Workspace(name: "Package Drift", primaryPath: "/tmp/package-drift")
         workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
-
-        let jiraSkill = Skill(
-            name: "Jira Agent",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use Jira REST API."
-        )
-        jiraSkill.isGlobal = true
-        context.insert(jiraSkill)
 
         let jiraConnector = Connector(
             name: "Jira-new",
@@ -923,8 +916,9 @@ struct TaskCapabilityResolverTests {
             authMethod: "none"
         )
         jiraConnector.isGlobal = true
-        jiraConnector.skill = jiraSkill
         context.insert(jiraConnector)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(jiraConnector, toComponent: "connector:jira:jira", of: activation)
 
         let task = AgentTask(
             title: "Use Jira",
@@ -1185,7 +1179,7 @@ struct TaskCapabilityResolverTests {
         #expect(!connectorsEnv.contains(#""credentials":{""#))
     }
 
-    @Test("Enabled package uses matched local tool owner when package skill name changed")
+    @Test("An enabled plugin projects its current skill and tool, ignoring legacy rows")
     func enabledPackageUsesMatchedLocalToolOwnerWhenPackageSkillNameChanged() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
@@ -1222,8 +1216,9 @@ struct TaskCapabilityResolverTests {
         try context.save()
 
         let resolver = TaskCapabilityResolver(task: task)
-        #expect(resolver.allBehaviorSkills.map(\.name) == ["Stanford Graph Mail Agent"])
-        #expect(resolver.allLocalTools.map(\.command) == ["stanford-graph-mail"])
+        #expect(resolver.allBehaviorSkills.map(\.name) == graphPackage.skills.map(\.name))
+        #expect(resolver.allLocalTools.map(\.command) == graphPackage.localTools.map(\.command))
+        #expect(!resolver.allLocalTools.contains { $0.id == graphTool.id })
 
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: task,
@@ -1555,7 +1550,7 @@ struct TaskCapabilityResolverTests {
         #expect(issue.message.contains("disabled in this workspace"))
     }
 
-    @Test("Runtime integrity passes when enabled package resources resolve through package ID")
+    @Test("Runtime integrity passes when the enabled plugin's account is bound")
     func runtimeIntegrityPassesForResolvedEnabledPackageResources() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
@@ -1565,14 +1560,6 @@ struct TaskCapabilityResolverTests {
         workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
 
-        let jiraSkill = Skill(
-            name: "Jira Agent",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use Jira REST API."
-        )
-        jiraSkill.isGlobal = true
-        context.insert(jiraSkill)
-
         let jiraConnector = Connector(
             name: "Configured Jira",
             serviceType: "jira",
@@ -1581,8 +1568,9 @@ struct TaskCapabilityResolverTests {
             authMethod: "none"
         )
         jiraConnector.isGlobal = true
-        jiraConnector.skill = jiraSkill
         context.insert(jiraConnector)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(jiraConnector, toComponent: "connector:jira:jira", of: activation)
 
         let task = AgentTask(
             title: "Use Jira",

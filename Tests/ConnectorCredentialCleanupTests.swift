@@ -1187,7 +1187,7 @@ struct ConnectorCredentialCleanupTests {
         #expect(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: trusted.upperBound..<app.endIndex) != nil)
     }
 
-    @Test("Disabling a package keeps the credentials a recreated connector outside it still reads")
+    @Test("Turning a plugin off keeps its account and every credential, shared namespace or not")
     func disableSparesSharedNamespace() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-credential-cleanup-\(UUID().uuidString)", isDirectory: true)
@@ -1220,9 +1220,10 @@ struct ConnectorCredentialCleanupTests {
             let result = CapabilityActivationDisabler().disable(
                 package, in: workspace, capabilities: capabilities, modelContext: context, availablePackages: [package]
             )
-            #expect(result.removedWorkspaceConnectorIDs == [installedID])
+            #expect(result.removedWorkspaceConnectorIDs.isEmpty)
+            #expect(workspace.connectors.map(\.id) == [installedID])
             #expect(KeychainService.load(key: "SVC_TOKEN", connector: recreated) == "secret-value")
-            #expect(KeychainService.load(key: "SVC_TOKEN", connectorID: installedID) == nil)
+            #expect(KeychainService.load(key: "SVC_TOKEN", connector: installed) == "secret-value")
         }
     }
 }

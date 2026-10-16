@@ -73,7 +73,9 @@ struct CapabilityRuntimeIntegrityServiceTests {
         )
 
         #expect(issues.contains { $0.source == .enabledPackage && $0.resourceKind == .connector })
-        #expect(issues.contains { $0.source == .enabledPackage && $0.resourceKind == .skill })
+        // The plugin's skill comes from its definition, so it can't be missing;
+        // the account it needs still blocks.
+        #expect(!issues.contains { $0.source == .enabledPackage && $0.resourceKind == .skill })
     }
 
     @Test("runtime integrity accepts enabled shared Jira when stale local Jira credentials are missing")

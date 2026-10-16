@@ -20,7 +20,7 @@ private func makeCapabilityUninstallerLibrary() -> (CapabilityLibrary, URL) {
 @Suite("CapabilityUninstallerTests")
 @MainActor
 struct CapabilityUninstallerTests {
-    @Test("local package uninstall removes only origin-owned resources")
+    @Test("local package uninstall removes the activation and leaves authored rows")
     func localPackageUninstallRemovesOnlyOriginOwnedResources() throws {
         let container = try makeCapabilityUninstallerContainer()
         let context = container.mainContext
@@ -57,18 +57,18 @@ struct CapabilityUninstallerTests {
             governance: .builtInApproved(riskLevel: .medium)
         )
         try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
-        let ownedSkill = try #require(try context.fetch(FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.isGlobal == true && $0.originPackageID == "uninstall-package" }
-        )).first)
-        let legacySkill = Skill(name: "Owned Skill", allowedTools: ["Read"])
-        legacySkill.isGlobal = true
-        context.insert(legacySkill)
+        #expect(WorkspaceCapabilities(workspace: workspace, packageDefinitions: [package]).activeSkills.map(\.name) == ["Owned Skill"])
+        let authoredSkill = Skill(name: "Owned Skill", allowedTools: ["Read"])
+        authoredSkill.isGlobal = true
+        context.insert(authoredSkill)
 
         let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
 
-        #expect(result.removedSkillIDs == [ownedSkill.id])
-        #expect(try context.fetch(FetchDescriptor<Skill>()).contains { $0.id == legacySkill.id })
-        #expect(try context.fetch(FetchDescriptor<Skill>()).contains { $0.id == ownedSkill.id } == false)
+        // The plugin's skill was never a row; an authored skill of the same
+        // name is the person's and stays.
+        #expect(result.removedSkillIDs.isEmpty)
+        #expect(try context.fetch(FetchDescriptor<Skill>()).map(\.id) == [authoredSkill.id])
+        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).isEmpty)
         #expect(library.installedPackage(id: package.id) == nil)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
     }
