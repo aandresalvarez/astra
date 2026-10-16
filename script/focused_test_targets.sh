@@ -32,6 +32,13 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
+    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Runtime/AgentRuntimeRunPersistence.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
+      add_target "RuntimeSettlementReviewRegressionTests"
+      add_target "WorkspaceSavedAutoExportTests"
+      add_target "WorkspaceExportTerminationFlushTests"
+      add_target "AgentRuntimeRunPersistenceTests"
+      add_target "TaskThreadChangeObserverTests"
+      ;;
     Tests/RuntimeFeedbackSnapshotTests.swift|Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift)
       add_target "RuntimeFeedbackSnapshotTests"
       add_target "FeedbackEvidencePrivacyTests"

@@ -27,6 +27,30 @@ public final class WorkspaceAutoExportGate: @unchecked Sendable {
         return Ticket(workspaceID: workspaceID, generation: generations[workspaceID, default: 0])
     }
 
+    /// A newer requested projection supersedes earlier reads as well as writes.
+    /// Issued by the saving actor, before handing work to a background actor.
+    public func beginExport(for workspaceID: String) -> Ticket {
+        lock.lock()
+        defer { lock.unlock() }
+        generations[workspaceID, default: 0] += 1
+        return Ticket(workspaceID: workspaceID, generation: generations[workspaceID, default: 0])
+    }
+
+    func isCurrent(_ ticket: Ticket) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return generations[ticket.workspaceID, default: 0] == ticket.generation
+    }
+
+    /// A source-context save invalidates only the read that observed that
+    /// context's previous save boundary, never a newer explicit snapshot.
+    func invalidateIfCurrent(_ ticket: Ticket) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generations[ticket.workspaceID, default: 0] == ticket.generation else { return }
+        generations[ticket.workspaceID, default: 0] += 1
+    }
+
     /// Writes `data` to `url` only while no `retire` came after `ticket`.
     /// The slow part, writing the bytes, happens outside the gate, into a
     /// temporary file beside `url`; the gate is held only to check the
@@ -73,22 +97,30 @@ actor WorkspaceAutoExportWriter {
         return encoder
     }()
 
+    @discardableResult
     func write(
         _ config: WorkspaceConfigManager.WorkspaceConfig,
         to url: URL,
         workspaceID: String,
         ticket: WorkspaceAutoExportGate.Ticket
-    ) {
+    ) -> Bool {
+        guard !Task.isCancelled, WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return false }
         do {
-            let data = try encoder.encode(config)
-            let written = try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url)
+            let data = try WorkspacePersistenceWork.measure("mirror_encode", workspaceID: workspaceID) {
+                try encoder.encode(config)
+            }
+            guard !Task.isCancelled else { return false }
+            let written = try WorkspacePersistenceWork.measure("mirror_write", workspaceID: workspaceID) {
+                try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url)
+            }
             if !written {
                 AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                     "result": "auto_export_skipped",
-                    "reason": "workspace_deleted",
+                    "reason": "superseded_or_deleted",
                     "workspace_id": workspaceID
                 ], level: .debug)
             }
+            return written
         } catch {
             let nsError = error as NSError
             AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
@@ -102,6 +134,7 @@ actor WorkspaceAutoExportWriter {
                 "error_code": String(nsError.code),
                 "error_description": nsError.localizedDescription
             ], level: .error)
+            return false
         }
     }
 }

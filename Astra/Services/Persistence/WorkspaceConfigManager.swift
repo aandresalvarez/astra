@@ -969,7 +969,7 @@ public enum WorkspaceConfigManager {
         let toolConfigs = localTools.compactMap(localToolConfig)
         let templateConfigs = workspace.templates.map(templateConfig)
         let scheduleConfigs = workspace.schedules.map(scheduleConfig)
-        let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        let sshConnections = SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath)
         guard let taskConfigs = try? workspace.tasks.map({ try taskConfig($0, modelContext: modelContext) }) else { return nil }
         let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
         let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
@@ -1056,8 +1056,9 @@ public enum WorkspaceConfigManager {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
             return
         }
-        guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
         let workspaceID = workspace.id.uuidString
+        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspaceID)
+        guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
         // Recorded before the mirror lands, so recovery after a lost store
         // probes this folder even when no scanned root holds it. A folder
         // that can't be recorded gets no mirror: one recovery can't find
@@ -1066,8 +1067,6 @@ public enum WorkspaceConfigManager {
             logAutoExportSkipped(workspace: workspace, reason: "mirror_registry_unwritable")
             return
         }
-        // Taken with the snapshot, so a deletion settled first drops it.
-        let ticket = WorkspaceAutoExportGate.shared.ticket(for: workspaceID)
         Task.detached(priority: .utility) {
             await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID, ticket: ticket)
         }

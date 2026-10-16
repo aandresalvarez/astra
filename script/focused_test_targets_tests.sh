@@ -46,6 +46,21 @@ assert_targets "" \
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 
+for path in \
+  Astra/Services/Persistence/SSHConnectionManager.swift \
+  Astra/Services/Persistence/WorkspaceAutoExportWriter.swift \
+  Astra/Services/Persistence/WorkspaceConfigManager.swift \
+  Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift \
+  Astra/Services/Persistence/WorkspacePersistenceWork.swift \
+  Astra/Services/Persistence/WorkspaceSavedAutoExport.swift \
+  Astra/Services/Runtime/AgentRuntimeRunPersistence.swift \
+  Tests/WorkspaceSavedAutoExportTests.swift \
+  Tests/WorkspaceExportTerminationFlushTests.swift \
+  Tests/RunFinalizationResponsivenessTests.swift \
+  Tests/RuntimeSettlementReviewRegressionTests.swift; do
+  assert_targets $'RuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceExportTerminationFlushTests\nAgentRuntimeRunPersistenceTests\nTaskThreadChangeObserverTests' "$path"
+done
+
 assert_targets "FeedbackEvidencePrivacyTests" \
   "Astra/Services/Feedback/FeedbackEvidenceBuilder.swift" \
   "Tests/FeedbackEvidencePrivacyTests.swift"

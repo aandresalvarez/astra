@@ -14,7 +14,7 @@ enum AgentRuntimeRunPersistence {
         _ work: () -> T
     ) -> T {
         let start = DispatchTime.now().uptimeNanoseconds
-        let result = work()
+        let result = MainThreadPhase.tracking("run_finalize_\(phase)", work)
         PerformanceTelemetry.logIfNeeded(
             "run_finalize_phase",
             start: start,
@@ -102,6 +102,7 @@ enum AgentRuntimeRunPersistence {
         persist: (() -> Bool)? = nil
     ) async -> Bool {
         let start = DispatchTime.now().uptimeNanoseconds
+        let traceID = AuditTrace.make("run-finalize")
         // File discovery is independent of SwiftData. Prepare it asynchronously
         // before the ordered model commit so directory traversal does not
         // monopolize the main actor. No SwiftData model crosses actors.
@@ -112,7 +113,13 @@ enum AgentRuntimeRunPersistence {
         } else {
             discoveredFiles = await TaskOutputDiscovery.filesAsync(in: taskFolder)
         }
-        let traceID = AuditTrace.make("run-finalize")
+        // Elapsed asynchronous discovery includes scheduling / filesystem wait;
+        // it is deliberately separate from synchronous main-actor phases.
+        PerformanceTelemetry.logIfNeeded(
+            "run_finalize_discovery", start: start,
+            thresholdMilliseconds: PerformanceTelemetry.backgroundThresholdMilliseconds,
+            fields: finalizationPhaseFields(phase: "file_discovery", task: task, run: run, traceID: traceID)
+        )
         // Bound the inline output blob now that the run is finalized. Session
         // history already captured the full output via recordSessionTurn before
         // this call, so nothing the user can re-open is lost. Assign only when it
