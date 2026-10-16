@@ -1336,9 +1336,10 @@ public enum WorkspaceConfigManager {
         var skillsByName: [String: Skill] = [:]
         for sc in config.skills {
             let reused = reusedGlobalSkill(for: sc, modelContext: modelContext)
-            let skill = reused ?? makeSkill(from: sc)
+            // The fresh ID is set before the skill is built: building it moves
+            // its secrets into the Keychain under its ID.
+            let skill = reused ?? makeSkill(from: sc, freshID: freshIDs)
             if reused == nil { sanitizeCreated(skill, trust: capabilityTrust, report: &trustReport) }
-            if reused == nil, freshIDs { skill.id = UUID() }
             if skill.modelContext == nil {
                 modelContext.insert(skill)
             }
@@ -1368,6 +1369,9 @@ public enum WorkspaceConfigManager {
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
+            // Skill IDs from the file resolve to the rows it created (fresh
+            // under `.validate`).
+            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
             sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }
@@ -1383,6 +1387,7 @@ public enum WorkspaceConfigManager {
         let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
             let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
+            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
             modelContext.insert(schedule)
         }
 
@@ -2163,7 +2168,7 @@ public enum WorkspaceConfigManager {
         return tool
     }
 
-    private static func makeSkill(from config: SkillConfig) -> Skill {
+    private static func makeSkill(from config: SkillConfig, freshID: Bool = false) -> Skill {
         let skill = Skill(
             name: config.name,
             icon: config.icon,
@@ -2173,7 +2178,7 @@ public enum WorkspaceConfigManager {
             customTools: config.customTools,
             behaviorInstructions: config.behaviorInstructions
         )
-        if let id = config.id.flatMap(UUID.init(uuidString:)) {
+        if !freshID, let id = config.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
         skill.environmentKeys = config.environmentKeys
@@ -2193,7 +2198,7 @@ public enum WorkspaceConfigManager {
         return skill
     }
 
-    private static func makeRestoredSkill(from snapshot: SkillSnapshotConfig, workspace: Workspace) -> Skill {
+    private static func makeRestoredSkill(from snapshot: SkillSnapshotConfig, workspace: Workspace, freshID: Bool = false) -> Skill {
         let restoredName = snapshot.name.hasSuffix(" (Restored)") ? snapshot.name : "\(snapshot.name) (Restored)"
         let restoredDescription = snapshot.description.isEmpty
             ? "Restored from task history snapshot."
@@ -2207,7 +2212,7 @@ public enum WorkspaceConfigManager {
             customTools: snapshot.customTools,
             behaviorInstructions: snapshot.behaviorInstructions
         )
-        if let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
+        if !freshID, let id = snapshot.id.flatMap(UUID.init(uuidString:)) {
             skill.id = id
         }
         skill.environmentKeys = snapshot.environmentKeys
@@ -2980,8 +2985,7 @@ public enum WorkspaceConfigManager {
             }
         }
 
-        let skill = makeRestoredSkill(from: snapshot, workspace: workspace)
-        if freshIDs { skill.id = UUID() }
+        let skill = makeRestoredSkill(from: snapshot, workspace: workspace, freshID: freshIDs)
         modelContext.insert(skill)
         linkResources(
             skill: skill,
