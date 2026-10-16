@@ -118,6 +118,9 @@ target_for_path() {
     Astra/Services/Settings/AppUpdateSafety.swift|Tests/RunningTaskCountPredicateTests.swift)
       add_target "RunningTaskCountPredicateTests"
       ;;
+    Astra/Services/Persistence/OrphanedV12StoreMigrator.swift|Tests/OrphanedV12StoreMigratorTests.swift)
+      add_target "OrphanedV12StoreMigratorTests"
+      ;;
     Astra/Services/Persistence/SwiftDataDeletionPreparation.swift|Astra/Services/Tasks/TaskWorktreeService.swift|Astra/Services/Tasks/TaskLifecycleCoordinator.swift|Tests/SwiftDataDeletionPreparationTests.swift|Tests/NewTaskWorktree*.swift)
       add_target "SwiftDataDeletionPreparationTests"
       add_target "NewTaskWorktree"

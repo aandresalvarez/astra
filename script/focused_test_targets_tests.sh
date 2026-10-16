@@ -149,3 +149,7 @@ assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree' \
   "Astra/Services/Persistence/SwiftDataDeletionPreparation.swift" \
   "Astra/Services/Tasks/TaskWorktreeService.swift" \
   "Astra/Services/Tasks/TaskLifecycleCoordinator.swift"
+
+assert_targets "OrphanedV12StoreMigratorTests" \
+  "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
+  "Tests/OrphanedV12StoreMigratorTests.swift"

@@ -672,9 +672,9 @@ enum TaskWorktreeService {
     /// cannot be saved, it is undone in memory and in the context: the draft
     /// gets its previous pin and isolation back, the copied binding is
     /// removed, and the temporary task's deletion is rolled back, so no later
-    /// unrelated save can commit half of a failed recovery. Restore the pin
-    /// after rollback, which can otherwise overwrite it with a saved checkout
-    /// that cleanup has since reserved.
+    /// unrelated save can commit half of a failed recovery. Restore before
+    /// rollback for SwiftData versions that leave model values stale, and
+    /// after it so rollback cannot reinstate a checkout cleanup reserved.
     static func recoverFailedSubmission(
         task: AgentTask,
         existingDraft: AgentTask?,
@@ -721,26 +721,26 @@ enum TaskWorktreeService {
             SwiftDataDeletionPreparation.prepare(task)
             modelContext.delete(task)
             recovered = adoptingDraft
+            let restorePreviousDraft = {
+                guard let draft = adoptingDraft else { return }
+                let safePin = TaskWorktreeCheckoutReservation.isReserved(previousPin) ? nil : previousPin
+                if draft.executionRootPath != safePin {
+                    if !TaskWorktreeCheckoutReservation.commit(safePin, to: draft) {
+                        TaskWorktreeCheckoutReservation.commit(nil, to: draft)
+                    }
+                }
+                if let previousIsolation, draft.isolationStrategy != previousIsolation {
+                    draft.isolationStrategy = previousIsolation
+                }
+            }
             undoAdoption = {
                 if let draft = adoptingDraft, let copiedBinding {
                     draft.events.removeAll { $0 === copiedBinding }
                     modelContext.delete(copiedBinding)
                 }
+                restorePreviousDraft()
                 modelContext.rollback()
-                if let draft = adoptingDraft {
-                    // Restoring nil, the usual case, always succeeds; a prior
-                    // pin that cleanup has since reserved is not readopted,
-                    // and the adopted one, whose binding goes below, is
-                    // cleared rather than left unbound.
-                    if draft.executionRootPath != previousPin || TaskWorktreeCheckoutReservation.isReserved(previousPin) {
-                        if !TaskWorktreeCheckoutReservation.commit(previousPin, to: draft) {
-                            TaskWorktreeCheckoutReservation.commit(nil, to: draft)
-                        }
-                    }
-                    if let previousIsolation, draft.isolationStrategy != previousIsolation {
-                        draft.isolationStrategy = previousIsolation
-                    }
-                }
+                restorePreviousDraft()
             }
         }
         do {
