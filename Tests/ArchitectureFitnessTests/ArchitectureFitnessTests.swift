@@ -29,7 +29,6 @@ struct ArchitectureFitnessTests {
             "Diagnostics",
             "Feedback",
             "Git",
-            "GoogleWorkspace",
             "Packs",
             "Persistence",
             "Runtime",
