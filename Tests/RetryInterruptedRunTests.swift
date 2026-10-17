@@ -242,6 +242,49 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("The GH_TOKEN check judges a token a detached skill snapshot still delivers")
+    func tokenCheckIncludesDetachedSnapshotToken() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Snapshot Token", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            // The skill that set this token was removed; only its snapshot
+            // remains, and the resumed turn's launch scope still includes it.
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GH_TOKEN"], environmentValues: ["snapshot-token"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHubEnvironmentToken
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments == [["GH_TOKEN": "snapshot-token"]], "retry: \(useRetry)")
+        }
+    }
+
     @Test("Without a provider session Retry still relaunches from scratch")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")

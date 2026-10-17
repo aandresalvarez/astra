@@ -58,6 +58,22 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.runs("gh", in: "cd 'my repo' && \"gh\" pr list"))
     }
 
+    @Test("A substitution inside double quotes still runs; inside single quotes it is text")
+    func doubleQuotedSubstitutionsRun() {
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "token=\"$(gh auth token)\""))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "x=\"`gh auth token`\""))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "echo \"user: $(gh api user --jq \".login\") ok\""))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "echo \"$(echo $(gh auth token))\""))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "token=$(gh auth token)"))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "x=`gh auth token`"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo '$(gh auth token)'"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo '`gh auth token`'"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo \"\\$(gh auth token)\""))
+        // Text after the substitution is back inside the quote.
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo \"$(date) ; gh pr list\""))
+        #expect(CLISessionExpiryClassifier.simpleCommands("token=\"$(gh auth token)\"") == [["token=$"], ["gh", "auth", "token"]])
+    }
+
     @Test("A bad GH_TOKEN stops with advice about the variable, not a sign-in")
     func environmentTokenIsNotASignIn() throws {
         let output = "The token in GH_TOKEN is invalid.\nTo get started with GitHub CLI, please run:  gh auth login"

@@ -159,6 +159,9 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
     case unenforcedRuntimeRestriction(runtime: String)
     /// A component without its kind's payload, or with another kind's.
     case mismatchedPayload(component: String)
+    /// A component ID the package can't carry: it would be re-derived from
+    /// the payload's name, so the declared ID would not survive conversion.
+    case unrepresentableComponentID(component: String, id: String)
 
     public var errorDescription: String? {
         switch self {
@@ -170,6 +173,8 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
             "\(component) doesn't carry the definition its kind needs, so the plugin can't be installed."
         case .unenforcedRuntimeRestriction(let runtime):
             "The plugin says it doesn't work on \(runtime), and ASTRA can't keep it off that runtime yet."
+        case .unrepresentableComponentID(let component, let id):
+            "\(component) declares the ID \"\(id)\", which ASTRA can't keep yet, so the plugin can't be installed."
         }
     }
 }
@@ -382,6 +387,17 @@ public enum PluginManifestConverter {
             }
         }
         let carried = self.manifest(from: package).components
+        // The package keeps no component IDs: each comes back derived from
+        // its payload (a name's slug, an MCP server's own ID). A declared ID
+        // that differs would be replaced, and a later rename would then
+        // change the component's identity, so it is refused instead.
+        for kind in [PluginComponent.Kind.skill, .connector, .tool, .mcp, .template] {
+            let derived = carried.filter { $0.kind == kind }
+            for (index, component) in manifest.components.filter({ $0.kind == kind }).enumerated()
+            where index >= derived.count || derived[index].id != component.id {
+                throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
+            }
+        }
         for component in manifest.components where !component.setup.isEmpty {
             let kept = carried.first { $0.kind == component.kind && $0.name == component.name }?.setup
             guard kept == component.setup else {

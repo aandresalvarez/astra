@@ -409,16 +409,20 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    /// The token variables the task's skills give `gh` (which override any
-    /// sign-in), so a repair check judges the token the resumed run gets.
+    /// The token variables the resumed run gives `gh` (which override any
+    /// sign-in), so a repair check judges the token that run gets. Built from
+    /// the same launch scope as the run, detached skill snapshots included: a
+    /// snapshot whose skill was removed still delivers its token.
     private func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
         guard binary == "gh" else { return nil }
-        var environment: [String: String] = [:]
-        for skill in TaskCapabilityResolver(task: task).allBehaviorSkills {
-            for (key, value) in skill.environmentVariables where ["GH_TOKEN", "GITHUB_TOKEN"].contains(key) && !value.isEmpty {
-                environment[key] = value
-            }
-        }
+        let scope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: Self.resumeContinuationMessage(for: task),
+            runtime: task.resolvedRuntimeID
+        ).providerLaunch
+        var launchEnvironment = scope.resolver.resolvedEnvironmentVariables
+        BrokeredConnectorEnvironment.strip(from: &launchEnvironment, capabilityScope: scope)
+        let environment = launchEnvironment.filter { ["GH_TOKEN", "GITHUB_TOKEN"].contains($0.key) && !$0.value.isEmpty }
         return environment.isEmpty ? nil : environment
     }
 
