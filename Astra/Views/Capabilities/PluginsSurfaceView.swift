@@ -51,20 +51,41 @@ struct PluginsSurfaceView: View {
         )
     }
 
-    private var state: PluginsSurfaceState {
+    /// The rows and their display, built in one pass so every action takes
+    /// the same package and activation the row shows.
+    private var surface: (state: PluginsSurfaceState, rows: [String: PluginRow]) {
         let context = policyContext
         let currentCapabilities = capabilities
-        return PluginsSurfacePresentation.makeState(packages.map { package in
+        var rows: [String: PluginRow] = [:]
+        var inputs: [PluginsSurfacePresentation.Input] = []
+        for package in packages {
             let packageState = CapabilityPackageState(package: package, workspace: workspace, capabilities: currentCapabilities)
             let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
-            return PluginsSurfacePresentation.Input(
+            let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+            var input = PluginsSurfacePresentation.Input(
                 package: package,
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + failingSetup(for: package).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
                 isRemovable: !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id)
             )
-        }, query: query)
+            input.needsUpdate = activation.map {
+                $0.recordedVersion != package.version
+                    || $0.knownComponentIDs != PluginUpdateService.componentIDs(of: package)
+            } ?? false
+            inputs.append(input)
+            rows[package.id] = PluginRow(package: package, activation: activation, display: PluginsSurfacePresentation.makeState(
+                [input], query: ""
+            ).allRows.first ?? placeholderRow(package))
+        }
+        return (PluginsSurfacePresentation.makeState(inputs, query: query), rows)
+    }
+
+    private func placeholderRow(_ package: PluginPackage) -> PluginsSurfaceRow {
+        PluginsSurfaceRow(
+            id: package.id, name: package.name, icon: package.icon, subtitle: "",
+            pendingSteps: 0, isEnabled: false, isRemovable: false, verb: nil
+        )
     }
 
     var body: some View {
@@ -82,12 +103,13 @@ struct PluginsSurfaceView: View {
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.statusError)
             }
-            let current = state
+            let model = surface
+            let current = model.state
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    group("Action needed", current.actionNeeded)
-                    group("Ready", current.ready)
-                    group("Available", current.available)
+                    group("Action needed", current.actionNeeded, rows: model.rows)
+                    group("Ready", current.ready, rows: model.rows)
+                    group("Available", current.available, rows: model.rows)
                     if current.isEmpty {
                         Text(query.isEmpty ? "No plugins yet." : "Nothing matches \u{201C}\(query)\u{201D}.")
                             .font(Stanford.caption(12))
@@ -112,20 +134,22 @@ struct PluginsSurfaceView: View {
     }
 
     @ViewBuilder
-    private func group(_ title: String, _ rows: [PluginsSurfaceRow]) -> some View {
-        if !rows.isEmpty {
+    private func group(_ title: String, _ displays: [PluginsSurfaceRow], rows: [String: PluginRow]) -> some View {
+        if !displays.isEmpty {
             Text(title)
                 .font(Stanford.ui(12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.top, 10)
-            ForEach(rows) { row in
-                rowView(row)
-                Divider().padding(.leading, 38)
+            ForEach(displays) { display in
+                if let row = rows[display.id] {
+                    rowView(row, display: display)
+                    Divider().padding(.leading, 38)
+                }
             }
         }
     }
 
-    private func rowView(_ row: PluginsSurfaceRow) -> some View {
+    private func rowView(_ pluginRow: PluginRow, display row: PluginsSurfaceRow) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 Button {
@@ -151,7 +175,12 @@ struct PluginsSurfaceView: View {
                 }
                 .buttonStyle(.plain)
                 if row.verb == .add {
-                    Button("Add") { add(row.id) }
+                    Button("Add") { add(pluginRow) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(Stanford.lagunita)
+                } else if row.verb == .update {
+                    Button("Update") { update(pluginRow) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
@@ -160,41 +189,26 @@ struct PluginsSurfaceView: View {
                     .font(Stanford.ui(11, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
-            if expanded.contains(row.id), let package = packages.first(where: { $0.id == row.id }) {
-                details(package, row: row)
-                    .padding(.leading, 38)
+            if expanded.contains(row.id) {
+                PluginRowDetailsView(
+                    row: pluginRow,
+                    workspace: workspace,
+                    setupRow: { componentRow($0, package: pluginRow.package, isEnabled: row.isEnabled) },
+                    onEditAccount: { onEditElement(.connectors, $0) },
+                    onConfirm: { confirming = $0 },
+                    onTurnOff: { disable(pluginRow.package) },
+                    onUpdate: { update(pluginRow) },
+                    onChanged: { onCatalogChanged() },
+                    onError: { errorMessage = $0 }
+                )
+                .padding(.leading, 38)
+                if let confirming, confirming.packageID == row.id {
+                    confirmationRow(confirming, row: pluginRow)
+                        .padding(.leading, 38)
+                }
             }
         }
         .padding(.vertical, 6)
-    }
-
-    @ViewBuilder
-    private func details(_ package: PluginPackage, row: PluginsSurfaceRow) -> some View {
-        let manifest = PluginManifestConverter.manifest(from: package)
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(manifest.components.enumerated()), id: \.offset) { _, component in
-                componentRow(component, package: package, isEnabled: row.isEnabled)
-            }
-            if row.isEnabled {
-                HStack {
-                    Toggle("On in this workspace", isOn: Binding(
-                        get: { confirming != .turnOff(packageID: package.id) },
-                        set: { if !$0 { confirming = .turnOff(packageID: package.id) } }
-                    ))
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    Spacer()
-                    if row.isRemovable {
-                        Button("Remove", role: .destructive) { confirming = .remove(packageID: package.id) }
-                            .controlSize(.small)
-                    }
-                }
-                .padding(.top, 4)
-                if let confirming, confirming.packageID == package.id {
-                    confirmationRow(confirming, package: package)
-                }
-            }
-        }
     }
 
     private func componentRow(_ component: PluginComponent, package: PluginPackage, isEnabled: Bool) -> some View {
@@ -291,8 +305,8 @@ struct PluginsSurfaceView: View {
 
     // MARK: - Actions
 
-    private func add(_ packageID: String) {
-        guard let package = packages.first(where: { $0.id == packageID }) else { return }
+    private func add(_ row: PluginRow) {
+        let package = row.package
         errorMessage = nil
         do {
             try CapabilityCatalogActionService().add(
@@ -302,7 +316,7 @@ struct PluginsSurfaceView: View {
                 policyContext: policyContext,
                 traceID: AuditTrace.make("plugins-add")
             )
-            expanded.insert(packageID)
+            expanded.insert(package.id)
             onCatalogChanged()
             refreshStatuses()
         } catch {
@@ -310,8 +324,26 @@ struct PluginsSurfaceView: View {
         }
     }
 
-    private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, package: PluginPackage) -> some View {
-        let copy = confirmation.copy(name: package.name, hasAccounts: !package.connectors.isEmpty)
+    private func update(_ row: PluginRow) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().update(modelContext: modelContext)
+            onCatalogChanged()
+            refreshStatuses()
+        } catch {
+            errorMessage = "Couldn't update \(row.package.name): \(error.localizedDescription)"
+        }
+    }
+
+    private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, row: PluginRow) -> some View {
+        let account: Connector? = {
+            guard case .deleteAccount(_, let accountID) = confirmation else { return nil }
+            return row.activation?.bindings.compactMap(\.account).first { $0.id == accountID }
+        }()
+        let copy = confirmation.copy(
+            name: account?.name ?? row.package.name,
+            workspaces: account.map { PluginOperations.workspacesUsing($0).map(\.name) } ?? []
+        )
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(copy.message)
                 .font(Stanford.caption(12))
@@ -322,14 +354,24 @@ struct PluginsSurfaceView: View {
             Button(copy.verb, role: .destructive) {
                 confirming = nil
                 switch confirmation {
-                case .turnOff: disable(package)
-                case .remove: remove(package)
+                case .remove: remove(row.package)
+                case .deleteAccount: if let account { deleteAccount(account) }
                 }
             }
             .controlSize(.small)
         }
         .padding(8)
         .background(Stanford.statusError.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func deleteAccount(_ account: Connector) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().deleteAccount(account, modelContext: modelContext)
+            onCatalogChanged()
+        } catch {
+            errorMessage = "Couldn't delete \(account.name): \(error.localizedDescription)"
+        }
     }
 
     private func disable(_ package: PluginPackage) {

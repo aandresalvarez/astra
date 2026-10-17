@@ -29,15 +29,26 @@ struct PluginsSurfaceTests {
         #expect(state.available.allSatisfy { $0.verb == .add })
     }
 
-    @Test("Turning off and removing ask first, naming what is deleted and how far it reaches")
+    @Test("Removing and deleting an account ask first; removing keeps accounts")
     func destructiveActionsConfirm() {
-        let off = PluginsSurfaceConfirmation.turnOff(packageID: "jira").copy(name: "Jira", hasAccounts: true)
-        #expect(off.verb == "Turn off")
-        #expect(off.message.contains("in this workspace") && off.message.contains("saved keys"))
-        #expect(!PluginsSurfaceConfirmation.turnOff(packageID: "x").copy(name: "X", hasAccounts: false).message.contains("keys"))
-        let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira", hasAccounts: true)
+        let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira")
         #expect(remove.verb == "Remove")
         #expect(remove.message.contains("every workspace"))
+        #expect(remove.message.contains("accounts stay"))
+        let delete = PluginsSurfaceConfirmation.deleteAccount(packageID: "jira", accountID: UUID())
+            .copy(name: "Jira 2", workspaces: ["Ops", "Research"])
+        #expect(delete.verb == "Delete")
+        #expect(delete.message.contains("saved keys") && delete.message.contains("Ops, Research"))
+    }
+
+    @Test("A plugin that still runs an earlier definition offers Update and needs action")
+    func outdatedPluginOffersUpdate() {
+        var outdated = input(package("jira", name: "Jira"), isEnabled: true)
+        outdated.needsUpdate = true
+        let state = PluginsSurfacePresentation.makeState([outdated], query: "")
+        #expect(state.actionNeeded.map(\.id) == ["jira"])
+        #expect(state.actionNeeded.first?.verb == .update)
+        #expect(state.actionNeeded.first?.subtitle.hasPrefix("Update to") == true)
     }
 
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
