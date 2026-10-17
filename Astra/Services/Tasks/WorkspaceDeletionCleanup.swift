@@ -121,12 +121,8 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
             uniquingKeysWith: { first, _ in first }
         )
         return activations.flatMap { activation in
-            (packages[activation.pluginID]?.skills ?? []).map {
-                SkillKeychainCleanup(skillID: PluginRuntimeProjection.derivedID(
-                    activationID: activation.id,
-                    componentID: CapabilityResourceOrigin.componentID(for: $0)
-                ))
-            }
+            PluginRuntimeProjection.secretNamespaces(of: activation, package: packages[activation.pluginID])
+                .map { SkillKeychainCleanup(skillID: $0) }
         }
     }
 
@@ -489,7 +485,9 @@ enum WorkspaceDeletionCleanupService {
             ], level: .error)
             return false
         }
-        let liveSkills = Set(skills.map(\.id))
+        // Stored rows, and the namespaces live activations name: a workspace
+        // imported over this one under its ID projects into the same ones.
+        let liveSkills = Set(skills.map(\.id)).union(PluginSecretCleanupOutbox.liveSkillIDs(modelContext: modelContext))
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so

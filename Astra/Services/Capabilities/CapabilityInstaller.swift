@@ -86,6 +86,18 @@ struct CapabilityInstaller {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .warning)
             throw InstallationError.blocked(blockers)
         }
+        // A stored skill row the catalog lists as a package is not a
+        // library entry: it is only turned on.
+        if Self.syntheticSkillRowID(of: package) != nil {
+            return try enable(
+                package,
+                in: workspace,
+                modelContext: modelContext,
+                policyContext: effectivePolicyContext,
+                auditSource: "install",
+                traceID: traceID
+            )
+        }
         // Snapshot the pre-install library state so a failed enable can be
         // compensated instead of leaving an orphaned or overwritten file.
         let packageStorageSnapshot = library.makePackageStorageSnapshot(for: package.id)
@@ -174,8 +186,15 @@ struct CapabilityInstaller {
             throw InstallationError.blocked(blockers)
         }
 
+        // A skill the catalog lists as its own package is a stored row: Add
+        // turns that row on, keeping its ID and its Keychain secrets.
+        if let skillID = Self.syntheticSkillRowID(of: package) {
+            return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist)
+        }
+
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         var savedSkillSecrets: [SavedSkillSecret] = []
+        var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
         // Everything from here through persist() is one transaction: staging a
         // skill/connector/tool can throw (credential save denied, activation
         // swap failure, ...) partway through the loops below, after earlier
@@ -203,14 +222,21 @@ struct CapabilityInstaller {
             // Adding a version this workspace had at another one is an Update
             // for it: renamed components keep their state, dropped ones
             // release theirs, and the version and digest are recorded.
-            let releasedSkillIDs = try PluginUpdateService.reconcile(activation, in: workspace, to: package)
+            let reconciliation = try PluginUpdateService.reconcile(
+                activation,
+                in: workspace,
+                to: package,
+                mode: .release,
+                copied: &renamedSecrets
+            )
+            let releasedSkillIDs = reconciliation.released
 
             let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
             let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
 
             for pluginSkill in package.skills {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
-                let projectedID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: componentID)
+                let projectedID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
                 try saveSkillSettings(
                     pluginSkill,
                     componentID: componentID,
@@ -239,6 +265,11 @@ struct CapabilityInstaller {
                     baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
                 )
                 let bound = activation.accounts(forComponent: componentID).first
+                // The account replacing this component's default takes its
+                // place as the workspace's default for the service.
+                let inheritsDefault = activation.bindings.contains {
+                    !$0.isDeleted && $0.componentID == componentID && $0.isDefault
+                }
                 let account: Connector
                 if let bound, !hasScopedInputs {
                     // Adding again keeps the account the workspace chose.
@@ -264,20 +295,19 @@ struct CapabilityInstaller {
                         WorkspaceCapabilityActivation.unbind(bound, from: activation)
                     }
                 }
-                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: true)
+                WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault)
                 appendUnique(account.id, to: &connectorIDs)
             }
 
             for pluginTool in package.localTools {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginTool)
                 appendUnique(
-                    PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: componentID),
+                    PluginRuntimeProjection.derivedID(of: activation, componentID: componentID),
                     to: &localToolIDs
                 )
             }
 
-            for pluginTemplate in package.templates {
-                let template = upsertWorkspaceTemplate(pluginTemplate, package: package, workspace: workspace, modelContext: modelContext)
+            for template in PluginTemplateSync.sync(package, in: workspace, modelContext: modelContext) {
                 appendUnique(template.id, to: &templateIDs)
             }
 
@@ -287,6 +317,7 @@ struct CapabilityInstaller {
             }) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
+            PluginUpdateService.clearStaleSecrets(reconciliation.staleSecrets)
             var enabledFields = [
                 "package_id": package.id,
                 "package_name": package.name,
@@ -318,6 +349,7 @@ struct CapabilityInstaller {
             modelContext.rollback()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             restoreSkillSecrets(savedSkillSecrets)
+            PluginUpdateService.undo(renamedSecrets)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"
@@ -363,6 +395,62 @@ struct CapabilityInstaller {
 
     /// A secret skill setting written to the Keychain by this enable, with
     /// the value it replaced, so a failed enable can put it back.
+    /// The stored skill row a catalog-synthesized `skill.<uuid>` package
+    /// stands for (`CapabilityCatalogInventory`), nil for a real plugin.
+    static func syntheticSkillRowID(of package: PluginPackage) -> UUID? {
+        let kind = package.sourceMetadata?.kind
+        guard package.id.hasPrefix("skill."), kind == "workspace" || kind == "shared" else { return nil }
+        return UUID(uuidString: String(package.id.dropFirst("skill.".count)))
+    }
+
+    /// Turns on the stored skill row a synthetic package names: a shared row
+    /// and its shared connectors and tools join the workspace; a workspace
+    /// row is already on. No activation is created, so nothing projects a
+    /// second copy under another ID.
+    private func enableSkillRow(
+        _ skillID: UUID,
+        package: PluginPackage,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool
+    ) throws -> InstallationResult {
+        var descriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == skillID })
+        descriptor.fetchLimit = 1
+        guard let skill = try? modelContext.fetch(descriptor).first, !skill.isDeleted else {
+            throw InstallationError.persistenceFailed(packageID: package.id)
+        }
+        let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
+        if skill.isGlobal {
+            WorkspaceCapabilityActivation.mutate(workspace) { state in
+                state.enableGlobalSkill(skill.id.uuidString)
+                for connector in skill.connectors where connector.isGlobal {
+                    state.enableGlobalConnector(connector.id.uuidString)
+                }
+                for tool in skill.localTools where tool.isGlobal {
+                    state.enableGlobalTool(tool.id.uuidString)
+                }
+            }
+            workspace.updatedAt = Date()
+        }
+        guard persist(workspace, modelContext) else {
+            modelContext.rollback()
+            WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
+            throw InstallationError.persistenceFailed(packageID: package.id)
+        }
+        AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
+            "package_id": package.id,
+            "workspace_id": workspace.id.uuidString,
+            "result": "skill_row_enabled"
+        ])
+        return InstallationResult(
+            packageID: package.id,
+            skillIDs: [skill.id],
+            connectorIDs: skill.connectors.map(\.id),
+            localToolIDs: skill.localTools.map(\.id),
+            templateIDs: []
+        )
+    }
+
     private struct SavedSkillSecret {
         let key: String
         let skillID: UUID
@@ -383,8 +471,10 @@ struct CapabilityInstaller {
     ) throws {
         for key in pluginSkill.environmentKeys {
             guard let value = configInputs[key] else { continue }
+            let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
             guard Skill.isSecretEnvironmentKey(key) else {
-                WorkspaceCapabilityActivation.setConfigValue(value, forKey: "\(componentID).\(key)", on: activation)
+                // A blank field at Add keeps the plugin's default.
+                WorkspaceCapabilityActivation.setConfigValue(value.isEmpty ? nil : value, forKey: settingKey, on: activation)
                 continue
             }
             guard !value.isEmpty else { continue }
@@ -400,6 +490,7 @@ struct CapabilityInstaller {
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: key)
             }
             savedSecrets.append(SavedSkillSecret(key: key, skillID: projectedID, previousValue: previous))
+            WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
         }
     }
 
@@ -599,42 +690,6 @@ struct CapabilityInstaller {
         return configKeys.contains { key in
             !(configInputs[key] ?? "").isEmpty
         }
-    }
-
-    private func upsertWorkspaceTemplate(
-        _ pluginTemplate: PluginTemplate,
-        package: PluginPackage,
-        workspace: Workspace,
-        modelContext: ModelContext
-    ) -> TaskTemplate {
-        let template = workspace.templates.first { $0.name == pluginTemplate.name } ?? TaskTemplate(
-            name: pluginTemplate.name,
-            mainGoal: pluginTemplate.mainGoal,
-            workspace: workspace,
-            icon: pluginTemplate.icon,
-            templateDescription: pluginTemplate.description
-        )
-        if template.modelContext == nil {
-            modelContext.insert(template)
-        }
-        template.icon = pluginTemplate.icon
-        template.templateDescription = pluginTemplate.description
-        template.mainGoal = pluginTemplate.mainGoal
-        template.beforeGoal = pluginTemplate.beforeGoal
-        template.afterGoal = pluginTemplate.afterGoal
-        template.mainBudget = pluginTemplate.mainBudget
-        template.beforeBudget = pluginTemplate.beforeBudget
-        template.afterBudget = pluginTemplate.afterBudget
-        template.variablesJSON = pluginTemplate.variablesJSON
-        template.passContextToMain = pluginTemplate.passContextToMain
-        template.passContextToAfter = pluginTemplate.passContextToAfter
-        CapabilityResourceOrigin.stamp(
-            template,
-            package: package,
-            componentID: CapabilityResourceOrigin.componentID(for: pluginTemplate)
-        )
-        template.updatedAt = Date()
-        return template
     }
 
     private func existingWorkspaceConnector(

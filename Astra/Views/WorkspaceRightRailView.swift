@@ -526,6 +526,7 @@ struct WorkspaceRightRailView: View {
             }
         }
         .tint(Stanford.lagunita)
+        .onDisappear { repairs.cancelAll() }
         .onAppear {
             loadSSHConnections()
             refreshApprovedCapabilities()
@@ -922,8 +923,10 @@ struct WorkspaceRightRailView: View {
             isEnabled: item.isEnabled,
             isCompact: isCompact,
             repairVerb: item.repair?.verb,
+            repairCommand: item.repair?.strategy == .terminal ? item.repair?.command : nil,
             repairStatus: item.repair.flatMap(repairs.phase(for:)) == .waiting ? "Checking…" : nil,
             onRepair: { if let repair = item.repair { repairs.start(repair) { refreshCapabilityPrerequisiteStatuses() } } },
+            contextualRepair: contextualRepair(for: item),
             onOpen: { openCapabilityConfiguration(item) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1117,6 +1120,15 @@ struct WorkspaceRightRailView: View {
         if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
         if lhs.isEnabled != rhs.isEnabled { return lhs.isEnabled && !rhs.isEnabled }
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+
+    private func contextualRepair(for item: RailCapabilityItem) -> AnyView? {
+        guard case .package(let package) = item.source,
+              CapabilityRailRepair.needsRepositoryAccessRepair(for: package, statuses: capabilityPrerequisiteStatuses)
+        else { return nil }
+        return AnyView(GitHubRepositoryAccessRepairButton(workingDirectory: workspace.resolvedWorkingPath) {
+            refreshCapabilityPrerequisiteStatuses()
+        })
     }
 
     private func railCapabilityPriority(_ item: RailCapabilityItem) -> Int {

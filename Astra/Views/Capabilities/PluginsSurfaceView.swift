@@ -38,6 +38,9 @@ struct PluginsSurfaceView: View {
     @State private var showMCPPaste = false
     @State private var pastedMCPTarget = ""
     @State private var mcpInstallRequest: MCPInstallChatRequest?
+    /// Only the latest health scan may publish; an older one finishing last
+    /// would bring back failures a repair already fixed.
+    @State private var statusGeneration = 0
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -77,12 +80,14 @@ struct PluginsSurfaceView: View {
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + failingSetup(for: package).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
-                isRemovable: !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id)
+                isRemovable: Self.isRemovable(package)
             )
             input.unavailableReason = PluginsSurfacePresentation.unavailableReason(for: package)
+            // Any drift an Update would settle: version, digest, components
+            // or templates.
             input.needsUpdate = activation.map {
-                $0.recordedVersion != package.version
-                    || $0.knownComponentIDs != PluginUpdateService.componentIDs(of: package)
+                PluginUpdateService.needsReconcile($0, to: package)
+                    || !PluginTemplateSync.isInSync(package, in: workspace)
             } ?? false
             inputs.append(input)
             rows[package.id] = PluginRow(package: package, activation: activation, display: PluginsSurfacePresentation.makeState(
@@ -143,6 +148,7 @@ struct PluginsSurfaceView: View {
             }
         }
         .padding(16)
+        .onDisappear { repairs.cancelAll() }
         .onAppear {
             expanded = PluginsSurfacePreferences.expandedPluginIDs(workspaceID: workspace.id)
             refreshApprovalRecords()
@@ -159,10 +165,13 @@ struct PluginsSurfaceView: View {
             refreshApprovalRecords()
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityCatalogPersistenceChanged)) { notification in
-            // A library change (an import, a removal in another window) needs
-            // a reload; a workspace-scoped change is observed through the model.
-            guard (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil else { return }
-            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            // A library change (an install, an import, a removal in another
+            // window) reloads this surface's catalog snapshot; a workspace
+            // change is observed through the model.
+            if (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil {
+                catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            }
+            refreshStatuses()
         }
         .sheet(isPresented: $showCreateWizard) {
             CapabilityCreationWizardView(workspace: workspace) { package, enableHere, sourceURL in
@@ -202,6 +211,14 @@ struct PluginsSurfaceView: View {
         expanded.insert(id)
         selectedPackageID = nil
         DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
+    }
+
+    /// A plugin the library holds and ASTRA did not ship. A row projected
+    /// from a standalone skill (`skill.<uuid>`) is not in the library.
+    static func isRemovable(_ package: PluginPackage) -> Bool {
+        guard !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id) else { return false }
+        let kind = package.sourceMetadata?.kind
+        return !(package.id.hasPrefix("skill.") && (kind == "workspace" || kind == "shared"))
     }
 
     @ViewBuilder
@@ -296,7 +313,9 @@ struct PluginsSurfaceView: View {
             Text(component.name).font(Stanford.ui(13))
             Text(kindLabel(component.kind)).font(Stanford.caption(11)).foregroundStyle(.secondary)
             Spacer()
-            if let failing, let repair = failing.repair {
+            if let failing, GitHubRepositoryAccessRepairButton.supports(failing.prerequisite, status: statuses[failing.prerequisite.id]) {
+                GitHubRepositoryAccessRepairButton(workingDirectory: workspace.resolvedWorkingPath) { refreshStatuses() }
+            } else if let failing, let repair = failing.repair {
                 if repairs.phase(for: repair) == .waiting {
                     Text("Checking…").font(Stanford.caption(11)).foregroundStyle(.secondary)
                 } else {
@@ -317,7 +336,9 @@ struct PluginsSurfaceView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(Stanford.lagunita)
-            } else if isEnabled, component.kind == .setup, statuses.isEmpty == false {
+            } else if failing != nil {
+                Text("Not working").font(Stanford.caption(11)).foregroundStyle(Stanford.statusError)
+            } else if isEnabled, component.kind == .setup, isUsable(component, package: package) {
                 ConfiguredStatusDot()
             }
         }
@@ -337,8 +358,16 @@ struct PluginsSurfaceView: View {
     // MARK: - Health
 
     private struct FailingSetup {
+        let prerequisite: CLIPrerequisite
         let component: PluginComponent
         let repair: RepairAction?
+    }
+
+    /// This setup component's own prerequisite was checked and works.
+    private func isUsable(_ component: PluginComponent, package: PluginPackage) -> Bool {
+        guard let prerequisite = package.prerequisites.first(where: { $0.displayName == component.name }),
+              let status = statuses[prerequisite.id] else { return false }
+        return status.isUsable
     }
 
     private func failingSetup(for package: PluginPackage) -> [FailingSetup] {
@@ -348,7 +377,11 @@ struct PluginsSurfaceView: View {
                   let component = components.first(where: { $0.kind == .setup && $0.name == prerequisite.displayName })
             else { return nil }
             let needsInstall: Bool = { if case .missingBinary = status { return true } else { return false } }()
-            return FailingSetup(component: component, repair: RepairAction.from(component, needsInstall: needsInstall))
+            return FailingSetup(
+                prerequisite: prerequisite,
+                component: component,
+                repair: RepairAction.from(component, needsInstall: needsInstall)
+            )
         }
     }
 
@@ -358,6 +391,8 @@ struct PluginsSurfaceView: View {
                 && CapabilityPackageState(package: $0, workspace: workspace, capabilities: capabilities).isEnabled
         }
         let directory = workspace.resolvedWorkingPath
+        statusGeneration += 1
+        let generation = statusGeneration
         Task { @MainActor in
             let cache = PreflightCache()
             var next: [String: HealthStatus] = [:]
@@ -367,6 +402,7 @@ struct PluginsSurfaceView: View {
                 )
                 next.merge(packageStatuses) { _, new in new }
             }
+            guard generation == statusGeneration else { return }
             statuses = next
         }
     }
@@ -476,7 +512,7 @@ struct PluginsSurfaceView: View {
     private func update(_ row: PluginRow) {
         errorMessage = nil
         do {
-            try CapabilityCatalogActionService().update(modelContext: modelContext)
+            try CapabilityCatalogActionService().update(row.package, modelContext: modelContext)
             onCatalogChanged()
             refreshStatuses()
         } catch {

@@ -150,8 +150,11 @@ struct WorkspaceCapabilityActivationTests {
 
         WorkspaceCapabilityActivation.bind(first, toComponent: component, of: activation)
         WorkspaceCapabilityActivation.bind(second, toComponent: component, of: activation, isDefault: true)
-        WorkspaceCapabilityActivation.setConfigValue("PROJ", forKey: "skill:jira agent.JIRA_PROJECT", on: activation)
+        WorkspaceCapabilityActivation.setConfigValue("PROJ", forKey: "skill:jira agent#JIRA_PROJECT", on: activation)
         WorkspaceCapabilityActivation.setOverridden(true, componentID: "skill:jira agent", on: activation)
+        WorkspaceCapabilityActivation.setKnownComponents(["skill:jira agent", component, component], on: activation)
+        WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: "skill:jira agent#JIRA_API_TOKEN", on: activation)
+        #expect(activation.knownComponentIDs == ["skill:jira agent", component])
         #expect(activation.revision > startRevision)
         #expect(activation.accounts(forComponent: component).map(\.name) == ["Jira Coral", "Jira Stanford"])
         #expect(activation.configuration(forComponent: "skill:jira agent") == ["JIRA_PROJECT": "PROJ"])
@@ -169,11 +172,104 @@ struct WorkspaceCapabilityActivationTests {
         #expect(PluginActivationRecord(restored) == snapshot.activations.first)
         #expect(restored.accounts(forComponent: component).map(\.name) == ["Jira Coral", "Jira Stanford"])
         #expect(restored.overriddenComponentIDs == ["skill:jira agent"])
+        #expect(restored.knownComponentIDs == ["skill:jira agent", component])
+        #expect(restored.secretSettingKeys == ["skill:jira agent#JIRA_API_TOKEN"])
 
         // Deleting an account removes its bindings with it.
         context.delete(second)
         try context.save()
         #expect(restored.accounts(forComponent: component).map(\.name) == ["Jira Stanford"])
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("A workspace has one default account per service across its plugins")
+    @MainActor
+    func oneDefaultPerServiceAcrossPlugins() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let stanford = Connector(name: "Stanford", serviceType: "jira")
+        let coral = Connector(name: "Coral", serviceType: "Jira ")
+        let redcap = Connector(name: "Stanford", serviceType: "redcap")
+        [stanford, coral, redcap].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability("jira-workflow")
+            $0.enableCapability("jira-ops")
+            $0.enableCapability("redcap-workflow")
+        }
+        let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        let ops = try #require(WorkspaceCapabilityActivation.activation(for: "jira-ops", in: workspace))
+        let redcapActivation = try #require(WorkspaceCapabilityActivation.activation(for: "redcap-workflow", in: workspace))
+
+        WorkspaceCapabilityActivation.bind(stanford, toComponent: "connector:jira:jira", of: jira)
+        // Another plugin's first Jira account is not a second default.
+        WorkspaceCapabilityActivation.bind(coral, toComponent: "connector:jira:ops", of: ops)
+        // Another service keeps its own default.
+        WorkspaceCapabilityActivation.bind(redcap, toComponent: "connector:redcap:redcap", of: redcapActivation)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == stanford.id)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "redcap", in: workspace)?.id == redcap.id)
+        func defaults() -> [UUID] {
+            WorkspaceCapabilityActivation.activations(of: workspace).flatMap(\.bindings)
+                .filter { $0.isDefault && $0.account?.serviceType.lowercased().contains("jira") == true }
+                .compactMap { $0.account?.id }
+        }
+        #expect(defaults() == [stanford.id])
+
+        // Making the other one default moves it across plugins.
+        WorkspaceCapabilityActivation.bind(coral, toComponent: "connector:jira:ops", of: ops, isDefault: true)
+        #expect(defaults() == [coral.id])
+
+        // Unbinding the default promotes the service's remaining account.
+        WorkspaceCapabilityActivation.unbind(coral, from: ops)
+        #expect(defaults() == [stanford.id])
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Accounts of one service a workspace sees get distinct names")
+    @MainActor
+    func aliasesAreUniquePerServiceInAWorkspace() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let first = Connector(name: "Stanford", serviceType: "jira")
+        let second = Connector(name: "stanford ", serviceType: "jira")
+        let otherService = Connector(name: "Stanford", serviceType: "redcap")
+        [first, second, otherService].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability("jira-workflow")
+            $0.enableCapability("jira-ops")
+            $0.enableCapability("redcap-workflow")
+        }
+        let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        let ops = try #require(WorkspaceCapabilityActivation.activation(for: "jira-ops", in: workspace))
+        let redcap = try #require(WorkspaceCapabilityActivation.activation(for: "redcap-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(first, toComponent: "connector:jira:jira", of: jira)
+        WorkspaceCapabilityActivation.bind(second, toComponent: "connector:jira:ops", of: ops)
+        WorkspaceCapabilityActivation.bind(otherService, toComponent: "connector:redcap:redcap", of: redcap)
+        #expect(first.name == "Stanford")
+        #expect(second.name == "stanford  2")
+        #expect(otherService.name == "Stanford")
+        #expect(WorkspaceCapabilityActivation.uniqueAlias("Stanford", serviceType: "jira", in: workspace) == "Stanford 2")
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("An emptied setting is kept; removing one restores the default")
+    @MainActor
+    func emptySettingIsKeptAndNilRemoves() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("p") }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "p", in: workspace))
+        let key = PluginActivation.settingKey(componentID: "skill:a.b", key: "c")
+        WorkspaceCapabilityActivation.setConfigValue("", forKey: key, on: activation)
+        #expect(activation.configuration(forComponent: "skill:a.b") == ["c": ""])
+        // Setting keys can't collide however components are named.
+        WorkspaceCapabilityActivation.setConfigValue("x", forKey: PluginActivation.settingKey(componentID: "skill:a", key: "b.c"), on: activation)
+        #expect(activation.configuration(forComponent: "skill:a.b") == ["c": ""])
+        #expect(activation.configuration(forComponent: "skill:a") == ["b.c": "x"])
+        #expect(PluginActivation.componentID(ofSettingKey: key) == "skill:a.b")
+        WorkspaceCapabilityActivation.setConfigValue("y", forKey: PluginActivation.settingKey(componentID: "skill:c# helper", key: "K"), on: activation)
+        #expect(activation.configuration(forComponent: "skill:c").isEmpty)
+        #expect(activation.configuration(forComponent: "skill:c# helper") == ["K": "y"])
+        WorkspaceCapabilityActivation.setConfigValue(nil, forKey: key, on: activation)
+        #expect(activation.configuration(forComponent: "skill:a.b").isEmpty)
         withExtendedLifetime(container) {}
     }
 

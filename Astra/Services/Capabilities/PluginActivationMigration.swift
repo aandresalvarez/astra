@@ -31,7 +31,9 @@ import ASTRAPersistence
 ///
 /// Every change is one save. A secret that cannot be copied aborts the whole
 /// migration before the save, so nothing is deleted with its settings
-/// stranded; the next launch tries again.
+/// stranded; the next launch tries again. On any failure the secrets already
+/// copied are put back as they were, so no namespace is left holding a value
+/// nothing owns.
 @MainActor
 enum PluginActivationMigration {
     struct Report: Equatable {
@@ -50,12 +52,10 @@ enum PluginActivationMigration {
 
     /// Runs the migration against the app's store when it has legacy state.
     static func migrateIfNeeded(modelContext context: ModelContext) {
-        guard needsMigration(modelContext: context) else { return }
+        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        guard needsMigration(modelContext: context, packages: packages) else { return }
         do {
-            let report = try migrate(
-                modelContext: context,
-                packages: CapabilityRuntimeResourceMatcher.packageDefinitions()
-            )
+            let report = try migrate(modelContext: context, packages: packages)
             AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: [
                 "migration": "plugin_activations_v20",
                 "result": "migrated",
@@ -75,9 +75,18 @@ enum PluginActivationMigration {
         }
     }
 
-    static func needsMigration(modelContext: ModelContext) -> Bool {
+    /// Legacy state to move, or an activation (one a mirror without history
+    /// restored) whose known components were never seeded.
+    static func needsMigration(modelContext: ModelContext, packages: [PluginPackage]? = nil) -> Bool {
         let workspaces = (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []
         if workspaces.contains(where: { !$0.legacyEnabledCapabilityIDs.isEmpty || !$0.legacyInstalledPluginIDs.isEmpty }) {
+            return true
+        }
+        let withComponents = Set((packages ?? CapabilityRuntimeResourceMatcher.packageDefinitions())
+            .filter { !PluginRuntimeProjection.componentIDs(of: $0).isEmpty }
+            .map(\.id))
+        let activations = (try? modelContext.fetch(FetchDescriptor<PluginActivation>())) ?? []
+        if activations.contains(where: { $0.knownComponentIDs.isEmpty && withComponents.contains($0.pluginID) }) {
             return true
         }
         let skills = (try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []
@@ -95,10 +104,23 @@ enum PluginActivationMigration {
         let tools = try modelContext.fetch(FetchDescriptor<LocalTool>())
         var report = Report()
         var releasedSkillIDs: [UUID] = []
+        var copiedSecrets: [CopiedSecret] = []
 
         do {
             for workspace in workspaces {
                 report.activations += migrateEnablement(of: workspace, packagesByID: packagesByID)
+            }
+            // The definition each activation starts from, so a later Update
+            // can tell which components it dropped.
+            for workspace in workspaces {
+                for activation in WorkspaceCapabilityActivation.activations(of: workspace)
+                where activation.knownComponentIDs.isEmpty {
+                    guard let package = packagesByID[activation.pluginID] else { continue }
+                    WorkspaceCapabilityActivation.setKnownComponents(
+                        PluginRuntimeProjection.componentIDs(of: package),
+                        on: activation
+                    )
+                }
             }
             var activationsByPlugin: [String: [(Workspace, PluginActivation)]] = [:]
             for workspace in workspaces {
@@ -131,11 +153,6 @@ enum PluginActivationMigration {
                     report.accountsBound += 1
                 }
             }
-            for workspace in workspaces {
-                for activation in WorkspaceCapabilityActivation.activations(of: workspace) {
-                    disambiguateAliases(in: activation)
-                }
-            }
 
             for skill in skills where isPluginOrigin(skill) && !skill.isSystemBuiltIn {
                 let pluginID = trimmed(skill.originPackageID)
@@ -160,8 +177,15 @@ enum PluginActivationMigration {
                     continue
                 }
                 for (workspace, activation) in using {
-                    let projectedID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: componentID)
-                    try moveSettings(of: skill, spec: spec, componentID: componentID, to: activation, projectedID: projectedID)
+                    let projectedID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
+                    try moveSettings(
+                        of: skill,
+                        spec: spec,
+                        componentID: componentID,
+                        to: activation,
+                        projectedID: projectedID,
+                        copied: &copiedSecrets
+                    )
                     retarget(skillID: skill.id, to: projectedID, in: workspace)
                 }
                 let skillID = skill.id.uuidString
@@ -238,9 +262,34 @@ enum PluginActivationMigration {
             guard saved else { throw saveError ?? MigrationError.cleanupUnrecordable }
         } catch {
             modelContext.rollback()
+            restore(copiedSecrets)
             throw error
         }
         return report
+    }
+
+    /// A secret written into a projected namespace, and what was there.
+    private struct CopiedSecret {
+        let key: String
+        let skillID: UUID
+        let previousValue: String?
+    }
+
+    private static func restore(_ copied: [CopiedSecret]) {
+        let persistence = SkillSecretSeam.required
+        for secret in copied.reversed() {
+            if let previous = secret.previousValue {
+                persistence.saveSecretValue(
+                    previous,
+                    key: secret.key,
+                    skillID: secret.skillID,
+                    skillName: "",
+                    allowUserInteraction: false
+                )
+            } else {
+                persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
+            }
+        }
     }
 
     // MARK: - Steps
@@ -277,22 +326,25 @@ enum PluginActivationMigration {
     }
 
     /// Settings that differ from the plugin's defaults move to the
-    /// activation; secret ones are copied into the projected skill's Keychain
-    /// namespace.
+    /// activation, an emptied one included (the person cleared a default);
+    /// secret ones are copied into the projected skill's Keychain namespace.
     private static func moveSettings(
         of skill: Skill,
         spec: PluginSkill,
         componentID: String,
         to activation: PluginActivation,
-        projectedID: UUID
+        projectedID: UUID,
+        copied: inout [CopiedSecret]
     ) throws {
         let persistence = SkillSecretSeam.required
         for (index, key) in skill.environmentKeys.enumerated() {
+            let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
             if Skill.isSecretEnvironmentKey(key) {
                 let stored = persistence.loadSecretValue(key: key, skillID: skill.id, store: KeychainSecretStore())
                 let legacy = index < skill.environmentValues.count ? skill.environmentValues[index] : ""
                 let value = stored ?? legacy
                 guard !value.isEmpty else { continue }
+                let previous = persistence.loadSecretValue(key: key, skillID: projectedID, store: KeychainSecretStore())
                 guard persistence.saveSecretValue(
                     value,
                     key: key,
@@ -302,13 +354,15 @@ enum PluginActivationMigration {
                 ) else {
                     throw MigrationError.secretCopyFailed(skill: skill.name, key: key)
                 }
+                copied.append(CopiedSecret(key: key, skillID: projectedID, previousValue: previous))
+                WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: settingKey, on: activation)
                 continue
             }
             let value = index < skill.environmentValues.count ? skill.environmentValues[index] : ""
             let specIndex = spec.environmentKeys.firstIndex(of: key)
             let defaultValue = specIndex.flatMap { $0 < spec.environmentValues.count ? spec.environmentValues[$0] : nil } ?? ""
-            guard !value.isEmpty, value != defaultValue else { continue }
-            WorkspaceCapabilityActivation.setConfigValue(value, forKey: "\(componentID).\(key)", on: activation)
+            guard value != defaultValue else { continue }
+            WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         }
     }
 
@@ -321,25 +375,6 @@ enum PluginActivationMigration {
         }
         for schedule in workspace.schedules where schedule.skillIDs.contains(old) {
             schedule.skillIDs = schedule.skillIDs.map { $0 == old ? new : $0 }
-        }
-    }
-
-    /// Accounts bound to one component share a service, so their names must
-    /// tell them apart: a repeated name gets " 2", " 3" in creation order.
-    private static func disambiguateAliases(in activation: PluginActivation) {
-        let byComponent = Dictionary(grouping: activation.bindings.filter { !$0.isDeleted }, by: \.componentID)
-        for bindings in byComponent.values where bindings.count > 1 {
-            var seen: [String: Int] = [:]
-            let accounts = bindings.compactMap(\.account).sorted { $0.createdAt < $1.createdAt }
-            for account in accounts {
-                let key = account.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                let count = (seen[key] ?? 0) + 1
-                seen[key] = count
-                if count > 1 {
-                    account.name = "\(account.name) \(count)"
-                    account.updatedAt = Date()
-                }
-            }
         }
     }
 
@@ -406,6 +441,8 @@ enum PluginActivationMigration {
 
     private static func isEdited(_ tool: LocalTool, spec: PluginLocalTool) -> Bool {
         tool.name != spec.name
+            || tool.toolDescription != spec.description
+            || tool.icon != spec.icon
             || tool.toolType != spec.toolType
             || tool.command != spec.command
             || tool.arguments != spec.arguments

@@ -227,7 +227,11 @@ struct ComposerToolbar: View {
                     }
 
                     ForEach(taskCapabilities) { skill in
-                        let isEnabled = skills.contains { $0.id == skill.id }
+                        // A plugin's skill is on for every task while its
+                        // plugin is on in the workspace; the Plugins screen
+                        // turns it off, not this menu.
+                        let isPluginSkill = PluginRuntimeProjection.isProjected(skill)
+                        let isEnabled = isPluginSkill || skills.contains { $0.id == skill.id }
                         Button {
                             onToggleSkill?(skill, !isEnabled)
                         } label: {
@@ -236,6 +240,8 @@ struct ComposerToolbar: View {
                                 if isEnabled { Image(systemName: "checkmark") }
                             }
                         }
+                        .disabled(isPluginSkill)
+                        .help(isPluginSkill ? "On while its plugin is on in this workspace" : "")
                     }
 
                     if onManageSkills != nil {

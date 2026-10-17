@@ -13,6 +13,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case invalidPackageID
         case duplicatePackageID
         case duplicatePackageFilename
+        case duplicateMCPServerID
         case invalidVersion
         case localSourceNormalized
         case missingGovernance
@@ -349,6 +350,25 @@ enum CapabilityPackageValidator {
                 "Package ID \(package.id) maps to the same filename as installed package \(collision.id).",
                 component: package.id
             ))
+        }
+
+        // Projected MCP servers, provider configuration and permission names
+        // use the server ID unqualified: one ID across two plugins would
+        // drop a server or point a permission at the wrong plugin.
+        for server in package.mcpServers {
+            let serverID = server.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let owner = installedPackages.first(where: { other in
+                other.id.lowercased() != normalizedID
+                    && other.mcpServers.contains { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == serverID }
+            }) {
+                issues.append(issue(
+                    .blocker,
+                    .duplicateMCPServerID,
+                    "MCP server ID in use",
+                    "MCP server \(server.id) is already declared by installed plugin \(owner.id).",
+                    component: server.id
+                ))
+            }
         }
 
         if !isValidSemanticVersionLiteral(package.version) {

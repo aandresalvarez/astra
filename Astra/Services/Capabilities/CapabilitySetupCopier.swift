@@ -71,6 +71,7 @@ struct CapabilitySetupCopier {
         for pluginConnector in package.connectors {
             let connectors = matchingConnectors(
                 for: pluginConnector,
+                of: package,
                 in: workspace,
                 globalConnectors: globalConnectors
             )
@@ -140,8 +141,13 @@ struct CapabilitySetupCopier {
         return !name.isEmpty && normalizedKey.contains(name)
     }
 
+    /// The accounts this package's own component uses in `workspace`, its
+    /// default first, then the workspace's rows no plugin is bound to. An
+    /// account another plugin uses is never a source: two plugins of one
+    /// service must not swap URLs or credentials.
     private func matchingConnectors(
         for pluginConnector: PluginConnector,
+        of package: PluginPackage,
         in workspace: Workspace,
         globalConnectors: [Connector]
     ) -> [Connector] {
@@ -149,17 +155,19 @@ struct CapabilitySetupCopier {
         let enabledGlobalConnectors = globalConnectors.filter { connector in
             enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))
         }
-        // Shared accounts reach a workspace through its activations' bindings.
-        let boundAccounts = WorkspaceCapabilityActivation.activations(of: workspace)
+        let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
+        let ownAccounts = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)?
+            .accounts(forComponent: componentID)
+            .filter { !$0.isDeleted } ?? []
+        let boundElsewhere = Set(WorkspaceCapabilityActivation.activations(of: workspace)
             .flatMap(\.bindings)
             .filter { !$0.isDeleted }
-            .compactMap(\.account)
+            .compactMap { $0.account?.id })
+        let unbound = (workspace.connectors + enabledGlobalConnectors).filter { !boundElsewhere.contains($0.id) }
         var seen = Set<UUID>()
-        let candidates = (workspace.connectors + enabledGlobalConnectors + boundAccounts)
-            .filter { seen.insert($0.id).inserted }
-        return candidates.filter { connector in
+        return (ownAccounts + unbound.filter { connector in
             CapabilityRuntimeResourceMatcher.connectorMatches(pluginConnector, connector: connector)
-        }
+        }).filter { seen.insert($0.id).inserted }
     }
 
     private func credentialValue(for key: String, in connector: Connector, serviceType: String) -> String? {
