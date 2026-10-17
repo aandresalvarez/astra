@@ -374,6 +374,102 @@ struct PluginOperationsTests {
         }
     }
 
+    @Test("Update never takes over a template the person authored under the same name")
+    func authoredTemplateIsNotTakenOver() throws {
+        let env = try Environment()
+        let mine = TaskTemplate(name: "Weekly", mainGoal: "My own goal", workspace: env.workspace, icon: "doc", templateDescription: "mine")
+        env.context.insert(mine)
+        try env.context.save()
+        var v1 = Self.package(version: "1.0.0")
+        v1.templates = [Self.template("Weekly", goal: "Plugin goal")]
+        try env.install(v1)
+        #expect(mine.mainGoal == "My own goal")
+        #expect(mine.originPackageID == nil)
+        #expect(env.workspace.templates.filter { $0.name == "Weekly" }.count == 2)
+    }
+
+    @Test("A full replaces identity matches however it is spelled")
+    func replacesIsCanonicalized() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        var v2 = Self.package(version: "2.0.0")
+        v2.skills[0].id = "summary-agent"
+        v2.skills[0].replaces = ["skill:Report Agent"]
+        try env.importUpdate(v2)
+        #expect(activation.configuration(forComponent: "skill:summary-agent") == ["PROJECT": "alpha"])
+    }
+
+    @Test("An automatic rename that releases nothing else is saved even when the pass holds back")
+    func automaticRenameIsPersisted() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        let account = try #require(activation.bindings.first?.account)
+        var v2 = Self.package(version: "2.0.0")
+        v2.connectors[0].id = "tracker"
+        v2.connectors[0].replaces = ["connector:tracker:tracker-api"]
+        v2.localTools = []
+        try env.importUpdate(v2, mode: .automatic)
+        #expect(activation.recordedVersion == "1.0.0")
+        #expect(activation.accounts(forComponent: "connector:tracker:tracker").map(\.id) == [account.id])
+        #expect(!env.context.hasChanges)
+    }
+
+    @Test("Update adds the credential keys a kept connector now declares to the accounts the plugin created")
+    func ownedAccountsFollowTheDefinition() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        let account = try #require(env.workspace.connectors.first)
+        account.baseURL = "https://mine.example.com"
+        try env.context.save()
+        var v2 = Self.package(version: "2.0.0")
+        v2.connectors[0].credentialHints.append(.init(key: "TRACKER_SECRET", hint: "Secret"))
+        v2.connectors[0].description = "Tracker v2"
+        try env.importUpdate(v2)
+        #expect(account.credentialKeys.contains("TRACKER_SECRET"))
+        #expect(account.connectorDescription == "Tracker v2")
+        #expect(account.baseURL == "https://mine.example.com")
+    }
+
+    @Test("The delete confirmation names every workspace the deletion reaches")
+    func deleteReachIncludesSharedListings() throws {
+        let env = try Environment()
+        let package = Self.package(version: "1.0.0")
+        try env.install(package)
+        let account = try #require(env.workspace.connectors.first)
+        let other = Workspace(name: "Listing", primaryPath: "/tmp/plugin-ops-listing")
+        env.context.insert(other)
+        WorkspaceCapabilityActivation.mutate(other) { $0.enableGlobalConnector(account.id.uuidString) }
+        try env.context.save()
+        #expect(Set(PluginOperations.workspacesUsing(account).map(\.id)) == [env.workspace.id, other.id])
+    }
+
+    @Test("Dropping the component whose account is the service default promotes another account")
+    func droppedDefaultIsPromoted() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        var other = Self.package(version: "1.0.0")
+        other.id = "ops.other"
+        other.skills[0].name = "Other Agent"
+        other.connectors[0].name = "Other Tracker"
+        other.localTools = []
+        try env.install(other)
+        let firstAccount = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace)?.bindings.first?.account)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "tracker", in: env.workspace)?.id == firstAccount.id)
+
+        var v2 = Self.package(version: "2.0.0")
+        v2.connectors = []
+        try env.importUpdate(v2)
+        let otherAccount = try #require(WorkspaceCapabilityActivation.activation(for: other.id, in: env.workspace)?.bindings.first?.account)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "tracker", in: env.workspace)?.id == otherAccount.id)
+    }
+
     @Test("A component may take over one predecessor only")
     func onePredecessorPerComponent() {
         var package = Self.package(version: "2.0.0")

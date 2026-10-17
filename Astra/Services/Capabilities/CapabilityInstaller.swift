@@ -292,7 +292,9 @@ struct CapabilityInstaller {
                         allowCredentialUserInteraction: allowCredentialUserInteraction
                     )
                     if let bound, bound.id != account.id, bound.isGlobal {
-                        WorkspaceCapabilityActivation.unbind(bound, from: activation)
+                        // Only this component moves to the new account; the
+                        // shared one stays bound wherever else it serves.
+                        WorkspaceCapabilityActivation.unbind(bound, from: activation, componentID: componentID)
                     }
                 }
                 WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault)

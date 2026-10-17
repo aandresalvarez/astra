@@ -190,7 +190,10 @@ enum PluginUpdateService {
         var recorded = false
         /// What an Update would release, when an automatic pass held back.
         var withheld: [String] = []
-        var changed: Bool { recorded || !copied.isEmpty || !released.isEmpty }
+        /// Whether a rename moved state (a connector's binding, a tool's
+        /// override) without copying a secret.
+        var moved = false
+        var changed: Bool { recorded || moved || !copied.isEmpty || !released.isEmpty }
     }
 
     /// True when the activation was not reconciled against this definition.
@@ -276,7 +279,10 @@ enum PluginUpdateService {
                 result.released.append(oldID)
             }
             WorkspaceCapabilityActivation.moveComponentState(from: old, to: new, on: activation)
+            result.moved = true
         }
+
+        if syncOwnedAccounts(of: activation, to: package) { result.moved = true }
 
         let dropped = known.subtracting(currentSet).subtracting(renames.keys).sorted()
         let staleKeys = staleSettings(of: activation, in: package)
@@ -344,6 +350,43 @@ enum PluginUpdateService {
     }
 
     // MARK: - Private
+
+    /// Brings the account rows this plugin created to its connector
+    /// declarations: credential and setting keys it now declares are added,
+    /// and its description, icon and notes follow. What the person entered
+    /// (URL, auth method, values) is kept. Returns whether a row changed.
+    @discardableResult
+    static func syncOwnedAccounts(of activation: PluginActivation, to package: PluginPackage) -> Bool {
+        var changed = false
+        for spec in package.connectors {
+            let componentID = CapabilityResourceOrigin.componentID(for: spec)
+            for account in activation.accounts(forComponent: componentID)
+            where !account.isDeleted && account.originPackageID == package.id {
+                var touched = false
+                for hint in spec.credentialHints where !account.credentialKeys.contains(hint.key) {
+                    while account.credentialValues.count < account.credentialKeys.count { account.credentialValues.append("") }
+                    account.credentialKeys.append(hint.key)
+                    account.credentialValues.append("")
+                    touched = true
+                }
+                for hint in spec.configHints where !account.configKeys.contains(hint.key) {
+                    while account.configValues.count < account.configKeys.count { account.configValues.append("") }
+                    account.configKeys.append(hint.key)
+                    account.configValues.append("")
+                    touched = true
+                }
+                if account.connectorDescription != spec.description { account.connectorDescription = spec.description; touched = true }
+                if account.icon != spec.icon { account.icon = spec.icon; touched = true }
+                if account.notes != spec.notes { account.notes = spec.notes; touched = true }
+                if account.originPackageVersion != package.version { account.originPackageVersion = package.version; touched = true }
+                if touched {
+                    account.updatedAt = Date()
+                    changed = true
+                }
+            }
+        }
+        return changed
+    }
 
     private struct StaleSetting {
         let componentID: String

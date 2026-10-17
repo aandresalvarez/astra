@@ -26,17 +26,27 @@ enum CapabilityResourceOrigin {
     /// The component identities `replaces` names, in the same form as
     /// `componentID(for:)`: a bare value is that kind's `id`.
     static func replacedComponentIDs(for skill: PluginSkill) -> [String] {
-        (skill.replaces ?? []).map { $0.contains(":") ? $0 : "skill:\(normalized($0))" }
+        (skill.replaces ?? []).map { $0.contains(":") ? canonical($0) : "skill:\(normalized($0))" }
     }
 
     static func replacedComponentIDs(for connector: PluginConnector) -> [String] {
         (connector.replaces ?? []).map {
-            $0.contains(":") ? $0 : "connector:\(normalized(connector.serviceType)):\(normalized($0))"
+            $0.contains(":") ? canonical($0) : "connector:\(normalized(connector.serviceType)):\(normalized($0))"
         }
     }
 
     static func replacedComponentIDs(for tool: PluginLocalTool) -> [String] {
-        (tool.replaces ?? []).map { $0.contains(":") ? $0 : "tool:\(normalized($0))" }
+        (tool.replaces ?? []).map { $0.contains(":") ? canonical($0) : "tool:\(normalized($0))" }
+    }
+
+    /// A full identity (`skill:Old Agent`, `connector:Jira:Old`) in the form
+    /// `componentID(for:)` produces: every part after the kind normalized,
+    /// so a predecessor is matched however its author spelled it.
+    static func canonical(_ identity: String) -> String {
+        let parts = identity.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard let kind = parts.first else { return identity }
+        return ([kind.trimmingCharacters(in: .whitespaces).lowercased()] + parts.dropFirst().map(normalized))
+            .joined(separator: ":")
     }
 
     static func componentID(for template: PluginTemplate) -> String {

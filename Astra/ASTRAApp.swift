@@ -1036,6 +1036,10 @@ public struct ASTRAApp: App {
     @MainActor private static var runtimeSettlementAutoExportWorkspaces = true
     @MainActor private static var worktreeCleanupRecovery: Task<Void, Never>?
 
+    /// Settles interrupted work and reconciles plugin activations with the
+    /// library (`runDeferredStartupWork`). `ContentView` starts the task
+    /// scheduler only after this, so an overdue schedule never launches
+    /// against a definition its activation hasn't met yet.
     @MainActor
     static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
         runDeferredStartupWork(modelContext: modelContext)

@@ -41,6 +41,11 @@ public final class PluginActivation {
     /// gone (and not taken over through `replaces`) has its settings,
     /// accounts and secrets released. Seeded by Add and the migration.
     public var knownComponentIDs: [String]
+    /// Mixed into the projected components' IDs (and so their Keychain
+    /// namespaces) when not empty. A validated import of a workspace file
+    /// gets a fresh one, so a file imported over a workspace under its ID
+    /// never reads the secrets that workspace's activation stored.
+    public var namespaceSeed: String
     public var revision: Int
     public var createdAt: Date
     public var updatedAt: Date
@@ -69,6 +74,7 @@ public final class PluginActivation {
         self.overridingRowIDs = []
         self.secretSettingKeys = []
         self.knownComponentIDs = []
+        self.namespaceSeed = ""
         self.revision = 0
         self.createdAt = createdAt
         self.updatedAt = createdAt

@@ -156,6 +156,26 @@ final class TaskLifecycleCoordinator {
     /// `@discardableResult` — production callers ignore it.
     @discardableResult
     func retryTask(_ task: AgentTask) -> Task<Void, Never>? {
+        // After an expired sign-in, Retry continues the stopped session like
+        // Resume, so it waits for the same check (`resumeTask`).
+        let latest = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        guard latest?.typedStopReason == .capabilitySessionExpired,
+              let repair = pendingRepair(for: task), repair.checkBinary != nil else {
+            return retryVerifiedTask(task)
+        }
+        let check = repairCheck
+        return Task { @MainActor [weak self] in
+            let works = await check(repair)
+            guard let self else { return }
+            if works {
+                _ = self.retryVerifiedTask(task)
+            } else {
+                self.recordRepairStillNeeded(task, repair: repair, action: "retried")
+            }
+        }
+    }
+
+    private func retryVerifiedTask(_ task: AgentTask) -> Task<Void, Never>? {
         // A durable submission leaves the task's terminal status untouched
         // while it waits, so status-gated Retry surfaces can still fire.
         // Starting a second continuation here would race the pending
@@ -347,19 +367,28 @@ final class TaskLifecycleCoordinator {
     }
 
     /// The repair the task's latest run stopped for, if it stopped for one.
+    /// A stop whose fix is outside ASTRA (a rejected `GH_TOKEN`) records no
+    /// repair to offer, but its check is still the one Resume and Retry run.
     func pendingRepair(for task: AgentTask) -> RepairAction? {
         guard let run = task.runs.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
-        return task.events
-            .last { $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue }
-            .flatMap { RepairAction.decode(from: $0.payload) }
+        if let recorded = task.events
+            .last(where: { $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue })
+            .flatMap({ RepairAction.decode(from: $0.payload) }) {
+            return recorded
+        }
+        guard run.typedStopReason == .capabilitySessionExpired else { return nil }
+        let stopMessage = task.events
+            .last { $0.run?.id == run.id && $0.type == TaskEventTypes.System.error.rawValue }?
+            .payload
+        return CLISessionExpiryClassifier.family(forStopMessage: stopMessage)?.repair
     }
 
-    private func recordRepairStillNeeded(_ task: AgentTask, repair: RepairAction) {
+    private func recordRepairStillNeeded(_ task: AgentTask, repair: RepairAction, action: String = "resumed") {
         let run = task.runs.max(by: { $0.startedAt < $1.startedAt })
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.System.info,
-            payload: "\(repair.componentName) still isn't working, so the task wasn't resumed. \(repair.detail)",
+            payload: "\(repair.componentName) still isn't working, so the task wasn't \(action). \(repair.detail)",
             run: run
         ))
         _ = persistWorkspaceChange(task.workspace, modelContext)

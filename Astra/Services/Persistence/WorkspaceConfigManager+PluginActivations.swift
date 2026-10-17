@@ -23,7 +23,8 @@ extension WorkspaceConfigManager {
             accounts: [PluginAccountRef]? = nil,
             activationID: String? = nil,
             knownComponentIDs: [String]? = nil,
-            secretSettingKeys: [String]? = nil
+            secretSettingKeys: [String]? = nil,
+            namespaceSeed: String? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -35,6 +36,7 @@ extension WorkspaceConfigManager {
             self.accounts = accounts
             self.knownComponentIDs = knownComponentIDs
             self.secretSettingKeys = secretSettingKeys
+            self.namespaceSeed = namespaceSeed
         }
 
         public var id: String
@@ -55,6 +57,9 @@ extension WorkspaceConfigManager {
         /// The secret settings (`componentID#KEY`) the activation stored in
         /// the Keychain. The values themselves are never in the file.
         public var secretSettingKeys: [String]?
+        /// The activation's namespace seed; restored only from the
+        /// workspace's own mirror.
+        public var namespaceSeed: String?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -78,6 +83,17 @@ extension WorkspaceConfigManager {
             .compactMap(\.account)
     }
 
+    /// Shared rows an activation names as a component's override, so the
+    /// mirror carries them even when nothing else enables them (an edited
+    /// shared row kept while its plugin was off).
+    static func overridingRows<Row: PersistentModel>(of workspace: Workspace, among rows: [Row]) -> [Row] where Row.ID == UUID {
+        let ids = Set(WorkspaceCapabilityActivation.activations(of: workspace)
+            .flatMap(\.overridingRowIDs)
+            .compactMap(UUID.init(uuidString:)))
+        guard !ids.isEmpty else { return [] }
+        return rows.filter { ids.contains($0.id) }
+    }
+
     static func installedPluginRefs(for workspace: Workspace) -> [InstalledPluginRef] {
         WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
             let accounts = activation.bindings
@@ -97,7 +113,8 @@ extension WorkspaceConfigManager {
                 accounts: accounts.isEmpty ? nil : accounts,
                 activationID: activation.id.uuidString,
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
-                secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys
+                secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys,
+                namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed
             )
         }
     }
@@ -120,7 +137,14 @@ extension WorkspaceConfigManager {
             let declared: Set<String>?
             if case .validate(let verifier) = trust {
                 declared = verifier.declaredComponentIDs[ref.id] ?? []
+                // A chosen file keeps the workspace's ID, so its activation
+                // gets its own namespaces: it never reads the secrets of the
+                // workspace it may replace.
+                WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
             } else {
+                if let seed = ref.namespaceSeed, !seed.isEmpty {
+                    WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)
+                }
                 declared = nil
                 // The workspace's own mirror keeps the activation's identity,
                 // so its secret settings resolve again. A chosen file never
@@ -138,7 +162,9 @@ extension WorkspaceConfigManager {
             for (key, value) in (ref.settings ?? [:]).sorted(by: { $0.key < $1.key }) where allowedSetting(key) {
                 WorkspaceCapabilityActivation.setConfigValue(value, forKey: key, on: activation)
             }
-            for key in ref.secretSettingKeys ?? [] where allowedSetting(key) {
+            // A chosen file's activation has fresh namespaces: no secret is
+            // carried over, so none is recorded.
+            for key in declared == nil ? ref.secretSettingKeys ?? [] : [] {
                 WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: key, on: activation)
             }
             // A chosen file's history is limited to what the installed
