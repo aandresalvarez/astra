@@ -45,6 +45,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     var backupPath: String?
     /// For `.danglingLink`: the link ends in a loop rather than a missing path.
     var isLinkLoop = false
+    /// An unreadable home whose children could not be listed: the fix must
+    /// restore read access below it too, not only on the home itself.
+    var hidesChildren = false
 
     /// Fixed by moving the entry aside rather than by changing permissions.
     var isMisplaced: Bool {
@@ -142,11 +145,6 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// alone leaves a mode-000 file just as unreadable as before.
     var fixCommand: String {
         var commands: [String] = []
-        for misplaced in problems where misplaced.isMisplaced {
-            let backup = misplaced.backupPath ?? misplaced.path + ".bak"
-            // `-n` so an earlier backup is never overwritten.
-            commands.append("mv -n \(Self.quoted(misplaced.path)) \(Self.quoted(backup))")
-        }
         let repairable = problems.filter { $0.symlinkTarget == nil && !$0.isMisplaced }
         let foreign = repairable.filter { !$0.ownedByCurrentUser }
         if !foreign.isEmpty {
@@ -166,6 +164,18 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let files = repairable.filter { !$0.isDirectory }
         if !files.isEmpty {
             commands.append("chmod u+rw \(Self.quotedPaths(files))")
+        }
+        // Read and traverse only: write stays as the user set it, so a
+        // deliberately read-only config file is not loosened.
+        let hiding = repairable.filter(\.hidesChildren)
+        if !hiding.isEmpty {
+            commands.append("chmod -R u+rX \(Self.quotedPaths(hiding))")
+        }
+        // Moves last: renaming an entry needs its parent repaired first.
+        for misplaced in problems where misplaced.isMisplaced {
+            let backup = misplaced.backupPath ?? misplaced.path + ".bak"
+            // `-n` so an earlier backup is never overwritten.
+            commands.append("mv -n \(Self.quoted(misplaced.path)) \(Self.quoted(backup))")
         }
         return commands.joined(separator: " && ")
     }
@@ -188,7 +198,8 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
                 continue
             }
             let target = ((linked.symlinkTarget ?? "") as NSString).abbreviatingWithTildeInPath
-            sentences.append("Make \(target) readable again, or replace the link at \(linked.displayPath).")
+            let ability = linked.access == .unwritable ? "writable" : "readable"
+            sentences.append("Make \(target) \(ability) again, or replace the link at \(linked.displayPath).")
         }
         return sentences.joined(separator: " ")
     }
@@ -314,7 +325,9 @@ enum CopilotHomeAccessCheck {
             // that is only unwritable can still hide an unreadable config, so
             // its children are still checked.
             guard homeProblem.access == .unwritable else {
-                return CopilotHomeAccessReport(home: trimmedHome, problems: [homeProblem])
+                var hiding = homeProblem
+                hiding.hidesChildren = hiding.isDirectory
+                return CopilotHomeAccessReport(home: trimmedHome, problems: [hiding])
             }
             problems.append(homeProblem)
         }
@@ -425,8 +438,8 @@ enum CopilotHomeAccessCheck {
         // A forced verdict is about the entry itself, link or not.
         if type == .typeSymbolicLink, forcedAccess == nil {
             return symlinkProblem(
-                at: path, isReadAtStartup: isReadAtStartup, expectedKind: expectedKind,
-                home: home, fileManager: fileManager
+                at: path, requiresWrite: requiresWrite, isReadAtStartup: isReadAtStartup,
+                expectedKind: expectedKind, home: home, fileManager: fileManager
             )
         }
         let isDirectory = type == .typeDirectory
@@ -461,6 +474,7 @@ enum CopilotHomeAccessCheck {
     /// Copilot home, and its write access is the user's own choice.
     private static func symlinkProblem(
         at path: String,
+        requiresWrite: Bool,
         isReadAtStartup: Bool,
         expectedKind: EntryKind?,
         home: String?,
@@ -476,10 +490,13 @@ enum CopilotHomeAccessCheck {
             access = .wrongType
         } else if !targetExists || Darwin.access(path, readMode) != 0 {
             access = .unreadable
-        } else if let home, !target.hasPrefix((home as NSString).standardizingPath + "/") {
-            // ASTRA does not widen the sandbox to follow it: a link would
-            // then grant a task read access to whatever it points at.
+        } else if let home, !canonicalPath(path).hasPrefix(canonicalPath(home) + "/") {
+            // Canonical on both sides, so an intermediate link out of the home
+            // counts. ASTRA does not widen the sandbox to follow it: a link
+            // would then grant a task read access to whatever it points at.
             access = .linksOutsideHome
+        } else if requiresWrite, Darwin.access(path, W_OK) != 0 {
+            access = .unwritable
         } else {
             return nil
         }
@@ -493,6 +510,15 @@ enum CopilotHomeAccessCheck {
             isReadAtStartup: true,
             symlinkTarget: target
         )
+    }
+
+    /// The fully resolved path, every intermediate link included, as the
+    /// kernel and the sandbox see it; the standardized path when it does not
+    /// resolve.
+    private static func canonicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else { return (path as NSString).standardizingPath }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     /// Where a symlink finally points, following up to eight hops. Absolute,

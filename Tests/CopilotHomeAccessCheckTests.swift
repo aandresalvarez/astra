@@ -90,7 +90,8 @@ struct CopilotHomeAccessCheckTests {
 
         #expect(report.problems.map(\.path) == [home.path])
         #expect(report.blocksCopilot)
-        #expect(report.fixCommand == "sudo chown -R \"$USER\":staff '\(home.path)' && chmod u+rwx '\(home.path)'")
+        #expect(report.fixCommand
+            == "sudo chown -R \"$USER\":staff '\(home.path)' && chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
     }
 
     @Test("Read-only Copilot config files are a hardened setup, not a problem")
@@ -345,6 +346,70 @@ struct CopilotHomeAccessCheckTests {
             atPath: (home.path as NSString).appendingPathComponent("config.json"), withDestinationPath: real
         )
 
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+    }
+
+    @Test("A symlinked state folder inside the home still needs write access")
+    func symlinkedStateFolderNeedsWrite() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let realSessions = try home.makeDirectory("real-sessions", mode: 0o555)
+        let link = (home.path as NSString).appendingPathComponent("session-state")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: realSessions)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let linked = try #require(report.problems.first { $0.path == link })
+        #expect(linked.access == .unwritable)
+        #expect(!report.blocksCopilot)
+        #expect(report.remediation.contains("real-sessions writable again"))
+    }
+
+    @Test("A startup link through an intermediate link out of the home is outside it")
+    func intermediateLinkOutOfHomeIsOutside() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        try elsewhere.write("config", mode: 0o600)
+        let alias = (home.path as NSString).appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(atPath: alias, withDestinationPath: elsewhere.path)
+        try FileManager.default.createSymbolicLink(
+            atPath: (home.path as NSString).appendingPathComponent("config.json"),
+            withDestinationPath: (alias as NSString).appendingPathComponent("config")
+        )
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.problems.map(\.access) == [.linksOutsideHome])
+    }
+
+    @Test("Repairing an unwritable home comes before moving a misplaced entry out of it")
+    func homeRepairPrecedesMove() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let configFolder = try home.makeDirectory("config.json", mode: 0o755)
+        try home.setMode(0o555, of: home.path)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.fixCommand == "chmod u+rwx '\(home.path)' && mv -n '\(configFolder)' '\(configFolder).bak'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+    }
+
+    @Test("Repairing an unreadable home also restores read access to what it hid")
+    func unreadableHomeRepairReachesChildren() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+        try home.setMode(0o000, of: home.path)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.problems.map(\.path) == [home.path])
+        #expect(report.fixCommand == "chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
