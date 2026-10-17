@@ -5,10 +5,17 @@ import ASTRACore
 
 @MainActor
 public enum WorkspacePersistenceCoordinator {
-    /// The workspace is retained alongside its timer so a termination flush can
-    /// write the pending mirror without re-fetching it from the store.
+    /// The workspace is retained through debounce, projection and write so a
+    /// termination flush can drain the current mirror synchronously.
     private struct PendingExport {
+        let id: UUID
         let workspace: Workspace
+        // The caller owns persistence. A deferred mirror must not keep a closed
+        // context (and its autosave timer) alive. Active reads retain their
+        // container only while actually reading; termination drains live owners.
+        weak var context: ModelContext?
+        weak var container: ModelContainer?
+        let ticket: WorkspaceAutoExportGate.Ticket?
         let task: Task<Void, Never>
     }
 
@@ -23,7 +30,9 @@ public enum WorkspacePersistenceCoordinator {
     ) -> Bool {
         var didSave = false
         do {
-            try modelContext.save()
+            try WorkspacePersistenceWork.measure("swiftdata_save", workspaceID: workspace?.id.uuidString ?? "none") {
+                try modelContext.save()
+            }
             didSave = true
             if taskID != nil || !auditFields.isEmpty {
                 var fields = auditFields
@@ -52,7 +61,7 @@ public enum WorkspacePersistenceCoordinator {
             ], level: .debug)
             return didSave
         }
-        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+        enqueueSavedAutoExport(workspace: workspace, modelContext: modelContext)
         return didSave
     }
 
@@ -79,6 +88,9 @@ public enum WorkspacePersistenceCoordinator {
         auditsSuccess: Bool = true
     ) -> Bool {
         do {
+            // The transcript's frequent pre-read flush deliberately emits no
+            // success audit when auditsSuccess is false. Keep it free of
+            // timing audits too; save-and-export boundaries are measured above.
             try modelContext.save()
             if auditsSuccess, taskID != nil || !auditFields.isEmpty {
                 var fields = auditFields
@@ -104,7 +116,9 @@ public enum WorkspacePersistenceCoordinator {
         auditFields: [String: String] = [:]
     ) throws {
         do {
-            try modelContext.save()
+            try WorkspacePersistenceWork.measure("swiftdata_save", workspaceID: workspace?.id.uuidString ?? "none") {
+                try modelContext.save()
+            }
             if taskID != nil || !auditFields.isEmpty {
                 var fields = auditFields
                 fields["result"] = "swiftdata_save_succeeded"
@@ -132,7 +146,7 @@ public enum WorkspacePersistenceCoordinator {
             ], level: .debug)
             return
         }
-        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+        enqueueSavedAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
     public static func saveWithoutAutoExportOrThrow(
@@ -142,7 +156,9 @@ public enum WorkspacePersistenceCoordinator {
         auditFields: [String: String] = [:]
     ) throws {
         do {
-            try modelContext.save()
+            try WorkspacePersistenceWork.measure("swiftdata_save", workspaceID: workspace?.id.uuidString ?? "none") {
+                try modelContext.save()
+            }
             if taskID != nil || !auditFields.isEmpty {
                 var fields = auditFields
                 fields["result"] = "swiftdata_save_succeeded"
@@ -165,6 +181,62 @@ public enum WorkspacePersistenceCoordinator {
         }
     }
 
+    /// Called only after a successful save. The mirror reads that durable
+    /// authority on its own actor rather than faulting every task's history on
+    /// the main actor at each settlement checkpoint. Keep the request pending
+    /// through the write so termination can synchronously drain it.
+    private static func enqueueSavedAutoExport(workspace: Workspace, modelContext: ModelContext) {
+        let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
+        guard let url = target.url else {
+            logSkippedExport(workspace: workspace, reason: target.reason)
+            return
+        }
+        // Register before dispatch, ordered with deletion on the saving actor.
+        guard WorkspaceMirrorRegistry(for: modelContext)?.register([workspace.primaryPath]) ?? true else {
+            logSkippedExport(workspace: workspace, reason: "mirror_registry_unwritable")
+            return
+        }
+        let workspaceID = workspace.id
+        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspaceID.uuidString)
+        let lease = WorkspaceSavedExportLease(context: modelContext, ticket: ticket)
+        let container = modelContext.container
+        let source = WorkspaceSavedExportSource(container)
+        let requestID = UUID()
+        pendingExports[workspaceID]?.task.cancel()
+        pendingExports[workspaceID] = PendingExport(
+            id: requestID, workspace: workspace, context: modelContext, container: container, ticket: ticket,
+            task: Task { @MainActor in
+                defer { withExtendedLifetime(lease) {} }
+                guard !Task.isCancelled else { return }
+                let written = await WorkspaceSavedAutoExport.shared.export(source: source, workspaceID: workspaceID,
+                    url: url, ticket: ticket)
+                // An old completion must never erase a newer pending request.
+                if pendingExports[workspaceID]?.id == requestID,
+                   written || pendingExports[workspaceID]?.context == nil || pendingExports[workspaceID]?.container == nil ||
+                    workspace.isDeleted || workspace.modelContext == nil {
+                    pendingExports[workspaceID] = nil
+                }
+            }
+        )
+    }
+
+    private static func logSkippedExport(workspace: Workspace, reason: String) {
+        AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+            "result": "auto_export_skipped", "reason": reason, "workspace_id": workspace.id.uuidString
+        ], level: .debug)
+    }
+
+    /// A successful explicit snapshot can finish the work owed by an older
+    /// coordinator request. Failed writes and later/debounced saves stay owed.
+    static func autoExportDidWrite(_ ticket: WorkspaceAutoExportGate.Ticket) {
+        guard let id = UUID(uuidString: ticket.workspaceID),
+              let pending = pendingExports[id], let previous = pending.ticket,
+              previous.generation <= ticket.generation,
+              WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return }
+        if previous.generation < ticket.generation { pending.task.cancel() }
+        pendingExports[id] = nil
+    }
+
     public static func scheduleAutoExport(
         workspace: Workspace?,
         modelContext: ModelContext,
@@ -176,10 +248,16 @@ public enum WorkspacePersistenceCoordinator {
         }
 
         let workspaceID = workspace.id
+        let container = modelContext.container
         pendingExports[workspaceID]?.task.cancel()
         pendingExports[workspaceID] = PendingExport(
+            id: UUID(),
             workspace: workspace,
+            context: modelContext,
+            container: container,
+            ticket: nil,
             task: Task { @MainActor in
+                defer { withExtendedLifetime(container) {} }
                 do {
                     try await Task.sleep(nanoseconds: delayNanoseconds)
                 } catch {
@@ -200,10 +278,17 @@ public enum WorkspacePersistenceCoordinator {
         saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    /// Workspaces whose debounced mirror export has not fired yet.
+    /// Workspaces whose debounced or in-flight mirror export has not finished.
     public static var pendingExportWorkspaceCount: Int { pendingExports.count }
 
-    /// Writes every debounced mirror export that has not fired yet.
+    /// Waits for the currently scheduled attempt without saving, retrying, or
+    /// promoting a deferred bookkeeping mirror. Callers must still check its
+    /// output: invalidation or a write failure can leave a mirror owed.
+    static func waitForPendingExport(workspaceID: UUID) async {
+        await pendingExports[workspaceID]?.task.value
+    }
+
+    /// Writes every pending mirror, including projections already off-main.
     ///
     /// `scheduleAutoExport` puts the `.astra-workspace.json` mirror 600 ms
     /// behind its SwiftData save, so quitting inside that window drops the
@@ -226,8 +311,12 @@ public enum WorkspacePersistenceCoordinator {
     public static func flushAllPendingExports(modelContext: ModelContext) -> Int {
         let pending = pendingExports
         pendingExports.removeAll()
-        for entry in pending.values {
+        for (workspaceID, entry) in pending {
             entry.task.cancel()
+            // A read/encode already executing off-main cannot be cancelled by
+            // cancelling its waiter. Invalidate it before the synchronous drain
+            // so it cannot overwrite the termination snapshot later.
+            WorkspaceAutoExportGate.shared.retire(workspaceID: workspaceID.uuidString)
         }
         guard !pending.isEmpty else { return 0 }
         guard !shouldSkipAutoExport() else {
@@ -246,11 +335,14 @@ public enum WorkspacePersistenceCoordinator {
 
         var exported = 0
         for entry in pending.values {
+            guard let context = entry.context, let container = entry.container else { continue }
+            defer { withExtendedLifetime(container) {} }
+            guard !entry.workspace.isDeleted, entry.workspace.modelContext != nil else { continue }
             let target = WorkspaceConfigManager.autoExportTarget(for: entry.workspace.primaryPath)
             guard let url = target.url else { continue }
             let result = WorkspaceConfigManager.exportToFileResult(
                 workspace: entry.workspace,
-                modelContext: modelContext,
+                modelContext: context,
                 url: url
             )
             if result.didExport { exported += 1 }
