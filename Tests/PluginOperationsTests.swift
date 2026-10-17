@@ -477,6 +477,40 @@ struct PluginOperationsTests {
         #expect(state.connectorsNeedingAttention.map(\.id) == [account.id])
     }
 
+    @Test("Update is refused, before anything changes, when a workspace with the plugin would refuse it")
+    func updatePreflightsEveryActivation() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        var v2 = Self.package(version: "2.0.0")
+        v2.requires = ["not-installed-plugin"]
+        v2.connectors = []
+        try env.library.install(v2, sourceMetadata: .builtIn())
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        #expect(throws: PluginUpdateService.UpdateError.self) {
+            try CapabilityCatalogActionService(library: env.library).update(v2, modelContext: env.context)
+        }
+        #expect(activation.recordedVersion == "1.0.0")
+        #expect(!activation.bindings.isEmpty)
+    }
+
+    @Test("A connector replaces identity is checked with the same service spelling as its component ID")
+    func replacesServiceNormalization() {
+        var package = Self.package(version: "2.0.0")
+        package.connectors[0].serviceType = "Issue Tracker"
+        package.connectors[0].id = "tracker"
+        package.connectors[0].replaces = ["old"]
+        #expect(PluginUpdateService.replacesProblems(in: package).isEmpty)
+    }
+
+    @Test("Two templates with one identity are refused")
+    func duplicateTemplatesAreRefused() {
+        var package = Self.package(version: "1.0.0")
+        package.templates = [Self.template("Daily Report", goal: "a"), Self.template("daily-report", goal: "b")]
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Duplicate template" })
+    }
+
     @Test("An MCP server ID another installed plugin declares is refused")
     func mcpServerIDsAreUniqueAcrossPlugins() {
         var installed = Self.package(version: "1.0.0")

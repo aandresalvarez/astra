@@ -24,6 +24,9 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     @Environment(\.modelContext) private var modelContext
     @State private var drafts: [String: String] = [:]
+    /// What each draft was loaded as, so a reload keeps the ones the person
+    /// is still editing.
+    @State private var loadedDrafts: [String: String] = [:]
 
     private var actions: CapabilityCatalogActionService { CapabilityCatalogActionService() }
 
@@ -181,13 +184,20 @@ struct PluginRowDetailsView<SetupRow: View>: View {
 
     private func loadDrafts() {
         guard let activation = row.activation else { return }
-        var next: [String: String] = [:]
+        var fresh: [String: String] = [:]
         for skill in row.package.skills {
             let componentID = CapabilityResourceOrigin.componentID(for: skill)
             for key in skill.environmentKeys {
-                next[PluginActivation.settingKey(componentID: componentID, key: key)] = PluginOperations.setting(key, of: skill, in: activation)
+                fresh[PluginActivation.settingKey(componentID: componentID, key: key)] = PluginOperations.setting(key, of: skill, in: activation)
             }
         }
+        // A field whose draft differs from what it was loaded as has an
+        // unsaved edit: saving another setting must not discard it.
+        var next = fresh
+        for (key, value) in drafts where loadedDrafts[key] != value && fresh[key] != nil {
+            next[key] = value
+        }
+        loadedDrafts = fresh
         drafts = next
     }
 

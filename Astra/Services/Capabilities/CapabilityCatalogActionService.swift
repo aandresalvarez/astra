@@ -196,6 +196,11 @@ struct CapabilityCatalogActionService {
     /// to its definition in the library, releasing what it dropped.
     func update(_ package: PluginPackage, modelContext: ModelContext) throws {
         let definition = library.installedPackages().filter { $0.id == package.id }
+        // Refused for every workspace if one with an activation of it would
+        // refuse this definition, as an import is, before anything changes.
+        if let refusal = PluginUpdateService.refusals(for: definition.first ?? package, modelContext: modelContext).first {
+            throw refusal
+        }
         try PluginUpdateService.reconcileAll(
             modelContext: modelContext,
             packages: definition.isEmpty ? [package] : definition,

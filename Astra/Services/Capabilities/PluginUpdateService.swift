@@ -109,7 +109,7 @@ enum PluginUpdateService {
             check(CapabilityResourceOrigin.replacedComponentIDs(for: skill), kindPrefix: "skill:", name: skill.name)
         }
         for connector in package.connectors {
-            let service = "connector:\(CapabilityRuntimeResourceMatcher.normalizedServiceType(connector.serviceType)):"
+            let service = CapabilityResourceOrigin.connectorPrefix(serviceType: connector.serviceType)
             check(CapabilityResourceOrigin.replacedComponentIDs(for: connector), kindPrefix: service, name: connector.name)
         }
         for tool in package.localTools {

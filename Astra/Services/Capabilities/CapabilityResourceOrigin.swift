@@ -18,6 +18,11 @@ enum CapabilityResourceOrigin {
         "connector:\(normalized(connector.serviceType)):\(normalized(connector.id ?? connector.name))"
     }
 
+    /// The start every component ID of a connector of `serviceType` has.
+    static func connectorPrefix(serviceType: String) -> String {
+        "connector:\(normalized(serviceType)):"
+    }
+
     static func componentID(for tool: PluginLocalTool) -> String {
         if let id = tool.id { return "tool:\(normalized(id))" }
         return "tool:\(normalized(tool.toolType)):\(normalized(tool.command)):\(normalized(tool.name))"

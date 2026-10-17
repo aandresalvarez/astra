@@ -186,7 +186,10 @@ enum PluginOperations {
         // the deletion, so recovery can't bring it back.
         var affected = listing + workspacesUsing(account)
         if let owner = account.workspace { affected.append(owner) }
-        let snapshots = listing.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
+        // rollback() doesn't restore bindings and memberships: every
+        // workspace the deletion touches is put back by hand if it fails.
+        var seen = Set<UUID>()
+        let snapshots = affected.filter { seen.insert($0.id).inserted }.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         for workspace in listing {
             WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { $0 == id } }
         }
