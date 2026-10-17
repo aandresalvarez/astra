@@ -347,7 +347,7 @@ count.
 | R2 | (merged into R1 so no release has two owners of a setting) | — |
 | R3 | Add, Update, Turn off, Remove and Delete account on the new model; `PluginRow` | renaming a component across an Update keeps its settings; a removed component is gone; Turn off leaves accounts and secrets |
 | R4 | Parity checklist, then retire the old catalog and the flag | every checklist item has a home or an owner's "dropped" |
-| R5 | Plugin sources, with their own threat model | written as its own spec first |
+| R5 | Plugin sources, with their own threat model | written as its own spec first: `docs/specs/2026-10-16-plugin-sources-threat-model.md` |
 
 ### How R1 was built (2026-10-16)
 
