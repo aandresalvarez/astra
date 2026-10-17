@@ -62,23 +62,23 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     }
 
     /// A Terminal command that restores access. Entries owned by someone else
-    /// (usually root) get their ownership back; entries the user owns but has
-    /// locked themselves out of get their permission bits back.
+    /// (usually root) get their ownership back first; then every entry gets
+    /// its owner permission bits back, because a chown alone leaves a mode-000
+    /// file just as unreadable as before.
     var fixCommand: String {
         let foreign = problems.filter { !$0.ownedByCurrentUser }
-        let own = problems.filter(\.ownedByCurrentUser)
         var commands: [String] = []
         if !foreign.isEmpty {
             let recursive = foreign.contains(where: \.isDirectory) ? " -R" : ""
             commands.append("sudo chown\(recursive) \"$USER\":staff \(Self.quotedPaths(foreign))")
         }
-        let ownFiles = own.filter { !$0.isDirectory }
-        let ownDirectories = own.filter(\.isDirectory)
-        if !ownDirectories.isEmpty {
-            commands.append("chmod u+rwx \(Self.quotedPaths(ownDirectories))")
+        let files = problems.filter { !$0.isDirectory }
+        let directories = problems.filter(\.isDirectory)
+        if !directories.isEmpty {
+            commands.append("chmod u+rwx \(Self.quotedPaths(directories))")
         }
-        if !ownFiles.isEmpty {
-            commands.append("chmod u+rw \(Self.quotedPaths(ownFiles))")
+        if !files.isEmpty {
+            commands.append("chmod u+rw \(Self.quotedPaths(files))")
         }
         return commands.joined(separator: " && ")
     }

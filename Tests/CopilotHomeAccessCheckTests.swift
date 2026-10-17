@@ -43,7 +43,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.cause.contains("config.json"))
         #expect(report.cause.contains("mode 0"))
         #expect(report.cause.contains("sudo"))
-        #expect(report.fixCommand == "sudo chown \"$USER\":staff '\(config)'")
+        #expect(report.fixCommand == "sudo chown \"$USER\":staff '\(config)' && chmod u+rw '\(config)'")
         #expect(report.userMessage.contains("Run `\(report.fixCommand)` in Terminal"))
     }
 
@@ -75,7 +75,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.access == .unwritable)
         #expect(!report.blocksCopilot)
         #expect(report.cause.contains("Copilot cannot write"))
-        #expect(report.fixCommand == "sudo chown -R \"$USER\":staff '\(sessions)'")
+        #expect(report.fixCommand == "sudo chown -R \"$USER\":staff '\(sessions)' && chmod u+rwx '\(sessions)'")
         #expect(CopilotHomeAccessCheck.readinessCheck(for: report)?.state == .warning)
     }
 
@@ -90,7 +90,33 @@ struct CopilotHomeAccessCheckTests {
 
         #expect(report.problems.map(\.path) == [home.path])
         #expect(report.blocksCopilot)
-        #expect(report.fixCommand == "sudo chown -R \"$USER\":staff '\(home.path)'")
+        #expect(report.fixCommand == "sudo chown -R \"$USER\":staff '\(home.path)' && chmod u+rwx '\(home.path)'")
+    }
+
+    @Test("Once ownership is back, the rest of the fix command restores access")
+    func fixCommandRestoresPermissionBits() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+        try home.makeDirectory("session-state", mode: 0o555)
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+        #expect(report.problems.count == 2)
+
+        // The test already owns the entries, so the `sudo chown` step is the
+        // one part it can skip; a chown alone would leave both still broken.
+        let afterChown = report.fixCommand
+            .components(separatedBy: " && ")
+            .filter { !$0.hasPrefix("sudo chown") }
+            .joined(separator: " && ")
+        #expect(afterChown.contains("chmod"))
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", afterChown]
+        try shell.run()
+        shell.waitUntilExit()
+        #expect(shell.terminationStatus == 0)
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
     @Test("Copilot readiness reports Needs setup when its config is unreadable")
