@@ -24,7 +24,8 @@ extension WorkspaceConfigManager {
             activationID: String? = nil,
             knownComponentIDs: [String]? = nil,
             secretSettingKeys: [String]? = nil,
-            namespaceSeed: String? = nil
+            namespaceSeed: String? = nil,
+            digest: String? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -37,6 +38,7 @@ extension WorkspaceConfigManager {
             self.knownComponentIDs = knownComponentIDs
             self.secretSettingKeys = secretSettingKeys
             self.namespaceSeed = namespaceSeed
+            self.digest = digest
         }
 
         public var id: String
@@ -60,6 +62,10 @@ extension WorkspaceConfigManager {
         /// The activation's namespace seed; restored only from the
         /// workspace's own mirror.
         public var namespaceSeed: String?
+        /// The approval digest of the definition the workspace accepted. A
+        /// chosen file's activation stays off, with none of its details,
+        /// unless this matches the installed copy (`CapabilityImportVerifier`).
+        public var digest: String?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -114,7 +120,8 @@ extension WorkspaceConfigManager {
                 activationID: activation.id.uuidString,
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
                 secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys,
-                namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed
+                namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
+                digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest
             )
         }
     }
@@ -139,6 +146,15 @@ extension WorkspaceConfigManager {
         var projectedIDs: [String: String] = [:]
         for ref in config.installedPlugins ?? [] {
             guard let activation = WorkspaceCapabilityActivation.activation(for: ref.id, in: workspace) else { continue }
+            // A chosen file's activation for another copy of the plugin than
+            // the one installed here (or for an unrecorded one) restores
+            // nothing: `reconcile` already left it off.
+            guard isAcceptedCopy(ref, trust: trust) else { continue }
+            if let digest = ref.digest, !digest.isEmpty {
+                WorkspaceCapabilityActivation.recordAccepted(
+                    pluginID: ref.id, version: activation.recordedVersion, digest: digest, in: workspace
+                )
+            }
             let declared: Set<String>?
             if case .validate(let verifier) = trust {
                 declared = verifier.declaredComponentIDs[ref.id] ?? []
