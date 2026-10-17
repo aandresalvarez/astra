@@ -413,6 +413,33 @@ struct CopilotHomeAccessCheckTests {
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
+    @Test("An unreadable providers.json blocks: BYOK models read it at startup")
+    func unreadableProvidersFileBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("providers.json", mode: 0o000)
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).blocksCopilot)
+    }
+
+    @Test("Only Copilot's silent exit 1 is blamed on the home, not a signal or other code")
+    func onlyExitOneIsDiagnosedAsHomeAccess() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+        func category(exitCode: Int) -> AgentRuntimeFailureCategory {
+            AgentRuntimeFailureDiagnostic.classify(
+                runtime: .copilotCLI, model: "gpt-5", exitCode: exitCode,
+                rawError: "", providerVersion: nil, stream: nil,
+                copilotHomeAccess: { CopilotHomeAccessCheck.inspect(home: home.path) }
+            ).category
+        }
+
+        #expect(category(exitCode: 1) == .providerHomeAccessDenied)
+        #expect(category(exitCode: 137) == .providerProcessFailed)
+        #expect(category(exitCode: 2) == .providerProcessFailed)
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()

@@ -115,8 +115,10 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         var homeAccess: CopilotHomeAccessReport?
         // Blank plain-text framing lines count as raw lines and turn the
         // category into noVisibleOutput, so the gate looks at parsed content.
+        // Exit 1 is the observed signature; a signal (128+N) or any other code
+        // is a different failure and keeps its own diagnosis.
         if category == .providerProcessFailed || category == .noVisibleOutput,
-           exitCode != 0,
+           exitCode == 1,
            meaningful.isEmpty,
            resultOutput.isEmpty,
            (stream?.jsonLineCount ?? 0) == 0,

@@ -259,6 +259,8 @@ enum CopilotHomeAccessCheck {
     static let startupEntries: [String: EntryKind] = readOnlyConfigFileNames
         .reduce(into: [
             "settings.json": .file,
+            // The user-level provider and model registry BYOK models read.
+            "providers.json": .file,
             "permissions-config.json": .file,
             // The extensionless name older CLI releases used; still loaded.
             "permissions-config": .file,
