@@ -13,8 +13,12 @@ enum PluginsSurfacePreferences {
         return defaults.bool(forKey: AppStorageKeys.pluginsSurfaceEnabled)
     }
 
+    /// Posted when `setEnabled` changes the preference.
+    static let didChange = Notification.Name("astra.pluginsSurface.preferenceChanged")
+
     static func setEnabled(_ enabled: Bool, in defaults: UserDefaults = .standard) {
         defaults.set(enabled, forKey: AppStorageKeys.pluginsSurfaceEnabled)
+        NotificationCenter.default.post(name: didChange, object: nil)
     }
 
     /// The plugin rows a workspace keeps expanded, so a disclosure choice

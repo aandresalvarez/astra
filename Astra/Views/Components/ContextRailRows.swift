@@ -177,23 +177,54 @@ struct CapabilityRailRow: View {
     /// A separate verb ("Sign in", "Install") beside the row, never the row's
     /// own tap target, per the lean UI system.
     var repairVerb: String? = nil
+    /// The Terminal command the repair runs. Shown, with a second tap to run
+    /// it, before anything a plugin declared is executed.
+    var repairCommand: String? = nil
     var repairStatus: String? = nil
     var onRepair: (() -> Void)? = nil
+    /// A repair with its own control (GitHub repository access), shown in
+    /// place of the verb.
+    var contextualRepair: AnyView? = nil
     let onOpen: () -> Void
 
+    @State private var isConfirmingCommand = false
+
     var body: some View {
-        HStack(spacing: 8) {
-            rowButton
-            if let repairStatus {
-                Text(repairStatus)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-            } else if let repairVerb, let onRepair {
-                Button(repairVerb, action: onRepair)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                rowButton
+                if let contextualRepair {
+                    contextualRepair
+                } else if let repairStatus {
+                    Text(repairStatus)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                } else if let repairVerb, let onRepair {
+                    Button(repairVerb) {
+                        if repairCommand == nil { onRepair() } else { isConfirmingCommand.toggle() }
+                    }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(Stanford.lagunita)
                     .accessibilityIdentifier("CapabilityRailRepairButton")
+                }
+            }
+            if isConfirmingCommand, repairStatus == nil, let repairCommand, let onRepair {
+                HStack(spacing: 6) {
+                    Text(repairCommand)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button("Run in Terminal") {
+                        isConfirmingCommand = false
+                        onRepair()
+                    }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("CapabilityRailRepairRunButton")
+                }
+                .padding(.leading, CapabilityRailLayout.leadingIconFrame + CapabilityRailLayout.leadingIconSpacing)
             }
         }
     }

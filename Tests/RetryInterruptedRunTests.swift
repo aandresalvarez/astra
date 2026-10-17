@@ -109,6 +109,48 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("Resume after an expired sign-in waits for the repair's check to pass")
+    func resumeWaitsForTheRepairCheck() async throws {
+        for works in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Resume After Repair", primaryPath: env.root)
+            let task = AgentTask(title: "Expired", goal: "List projects", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            env.context.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.runtimeRepairRequired,
+                payload: CLISessionExpiryClassifier.googleCloud.repair.encoded(),
+                run: run
+            ))
+            try env.context.save()
+            env.coordinator.repairCheck = { _ in works }
+
+            #expect(env.coordinator.pendingRepair(for: task)?.command == "gcloud auth login")
+            await env.coordinator.resumeTask(task)?.value
+            let requests = try TaskTurnRequestRepository.requests(for: task, in: env.context)
+            if works {
+                #expect(requests.count == 1)
+                if let request = requests.last {
+                    env.queue.cancelTurnRequest(id: request.id, workspace: workspace, modelContext: env.context)
+                }
+            } else {
+                // No new run was started, so the stopped run keeps its repair.
+                #expect(requests.isEmpty)
+                #expect(task.events.contains { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("wasn't resumed") })
+                #expect(env.coordinator.pendingRepair(for: task) != nil)
+            }
+        }
+    }
+
     @Test("Without a provider session Retry still relaunches from scratch")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")
