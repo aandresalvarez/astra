@@ -98,7 +98,7 @@ struct CapabilityUninstaller {
         var result = RemovalResult(packageID: package.id)
         // Membership arrays are mutated per workspace below; rollback does not
         // revert them, so snapshot for the save-failure path.
-        let membershipSnapshots = workspaces.map { ($0, WorkspaceCapabilityMembershipSnapshot($0)) }
+        let membershipSnapshots = workspaces.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         // Wiped only after the SwiftData deletes are saved — see below.
         var pendingKeychainCleanups: [() -> Void] = []
         // Snapshotted before the delete; run after the save, against the
@@ -127,11 +127,13 @@ struct CapabilityUninstaller {
                 workspace.enabledGlobalConnectorIDs.contains { removableGlobalConnectorIDs.contains($0) } ||
                 workspace.enabledGlobalToolIDs.contains { removableGlobalToolIDs.contains($0) }
 
-            workspace.enabledCapabilityIDs.removeAll { $0 == package.id }
-            workspace.enabledGlobalSkillIDs.removeAll { removableGlobalSkillIDs.contains($0) }
-            workspace.enabledGlobalConnectorIDs.removeAll { removableGlobalConnectorIDs.contains($0) }
-            workspace.enabledGlobalToolIDs.removeAll { removableGlobalToolIDs.contains($0) }
-            removeInstalledPackageRecord(package.id, from: workspace)
+            WorkspaceCapabilityActivation.mutate(workspace) {
+                $0.capabilityIDs.removeAll { $0 == package.id }
+                $0.globalSkillIDs.removeAll { removableGlobalSkillIDs.contains($0) }
+                $0.globalConnectorIDs.removeAll { removableGlobalConnectorIDs.contains($0) }
+                $0.globalToolIDs.removeAll { removableGlobalToolIDs.contains($0) }
+                $0.removeInstalledPlugin(id: package.id)
+            }
 
             let workspaceConnectors = ownedOrLegacyMatches(
                 workspace.connectors,
@@ -198,7 +200,7 @@ struct CapabilityUninstaller {
             // deletes were not persisted, so removing either would strand
             // resources (file gone) or credentials (records still present).
             modelContext.rollback()
-            membershipSnapshots.forEach { $1.restore(to: $0) }
+            membershipSnapshots.forEach { WorkspaceCapabilityActivation.restore($1, to: $0) }
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
@@ -235,15 +237,6 @@ struct CapabilityUninstaller {
 
         CapabilityCatalogPersistenceEvents.post(.global)
         return result
-    }
-
-    private func removeInstalledPackageRecord(_ packageID: String, from workspace: Workspace) {
-        while let index = workspace.installedPluginIDs.firstIndex(of: packageID) {
-            workspace.installedPluginIDs.remove(at: index)
-            if index < workspace.installedPluginVersions.count {
-                workspace.installedPluginVersions.remove(at: index)
-            }
-        }
     }
 
     private func matches(_ connector: Connector, pluginConnector: PluginConnector) -> Bool {

@@ -173,7 +173,7 @@ struct CapabilityInstaller {
             throw InstallationError.blocked(blockers)
         }
 
-        let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
+        let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         // Everything from here through persist() is one transaction: staging a
         // skill/connector/tool can throw (credential save denied, activation
         // swap failure, ...) partway through the loops below, after earlier
@@ -200,7 +200,7 @@ struct CapabilityInstaller {
                     configInputs: skillConfigInputs
                 )
                 skillsByName[pluginSkill.name] = skill
-                appendUnique(skill.id.uuidString, to: &workspace.enabledGlobalSkillIDs)
+                WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalSkill(skill.id.uuidString) }
                 appendUnique(skill.id, to: &skillIDs)
             }
 
@@ -251,7 +251,7 @@ struct CapabilityInstaller {
                     if let primarySkill, connector.skill == nil {
                         connector.skill = primarySkill
                     }
-                    appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
+                    WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalConnector(connector.id.uuidString) }
                 }
                 appendUnique(connector.id, to: &connectorIDs)
             }
@@ -262,7 +262,7 @@ struct CapabilityInstaller {
                     tool.skill = primarySkill
                 }
                 if primarySkill == nil {
-                    appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
+                    WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalTool(tool.id.uuidString) }
                 }
                 appendUnique(tool.id, to: &localToolIDs)
             }
@@ -272,8 +272,11 @@ struct CapabilityInstaller {
                 appendUnique(template.id, to: &templateIDs)
             }
 
-            appendUnique(package.id, to: &workspace.enabledCapabilityIDs)
-            workspace.recordInstalledPlugin(id: package.id, version: package.version)
+            WorkspaceCapabilityActivation.mutate(workspace) {
+                $0.enableCapability(package.id)
+                $0.recordInstalledPlugin(id: package.id, version: package.version)
+            }
+            workspace.updatedAt = Date()
             guard persist(workspace, modelContext) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
@@ -306,7 +309,7 @@ struct CapabilityInstaller {
             // rollback() drops the inserted resources; restore() undoes the
             // membership-array mutations it does not revert.
             modelContext.rollback()
-            membershipSnapshot.restore(to: workspace)
+            WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"
@@ -665,7 +668,7 @@ struct CapabilityInstaller {
                 .map { $0.id.uuidString }
         )
         guard !matchingIDs.isEmpty else { return }
-        workspace.enabledGlobalConnectorIDs.removeAll { matchingIDs.contains($0) }
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { matchingIDs.contains($0) } }
     }
 
     private func upsertGlobalTool(
@@ -799,11 +802,6 @@ struct CapabilityInstaller {
             }
         )
         return try modelContext.fetch(descriptor).first
-    }
-
-    private func appendUnique(_ value: String, to values: inout [String]) {
-        guard !values.contains(value) else { return }
-        values.append(value)
     }
 
     private func appendUnique(_ value: UUID, to values: inout [UUID]) {
