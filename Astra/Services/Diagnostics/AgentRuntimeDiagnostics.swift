@@ -110,11 +110,12 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         // read its own config: no stderr, no stdout, no log. Only then is the
         // state home inspected, so a failure with any real evidence keeps it.
         // Only an unreadable entry explains the exit; an unwritable one is a
-        // readiness warning, not proof of cause.
+        // readiness warning, not proof of cause. Benign warnings on stderr
+        // (deprecation notices) do not count as evidence here either.
         var homeAccess: CopilotHomeAccessReport?
         if category == .providerProcessFailed,
            exitCode != 0,
-           !hadStderr,
+           meaningful.isEmpty,
            resultOutput.isEmpty,
            (stream?.rawLineCount ?? 0) == 0,
            let report = copilotHomeAccess?(),

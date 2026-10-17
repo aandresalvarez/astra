@@ -10,6 +10,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         /// The state home exists but is a file, so Copilot has nowhere to
         /// keep its config.
         case notADirectory
+        /// The state home is missing and `path`, its nearest existing parent,
+        /// does not let the user create it.
+        case cannotCreateHome
     }
 
     let path: String
@@ -21,11 +24,20 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// Whether Copilot reads this entry when it starts. An unreadable entry it
     /// never opens (a stray `config.json.bak`) is worth a warning, not a block.
     let isReadAtStartup: Bool
+    /// An extended ACL can deny access the mode bits allow, so restoring mode
+    /// bits alone would leave the entry broken.
+    var hasACL = false
+    /// Set when `path` is a symlink: Copilot follows it, so the target is what
+    /// must be readable, and ASTRA never suggests changing a file outside the
+    /// Copilot home.
+    var symlinkTarget: String?
+    /// For `.notADirectory`: an unused name to move the file aside to.
+    var backupPath: String?
 
     /// Kills every Copilot turn before it prints a byte.
     var blocksCopilot: Bool {
         switch access {
-        case .notADirectory: return true
+        case .notADirectory, .cannotCreateHome: return true
         case .unreadable: return isReadAtStartup
         case .unwritable: return false
         }
@@ -35,11 +47,19 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         (path as NSString).abbreviatingWithTildeInPath
     }
 
-    var ownershipDescription: String {
+    var detail: String {
+        if let symlinkTarget {
+            return "a link to \((symlinkTarget as NSString).abbreviatingWithTildeInPath)"
+        }
         var parts: [String] = []
         if let owner { parts.append("owned by \(owner)") }
         if let posixPermissions { parts.append("mode \(String(posixPermissions & 0o777, radix: 8))") }
+        if hasACL { parts.append("with an ACL") }
         return parts.joined(separator: ", ")
+    }
+
+    var describedPath: String {
+        detail.isEmpty ? displayPath : "\(displayPath) (\(detail))"
     }
 }
 
@@ -58,71 +78,94 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         problems.contains(where: \.blocksCopilot)
     }
 
-    /// One sentence naming what is wrong, e.g. "Copilot cannot read
-    /// ~/.copilot/config.json (owned by root, mode 600)."
+    /// What is wrong, e.g. "Copilot cannot read ~/.copilot/config.json
+    /// (owned by root, mode 600)."
     var cause: String {
         guard !problems.isEmpty else { return "" }
         if let misplaced = problems.first(where: { $0.access == .notADirectory }) {
             return "\(misplaced.displayPath) is a file, not a folder, so Copilot has nowhere to keep its settings."
         }
+        if let parent = problems.first(where: { $0.access == .cannotCreateHome }) {
+            let homePath = (home as NSString).abbreviatingWithTildeInPath
+            return "Copilot cannot create \(homePath) because \(parent.describedPath) is not writable."
+        }
         let unreadable = problems.filter { $0.access == .unreadable }
         let unwritable = problems.filter { $0.access == .unwritable }
         var sentences: [String] = []
         if !unreadable.isEmpty {
-            sentences.append("Copilot cannot read \(Self.list(unreadable)).")
+            sentences.append("Copilot cannot read \(unreadable.map(\.describedPath).joined(separator: ", ")).")
         }
         if !unwritable.isEmpty {
-            sentences.append("Copilot cannot write \(Self.list(unwritable)).")
+            sentences.append("Copilot cannot write \(unwritable.map(\.describedPath).joined(separator: ", ")).")
         }
-        if problems.contains(where: { !$0.ownedByCurrentUser }) {
+        if problems.contains(where: { !$0.ownedByCurrentUser && $0.symlinkTarget == nil }) {
             sentences.append("This usually happens after Copilot was run with sudo.")
         }
         return sentences.joined(separator: " ")
     }
 
-    /// A Terminal command that restores access. Entries owned by someone else
-    /// (usually root) get their ownership back first; then every entry gets
-    /// its owner permission bits back, because a chown alone leaves a mode-000
-    /// file just as unreadable as before.
+    /// A Terminal command that restores access, or "" when nothing inside the
+    /// Copilot home can be repaired by one. Entries owned by someone else
+    /// (usually root) get their ownership back first; ACLs are removed next;
+    /// then every entry gets its owner permission bits back, because a chown
+    /// alone leaves a mode-000 file just as unreadable as before.
     var fixCommand: String {
         if let misplaced = problems.first(where: { $0.access == .notADirectory }) {
-            let path = RuntimeRemediationCatalog.shellQuoted(misplaced.path)
-            let backup = RuntimeRemediationCatalog.shellQuoted(misplaced.path + ".bak")
-            return "mv \(path) \(backup)"
+            let backup = misplaced.backupPath ?? misplaced.path + ".bak"
+            // `-n` so an earlier backup is never overwritten.
+            return "mv -n \(Self.quoted(misplaced.path)) \(Self.quoted(backup))"
         }
-        let foreign = problems.filter { !$0.ownedByCurrentUser }
+        let repairable = problems.filter { $0.symlinkTarget == nil }
+        let foreign = repairable.filter { !$0.ownedByCurrentUser }
         var commands: [String] = []
         if !foreign.isEmpty {
-            let recursive = foreign.contains(where: \.isDirectory) ? " -R" : ""
+            // Recursive only inside the Copilot home: the parent a missing home
+            // would be created in is usually the user's whole home folder.
+            let recursive = foreign.contains { $0.isDirectory && $0.access != .cannotCreateHome } ? " -R" : ""
             commands.append("sudo chown\(recursive) \"$USER\":staff \(Self.quotedPaths(foreign))")
         }
-        let files = problems.filter { !$0.isDirectory }
-        let directories = problems.filter(\.isDirectory)
+        let withACL = repairable.filter(\.hasACL)
+        if !withACL.isEmpty {
+            commands.append("chmod -N \(Self.quotedPaths(withACL))")
+        }
+        let directories = repairable.filter(\.isDirectory)
         if !directories.isEmpty {
             commands.append("chmod u+rwx \(Self.quotedPaths(directories))")
         }
+        let files = repairable.filter { !$0.isDirectory }
         if !files.isEmpty {
             commands.append("chmod u+rw \(Self.quotedPaths(files))")
         }
         return commands.joined(separator: " && ")
     }
 
-    /// Cause plus fix, for blocker text and readiness remediation.
-    var userMessage: String {
-        guard !problems.isEmpty else { return "" }
-        return "\(cause) Run `\(fixCommand)` in Terminal, then retry."
+    /// How to fix it: the command, plus what to restore for a symlinked entry
+    /// whose target lives outside the Copilot home.
+    var remediation: String {
+        var sentences: [String] = []
+        let command = fixCommand
+        if !command.isEmpty {
+            sentences.append("Run `\(command)` in Terminal.")
+        }
+        for linked in problems where linked.symlinkTarget != nil {
+            let target = ((linked.symlinkTarget ?? "") as NSString).abbreviatingWithTildeInPath
+            sentences.append("Make \(target) readable again, or replace the link at \(linked.displayPath).")
+        }
+        return sentences.joined(separator: " ")
     }
 
-    private static func list(_ problems: [CopilotHomeAccessProblem]) -> String {
-        problems.map { problem in
-            let detail = problem.ownershipDescription
-            return detail.isEmpty ? problem.displayPath : "\(problem.displayPath) (\(detail))"
-        }
-        .joined(separator: ", ")
+    /// Cause plus fix, for blocker text.
+    var userMessage: String {
+        guard !problems.isEmpty else { return "" }
+        return "\(cause) \(remediation) Then retry."
+    }
+
+    private static func quoted(_ path: String) -> String {
+        RuntimeRemediationCatalog.shellQuoted(path)
     }
 
     private static func quotedPaths(_ problems: [CopilotHomeAccessProblem]) -> String {
-        problems.map { RuntimeRemediationCatalog.shellQuoted($0.path) }.joined(separator: " ")
+        problems.map { quoted($0.path) }.joined(separator: " ")
     }
 }
 
@@ -154,6 +197,8 @@ enum CopilotHomeAccessCheck {
     static let startupEntryNames: Set<String> = readOnlyConfigFileNames.union([
         "settings.json",
         "permissions-config.json",
+        // The extensionless name older CLI releases used; still loaded.
+        "permissions-config",
         "session-state",
         "session-store.db",
         "session-store.db-wal",
@@ -172,16 +217,18 @@ enum CopilotHomeAccessCheck {
             return CopilotHomeAccessReport(home: home, problems: [])
         }
         var isDirectory: ObjCBool = false
-        // A missing home is not a problem: Copilot creates it on first run.
+        // A missing home is fine as long as Copilot can create it.
         guard fileManager.fileExists(atPath: trimmedHome, isDirectory: &isDirectory) else {
-            return CopilotHomeAccessReport(home: trimmedHome, problems: [])
+            let parent = creationProblem(for: trimmedHome, fileManager: fileManager, currentUserID: currentUserID)
+            return CopilotHomeAccessReport(home: trimmedHome, problems: parent.map { [$0] } ?? [])
         }
         var problems: [CopilotHomeAccessProblem] = []
         guard isDirectory.boolValue else {
-            let problem = problem(
+            var problem = problem(
                 at: trimmedHome, requiresWrite: true, isReadAtStartup: true,
                 fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .notADirectory
             )
+            problem?.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
             return CopilotHomeAccessReport(home: trimmedHome, problems: problem.map { [$0] } ?? [])
         }
         if let homeProblem = problem(
@@ -230,8 +277,52 @@ enum CopilotHomeAccessCheck {
             title: "Copilot settings folder",
             detail: report.cause,
             state: report.blocksCopilot ? .blocked : .warning,
-            remediation: "Run `\(report.fixCommand)` in Terminal."
+            remediation: report.remediation
         )
+    }
+
+    /// The nearest existing parent of a missing home, when it does not let
+    /// the user create folders in it. `AgentRuntimeProcessRunner` ignores a
+    /// failed `createDirectory`, so without this the CLI would be launched
+    /// with no usable home.
+    private static func creationProblem(
+        for home: String,
+        fileManager: FileManager,
+        currentUserID: uid_t
+    ) -> CopilotHomeAccessProblem? {
+        var parent = (home as NSString).deletingLastPathComponent
+        var isDirectory: ObjCBool = false
+        while !parent.isEmpty, parent != "/", !fileManager.fileExists(atPath: parent, isDirectory: &isDirectory) {
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        guard !parent.isEmpty, isDirectory.boolValue || parent == "/",
+              Darwin.access(parent, W_OK | X_OK) != 0 else {
+            return nil
+        }
+        return problem(
+            at: parent, requiresWrite: true, isReadAtStartup: true,
+            fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .cannotCreateHome
+        )
+    }
+
+    /// `<home>.bak`, or the first `<home>.bak-N` that does not exist yet.
+    private static func unusedBackupPath(for path: String, fileManager: FileManager) -> String {
+        func exists(_ candidate: String) -> Bool {
+            // `attributesOfItem` also sees a dangling symlink, which `mv` would replace.
+            (try? fileManager.attributesOfItem(atPath: candidate)) != nil
+        }
+        let base = path + ".bak"
+        guard exists(base) else { return base }
+        var index = 2
+        while exists("\(base)-\(index)") { index += 1 }
+        return "\(base)-\(index)"
+    }
+
+    /// Whether the entry itself (not a link target) carries an extended ACL.
+    private static func hasExtendedACL(_ path: String) -> Bool {
+        guard let acl = acl_get_link_np(path, ACL_TYPE_EXTENDED) else { return false }
+        acl_free(UnsafeMutableRawPointer(acl))
+        return true
     }
 
     private static func problem(
@@ -242,11 +333,12 @@ enum CopilotHomeAccessCheck {
         currentUserID: uid_t,
         forcedAccess: CopilotHomeAccessProblem.Access? = nil
     ) -> CopilotHomeAccessProblem? {
-        // `attributesOfItem` does not follow symlinks; a link's target lives
-        // outside Copilot's home and is not this check's to judge.
+        // `attributesOfItem` does not follow symlinks.
         guard let attributes = try? fileManager.attributesOfItem(atPath: path) else { return nil }
         let type = attributes[.type] as? FileAttributeType
-        if type == .typeSymbolicLink { return nil }
+        if type == .typeSymbolicLink {
+            return symlinkProblem(at: path, isReadAtStartup: isReadAtStartup, fileManager: fileManager)
+        }
         let isDirectory = type == .typeDirectory
         let readMode = isDirectory ? (R_OK | X_OK) : R_OK
         let access: CopilotHomeAccessProblem.Access
@@ -267,7 +359,37 @@ enum CopilotHomeAccessCheck {
             ownedByCurrentUser: ownerID.map { $0 == currentUserID } ?? true,
             posixPermissions: (attributes[.posixPermissions] as? NSNumber)?.intValue,
             access: access,
-            isReadAtStartup: isReadAtStartup
+            isReadAtStartup: isReadAtStartup,
+            hasACL: hasExtendedACL(path)
+        )
+    }
+
+    /// Copilot follows a symlinked startup entry, so its target must be
+    /// readable. Only reading is checked: the target lives outside the
+    /// Copilot home, and its write access is the user's own choice.
+    private static func symlinkProblem(
+        at path: String,
+        isReadAtStartup: Bool,
+        fileManager: FileManager
+    ) -> CopilotHomeAccessProblem? {
+        guard isReadAtStartup else { return nil }
+        var isDirectory: ObjCBool = false
+        let targetExists = fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
+        let readMode = isDirectory.boolValue ? (R_OK | X_OK) : R_OK
+        guard !targetExists || Darwin.access(path, readMode) != 0 else { return nil }
+        let destination = (try? fileManager.destinationOfSymbolicLink(atPath: path)) ?? path
+        let target = destination.hasPrefix("/")
+            ? destination
+            : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(destination)
+        return CopilotHomeAccessProblem(
+            path: path,
+            isDirectory: isDirectory.boolValue,
+            owner: nil,
+            ownedByCurrentUser: true,
+            posixPermissions: nil,
+            access: .unreadable,
+            isReadAtStartup: true,
+            symlinkTarget: (target as NSString).standardizingPath
         )
     }
 }

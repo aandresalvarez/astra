@@ -171,8 +171,117 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.problems.map(\.access) == [.notADirectory])
         #expect(report.blocksCopilot)
         #expect(report.cause.contains("is a file, not a folder"))
-        #expect(report.fixCommand == "mv '\(notAFolder)' '\(notAFolder).bak'")
+        #expect(report.fixCommand == "mv -n '\(notAFolder)' '\(notAFolder).bak'")
         #expect(CopilotHomeAccessCheck.readinessCheck(for: report)?.state == .blocked)
+    }
+
+    @Test("Moving a file-shaped home aside never overwrites an earlier backup")
+    func moveAsideAvoidsExistingBackup() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let notAFolder = try home.write("copilot-home", mode: 0o600)
+        try home.write("copilot-home.bak", mode: 0o600)
+        try home.write("copilot-home.bak-2", mode: 0o600)
+
+        let report = CopilotHomeAccessCheck.inspect(home: notAFolder)
+
+        #expect(report.problems.first?.backupPath == "\(notAFolder).bak-3")
+        #expect(report.fixCommand == "mv -n '\(notAFolder)' '\(notAFolder).bak-3'")
+    }
+
+    @Test("A symlinked startup entry is judged by its target, and never repaired outside the home")
+    func symlinkedStartupEntryChecksTarget() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let target = try elsewhere.write("real-config.json", mode: 0o600)
+        let strayTarget = try elsewhere.write("stray", mode: 0o000)
+        let link = (home.path as NSString).appendingPathComponent("config.json")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+        try FileManager.default.createSymbolicLink(
+            atPath: (home.path as NSString).appendingPathComponent("notes.link"),
+            withDestinationPath: strayTarget
+        )
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+
+        try elsewhere.setMode(0o000, of: target)
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let problem = try #require(report.problems.first)
+        #expect(report.problems.count == 1)
+        #expect(problem.path == link)
+        #expect(problem.symlinkTarget == (target as NSString).standardizingPath)
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("real-config.json readable again"))
+        #expect(!report.userMessage.contains("chmod"))
+    }
+
+    @Test("The legacy extensionless permissions file is a startup entry")
+    func legacyPermissionsFileBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("permissions-config", mode: 0o000)
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).blocksCopilot)
+    }
+
+    @Test("An ACL that denies reading is removed by the fix, not just the mode bits")
+    func aclDenialIsRepaired() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny read", config])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let problem = try #require(report.problems.first)
+        #expect(problem.access == .unreadable)
+        #expect(problem.hasACL)
+        #expect(report.cause.contains("with an ACL"))
+        #expect(report.fixCommand == "chmod -N '\(config)' && chmod u+rw '\(config)'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+    }
+
+    @Test("A missing home in a folder the user cannot write blocks, without a recursive chown")
+    func uncreatableHomeBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let parent = try home.makeDirectory("locked", mode: 0o555)
+        let missingHome = (parent as NSString).appendingPathComponent(".copilot")
+
+        let own = CopilotHomeAccessCheck.inspect(home: missingHome)
+        #expect(own.problems.map(\.access) == [.cannotCreateHome])
+        #expect(own.problems.first?.path == parent)
+        #expect(own.blocksCopilot)
+        #expect(own.cause.contains("cannot create"))
+        #expect(own.fixCommand == "chmod u+rwx '\(parent)'")
+
+        let foreign = CopilotHomeAccessCheck.inspect(home: missingHome, currentUserID: getuid() + 1)
+        #expect(foreign.fixCommand == "sudo chown \"$USER\":staff '\(parent)' && chmod u+rwx '\(parent)'")
+
+        try home.setMode(0o755, of: parent)
+        #expect(CopilotHomeAccessCheck.inspect(home: missingHome).isClean)
+    }
+
+    @Test("A benign stderr warning does not hide an unreadable home from the diagnosis")
+    func warningOnlyStderrStillDiagnosesHome() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI, model: "gpt-5", exitCode: 1,
+            rawError: "Warning: --stream is deprecated. Use --stream=on.\n", runOutput: "",
+            providerVersion: nil, stream: nil,
+            copilotHomeAccess: { CopilotHomeAccessCheck.inspect(home: home.path) }
+        )
+
+        #expect(diagnostic.category == .providerHomeAccessDenied)
+        #expect(diagnostic.stderrWasWarningOnly)
     }
 
     @Test("The composer's cached readiness re-checks the Copilot home on every answer")
@@ -343,6 +452,15 @@ struct CopilotHomeAccessCheckTests {
         )
         #expect(clean.category == .providerProcessFailed)
         #expect(clean.userMessage.contains("failed before ASTRA received a visible assistant response"))
+    }
+
+    private static func shell(_ executable: String, _ arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0, "\(executable) \(arguments)")
     }
 
     /// A readiness service whose Copilot CLI probe always answers, so the
