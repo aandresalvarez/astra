@@ -473,8 +473,12 @@ public enum PluginManifestConverter {
                 throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
             }
         }
+        // Matched by the ID checked above (two connectors may share a name);
+        // a setup step's ID isn't carried, so it is matched by its name.
         for component in manifest.components where !component.setup.isEmpty {
-            let kept = carried.first { $0.kind == component.kind && $0.name == component.name }?.setup
+            let kept = carried.first {
+                $0.kind == component.kind && (component.kind == .setup ? $0.name == component.name : $0.id == component.id)
+            }?.setup
             guard kept == component.setup else {
                 throw PluginManifestError.unrepresentableSetup(component: component.name)
             }

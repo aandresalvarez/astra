@@ -58,6 +58,7 @@ struct PluginRuntimeProjection {
         var connectors: [Connector] = []
         var unbound: [String: [String]] = [:]
         var seenConnectorIDs = Set<UUID>()
+        var copies: [UUID: Connector] = [:]
         var owners: [UUID: Set<UUID>] = [:]
 
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) where activation.isEnabled {
@@ -103,16 +104,26 @@ struct PluginRuntimeProjection {
                 if let primarySkill {
                     for account in accounts { owners[account.id, default: []].insert(primarySkill.id) }
                 }
-                for account in accounts where seenConnectorIDs.insert(account.id).inserted {
-                    switch connectorMode {
-                    case .accounts:
-                        connectors.append(account)
-                    case .runtimeCopies:
-                        let copy = TaskExecutionLaunchSnapshotApplicator.detachedConnector(account, skill: primarySkill)
-                        // A bound account is in scope through its binding,
-                        // wherever the row itself lives.
-                        copy.isGlobal = true
-                        connectors.append(copy)
+                for account in accounts {
+                    if seenConnectorIDs.insert(account.id).inserted {
+                        switch connectorMode {
+                        case .accounts:
+                            connectors.append(account)
+                        case .runtimeCopies:
+                            let copy = TaskExecutionLaunchSnapshotApplicator.detachedConnector(account, skill: primarySkill)
+                            // A bound account is in scope through its binding,
+                            // wherever the row itself lives.
+                            copy.isGlobal = true
+                            copies[account.id] = copy
+                            connectors.append(copy)
+                        }
+                    }
+                    // An account this plugin created carries the credentials
+                    // its definition declares. A key an update stopped
+                    // declaring stays on the row (Update keeps what the person
+                    // entered) but never reaches a run.
+                    if account.originPackageID == package.id, let copy = copies[account.id] {
+                        retainDeclaredCredentials(of: spec, on: copy)
                     }
                 }
             }
@@ -271,6 +282,16 @@ struct PluginRuntimeProjection {
         skill.createdAt = activation.createdAt
         skill.updatedAt = activation.updatedAt
         return skill
+    }
+
+    /// Drops from a runtime copy the credential keys `spec` doesn't declare.
+    /// An account two plugins bind is filtered by the one that created it.
+    private static func retainDeclaredCredentials(of spec: PluginConnector, on copy: Connector) {
+        let declared = Set(spec.credentialHints.map(\.key))
+        let kept = copy.credentialKeys.indices.filter { declared.contains(copy.credentialKeys[$0]) }
+        guard kept.count < copy.credentialKeys.count else { return }
+        copy.credentialValues = kept.map { $0 < copy.credentialValues.count ? copy.credentialValues[$0] : "" }
+        copy.credentialKeys = kept.map { copy.credentialKeys[$0] }
     }
 
     private static func makeTool(
