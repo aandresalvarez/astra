@@ -35,6 +35,27 @@ struct CLISessionExpiryTests {
         #expect(!CLISessionExpiryClassifier.runs("gh", in: "ghost --help"))
     }
 
+    @Test("Only an executed CLI counts: by basename, after wrappers, never as an argument")
+    func onlyExecutedCLIsCount() {
+        #expect(CLISessionExpiryClassifier.runs("gcloud", in: "/opt/homebrew/bin/gcloud projects list"))
+        #expect(CLISessionExpiryClassifier.runs("gcloud", in: "A=1 B=2 env gcloud auth list"))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "cd repo && gh pr list | head"))
+        #expect(CLISessionExpiryClassifier.runs("gsutil", in: "echo $(gsutil ls)"))
+        #expect(!CLISessionExpiryClassifier.runs("gcloud", in: "grep gcloud notes.txt"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo gh is the GitHub CLI"))
+        #expect(CLISessionExpiryClassifier.stop(content: gcloudReauth, command: "grep gcloud notes.txt") == nil)
+    }
+
+    @Test("A bad GH_TOKEN stops with advice about the variable, not a sign-in")
+    func environmentTokenIsNotASignIn() throws {
+        let output = "The token in GH_TOKEN is invalid.\nTo get started with GitHub CLI, please run:  gh auth login"
+        let family = try #require(CLISessionExpiryClassifier.family(content: output, command: "gh pr list"))
+        #expect(family == CLISessionExpiryClassifier.gitHubEnvironmentToken)
+        #expect(!family.offersSignIn)
+        #expect(family.stopMessage.contains("GH_TOKEN"))
+        #expect(CLISessionExpiryClassifier.family(forStopMessage: family.stopMessage) == family)
+    }
+
     @Test("gh logged out is a GitHub session expiry")
     func gitHubExpiryIsRecognised() {
         let stop = CLISessionExpiryClassifier.stop(

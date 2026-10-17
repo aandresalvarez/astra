@@ -55,6 +55,15 @@ struct PluginsSurfaceTests {
         #expect(PluginsSurfacePreferences.expandedPluginIDs(workspaceID: first, in: defaults).isEmpty)
     }
 
+    @Test("A row projected from a standalone skill is not a library plugin, so it offers no Remove")
+    @MainActor
+    func projectedSkillRowsAreNotRemovable() {
+        var synthetic = package("skill.1234", name: "My skill")
+        synthetic.sourceMetadata = CapabilitySourceMetadata(id: "workspace", displayName: "Workspace", kind: "workspace", trustLevel: "local")
+        #expect(!PluginsSurfaceView.isRemovable(synthetic))
+        #expect(PluginsSurfaceView.isRemovable(package("imported.plugin", name: "Imported")))
+    }
+
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
     func searchReachesComponents() throws {
         let gcloud = try builtIn("gcloud-workflow")

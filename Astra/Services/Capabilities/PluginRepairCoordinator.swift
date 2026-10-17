@@ -64,20 +64,27 @@ final class PluginRepairCoordinator: ObservableObject {
             return
         }
         phases[key] = .waiting
+        // The loop holds the coordinator only between sleeps, so a view that
+        // goes away (and cancels, below) is not kept alive by its polling.
+        let sleep = self.sleep
+        let check = self.check
+        let interval = self.interval
+        let attempts = maxAttempts
+        let required = requiredPasses
         polls[key] = Task { [weak self] in
-            guard let self else { return }
             var passes = 0
-            for _ in 0..<maxAttempts {
+            for _ in 0..<attempts {
                 await sleep(interval)
-                if Task.isCancelled { return }
+                if Task.isCancelled || self == nil { return }
                 passes = await check(repair) ? passes + 1 : 0
-                if passes >= requiredPasses {
-                    phases[key] = .verified
+                if Task.isCancelled { return }
+                if passes >= required {
+                    self?.phases[key] = .verified
                     onVerified()
                     return
                 }
             }
-            phases[key] = .timedOut
+            self?.phases[key] = .timedOut
         }
     }
 

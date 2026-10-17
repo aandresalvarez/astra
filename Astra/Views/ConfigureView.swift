@@ -125,7 +125,16 @@ struct ConfigureView: View {
         return "\(workspace.name) · \(selectedTab.subtitle)"
     }
 
+    /// The sheet's own `@Query`s can re-run this body after the workspace
+    /// is deleted and before the parent swaps the sheet out, so a deleted
+    /// workspace renders nothing here rather than reading its properties.
     var body: some View {
+        if workspace.isLive {
+            liveBody
+        }
+    }
+
+    private var liveBody: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: selectedTab.icon)

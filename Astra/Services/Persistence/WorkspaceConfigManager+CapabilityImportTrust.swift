@@ -50,6 +50,7 @@ extension WorkspaceConfigManager {
     public struct CapabilityImportTrustReport: Sendable, Equatable {
         public var capabilitiesUnavailable: [String] = []
         public var packsUnavailable: [String] = []
+        public var pluginsUnavailable: [String] = []
         public var unknownSharedRowIDs: [String] = []
         public var originStampsStripped = 0
         public var sharedRowsLocalized = 0
@@ -62,6 +63,7 @@ extension WorkspaceConfigManager {
             [
                 "capabilities_unavailable": capabilitiesUnavailable.joined(separator: ", "),
                 "packs_unavailable": packsUnavailable.joined(separator: ", "),
+                "plugins_unavailable": pluginsUnavailable.joined(separator: ", "),
                 "unknown_shared_row_count": String(unknownSharedRowIDs.count),
                 "origin_stamps_stripped": String(originStampsStripped),
                 "shared_rows_localized": String(sharedRowsLocalized)
@@ -100,7 +102,11 @@ extension WorkspaceConfigManager {
 
         var keptIDs: [String] = []
         var keptVersions: [String] = []
-        for (index, id) in state.pluginIDs.enumerated() where verifier.installedPackageIDs.contains(id) {
+        for (index, id) in state.pluginIDs.enumerated() {
+            guard verifier.installedPackageIDs.contains(id) else {
+                report.pluginsUnavailable.append(id)
+                continue
+            }
             keptIDs.append(id)
             keptVersions.append(index < state.pluginVersions.count ? state.pluginVersions[index] : "")
         }
@@ -130,14 +136,22 @@ extension WorkspaceConfigManager {
 
     /// A row created from the file (not an existing row it reused) stays in
     /// this workspace and carries no package provenance under `.validate`.
-    /// Built-in skills keep the shared scope they always get.
+    /// That includes a skill that only borrows a built-in's name: a reused
+    /// built-in is not created here, so a created one is the file's own and
+    /// may not mint shared state under a trusted name.
     static func sanitizeCreated(_ skill: Skill, trust: CapabilityImportTrustPolicy, report: inout CapabilityImportTrustReport) {
         guard case .validate = trust else { return }
-        if skill.isGlobal && !skill.isBuiltIn {
+        if skill.isBuiltIn {
+            skill.isBuiltIn = false
+        }
+        if skill.isGlobal {
             skill.isGlobal = false
             report.sharedRowsLocalized += 1
         }
-        if skill.originPackageID != nil || skill.originComponentID != nil { report.originStampsStripped += 1 }
+        if [skill.originPackageID, skill.originPackageVersion, skill.originComponentID,
+            skill.originComponentKind, skill.originSourceKind].contains(where: { $0 != nil }) {
+            report.originStampsStripped += 1
+        }
         skill.originPackageID = nil
         skill.originPackageVersion = nil
         skill.originComponentID = nil
@@ -151,7 +165,10 @@ extension WorkspaceConfigManager {
             connector.isGlobal = false
             report.sharedRowsLocalized += 1
         }
-        if connector.originPackageID != nil || connector.originComponentID != nil { report.originStampsStripped += 1 }
+        if [connector.originPackageID, connector.originPackageVersion, connector.originComponentID,
+            connector.originComponentKind, connector.originSourceKind].contains(where: { $0 != nil }) {
+            report.originStampsStripped += 1
+        }
         connector.originPackageID = nil
         connector.originPackageVersion = nil
         connector.originComponentID = nil
@@ -165,7 +182,10 @@ extension WorkspaceConfigManager {
             tool.isGlobal = false
             report.sharedRowsLocalized += 1
         }
-        if tool.originPackageID != nil || tool.originComponentID != nil { report.originStampsStripped += 1 }
+        if [tool.originPackageID, tool.originPackageVersion, tool.originComponentID,
+            tool.originComponentKind, tool.originSourceKind].contains(where: { $0 != nil }) {
+            report.originStampsStripped += 1
+        }
         tool.originPackageID = nil
         tool.originPackageVersion = nil
         tool.originComponentID = nil
@@ -175,11 +195,29 @@ extension WorkspaceConfigManager {
 
     static func sanitizeCreated(_ template: TaskTemplate, trust: CapabilityImportTrustPolicy, report: inout CapabilityImportTrustReport) {
         guard case .validate = trust else { return }
-        if template.originPackageID != nil || template.originComponentID != nil { report.originStampsStripped += 1 }
+        if [template.originPackageID, template.originPackageVersion, template.originComponentID,
+            template.originComponentKind, template.originSourceKind].contains(where: { $0 != nil }) {
+            report.originStampsStripped += 1
+        }
         template.originPackageID = nil
         template.originPackageVersion = nil
         template.originComponentID = nil
         template.originComponentKind = nil
         template.originSourceKind = nil
     }
+
+    /// A snapshot the import restored as a row (with a fresh ID and a
+    /// "(Restored)" name) now names that row, so the resolver does not count
+    /// the old snapshot as a second, detached skill.
+    static func remapSnapshots(of task: AgentTask, to restored: [String: Skill]) {
+        guard !restored.isEmpty else { return }
+        task.skillSnapshots = task.skillSnapshots.map { snapshot in
+            guard let id = snapshot.id, let row = restored[id] else { return snapshot }
+            var remapped = snapshot
+            remapped.id = row.id.uuidString
+            remapped.name = row.name
+            return remapped
+        }
+    }
+
 }

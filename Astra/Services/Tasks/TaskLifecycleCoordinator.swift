@@ -12,6 +12,8 @@ final class TaskLifecycleCoordinator {
     private let worktreeCleanupStore: TaskWorktreeCleanupStore
     private let workspaceDeletionCleanupStore: WorkspaceDeletionCleanupStore
     private let persistWorkspaceChange: @MainActor (Workspace?, ModelContext) -> Bool
+    /// Re-runs a repair's own check before Resume (tests substitute it).
+    var repairCheck: @Sendable (RepairAction) async -> Bool = PluginRepairCoordinator.liveCheck
 
     init(
         modelContext: ModelContext,
@@ -256,7 +258,11 @@ final class TaskLifecycleCoordinator {
             else { return nil }
             if let sourceEvent = task.events.first(where: { $0.id == retryTurn.sourceEventID }),
                let source = ExecutionRequestSubmissionService.decodeSourcePayload(sourceEvent),
-               (source.launchMode != .initial && !(acceptsFollowUp && retryTurn.kind == .followUp)) || source.planSnapshot != nil
+               // After an expired sign-in a follow-up, or a retry that was
+               // itself continuing one, resumes rather than replays.
+               (source.launchMode != .initial
+                    && !(acceptsFollowUp && (retryTurn.kind == .followUp || source.launchMode == .continuation)))
+                || source.planSnapshot != nil
                 || source.scheduleID != nil || source.sourceTaskID != nil {
                 return nil
             }
@@ -319,7 +325,47 @@ final class TaskLifecycleCoordinator {
     }
 
     @discardableResult
+    /// After a stop for an expired sign-in, Resume first re-runs that
+    /// repair's check: resuming before the sign-in finished would start a run
+    /// that fails its pre-launch check, and that newer run would no longer
+    /// carry the repair. When the check fails, the task records why and stays
+    /// on the stopped run, whose repair is still offered.
     func resumeTask(_ task: AgentTask) -> Task<Void, Never>? {
+        guard let repair = pendingRepair(for: task), repair.checkBinary != nil else {
+            return resumeVerifiedTask(task)
+        }
+        let check = repairCheck
+        return Task { @MainActor [weak self] in
+            let works = await check(repair)
+            guard let self else { return }
+            if works {
+                _ = self.resumeVerifiedTask(task)
+            } else {
+                self.recordRepairStillNeeded(task, repair: repair)
+            }
+        }
+    }
+
+    /// The repair the task's latest run stopped for, if it stopped for one.
+    func pendingRepair(for task: AgentTask) -> RepairAction? {
+        guard let run = task.runs.max(by: { $0.startedAt < $1.startedAt }) else { return nil }
+        return task.events
+            .last { $0.run?.id == run.id && $0.type == TaskEventTypes.System.runtimeRepairRequired.rawValue }
+            .flatMap { RepairAction.decode(from: $0.payload) }
+    }
+
+    private func recordRepairStillNeeded(_ task: AgentTask, repair: RepairAction) {
+        let run = task.runs.max(by: { $0.startedAt < $1.startedAt })
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: "\(repair.componentName) still isn't working, so the task wasn't resumed. \(repair.detail)",
+            run: run
+        ))
+        _ = persistWorkspaceChange(task.workspace, modelContext)
+    }
+
+    private func resumeVerifiedTask(_ task: AgentTask) -> Task<Void, Never>? {
         if LegacyApprovedPermissionContinuation.isAvailable(task: task) {
             guard let submission = LegacyApprovedPermissionContinuation.submit(task: task, modelContext: modelContext) else { return nil }
             return taskQueue.signalExecutionRequest(id: submission.requestID, task: task, modelContext: modelContext)
