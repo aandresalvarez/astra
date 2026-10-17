@@ -113,6 +113,26 @@ struct PluginRepairTests {
         #expect(working == nil)
     }
 
+    @Test("An installed CLI whose fix is prose only offers a check, not Install")
+    func proseOnlyRepairIsACheckNotInstall() throws {
+        var package = try gcloudPackage()
+        let docker = CommonCLIPrerequisites.docker
+        package.prerequisites = [docker]
+        let repair = try #require(CapabilityRailRepair.repair(for: package, statuses: [
+            docker.id: .unresponsive(detail: "Cannot connect to the Docker daemon")
+        ]))
+        #expect(repair.verb == "Check")
+        #expect(repair.strategy == .terminal)
+        #expect(repair.command == nil)
+        #expect(repair.url == nil)
+        #expect(repair.detail == "Start Docker Desktop if the daemon is unreachable.")
+        #expect(repair.checkBinary == "docker")
+        // A missing Docker still offers its install page.
+        let install = CapabilityRailRepair.repair(for: package, statuses: [docker.id: .missingBinary])
+        #expect(install?.verb == "Install")
+        #expect(install?.url?.host == "docs.docker.com")
+    }
+
     @Test("A failing prerequisite gets its own repair when another shares its name")
     func railMatchesPrerequisitesByCheckIdentity() throws {
         var package = try gcloudPackage()

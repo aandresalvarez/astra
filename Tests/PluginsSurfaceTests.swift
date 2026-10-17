@@ -174,16 +174,34 @@ struct PluginsSurfaceTests {
 
         // Connected means the runtime can still get a token: an expired one
         // refreshes, a revoked or lost one does not.
-        let active = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com")
+        let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
+        let active = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
         #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .expiredToken))
         #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: nil))
         #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .missingAccount))
         #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .revokedToken))
         #expect(!GoogleWorkspaceCapability.isAccountConnected(nil, credentialStatus: nil))
         for state in [GoogleOAuthAccountAuthState.needsReauth, .revoked] {
-            let stale = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", authState: state)
+            let stale = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", grantedScopes: scopes, authState: state)
             #expect(!GoogleWorkspaceCapability.isAccountConnected(stale, credentialStatus: .expiredToken))
         }
+    }
+
+    @Test("An account missing a newly required Workspace scope is a pending step, not Ready")
+    func missingOAuthScopesArePending() throws {
+        let google = try builtIn("google-workspace")
+        let required = GoogleWorkspaceSetupStateFactory.requiredScopes
+        let gmail = try #require(required.first { $0.contains("gmail") })
+        let lacking = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: required.filter { $0 != gmail })
+        let full = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", grantedScopes: required)
+        let expires = Date().addingTimeInterval(3_600)
+        // The runtime refuses a token without the scope, whichever side lacks it.
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .available(expiresAt: expires, grantedScopes: required)))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: nil))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: [])))
+        #expect(GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: required)))
+        let connected = GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .expiredToken)
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: google, googleAccountConnected: connected).count == 1)
     }
 
     @Test("The preview is on by default in development builds only, and remembers a choice")
@@ -243,6 +261,17 @@ struct PluginsSurfaceTests {
             try PluginManifestConverter.checkedPackage(from: restricted)
         }
         #expect((try? PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: jira))) != nil)
+    }
+
+    @Test("A manifest that conditions a runtime on a recent CLI where ASTRA derives full is refused")
+    func recentCLIConditionIsNotDropped() throws {
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        var conditional = PluginManifestConverter.manifest(from: jira)
+        #expect(conditional.worksOn["cursor_cli"] == .full)
+        conditional.worksOn["cursor_cli"] = .fullWithRecentCLI
+        #expect(throws: PluginManifestError.unenforcedRuntimeRestriction(runtime: "cursor_cli")) {
+            try PluginManifestConverter.checkedPackage(from: conditional)
+        }
     }
 
     @Test("A manifest component must carry exactly its kind's definition")

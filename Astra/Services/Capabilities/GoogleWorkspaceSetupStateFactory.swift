@@ -10,9 +10,6 @@ enum GoogleWorkspaceSetupStateFactory {
     ) -> GoogleWorkspaceSetupState {
         let account = selectedAccount(from: accounts)
         let credentialStatus = account.map { vault.credentialStatus(for: $0, now: now) }
-        let requiredScopes = GoogleOAuthScopeNormalizer.normalized(
-            GoogleWorkspaceRemoteMCPRegistry.products.flatMap(\.requiredScopes)
-        )
 
         return GoogleWorkspaceSetupState(
             account: accountState(profile: account, credentialStatus: credentialStatus),
@@ -23,6 +20,28 @@ enum GoogleWorkspaceSetupStateFactory {
                 : .available,
             policy: .allowed,
             writeApproval: .notRequired
+        )
+    }
+
+    /// Every scope the Workspace products need.
+    static var requiredScopes: [String] {
+        GoogleOAuthScopeNormalizer.normalized(GoogleWorkspaceRemoteMCPRegistry.products.flatMap(\.requiredScopes))
+    }
+
+    /// The required scopes the account lacks, as the setup state counts them
+    /// and as the runtime does (`GoogleWorkspaceRemoteMCPVaultTokenResolver`
+    /// checks the profile's scopes, then the stored token's): a token missing
+    /// one is refused, so the account needs consent again.
+    static func missingScopes(
+        profile: GoogleOAuthAccountProfile,
+        credentialStatus: GoogleOAuthCredentialStatus?
+    ) -> [String] {
+        GoogleOAuthScopeNormalizer.normalized(
+            GoogleOAuthScopeNormalizer.missing(required: requiredScopes, granted: profile.grantedScopes)
+                + GoogleOAuthScopeNormalizer.missing(
+                    required: requiredScopes,
+                    granted: grantedScopes(profile: profile, credentialStatus: credentialStatus)
+                )
         )
     }
 

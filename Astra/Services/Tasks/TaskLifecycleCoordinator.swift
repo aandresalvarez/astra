@@ -409,12 +409,15 @@ final class TaskLifecycleCoordinator {
         }
     }
 
-    /// The token variables the resumed run gives `gh` (which override any
-    /// sign-in), so a repair check judges the token that run gets. Built from
+    /// The variables the resumed run gives the checked CLI, so a repair check
+    /// judges the credentials that run gets: for `gh` its token variables
+    /// (which override any sign-in), for `gcloud` the whole stripped launch
+    /// environment, where `CLOUDSDK_CONFIG`, `CLOUDSDK_CORE_ACCOUNT` or
+    /// `GOOGLE_APPLICATION_CREDENTIALS` pick the account it uses. Built from
     /// the same launch scope as the run, detached skill snapshots included: a
-    /// snapshot whose skill was removed still delivers its token.
+    /// snapshot whose skill was removed still delivers its variables.
     private func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
-        guard binary == "gh" else { return nil }
+        guard binary == "gh" || binary == "gcloud" else { return nil }
         let scope = TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: Self.resumeContinuationMessage(for: task),
@@ -422,7 +425,9 @@ final class TaskLifecycleCoordinator {
         ).providerLaunch
         var launchEnvironment = scope.resolver.resolvedEnvironmentVariables
         BrokeredConnectorEnvironment.strip(from: &launchEnvironment, capabilityScope: scope)
-        let environment = launchEnvironment.filter { ["GH_TOKEN", "GITHUB_TOKEN"].contains($0.key) && !$0.value.isEmpty }
+        let environment = launchEnvironment.filter { key, value in
+            !value.isEmpty && (binary == "gcloud" || ["GH_TOKEN", "GITHUB_TOKEN"].contains(key))
+        }
         return environment.isEmpty ? nil : environment
     }
 
