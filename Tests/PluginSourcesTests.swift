@@ -79,9 +79,35 @@ struct PluginSourcesTests {
         #expect(environment["GIT_CONFIG_NOSYSTEM"] == "1")
         #expect(environment["GIT_CONFIG_GLOBAL"] == "/dev/null")
         #expect(Set(environment.keys).isSubset(of: [
-            "PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_LFS_SKIP_SMUDGE", "SSH_AUTH_SOCK"
+            "PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_LFS_SKIP_SMUDGE",
+            "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "SSH_AUTH_SOCK"
         ]))
+        #expect(environment["GIT_SSH_COMMAND"] == PluginSourceFetcher.sshCommand)
         #expect(call.timeout <= 300)
+    }
+
+    @Test("T3: the ssh a fetch runs reads no SSH config, so no ProxyCommand or LocalCommand can run")
+    func sshReadsNoConfig() throws {
+        let words = PluginSourceFetcher.sshCommand.split(separator: " ").map(String.init)
+        #expect(words.first == "/usr/bin/ssh")
+        #expect(words.contains("-F") && words[words.firstIndex(of: "-F")! + 1] == "/dev/null")
+        // `ssh -G` prints the effective configuration without connecting.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: words[0])
+        process.arguments = Array(words.dropFirst()) + ["-G", "plugins.example.com"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        let lines = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .lowercased().split(separator: "\n").map(String.init)
+        #expect(process.terminationStatus == 0)
+        for option in ["proxycommand ", "proxyjump ", "localcommand "] {
+            #expect(!lines.contains { $0.hasPrefix(option) && $0 != option + "none" }, "\(option)")
+        }
+        #expect(lines.contains("permitlocalcommand no"))
+        #expect(lines.contains("batchmode yes"))
     }
 
     @Test("T3: a hook the person's git config names does not run during a fetch")

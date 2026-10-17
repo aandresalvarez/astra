@@ -390,9 +390,23 @@ struct PluginSourceFetcher {
         // hook path or alias never applies to an untrusted checkout.
         environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
         environment["GIT_LFS_SKIP_SMUDGE"] = "1"
+        // ssh reads no config file either: a `ProxyCommand`, `Match exec` or
+        // `LocalCommand` in ~/.ssh/config or the system one would run a shell
+        // command. Only the agent authenticates.
+        environment["GIT_SSH_COMMAND"] = sshCommand
+        environment["GIT_SSH_VARIANT"] = "ssh"
         if let agent = base["SSH_AUTH_SOCK"] { environment["SSH_AUTH_SOCK"] = agent }
         return environment
     }
+
+    /// The ssh a fetch runs: no config file, nothing that executes a command
+    /// or forwards anything, never a prompt.
+    static let sshCommand = [
+        "/usr/bin/ssh", "-F", "/dev/null",
+        "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "PermitLocalCommand=no",
+        "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ControlMaster=no",
+        "-o", "ControlPath=none", "-o", "BatchMode=yes"
+    ].joined(separator: " ")
 }
 
 /// A source's files through the file-access broker (T4, T11). A path is read
