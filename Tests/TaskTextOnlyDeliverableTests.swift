@@ -61,6 +61,39 @@ struct TaskTextOnlyDeliverableTests {
         #expect(TaskDeliverableExpectation.requiresDeliverableArtifact(AgentTask(title: "Task", goal: goal)))
     }
 
+    @Test("Creation headers govern labeled and numbered list items", arguments: [
+        "Create the following artifacts:\n- a website",
+        "Create:\n1. a website",
+        "Create the following outputs:\n1) a website",
+        "Generate these deliverables:\n+ a script",
+        "Build the following items:\n• a dashboard",
+        "Create artifacts:\n1. a short summary about scheduling\n2. a website",
+        "Write the following files:\n1. a short summary about an app",
+        "Create:\n1. five sentences about an app\n2. a website",
+        "Create the following artifacts: 12. a website",
+        "Create:\r\n1. a website",
+        "Create:\n  1) a website",
+        "Do not create the following:\n1. a website\n\nCreate:\n1. a dashboard"
+    ])
+    func creationListsRequireArtifacts(goal: String) {
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(AgentTask(title: "Task", goal: goal)))
+    }
+
+    @Test("List normalization preserves negation, text objects, and instruction boundaries", arguments: [
+        "Do not create the following artifacts:\n1. a website",
+        "Never generate these outputs:\n- a script",
+        "Do not write the following files:\n1. a short summary about an app",
+        "Write the following:\n1. five sentences about an app\n2. a summary of a website",
+        "Explain the following:\n1. how to build a website",
+        "Explain how to create the following artifacts:\n1. a website",
+        "Write an explanation:\n1. how to build a website",
+        "Write the following:\n1. a summary about testing\n\nA website is the topic.",
+        "Write the following:\n1. a summary about testing\nA website is the topic."
+    ])
+    func listsDoNotInventArtifacts(goal: String) {
+        #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(AgentTask(title: "Task", goal: goal)))
+    }
+
     @Test("Context fields cannot lend an artifact noun to a text request")
     func contextDoesNotChangeTextRequest() {
         let task = AgentTask(title: "Desktop app overview", goal: "Write five numbered sentences.")
@@ -70,7 +103,8 @@ struct TaskTextOnlyDeliverableTests {
 
     @Test("Text requests neither rewrite the provider prompt nor block successful completion", arguments: [
         "Write five numbered sentences about testing a desktop app. Answer only in this chat.",
-        "Write an explanation of how to build a website."
+        "Write an explanation of how to build a website.",
+        "Write the following:\n1. five sentences about an app\n2. a summary of a website"
     ])
     func textRequestCompletesWithoutAFile(goal: String) async throws {
         let fixture = try fixture(goal: goal)
@@ -88,9 +122,15 @@ struct TaskTextOnlyDeliverableTests {
         #expect(!TaskCompletionPolicy.decideSuccessfulCompletion(task: fixture.task, run: fixture.run).shouldBlockCompletion)
     }
 
-    @Test("Real creation still rewrites the prompt and fails verification when its file is missing")
-    func missingArtifactIsStillBlocked() async throws {
-        let fixture = try fixture(goal: "Write five sentences about an app and create a website.")
+    @Test("Real creation still rewrites the prompt and fails verification when its file is missing", arguments: [
+        "Write five sentences about an app and create a website.",
+        "Create the following artifacts:\n- a website",
+        "Create:\n1. a website",
+        "Write the following files:\n1. a short summary about an app",
+        "Create:\n1. a summary about testing\n2. a website"
+    ])
+    func missingArtifactIsStillBlocked(goal: String) async throws {
+        let fixture = try fixture(goal: goal)
         defer {
             try? FileManager.default.removeItem(at: fixture.root)
             withExtendedLifetime(fixture.container) {}

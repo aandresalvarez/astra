@@ -47,12 +47,7 @@ enum TaskIntentLanguagePolicy {
         let actionPattern = "\\b(?:\(forms))\\b"
         let coordination = "\\band\\s+(?=(?:(?:also|please|do|not|never)\\s+)*\(actionPattern))"
         var result: [(verb: String, object: String)] = []
-        // A creation header governs its first list item, not an unrelated
-        // later clause: "Create:\n- a website" is one requested object.
-        let instructions = text.replacingOccurrences(
-            of: "(\(actionPattern))(?:\\s+the\\s+following)?\\s*:\\s*(?:[-*]\\s*)?",
-            with: "$1 ", options: [.regularExpression, .caseInsensitive]
-        )
+        let instructions = normalizingActionLists(in: text, actionPattern: actionPattern)
         // A filename's dot belongs to the requested object, rather than ending
         // the instruction before its extension ("create preview.html"). Keep
         // the existing action-only parser's clause behavior unchanged.
@@ -82,6 +77,50 @@ enum TaskIntentLanguagePolicy {
             }
         }
         return result
+    }
+
+    /// A list header owns each immediately following list item. Preserve its
+    /// whole action prefix, including negation and informational context, and
+    /// stop inheriting it when a new non-list instruction starts.
+    private static func normalizingActionLists(in text: String, actionPattern: String) -> String {
+        let label = #"(?:artifacts?|outputs?|deliverables?|files?|items?)"#
+        let qualifier = "(?:[ \\t]+(?:(?:the[ \\t]+following|these)(?:[ \\t]+\(label))?|\(label)))?"
+        guard let header = try? NSRegularExpression(
+            pattern: "^(.*?\(actionPattern))\(qualifier)[ \\t]*:[ \\t]*(.*)$", options: .caseInsensitive
+        ), let marker = try? NSRegularExpression(pattern: #"^[ \t]*(?:[-*+•]|[0-9]+[.)])[ \t]+(.*)$"#) else {
+            return text
+        }
+        func listItem(in line: String) -> String? {
+            guard let match = marker.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                  let range = Range(match.range(at: 1), in: line) else { return nil }
+            return String(line[range])
+        }
+
+        var actionPrefix: String?
+        var lines: [String] = []
+        for line in text.components(separatedBy: .newlines) {
+            if let match = header.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+               let prefix = Range(match.range(at: 1), in: line),
+               let body = Range(match.range(at: 2), in: line) {
+                // "Write the following files" explicitly chooses file
+                // delivery even when an item itself is a prose summary.
+                let fileLabel = String(line[..<body.lowerBound]).range(
+                    of: #"\bfiles?[ \t]*:[ \t]*$"#, options: [.regularExpression, .caseInsensitive]
+                ) != nil
+                let action = String(line[prefix]) + (fileLabel ? " file" : "")
+                let object = String(line[body])
+                actionPrefix = action
+                lines.append(action + " " + (listItem(in: object) ?? object))
+            } else if let actionPrefix, let object = listItem(in: line) {
+                lines.append(actionPrefix + " " + object)
+            } else {
+                // Blank lines are valid between Markdown list items. They
+                // never make a later ordinary paragraph inherit the action.
+                if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { actionPrefix = nil }
+                lines.append(line)
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func clauses(in text: String) -> [String] {
