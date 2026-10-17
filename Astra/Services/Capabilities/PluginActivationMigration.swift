@@ -50,9 +50,25 @@ enum PluginActivationMigration {
         case cleanupUnrecordable
     }
 
+    /// The definitions this build ships, plus the library's own plugins.
+    /// A built-in's copy on disk may be a previous version the catalog sync
+    /// (after launch) hasn't replaced yet: migrating against it would record
+    /// an obsolete component graph, so the bundled one wins, and a built-in
+    /// this build no longer ships is not migrated as a plugin.
+    static func currentDefinitions() -> [PluginPackage] {
+        let builtIns = PluginCatalog.builtInPackages
+        let builtInIDs = Set(builtIns.map(\.id))
+        let library = CapabilityRuntimeResourceMatcher.packageDefinitions().filter { package in
+            !builtInIDs.contains(package.id)
+                && !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id)
+                && package.sourceMetadata?.kind != "built-in"
+        }
+        return builtIns + library
+    }
+
     /// Runs the migration against the app's store when it has legacy state.
     static func migrateIfNeeded(modelContext context: ModelContext) {
-        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        let packages = currentDefinitions()
         guard needsMigration(modelContext: context, packages: packages) else { return }
         do {
             let report = try migrate(modelContext: context, packages: packages)
@@ -82,7 +98,7 @@ enum PluginActivationMigration {
         if workspaces.contains(where: { !$0.legacyEnabledCapabilityIDs.isEmpty || !$0.legacyInstalledPluginIDs.isEmpty }) {
             return true
         }
-        let withComponents = Set((packages ?? CapabilityRuntimeResourceMatcher.packageDefinitions())
+        let withComponents = Set((packages ?? currentDefinitions())
             .filter { !PluginRuntimeProjection.componentIDs(of: $0).isEmpty }
             .map(\.id))
         let activations = (try? modelContext.fetch(FetchDescriptor<PluginActivation>())) ?? []
@@ -105,6 +121,9 @@ enum PluginActivationMigration {
         var report = Report()
         var releasedSkillIDs: [UUID] = []
         var copiedSecrets: [CopiedSecret] = []
+        // Shared skills kept as authored rows for workspaces that turned them
+        // on without the plugin: their tools stay with them.
+        var independentSkillIDs = Set<UUID>()
 
         do {
             for workspace in workspaces {
@@ -198,6 +217,7 @@ enum PluginActivationMigration {
                 // plugin keeps it, as an authored row it alone still lists.
                 if workspaces.contains(where: { !usingIDs.contains($0.id) && $0.enabledGlobalSkillIDs.contains(skillID) }) {
                     clearOrigin(skill)
+                    independentSkillIDs.insert(skill.id)
                     report.skillsKeptAsAuthored += 1
                     continue
                 }
@@ -219,6 +239,13 @@ enum PluginActivationMigration {
                     continue
                 }
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
+                // A tool of a skill kept for a workspace without the plugin
+                // stays that skill's, as an authored row.
+                if let owner = tool.skill, independentSkillIDs.contains(owner.id) {
+                    clearOrigin(tool)
+                    report.toolsKeptAsAuthored += 1
+                    continue
+                }
                 if isEdited(tool, spec: spec) {
                     clearOrigin(tool)
                     tool.skill = nil
@@ -337,6 +364,14 @@ enum PluginActivationMigration {
         copied: inout [CopiedSecret]
     ) throws {
         let persistence = SkillSecretSeam.required
+        // A build that kept skill secrets in the login keychain (or the row)
+        // is migrated by a later launch pass that only sees surviving rows:
+        // this row is about to go, so its secrets move to the dedicated
+        // keychain first.
+        if skill.environmentKeys.contains(where: Skill.isSecretEnvironmentKey) {
+            skill.migrateSecretsToKeychain()
+            KeychainService.migrateSkillFromLoginKeychain(skillID: skill.id)
+        }
         for (index, key) in skill.environmentKeys.enumerated() {
             let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
             if Skill.isSecretEnvironmentKey(key) {
@@ -432,12 +467,14 @@ enum PluginActivationMigration {
     }
 
     /// The one-time startup migration folds `disallowedTools` into the
-    /// behavior text, so a row may carry the spec's text plus that note.
+    /// behavior text, so a row may carry the spec's text plus exactly the
+    /// note it appends (`migrateDisallowedToolsToBehavior`); anything more is
+    /// the person's.
     private static func behaviorMatches(_ behavior: String, spec: PluginSkill) -> Bool {
         if behavior == spec.behaviorInstructions { return true }
         guard !spec.disallowedTools.isEmpty else { return false }
-        return behavior.hasPrefix(spec.behaviorInstructions)
-            && spec.disallowedTools.allSatisfy { behavior.contains($0) }
+        let note = "\nDo NOT use these tools: \(spec.disallowedTools.joined(separator: ", "))."
+        return behavior == spec.behaviorInstructions + note
     }
 
     private static func isEdited(_ tool: LocalTool, spec: PluginLocalTool) -> Bool {

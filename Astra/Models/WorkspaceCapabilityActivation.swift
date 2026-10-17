@@ -339,8 +339,13 @@ public enum WorkspaceCapabilityActivation {
             )
             activation.configKeys = record.configKeys
             activation.configValues = record.configValues
-            activation.overriddenComponentIDs = record.overriddenComponentIDs
-            activation.overridingRowIDs = record.overridingRowIDs
+            // A launch copy can't tell a deleted override row from a shared
+            // one it didn't copy, so overrides whose row the store no longer
+            // has are dropped here, where the store can still say: the copy
+            // projects the plugin's component, as the live workspace does.
+            let live = liveOverrides(record, in: source)
+            activation.overriddenComponentIDs = live.map(\.componentID)
+            activation.overridingRowIDs = live.map(\.rowID)
             activation.secretSettingKeys = record.secretSettingKeys
             activation.knownComponentIDs = record.knownComponentIDs
             activation.namespaceSeed = record.namespaceSeed
@@ -362,6 +367,27 @@ public enum WorkspaceCapabilityActivation {
     }
 
     // MARK: - Private
+
+    /// The overrides of `record` whose authored row still exists in the
+    /// store `workspace` is in; all of them when there is no store to ask.
+    private static func liveOverrides(
+        _ record: PluginActivationRecord,
+        in workspace: Workspace
+    ) -> [(componentID: String, rowID: String)] {
+        let pairs = record.overriddenComponentIDs.enumerated().map { index, componentID in
+            (componentID: componentID, rowID: index < record.overridingRowIDs.count ? record.overridingRowIDs[index] : "")
+        }
+        guard let context = workspace.modelContext else { return pairs }
+        return pairs.filter { pair in
+            guard let id = UUID(uuidString: pair.rowID) else { return false }
+            var skills = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == id })
+            skills.fetchLimit = 1
+            if ((try? context.fetchCount(skills)) ?? 1) > 0 { return true }
+            var tools = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.id == id })
+            tools.fetchLimit = 1
+            return ((try? context.fetchCount(tools)) ?? 1) > 0
+        }
+    }
 
     private static func reconcileActivations(with state: WorkspaceCapabilityActivationState, in workspace: Workspace) {
         var desired: [String] = []

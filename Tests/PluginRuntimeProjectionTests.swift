@@ -298,6 +298,31 @@ struct PluginRuntimeProjectionTests {
         #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "tracker", in: workspace)?.id == account.id)
     }
 
+    @Test("A launch copy projects a component whose override row was deleted, like the live workspace")
+    func detachedCopyDropsStaleOverrides() throws {
+        let context = try makeContext()
+        let gcloud = try builtIn("gcloud-workflow")
+        let workspace = Workspace(name: "Stale", primaryPath: "/tmp/projection-stale")
+        context.insert(workspace)
+        let authored = Skill(name: "My GCloud", allowedTools: ["Read"])
+        authored.isGlobal = true
+        context.insert(authored)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(gcloud.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: gcloud.id, in: workspace))
+        let component = CapabilityResourceOrigin.componentID(for: gcloud.skills[0])
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: component, rowID: authored.id, on: activation)
+        try context.save()
+        context.delete(authored)
+        try context.save()
+
+        let copy = Workspace(name: "Copy", primaryPath: "/tmp/projection-stale")
+        copy.id = workspace.id
+        WorkspaceCapabilityActivation.copyActivations(from: workspace, to: copy, accountsByID: [:])
+        #expect(copy.pluginActivations.first?.overriddenComponentIDs.isEmpty == true)
+        let detached = PluginRuntimeProjection.project(workspace: copy, packages: [gcloud], connectorMode: .runtimeCopies)
+        #expect(detached.skills.contains { $0.originComponentID == component })
+    }
+
     // MARK: - Helpers
 
     private func makeContext() throws -> ModelContext {
