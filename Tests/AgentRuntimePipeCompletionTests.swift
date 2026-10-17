@@ -68,18 +68,30 @@ struct AgentRuntimePipeCompletionTests {
             try? FileManager.default.removeItem(at: hold)
         }
         defer { breaker.cancel() }
+        // Non-interactive shell job control races the runner's process-group
+        // setup and can add setpgid errors to stderr. Fork into a fresh session
+        // explicitly, so the escaped pipe holder has no shell bookkeeping.
         let script = """
-        set -m
-        (trap '' TERM; printf ready > "$2"; while [ -e "$1" ]; do /bin/sleep 0.05; done) &
-        while [ ! -e "$2" ]; do /bin/sleep 0.01; done
-        printf 'last stderr — fin' >&2
-        printf 'last stdout — fin\(stop == .earlyResult ? "\\n" : "")'
-        \(stop == .natural ? "exit 0" : "wait")
+        import os, pathlib, signal, sys, time
+        hold, ready = map(pathlib.Path, sys.argv[1:])
+        child = os.fork()
+        if child == 0:
+            os.setsid()
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            ready.write_text('ready')
+            while hold.exists():
+                time.sleep(0.05)
+            os._exit(0)
+        while not ready.exists():
+            time.sleep(0.01)
+        os.write(2, 'last stderr — fin'.encode('utf-8'))
+        os.write(1, 'last stdout — fin\(stop == .earlyResult ? "\\n" : "")'.encode('utf-8'))
+        \(stop == .natural ? "os._exit(0)" : "os.waitpid(child, 0)")
         """
         let runner = AgentRuntimeProcessRunner { _ in ExecutionSandboxSettings(enforcement: .off) }
         let plan = AgentRuntimeProcessLaunchPlan(
-            runtime: .claudeCode, executablePath: "/bin/sh",
-            arguments: ["-c", script, "sh", hold.path, ready.path],
+            runtime: .claudeCode, executablePath: "/usr/bin/python3",
+            arguments: ["-c", script, hold.path, ready.path],
             currentDirectory: root.path, environment: RuntimeProcessEnvironment.enriched(),
             browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: false
         )
@@ -125,7 +137,7 @@ struct AgentRuntimePipeCompletionTests {
             let task = AgentTask(title: "Pipe completion", goal: "Synthetic provider")
             let result = await runner.runRuntimeProcess(
                 adapter: PipeFixtureAdapter(plan: plan), prompt: "Synthetic", task: task,
-                workspacePath: root.path, executablePath: "/bin/sh", homeDirectory: root.path,
+                workspacePath: root.path, executablePath: plan.executablePath, homeDirectory: root.path,
                 permissionPolicy: .restricted, timeoutSeconds: 2,
                 onLine: { line, _ in output.append(line) }
             )

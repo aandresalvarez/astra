@@ -536,114 +536,102 @@ struct LogViewerView: View {
         entries = latestEntries
         recomputeFilteredEntries(from: latestEntries)
 
-        do {
-            let reportEntries = LogDiagnosticsService.collectCurrentEntries(inMemoryEntries: latestEntries)
-            let history = LogDiagnosticsService.loadHistory()
-            let analysisInterval = LogDiagnosticsService.analysisDateInterval(
-                scope: scope,
-                generatedAt: generatedAt,
-                previousGeneratedAt: history.lastGeneratedAt
-            )
-            let crashReports = CrashDiagnosticsService.reports(
-                limit: 50,
-                modifiedIn: analysisInterval
-            )
-            let report = LogDiagnosticsService.makeReport(
-                entries: reportEntries,
-                generatedAt: generatedAt,
-                scope: scope,
-                history: history,
-                crashReports: crashReports
-            )
-            let analyzedEntries = LogDiagnosticsService.analyzedEntries(
-                reportEntries,
-                generatedAt: generatedAt,
-                scope: scope,
-                history: history
-            )
-
-            switch delivery {
-            case .archive:
-                let archive = try LogDiagnosticsService.writeArchive(
-                    report: report,
-                    analyzedEntries: analyzedEntries,
-                    analysisInterval: analysisInterval,
-                    crashReports: crashReports
-                )
-                diagnosticsReportURL = archive.url
-                diagnosticsMessage = diagnosticsArchiveSuccessMessage(
-                    report: report,
-                    scope: scope,
-                    archive: archive
-                )
-                AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
-                    "entries": String(report.entryCount),
-                    "issues": String(report.issueCount),
-                    "notices": String(report.notices.count),
-                    "errors": String(report.errorCount),
-                    "warnings": String(report.warningCount),
-                    "crash_reports": String(report.crashReports.count),
-                    "scope": scope.rawValue,
-                    "delivery": "archive",
-                    "artifacts": String(archive.artifactCount),
-                    "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
-                    "archive": archive.url.path
-                ], level: .info)
-                LogDiagnosticsService.saveHistory(from: report)
-                NSWorkspace.shared.activateFileViewerSelecting([archive.url])
-            case .file:
-                let url = try LogDiagnosticsService.writeReport(report)
-                diagnosticsReportURL = url
-                diagnosticsMessage = diagnosticsSuccessMessage(
-                    report: report,
-                    scope: scope,
-                    verb: "saved"
-                )
-                AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
-                    "entries": String(report.entryCount),
-                    "issues": String(report.issueCount),
-                    "notices": String(report.notices.count),
-                    "errors": String(report.errorCount),
-                    "warnings": String(report.warningCount),
-                    "crash_reports": String(report.crashReports.count),
-                    "scope": scope.rawValue,
-                    "delivery": "file",
-                    "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
-                    "report": url.path
-                ], level: .info)
-                LogDiagnosticsService.saveHistory(from: report)
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            case .clipboard:
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(report.markdown, forType: .string)
+        Task {
+            do {
+                let prepared = await LogDiagnosticsPreparationService.prepare(entries: latestEntries,
+                    scope: scope, generatedAt: generatedAt)
+                let report = prepared.report
+                let analyzedEntries = prepared.entries
+                let analysisInterval = prepared.interval
+                let history = prepared.history
+                let crashReports = report.crashReports
+                switch delivery {
+                case .archive:
+                    let archive = try await Task.detached(priority: .utility) {
+                        try LogDiagnosticsService.writeArchive(
+                            report: report,
+                            analyzedEntries: analyzedEntries,
+                            analysisInterval: analysisInterval,
+                            crashReports: crashReports
+                        )
+                    }.value
+                    diagnosticsReportURL = archive.url
+                    diagnosticsMessage = diagnosticsArchiveSuccessMessage(
+                        report: report,
+                        scope: scope,
+                        archive: archive
+                    )
+                    AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
+                        "entries": String(report.entryCount),
+                        "issues": String(report.issueCount),
+                        "notices": String(report.notices.count),
+                        "errors": String(report.errorCount),
+                        "warnings": String(report.warningCount),
+                        "crash_reports": String(report.crashReports.count),
+                        "scope": scope.rawValue,
+                        "delivery": "archive",
+                        "artifacts": String(archive.artifactCount),
+                        "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
+                        "archive": archive.url.path
+                    ], level: .info)
+                    LogDiagnosticsService.saveHistory(from: report)
+                    NSWorkspace.shared.activateFileViewerSelecting([archive.url])
+                case .file:
+                    let url = try await Task.detached(priority: .utility) {
+                        try LogDiagnosticsService.writeReport(report)
+                    }.value
+                    diagnosticsReportURL = url
+                    diagnosticsMessage = diagnosticsSuccessMessage(
+                        report: report,
+                        scope: scope,
+                        verb: "saved"
+                    )
+                    AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
+                        "entries": String(report.entryCount),
+                        "issues": String(report.issueCount),
+                        "notices": String(report.notices.count),
+                        "errors": String(report.errorCount),
+                        "warnings": String(report.warningCount),
+                        "crash_reports": String(report.crashReports.count),
+                        "scope": scope.rawValue,
+                        "delivery": "file",
+                        "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none",
+                        "report": url.path
+                    ], level: .info)
+                    LogDiagnosticsService.saveHistory(from: report)
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                case .clipboard:
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(report.markdown, forType: .string)
+                    diagnosticsReportURL = nil
+                    diagnosticsMessage = diagnosticsSuccessMessage(
+                        report: report,
+                        scope: scope,
+                        verb: "copied to clipboard"
+                    )
+                    AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
+                        "entries": String(report.entryCount),
+                        "issues": String(report.issueCount),
+                        "notices": String(report.notices.count),
+                        "errors": String(report.errorCount),
+                        "warnings": String(report.warningCount),
+                        "crash_reports": String(report.crashReports.count),
+                        "scope": scope.rawValue,
+                        "delivery": "clipboard",
+                        "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none"
+                    ], level: .info)
+                    LogDiagnosticsService.saveHistory(from: report)
+                }
+            } catch {
                 diagnosticsReportURL = nil
-                diagnosticsMessage = diagnosticsSuccessMessage(
-                    report: report,
-                    scope: scope,
-                    verb: "copied to clipboard"
-                )
-                AppLogger.audit(.diagnosticsGenerated, category: "Diagnostics", fields: [
-                    "entries": String(report.entryCount),
-                    "issues": String(report.issueCount),
-                    "notices": String(report.notices.count),
-                    "errors": String(report.errorCount),
-                    "warnings": String(report.warningCount),
-                    "crash_reports": String(report.crashReports.count),
-                    "scope": scope.rawValue,
-                    "delivery": "clipboard",
-                    "previous_report": history.lastGeneratedAt.map { String(Int($0.timeIntervalSince1970)) } ?? "none"
-                ], level: .info)
-                LogDiagnosticsService.saveHistory(from: report)
+                diagnosticsMessage = "Diagnostics report failed: \(LogSanitizer.sanitize(error.localizedDescription))"
+                AppLogger.audit(.diagnosticsGenerationFailed, category: "Diagnostics", fields: [
+                    "error": error.localizedDescription
+                ], level: .error)
             }
-        } catch {
-            diagnosticsReportURL = nil
-            diagnosticsMessage = "Diagnostics report failed: \(LogSanitizer.sanitize(error.localizedDescription))"
-            AppLogger.audit(.diagnosticsGenerationFailed, category: "Diagnostics", fields: [
-                "error": error.localizedDescription
-            ], level: .error)
-        }
 
-        isGeneratingDiagnostics = false
+            isGeneratingDiagnostics = false
+        }
     }
 
     private func revealCrashReports() {

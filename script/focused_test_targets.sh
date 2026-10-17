@@ -77,11 +77,32 @@ target_for_path() {
       add_target "FeedbackReportPresentationTests"
       add_target "FeedbackCrashRecoveryTests"
       ;;
-    Tests/TaskDecisionDockPresentationTests.swift|Astra/Services/Tasks/TaskDecisionDockContextBuilder.swift|Astra/Services/Tasks/TaskDecisionDockPresentation.swift|Astra/Views/TaskDecisionDockView.swift|Astra/Views/TaskMainView.swift)
+    Astra/Views/TaskMainView.swift)
+      add_target "TaskDecisionDockPresentationTests"
+      add_target "FeedbackReportPresentationTests"
+      add_target "ComposerAttachmentsTests"
+      add_target "TaskInputContinuityPromptTests"
+      add_target "TaskAttachmentFilesReaderTests"
+      ;;
+    Tests/TaskDecisionDockPresentationTests.swift|Astra/Services/Tasks/TaskDecisionDockContextBuilder.swift|Astra/Services/Tasks/TaskDecisionDockPresentation.swift|Astra/Views/TaskDecisionDockView.swift)
       add_target "TaskDecisionDockPresentationTests"
       add_target "FeedbackReportPresentationTests"
       ;;
-    Tests/HeadlessChatProcessScenarioTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
+    Astra/Views/TaskInputFileMetadata.swift|Astra/Views/Components/TaskFilesPopoverView.swift|Astra/Views/Components/TaskInputFilesView.swift|Tests/ComposerAttachmentsTests.swift)
+      add_target "ComposerAttachmentsTests"
+      add_target "TaskInputContinuityPromptTests"
+      add_target "TaskAttachmentFilesReaderTests"
+      ;;
+    Astra/Services/Tasks/TaskAttachmentFilesReader.swift|Tests/TaskAttachmentFilesReaderTests.swift)
+      add_target "TaskAttachmentFilesReaderTests"
+      add_target "ComposerAttachmentsTests"
+      ;;
+    Astra/Views/ShelfAttachmentHistoryModifier.swift|Tests/ShelfAttachmentHistoryTests.swift)
+      add_target "ShelfAttachmentHistoryTests"
+      add_target "TaskAttachmentFilesReaderTests"
+      ;;
+    Tests/HeadlessChatProcessScenarioTests.swift|Tests/RuntimeCancellationDiagnosticTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
+      add_target "RuntimeCancellationDiagnosticTests"
       add_target "HeadlessChatScenarioTests"
       add_target "FeedbackReportPresentationTests"
       ;;
@@ -89,16 +110,42 @@ target_for_path() {
       add_target "AgentRuntimeFailureDiagnosticsTests"
       add_target "FeedbackReportPresentationTests"
       ;;
-    Astra/Services/Diagnostics/LogDiagnosticsService.swift|Astra/Services/Diagnostics/PersistedLogEntryParser.swift)
+    Astra/Services/Diagnostics/LogDiagnostics*.swift|Astra/Services/Diagnostics/DiagnosticPerformancePolicy.swift|Tests/DiagnosticCoverageRegressionTests.swift|Astra/Services/Diagnostics/PersistedLogEntryParser.swift)
+      add_target "DiagnosticCoverageRegressionTests"
+      add_target "PendingP2RegressionTests"
       add_target "LogDiagnosticsTests"
       add_target "FeedbackEvidencePrivacyTests"
+      ;;
+    Astra/Services/Runtime/CopilotCLIRuntime.swift)
+      add_target "CopilotCLICommandPlanningTests"
+      add_target "PendingP2RegressionTests"
+      ;;
+    Astra/Services/Tasks/TaskTitleGenerationService.swift|Astra/Services/Tasks/SpecEngine.swift|Astra/Services/Runtime/AntigravityCLIRuntime.swift|Astra/Services/Diagnostics/CopilotStartupEvidence.swift|Tests/PendingP2RegressionTests.swift)
+      add_target "PendingP2RegressionTests"
+      add_target "SpecEngineTests"
+      add_target "AntigravityCLIRuntimeTests"
+      ;;
+    Astra/Services/Tasks/TaskLifecycleCoordinator.swift)
+      add_target "SwiftDataDeletionPreparationTests"
+      add_target "NewTaskWorktree"
+      add_target "PendingP2RegressionTests"
+      add_target "SpecEngineTests"
+      ;;
+    ASTRACore/HostFileAccessBroker.swift|Astra/Services/Browser/ShelfPreviewFailure.swift|Astra/Services/Browser/ShelfMarkdownSession.swift|Tests/ShelfPreviewFailureTests.swift)
+      add_target "HostFileAccessBrokerTests"
+      add_target "ShelfPreviewFailureTests"
+      add_target "ShelfMarkdownAsyncLoadingTests"
+      ;;
+    Astra/Services/Runtime/AgentRuntimeRunPersistence.swift|Astra/Services/Persistence/TaskOutputDiscovery.swift)
+      add_target "TaskOutputDiscoveryTests"
+      add_target "AgentRuntimeRunPersistenceTests"
       ;;
     Astra/Services/Diagnostics/CrashDiagnosticsService.swift)
       add_target "LogDiagnosticsTests"
       add_target "FeedbackEvidencePrivacyTests"
       add_target "FeedbackCrashRecoveryTests"
       ;;
-    Tests/AgentRuntimeAdapterTests.swift|Astra/Services/Runtime/ProviderMessages.swift)
+    Tests/AgentRuntimeAdapterTests.swift|Astra/Services/Runtime/ProviderMessages.swift|Astra/Services/Runtime/CopilotRuntimeLaunchSupport.swift)
       add_target "AgentRuntimeAdapterTests"
       add_target "FeedbackReportPresentationTests"
       ;;
@@ -106,9 +153,17 @@ target_for_path() {
       add_target "CodexMCPConfigRendererTests"
       add_target "MCPRuntimeProjectionTests"
       ;;
+    Astra/Views/ShelfFileIndexController.swift|Astra/Views/ShelfAttachmentRootResolver.swift|Tests/ShelfFileIndexControllerTests.swift|Astra/Services/Diagnostics/UIResponsivenessDiagnostics.swift|Astra/Services/Diagnostics/FilesShelfResponsivenessTelemetry.swift)
+      add_target "ShelfFileIndexControllerTests"
+      add_target "FilesShelfResponsivenessTelemetryTests"
+      add_target "UIResponsivenessDiagnosticsTests"
+      add_target "ShelfAttachmentHistoryTests"
+      ;;
     Astra/Views/ShelfFileNavigatorPresentation.swift|Astra/Views/ShelfMarkdownPanelView.swift|Tests/ShelfMarkdownPanelLayoutTests.swift)
       add_target "ShelfMarkdownPanelLayoutTests"
       add_target "ShelfChromeTests"
+      add_target "TaskAttachmentFilesReaderTests"
+      add_target "ShelfAttachmentHistoryTests"
       ;;
     Astra/Views/SidebarTask*.swift|Astra/Views/TaskSidebarView.swift|Tests/SidebarTaskStore*.swift|Tests/SidebarTaskSourceObservationTests.swift)
       add_target "SidebarTaskStoreTests"
@@ -124,6 +179,13 @@ target_for_path() {
       ;;
     Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
+      ;;
+    Astra/Services/Runtime/AgentPromptBuilder.swift|Astra/Services/Runtime/TaskInputManifest.swift|Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift|Astra/Services/Tasks/PromptContextSectionProvider.swift|Astra/Views/PromptContextPreviewView.swift|Tests/TaskInputContinuityPromptTests.swift|Tests/AgentRuntimeWorkerTests.swift)
+      add_target "TaskInputContinuityPromptTests"
+      add_target "BuildPromptTests"
+      add_target "AgentRuntimeAttachmentProjectionTests"
+      add_target "RuntimeAttachmentPolicyRegressionTests"
+      add_target "PromptContextPreviewPresentationTests"
       ;;
     Astra/Services/Validation/TaskDeliverableExpectation.swift|Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift|Astra/Services/Tasks/TaskIntentLanguagePolicy.swift|Tests/TaskTextOnlyDeliverableTests.swift)
       add_target "TaskTextOnlyDeliverableTests"
@@ -143,7 +205,7 @@ target_for_path() {
     Astra/Services/Persistence/OrphanedV12StoreMigrator.swift|Tests/OrphanedV12StoreMigratorTests.swift)
       add_target "OrphanedV12StoreMigratorTests"
       ;;
-    Astra/Services/Persistence/SwiftDataDeletionPreparation.swift|Astra/Services/Tasks/TaskWorktreeService.swift|Astra/Services/Tasks/TaskLifecycleCoordinator.swift|Tests/SwiftDataDeletionPreparationTests.swift|Tests/NewTaskWorktree*.swift)
+    Astra/Services/Persistence/SwiftDataDeletionPreparation.swift|Astra/Services/Tasks/TaskWorktreeService.swift|Tests/SwiftDataDeletionPreparationTests.swift|Tests/NewTaskWorktree*.swift)
       add_target "SwiftDataDeletionPreparationTests"
       add_target "NewTaskWorktree"
       ;;

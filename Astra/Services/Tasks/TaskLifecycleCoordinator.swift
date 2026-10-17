@@ -1185,11 +1185,16 @@ final class TaskLifecycleCoordinator {
                 let originalTitle = task.title
                 let originalUpdatedAt = task.updatedAt
 
-                guard let generated = await SpecEngine.generateTitle(
-                    goal: task.goal,
-                    workspacePath: workspace.primaryPath,
-                    utilityRuntime: utilityRuntime
-                ),
+                let outcome = await TaskTitleGenerationService.generate(goal: task.goal,
+                    workspacePath: workspace.primaryPath, configuration: utilityRuntime)
+                if outcome.shouldStopBatch {
+                    AppLogger.audit(.taskStats, category: "UI", fields: [
+                        "operation": "thread_title_backfill", "result": "runtime_unavailable",
+                        "runtime": runtime.rawValue
+                    ], level: .warning)
+                    break
+                }
+                guard let generated = outcome.title,
                 Self.isUsableGeneratedTitle(generated),
                 generated.caseInsensitiveCompare(originalTitle) != .orderedSame else {
                     continue

@@ -362,6 +362,7 @@ enum CopilotCLIRuntime {
         reasoningEffort: String? = nil,
         resumeSessionID: String? = nil,
         disableCustomInstructions: Bool = false,
+        diagnosticLogDirectory: String? = nil,
         permissionArguments: [String]
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
@@ -379,7 +380,7 @@ enum CopilotCLIRuntime {
         if capabilities.supportsNoAutoUpdate {
             args += ["--no-auto-update"]
         }
-        if capabilities.supportsLogDir, let logDirectory = managedLogDirectory(copilotHome: copilotHome) {
+        if capabilities.supportsLogDir, let logDirectory = diagnosticLogDirectory ?? managedLogDirectory(copilotHome: copilotHome) {
             args += ["--log-dir", logDirectory]
         }
 

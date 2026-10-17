@@ -60,5 +60,23 @@ struct LargeHistoryResponsivenessTests {
         #expect(measurement.rows > 0)
         #expect(measurement.uniqueRows < summary.tasks.count / 2)
         #expect(measurement.elapsed < .seconds(2))
+        // Finalizing the largest chat must not inherit the former 33 s stall.
+        let run = try #require(tasks[0].runs.first)
+        let folder = try TaskWorkspaceAccess(task: tasks[0]).ensureTaskFolder()
+        for previous in tasks[0].runs {
+            #expect(SessionHistoryManager.recordTurn(taskFolder: folder, taskTitle: tasks[0].title,
+                turnMessage: "Synthetic previous turn", output: String(repeating: "Synthetic transcript text. ", count: 4_000),
+                tokensUsed: 0, costUSD: 0, fileChanges: [], runID: previous.id))
+        }
+        let started = ContinuousClock.now
+        let sessionSaved = AgentRuntimeRunPersistence.recordSessionTurn(task: tasks[0], run: run, message: "Synthetic scale validation")
+        let finalized = await AgentRuntimeRunPersistence.finalizeAndPersist(task: tasks[0], run: run,
+            modelContext: context, phase: .run, autoExport: false)
+        let finalizationElapsed = ContinuousClock.now - started
+        print("[large-history] finalize=\(finalizationElapsed) events=794 turns=24 session_saved=\(sessionSaved) finalized=\(finalized)")
+        #expect(sessionSaved)
+        #expect(finalized)
+        #expect(finalizationElapsed < .seconds(2))
+
     }
 }
