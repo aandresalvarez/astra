@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import SwiftData
 import ASTRACore
 import ASTRAModels
@@ -13,6 +15,9 @@ import ASTRAModels
 struct PluginsSurfaceView: View {
     var workspace: Workspace
     var catalog: PluginCatalog
+    /// A plugin another surface asked to open (the rail, an MCP install):
+    /// its row is expanded and scrolled to, then the request is cleared.
+    @Binding var selectedPackageID: String?
     var onCatalogChanged: () -> Void = {}
     var onEditElement: (ConfigureTab, UUID) -> Void = { _, _ in }
 
@@ -28,6 +33,11 @@ struct PluginsSurfaceView: View {
     @State private var errorMessage: String?
     @State private var confirming: PluginsSurfaceConfirmation?
     @StateObject private var repairs = PluginRepairCoordinator()
+    @State private var showCreateWizard = false
+    @State private var importReview: CapabilityImportReview?
+    @State private var showMCPPaste = false
+    @State private var pastedMCPTarget = ""
+    @State private var mcpInstallRequest: MCPInstallChatRequest?
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -69,6 +79,7 @@ struct PluginsSurfaceView: View {
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
                 isRemovable: !CapabilityLibrary.trustedBuiltInPackageIDs.contains(package.id)
             )
+            input.unavailableReason = PluginsSurfacePresentation.unavailableReason(for: package)
             input.needsUpdate = activation.map {
                 $0.recordedVersion != package.version
                     || $0.knownComponentIDs != PluginUpdateService.componentIDs(of: package)
@@ -97,6 +108,14 @@ struct PluginsSurfaceView: View {
                 TextField("Search: jira, gmail, bigquery", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
+                Menu("New") {
+                    Button("Create a plugin…") { showCreateWizard = true }
+                    Button("From an MCP server…") { showMCPPaste = true }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Button("Import file…") { openImportPanel() }
+                    .controlSize(.small)
             }
             if let errorMessage {
                 Text(errorMessage)
@@ -105,18 +124,22 @@ struct PluginsSurfaceView: View {
             }
             let model = surface
             let current = model.state
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    group("Action needed", current.actionNeeded, rows: model.rows)
-                    group("Ready", current.ready, rows: model.rows)
-                    group("Available", current.available, rows: model.rows)
-                    if current.isEmpty {
-                        Text(query.isEmpty ? "No plugins yet." : "Nothing matches \u{201C}\(query)\u{201D}.")
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.secondary)
-                            .padding(.vertical, 8)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        group("Action needed", current.actionNeeded, rows: model.rows)
+                        group("Ready", current.ready, rows: model.rows)
+                        group("Available", current.available, rows: model.rows)
+                        if current.isEmpty {
+                            Text(query.isEmpty ? "No plugins yet." : "Nothing matches \u{201C}\(query)\u{201D}.")
+                                .font(Stanford.caption(12))
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 8)
+                        }
                     }
                 }
+                .onAppear { revealSelectedPackage(proxy) }
+                .onChange(of: selectedPackageID) { _, _ in revealSelectedPackage(proxy) }
             }
         }
         .padding(16)
@@ -135,6 +158,50 @@ struct PluginsSurfaceView: View {
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
             refreshApprovalRecords()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityCatalogPersistenceChanged)) { notification in
+            // A library change (an import, a removal in another window) needs
+            // a reload; a workspace-scoped change is observed through the model.
+            guard (notification.object as? CapabilityCatalogPersistenceChange)?.workspaceID == nil else { return }
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+        }
+        .sheet(isPresented: $showCreateWizard) {
+            CapabilityCreationWizardView(workspace: workspace) { package, enableHere, sourceURL in
+                create(package, enableHere: enableHere, sourceURL: sourceURL)
+            }
+        }
+        .sheet(item: $importReview) { review in
+            CapabilityImportReviewSheet(
+                review: review,
+                onCancel: { importReview = nil },
+                onImport: { importFile($0) }
+            )
+        }
+        .sheet(isPresented: $showMCPPaste) {
+            MCPInstallTargetPasteSheet(
+                targetText: $pastedMCPTarget,
+                onCancel: { showMCPPaste = false },
+                onReview: { reviewPastedMCPTarget() }
+            )
+        }
+        .sheet(item: $mcpInstallRequest) { request in
+            CapabilityMCPInstallReviewSheet(
+                request: request,
+                workspace: workspace,
+                onCancel: { mcpInstallRequest = nil },
+                onInstalled: { package in
+                    mcpInstallRequest = nil
+                    catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+                    selectedPackageID = package.id
+                }
+            )
+        }
+    }
+
+    private func revealSelectedPackage(_ proxy: ScrollViewProxy) {
+        guard let id = selectedPackageID else { return }
+        expanded.insert(id)
+        selectedPackageID = nil
+        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .top) }
     }
 
     @ViewBuilder
@@ -147,6 +214,7 @@ struct PluginsSurfaceView: View {
             ForEach(displays) { display in
                 if let row = rows[display.id] {
                     rowView(row, display: display)
+                        .id(display.id)
                     Divider().padding(.leading, 38)
                 }
             }
@@ -200,7 +268,10 @@ struct PluginsSurfaceView: View {
                     setupRow: { componentRow($0, package: pluginRow.package, isEnabled: row.isEnabled) },
                     onEditAccount: { onEditElement(.connectors, $0) },
                     onConfirm: { confirming = $0 },
+                    approvalRecords: approvalRecords,
+                    policyContext: policyContext,
                     onTurnOff: { disable(pluginRow.package) },
+                    onSetApproval: { setApproval($0, for: pluginRow.package) },
                     onUpdate: { update(pluginRow) },
                     onChanged: { onCatalogChanged() },
                     onError: { errorMessage = $0 }
@@ -325,6 +396,80 @@ struct PluginsSurfaceView: View {
             refreshStatuses()
         } catch {
             errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - New and import
+
+    private func create(_ package: PluginPackage, enableHere: Bool, sourceURL: URL?) {
+        errorMessage = nil
+        do {
+            let result = try CapabilityCatalogActionService().create(
+                package,
+                enableHere: enableHere,
+                sourceURL: sourceURL,
+                workspace: workspace,
+                modelContext: modelContext,
+                policyContext: policyContext,
+                traceID: AuditTrace.make(enableHere ? "capability-create-enable" : "capability-create")
+            )
+            if result.approvalRecordChanged { refreshApprovalRecords() }
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            expanded.insert(package.id)
+            onCatalogChanged()
+        } catch {
+            errorMessage = "Couldn't create \(package.name): \(error.localizedDescription)"
+        }
+    }
+
+    private func openImportPanel() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Plugin"
+        panel.prompt = "Review"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        importReview = CapabilityImportReview(report: CapabilityPackageImporter().validateFile(at: url))
+    }
+
+    private func importFile(_ report: CapabilityPackageValidationReport) {
+        errorMessage = nil
+        do {
+            let result = try CapabilityCatalogActionService().importPlugin(
+                report, workspace: workspace, modelContext: modelContext, traceID: AuditTrace.make("capability-import")
+            )
+            importReview = nil
+            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+            expanded.insert(result.package.id)
+            onCatalogChanged()
+        } catch {
+            importReview = nil
+            errorMessage = "Couldn't import the plugin: \(error.localizedDescription)"
+        }
+    }
+
+    private func reviewPastedMCPTarget() {
+        guard let result = MCPInstallChatCommand.installResult(input: "/mcp \(pastedMCPTarget)") else {
+            errorMessage = "Paste an MCP npm, uvx, Docker, JSON, or HTTPS target to review."
+            return
+        }
+        switch result {
+        case .request(let request):
+            showMCPPaste = false
+            DispatchQueue.main.async { mcpInstallRequest = request }
+        case .failure(let failure):
+            errorMessage = failure.message
+        }
+    }
+
+    private func setApproval(_ status: CapabilityApprovalStatus, for package: PluginPackage) {
+        errorMessage = nil
+        do {
+            try CapabilityCatalogActionService().setApprovalStatus(status, for: package, workspace: workspace)
+            refreshApprovalRecords()
+        } catch {
+            errorMessage = "Couldn't update the review of \(package.name): \(error.localizedDescription)"
         }
     }
 

@@ -104,15 +104,6 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
-    @Test("The preview is on by default in development builds only, and remembers a choice")
-    func previewFlagDefaultsByChannel() {
-        let defaults = InMemoryDefaults()
-        #expect(PluginsSurfacePreferences.isEnabled(in: defaults, channel: .development))
-        #expect(!PluginsSurfacePreferences.isEnabled(in: defaults, channel: .production))
-        PluginsSurfacePreferences.setEnabled(true, in: defaults)
-        #expect(PluginsSurfacePreferences.isEnabled(in: defaults, channel: .production))
-    }
-
     // MARK: - Fixtures
 
     private func input(

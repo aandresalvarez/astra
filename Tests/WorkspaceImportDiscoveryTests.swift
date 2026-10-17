@@ -222,18 +222,6 @@ struct WorkspaceImportOrchestratorTests {
         let workspace = try #require(result?.workspace)
         #expect(result?.hasCapabilityEnableFailures == false)
         #expect(recorder.changes == [.global, .workspace(workspace.id)])
-        let importingWindow = PluginCatalogPresentationSourceRevision()
-        let otherWindow = PluginCatalogPresentationSourceRevision()
-        var importingReloads = 0
-        var otherReloads = 0
-        for change in recorder.changes {
-            _ = importingWindow.receive(change, workspaceID: workspace.id) { importingReloads += 1 }
-            _ = otherWindow.receive(change, workspaceID: UUID()) { otherReloads += 1 }
-        }
-        #expect(importingReloads == 1)
-        #expect(otherReloads == 1)
-        #expect(importingWindow.persistenceRevision == 2)
-        #expect(otherWindow.persistenceRevision == 1)
     }
 
     @Test("workspace action coordinator flags a failed quick-start capability credential save")

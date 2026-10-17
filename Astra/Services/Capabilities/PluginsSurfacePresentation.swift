@@ -56,6 +56,8 @@ enum PluginsSurfacePresentation {
         var isVisible: Bool
         var isRemovable: Bool
         var needsUpdate: Bool = false
+        /// Why it can't be added whatever the policy says; shown instead of Add.
+        var unavailableReason: String? = nil
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -72,11 +74,11 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: !input.isEnabled ? .add : (input.needsUpdate ? .update : nil)
+                verb: input.unavailableReason != nil ? nil : (!input.isEnabled ? .add : (input.needsUpdate ? .update : nil))
             )
             if !input.isEnabled {
                 state.available.append(row)
-            } else if input.pendingSteps > 0 || input.needsUpdate {
+            } else if input.pendingSteps > 0 || input.needsUpdate || input.unavailableReason != nil {
                 state.actionNeeded.append(row)
             } else {
                 state.ready.append(row)
@@ -89,6 +91,7 @@ enum PluginsSurfacePresentation {
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
         let contents = input.package.contentParts.joined(separator: ", ")
+        if let reason = input.unavailableReason { return reason }
         if input.isEnabled, input.needsUpdate {
             return contents.isEmpty ? "Update to \(input.package.version)" : "Update to \(input.package.version) · \(contents)"
         }
@@ -97,6 +100,15 @@ enum PluginsSurfacePresentation {
         }
         let pending = input.pendingSteps == 1 ? "1 step pending" : "\(input.pendingSteps) steps pending"
         return contents.isEmpty ? pending : "\(pending) · \(contents)"
+    }
+
+    /// Why a plugin can't be added on this build whatever the policy says:
+    /// one that needs an OAuth account sign-in, which ASTRA does not offer
+    /// (owner decision: the Google OAuth stack is deleted), would add and then
+    /// never work.
+    static func unavailableReason(for package: PluginPackage) -> String? {
+        guard package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) else { return nil }
+        return "Needs an account sign-in that ASTRA can't do."
     }
 
     /// Name, summary and tags, plus what is inside: skill names, tool names and

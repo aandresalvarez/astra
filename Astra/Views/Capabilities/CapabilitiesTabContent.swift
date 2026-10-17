@@ -11,23 +11,12 @@ struct CapabilitiesTabContent: View {
     @State private var catalog = PluginCatalog()
 
     var body: some View {
-        if PluginsSurfacePreferences.isEnabled() {
-            PluginsSurfaceView(
-                workspace: workspace,
-                catalog: catalog,
-                onCatalogChanged: onCatalogChanged,
-                onEditElement: onEditElement
-            )
-        } else {
-            PluginCatalogView(
-                workspace: workspace,
-                catalog: catalog,
-                focus: .all,
-                presentation: .embedded,
-                selectedPackageID: $selectedPackageID,
-                onCatalogChanged: onCatalogChanged,
-                onEditElement: onEditElement
-            )
-        }
+        PluginsSurfaceView(
+            workspace: workspace,
+            catalog: catalog,
+            selectedPackageID: $selectedPackageID,
+            onCatalogChanged: onCatalogChanged,
+            onEditElement: onEditElement
+        )
     }
 }

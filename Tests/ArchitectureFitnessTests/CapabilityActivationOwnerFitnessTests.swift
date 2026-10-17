@@ -52,7 +52,6 @@ struct CapabilityActivationOwnerFitnessTests {
         // The V19 -> V20 migration reads the legacy shared-row lists it prunes,
         // and which workspaces list a plugin row without the plugin.
         "Astra/Services/Capabilities/PluginActivationMigration.swift": 5,
-        "Astra/Services/Capabilities/PluginCatalogPresentation.swift": 1,
         "Astra/Services/Capabilities/TaskCapabilityResolver.swift": 7,
         "Astra/Services/Capabilities/WorkspaceCapabilities.swift": 4,
         "Astra/Services/Packs/AstraPackProfileResolver.swift": 1,
@@ -70,7 +69,6 @@ struct CapabilityActivationOwnerFitnessTests {
         "Astra/Views/ConnectorsManagerView.swift": 1,
         "Astra/Views/ContentView.swift": 7,
         "Astra/Views/ContentViewBrowserSessionPolicyCache.swift": 4,
-        "Astra/Views/PluginCatalogView.swift": 2,
         "Astra/Views/ScheduleEditorView.swift": 1,
         "Astra/Views/ToolsManagerView.swift": 1,
         "Astra/Views/WorkspaceAppStudioChatView.swift": 1,

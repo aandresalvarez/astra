@@ -26,15 +26,14 @@ struct CredentialSweepFitnessTests {
     @Test("Capability-setup copying stays out of SwiftUI body")
     func capabilitySetupCopyingIsNotEvaluatedFromBody() throws {
         let contentView = try fileText("Astra/Views/ContentView.swift")
-        let pluginCatalog = try fileText("Astra/Views/PluginCatalogView.swift")
 
         // `copySetup` / `installationInputs` walk every workspace × every
         // package connector × every credential hint × every key alias × every
         // entity-ID namespace, and each leaf is a Keychain round trip. Reached
-        // from a computed property they re-run on every body pass; both of these
-        // views re-render on every keystroke into a text field. They must be
-        // driven from a keyed `.task` into `@State` instead.
-        for (name, source) in [("ContentView", contentView), ("PluginCatalogView", pluginCatalog)] {
+        // from a computed property they re-run on every body pass, and the view
+        // re-renders on every keystroke into a text field. They must be driven
+        // from a keyed `.task` into `@State` instead.
+        for (name, source) in [("ContentView", contentView)] {
             #expect(
                 source.contains("@State private var copyable"),
                 "\(name) no longer caches its copyable capability setups in @State"
@@ -50,7 +49,6 @@ struct CredentialSweepFitnessTests {
         }
 
         #expect(contentView.contains(".task(id: copyableCapabilitySetupKey)"))
-        #expect(pluginCatalog.contains(".task(id: copyableSetupSourceKey)"))
     }
 
     @Test("The dedicated keychain caches its failures, not only its successes")

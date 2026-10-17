@@ -166,9 +166,9 @@ struct CapabilityDisableSaveFailureTests {
         #expect(try context.fetch(FetchDescriptor<Connector>()).count == connectorsBefore)
         let view = try String(
             contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("Astra/Views/PluginCatalogView.swift"), encoding: .utf8
+                .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift"), encoding: .utf8
         )
-        #expect(view.contains("guard result.persisted else {"))
+        #expect(view.contains("if !result.persisted {"))
     }
 }
 
