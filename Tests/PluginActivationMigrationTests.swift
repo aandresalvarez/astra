@@ -368,6 +368,38 @@ struct PluginActivationMigrationTests {
         #expect(try outbox.pending().isEmpty)
     }
 
+    @Test("Adding a plugin again first clears what its Remove left pending, and waits while it can't")
+    func reAddSettlesPendingSecrets() throws {
+        let fixture = try Fixture()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-plugin-secret-readd-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outbox = PluginSecretCleanupOutbox(fileURL: directory.appendingPathComponent("PluginSecretCleanup.json"))
+        let workspace = try fixture.workspace(fixture.cID)
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        let reused = PluginActivation.projectedID(workspaceID: workspace.id, pluginID: "gcloud-workflow", componentID: component)
+        let unrelated = UUID()
+        try outbox.write([reused, unrelated])
+        #expect(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: workspace) == nil)
+
+        // A delete that fails keeps the record and holds the Add back.
+        #expect(!PluginSecretCleanupOutbox.settleBeforeAdding(
+            fixture.gcloud, to: workspace, modelContext: fixture.context, outbox: outbox, clean: { _ in false }
+        ))
+        #expect(Set(try outbox.pending()) == [reused, unrelated])
+        var cleaned: [UUID] = []
+        #expect(PluginSecretCleanupOutbox.settleBeforeAdding(
+            fixture.gcloud, to: workspace, modelContext: fixture.context, outbox: outbox, clean: { cleaned.append($0); return true }
+        ))
+        // Only the namespaces the new activation would reuse are settled.
+        #expect(cleaned == [reused])
+        #expect(try outbox.pending() == [unrelated])
+
+        // A record that can't be read never lets the Add through.
+        try Data("not json".utf8).write(to: outbox.fileURL)
+        #expect(!PluginSecretCleanupOutbox.settleBeforeAdding(fixture.gcloud, to: workspace, modelContext: fixture.context, outbox: outbox))
+    }
+
     @Test("A plugin missing from the library keeps its activation and its rows")
     func missingLibraryEntryKeepsActivationAndRows() throws {
         let fixture = try Fixture()

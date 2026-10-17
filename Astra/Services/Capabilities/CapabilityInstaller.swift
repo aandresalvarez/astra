@@ -18,6 +18,9 @@ struct CapabilityInstaller {
         /// above because the remedy is different: nothing about this install
         /// can recover it, and they have to re-enter the value.
         case credentialRestoreFailed(packageID: String, keys: [String])
+        /// An earlier Remove's secrets are still waiting to be cleared from
+        /// the Keychain; a new activation would derive the same namespaces.
+        case secretCleanupPending(packageID: String)
 
         var errorDescription: String? {
             switch self {
@@ -31,6 +34,8 @@ struct CapabilityInstaller {
                 let reason = verdict.message(forKey: key)
                     ?? "\(key) is not a valid credential for this connector."
                 return "Enabling \(id) was stopped: \(reason)"
+            case .secretCleanupPending(let id):
+                return "\(id) can't be added yet: the secrets it had here before haven't been cleared from the Keychain. Try again."
             case .credentialRestoreFailed(let id, let keys):
                 let names = keys.joined(separator: ", ")
                 return """
@@ -197,6 +202,12 @@ struct CapabilityInstaller {
             return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist)
         }
 
+        // A new activation derives the namespaces a Remove may not have
+        // finished clearing: settle them first, and wait while one is pending.
+        if WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil,
+           !PluginSecretCleanupOutbox.settleBeforeAdding(package, to: workspace, modelContext: modelContext) {
+            throw InstallationError.secretCleanupPending(packageID: package.id)
+        }
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         var savedSkillSecrets: [SavedSkillSecret] = []
         // Everything from here through persist() is one transaction: staging a
