@@ -447,12 +447,22 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   settings (copied to the new namespace before the save), and the templates
   and schedules that named its skill are rewritten; a component the
   activation knew (`knownComponentIDs`) that is gone and not taken over is
-  released, its secret namespace journaled. It runs after an import (which
-  first refuses a version a workspace with the plugin on would refuse: a
-  pack rule, a missing dependency, a conflict, an unsafe declaration, and
-  restores the previous library entry if reconciling fails), on Add, and at
-  launch after the built-in sync. A row whose activation still runs an
-  earlier definition offers Update.
+  released, its secret namespace journaled. Releasing deletes the
+  person's settings and secrets, so only an action of theirs does it: an
+  import they chose (which first refuses a version a workspace with the
+  plugin on would refuse: a pack rule, a missing dependency, a conflict, an
+  unsafe declaration, and restores the previous library entry if
+  reconciling fails), Add, or the row's Update. The automatic pass at
+  launch after the built-in sync, and after workspace recovery, only moves
+  renamed components (nothing is lost) and records the new version when
+  the definition drops nothing; when it would drop a component the
+  activation stays on its recorded version and the row offers Update,
+  which names what goes.
+- **`knownComponentIDs`** is part of V20 (R1 and R3 ship together; no
+  release has the model without it). The migration seeds it from the
+  definition each activation was migrated against, Add and every
+  reconciliation set it, and the workspace mirror carries it, so a dropped
+  component is always identifiable, including one that only had secrets.
 - **Remove** writes its intent (`PluginRemoveJournal`) before the save and
   clears it after the library entry goes; launch finishes an interrupted one
   and drops one whose activations were never deleted.
