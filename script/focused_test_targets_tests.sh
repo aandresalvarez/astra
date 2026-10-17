@@ -158,3 +158,18 @@ assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree' \
 assert_targets "OrphanedV12StoreMigratorTests" \
   "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
   "Tests/OrphanedV12StoreMigratorTests.swift"
+
+assert_targets $'AgentRuntimePipeCompletionTests\nAgentExecutionScopedProcessTests\nAgentUtilityRuntimeTests\nProcessMonitorTests' \
+  "Astra/Services/Runtime/AgentProcessPipeReader.swift" \
+  "Astra/Services/Runtime/AgentExecutionScopedProcess.swift" \
+  "Tests/AgentExecutionScopedProcessTests.swift" \
+  "Astra/Services/Runtime/AgentRuntimeProcessRunner.swift" \
+  "Tests/AgentRuntimePipeCompletionTests.swift"
+
+assert_targets $'UsageDashboardStoreTests\nUsageDashboardRenderingTests' \
+  "Astra/Views/UsageDashboardView.swift" \
+  "Astra/Views/UsageDashboardStore.swift" \
+  "Astra/Views/UsageDashboardSummary.swift" \
+  "Tests/UsageDashboardStoreTests.swift" \
+  "Tests/UsageDashboardRenderingTests.swift" \
+  "Tests/LargeHistoryResponsivenessTests.swift"
