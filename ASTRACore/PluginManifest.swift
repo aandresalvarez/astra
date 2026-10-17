@@ -317,7 +317,10 @@ public enum PluginManifestConverter {
             category: package.category,
             tags: package.tags,
             setupGuide: package.setupGuide,
-            worksOn: defaultWorksOn(hasMCP: !package.mcpServers.isEmpty),
+            worksOn: defaultWorksOn(
+                hasMCP: !package.mcpServers.isEmpty,
+                hasShellComponents: !package.skills.isEmpty || !package.connectors.isEmpty || !package.localTools.isEmpty
+            ),
             components: components,
             browserAdapters: package.browserAdapters,
             minAppVersion: package.minAppVersion,
@@ -467,11 +470,16 @@ public enum PluginManifestConverter {
         return object["components"] != nil && object["manifestVersion"] != nil
     }
 
-    public static func defaultWorksOn(hasMCP: Bool) -> [String: PluginRuntimeSupport] {
+    /// Where a plugin works. On a runtime without MCP delivery, a plugin with
+    /// MCP servers works through the shell relay only when it has something
+    /// the relay can use (a skill, an account, a tool); an MCP-only plugin
+    /// is `unsupported` there, since nothing in it reaches that runtime.
+    public static func defaultWorksOn(hasMCP: Bool, hasShellComponents: Bool = true) -> [String: PluginRuntimeSupport] {
         var support: [String: PluginRuntimeSupport] = [:]
         for runtime in mcpRuntimes { support[runtime] = .full }
         for runtime in conditionalMCPRuntimes { support[runtime] = hasMCP ? .fullWithRecentCLI : .full }
-        for runtime in shellOnlyRuntimes { support[runtime] = hasMCP ? .shellOnly : .full }
+        let withoutMCP: PluginRuntimeSupport = !hasMCP ? .full : (hasShellComponents ? .shellOnly : .unsupported)
+        for runtime in shellOnlyRuntimes { support[runtime] = withoutMCP }
         return support
     }
 

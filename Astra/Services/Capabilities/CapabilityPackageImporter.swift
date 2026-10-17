@@ -65,10 +65,15 @@ struct CapabilityPackageImporter {
     /// it on would refuse the new version, and every activation is
     /// reconciled with the new definition right after the library changes
     /// (the previous library entry is restored if that fails).
+    ///
+    /// `replacesInstalledCopy` is set only for a plugin from a source whose
+    /// installed copy came from that same source (plugin sources, T5, T7):
+    /// it replaces that copy whatever its version.
     @discardableResult
     func importValidatedPackage(
         _ report: CapabilityPackageValidationReport,
-        modelContext: ModelContext? = nil
+        modelContext: ModelContext? = nil,
+        replacesInstalledCopy: Bool = false
     ) throws -> CapabilityPackageImportResult {
         guard report.canInstall, let package = report.package else {
             throw CapabilityPackageImportError(report: report)
@@ -89,6 +94,7 @@ struct CapabilityPackageImporter {
         let currentReport = CapabilityPackageValidator.validate(
             source: currentSource,
             installedPackages: library.installedPackages(),
+            allowReplacingExistingPackageID: replacesInstalledCopy,
             checkPrerequisites: false
         )
         guard currentReport.canInstall else {
