@@ -1199,14 +1199,16 @@ public enum WorkspaceConfigManager {
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
-        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
+        sourceWorkspaceID: UUID? = nil
     ) -> Workspace {
         importWorkspaceResult(
             from: config,
             modelContext: modelContext,
             scheduleTrustPolicy: scheduleTrustPolicy,
             taskRecoveryTrustPolicy: taskRecoveryTrustPolicy,
-            capabilityTrust: capabilityTrust
+            capabilityTrust: capabilityTrust,
+            sourceWorkspaceID: sourceWorkspaceID
         ).workspace
     }
 
@@ -1215,14 +1217,16 @@ public enum WorkspaceConfigManager {
     /// destructive step. An additional root that cleanup starts removing
     /// between that check and this import is dropped and reported in
     /// `droppedAdditionalPaths`, never persisted silently as part of the
-    /// workspace.
+    /// workspace. `sourceWorkspaceID` names the file's workspace when the
+    /// import does not keep its ID (Duplicate), for its projected skill IDs.
     @MainActor
     public static func importWorkspaceResult(
         from config: WorkspaceConfig,
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules,
         taskRecoveryTrustPolicy: TaskRecoveryImportTrustPolicy = .quarantine,
-        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState
+        capabilityTrust: CapabilityImportTrustPolicy = .preserveRecordedState,
+        sourceWorkspaceID: UUID? = nil
     ) -> WorkspaceConfigImportResult {
         let additionalPaths = config.additionalPaths.filter { !TaskWorktreeCheckoutReservation.isReserved($0) }
         let droppedAdditionalPaths = config.additionalPaths.filter { !additionalPaths.contains($0) }
@@ -1351,7 +1355,8 @@ public enum WorkspaceConfigManager {
 
         WorkspaceCapabilityActivation.apply(activation, to: workspace)
         let projectedIDs = restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
-                                 skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust)
+                                 skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust,
+                                 fileWorkspaceID: sourceWorkspaceID ?? workspace.id)
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)

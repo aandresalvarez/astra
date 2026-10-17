@@ -211,6 +211,29 @@ struct PluginRuntimeProjectionTests {
         #expect(inputs.configInputs["JIRA_PROJECTS"] == nil)
     }
 
+    @Test("Copying setup does not turn back on a plugin the source turned off")
+    func setupCopySkipsDisabledActivation() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        let spec = jira.connectors[0]
+        let workspace = Workspace(name: "Off", primaryPath: "/tmp/projection-copy-off")
+        context.insert(workspace)
+        // Turn off keeps the binding; its non-default URL is a nonempty input.
+        let own = Connector(name: spec.name, serviceType: spec.serviceType, baseURL: "https://own.atlassian.net")
+        own.workspace = workspace
+        context.insert(own)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        WorkspaceCapabilityActivation.bind(own, toComponent: CapabilityResourceOrigin.componentID(for: spec), of: activation)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == jira.id } }
+        try context.save()
+        #expect(activation.isEnabled == false)
+
+        let summary = CapabilitySetupCopier(secretStore: MockSecretStore()).copySetup(from: workspace, packages: [jira])
+        #expect(!summary.selectedPackageIDs.contains(jira.id))
+        #expect(summary.inputsByPackageID[jira.id] == nil)
+    }
+
     @Test("Deleting a workspace cleans the namespaces its activations remember, even without the plugin")
     func deletionCleanupUsesRememberedComponents() throws {
         let context = try makeContext()

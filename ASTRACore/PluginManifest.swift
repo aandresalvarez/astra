@@ -547,6 +547,13 @@ public enum PluginManifestConverter {
         )
     }
 
+    /// The `CLIPrerequisite.id` (binary, arguments, context) a setup
+    /// component checks; nil for one that runs no CLI. Health is keyed by it,
+    /// so a failure finds its own component even when two share a name.
+    public static func prerequisiteID(of component: PluginComponent) -> String? {
+        component.kind == .setup ? prerequisite(component)?.id : nil
+    }
+
     private static func prerequisite(_ component: PluginComponent) -> CLIPrerequisite? {
         guard let check = component.setup.check, check.kind == .exec, let binary = check.binary else { return nil }
         return CLIPrerequisite(

@@ -32,6 +32,11 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// Optional for backward compatibility with V16 requests written before
     /// turn-scoped capability admission was introduced.
     public let turnIntentSnapshot: TaskTurnIntentSnapshot?
+    /// The workspace's plugin activations at submission, so turning a plugin
+    /// off, on or changing its settings while the request waits does not
+    /// change what it runs with. Nil for requests written before activations
+    /// were frozen, which keep reading the live workspace.
+    public let pluginActivations: [PluginActivationRecord]?
 
     public init(
         task: AgentTask,
@@ -53,6 +58,9 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
         self.turnIntentSnapshot = turnIntentSnapshot
+        pluginActivations = task.workspace.map {
+            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
+        }
     }
 }
 

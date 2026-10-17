@@ -17,6 +17,9 @@ struct CapabilityActivationDisabler {
         var persisted = true
     }
 
+    /// `keepingWorkspaceRows` turns a package without an activation off by
+    /// enablement alone: shared rows leave this workspace's scope, and no
+    /// workspace skill or connector is deleted.
     @discardableResult
     func disable(
         _ package: PluginPackage,
@@ -25,7 +28,8 @@ struct CapabilityActivationDisabler {
         modelContext: ModelContext,
         availablePackages: [PluginPackage] = CapabilityRuntimeResourceMatcher.packageDefinitions(),
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
-        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
+        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil,
+        keepingWorkspaceRows: Bool = false
     ) -> Result {
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         if WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) != nil {
@@ -84,7 +88,7 @@ struct CapabilityActivationDisabler {
         // connectors that remain.
         var pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
 
-        for connector in state.linkedConnectors where !connector.isGlobal {
+        for connector in state.linkedConnectors where !connector.isGlobal && !keepingWorkspaceRows {
             guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
             pendingConnectorCleanups.append(connector.keychainCleanup)
             result.removedWorkspaceConnectorIDs.append(connector.id)
@@ -93,7 +97,7 @@ struct CapabilityActivationDisabler {
         }
 
         let remainingExplicitPackages = remainingPackages.filter { !$0.isSyntheticWorkspaceSkillPackage }
-        for skill in state.linkedSkills where !skill.isGlobal {
+        for skill in state.linkedSkills where !skill.isGlobal && !keepingWorkspaceRows {
             guard !isClaimedByRemainingPackages(skill, excluding: package, remainingPackages: remainingExplicitPackages) else { continue }
             pendingKeychainCleanups.append { skill.cleanupKeychain() }
             result.removedWorkspaceSkillIDs.append(skill.id)

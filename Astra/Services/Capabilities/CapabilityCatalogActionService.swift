@@ -38,9 +38,10 @@ struct CapabilityCatalogActionService {
     /// How Add handles `package`. A package that needs an account of a
     /// provider ASTRA can't sign in to is refused: the router's fallback
     /// sheet would enable it with no account, and it would read as ready
-    /// though its setup never ran.
+    /// though its setup never ran. An optional account neither routes nor
+    /// refuses: the plugin works without it.
     static func addRoute(for package: PluginPackage) throws -> AddRoute {
-        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount }
+        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount && $0.required }
         if let unsupported = accounts.first(where: { !supportedOAuthProviders.contains($0.provider ?? "") }) {
             throw CapabilityAccountSetupError.unsupportedProvider(account: unsupported.displayName, provider: unsupported.provider)
         }
@@ -224,7 +225,11 @@ struct CapabilityCatalogActionService {
         return context
     }
 
-    /// Turns a package off in one workspace, leaving it installed.
+    /// Turns a package off in one workspace, leaving it installed and
+    /// deleting nothing. A row standing for a standalone skill
+    /// (`skill.<uuid>`) has no activation: a shared skill leaves this
+    /// workspace's scope, and a workspace's own skill, which has no off state
+    /// short of deleting it, is refused (`PluginsSurfacePresentation.offersTurnOff`).
     @discardableResult
     func disable(
         _ package: PluginPackage,
@@ -232,11 +237,15 @@ struct CapabilityCatalogActionService {
         capabilities: WorkspaceCapabilities,
         modelContext: ModelContext
     ) -> CapabilityActivationDisabler.Result {
+        guard PluginsSurfacePresentation.offersTurnOff(package) else {
+            return CapabilityActivationDisabler.Result(packageID: package.id, persisted: false)
+        }
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
             capabilities: capabilities,
-            modelContext: modelContext
+            modelContext: modelContext,
+            keepingWorkspaceRows: CapabilityInstaller.syntheticSkillRowID(of: package) != nil
         )
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return result
