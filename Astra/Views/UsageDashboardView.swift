@@ -32,68 +32,67 @@ struct UsageDashboardView: View {
     }
 }
 
-/// Rows are direct children of the scroll stack: no eager wrapper around
-/// the ForEach, and no managed models in the render graph.
+/// The native macOS list owns virtualization and accessible navigation.
+/// LazyVStack's accessible end-jump traps in SwiftUICore on macOS 27; an
+/// eager stack instead builds the entire archive. Each list row is one child,
+/// and no managed models enter the render graph.
 struct UsageDashboardContent<Row: View>: View {
     let summary: UsageDashboardSummary
     @Binding var timeFilter: TimeFilter
     let row: (UsageDashboardSummary.TaskRow) -> Row
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                HStack {
-                    Text("Usage Dashboard")
-                        .font(Stanford.heading(22))
-                        .foregroundStyle(Stanford.black)
-                    Spacer()
-                    Picker("Period", selection: $timeFilter) {
-                        ForEach(TimeFilter.allCases, id: \.self) { f in
-                            Text(f.rawValue).tag(f)
-                        }
+        List {
+            HStack {
+                Text("Usage Dashboard")
+                    .font(Stanford.heading(22))
+                    .foregroundStyle(Stanford.black)
+                Spacer()
+                Picker("Period", selection: $timeFilter) {
+                    ForEach(TimeFilter.allCases, id: \.self) { f in
+                        Text(f.rawValue).tag(f)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 220)
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+            }
 
-                // Summary cards
-                LazyVGrid(columns: [
-                    GridItem(.flexible()),
-                    GridItem(.flexible()),
-                    GridItem(.flexible()),
-                    GridItem(.flexible())
-                ], spacing: 12) {
-                    StatCard(title: "Total Tasks", value: "\(summary.tasks.count)", icon: "list.bullet", color: Stanford.lagunita)
-                    StatCard(title: "Completed", value: "\(summary.completedCount)", icon: "checkmark.circle", color: Stanford.paloAltoGreen)
-                    StatCard(title: "Failed", value: "\(summary.failedCount)", icon: "xmark.circle", color: Stanford.failed)
-                    StatCard(title: "Total Runs", value: "\(summary.totalRuns)", icon: "arrow.triangle.2.circlepath", color: Stanford.driftwood)
-                }
+            // Summary cards
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible()),
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 12) {
+                StatCard(title: "Total Tasks", value: "\(summary.tasks.count)", icon: "list.bullet", color: Stanford.lagunita)
+                StatCard(title: "Completed", value: "\(summary.completedCount)", icon: "checkmark.circle", color: Stanford.paloAltoGreen)
+                StatCard(title: "Failed", value: "\(summary.failedCount)", icon: "xmark.circle", color: Stanford.failed)
+                StatCard(title: "Total Runs", value: "\(summary.totalRuns)", icon: "arrow.triangle.2.circlepath", color: Stanford.driftwood)
+            }
 
-                LazyVGrid(columns: [
-                    GridItem(.flexible()),
-                    GridItem(.flexible())
-                ], spacing: 12) {
-                    StatCard(title: "Total Tokens", value: Formatters.formatTokens(summary.totalTokens), icon: "number", color: Stanford.poppy)
-                    StatCard(title: "Total Cost", value: String(format: "$%.2f", summary.totalCost), icon: "dollarsign.circle", color: Stanford.sky)
-                }
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 12) {
+                StatCard(title: "Total Tokens", value: Formatters.formatTokens(summary.totalTokens), icon: "number", color: Stanford.poppy)
+                StatCard(title: "Total Cost", value: String(format: "$%.2f", summary.totalCost), icon: "dollarsign.circle", color: Stanford.sky)
+            }
 
-                // Per-task breakdown
-                if !summary.tasks.isEmpty {
-                    Text("Per-Task Breakdown")
-                        .font(Stanford.heading(16))
-                        .foregroundStyle(Stanford.black)
-                        .padding(.top, 8)
+            // Per-task breakdown
+            if !summary.tasks.isEmpty {
+                Text("Per-Task Breakdown")
+                    .font(Stanford.heading(16))
+                    .foregroundStyle(Stanford.black)
+                    .padding(.top, 8)
 
-                    ForEach(summary.tasks) { task in
-                        VStack(spacing: 20) {
-                            row(task)
-                            Divider()
-                        }
-                    }
+                ForEach(summary.tasks) { task in
+                    row(task)
+                        .padding(.vertical, 4)
                 }
             }
-            .padding()
         }
+        .listStyle(.plain)
+        .listRowSeparator(.hidden)
     }
 }
 

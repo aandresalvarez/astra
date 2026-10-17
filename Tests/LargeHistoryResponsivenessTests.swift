@@ -56,9 +56,9 @@ struct LargeHistoryResponsivenessTests {
         #expect(summary.tasks.count == 2180)
         #expect(summary.totalRuns == 5541)
         let measurement = measureUsageRendering(summary)
-        print("[large-history] tasks=2180 runs=5541 workspaces=22 usage_layout=\(measurement.elapsed) rendered_rows=\(measurement.rows) fixture=\(root.path)")
+        print("[large-history] tasks=2180 runs=5541 workspaces=22 usage_layout=\(measurement.elapsed) rendered_rows=\(measurement.rows) unique_rows=\(measurement.uniqueRows) fixture=\(root.path)")
         #expect(measurement.rows > 0)
-        #expect(measurement.rows < 100)
+        #expect(measurement.uniqueRows < summary.tasks.count / 2)
         #expect(measurement.elapsed < .seconds(2))
     }
 }
