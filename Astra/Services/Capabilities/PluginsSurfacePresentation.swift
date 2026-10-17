@@ -58,6 +58,8 @@ enum PluginsSurfacePresentation {
         var needsUpdate: Bool = false
         /// Why it can't be added whatever the policy says; shown instead of Add.
         var unavailableReason: String? = nil
+        /// The source an installed plugin came from (plugin sources, T14).
+        var origin: String? = nil
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -90,7 +92,11 @@ enum PluginsSurfacePresentation {
     /// "1 step pending · 1 skill, 3 tools" for an added plugin with work left;
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
-        let contents = input.package.contentParts.joined(separator: ", ")
+        var contents = input.package.contentParts.joined(separator: ", ")
+        // A plugin from a source always names it (plugin sources, T14).
+        if let origin = input.origin {
+            contents = contents.isEmpty ? "From \(origin)" : "\(contents) · from \(origin)"
+        }
         if let reason = input.unavailableReason { return reason }
         if input.isEnabled, input.needsUpdate {
             return contents.isEmpty ? "Update to \(input.package.version)" : "Update to \(input.package.version) · \(contents)"

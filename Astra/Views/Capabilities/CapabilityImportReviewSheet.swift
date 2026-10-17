@@ -7,6 +7,11 @@ import ASTRACore
 struct CapabilityImportReview: Identifiable {
     let id = UUID()
     let report: CapabilityPackageValidationReport
+    /// For a plugin from a source: where it comes from (shown in place of a
+    /// file name), the digest being approved, and what ASTRA won't run.
+    var origin: String?
+    var digest: String?
+    var unsupported: [String] = []
 
     var sourceURL: URL? {
         report.sourceURL
@@ -46,9 +51,15 @@ struct CapabilityImportReviewSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(package?.name ?? "Invalid Capability")
                         .font(Stanford.heading(18))
-                    Text(review.sourceURL?.lastPathComponent ?? "Package JSON")
+                    Text(review.origin ?? review.sourceURL?.lastPathComponent ?? "Package JSON")
                         .font(Stanford.caption(12))
                         .foregroundStyle(.secondary)
+                    if let digest = review.digest {
+                        Text("Digest \(digest)")
+                            .font(Stanford.ui(11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
 
                 Spacer()
@@ -61,6 +72,16 @@ struct CapabilityImportReviewSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     if let package {
                         importPackageOverview(package)
+                    }
+                    if let package {
+                        Text(Self.worksOnSummary(package))
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    }
+                    if !review.unsupported.isEmpty {
+                        Text("Not brought over: " + review.unsupported.joined(separator: ", "))
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
                     }
                     importIssueSection(
                         title: "Blockers",
@@ -99,6 +120,25 @@ struct CapabilityImportReviewSheet: View {
             .padding(18)
         }
         .frame(width: 640, height: 560)
+    }
+
+    /// "Works on Claude Code, Codex · shell only on Cursor · not on …": the
+    /// manifest's `worksOn`, shown before the plugin is added.
+    static func worksOnSummary(_ package: PluginPackage) -> String {
+        let worksOn = PluginManifestConverter.manifest(from: package).worksOn
+        func names(_ support: Set<PluginRuntimeSupport>) -> [String] {
+            worksOn.filter { support.contains($0.value) }
+                .map { AgentRuntimeID(rawValue: $0.key)?.displayName ?? $0.key }
+                .sorted()
+        }
+        var parts: [String] = []
+        let full = names([.full, .fullWithRecentCLI])
+        let shell = names([.shellOnly])
+        let none = names([.unsupported])
+        if !full.isEmpty { parts.append("Works on " + full.joined(separator: ", ")) }
+        if !shell.isEmpty { parts.append("shell only on " + shell.joined(separator: ", ")) }
+        if !none.isEmpty { parts.append("not on " + none.joined(separator: ", ")) }
+        return parts.joined(separator: " · ")
     }
 
     private func importPackageOverview(_ package: PluginPackage) -> some View {

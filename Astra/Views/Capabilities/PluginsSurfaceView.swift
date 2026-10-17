@@ -84,6 +84,7 @@ struct PluginsSurfaceView: View {
                 isRemovable: Self.isRemovable(package)
             )
             input.unavailableReason = PluginsSurfacePresentation.unavailableReason(for: package)
+            input.origin = PluginSourceCoordinator.shared.origin(of: package)
             // Any drift an Update would settle: version, digest, components
             // or templates.
             input.needsUpdate = activation.map {
@@ -141,6 +142,10 @@ struct PluginsSurfaceView: View {
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 8)
+                        }
+                        PluginSourcesSection(workspace: workspace, installed: catalog.packages) {
+                            catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+                            onCatalogChanged()
                         }
                     }
                 }
