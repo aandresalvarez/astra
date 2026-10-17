@@ -347,6 +347,16 @@ final class AgentRuntimeWorker {
         }
 
         await CodexMCPPolicyService.warmBeforeLaunch(configuration: runtimeConfiguration)
+        await CopilotCLIRuntime.warmBeforeLaunch(runtime: selectedRuntime, executablePath: launchSettings.executablePath)
+        // The warm-ups can wait on a provider CLI, and a stop pressed meanwhile had no
+        // process to terminate, so it is honoured here, before a run exists.
+        guard !cancellationRequested else {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+                "reason": "cancelled_before_launch",
+                "phase": auditPhase.rawValue
+            ])
+            return
+        }
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: launchTask,
             requestedRuntime: selectedRuntime,

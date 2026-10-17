@@ -199,6 +199,15 @@ enum CopilotCLIRuntime {
         _ = await answeredCapabilities(executablePath: executablePath)
     }
 
+    /// Gets an answer before a Copilot launch so the main-actor reads that follow
+    /// (admission, policy, launch plan) do not probe briefly and launch on the fallback.
+    /// Admission reads every runtime's profile, so this is scoped to the requested
+    /// runtime: another runtime's launch never waits on `copilot help`.
+    static func warmBeforeLaunch(runtime: AgentRuntimeID, executablePath: String) async {
+        guard runtime == .copilotCLI else { return }
+        await warmCapabilities(executablePath: executablePath)
+    }
+
     private static func memoisedCapabilities(
         executablePath: String,
         acceptsUnanswered: Bool

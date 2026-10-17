@@ -112,6 +112,42 @@ struct CopilotCLICapabilityProbeTests {
         #expect(try Self.probeCount(at: counter) == probesWhileHung + 1)
     }
 
+    @Test("Only a Copilot launch waits on the Copilot capability probe")
+    func onlyCopilotLaunchesWarmTheProbe() async throws {
+        let root = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let copilot = root.appendingPathComponent("copilot")
+        let counter = root.appendingPathComponent("probe-count")
+        defer { CopilotCLIRuntime.invalidateCapabilitiesCache(executablePath: copilot.path) }
+
+        try Self.writeCountingCopilot(
+            at: copilot,
+            counter: counter,
+            helpBody: #"echo "--output-format=FORMAT --stream=MODE --no-ask-user""#
+        )
+
+        // Admission reads every runtime's profile, so a Claude launch must not stop to
+        // ask an installed Copilot anything.
+        await CopilotCLIRuntime.warmBeforeLaunch(runtime: .claudeCode, executablePath: copilot.path)
+        #expect(try Self.probeCount(at: counter) == 0)
+
+        // A Copilot launch gets the answer before its main-actor reads.
+        await CopilotCLIRuntime.warmBeforeLaunch(runtime: .copilotCLI, executablePath: copilot.path)
+        #expect(try Self.probeCount(at: counter) == 1)
+        #expect(CopilotCLIRuntime.capabilities(executablePath: copilot.path).supportsOutputFormatJSON)
+        #expect(try Self.probeCount(at: counter) == 1)
+    }
+
+    /// The main actor's read, on its own thread so a `@MainActor` test does not hold the
+    /// main thread for the whole probe budget.
+    static func briefCapabilitiesOffMain(executablePath: String) async -> CopilotCLICapabilities {
+        await withCheckedContinuation { continuation in
+            Thread.detachNewThread {
+                continuation.resume(returning: CopilotCLIRuntime.capabilities(executablePath: executablePath))
+            }
+        }
+    }
+
     /// A `help` body that blocks until `release` exists. After at least 30 s it gives up
     /// with empty help, which parses to something other than `.conservative`. That sits
     /// between the main actor's 5 s budget and the 60 s answer budget, so a main-actor read
