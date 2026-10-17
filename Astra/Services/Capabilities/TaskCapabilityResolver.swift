@@ -239,7 +239,12 @@ struct TaskCapabilityResolver {
     var allLocalTools: [LocalTool] {
         let packageSkills = enabledPackageSkills()
         let fromSkills = (task.skills + packageSkills).flatMap(\.localTools)
-        let standalone = task.workspace?.localTools.filter { $0.skill == nil && !$0.isGlobal } ?? []
+        // A tool an activation names as an override reaches a run only
+        // through the projection, while its plugin is on.
+        let overriding = task.workspace.map(WorkspaceCapabilities.overridingRowIDs(of:)) ?? []
+        let standalone = task.workspace?.localTools.filter {
+            $0.skill == nil && !$0.isGlobal && !overriding.contains($0.id)
+        } ?? []
         var all = fromSkills + standalone + enabledPackageLocalTools()
 
         if let ws = task.workspace, !ws.enabledGlobalToolIDs.isEmpty {

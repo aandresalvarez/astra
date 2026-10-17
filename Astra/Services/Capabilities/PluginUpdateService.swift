@@ -376,7 +376,13 @@ enum PluginUpdateService {
                 let oldID = PluginRuntimeProjection.derivedID(of: activation, componentID: old)
                 let newID = PluginRuntimeProjection.derivedID(of: activation, componentID: new)
                 let before = copied.count
-                try copySecrets(of: spec, from: oldID, to: newID, copied: &copied)
+                // The old namespace is released below, so the automatic pass
+                // also carries the secrets the successor stopped declaring:
+                // they stay recorded on it, and only Update deletes them.
+                let undeclared = mode == .release ? [] : activation.secretSettingKeys
+                    .filter { PluginActivation.componentID(ofSettingKey: $0) == old }
+                    .map { String($0.dropFirst(old.count + 1)) }
+                try copySecrets(of: spec, alsoCopying: undeclared, from: oldID, to: newID, copied: &copied)
                 result.copied += copied[before...]
                 retargetSkill(oldID, to: newID, in: workspace)
                 result.released.append(oldID)
@@ -515,11 +521,19 @@ enum PluginUpdateService {
         return stale
     }
 
-    /// Copies each secret setting of a renamed skill into its successor's
-    /// namespace, unless the successor already has a value of its own.
-    private static func copySecrets(of spec: PluginSkill, from oldID: UUID, to newID: UUID, copied: inout [CopiedSecret]) throws {
+    /// Copies each secret setting of a renamed skill (and the recorded
+    /// `extraKeys`) into its successor's namespace, unless the successor
+    /// already has a value of its own.
+    private static func copySecrets(
+        of spec: PluginSkill,
+        alsoCopying extraKeys: [String] = [],
+        from oldID: UUID,
+        to newID: UUID,
+        copied: inout [CopiedSecret]
+    ) throws {
         let persistence = SkillSecretSeam.required
-        for key in spec.environmentKeys where Skill.isSecretEnvironmentKey(key) {
+        let declared = spec.environmentKeys.filter(Skill.isSecretEnvironmentKey)
+        for key in declared + extraKeys.filter({ !declared.contains($0) }) {
             guard let value = persistence.loadSecretValue(key: key, skillID: oldID, store: KeychainSecretStore()),
                   !value.isEmpty else { continue }
             let existing = persistence.loadSecretValue(key: key, skillID: newID, store: KeychainSecretStore())

@@ -9,8 +9,46 @@ struct CapabilityCatalogCreateActionResult {
     var installedPackage: PluginPackage?
 }
 
+/// A plugin needs an account ASTRA has no sign-in flow for.
+enum CapabilityAccountSetupError: Error, Equatable, LocalizedError {
+    case unsupportedProvider(account: String, provider: String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedProvider(let account, let provider):
+            let named = provider.map { " (\($0))" } ?? ""
+            return "This plugin needs \(account)\(named), and ASTRA can't connect that kind of account yet."
+        }
+    }
+}
+
 @MainActor
 struct CapabilityCatalogActionService {
+    /// What Plugins Add does with a package.
+    enum AddRoute: Equatable {
+        /// Install, approve and enable in one step.
+        case enable
+        /// Open the install flow that connects the package's account first.
+        case connectAccount
+    }
+
+    /// OAuth providers ASTRA can sign in to: none. The Google OAuth stack is
+    /// deleted (owner decision), so a plugin that needs an account sign-in
+    /// can't be added (`PluginsSurfacePresentation.unavailableReason`).
+    static let supportedOAuthProviders: Set<String> = []
+
+    /// How Add handles `package`. A package that needs an account of a
+    /// provider ASTRA can't sign in to is refused: the router's fallback
+    /// sheet would enable it with no account, and it would read as ready
+    /// though its setup never ran.
+    static func addRoute(for package: PluginPackage) throws -> AddRoute {
+        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount }
+        if let unsupported = accounts.first(where: { !supportedOAuthProviders.contains($0.provider ?? "") }) {
+            throw CapabilityAccountSetupError.unsupportedProvider(account: unsupported.displayName, provider: unsupported.provider)
+        }
+        return accounts.isEmpty ? .enable : .connectAccount
+    }
+
     let installer: CapabilityInstaller
     let creationService: CapabilityPackageCreationService
     let uninstaller: CapabilityUninstaller
@@ -148,6 +186,7 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
+        _ = try Self.addRoute(for: package)
         let context = try grantPendingApproval(for: package, policyContext: policyContext, approvalStore: approvalStore)
         return try enable(
             package,

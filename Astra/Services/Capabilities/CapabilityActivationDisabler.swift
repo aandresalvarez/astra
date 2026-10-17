@@ -88,6 +88,7 @@ struct CapabilityActivationDisabler {
             guard !isClaimedByRemainingPackages(connector, excluding: package, remainingPackages: remainingPackages) else { continue }
             pendingConnectorCleanups.append(connector.keychainCleanup)
             result.removedWorkspaceConnectorIDs.append(connector.id)
+            WorkspaceCapabilityActivation.releaseAccount(connector)
             modelContext.delete(connector)
         }
 

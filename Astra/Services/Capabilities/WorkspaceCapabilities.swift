@@ -56,8 +56,20 @@ struct WorkspaceCapabilities {
         })
     }
 
+    /// A row an activation names as a component's override is on exactly
+    /// while that activation is (the projection brings it in), so it never
+    /// counts as one of the workspace's own. Lists still show it.
     var activeSkills: [Skill] {
-        uniqueSkills(workspaceSkills + enabledGlobalSkills + enabledPackageSkills)
+        let overriding = Self.overridingRowIDs(of: workspace)
+        return uniqueSkills(workspaceSkills.filter { !overriding.contains($0.id) } + enabledGlobalSkills + enabledPackageSkills)
+    }
+
+    /// Rows any of the workspace's activations, on or off, names as a
+    /// component's override.
+    static func overridingRowIDs(of workspace: Workspace) -> Set<UUID> {
+        Set(WorkspaceCapabilityActivation.activations(of: workspace)
+            .flatMap(\.overridingRowIDs)
+            .compactMap(UUID.init(uuidString:)))
     }
 
     var workspaceConnectors: [Connector] {
@@ -95,9 +107,18 @@ struct WorkspaceCapabilities {
         return uniqueConnectors(authored.filter { !boundAccountIDs.contains($0.id) } + projection.connectors)
     }
 
-    /// A workspace row a plugin created for one of its connector components.
+    /// A workspace row a plugin created for one of its connector components,
+    /// while an activation binds it or its plugin is still added there (a
+    /// dropped component's account stays out). A stamped row nothing owns,
+    /// one the migration couldn't bind or one Remove left stamped because
+    /// its credentials couldn't be copied out, is the person's.
     static func isPluginAccount(_ connector: Connector) -> Bool {
-        !connector.isGlobal && !(connector.originPackageID ?? "").isEmpty
+        let pluginID = (connector.originPackageID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !connector.isGlobal, !pluginID.isEmpty else { return false }
+        if connector.accountBindings.contains(where: { !$0.isDeleted && $0.activation.map { !$0.isDeleted } == true }) {
+            return true
+        }
+        return connector.workspace.map { WorkspaceCapabilityActivation.activation(for: pluginID, in: $0) != nil } ?? false
     }
 
     /// Connector rows bound as accounts to any of this workspace's
@@ -127,8 +148,9 @@ struct WorkspaceCapabilities {
     }
 
     var activeTools: [LocalTool] {
-        let attached = activeSkills.flatMap(\.localTools)
-        return uniqueTools(workspaceTools + attached + enabledGlobalTools + projection.tools)
+        let overriding = Self.overridingRowIDs(of: workspace)
+        let ambient = (workspaceTools + activeSkills.flatMap(\.localTools)).filter { !overriding.contains($0.id) }
+        return uniqueTools(ambient + enabledGlobalTools + projection.tools)
     }
 
     private var enabledPackages: [PluginPackage] {

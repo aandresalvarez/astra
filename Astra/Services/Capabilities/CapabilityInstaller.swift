@@ -134,6 +134,7 @@ struct CapabilityInstaller {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
             throw error
         }
+        library.discardPackageStorageSnapshot(packageStorageSnapshot)
         var installedFields = [
             "package_id": package.id,
             "package_name": package.name,

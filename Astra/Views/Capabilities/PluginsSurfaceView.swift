@@ -322,7 +322,7 @@ struct PluginsSurfaceView: View {
             if let failing, GitHubRepositoryAccessRepairButton.supports(failing.prerequisite, status: statuses[failing.prerequisite.id]) {
                 GitHubRepositoryAccessRepairButton(workingDirectory: workspace.resolvedWorkingPath) { refreshStatuses() }
             } else if let failing, let repair = failing.repair {
-                if repairs.phase(for: repair) == .waiting {
+                if repairs.phase(for: repair, owner: "\(package.id)/\(component.id)") == .waiting {
                     Text("Checking…").font(Stanford.caption(11)).foregroundStyle(.secondary)
                 } else {
                     // What the button runs is shown before it runs.
@@ -332,7 +332,7 @@ struct PluginsSurfaceView: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
-                    Button(repair.verb) { repairs.start(repair) { refreshStatuses() } }
+                    Button(repair.verb) { repairs.start(repair, owner: "\(package.id)/\(component.id)") { refreshStatuses() } }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
@@ -536,25 +536,29 @@ struct PluginsSurfaceView: View {
             guard case .deleteAccount(_, let accountID) = confirmation else { return nil }
             return row.activation?.bindings.compactMap(\.account).first { $0.id == accountID }
         }()
-        let copy = confirmation.copy(
-            name: account?.name ?? row.package.name,
-            workspaces: account.map { PluginOperations.workspacesUsing($0).map(\.name) } ?? []
-        )
+        // An unreadable delete scope offers no Delete: the confirmation
+        // would not name every workspace the deletion reaches.
+        let reach: [String]? = account.map { account in
+            (try? PluginOperations.workspacesUsing(account))?.map(\.name)
+        } ?? []
+        let copy = confirmation.copy(name: account?.name ?? row.package.name, workspaces: reach ?? [])
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(copy.message)
+            Text(reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message)
                 .font(Stanford.caption(12))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Button("Cancel") { confirming = nil }
                 .controlSize(.small)
-            Button(copy.verb, role: .destructive) {
-                confirming = nil
-                switch confirmation {
-                case .remove: remove(row.package)
-                case .deleteAccount: if let account { deleteAccount(account) }
+            if reach != nil {
+                Button(copy.verb, role: .destructive) {
+                    confirming = nil
+                    switch confirmation {
+                    case .remove: remove(row.package)
+                    case .deleteAccount: if let account { deleteAccount(account) }
+                    }
                 }
+                .controlSize(.small)
             }
-            .controlSize(.small)
         }
         .padding(8)
         .background(Stanford.statusError.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
