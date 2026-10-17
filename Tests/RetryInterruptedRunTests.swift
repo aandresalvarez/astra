@@ -151,6 +151,43 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("A rejected GH_TOKEN stop offers no sign-in, but Resume and Retry still wait for its check")
+    func tokenStopIsCheckedBeforeContinuing() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Token", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a PR", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHubEnvironmentToken
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var checked: [String] = []
+            env.coordinator.repairCheck = { repair in
+                checked.append(repair.checkBinary ?? "")
+                return false
+            }
+
+            #expect(env.coordinator.pendingRepair(for: task)?.checkBinary == "gh")
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(checked == ["gh"])
+            #expect(try TaskTurnRequestRepository.requests(for: task, in: env.context).isEmpty)
+            #expect(task.events.contains { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("still isn't working") })
+        }
+    }
+
     @Test("Without a provider session Retry still relaunches from scratch")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")
