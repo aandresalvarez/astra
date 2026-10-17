@@ -85,8 +85,10 @@ struct UsageDashboardContent<Row: View>: View {
                         .padding(.top, 8)
 
                     ForEach(summary.tasks) { task in
-                        row(task)
-                        Divider()
+                        VStack(spacing: 20) {
+                            row(task)
+                            Divider()
+                        }
                     }
                 }
             }
