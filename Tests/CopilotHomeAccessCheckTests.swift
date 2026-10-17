@@ -44,7 +44,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.cause.contains("mode 0"))
         #expect(report.cause.contains("sudo"))
         // config.json is read-only to Copilot, so read access is all it gets back.
-        #expect(report.fixCommand == "sudo chown \"$USER\":staff '\(config)' && chmod u+r '\(config)'")
+        #expect(report.fixCommand == "sudo chown \"$USER\" '\(config)' && chmod u+r '\(config)'")
         #expect(report.userMessage.contains("Run `\(report.fixCommand)` in Terminal"))
     }
 
@@ -76,7 +76,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.access == .unwritable)
         #expect(!report.blocksCopilot)
         #expect(report.cause.contains("Copilot cannot write"))
-        #expect(report.fixCommand == "sudo chown -R \"$USER\":staff '\(sessions)' && chmod u+rwx '\(sessions)'")
+        #expect(report.fixCommand == "sudo chown -R \"$USER\" '\(sessions)' && chmod u+rwx '\(sessions)'")
         #expect(CopilotHomeAccessCheck.readinessCheck(for: report)?.state == .warning)
     }
 
@@ -92,7 +92,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.problems.map(\.path) == [home.path])
         #expect(report.blocksCopilot)
         #expect(report.fixCommand
-            == "sudo chown -R \"$USER\":staff '\(home.path)' && chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
+            == "sudo chown -R \"$USER\" '\(home.path)' && chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
     }
 
     @Test("Read-only Copilot config files are a hardened setup, not a problem")
@@ -270,7 +270,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(own.fixCommand == "chmod u+rwx '\(parent)'")
 
         let foreign = CopilotHomeAccessCheck.inspect(home: missingHome, currentUserID: getuid() + 1)
-        #expect(foreign.fixCommand == "sudo chown \"$USER\":staff '\(parent)' && chmod u+rwx '\(parent)'")
+        #expect(foreign.fixCommand == "sudo chown \"$USER\" '\(parent)' && chmod u+rwx '\(parent)'")
 
         try home.setMode(0o755, of: parent)
         #expect(CopilotHomeAccessCheck.inspect(home: missingHome).isClean)
@@ -680,6 +680,44 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.problems.map(\.access) == [.linksOutsideHome])
     }
 
+    @Test("The launch gate uses the launch's own providers override and resumed session")
+    func launchBlockerUsesLaunchEnvironment() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+        let stale = try home.write("stale-providers.json", mode: 0o000)
+        let active = try home.write("active-providers.json", mode: 0o600)
+        let variable = CopilotHomeAccessCheck.providersOverrideVariable
+
+        // The launch's override replaces a stale process-level one.
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [variable: active]
+        ) == nil)
+        let blocked = try #require(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [variable: stale]
+        ))
+        #expect(blocked.state == .blocked)
+        #expect(blocked.checks.first?.id == CopilotHomeAccessCheck.readinessCheckID)
+
+        // A warning (an unwritable state folder) never stops a launch.
+        try home.makeDirectory("session-state", mode: 0o555)
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [variable: active]
+        ) == nil)
+    }
+
+    @Test("The chown in a fix keeps the entry's group")
+    func chownKeepsGroup() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+
+        #expect(report.fixCommand.hasPrefix("sudo chown \"$USER\" '"))
+        #expect(!report.fixCommand.contains(":staff"))
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()
@@ -892,7 +930,7 @@ struct CopilotHomeAccessCheckTests {
 
         #expect(diagnostic.category == .providerHomeAccessDenied)
         #expect(diagnostic.userMessage.contains("config.json"))
-        #expect(diagnostic.userMessage.contains("sudo chown \"$USER\":staff '\(config)'"))
+        #expect(diagnostic.userMessage.contains("sudo chown \"$USER\" '\(config)'"))
         #expect(diagnostic.summarySource == .fallback)
         #expect(!diagnostic.redactedSummary.isEmpty)
         let payload = diagnostic.userFacingPayload(prefix: "Copilot exited with code 1.")

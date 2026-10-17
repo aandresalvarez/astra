@@ -170,7 +170,9 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             // Recursive only inside the Copilot home: the parent a missing home
             // would be created in is usually the user's whole home folder.
             let recursive = foreign.contains { $0.isDirectory && $0.access != .cannotCreateHome } ? " -R" : ""
-            commands.append("sudo chown\(recursive) \"$USER\":staff \(Self.quotedPaths(foreign))")
+            // Owner only: changing the group too would hand the entry's group
+            // bits to everyone in `staff`.
+            commands.append("sudo chown\(recursive) \"$USER\" \(Self.quotedPaths(foreign))")
         }
         let withACL = repairable.filter(\.hasACL)
         if !withACL.isEmpty {
@@ -501,6 +503,24 @@ enum CopilotHomeAccessCheck {
         )
         outside.isProvidersOverride = true
         return [outside]
+    }
+
+    /// The launch-time gate: the same check run with the launch's own
+    /// environment (a skill can set `COPILOT_PROVIDERS_CONFIG`) and the session
+    /// it resumes, neither of which the earlier readiness preflight can know.
+    /// A report to fail the launch with when Copilot would exit silently, else
+    /// nil; warnings stay with readiness.
+    static func launchBlocker(
+        home: String = CopilotCLIRuntime.defaultHome(),
+        resumeSessionID: String?,
+        environment: [String: String],
+        fileManager: FileManager = .default
+    ) -> RuntimeReadinessReport? {
+        let report = inspect(
+            home: home, resumeSessionID: resumeSessionID, environment: environment, fileManager: fileManager
+        )
+        guard report.blocksCopilot, let check = readinessCheck(for: report) else { return nil }
+        return RuntimeReadinessReport(checks: [check])
     }
 
     /// The readiness row for a report, or nil when nothing is wrong.

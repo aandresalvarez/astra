@@ -725,8 +725,9 @@ final class AgentRuntimeWorker {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
         )
         // OpenCode, Antigravity and Cursor keep their stores under HOME (OpenCode also XDG_DATA_HOME / OPENCODE_DB), which an attached skill may redirect for the launch.
+        // Copilot reads COPILOT_PROVIDERS_CONFIG, which a skill may set; its home check below needs it.
         let baseLaunchEnvironment = ProcessInfo.processInfo.environment.merging(["HOME": providerSessionStoreHome]) { _, home in home }
-        let providerLaunchEnvironment = [.openCodeCLI, .antigravityCLI, .cursorCLI].contains(selectedRuntime)
+        let providerLaunchEnvironment = [.openCodeCLI, .antigravityCLI, .cursorCLI, .copilotCLI].contains(selectedRuntime)
             ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: executionTask,
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch,
@@ -747,6 +748,15 @@ final class AgentRuntimeWorker {
             environment: providerLaunchEnvironment
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
+        if selectedRuntime == .copilotCLI,
+           let blocker = CopilotHomeAccessCheck.launchBlocker(
+               resumeSessionID: nativeContinuationSessionID, environment: providerLaunchEnvironment
+           ),
+           !AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunchResult(
+               task: task, run: run, modelContext: modelContext, phase: auditPhase, report: blocker
+           ).didPass {
+            return
+        }
         // What a launch without the resume sends, kept in case a resumed turn comes back empty.
         let historyGuidance = runtimeCapabilityProfile.canDeliverHostControlPlane
             && appliedRuntime.requirements.offeredHostControlTools.contains("history")
@@ -1091,18 +1101,10 @@ final class AgentRuntimeWorker {
             )
         }
         let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
-        // Only Copilot's silent exit 1 looks at its home; a skill can point
-        // COPILOT_PROVIDERS_CONFIG elsewhere, so that check needs the launch's
-        // scoped variables, resolved only once that failure has happened.
+        // Only Copilot's silent exit 1 looks at its home, with the launch's own
+        // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere).
         let copilotFailureEnvironment = selectedRuntime == .copilotCLI && result.exitCode == 1
-            ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
-                for: executionTask,
-                capabilityScope: capabilityResolutionSnapshot.providerLaunch,
-                contextText: providerLaunchContextText,
-                executionPolicy: executionPolicy,
-                runtimeRequirements: appliedRuntime.requirements
-            )) { _, scoped in scoped }
-            : nil
+            ? providerLaunchEnvironment : nil
         let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
