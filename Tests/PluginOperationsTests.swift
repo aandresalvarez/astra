@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+@testable import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -19,7 +20,7 @@ struct PluginOperationsTests {
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
         try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: workspace, modelContext: env.context)
         let account = try #require(workspace.connectors.first)
-        let oldSkillID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: "skill:report-agent")
+        let oldSkillID = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
         let schedule = TaskSchedule(name: "Weekly", goal: "Report", workspace: workspace)
         schedule.skillIDs = [oldSkillID.uuidString]
         env.context.insert(schedule)
@@ -37,7 +38,7 @@ struct PluginOperationsTests {
         #expect(activation.configuration(forComponent: newSkillComponent) == ["PROJECT": "alpha"])
         #expect(activation.configuration(forComponent: "skill:report-agent").isEmpty)
         #expect(activation.accounts(forComponent: "connector:tracker:tracker").map(\.id) == [account.id])
-        let newSkillID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: newSkillComponent)
+        let newSkillID = PluginRuntimeProjection.derivedID(of: activation, componentID: newSkillComponent)
         #expect(schedule.skillIDs == [newSkillID.uuidString])
         #expect(activation.recordedVersion == "2.0.0")
         #expect(activation.knownComponentIDs.contains(newSkillComponent))
@@ -165,7 +166,196 @@ struct PluginOperationsTests {
         #expect(journal.pending().isEmpty)
     }
 
+    @Test("The automatic pass moves renames but never releases; Update does")
+    func automaticPassWithholdsReleases() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+
+        var v2 = Self.package(version: "2.0.0")
+        v2.skills[0].id = "summary-agent"
+        v2.skills[0].replaces = ["report-agent"]
+        v2.connectors = []
+        try env.importUpdate(v2, mode: .automatic)
+
+        // The rename moved; the dropped connector's binding is still there.
+        #expect(activation.configuration(forComponent: "skill:summary-agent") == ["PROJECT": "alpha"])
+        #expect(!activation.bindings.isEmpty)
+        #expect(activation.recordedVersion == "1.0.0")
+        #expect(PluginUpdateService.needsReconcile(activation, to: v2))
+        #expect(activation.knownComponentIDs.contains("skill:summary-agent"))
+        #expect(!activation.knownComponentIDs.contains("skill:report-agent"))
+
+        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: [v2], mode: .release)
+        #expect(activation.bindings.isEmpty)
+        #expect(activation.recordedVersion == "2.0.0")
+        #expect(!PluginUpdateService.needsReconcile(activation, to: v2))
+    }
+
+    @Test("A setting a kept skill no longer declares is released by Update")
+    func removedKeyOfKeptComponentIsReleased() throws {
+        let env = try Environment()
+        var v1 = Self.package(version: "1.0.0")
+        v1.skills[0].environmentKeys = ["PROJECT", "REGION"]
+        v1.skills[0].environmentValues = ["default-project", ""]
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        try PluginOperations.setSetting("REGION", to: "us", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+
+        let v2 = Self.package(version: "2.0.0")
+        try env.importUpdate(v2, mode: .automatic)
+        #expect(activation.configuration(forComponent: "skill:report-agent") == ["REGION": "us"])
+        #expect(activation.recordedVersion == "1.0.0")
+
+        try env.importUpdate(v2)
+        #expect(activation.configuration(forComponent: "skill:report-agent").isEmpty)
+        #expect(activation.recordedVersion == "2.0.0")
+    }
+
+    @Test("Update brings the plugin's templates to the definition and keeps dropped ones as the person's")
+    func templatesFollowUpdate() throws {
+        let env = try Environment()
+        var v1 = Self.package(version: "1.0.0")
+        v1.templates = [Self.template("Weekly", goal: "Write it"), Self.template("Daily", goal: "Note it")]
+        try env.install(v1)
+        let weekly = try #require(env.workspace.templates.first { $0.name == "Weekly" })
+        let daily = try #require(env.workspace.templates.first { $0.name == "Daily" })
+
+        var v2 = Self.package(version: "2.0.0")
+        v2.templates = [Self.template("Weekly", goal: "Write it better"), Self.template("Monthly", goal: "Sum it")]
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        try env.importUpdate(v2, mode: .automatic)
+        #expect(weekly.mainGoal == "Write it")
+        #expect(activation.recordedVersion == "1.0.0")
+
+        try env.importUpdate(v2)
+        #expect(weekly.mainGoal == "Write it better")
+        #expect(env.workspace.templates.contains { $0.name == "Monthly" && $0.originPackageID == v2.id })
+        #expect(daily.originPackageID == nil)
+        #expect(env.workspace.templates.contains { $0 === daily })
+        #expect(PluginTemplateSync.isInSync(v2, in: env.workspace))
+    }
+
+    @Test("A rename into a component that has its own secret keeps that secret; a failed save puts copies back")
+    func renameKeepsDestinationSecret() throws {
+        guard AstraSecureKeychainTestSupport.isAvailable else { return }
+        let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
+        defer {
+            AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: [])
+        }
+        try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
+            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                let env = try Environment()
+                var v1 = Self.package(version: "1.0.0")
+                var second = v1.skills[0]
+                second.id = "summary-agent"
+                second.name = "Summary Agent"
+                v1.skills.append(second)
+                for index in v1.skills.indices {
+                    v1.skills[index].environmentKeys = ["API_TOKEN"]
+                    v1.skills[index].environmentValues = [""]
+                }
+                try env.install(v1)
+                let workspace = env.workspace
+                try PluginOperations.setSetting("API_TOKEN", to: "old", of: v1.skills[0], pluginID: v1.id, in: workspace, modelContext: env.context)
+                try PluginOperations.setSetting("API_TOKEN", to: "mine", of: v1.skills[1], pluginID: v1.id, in: workspace, modelContext: env.context)
+                let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
+
+                var v2 = v1
+                v2.version = "2.0.0"
+                v2.skills.removeFirst()
+                v2.skills[0].replaces = ["report-agent"]
+                try env.importUpdate(v2)
+                #expect(PluginOperations.setting("API_TOKEN", of: v2.skills[0], in: activation) == "mine")
+
+                // `undo` restores what a copy overwrote, or clears what it added.
+                let persistence = SkillSecretSeam.required
+                let target = UUID()
+                #expect(persistence.saveSecretValue("new", key: "API_TOKEN", skillID: target, skillName: "", allowUserInteraction: false))
+                PluginUpdateService.undo([.init(key: "API_TOKEN", skillID: target, previousValue: nil)])
+                #expect(!persistence.secretExists(key: "API_TOKEN", skillID: target))
+            }
+        }
+    }
+
+    @Test("A component may take over one predecessor only")
+    func onePredecessorPerComponent() {
+        var package = Self.package(version: "2.0.0")
+        package.skills[0].replaces = ["old-a", "old-b"]
+        #expect(PluginUpdateService.replacesProblems(in: package).contains { $0.contains("more than one component") })
+    }
+
+    @Test("An MCP server ID another installed plugin declares is refused")
+    func mcpServerIDsAreUniqueAcrossPlugins() {
+        var installed = Self.package(version: "1.0.0")
+        installed.mcpServers = [PluginMCPServer(id: "tracker", displayName: "Tracker", transport: .stdio, command: "tracker-mcp")]
+        var incoming = Self.package(version: "1.0.0")
+        incoming.id = "ops.other"
+        incoming.mcpServers = installed.mcpServers
+        let report = CapabilityPackageValidator.validate(package: incoming, installedPackages: [installed], checkPrerequisites: false)
+        #expect(report.issues.contains { $0.code == .duplicateMCPServerID })
+        #expect(!report.canInstall)
+    }
+
+    @Test("A Remove of a plugin no workspace added is finished; one the library refuses stays pending")
+    func removeJournalEdgeCases() throws {
+        let env = try Environment()
+        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
+        let package = Self.package(version: "1.0.0")
+        try env.library.install(package, sourceMetadata: .localLibrary())
+        try journal.begin(package.id)
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        #expect(env.library.installedPackage(id: package.id) == nil)
+        #expect(journal.pending().isEmpty)
+
+        // The library refuses to delete a built-in: the intent is kept.
+        let builtIn = try #require(PluginCatalog.builtInPackages.first)
+        try env.library.install(builtIn, sourceMetadata: .builtIn())
+        try journal.begin(builtIn.id)
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        #expect(journal.pending() == [builtIn.id])
+    }
+
+    @Test("Deleting an account refreshes the mirror of every workspace that used it")
+    func deleteAccountExportsAffectedWorkspaces() async throws {
+        let env = try Environment()
+        let folder = env.root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        env.workspace.primaryPath = folder.path
+        let package = Self.package(version: "1.0.0")
+        try env.install(package)
+        let account = try #require(env.workspace.connectors.first)
+        let accountID = account.id.uuidString
+        let mirror = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        func mirrorNamesAccount() -> Bool? {
+            guard let config = try? WorkspaceConfigManager.loadConfig(from: mirror) else { return nil }
+            let connectors: [String] = (config.connectors ?? []).compactMap(\.id)
+            let bound: [String] = (config.installedPlugins ?? []).flatMap { $0.accounts ?? [] }.map(\.connectorID)
+            return connectors.contains(accountID) || bound.contains(accountID)
+        }
+        // The mirror is written off the main actor: wait for Add's.
+        for _ in 0..<500 where mirrorNamesAccount() != true { try await Task.sleep(nanoseconds: 10_000_000) }
+        #expect(mirrorNamesAccount() == true)
+
+        try PluginOperations.deleteAccount(account, modelContext: env.context)
+        for _ in 0..<500 where mirrorNamesAccount() != false { try await Task.sleep(nanoseconds: 10_000_000) }
+        #expect(mirrorNamesAccount() == false)
+    }
+
     // MARK: - Fixtures
+
+    static func template(_ name: String, goal: String) -> PluginTemplate {
+        PluginTemplate(
+            name: name, icon: "doc", description: name, mainGoal: goal,
+            beforeGoal: "", afterGoal: "", mainBudget: 1000, beforeBudget: 0,
+            afterBudget: 0, variablesJSON: "[]", passContextToMain: true,
+            passContextToAfter: true
+        )
+    }
 
     static func package(version: String) -> PluginPackage {
         PluginPackage(
@@ -231,12 +421,12 @@ struct PluginOperationsTests {
 
         /// What an import of a newer version does: refuse it if a workspace
         /// would, replace the library entry, reconcile every activation.
-        func importUpdate(_ package: PluginPackage) throws {
+        func importUpdate(_ package: PluginPackage, mode: PluginUpdateService.Mode = .release) throws {
             if let refusal = PluginUpdateService.refusals(for: package, modelContext: context, approvalRecords: []).first {
                 throw refusal
             }
             try library.install(package, sourceMetadata: .builtIn())
-            try PluginUpdateService.reconcileAll(modelContext: context, packages: library.installedPackages())
+            try PluginUpdateService.reconcileAll(modelContext: context, packages: library.installedPackages(), mode: mode)
         }
     }
 }

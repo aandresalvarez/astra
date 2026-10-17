@@ -131,15 +131,11 @@ struct CapabilityUninstaller {
                 workspace.enabledGlobalToolIDs.contains { removableGlobalToolIDs.contains($0) }
 
             // The activation's secret settings live under its projected
-            // skills' IDs, which nothing can derive once the activation is
-            // gone: they are recorded before the save and cleaned after it.
+            // skills' IDs, which nothing names once the activation is gone:
+            // they are recorded before the save and cleaned after it, every
+            // component it ever knew included.
             if let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
-                activationSecretSkillIDs += package.skills.map {
-                    PluginRuntimeProjection.derivedID(
-                        activationID: activation.id,
-                        componentID: CapabilityResourceOrigin.componentID(for: $0)
-                    )
-                }
+                activationSecretSkillIDs += PluginRuntimeProjection.secretNamespaces(of: activation, package: package)
             }
             WorkspaceCapabilityActivation.mutate(workspace) {
                 $0.capabilityIDs.removeAll { $0 == package.id }

@@ -24,9 +24,14 @@ enum CLISessionExpiryClassifier {
         let checkBinary: String
         let checkArguments: [String]
         let patterns: [String]
+        /// Signing in again fixes it. Not so for a token the environment
+        /// supplies (`GH_TOKEN`), which overrides the stored sign-in.
+        var offersSignIn = true
+        var customStopMessage: String? = nil
 
         var stopMessage: String {
-            "The \(displayName) sign-in expired while the agent was using it. Run `\(signInCommand)`, then resume."
+            customStopMessage
+                ?? "The \(displayName) sign-in expired while the agent was using it. Run `\(signInCommand)`, then resume."
         }
 
         var repair: RepairAction {
@@ -71,14 +76,28 @@ enum CLISessionExpiryClassifier {
             "you are not logged into any github hosts",
             "http 401: bad credentials",
             "the token in default is invalid",
-            "the token in gh_token is invalid",
-            "the token in github_token is invalid",
             "run gh auth login",
             "to get started with github cli, please run:  gh auth login"
         ]
     )
 
-    static let families = [googleCloud, gitHub]
+    /// `gh` reports a bad token from `GH_TOKEN` or `GITHUB_TOKEN`. Those
+    /// variables take precedence over the stored sign-in (`gh help
+    /// environment`), so `gh auth login` cannot fix it: the person has to
+    /// update or remove the variable. Checked before `gitHub`, whose
+    /// "run gh auth login" hint `gh` prints here too.
+    static let gitHubEnvironmentToken = Family(
+        commands: ["gh"],
+        displayName: "GitHub",
+        signInCommand: "gh auth login",
+        checkBinary: "gh",
+        checkArguments: ["auth", "status", "--hostname", "github.com"],
+        patterns: ["the token in gh_token is invalid", "the token in github_token is invalid"],
+        offersSignIn: false,
+        customStopMessage: "GitHub rejected the token in GH_TOKEN or GITHUB_TOKEN. That variable overrides any sign-in, so signing in again won't help: update or remove it where ASTRA's environment gets it, then resume."
+    )
+
+    static let families = [googleCloud, gitHubEnvironmentToken, gitHub]
 
     struct Stop: Equatable {
         let reason: String
@@ -107,10 +126,23 @@ enum CLISessionExpiryClassifier {
         return families.first { $0.stopMessage == message }
     }
 
-    /// True when `command` invokes `cli`, at the start or after a separator
-    /// (`cd x && gcloud …`, `env A=b gcloud …`).
+    /// True when `command` executes `cli`: the command word of one of its
+    /// simple commands (split at `;`, `&`, `|`, newlines and subshells), after
+    /// any `VAR=value` assignments and wrappers like `env`, `command`, `exec`,
+    /// `time`, `sudo`, compared by basename so `/opt/homebrew/bin/gcloud`
+    /// counts. An argument that merely names the CLI does not.
     static func runs(_ cli: String, in command: String) -> Bool {
-        let escaped = NSRegularExpression.escapedPattern(for: cli)
-        return command.range(of: #"(^|[\s;&|(`$])"# + escaped + #"(\s|$)"#, options: .regularExpression) != nil
+        let separators = CharacterSet(charactersIn: ";&|\n()`")
+        let wrappers: Set<String> = ["env", "command", "exec", "time", "sudo", "nohup", "xargs"]
+        for segment in command.components(separatedBy: separators) {
+            var words = segment.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            while let first = words.first,
+                  first.contains("=") && !first.hasPrefix("=") || wrappers.contains(first) || first.hasPrefix("$(") {
+                words.removeFirst()
+            }
+            guard let executable = words.first?.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) else { continue }
+            if (executable as NSString).lastPathComponent == cli { return true }
+        }
+        return false
     }
 }

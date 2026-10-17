@@ -192,10 +192,15 @@ struct CapabilityCatalogActionService {
         return result
     }
 
-    /// Brings every workspace's activations up to the definitions in the
-    /// library (the Update verb, after a reconcile that failed earlier).
-    func update(modelContext: ModelContext) throws {
-        try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: library.installedPackages())
+    /// The row's Update: brings every workspace's activations of `package`
+    /// to its definition in the library, releasing what it dropped.
+    func update(_ package: PluginPackage, modelContext: ModelContext) throws {
+        let definition = library.installedPackages().filter { $0.id == package.id }
+        try PluginUpdateService.reconcileAll(
+            modelContext: modelContext,
+            packages: definition.isEmpty ? [package] : definition,
+            mode: .release
+        )
         CapabilityCatalogPersistenceEvents.post(.global)
     }
 

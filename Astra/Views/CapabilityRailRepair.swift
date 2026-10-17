@@ -29,6 +29,9 @@ enum CapabilityRailRepair {
         let components = PluginManifestConverter.manifest(from: package).components
         for prerequisite in package.prerequisites {
             guard let status = statuses[prerequisite.id], !status.isUsable else { continue }
+            // Repository access (SSO, an org grant) is repaired by the
+            // contextual GitHub flow, not by signing in again.
+            if GitHubRepositoryAccessRepairButton.supports(prerequisite, status: status) { continue }
             guard let component = components.first(where: { $0.kind == .setup && $0.name == prerequisite.displayName })
             else { continue }
             if case .missingBinary = status {
@@ -38,5 +41,12 @@ enum CapabilityRailRepair {
             if let repair = RepairAction.from(component) { return repair }
         }
         return nil
+    }
+
+    /// True when a package's GitHub prerequisite fails its repository-access
+    /// probe, which only the contextual repair (device sign-in for the
+    /// repository, then its own probe) can fix.
+    static func needsRepositoryAccessRepair(for package: PluginPackage, statuses: [String: HealthStatus]) -> Bool {
+        package.prerequisites.contains { GitHubRepositoryAccessRepairButton.supports($0, status: statuses[$0.id]) }
     }
 }

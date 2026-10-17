@@ -41,6 +41,16 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             footer
         }
         .onAppear(perform: loadDrafts)
+        // An Update while the row stays open renames or adds settings: the
+        // drafts follow the activation and the definition.
+        .onChange(of: draftSource) { _, _ in loadDrafts() }
+    }
+
+    private var draftSource: String {
+        let keys = row.package.skills.map { skill in
+            CapabilityResourceOrigin.componentID(for: skill) + ":" + skill.environmentKeys.joined(separator: ",")
+        }
+        return "\(row.activation?.revision ?? -1)|\(row.package.version)|" + keys.joined(separator: ";")
     }
 
     private var otherComponents: [PluginComponent] {
@@ -63,7 +73,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     }
 
     private func settingField(_ key: String, of skill: PluginSkill) -> some View {
-        let draftKey = "\(CapabilityResourceOrigin.componentID(for: skill)).\(key)"
+        let draftKey = PluginActivation.settingKey(componentID: CapabilityResourceOrigin.componentID(for: skill), key: key)
         let binding = Binding(get: { drafts[draftKey] ?? "" }, set: { drafts[draftKey] = $0 })
         return HStack(spacing: 8) {
             Text(key)
@@ -145,7 +155,9 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                     .tint(Stanford.lagunita)
             }
             Spacer()
-            if row.display.isRemovable {
+            // Remove reaches every workspace, so it is offered once the plugin
+            // is off here.
+            if row.display.isRemovable, row.activation?.isEnabled != true {
                 Button("Remove", role: .destructive) { onConfirm(.remove(packageID: row.package.id)) }
                     .controlSize(.small)
             }
@@ -168,7 +180,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
         for skill in row.package.skills {
             let componentID = CapabilityResourceOrigin.componentID(for: skill)
             for key in skill.environmentKeys {
-                next["\(componentID).\(key)"] = PluginOperations.setting(key, of: skill, in: activation)
+                next[PluginActivation.settingKey(componentID: componentID, key: key)] = PluginOperations.setting(key, of: skill, in: activation)
             }
         }
         drafts = next

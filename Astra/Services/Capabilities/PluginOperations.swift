@@ -17,12 +17,16 @@ enum PluginOperations {
     enum OperationError: Error, Equatable, LocalizedError {
         case notAdded(pluginID: String)
         case secretSaveFailed(key: String)
+        case secretDeleteFailed(key: String)
+        case storeUnreadable
         case saveFailed
 
         var errorDescription: String? {
             switch self {
             case .notAdded: "Add the plugin to this workspace first."
             case .secretSaveFailed(let key): "Couldn't save \(key) to the Keychain."
+            case .secretDeleteFailed(let key): "Couldn't clear \(key) from the Keychain; the old value is still in use."
+            case .storeUnreadable: "Couldn't read the workspaces that use this account."
             case .saveFailed: "Couldn't save the change."
             }
         }
@@ -39,7 +43,7 @@ enum PluginOperations {
     ) -> String {
         let componentID = CapabilityResourceOrigin.componentID(for: skill)
         if Skill.isSecretEnvironmentKey(key) {
-            let skillID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: componentID)
+            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
             return SkillSecretSeam.required.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore()) ?? ""
         }
         if let value = activation.configuration(forComponent: componentID)[key] { return value }
@@ -48,7 +52,9 @@ enum PluginOperations {
     }
 
     /// Sets a plugin skill's setting for this workspace. An empty secret
-    /// clears it from the Keychain.
+    /// clears it from the Keychain; a clear the Keychain refuses throws, so
+    /// the old credential is never reported gone while still in use. An
+    /// emptied non-secret setting is kept as empty.
     static func setSetting(
         _ key: String,
         to value: String,
@@ -61,18 +67,24 @@ enum PluginOperations {
             throw OperationError.notAdded(pluginID: pluginID)
         }
         let componentID = CapabilityResourceOrigin.componentID(for: skill)
+        let settingKey = PluginActivation.settingKey(componentID: componentID, key: key)
+        let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         if Skill.isSecretEnvironmentKey(key) {
-            let skillID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: componentID)
+            let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
             let persistence = SkillSecretSeam.required
             if value.isEmpty {
-                persistence.deleteSecret(key: key, skillID: skillID)
+                guard persistence.deleteSecret(key: key, skillID: skillID) else {
+                    throw OperationError.secretDeleteFailed(key: key)
+                }
             } else if !persistence.saveSecretValue(value, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: true) {
                 throw OperationError.secretSaveFailed(key: key)
             }
+            // Which secrets exist is recorded, so cleanup and Update find them.
+            WorkspaceCapabilityActivation.setSecretRecorded(!value.isEmpty, forKey: settingKey, on: activation)
+            try save(workspace, modelContext: modelContext, restoring: snapshot)
             return
         }
-        let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
-        WorkspaceCapabilityActivation.setConfigValue(value, forKey: "\(componentID).\(key)", on: activation)
+        WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
         workspace.updatedAt = Date()
         try save(workspace, modelContext: modelContext, restoring: snapshot)
     }
@@ -94,9 +106,8 @@ enum PluginOperations {
         }
         let componentID = CapabilityResourceOrigin.componentID(for: connector)
         let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
-        let existing = activation.accounts(forComponent: componentID)
         let account = Connector(
-            name: uniqueAlias(connector.name, among: existing.map(\.name)),
+            name: WorkspaceCapabilityActivation.uniqueAlias(connector.name, serviceType: connector.serviceType, in: workspace),
             serviceType: connector.serviceType,
             icon: connector.icon,
             connectorDescription: connector.description,
@@ -117,7 +128,7 @@ enum PluginOperations {
         return account
     }
 
-    /// Makes `account` the default for its component in this workspace.
+    /// Makes `account` the workspace's default for its service.
     static func makeDefault(
         _ account: Connector,
         componentID: String,
@@ -150,9 +161,17 @@ enum PluginOperations {
     /// cleanup outbox once the deletion is saved. The only operation that
     /// clears an account's credentials.
     static func deleteAccount(_ account: Connector, modelContext: ModelContext) throws {
-        let workspaces = (try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []
+        // Who lists the account must be known before anything is deleted: a
+        // workspace missed here would keep a dangling ID.
+        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()) else {
+            throw OperationError.storeUnreadable
+        }
         let id = account.id.uuidString
         let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
+        // Every workspace whose mirror names the account is exported after
+        // the deletion, so recovery can't bring it back.
+        var affected = listing + workspacesUsing(account)
+        if let owner = account.workspace { affected.append(owner) }
         let snapshots = listing.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         for workspace in listing {
             WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { $0 == id } }
@@ -165,7 +184,7 @@ enum PluginOperations {
         }
         modelContext.delete(account)
         let saved = ConnectorCredentialCleanup.deleteThenClean([cleanup], modelContext: modelContext) {
-            (try? WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: nil, modelContext: modelContext)) != nil
+            (try? WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspaces: affected, modelContext: modelContext)) != nil
         }
         guard saved else {
             modelContext.rollback()
@@ -175,16 +194,6 @@ enum PluginOperations {
     }
 
     // MARK: - Private
-
-    /// "Jira", then "Jira 2", "Jira 3": an account's name is its alias, and
-    /// aliases of one component must tell its accounts apart.
-    static func uniqueAlias(_ base: String, among names: [String]) -> String {
-        let taken = Set(names.map { $0.lowercased() })
-        guard taken.contains(base.lowercased()) else { return base }
-        var index = 2
-        while taken.contains("\(base) \(index)".lowercased()) { index += 1 }
-        return "\(base) \(index)"
-    }
 
     private static func save(
         _ workspace: Workspace,

@@ -88,7 +88,12 @@ struct CapabilityPackageImporter {
         }
         if let modelContext {
             do {
-                try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: library.installedPackages())
+                // The person chose this version: what it dropped is released.
+                try PluginUpdateService.reconcileAll(
+                    modelContext: modelContext,
+                    packages: library.installedPackages().filter { $0.id == package.id },
+                    mode: .release
+                )
             } catch {
                 library.restorePackageStorage(previousStorage)
                 throw error
