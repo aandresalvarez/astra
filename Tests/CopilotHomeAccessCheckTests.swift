@@ -1453,6 +1453,32 @@ struct CopilotHomeAccessCheckTests {
         #expect(AgentRuntimeWorker.isTerminalRuntimeStop(CopilotHomeAccessCheck.launchStopReason))
     }
 
+    @Test("Explicit denials only count for the startup files Copilot will actually open")
+    func explicitDenialsFollowEffectiveStartupSet() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+        try home.write("permissions-config.json", mode: 0o600)
+        let legacy = try home.write("permissions-config", mode: 0o600)
+        let defaultProviders = try home.write("providers.json", mode: 0o600)
+        let override = try home.write("my-providers.json", mode: 0o600)
+        func report(readDenied: [String], environment: [String: String]) -> CopilotHomeAccessReport {
+            CopilotHomeAccessCheck.inspect(
+                home: home.path, environment: environment,
+                sandboxReceipt: ExecutionSandboxBoundaryReceipt(
+                    writableRoots: [home.path], writeDeniedRoots: [], readScope: .enforce,
+                    readableRoots: [home.path], readDeniedRoots: readDenied
+                )
+            )
+        }
+        let overridden = [CopilotHomeAccessCheck.providersOverrideVariable: override]
+
+        #expect(!report(readDenied: [legacy], environment: [:]).blocksCopilot)
+        #expect(!report(readDenied: [defaultProviders], environment: overridden).blocksCopilot)
+        #expect(report(readDenied: [defaultProviders], environment: [:]).blocksCopilot)
+        #expect(report(readDenied: [override], environment: overridden).blocksCopilot)
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()

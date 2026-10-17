@@ -498,7 +498,7 @@ enum CopilotHomeAccessCheck {
         if let sandboxReceipt {
             problems += explicitDenials(
                 home: trimmedHome, resolvedHome: resolvedHome, resumeSessionID: resumeSessionID,
-                receipt: sandboxReceipt, fileManager: fileManager
+                providersOverride: providersOverride, receipt: sandboxReceipt, fileManager: fileManager
             )
         }
         if let sandboxReceipt, (reachedIndirectly && (
@@ -568,14 +568,20 @@ enum CopilotHomeAccessCheck {
         home: String,
         resolvedHome: String,
         resumeSessionID: String?,
+        providersOverride: String?,
         receipt: ExecutionSandboxBoundaryReceipt,
         fileManager: FileManager
     ) -> [CopilotHomeAccessProblem] {
         var entries: [(path: String, requiresWrite: Bool)] = [(home, true)]
-        for (name, _) in startupEntries.sorted(by: { $0.key < $1.key }) {
-            let path = (resolvedHome as NSString).appendingPathComponent(name)
-            guard (try? fileManager.attributesOfItem(atPath: path)) != nil else { continue }
-            entries.append((path, !readOnlyConfigFileNames.contains(name)))
+        // Only what Copilot will actually open: the legacy permissions file
+        // when the current one is absent, providers.json unless overridden.
+        let children = Set((try? fileManager.contentsOfDirectory(atPath: resolvedHome)) ?? [])
+        let startup = effectiveStartupEntries(present: children, providersOverride: providersOverride)
+        for name in startup.keys.sorted() where children.contains(name) {
+            entries.append(((resolvedHome as NSString).appendingPathComponent(name), !readOnlyConfigFileNames.contains(name)))
+        }
+        if let providersOverride {
+            entries.append((providersOverride, false))
         }
         if let sessionID = resumeSessionID, !sessionID.isEmpty, !sessionID.contains("/") {
             entries.append(((resolvedHome as NSString).appendingPathComponent("session-state/\(sessionID)"), true))
