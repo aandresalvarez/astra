@@ -1248,6 +1248,63 @@ struct CopilotHomeAccessCheckTests {
         #expect(!FileManager.default.fileExists(atPath: notAFolder))
     }
 
+    @Test("A malformed home under an untrusted linked ancestor is never moved")
+    func malformedHomeUnderUntrustedAncestorIsNotMoved() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let realUser = try root.makeDirectory("someone-elses", mode: 0o755)
+        try Data("x".utf8).write(to: URL(fileURLWithPath: (realUser as NSString).appendingPathComponent(".copilot")))
+        let userLink = (root.path as NSString).appendingPathComponent("alice")
+        try FileManager.default.createSymbolicLink(atPath: userLink, withDestinationPath: realUser)
+        let home = (userLink as NSString).appendingPathComponent(".copilot")
+
+        let foreign = CopilotHomeAccessCheck.inspect(home: home, currentUserID: getuid() + 1)
+        #expect(foreign.blocksCopilot)
+        #expect(!foreign.fixCommand.contains("mv"))
+        #expect(CopilotHomeAccessCheck.inspect(home: home).fixCommand.contains("mv -n"))
+    }
+
+    @Test("A linked home the boundary lets Copilot read but not write blocks")
+    func linkedHomeWithoutWriteBlocks() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let target = try root.makeDirectory("read-only-input", mode: 0o755)
+        let link = (root.path as NSString).appendingPathComponent("home-link")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+
+        let blocker = CopilotHomeAccessCheck.launchBlocker(
+            home: link, resumeSessionID: nil, environment: [:], workingDirectory: nil,
+            sandboxReceipt: ExecutionSandboxBoundaryReceipt(
+                writableRoots: [], writeDeniedRoots: [target], readScope: .enforce, readableRoots: [target]
+            )
+        )
+
+        #expect(blocker != nil)
+    }
+
+    @Test("A deny-delete ACL on a misplaced home is removed before the move; one on its folder is advised")
+    func deleteACLsAroundAMove() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let parent = try root.makeDirectory("parent", mode: 0o755)
+        let notAFolder = (parent as NSString).appendingPathComponent(".copilot")
+        try Data("x".utf8).write(to: URL(fileURLWithPath: notAFolder))
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny delete", notAFolder])
+
+        let own = CopilotHomeAccessCheck.inspect(home: notAFolder)
+        #expect(own.problems.first?.moveDeniedByOwnACL == true)
+        #expect(own.fixCommand == "chmod -h -N '\(notAFolder)' && mv -n '\(notAFolder)' '\(notAFolder).bak'")
+        try Self.shell("/bin/sh", ["-c", own.fixCommand])
+        #expect(!FileManager.default.fileExists(atPath: notAFolder))
+
+        try Data("x".utf8).write(to: URL(fileURLWithPath: notAFolder))
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny delete_child", parent])
+        defer { _ = try? Self.shell("/bin/chmod", ["-N", parent]) }
+        let folder = CopilotHomeAccessCheck.inspect(home: notAFolder)
+        #expect(folder.problems.first?.moveDeniedByParentACL == true)
+        #expect(folder.remediation.contains("forbids removing entries from it"))
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()
@@ -1360,27 +1417,6 @@ struct CopilotHomeAccessCheckTests {
         try home.setMode(0o600, of: config)
         #expect(await service.states(configuration: configuration, cache: cache)[.copilotCLI] == .ready)
         #expect(await cache.states(for: configuration, maxAge: 300)?[.copilotCLI] == .ready)
-    }
-
-    @Test("A cached launch verdict re-checks the Copilot home before it is trusted")
-    func launchCacheRechecksHome() async throws {
-        let home = try FakeCopilotHome()
-        defer { home.remove() }
-        let config = try home.write("config.json", mode: 0o600)
-        let service = await Self.readyCopilotService(home: home.path)
-        let cache = RuntimeLaunchReadinessCache()
-
-        let probed = await service.check(configuration: Self.copilotConfiguration)
-        #expect(probed.state == .ready)
-        await cache.record(probed.cacheable, for: Self.copilotConfiguration)
-
-        try home.setMode(0o000, of: config)
-        let hit = try #require(await cache.hit(for: Self.copilotConfiguration))
-        let refreshed = service.refreshingUncachedChecks(hit.report, runtime: .copilotCLI)
-        #expect(refreshed.state == .blocked)
-        #expect(refreshed.checks.contains { $0.id == CopilotHomeAccessCheck.readinessCheckID })
-        // A blocked report must never be what the cache keeps.
-        #expect(!probed.cacheable.checks.contains { $0.id == CopilotHomeAccessCheck.readinessCheckID })
     }
 
     @Test("Once ownership is back, the rest of the fix command restores access")

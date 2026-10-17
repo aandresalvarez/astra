@@ -194,10 +194,11 @@ struct RuntimeReadinessService {
     }
 
     /// Checks of local state the user can break at any moment, and cheap
-    /// enough to re-run every time. Both readiness caches store reports
-    /// without them (`cacheable`) and re-run them on every hit, so a
-    /// `~/.copilot/config.json` that turns root-owned after a ready probe is
-    /// caught on the next launch instead of five minutes later.
+    /// enough to re-run every time. Readiness caches store reports without
+    /// them (`cacheable`): the composer's cache re-runs them on every answer,
+    /// and the launch preflight leaves them to the final-plan guard
+    /// (`guardedSandboxedPlan`), which checks every launch. A config that
+    /// turns root-owned after a ready probe is caught on the next launch.
     static let uncachedCheckIDs: Set<String> = [CopilotHomeAccessCheck.readinessCheckID]
 
     func uncachedChecks(for runtime: AgentRuntimeID) -> [RuntimeReadinessCheck] {
@@ -208,14 +209,6 @@ struct RuntimeReadinessService {
         let report = CopilotHomeAccessCheck.inspect(home: copilotStateHome)
         // No task environment exists yet; the launch gate rules on providers.
         return CopilotHomeAccessCheck.readinessCheck(for: report, providersFileBlocks: false).map { [$0] } ?? []
-    }
-
-    /// A cached report with its uncached checks re-run now.
-    func refreshingUncachedChecks(
-        _ report: RuntimeReadinessReport,
-        runtime: AgentRuntimeID
-    ) -> RuntimeReadinessReport {
-        RuntimeReadinessReport(checks: report.cacheable.checks + uncachedChecks(for: runtime))
     }
 
     /// A cached readiness state with the uncached checks re-run now.

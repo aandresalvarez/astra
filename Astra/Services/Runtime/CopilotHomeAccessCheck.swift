@@ -43,6 +43,12 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// For `.notADirectory` and `.wrongType`: an unused name to move the
     /// entry aside to.
     var backupPath: String?
+    /// A deny-delete ACL on this misplaced entry would refuse the move; the
+    /// fix removes it (the entry is being set aside anyway).
+    var moveDeniedByOwnACL = false
+    /// A deny-delete_child ACL on the folder holding this misplaced entry.
+    /// That folder's ACLs may be deliberate, so this is advice only.
+    var moveDeniedByParentACL = false
     /// For `.danglingLink`: the link ends in a loop rather than a missing path.
     var isLinkLoop = false
     /// An unreadable folder whose children could not be listed. The fix
@@ -243,6 +249,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !readOnlyFiles.isEmpty {
             commands.append("chmod u+r \(Self.quotedPaths(readOnlyFiles))")
         }
+        let unlockedForMove = problems.filter { $0.isMisplaced && $0.isRepairable && $0.moveDeniedByOwnACL }
+        if !unlockedForMove.isEmpty {
+            commands.append("chmod -h -N \(Self.quotedPaths(unlockedForMove))")
+        }
         // Moves last: renaming an entry needs its parent repaired first.
         for misplaced in problems where misplaced.isMisplaced && misplaced.isRepairable {
             let backup = misplaced.backupPath ?? misplaced.path + ".bak"
@@ -280,6 +290,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// Advice for problems no command is suggested for.
     private var manualRemediation: [String] {
         var sentences: [String] = []
+        if let blocked = problems.first(where: { $0.isMisplaced && $0.moveDeniedByParentACL }) {
+            let folder = ((blocked.path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
+            sentences.append("An ACL on \(folder) forbids removing entries from it, so moving \(blocked.displayPath) aside will fail until you change that ACL.")
+        }
         let hardLinked = problems.filter(\.hasOtherHardLinks)
         if !hardLinked.isEmpty {
             sentences.append("\(Self.listed(hardLinked)) also exist under another name (hard links), so changing them would change those too; ASTRA suggests no command for them.")
@@ -446,6 +460,9 @@ enum CopilotHomeAccessCheck {
         if let sandboxReceipt, reachedIndirectly,
            sandboxReceipt.explains(RuntimeSandboxFileDenial(
                operation: .read, path: canonicalPath(resolvedHome), detail: ""
+           )) || sandboxReceipt.explains(RuntimeSandboxFileDenial(
+               // Copilot writes its session state there too.
+               operation: .write, path: canonicalPath(resolvedHome), detail: ""
            )) {
             var unreachable = CopilotHomeAccessProblem(
                 path: trimmedHome, isDirectory: true, owner: nil, ownedByCurrentUser: true,
@@ -468,6 +485,10 @@ enum CopilotHomeAccessCheck {
         // A link anywhere on the way counts, not only the final `.copilot`
         // (a `/Users/alice` that links to someone else's folder, say).
         let homeTrusted = !reachedIndirectly || targetOwner.map { uid_t($0.uint32Value) == currentUserID } ?? false
+        let homeParentPath = canonicalPath((trimmedHome as NSString).deletingLastPathComponent)
+        let parentOwner = (try? fileManager.attributesOfItem(atPath: homeParentPath))?[.ownerAccountID] as? NSNumber
+        let parentTrusted = !hasAncestorLink(trimmedHome, fileManager: fileManager)
+            || parentOwner.map { uid_t($0.uint32Value) == currentUserID } ?? false
         let trustedRoot = canonicalPath(resolvedHome)
         // The providers override never gets a command: it can name any path,
         // the home itself included, and the fix there is the variable.
@@ -476,7 +497,10 @@ enum CopilotHomeAccessCheck {
             let problem = problems[index]
             let entry = canonicalEntryPath(problem.path)
             let inside = homeTrusted && (entry == trustedRoot || entry.hasPrefix(trustedRoot + "/"))
-            let isHomeEntry = problem.path == trimmedHome && problem.access != .cannotCreateHome
+            // The home entry itself (moved aside when malformed) only when the
+            // folder it sits in is trusted: through a linked ancestor it may
+            // sit in someone else's tree.
+            let isHomeEntry = problem.path == trimmedHome && problem.access != .cannotCreateHome && parentTrusted
             // Only the direct, user-owned parent: never a shared ancestor such
             // as /Users when the user's own home is missing.
             let isOwnedHomeParent = problem.access == .cannotCreateHome
@@ -732,6 +756,24 @@ enum CopilotHomeAccessCheck {
         return "\(base)-\(index)"
     }
 
+    /// Whether the entry's own ACL (links not followed) has a deny entry for
+    /// `permission`, for any principal.
+    private static func aclDenies(_ path: String, _ permission: acl_perm_t) -> Bool {
+        guard let acl = acl_get_link_np(path, ACL_TYPE_EXTENDED) else { return false }
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        var entry: acl_entry_t?
+        var entryID = ACL_FIRST_ENTRY.rawValue
+        while acl_get_entry(acl, entryID, &entry) == 0, let current = entry {
+            entryID = ACL_NEXT_ENTRY.rawValue
+            var tag = ACL_UNDEFINED_TAG
+            var permissions: acl_permset_t?
+            guard acl_get_tag_type(current, &tag) == 0, tag == ACL_EXTENDED_DENY,
+                  acl_get_permset(current, &permissions) == 0, let permissions else { continue }
+            if acl_get_perm_np(permissions, permission) == 1 { return true }
+        }
+        return false
+    }
+
     /// Whether the entry itself (not a link target) carries an extended ACL.
     private static func hasExtendedACL(_ path: String) -> Bool {
         guard let acl = acl_get_link_np(path, ACL_TYPE_EXTENDED) else { return false }
@@ -815,6 +857,8 @@ enum CopilotHomeAccessCheck {
         problem.hidesChildren = isDirectory && access == .unreadable
         if problem.isMisplaced {
             problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
+            problem.moveDeniedByOwnACL = aclDenies(path, ACL_DELETE)
+            problem.moveDeniedByParentACL = aclDenies((path as NSString).deletingLastPathComponent, ACL_DELETE_CHILD)
         }
         return problem
     }

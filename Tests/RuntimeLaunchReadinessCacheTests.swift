@@ -266,14 +266,15 @@ struct LaunchReadinessPreflightCacheTests {
         #expect(await cache.hit(for: readinessConfiguration()) == nil)
     }
 
-    /// A ready verdict cached for Copilot must not hide a config that went
-    /// root-owned since: the home is re-checked on every cache hit.
-    @Test("A cached Copilot verdict still blocks when its config became unreadable", .enabled(if: getuid() != 0))
-    func cachedCopilotVerdictRechecksHome() async throws {
+    /// Copilot's home is not this preflight's to judge: it runs before the
+    /// task's environment, sandbox boundary and container placement exist,
+    /// so the final-plan guard (`guardedSandboxedPlan`) decides instead.
+    @Test("The worker preflight leaves Copilot's home to the final-plan guard", .enabled(if: getuid() != 0))
+    func preflightLeavesCopilotHomeToFinalPlanGuard() async throws {
         let fixture = try fixture()
         let home = try FakeCopilotHome()
         defer { home.remove() }
-        let config = try home.write("config.json", mode: 0o600)
+        try home.write("config.json", mode: 0o000)
         let runner = StubBinaryRunner()
         await runner.setResponse(
             forKey: "/opt/copilot --version",
@@ -285,21 +286,17 @@ struct LaunchReadinessPreflightCacheTests {
             isExecutable: { _ in true },
             copilotStateHome: home.path
         )
-        let cache = RuntimeLaunchReadinessCache()
         let configuration = readinessConfiguration(.copilotCLI, executablePath: "/opt/copilot")
-        func launch() async -> Bool {
-            await AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunch(
-                task: fixture.task, run: fixture.run, modelContext: fixture.container.mainContext,
-                phase: "resume", configuration: configuration,
-                readinessService: service, verdictCache: cache
-            )
-        }
 
-        #expect(await launch())
-        let probes = await runner.recordedCalls().count
-        try home.setMode(0o000, of: config)
+        let passed = await AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunch(
+            task: fixture.task, run: fixture.run, modelContext: fixture.container.mainContext,
+            phase: "resume", configuration: configuration,
+            readinessService: service, verdictCache: RuntimeLaunchReadinessCache()
+        )
 
-        #expect(await launch() == false)
-        #expect(await runner.recordedCalls().count == probes, "served from the cache, yet still blocked")
+        #expect(passed)
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil
+        ) != nil)
     }
 }
