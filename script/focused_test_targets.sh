@@ -115,6 +115,28 @@ target_for_path() {
       add_target "SidebarTaskStoreSignalIntegrationTests"
       add_target "SidebarTaskSourceObservationTests"
       ;;
+    Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift)
+      add_target "AgentRuntimePipeCompletionTests"
+      add_target "StreamVolumeAccountingTests"
+      add_target "AgentExecutionScopedProcessTests"
+      add_target "AgentUtilityRuntimeTests"
+      add_target "ProcessMonitorTests"
+      ;;
+    Tests/RuntimeProgressSignalTests.swift)
+      add_target "StreamVolumeAccountingTests"
+      ;;
+    Astra/Services/Validation/TaskDeliverableExpectation.swift|Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift|Astra/Services/Tasks/TaskIntentLanguagePolicy.swift|Tests/TaskTextOnlyDeliverableTests.swift)
+      add_target "TaskTextOnlyDeliverableTests"
+      add_target "TaskDeliverableExpectationTests"
+      add_target "DeliverableExpectationCoverageTests"
+      add_target "TaskDeliverableVerificationServiceTests"
+      add_target "TaskDeliverableFollowUpTests"
+      add_target "TaskExecutionResourceClaimResolverTests"
+      ;;
+    Astra/Views/UsageDashboard*.swift|Tests/UsageDashboard*.swift|Tests/LargeHistoryResponsivenessTests.swift)
+      add_target "UsageDashboardStoreTests"
+      add_target "UsageDashboardRenderingTests"
+      ;;
     Astra/Services/Settings/AppUpdateSafety.swift|Tests/RunningTaskCountPredicateTests.swift)
       add_target "RunningTaskCountPredicateTests"
       ;;
