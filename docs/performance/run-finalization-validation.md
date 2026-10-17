@@ -57,6 +57,27 @@ The measurements and local suite counts in the October 15–16 sections below
 are historical validation of the original implementation. Current full-suite,
 native Dev and remote CI results are tracked separately on PR #511.
 
+### CI pipe-completion regression
+
+CI run `39067213670` completed 8,035 tests but failed the first natural-exit
+pipe fixture: its unrelated two-second utility deadline expired, discarding
+stdout/stderr. The subsequent worker case passed. The log does not distinguish
+interpreter startup from host scheduling delay. A controlled 2.5-second setup
+delay reproduces the same failure locally, in both utility and worker paths.
+
+Only the intentional timeout cases now use the two-second watchdog. Natural
+exit, cancellation and early-result fixtures use a separate 60-second safety
+limit; the escaped holder must still be alive when completion returns. An
+eight-second EOF hang breaker starts after the holder's ready marker, with a
+separate bounded startup wait. Slow natural-exit and early-result regressions
+check complete stdout/stderr and terminal results. Production timeout policy
+and process execution code are unchanged.
+
+A temporary blocking-EOF mutation of the reader still fails both natural-exit
+cases on the live-holder assertion, after the breaker releases them. This
+confirms that separating startup headroom did not weaken the original hang
+regression. The nonblocking reader was restored before final validation.
+
 ## Finding and scope
 
 At `19bb27e668d4`, `WorkspacePersistenceCoordinator.saveAndAutoExport`
