@@ -286,8 +286,9 @@ struct PluginActivationMigrationTests {
         let taskD = AgentTask(title: "D", goal: "Google Cloud", workspace: d)
         context.insert(taskD)
         #expect(TaskCapabilityResolver(task: taskD).allConnectors.map(\.id) == [fixture.sharedGCloudID])
-        // The skill D keeps still has its tools.
+        // The skill D keeps still has its tools and its account.
         #expect(skill.localTools.count == fixture.gcloud.localTools.count)
+        #expect(skill.connectors.map(\.id) == [fixture.sharedGCloudID])
     }
 
     @Test("Secret cleanup is recorded before the save and taken back when it fails")
@@ -355,7 +356,7 @@ struct PluginActivationMigrationTests {
                 #expect(persistence.saveSecretValue(
                     "s3cret", key: "GCP_API_TOKEN", skillID: fixture.gcloudSkillID, skillName: "GCloud", allowUserInteraction: false
                 ))
-                try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+                try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packagesDeclaringSecret)
 
                 let a = try fixture.workspace(fixture.aID)
                 let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
@@ -368,7 +369,8 @@ struct PluginActivationMigrationTests {
                 // A projected skill's snapshot never carries the secret value.
                 let task = AgentTask(title: "A", goal: "Google Cloud", workspace: a)
                 fixture.context.insert(task)
-                let projected = try #require(TaskCapabilityResolver(task: task).allBehaviorSkills.first { $0.id == projectedID })
+                let declared = try #require(fixture.packagesDeclaringSecret.first { $0.id == "gcloud-workflow" })
+                let projected = try #require(PluginRuntimeProjection.project(workspace: a, packages: [declared]).skills.first { $0.id == projectedID })
                 #expect(!SkillSnapshotConfig(skill: projected).environmentValues.contains("s3cret"))
                 #expect(projected.environmentVariables["GCP_API_TOKEN"] == "s3cret")
                 // The deleted row's own namespace is cleaned after the save.
@@ -538,6 +540,30 @@ struct PluginActivationMigrationTests {
         #expect(imported.templates.first { $0.name == "Weekly GCP report" }?.defaultSkillIDs == [newID.uuidString])
     }
 
+    @Test("A workspace that replaced the shared account with its own binds only its own")
+    func replacedSharedAccountIsNotBound() throws {
+        let fixture = try Fixture(aOwnsGCloudAccount: true)
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let b = try fixture.workspace(fixture.bID)
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.connectors[0])
+        let aAccounts = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a)).accounts(forComponent: component)
+        #expect(aAccounts.count == 1)
+        #expect(aAccounts.first?.id != fixture.sharedGCloudID)
+        // B never replaced it and keeps the shared account.
+        let bAccounts = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: b)).accounts(forComponent: component)
+        #expect(bAccounts.map(\.id) == [fixture.sharedGCloudID])
+    }
+
+    @Test("A plugin skill whose environment keys the person changed stays an authored row")
+    func editedEnvironmentKeysAreKept() throws {
+        let fixture = try Fixture(gcloudSkillSecret: "x")
+        let report = try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        #expect(report.skillsProjected == 0)
+        let kept = try #require(try fixture.context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        #expect(kept.environmentKeys.contains("GCP_API_TOKEN"))
+    }
+
     @Test("A failed migration takes back the secrets it copied")
     func failedMigrationRestoresCopiedSecrets() throws {
         guard AstraSecureKeychainTestSupport.isAvailable else { return }
@@ -561,9 +587,13 @@ struct PluginActivationMigrationTests {
                     withIntermediateDirectories: true
                 )
                 #expect(throws: PluginActivationMigration.MigrationError.cleanupUnrecordable) {
-                    try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+                    try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packagesDeclaringSecret)
                 }
                 let a = try fixture.workspace(fixture.aID)
+                // Nothing in memory claims the migration happened.
+                #expect(a.legacyEnabledCapabilityIDs == ["jira-workflow", "gcloud-workflow"])
+                #expect(WorkspaceCapabilityActivation.activations(of: a).isEmpty)
+                #expect(a.enabledGlobalSkillIDs == [fixture.gcloudSkillID.uuidString])
                 let projectedID = PluginRuntimeProjection.derivedID(
                     workspaceID: a.id,
                     pluginID: "gcloud-workflow",
@@ -605,7 +635,8 @@ private struct Fixture {
         gcloudSkillProject: String = "skill-project",
         editedToolDescription: String? = nil,
         editedSkillIcon: String? = nil,
-        gcloudBehaviorSuffix: String? = nil
+        gcloudBehaviorSuffix: String? = nil,
+        aOwnsGCloudAccount: Bool = false
     ) throws {
         jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
@@ -671,6 +702,21 @@ private struct Fixture {
             context.insert(shared)
             ids["shared"] = shared.id
             a.enabledGlobalConnectorIDs = [shared.id.uuidString]
+            if aOwnsGCloudAccount {
+                // A gave the component its own account (scoped inputs) and
+                // stopped listing the shared one.
+                a.enabledGlobalConnectorIDs = []
+                let own = V19.Connector()
+                own.name = gcloudSpec.name
+                own.serviceType = gcloudSpec.serviceType
+                own.configKeys = ["GCP_PROJECT"]
+                own.configValues = ["a-project"]
+                own.originPackageID = "gcloud-workflow"
+                own.originComponentID = CapabilityResourceOrigin.componentID(for: gcloudSpec)
+                own.workspace = a
+                context.insert(own)
+                ids["aOwn"] = own.id
+            }
 
             let gcloudSkillSpec = gcloud.skills[0]
             let skill = V19.Skill()
@@ -751,6 +797,18 @@ private struct Fixture {
         sharedGCloudID = try #require(ids["shared"])
         gcloudSkillID = try #require(ids["gcloudSkill"])
         editedJiraSkillID = try #require(ids["edited"])
+    }
+
+    /// The built-ins, with the GCloud skill declaring the secret the
+    /// `gcloudSkillSecret` fixture row carries (an unedited row).
+    var packagesDeclaringSecret: [PluginPackage] {
+        packages.map { package in
+            guard package.id == gcloud.id else { return package }
+            var declared = package
+            declared.skills[0].environmentKeys = ["GCP_PROJECT", "GCP_API_TOKEN"]
+            declared.skills[0].environmentValues = ["", ""]
+            return declared
+        }
     }
 
     func workspace(_ id: UUID) throws -> Workspace {

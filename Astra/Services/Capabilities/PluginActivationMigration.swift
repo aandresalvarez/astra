@@ -121,9 +121,12 @@ enum PluginActivationMigration {
         var report = Report()
         var releasedSkillIDs: [UUID] = []
         var copiedSecrets: [CopiedSecret] = []
-        // Shared skills kept as authored rows for workspaces that turned them
-        // on without the plugin: their tools stay with them.
-        var independentSkillIDs = Set<UUID>()
+        // rollback() doesn't restore array-backed state (legacy and global
+        // memberships, activation records): a failed run puts it back.
+        let workspaceSnapshots = workspaces.map { workspace in
+            (workspace, WorkspaceCapabilityActivation.snapshot(workspace),
+             workspace.legacyEnabledCapabilityIDs, workspace.legacyInstalledPluginIDs, workspace.legacyInstalledPluginVersions)
+        }
 
         do {
             for workspace in workspaces {
@@ -152,6 +155,25 @@ enum PluginActivationMigration {
                 guard let owner else { return all }
                 return all.filter { $0.0.id == owner.id }
             }
+            // Shared plugin skills a workspace turned on without the plugin
+            // are kept as authored rows there, with their tools and accounts.
+            let independentSkillIDs = Set(skills.filter { skill in
+                guard isPluginOrigin(skill), skill.isGlobal, !skill.isSystemBuiltIn else { return false }
+                let usingIDs = Set(targets(pluginID: trimmed(skill.originPackageID), owner: nil).map(\.0.id))
+                return workspaces.contains { !usingIDs.contains($0.id) && $0.enabledGlobalSkillIDs.contains(skill.id.uuidString) }
+            }.map(\.id))
+            // A workspace that gave a component its own account (scoped
+            // inputs) stopped listing the shared one: it isn't bound there.
+            func replacedShared(_ connector: Connector, componentID: String, in workspace: Workspace) -> Bool {
+                guard connector.isGlobal,
+                      !WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString)
+                else { return false }
+                let pluginID = trimmed(connector.originPackageID)
+                return connectors.contains { other in
+                    !other.isGlobal && other.workspace?.id == workspace.id && trimmed(other.originPackageID) == pluginID
+                        && connectorComponentID(other, package: packagesByID[pluginID]) == componentID
+                }
+            }
 
             // V19 stored no default account: binding in creation order makes
             // each component's oldest account its default.
@@ -159,9 +181,13 @@ enum PluginActivationMigration {
                 let pluginID = trimmed(connector.originPackageID)
                 let componentID = connectorComponentID(connector, package: packagesByID[pluginID])
                 let bindTo = targets(pluginID: pluginID, owner: connector.isGlobal ? nil : connector.workspace)
+                    .filter { !replacedShared(connector, componentID: componentID, in: $0.0) }
                 guard !bindTo.isEmpty else { continue }
                 KeychainService.synchronizeConnectorCredentialNamespaces(connector: connector)
-                connector.skill = nil
+                // An account of a skill kept for a workspace without the
+                // plugin stays that skill's; it is also an account of the
+                // activations that bind it.
+                if !(connector.skill.map { independentSkillIDs.contains($0.id) } ?? false) { connector.skill = nil }
                 for (workspace, activation) in bindTo
                 where !activation.bindings.contains(where: { $0.account?.id == connector.id }) {
                     WorkspaceCapabilityActivation.bind(connector, toComponent: componentID, of: activation)
@@ -215,9 +241,8 @@ enum PluginActivationMigration {
                 }
                 // A workspace that turned this one shared row on without its
                 // plugin keeps it, as an authored row it alone still lists.
-                if workspaces.contains(where: { !usingIDs.contains($0.id) && $0.enabledGlobalSkillIDs.contains(skillID) }) {
+                if independentSkillIDs.contains(skill.id) {
                     clearOrigin(skill)
-                    independentSkillIDs.insert(skill.id)
                     report.skillsKeptAsAuthored += 1
                     continue
                 }
@@ -289,6 +314,12 @@ enum PluginActivationMigration {
             guard saved else { throw saveError ?? MigrationError.cleanupUnrecordable }
         } catch {
             modelContext.rollback()
+            for (workspace, snapshot, enabled, installed, versions) in workspaceSnapshots {
+                WorkspaceCapabilityActivation.restore(snapshot, to: workspace)
+                workspace.legacyEnabledCapabilityIDs = enabled
+                workspace.legacyInstalledPluginIDs = installed
+                workspace.legacyInstalledPluginVersions = versions
+            }
             restore(copiedSecrets)
             throw error
         }
@@ -459,6 +490,7 @@ enum PluginActivationMigration {
             return false
         }
         return skill.name != spec.name
+            || Set(skill.environmentKeys) != Set(spec.environmentKeys)
             || skill.icon != spec.icon
             || skill.skillDescription != spec.description
             || skill.allowedTools != spec.allowedTools

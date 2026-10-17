@@ -152,7 +152,7 @@ enum PluginsSurfaceConfirmation: Equatable {
         switch self {
         case .remove:
             return (
-                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts stay; delete them separately. You can add it again later.",
+                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts and their saved keys stay; delete an account to clear it. You can add it again later.",
                 "Remove"
             )
         case .deleteAccount:

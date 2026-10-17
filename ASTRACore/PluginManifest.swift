@@ -153,11 +153,19 @@ public struct PluginComponent: Codable, Sendable {
 public enum PluginManifestError: Error, Equatable, LocalizedError {
     /// A component declares setup steps ASTRA cannot run yet.
     case unrepresentableSetup(component: String)
+    /// A manifest version this build doesn't know.
+    case unsupportedVersion(Int)
+    /// `worksOn` keeps the plugin off runtimes ASTRA would run it on.
+    case unenforcedRuntimeRestriction(runtime: String)
 
     public var errorDescription: String? {
         switch self {
         case .unrepresentableSetup(let component):
             "\(component) declares setup steps ASTRA can't run yet, so the plugin can't be installed."
+        case .unsupportedVersion(let version):
+            "This plugin uses manifest version \(version), which this version of ASTRA doesn't read."
+        case .unenforcedRuntimeRestriction(let runtime):
+            "The plugin says it doesn't work on \(runtime), and ASTRA can't keep it off that runtime yet."
         }
     }
 }
@@ -350,7 +358,23 @@ public enum PluginManifestConverter {
     /// unchanged would be dropped, and the plugin would read as ready without
     /// that step ever running. Such a manifest is refused instead.
     public static func checkedPackage(from manifest: PluginManifest) throws -> PluginPackage {
+        // Fail closed: a later version may carry meaning this converter
+        // would silently drop.
+        guard manifest.manifestVersion == PluginManifest.currentVersion else {
+            throw PluginManifestError.unsupportedVersion(manifest.manifestVersion)
+        }
         let package = package(from: manifest)
+        // The package doesn't carry `worksOn`; a manifest that restricts a
+        // runtime more than ASTRA's own reading of its components would lose
+        // that restriction, so it is refused rather than run where it says
+        // it doesn't work.
+        let derived = self.manifest(from: package).worksOn
+        for (runtime, declared) in manifest.worksOn.sorted(by: { $0.key < $1.key }) {
+            guard let allowed = derived[runtime] else { continue }
+            if rank(declared) < rank(allowed) {
+                throw PluginManifestError.unenforcedRuntimeRestriction(runtime: runtime)
+            }
+        }
         let carried = self.manifest(from: package).components
         for component in manifest.components where !component.setup.isEmpty {
             let kept = carried.first { $0.kind == component.kind && $0.name == component.name }?.setup
@@ -359,6 +383,14 @@ public enum PluginManifestConverter {
             }
         }
         return package
+    }
+
+    private static func rank(_ support: PluginRuntimeSupport) -> Int {
+        switch support {
+        case .unsupported: 0
+        case .shellOnly: 1
+        case .fullWithRecentCLI, .full: 2
+        }
     }
 
     public static func isManifest(_ data: Data) -> Bool {
