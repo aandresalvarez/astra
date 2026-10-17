@@ -95,6 +95,15 @@ struct CapabilityPackageState {
         linkedConnectors.filter { !attentionMessages(for: $0).isEmpty }
     }
 
+    /// Connectors an added plugin requires that have no row at all (deleted
+    /// since): a pending step with nothing to edit, so Add sets it up again.
+    var missingConnectors: [PluginConnector] {
+        guard isEnabled else { return [] }
+        return package.connectors.filter { required in
+            !linkedConnectors.contains { CapabilityRuntimeResourceMatcher.connectorMatches(required, connector: $0) }
+        }
+    }
+
     func attentionMessages(for connector: Connector) -> [String] {
         guard isEnabled else { return [] }
 
