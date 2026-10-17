@@ -430,6 +430,46 @@ Exit criteria, as tested on the branch:
 - A detached launch resolves the same skills, accounts, tools and settings
   as the live task; the mirror round-trips activations.
 
+### How R3 was built (2026-10-16)
+
+R3 is on `plugins2-r3`, stacked on R1 (`#518`).
+
+- **Component identity.** A skill, connector or tool may declare `id`
+  (stable identity) and `replaces` (identities it takes over). Without `id`
+  the identity is the runtime one R1 used. The validator refuses two
+  components with one identity, a `replaces` naming another kind (or, for a
+  connector, another service), one naming a component still declared, and
+  one claimed twice. The library still stores `PluginPackage`, with these
+  optional fields; nothing changes for a package that omits them.
+- **Update is reconciliation.** `PluginUpdateService` brings each activation
+  to the definition in the library: a component taken over through
+  `replaces` keeps the old one's settings, bindings, override and secret
+  settings (copied to the new namespace before the save), and the templates
+  and schedules that named its skill are rewritten; a component the
+  activation knew (`knownComponentIDs`) that is gone and not taken over is
+  released, its secret namespace journaled. It runs after an import (which
+  first refuses a version a workspace with the plugin on would refuse: a
+  pack rule, a missing dependency, a conflict, an unsafe declaration, and
+  restores the previous library entry if reconciling fails), on Add, and at
+  launch after the built-in sync. A row whose activation still runs an
+  earlier definition offers Update.
+- **Remove** writes its intent (`PluginRemoveJournal`) before the save and
+  clears it after the library entry goes; launch finishes an interrupted one
+  and drops one whose activations were never deleted.
+- **Accounts.** A plugin-created account is in scope only through a binding:
+  after Turn off, Remove or a dropped component it stays, unbound and out of
+  every run, until it is bound again or deleted. Add account, Make default
+  and Delete account (confirmed, naming the workspaces that use it; the only
+  path that clears its credentials, through the connector cleanup outbox)
+  are on the row.
+- **`PluginRow`.** The surface builds each row once from the package, the
+  activation and the display state; Expand, Add, Update, Turn off, Remove,
+  settings and accounts all take it. Turn off asks nothing. Plugin skill
+  settings are edited on the expanded row (secret ones with
+  `SecretEntryField`, into the Keychain).
+- **Still rows:** plugin templates (workspace rows owned by the plugin);
+  they move to the parity checklist in R4.
+
 ### Owner decisions (2026-10-16)
 
 1. Edited plugin skills survive the migration as authored skills.
