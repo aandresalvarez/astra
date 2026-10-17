@@ -705,6 +705,101 @@ public struct PluginActivationRecord: Codable, Equatable, Sendable {
     }
 }
 
+/// A plugin account's non-secret contents, frozen with a queued request so an
+/// account edited or deleted while the request waits does not change what it
+/// runs with. Never a credential value: those stay in the Keychain, read by
+/// the account's ID at launch. (`credentialValues` is the legacy plaintext
+/// column, so it is never captured.)
+public struct PluginAccountRecord: Codable, Equatable, Sendable {
+    public let id: UUID
+    public let name: String
+    public let serviceType: String
+    public let icon: String
+    public let connectorDescription: String
+    public let baseURL: String
+    public let authMethod: String
+    public let credentialKeys: [String]
+    public let configKeys: [String]
+    public let configValues: [String]
+    public let isGlobal: Bool
+    public let testHTTPMethod: String
+    public let notes: String
+    public let originPackageID: String?
+    public let originPackageVersion: String?
+    public let originComponentID: String?
+    public let originComponentKind: String?
+    public let originSourceKind: String?
+    public let createdAt: Date
+    public let updatedAt: Date
+
+    public init(_ account: Connector) {
+        id = account.id
+        name = account.name
+        serviceType = account.serviceType
+        icon = account.icon
+        connectorDescription = account.connectorDescription
+        baseURL = account.baseURL
+        authMethod = account.authMethod
+        credentialKeys = account.credentialKeys
+        configKeys = account.configKeys
+        configValues = account.configValues
+        isGlobal = account.isGlobal
+        testHTTPMethod = account.testHTTPMethod
+        notes = account.notes
+        originPackageID = account.originPackageID
+        originPackageVersion = account.originPackageVersion
+        originComponentID = account.originComponentID
+        originComponentKind = account.originComponentKind
+        originSourceKind = account.originSourceKind
+        createdAt = account.createdAt
+        updatedAt = account.updatedAt
+    }
+
+    /// The accounts `workspace`'s enabled activations bind, once each.
+    public static func boundAccounts(of workspace: Workspace) -> [PluginAccountRecord] {
+        var seen = Set<UUID>()
+        return WorkspaceCapabilityActivation.activations(of: workspace)
+            .filter(\.isEnabled)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap(\.account)
+            .filter { !$0.isDeleted && seen.insert($0.id).inserted }
+            .map(PluginAccountRecord.init)
+    }
+
+    /// Writes these contents onto `account`, a launch copy (never a stored
+    /// row): its credential values are left as they are.
+    public func apply(to account: Connector) {
+        account.name = name
+        account.serviceType = serviceType
+        account.icon = icon
+        account.connectorDescription = connectorDescription
+        account.baseURL = baseURL
+        account.authMethod = authMethod
+        account.credentialKeys = credentialKeys
+        account.configKeys = configKeys
+        account.configValues = configValues
+        account.isGlobal = isGlobal
+        account.testHTTPMethod = testHTTPMethod
+        account.notes = notes
+        account.originPackageID = originPackageID
+        account.originPackageVersion = originPackageVersion
+        account.originComponentID = originComponentID
+        account.originComponentKind = originComponentKind
+        account.originSourceKind = originSourceKind
+        account.createdAt = createdAt
+        account.updatedAt = updatedAt
+    }
+
+    /// A never-inserted account with these contents, for one deleted since.
+    public func makeAccount() -> Connector {
+        let account = Connector()
+        account.id = id
+        apply(to: account)
+        return account
+    }
+}
+
 /// A workspace's capability enablement state as a plain value. The arrays keep
 /// their stored order and content, including a `pluginVersions` array that has
 /// fallen out of step with `pluginIDs`, so copying state between workspaces

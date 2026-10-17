@@ -63,7 +63,7 @@ struct LaunchSnapshotDisciplineTests {
 
     /// Snapshot fields that are not task fields: the workspace state a launch
     /// copy is built with. `detachedTask` reads each one off the snapshot.
-    private static let snapshotOwnedWorkspaceFields: Set<String> = ["pluginActivations"]
+    private static let snapshotOwnedWorkspaceFields: Set<String> = ["pluginActivations", "pluginDefinitions", "pluginAccounts"]
 
     // MARK: - Freeze chain
 

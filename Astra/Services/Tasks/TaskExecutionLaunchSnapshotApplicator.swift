@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 import ASTRAModels
 
 /// Applies the immutable launch configuration captured by a durable request.
@@ -39,7 +40,9 @@ enum TaskExecutionLaunchSnapshotApplicator {
             templateHooksJSON: policy.templateHooksJSON,
             skillSnapshotsJSON: policy.skillSnapshotsJSON,
             runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON,
-            pluginActivations: policy.pluginActivations
+            pluginActivations: policy.pluginActivations,
+            pluginDefinitions: policy.pluginDefinitions,
+            pluginAccounts: policy.pluginAccounts
         )
     }
 
@@ -58,6 +61,11 @@ enum TaskExecutionLaunchSnapshotApplicator {
             workspace: workspace
         )
         if let workspace, let live = source.workspace {
+            // The accounts and definitions frozen with them: an account
+            // edited or deleted, or a plugin updated, while the request
+            // waited does not change the run either.
+            applyFrozenAccounts(snapshot.pluginAccounts, to: workspace)
+            workspace.launchPluginDefinitions = snapshot.pluginDefinitions
             // The activations frozen at submission, when the request has
             // them: a plugin turned off, on or reconfigured while it waited
             // does not change the run.
@@ -211,6 +219,30 @@ enum TaskExecutionLaunchSnapshotApplicator {
             rows.localTools = ((try? context.fetch(tools)) ?? []).filter { !$0.isDeleted }
         }
         return rows
+    }
+
+    /// The bound accounts' copies take the contents frozen at submission;
+    /// one deleted since is brought back as a copy of what was submitted.
+    /// Credentials are still read from the Keychain by the account's ID.
+    private static func applyFrozenAccounts(_ records: [PluginAccountRecord]?, to workspace: Workspace) {
+        for record in records ?? [] {
+            if let copy = workspace.connectors.first(where: { $0.id == record.id }) {
+                record.apply(to: copy)
+            } else {
+                workspace.connectors.append(record.makeAccount())
+            }
+        }
+    }
+
+    /// The definitions a request should freeze for `task`: a launch copy's
+    /// own frozen ones, else the library's for the plugins its workspace has
+    /// on. The run's policy gates still apply at launch.
+    static func pluginDefinitions(for task: AgentTask) -> [PluginPackage]? {
+        guard let workspace = task.workspace else { return nil }
+        if let frozen = workspace.launchPluginDefinitions { return frozen }
+        let enabled = Set(WorkspaceCapabilityActivation.activations(of: workspace).filter(\.isEnabled).map(\.pluginID))
+        guard !enabled.isEmpty else { return [] }
+        return CapabilityRuntimeResourceMatcher.packageDefinitions().filter { enabled.contains($0.id) }
     }
 
     /// The live workspace remains authoritative for capability enablement

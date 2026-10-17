@@ -297,7 +297,7 @@ public struct CapabilityIconDescriptor: Codable, Sendable, Equatable {
     }
 }
 
-public struct PluginPackage: Codable, Identifiable, Sendable {
+public struct PluginPackage: Codable, Equatable, Identifiable, Sendable {
     public var formatVersion: Int
     public var id: String
     public var name: String
@@ -495,7 +495,7 @@ public struct PluginSetupRequirement: Codable, Equatable, Sendable, Identifiable
     }
 }
 
-public struct PluginSkill: Codable, Sendable {
+public struct PluginSkill: Codable, Equatable, Sendable {
     public var name: String
     public var icon: String
     public var description: String
@@ -521,7 +521,7 @@ public struct PluginSkill: Codable, Sendable {
     }
 }
 
-public struct PluginConnector: Codable, Sendable {
+public struct PluginConnector: Codable, Equatable, Sendable {
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -532,7 +532,7 @@ public struct PluginConnector: Codable, Sendable {
     public var configHints: [ConfigHint]
     public var notes: String
 
-    public struct CredentialHint: Codable, Sendable {
+    public struct CredentialHint: Codable, Equatable, Sendable {
         public var key: String
         public var hint: String
         /// Shape this credential must have, enforced at save time by
@@ -551,7 +551,7 @@ public struct PluginConnector: Codable, Sendable {
         }
     }
 
-    public struct ConfigHint: Codable, Sendable {
+    public struct ConfigHint: Codable, Equatable, Sendable {
         public var key: String
         public var hint: String
         public var isList: Bool
@@ -578,7 +578,7 @@ public struct PluginConnector: Codable, Sendable {
     }
 }
 
-public struct PluginLocalTool: Codable, Sendable {
+public struct PluginLocalTool: Codable, Equatable, Sendable {
     public var name: String
     public var description: String
     public var icon: String
@@ -724,7 +724,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-public struct PluginTemplate: Codable, Sendable {
+public struct PluginTemplate: Codable, Equatable, Sendable {
     public var name: String
     public var icon: String
     public var description: String
