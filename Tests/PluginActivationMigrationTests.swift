@@ -80,14 +80,14 @@ struct PluginActivationMigrationTests {
         #expect(try context.fetch(FetchDescriptor<LocalTool>()).isEmpty)
 
         // 4. The edited skill survives as an authored skill; the activations
-        // skip the component it replaced, and it stays on where Jira is on.
+        // skip the component it replaced and alone turn it on.
         let edited = try #require(try context.fetch(FetchDescriptor<Skill>()).first)
         #expect(edited.originPackageID == nil)
         #expect(edited.behaviorInstructions == "My own Jira rules.")
         let editedComponent = CapabilityResourceOrigin.componentID(for: fixture.jira.skills[0])
         #expect(aJira.overriddenComponentIDs == [editedComponent])
         #expect(cJira.overriddenComponentIDs == [editedComponent])
-        #expect(a.enabledGlobalSkillIDs.contains(fixture.editedJiraSkillID.uuidString))
+        #expect(!a.enabledGlobalSkillIDs.contains(fixture.editedJiraSkillID.uuidString))
         #expect(!c.enabledGlobalSkillIDs.contains(fixture.editedJiraSkillID.uuidString))
 
         // Idempotent: nothing left to move.
@@ -428,6 +428,46 @@ struct PluginActivationMigrationTests {
         #expect(Set(activation.overriddenComponentIDs).isSuperset(of: fixture.gcloud.localTools.map {
             CapabilityResourceOrigin.componentID(for: $0)
         }))
+    }
+
+    @Test("An edited plugin tool stays in scope with its plugin's skill")
+    func editedToolStaysWithItsPluginSkill() throws {
+        let fixture = try Fixture(editedToolDescription: "My own words")
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let task = AgentTask(title: "A", goal: "Manage GCP resources", workspace: a)
+        fixture.context.insert(task)
+        let edited = try fixture.context.fetch(FetchDescriptor<LocalTool>())
+        #expect(edited.count == fixture.gcloud.localTools.count)
+
+        // The request matches the plugin's skill but none of the edited
+        // tools' own words: they come along with the skill, as projected
+        // tools would.
+        let scope = TaskCapabilityResolver(task: task).activationScope(contextText: "Manage GCP resources")
+        #expect(scope.behaviorSkills.contains { $0.name == fixture.gcloud.skills[0].name })
+        #expect(Set(edited.map(\.id)).isSubset(of: Set(scope.localTools.map(\.id))))
+        // Only the runtime's copies are wired; the stored rows stay unowned.
+        #expect(edited.allSatisfy { $0.skill == nil })
+    }
+
+    @Test("An edited shared plugin skill is on exactly while its plugin is")
+    func editedSharedSkillFollowsItsActivation() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let shared = try fixture.context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
+        func activeSkillIDs() -> Set<UUID> {
+            Set(WorkspaceCapabilities(workspace: a, globalSkills: shared, packageDefinitions: fixture.packages).activeSkills.map(\.id))
+        }
+        #expect(activeSkillIDs().contains(fixture.editedJiraSkillID))
+
+        // Turning Jira off takes its edited skill with it: no shared-list
+        // membership keeps it on for new tasks.
+        WorkspaceCapabilityActivation.mutate(a) { $0.capabilityIDs.removeAll { $0 == "jira-workflow" } }
+        #expect(!activeSkillIDs().contains(fixture.editedJiraSkillID))
+        // The mirror still carries the row the override names.
+        let config = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        #expect(config.skills.contains { $0.id == fixture.editedJiraSkillID.uuidString })
     }
 
     @Test("A plugin skill whose icon the person changed stays an authored row")

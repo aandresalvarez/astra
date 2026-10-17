@@ -34,6 +34,15 @@ public struct RepairAction: Codable, Sendable, Equatable {
     public var checkArguments: [String]?
     /// The check's semantic test (`SemanticCheck` raw value), if any.
     public var checkExpect: String?
+    /// Variables the stopped run gave the CLI (a projected `GH_TOKEN`), so
+    /// the check sees what the resumed run will. Set when checking, not
+    /// stored with the repair.
+    public var checkEnvironment: [String: String]?
+
+    /// `checkEnvironment` can hold a token: it is never encoded.
+    private enum CodingKeys: String, CodingKey {
+        case strategy, componentName, title, verb, detail, command, url, checkBinary, checkArguments, checkExpect
+    }
 
     public init(
         strategy: Strategy,

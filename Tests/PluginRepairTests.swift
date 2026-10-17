@@ -40,6 +40,18 @@ struct PluginRepairTests {
         #expect(coordinator.phase(for: repair) == .timedOut)
     }
 
+    @Test("Cancelling the polls clears their waiting phase")
+    func cancelClearsWaiting() async {
+        let coordinator = PluginRepairCoordinator(
+            check: { _ in false }, run: { _ in }, sleep: { _ in try? await Task.sleep(nanoseconds: 50_000_000) }, interval: 1, maxWait: 100
+        )
+        let repair = CLISessionExpiryClassifier.googleCloud.repair
+        coordinator.start(repair)
+        #expect(coordinator.phase(for: repair) == .waiting)
+        coordinator.cancelAll()
+        #expect(coordinator.phase(for: repair) == nil)
+    }
+
     @Test("A repair with nothing to check just runs")
     func uncheckedRepairJustRuns() {
         var runs = 0

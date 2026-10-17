@@ -172,6 +172,8 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
     case unsupportedVersion(Int)
     /// `worksOn` keeps the plugin off runtimes ASTRA would run it on.
     case unenforcedRuntimeRestriction(runtime: String)
+    /// A component without its kind's payload, or with another kind's.
+    case mismatchedPayload(component: String)
 
     public var errorDescription: String? {
         switch self {
@@ -179,6 +181,8 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
             "\(component) declares setup steps ASTRA can't run yet, so the plugin can't be installed."
         case .unsupportedVersion(let version):
             "This plugin uses manifest version \(version), which this version of ASTRA doesn't read."
+        case .mismatchedPayload(let component):
+            "\(component) doesn't carry the definition its kind needs, so the plugin can't be installed."
         case .unenforcedRuntimeRestriction(let runtime):
             "The plugin says it doesn't work on \(runtime), and ASTRA can't keep it off that runtime yet."
         }
@@ -407,6 +411,11 @@ public enum PluginManifestConverter {
         guard manifest.manifestVersion == PluginManifest.currentVersion else {
             throw PluginManifestError.unsupportedVersion(manifest.manifestVersion)
         }
+        // Every component carries exactly its kind's payload: one without it
+        // would vanish in conversion, one with another's would change kind.
+        for component in manifest.components where !hasExactPayload(component) {
+            throw PluginManifestError.mismatchedPayload(component: component.name)
+        }
         let package = package(from: manifest)
         // The package doesn't carry `worksOn`; a manifest that restricts a
         // runtime more than ASTRA's own reading of its components would lose
@@ -427,6 +436,22 @@ public enum PluginManifestConverter {
             }
         }
         return package
+    }
+
+    private static func hasExactPayload(_ component: PluginComponent) -> Bool {
+        let payloads: [PluginComponent.Kind: Bool] = [
+            .skill: component.skill != nil,
+            .connector: component.connector != nil,
+            .tool: component.tool != nil,
+            .mcp: component.mcp != nil,
+            .template: component.template != nil
+        ]
+        let present = payloads.filter(\.value).map(\.key)
+        if component.kind == .setup {
+            // A setup step stands alone, or carries its setup requirement.
+            return present.isEmpty
+        }
+        return present == [component.kind]
     }
 
     private static func rank(_ support: PluginRuntimeSupport) -> Int {

@@ -37,6 +37,8 @@ struct PluginsSurfaceView: View {
     /// A plugin whose setup connects an account goes through its install
     /// flow, which does that.
     @State private var accountSetupPackage: PluginPackage?
+    @State private var accountSetupContext: CapabilityCatalogPolicyContext?
+    @State private var approvalGeneration = 0
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -141,7 +143,7 @@ struct PluginsSurfaceView: View {
             CapabilityInstallSheetRouter(
                 package: package,
                 workspace: workspace,
-                policyContext: policyContext,
+                policyContext: accountSetupContext ?? policyContext,
                 onDismiss: { accountSetupPackage = nil },
                 onInstalled: { _ in
                     accountSetupPackage = nil
@@ -379,8 +381,13 @@ struct PluginsSurfaceView: View {
     }
 
     private func refreshApprovalRecords() {
+        // Only the latest read publishes: an older one finishing last would
+        // bring back obsolete approvals.
+        approvalGeneration += 1
+        let generation = approvalGeneration
         Task {
             let records = await Task.detached(priority: .utility) { CapabilityApprovalStore().records() }.value
+            guard generation == approvalGeneration else { return }
             approvalRecords = records
         }
     }
@@ -391,7 +398,14 @@ struct PluginsSurfaceView: View {
         let package = row.package
         errorMessage = nil
         if package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) {
-            accountSetupPackage = package
+            // The same one-step approval as Add, before the flow enables it.
+            do {
+                accountSetupContext = try CapabilityCatalogActionService().grantPendingApproval(for: package, policyContext: policyContext)
+                accountSetupPackage = package
+                refreshApprovalRecords()
+            } catch {
+                errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
+            }
             return
         }
         do {

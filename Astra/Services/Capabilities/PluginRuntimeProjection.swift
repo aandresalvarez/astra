@@ -120,7 +120,15 @@ struct PluginRuntimeProjection {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
                 if overridden.contains(componentID) {
                     if let row = overridingTool(for: componentID, of: activation, in: workspace) {
-                        tools.append(row)
+                        // An ownerless replacement still belongs to its
+                        // plugin: the runtime gets a copy wired to the first
+                        // skill, so scope pruning keeps it with the plugin as
+                        // it would the projected tool.
+                        if connectorMode == .runtimeCopies, row.skill == nil, let primarySkill {
+                            tools.append(TaskExecutionLaunchSnapshotApplicator.detachedLocalTool(row, skill: primarySkill))
+                        } else {
+                            tools.append(row)
+                        }
                         continue
                     }
                     if !overrideRowIsGone(in: workspace) { continue }

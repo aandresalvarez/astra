@@ -172,6 +172,18 @@ struct PluginsSurfaceTests {
         #expect((try? PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: jira))) != nil)
     }
 
+    @Test("A manifest component must carry exactly its kind's definition")
+    func manifestPayloadsMatchKinds() throws {
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        var manifest = PluginManifestConverter.manifest(from: jira)
+        let skillIndex = try #require(manifest.components.firstIndex { $0.kind == .skill })
+        manifest.components[skillIndex].skill = nil
+        #expect(throws: PluginManifestError.self) { try PluginManifestConverter.checkedPackage(from: manifest) }
+        var extra = PluginManifestConverter.manifest(from: jira)
+        extra.components[skillIndex].tool = PluginLocalTool(name: "x", description: "", icon: "terminal", toolType: "cli", command: "x", arguments: "")
+        #expect(throws: PluginManifestError.self) { try PluginManifestConverter.checkedPackage(from: extra) }
+    }
+
     @Test("A repair or install link opens only an https page")
     func repairURLsAreWebPages() throws {
         #expect(RepairAction.isSafeRepairURL(try #require(URL(string: "https://cloud.google.com/sdk"))))

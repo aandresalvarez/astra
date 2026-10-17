@@ -401,7 +401,8 @@ struct CapabilityRailWorkspaceResourceIndex {
                 isEnabled: activation.isEnabled,
                 skills: projection.skills.filter { $0.originPackageID == activation.pluginID },
                 tools: projection.tools.filter { $0.originPackageID == activation.pluginID },
-                accounts: activation.bindings.filter { !$0.isDeleted }.compactMap(\.account)
+                accounts: activation.bindings.filter { !$0.isDeleted }.compactMap(\.account),
+                accountIDsByComponent: CapabilityPackageState.boundAccountIDs(of: activation)
             )
         }
         self.activations = activations
@@ -413,6 +414,9 @@ struct CapabilityRailActivationResources {
     let skills: [Skill]
     let tools: [LocalTool]
     let accounts: [Connector]
+    /// The accounts by connector component, so each component is checked
+    /// against its own (`CapabilityPackageState.connector(_:serves:boundAccountIDs:)`).
+    let accountIDsByComponent: [String: Set<UUID>]
 }
 
 struct CapabilityRailPackageSnapshotState {
@@ -536,7 +540,9 @@ struct CapabilityRailPackageSnapshotState {
         }
 
         return linkedSkills.contains { isSkillEnabled($0, index: index) }
-            || linkedConnectors.contains { isConnectorEnabled($0, index: index) }
+            // As `CapabilityPackageState.isEnabled`: a workspace's own
+            // account outlives its plugin, so only a shared one counts.
+            || linkedConnectors.contains { $0.isGlobal && isConnectorEnabled($0, index: index) }
             || linkedTools.contains { isToolEnabled($0, index: index) }
     }
 
@@ -554,7 +560,8 @@ struct CapabilityRailPackageSnapshotState {
         }
         let messages = missingPackageConnectorMessages(
             for: package,
-            activeLinkedConnectors: activeLinkedConnectors
+            activeLinkedConnectors: activeLinkedConnectors,
+            boundAccountIDs: index.activations[package.id]?.accountIDsByComponent
         ) + activeLinkedConnectors.flatMap(readinessMessages(for:))
 
         return messages.isEmpty
@@ -613,11 +620,12 @@ struct CapabilityRailPackageSnapshotState {
 
     private static func missingPackageConnectorMessages(
         for package: PluginPackage,
-        activeLinkedConnectors: [Connector]
+        activeLinkedConnectors: [Connector],
+        boundAccountIDs: [String: Set<UUID>]?
     ) -> [String] {
         package.connectors.compactMap { packageConnector in
             let hasActiveConnector = activeLinkedConnectors.contains { connector in
-                CapabilityRuntimeResourceMatcher.connectorMatches(packageConnector, connector: connector)
+                CapabilityPackageState.connector(connector, serves: packageConnector, boundAccountIDs: boundAccountIDs)
             }
             guard !hasActiveConnector else { return nil }
             let name = packageConnector.name.trimmingCharacters(in: .whitespacesAndNewlines)
