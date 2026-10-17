@@ -204,7 +204,14 @@ struct CopilotHomeAccessCheckTests {
             withDestinationPath: strayTarget
         )
 
-        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+        // Readable, but outside the home: a sandboxed task cannot follow it.
+        let readable = CopilotHomeAccessCheck.inspect(home: home.path)
+        #expect(readable.problems.map(\.access) == [.linksOutsideHome])
+        #expect(!readable.blocksCopilot)
+        #expect(readable.cause.contains("sandboxed policy"))
+        #expect(readable.fixCommand.isEmpty)
+        #expect(readable.remediation.contains("with a copy of the file"))
+        #expect(CopilotHomeAccessCheck.readinessCheck(for: readable)?.state == .warning)
 
         try elsewhere.setMode(0o000, of: target)
         let report = CopilotHomeAccessCheck.inspect(home: home.path)
@@ -327,6 +334,68 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.cause.contains("unmounted/copilot, which does not exist"))
         #expect(report.fixCommand == "mv -n '\(link)' '\(link).bak'")
         #expect(!report.remediation.contains("readable again"))
+    }
+
+    @Test("A startup link inside the home is clean")
+    func startupLinkInsideHomeIsClean() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let real = try home.write("config.real.json", mode: 0o600)
+        try FileManager.default.createSymbolicLink(
+            atPath: (home.path as NSString).appendingPathComponent("config.json"), withDestinationPath: real
+        )
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+    }
+
+    @Test("A home symlink loop blocks like a dangling link")
+    func homeLinkLoopBlocks() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let link = (root.path as NSString).appendingPathComponent("home-loop")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: link)
+
+        let report = CopilotHomeAccessCheck.inspect(home: link)
+
+        #expect(report.problems.map(\.access) == [.danglingLink])
+        #expect(report.problems.first?.isLinkLoop == true)
+        #expect(report.blocksCopilot)
+        #expect(report.cause.contains("loops back on itself"))
+        #expect(report.fixCommand == "mv -n '\(link)' '\(link).bak'")
+    }
+
+    @Test("The fix covers every problem even when the explanation is capped")
+    func fixCoversEveryProblem() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let names = ["config.json", "mcp-config.json", "settings.json", "permissions-config.json",
+                     "permissions-config", "session-store.db", "session-store.db-wal"]
+        let paths = try names.map { try home.write($0, mode: 0o000) }
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.problems.count == names.count)
+        #expect(report.cause.contains("and 2 more"))
+        for path in paths {
+            #expect(report.fixCommand.contains("'\(path)'"))
+        }
+    }
+
+    @Test("Blank plain-text stdout lines do not hide an unreadable home")
+    func blankStreamFramesStillDiagnoseHome() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+        let telemetry = AgentRuntimeStreamTelemetry()
+        telemetry.recordRawLine(parsesJSONLines: false)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI, model: "gpt-5", exitCode: 1,
+            rawError: "", runOutput: "", providerVersion: nil, stream: telemetry.snapshot(),
+            copilotHomeAccess: { CopilotHomeAccessCheck.inspect(home: home.path) }
+        )
+
+        #expect(diagnostic.category == .providerHomeAccessDenied)
     }
 
     @Test("A startup entry of the wrong type blocks and is moved aside")

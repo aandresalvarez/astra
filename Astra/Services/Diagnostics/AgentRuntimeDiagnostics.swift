@@ -113,11 +113,14 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         // readiness warning, not proof of cause. Benign warnings on stderr
         // (deprecation notices) do not count as evidence here either.
         var homeAccess: CopilotHomeAccessReport?
-        if category == .providerProcessFailed,
+        // Blank plain-text framing lines count as raw lines and turn the
+        // category into noVisibleOutput, so the gate looks at parsed content.
+        if category == .providerProcessFailed || category == .noVisibleOutput,
            exitCode != 0,
            meaningful.isEmpty,
            resultOutput.isEmpty,
-           (stream?.rawLineCount ?? 0) == 0,
+           (stream?.jsonLineCount ?? 0) == 0,
+           (stream?.parsedEventCount ?? 0) == 0,
            let report = copilotHomeAccess?(),
            report.blocksCopilot {
             category = .providerHomeAccessDenied

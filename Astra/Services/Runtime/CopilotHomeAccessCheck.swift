@@ -16,9 +16,12 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         /// A startup entry is a folder where Copilot expects a file, or the
         /// other way round.
         case wrongType
-        /// The state home is a symlink to nothing: Copilot cannot create a
-        /// folder through it, because the link itself already exists.
+        /// The state home is a symlink to nothing (or a link loop): Copilot
+        /// cannot create a folder through it, because the link itself exists.
         case danglingLink
+        /// A startup entry links outside the Copilot home. Readable here, but a
+        /// sandboxed task is granted only `~/.copilot` and cannot follow it.
+        case linksOutsideHome
     }
 
     let path: String
@@ -40,6 +43,8 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// For `.notADirectory` and `.wrongType`: an unused name to move the
     /// entry aside to.
     var backupPath: String?
+    /// For `.danglingLink`: the link ends in a loop rather than a missing path.
+    var isLinkLoop = false
 
     /// Fixed by moving the entry aside rather than by changing permissions.
     var isMisplaced: Bool {
@@ -51,7 +56,7 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         switch access {
         case .notADirectory, .cannotCreateHome, .wrongType, .danglingLink: return true
         case .unreadable: return isReadAtStartup
-        case .unwritable: return false
+        case .unwritable, .linksOutsideHome: return false
         }
     }
 
@@ -98,7 +103,8 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             return "\(misplaced.displayPath) is a file, not a folder, so Copilot has nowhere to keep its settings."
         }
         if let dangling = problems.first(where: { $0.access == .danglingLink }) {
-            return "\(dangling.displayPath) is \(dangling.detail), which does not exist, so Copilot cannot create its settings folder."
+            let why = dangling.isLinkLoop ? "which loops back on itself" : "which does not exist"
+            return "\(dangling.displayPath) is \(dangling.detail), \(why), so Copilot cannot create its settings folder."
         }
         if let parent = problems.first(where: { $0.access == .cannotCreateHome }) {
             let homePath = (home as NSString).abbreviatingWithTildeInPath
@@ -114,10 +120,14 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             sentences.append("\(misshapen.displayPath) \(verb) \(found), but Copilot expects \(expected) there.")
         }
         if !unreadable.isEmpty {
-            sentences.append("Copilot cannot read \(unreadable.map(\.describedPath).joined(separator: ", ")).")
+            sentences.append("Copilot cannot read \(Self.listed(unreadable)).")
         }
         if !unwritable.isEmpty {
-            sentences.append("Copilot cannot write \(unwritable.map(\.describedPath).joined(separator: ", ")).")
+            sentences.append("Copilot cannot write \(Self.listed(unwritable)).")
+        }
+        let outside = problems.filter { $0.access == .linksOutsideHome }
+        if !outside.isEmpty {
+            sentences.append("\(Self.listed(outside)) point outside the Copilot folder, so a task run under a sandboxed policy cannot read them.")
         }
         if problems.contains(where: { !$0.ownedByCurrentUser && $0.symlinkTarget == nil }) {
             sentences.append("This usually happens after Copilot was run with sudo.")
@@ -173,6 +183,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
                 sentences.append("Replace the link at \(linked.displayPath).")
                 continue
             }
+            if linked.access == .linksOutsideHome {
+                sentences.append("To use sandboxed policies, replace the link at \(linked.displayPath) with a copy of the file.")
+                continue
+            }
             let target = ((linked.symlinkTarget ?? "") as NSString).abbreviatingWithTildeInPath
             sentences.append("Make \(target) readable again, or replace the link at \(linked.displayPath).")
         }
@@ -183,6 +197,14 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     var userMessage: String {
         guard !problems.isEmpty else { return "" }
         return "\(cause) \(remediation) Then retry."
+    }
+
+    /// Paths for the explanation, capped so a whole root-owned tree stays
+    /// readable. The fix command always covers every problem.
+    private static func listed(_ problems: [CopilotHomeAccessProblem]) -> String {
+        let shown = problems.prefix(CopilotHomeAccessCheck.maximumListedProblems).map(\.describedPath)
+        let hidden = problems.count - shown.count
+        return (shown + (hidden > 0 ? ["and \(hidden) more"] : [])).joined(separator: ", ")
     }
 
     private static func quoted(_ path: String) -> String {
@@ -206,8 +228,9 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
 /// config and opens its top-level state folders on every turn, and walking
 /// `session-state` recursively would cost a stat per historical session.
 enum CopilotHomeAccessCheck {
-    /// Keeps blocker text readable when a whole tree went root-owned.
-    static let maximumReportedProblems = 5
+    /// Keeps blocker text readable when a whole tree went root-owned. Only the
+    /// explanation is capped; the fix command repairs every problem.
+    static let maximumListedProblems = 5
 
     /// Config files Copilot only reads during a task. ASTRA already denies
     /// task-side writes to them (`configWriteDenyPaths`), so a user who made
@@ -254,12 +277,16 @@ enum CopilotHomeAccessCheck {
         let homeIsLink = (try? fileManager.attributesOfItem(atPath: trimmedHome))?[.type] as? FileAttributeType
             == .typeSymbolicLink
         let resolvedHome = homeIsLink ? linkTarget(of: trimmedHome, fileManager: fileManager) : trimmedHome
-        if homeIsLink, (try? fileManager.attributesOfItem(atPath: resolvedHome)) == nil,
+        // `fileExists` follows links, so it is false for a link to nothing and
+        // for a link loop alike.
+        if homeIsLink, !fileManager.fileExists(atPath: trimmedHome),
            var dangling = problem(
                at: trimmedHome, requiresWrite: true, isReadAtStartup: true,
                fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .danglingLink
            ) {
             dangling.symlinkTarget = resolvedHome
+            dangling.isLinkLoop = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.type] as? FileAttributeType
+                == .typeSymbolicLink
             dangling.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
             return CopilotHomeAccessReport(home: trimmedHome, problems: [dangling])
         }
@@ -301,6 +328,7 @@ enum CopilotHomeAccessCheck {
                 requiresWrite: !readOnlyConfigFileNames.contains(child),
                 isReadAtStartup: startupEntries[child] != nil,
                 expectedKind: startupEntries[child],
+                home: resolvedHome,
                 fileManager: fileManager,
                 currentUserID: currentUserID
             ) {
@@ -321,13 +349,8 @@ enum CopilotHomeAccessCheck {
             }
         }
         // Blocking entries first: they are the ones that kill the CLI.
-        let ordered = problems.filter(\.blocksCopilot)
-            + problems.filter { !$0.blocksCopilot && $0.access == .unreadable }
-            + problems.filter { $0.access == .unwritable }
-        return CopilotHomeAccessReport(
-            home: trimmedHome,
-            problems: Array(ordered.prefix(maximumReportedProblems))
-        )
+        let ordered = problems.filter(\.blocksCopilot) + problems.filter { !$0.blocksCopilot }
+        return CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
     }
 
     /// The readiness row for a report, or nil when nothing is wrong.
@@ -391,6 +414,7 @@ enum CopilotHomeAccessCheck {
         requiresWrite: Bool,
         isReadAtStartup: Bool,
         expectedKind: EntryKind? = nil,
+        home: String? = nil,
         fileManager: FileManager,
         currentUserID: uid_t,
         forcedAccess: CopilotHomeAccessProblem.Access? = nil
@@ -401,7 +425,8 @@ enum CopilotHomeAccessCheck {
         // A forced verdict is about the entry itself, link or not.
         if type == .typeSymbolicLink, forcedAccess == nil {
             return symlinkProblem(
-                at: path, isReadAtStartup: isReadAtStartup, expectedKind: expectedKind, fileManager: fileManager
+                at: path, isReadAtStartup: isReadAtStartup, expectedKind: expectedKind,
+                home: home, fileManager: fileManager
             )
         }
         let isDirectory = type == .typeDirectory
@@ -438,17 +463,23 @@ enum CopilotHomeAccessCheck {
         at path: String,
         isReadAtStartup: Bool,
         expectedKind: EntryKind?,
+        home: String?,
         fileManager: FileManager
     ) -> CopilotHomeAccessProblem? {
         guard isReadAtStartup else { return nil }
         var isDirectory: ObjCBool = false
         let targetExists = fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
         let readMode = isDirectory.boolValue ? (R_OK | X_OK) : R_OK
+        let target = linkTarget(of: path, fileManager: fileManager)
         let access: CopilotHomeAccessProblem.Access
         if targetExists, let expectedKind, isDirectory.boolValue != (expectedKind == .directory) {
             access = .wrongType
         } else if !targetExists || Darwin.access(path, readMode) != 0 {
             access = .unreadable
+        } else if let home, !target.hasPrefix((home as NSString).standardizingPath + "/") {
+            // ASTRA does not widen the sandbox to follow it: a link would
+            // then grant a task read access to whatever it points at.
+            access = .linksOutsideHome
         } else {
             return nil
         }
@@ -460,7 +491,7 @@ enum CopilotHomeAccessCheck {
             posixPermissions: nil,
             access: access,
             isReadAtStartup: true,
-            symlinkTarget: linkTarget(of: path, fileManager: fileManager)
+            symlinkTarget: target
         )
     }
 
