@@ -64,6 +64,10 @@ struct CapabilityUninstaller {
         let globalTools = try modelContext.fetch(FetchDescriptor<LocalTool>(
             predicate: #Predicate { $0.isGlobal == true }
         ))
+        let packageID = package.id
+        let stampedAccounts = try modelContext.fetch(FetchDescriptor<Connector>(
+            predicate: #Predicate { $0.originPackageID == packageID }
+        ))
 
         let packageTemplateNames = Set(package.templates.map(\.name))
 
@@ -166,6 +170,13 @@ struct CapabilityUninstaller {
             }
         }
 
+        // The accounts stay with their credentials, but no longer as this
+        // plugin's: a later install of the same file has no activation yet,
+        // and a stamped account would make the plugin look on.
+        for account in stampedAccounts {
+            releaseProvenance(of: account, packageID: package.id)
+        }
+
         for tool in matchedGlobalTools where !remainingPackages.contains(where: { claims(tool, package: $0) }) {
             result.removedToolIDs.append(tool.id)
             modelContext.delete(tool)
@@ -229,6 +240,32 @@ struct CapabilityUninstaller {
 
         CapabilityCatalogPersistenceEvents.post(.global)
         return result
+    }
+
+    /// Clears the plugin's origin stamp from an account it leaves behind.
+    /// The stamp also names a shared Keychain namespace, so credentials only
+    /// there are first copied into the row's own (which loads first); one
+    /// the copy can't reach keeps the stamp rather than be stranded.
+    private func releaseProvenance(of account: Connector, packageID: String) {
+        KeychainService.synchronizeConnectorCredentialNamespaces(connector: account)
+        let stranded = account.credentialKeys.contains { key in
+            KeychainService.load(key: key, connectorID: account.id) == nil
+                && KeychainService.load(key: key, connector: account) != nil
+        }
+        guard !stranded else {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "package_uninstall",
+                "package_id": packageID,
+                "result": "account_provenance_kept_credentials_not_copied"
+            ], level: .warning)
+            return
+        }
+        account.originPackageID = nil
+        account.originPackageVersion = nil
+        account.originComponentID = nil
+        account.originComponentKind = nil
+        account.originSourceKind = nil
+        account.updatedAt = Date()
     }
 
     private func matches(_ connector: Connector, pluginConnector: PluginConnector) -> Bool {
