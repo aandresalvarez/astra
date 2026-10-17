@@ -1349,14 +1349,14 @@ public enum WorkspaceConfigManager {
         }
 
         WorkspaceCapabilityActivation.apply(activation, to: workspace)
-        restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
+        let projectedIDs = restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
                                  skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust)
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
             // Skill IDs from the file resolve to the rows it created (fresh
             // under `.validate`).
-            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
+            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
             sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }
@@ -1372,7 +1372,7 @@ public enum WorkspaceConfigManager {
         let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
             let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
-            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
+            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
             modelContext.insert(schedule)
         }
 

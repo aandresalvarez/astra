@@ -286,6 +286,8 @@ struct PluginActivationMigrationTests {
         let taskD = AgentTask(title: "D", goal: "Google Cloud", workspace: d)
         context.insert(taskD)
         #expect(TaskCapabilityResolver(task: taskD).allConnectors.map(\.id) == [fixture.sharedGCloudID])
+        // The skill D keeps still has its tools.
+        #expect(skill.localTools.count == fixture.gcloud.localTools.count)
     }
 
     @Test("Secret cleanup is recorded before the save and taken back when it fails")
@@ -314,7 +316,7 @@ struct PluginActivationMigrationTests {
             of: gcloud,
             componentID: CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
         )
-        #expect(PluginSecretCleanupOutbox.liveSkillIDs(modelContext: fixture.context).contains(live))
+        #expect(PluginSecretCleanupOutbox.liveSkillIDs(modelContext: fixture.context)?.contains(live) == true)
         try outbox.write([live])
         PluginSecretCleanupOutbox.resumePending(modelContext: fixture.context, outbox: outbox)
         #expect(try outbox.pending().isEmpty)
@@ -492,6 +494,50 @@ struct PluginActivationMigrationTests {
         #expect(config.skills.contains { $0.id == fixture.editedJiraSkillID.uuidString })
     }
 
+    @Test("Only the exact note the disallowed-tools migration appended counts as unedited")
+    func behaviorMatchIsExact() throws {
+        let note = "\nDo NOT use these tools: Write, Edit."
+        let generated = try Fixture(gcloudBehaviorSuffix: note)
+        #expect(try PluginActivationMigration.migrate(modelContext: generated.context, packages: generated.packages).skillsProjected == 1)
+        let extended = try Fixture(gcloudBehaviorSuffix: note + "\nAlso cite the console link.")
+        let report = try PluginActivationMigration.migrate(modelContext: extended.context, packages: extended.packages)
+        #expect(report.skillsProjected == 0)
+        let kept = try #require(try extended.context.fetch(FetchDescriptor<Skill>()).first { $0.id == extended.gcloudSkillID })
+        #expect(kept.behaviorInstructions.hasSuffix("Also cite the console link."))
+    }
+
+    @Test("A validated import points templates and schedules at the re-minted projected IDs")
+    func validatedImportRemapsProjectedReferences() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let config = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        let oldID = PluginRuntimeProjection.derivedID(workspaceID: a.id, pluginID: "gcloud-workflow", componentID: component)
+        #expect(config.schedules?.first?.skillIDs == [oldID.uuidString])
+
+        let target = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(target)
+        let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+            approvedPackageIDs: ["gcloud-workflow"],
+            installedPackageIDs: ["gcloud-workflow"],
+            availablePackIDs: [],
+            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))]
+        )
+        let imported = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier)
+        ).workspace
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: imported))
+        let newID = PluginRuntimeProjection.derivedID(of: activation, componentID: component)
+        #expect(newID != oldID)
+        #expect(imported.schedules.first?.skillIDs == [newID.uuidString])
+        #expect(imported.templates.first { $0.name == "Weekly GCP report" }?.defaultSkillIDs == [newID.uuidString])
+    }
+
     @Test("A failed migration takes back the secrets it copied")
     func failedMigrationRestoresCopiedSecrets() throws {
         guard AstraSecureKeychainTestSupport.isAvailable else { return }
@@ -558,7 +604,8 @@ private struct Fixture {
         componentOnlyWorkspace: Bool = false,
         gcloudSkillProject: String = "skill-project",
         editedToolDescription: String? = nil,
-        editedSkillIcon: String? = nil
+        editedSkillIcon: String? = nil,
+        gcloudBehaviorSuffix: String? = nil
     ) throws {
         jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
@@ -632,7 +679,7 @@ private struct Fixture {
             skill.skillDescription = gcloudSkillSpec.description
             skill.allowedTools = gcloudSkillSpec.allowedTools
             skill.customTools = gcloudSkillSpec.customTools
-            skill.behaviorInstructions = gcloudSkillSpec.behaviorInstructions
+            skill.behaviorInstructions = gcloudSkillSpec.behaviorInstructions + (gcloudBehaviorSuffix ?? "")
             skill.environmentKeys = ["GCP_PROJECT"] + (gcloudSkillSecret == nil ? [] : ["GCP_API_TOKEN"])
             skill.environmentValues = [gcloudSkillProject] + (gcloudSkillSecret == nil ? [] : [""])
             skill.isGlobal = true
