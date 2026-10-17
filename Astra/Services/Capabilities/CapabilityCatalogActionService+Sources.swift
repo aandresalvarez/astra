@@ -58,6 +58,11 @@ extension CapabilityCatalogActionService {
             checkPrerequisites: false
         )
         guard report.canInstall else { throw CapabilityPackageImportError(report: report) }
+        // Provenance first: an exit after the library write still finds the
+        // new copy named, and a failed write still finds the old one.
+        try coordinator.store.beginProvenance(
+            pluginID: package.id, sourceID: plugin.source.id, digest: PluginSourceCatalog.contentDigest(package)
+        )
         let result = try CapabilityPackageImporter(library: library).importValidatedPackage(
             report,
             modelContext: modelContext,

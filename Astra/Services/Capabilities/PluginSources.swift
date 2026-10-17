@@ -154,10 +154,17 @@ struct PluginSourceStore {
     /// Where an installed plugin came from: its source and the content
     /// digest of the copy that source installed. A record whose digest no
     /// longer matches the installed copy (a file imported over it) doesn't
-    /// count.
+    /// count. `pendingDigest` is the copy an import from the same source is
+    /// writing: it is recorded before the library write, so an exit between
+    /// the two leaves either copy recognised as the source's own.
     struct Provenance: Codable, Equatable, Sendable {
         var sourceID: String
         var digest: String
+        var pendingDigest: String?
+
+        func names(_ digest: String) -> Bool {
+            !digest.isEmpty && (self.digest == digest || pendingDigest == digest)
+        }
     }
 
     private var provenanceURL: URL { root.appendingPathComponent("provenance.json") }
@@ -174,6 +181,24 @@ struct PluginSourceStore {
     func recordProvenance(pluginID: String, sourceID: String, digest: String) throws {
         var records = provenance()
         records[pluginID] = Provenance(sourceID: sourceID, digest: digest)
+        try write(records)
+    }
+
+    /// Records the copy an import from `sourceID` is about to write, before
+    /// the library write. A record for the same source keeps the copy it
+    /// names until `recordProvenance` settles on the new one.
+    func beginProvenance(pluginID: String, sourceID: String, digest: String) throws {
+        var records = provenance()
+        if var record = records[pluginID], record.sourceID == sourceID {
+            record.pendingDigest = digest
+            records[pluginID] = record
+        } else {
+            records[pluginID] = Provenance(sourceID: sourceID, digest: digest)
+        }
+        try write(records)
+    }
+
+    private func write(_ records: [String: Provenance]) throws {
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

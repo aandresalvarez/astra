@@ -173,7 +173,7 @@ enum PluginSourceCatalog {
         provenance: [String: PluginSourceStore.Provenance]
     ) -> Bool {
         guard let record = provenance[installed.id] else { return false }
-        return record.sourceID == source.id && record.digest == contentDigest(installed)
+        return record.sourceID == source.id && record.names(contentDigest(installed))
     }
 
     /// Only from the plugin's own source, only a strictly greater version or

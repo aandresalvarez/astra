@@ -237,6 +237,27 @@ struct PluginSourcesTests {
         if case .changed? = try offer("2.0.0", description: "Edited in place") {} else { Issue.record("an edited same version was not shown as changed") }
     }
 
+    @Test("T5: provenance is written before the library, so an exit between them keeps either copy the source's own")
+    func provenanceSurvivesAnInterruptedImport() throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("source", isDirectory: true)
+        let source = try #require(PluginSource.make(from: folder.path))
+        let old = try Self.package(id: "journaled", version: "1.0.0")
+        let new = try Self.package(id: "journaled", version: "1.1.0")
+        try fixture.store.recordProvenance(pluginID: old.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(old))
+        try fixture.store.beginProvenance(pluginID: new.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(new))
+        // The library write never happened, or happened and the exit came
+        // before the record settled: both copies are the source's own.
+        #expect(PluginSourceCatalog.isOwnCopy(old, of: source, provenance: fixture.store.provenance()))
+        #expect(PluginSourceCatalog.isOwnCopy(new, of: source, provenance: fixture.store.provenance()))
+        let other = try #require(PluginSource.make(from: fixture.root.appendingPathComponent("other").path))
+        #expect(!PluginSourceCatalog.isOwnCopy(new, of: other, provenance: fixture.store.provenance()))
+        // A completed import settles on the new copy alone.
+        try fixture.store.recordProvenance(pluginID: new.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(new))
+        #expect(!PluginSourceCatalog.isOwnCopy(old, of: source, provenance: fixture.store.provenance()))
+        #expect(PluginSourceCatalog.isOwnCopy(new, of: source, provenance: fixture.store.provenance()))
+    }
+
     @Test("T8: a folder edited after review can't be added")
     func addInstallsWhatWasReviewed() throws {
         let fixture = try Fixture()
