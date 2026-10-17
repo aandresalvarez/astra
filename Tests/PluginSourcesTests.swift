@@ -82,19 +82,20 @@ struct PluginSourcesTests {
             "PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_LFS_SKIP_SMUDGE",
             "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "SSH_AUTH_SOCK"
         ]))
-        #expect(environment["GIT_SSH_COMMAND"] == PluginSourceFetcher.sshCommand)
+        #expect(environment["GIT_SSH_COMMAND"] == PluginSourceFetcher.sshCommand(knownHostsFile: fixture.store.knownHostsFile.path))
         #expect(call.timeout <= 300)
     }
 
-    @Test("T3: the ssh a fetch runs reads no SSH config, so no ProxyCommand or LocalCommand can run")
+    @Test("T3: the ssh a fetch runs reads no SSH config, and verifies host keys against ASTRA's own file first")
     func sshReadsNoConfig() throws {
-        let words = PluginSourceFetcher.sshCommand.split(separator: " ").map(String.init)
-        #expect(words.first == "/usr/bin/ssh")
-        #expect(words.contains("-F") && words[words.firstIndex(of: "-F")! + 1] == "/dev/null")
-        // `ssh -G` prints the effective configuration without connecting.
+        let knownHosts = "/tmp/Astra Test/known_hosts"
+        let command = PluginSourceFetcher.sshCommand(knownHostsFile: knownHosts)
+        #expect(command.hasPrefix("/usr/bin/ssh -F /dev/null "))
+        // git runs the command through a shell; `ssh -G` prints the effective
+        // configuration without connecting.
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: words[0])
-        process.arguments = Array(words.dropFirst()) + ["-G", "plugins.example.com"]
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command + " -G plugins.example.com"]
         let output = Pipe()
         process.standardOutput = output
         process.standardError = Pipe()
@@ -108,6 +109,52 @@ struct PluginSourcesTests {
         }
         #expect(lines.contains("permitlocalcommand no"))
         #expect(lines.contains("batchmode yes"))
+        // A first-seen host is kept in ASTRA's file; a changed key is refused.
+        #expect(lines.contains("stricthostkeychecking accept-new"))
+        let files = try #require(lines.first { $0.hasPrefix("userknownhostsfile ") })
+        // ASTRA's file comes first (new keys are written there), its space intact.
+        #expect(files.hasPrefix("userknownhostsfile /tmp/astra test/known_hosts "))
+        #expect(files.contains(".ssh/known_hosts"))
+    }
+
+    @Test("T11: the checkout applies no attribute from the repository, so files are the size measured")
+    func checkoutIgnoresRepositoryAttributes() throws {
+        let args = PluginSourceFetcher.checkoutArguments(in: "/tmp/staging")
+        #expect(args.first == "--attr-source=\(PluginSourceFetcher.emptyTree)")
+        #expect(args.suffix(5) == ["checkout", "--quiet", "HEAD", "--", "."])
+        // Real git: an `ident` attribute would expand every `$Id$`.
+        let fixture = try Fixture()
+        let source = fixture.root.appendingPathComponent("src", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data("* ident\n".utf8).write(to: source.appendingPathComponent(".gitattributes"))
+        let body = String(repeating: "$Id$", count: 500)
+        try Data(body.utf8).write(to: source.appendingPathComponent("f.txt"))
+        let env = PluginSourceFetcher.environment(knownHostsFile: fixture.store.knownHostsFile.path)
+        func git(_ arguments: [String], in directory: URL) throws {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = ["-C", directory.path] + arguments
+            process.environment = env
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            try process.run()
+            process.waitUntilExit()
+            #expect(process.terminationStatus == 0, "\(arguments)")
+        }
+        try git(["init", "-q"], in: source)
+        try git(["add", "-A"], in: source)
+        try git(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "x"], in: source)
+        let staging = fixture.root.appendingPathComponent("staging", isDirectory: true)
+        try git(["clone", "-q", "--no-checkout", source.path, staging.path], in: fixture.root)
+        let checkout = Process()
+        checkout.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        checkout.arguments = PluginSourceFetcher.checkoutArguments(in: staging.path, allowedProtocols: ["file"])
+        checkout.environment = env
+        try checkout.run()
+        checkout.waitUntilExit()
+        #expect(checkout.terminationStatus == 0)
+        let written = try Data(contentsOf: staging.appendingPathComponent("f.txt"))
+        #expect(written.count == body.utf8.count)
     }
 
     @Test("T3: a hook the person's git config names does not run during a fetch")

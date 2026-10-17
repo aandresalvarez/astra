@@ -120,6 +120,10 @@ struct PluginSourceStore {
         self.fileManager = fileManager
     }
 
+    /// Host keys of the SSH sources ASTRA has fetched, first seen on first
+    /// use (`PluginSourceFetcher.sshCommand`).
+    var knownHostsFile: URL { root.appendingPathComponent("known_hosts") }
+
     static func defaultRoot(for channel: AppChannel = .current) -> URL {
         AppChannelStoragePaths.applicationSupportDirectory(for: channel)
             .appendingPathComponent("PluginSources", isDirectory: true)
@@ -265,11 +269,12 @@ struct PluginSourceFetcher {
         try fileManager.createDirectory(at: store.root, withIntermediateDirectories: true)
         let staging = store.root.appendingPathComponent(".\(source.id)-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: staging) }
+        let environment = Self.environment(knownHostsFile: store.knownHostsFile.path)
 
         // 1. Download without a checkout, stopped if it grows past the bound.
         let result = try await runBounded(
             git, Self.cloneArguments(location: source.location, into: staging.path, allowedProtocols: allowedProtocols),
-            watching: staging, fileManager: fileManager
+            watching: staging, environment: environment, fileManager: fileManager
         )
         if result.timedOut { throw PluginSourceFetchError.timedOut }
         guard result.exitCode == 0, fileManager.fileExists(atPath: staging.path) else {
@@ -280,7 +285,7 @@ struct PluginSourceFetcher {
             path: git,
             args: Self.hardening(allowedProtocols: allowedProtocols) + ["-C", staging.path, "ls-tree", "-r", "-l", "--full-tree", "HEAD"],
             timeout: timeout,
-            environment: Self.environment()
+            environment: environment
         )
         guard tree.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(tree)) }
         let sizes = Self.blobSizes(tree.stdout)
@@ -290,9 +295,9 @@ struct PluginSourceFetcher {
         // 3. Check out under the same isolated configuration.
         let checkout = await runner.run(
             path: git,
-            args: Self.hardening(allowedProtocols: allowedProtocols) + ["-C", staging.path, "checkout", "--quiet", "HEAD", "--", "."],
+            args: Self.checkoutArguments(in: staging.path, allowedProtocols: allowedProtocols),
             timeout: timeout,
-            environment: Self.environment()
+            environment: environment
         )
         guard checkout.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(checkout)) }
 
@@ -310,13 +315,14 @@ struct PluginSourceFetcher {
         _ git: String,
         _ args: [String],
         watching directory: URL,
+        environment: [String: String],
         fileManager: FileManager
     ) async throws -> RunResult {
         let limit = maxDownloadBytes
         let (runner, timeout) = (self.runner, self.timeout)
         return try await withThrowingTaskGroup(of: RunResult?.self) { group in
             group.addTask {
-                await runner.run(path: git, args: args, timeout: timeout, environment: Self.environment())
+                await runner.run(path: git, args: args, timeout: timeout, environment: environment)
             }
             group.addTask {
                 while !Task.isCancelled {
@@ -382,7 +388,21 @@ struct PluginSourceFetcher {
             + ["clone", "--depth", "1", "--no-checkout", "--no-recurse-submodules", "--quiet", "--", location, path]
     }
 
-    static func environment(base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+    /// The checkout reads no attributes from the repository: `ident`,
+    /// `working-tree-encoding` or a filter in its `.gitattributes` would make
+    /// the files written larger than the blobs measured (T11). The empty tree
+    /// is the attribute source.
+    static func checkoutArguments(in path: String, allowedProtocols: [String] = ["https", "ssh"]) -> [String] {
+        ["--attr-source=\(emptyTree)"] + hardening(allowedProtocols: allowedProtocols)
+            + ["-C", path, "checkout", "--quiet", "HEAD", "--", "."]
+    }
+
+    static let emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    static func environment(
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        knownHostsFile: String
+    ) -> [String: String] {
         var environment = ["PATH": base["PATH"] ?? "/usr/bin:/bin", "HOME": base["HOME"] ?? NSHomeDirectory()]
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -393,20 +413,32 @@ struct PluginSourceFetcher {
         // ssh reads no config file either: a `ProxyCommand`, `Match exec` or
         // `LocalCommand` in ~/.ssh/config or the system one would run a shell
         // command. Only the agent authenticates.
-        environment["GIT_SSH_COMMAND"] = sshCommand
+        environment["GIT_SSH_COMMAND"] = sshCommand(knownHostsFile: knownHostsFile)
         environment["GIT_SSH_VARIANT"] = "ssh"
         if let agent = base["SSH_AUTH_SOCK"] { environment["SSH_AUTH_SOCK"] = agent }
         return environment
     }
 
     /// The ssh a fetch runs: no config file, nothing that executes a command
-    /// or forwards anything, never a prompt.
-    static let sshCommand = [
-        "/usr/bin/ssh", "-F", "/dev/null",
-        "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "PermitLocalCommand=no",
-        "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ControlMaster=no",
-        "-o", "ControlPath=none", "-o", "BatchMode=yes"
-    ].joined(separator: " ")
+    /// or forwards anything, never a prompt. A host seen for the first time
+    /// is accepted and its key kept in ASTRA's own known-hosts file
+    /// (`accept-new`); a known host whose key changed is refused, so the
+    /// key is still verified on every later fetch. The person's
+    /// `~/.ssh/known_hosts` is read, never written.
+    static func sshCommand(knownHostsFile: String) -> String {
+        let knownHosts = "UserKnownHostsFile=\"\(knownHostsFile)\" ~/.ssh/known_hosts"
+        return [
+            "/usr/bin/ssh", "-F", "/dev/null",
+            "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "PermitLocalCommand=no",
+            "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "ControlMaster=no",
+            "-o", "ControlPath=none", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+            "-o", shellQuoted(knownHosts)
+        ].joined(separator: " ")
+    }
+
+    private static func shellQuoted(_ word: String) -> String {
+        "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }
 
 /// A source's files through the file-access broker (T4, T11). A path is read
