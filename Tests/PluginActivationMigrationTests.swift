@@ -252,6 +252,59 @@ struct PluginActivationMigrationTests {
         #expect(record.skills.contains { $0.skillID == projectedID })
     }
 
+    @Test("A shared row a workspace turned on without its plugin survives there")
+    func componentOnlyMembershipSurvives() throws {
+        let fixture = try Fixture(componentOnlyWorkspace: true)
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let d = try fixture.workspace(fixture.dID)
+        let a = try fixture.workspace(fixture.aID)
+
+        // D listed the GCloud skill and the shared Google Cloud row directly.
+        #expect(d.pluginActivations.isEmpty)
+        let skill = try #require(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        #expect(skill.originPackageID == nil)
+        #expect(d.enabledGlobalSkillIDs == [fixture.gcloudSkillID.uuidString])
+        #expect(d.enabledGlobalConnectorIDs == [fixture.sharedGCloudID.uuidString])
+        // A, which has the plugin, uses the projection instead of the row.
+        #expect(!a.enabledGlobalSkillIDs.contains(fixture.gcloudSkillID.uuidString))
+        let taskD = AgentTask(title: "D", goal: "Google Cloud", workspace: d)
+        context.insert(taskD)
+        #expect(TaskCapabilityResolver(task: taskD).allConnectors.map(\.id) == [fixture.sharedGCloudID])
+    }
+
+    @Test("Secret cleanup is recorded before the save and taken back when it fails")
+    func secretCleanupOutboxRecordsBeforeSave() throws {
+        let fixture = try Fixture()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-plugin-secret-outbox-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outbox = PluginSecretCleanupOutbox(fileURL: directory.appendingPathComponent("PluginSecretCleanup.json"))
+        let orphan = UUID()
+
+        var recordedDuringSave: [UUID] = []
+        let failed = PluginSecretCleanupOutbox.deleteThenClean([orphan], modelContext: fixture.context, outbox: outbox) {
+            recordedDuringSave = (try? outbox.pending()) ?? []
+            return false
+        }
+        #expect(!failed)
+        #expect(recordedDuringSave == [orphan])
+        #expect(try outbox.pending().isEmpty)
+
+        // A namespace something live still names is dropped, never cleaned.
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let gcloud = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        let live = PluginRuntimeProjection.derivedID(
+            activationID: gcloud.id,
+            componentID: CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        )
+        #expect(PluginSecretCleanupOutbox.liveSkillIDs(modelContext: fixture.context).contains(live))
+        try outbox.write([live])
+        PluginSecretCleanupOutbox.resumePending(modelContext: fixture.context, outbox: outbox)
+        #expect(try outbox.pending().isEmpty)
+    }
+
     @Test("A plugin missing from the library keeps its activation and its rows")
     func missingLibraryEntryKeepsActivationAndRows() throws {
         let fixture = try Fixture()
@@ -320,6 +373,7 @@ private struct Fixture {
     let aID = UUID()
     let bID = UUID()
     let cID = UUID()
+    let dID = UUID()
     let jiraAccount1ID: UUID
     let jiraAccount2ID: UUID
     let jiraAccountBID: UUID
@@ -329,7 +383,7 @@ private struct Fixture {
 
     private static var retained: [ModelContainer] = []
 
-    init(gcloudSkillSecret: String? = nil) throws {
+    init(gcloudSkillSecret: String? = nil, componentOnlyWorkspace: Bool = false) throws {
         jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
         packages = PluginCatalog.builtInPackages
@@ -412,6 +466,11 @@ private struct Fixture {
             shared.skill = skill
             ids["gcloudSkill"] = skill.id
             a.enabledGlobalSkillIDs = [skill.id.uuidString]
+            if componentOnlyWorkspace {
+                let d = workspace(dID, "D")
+                d.enabledGlobalSkillIDs = [skill.id.uuidString]
+                d.enabledGlobalConnectorIDs = [shared.id.uuidString]
+            }
 
             for toolSpec in gcloud.localTools {
                 let tool = V19.LocalTool()

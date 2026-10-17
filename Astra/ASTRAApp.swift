@@ -974,6 +974,7 @@ public struct ASTRAApp: App {
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
                     ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                    PluginSecretCleanupOutbox.resumePending(modelContext: modelContext)
                     WorkspaceDeletionCleanupService.dropUnconfirmed(
                         modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
                     )

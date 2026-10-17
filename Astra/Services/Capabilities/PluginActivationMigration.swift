@@ -23,8 +23,11 @@ import ASTRAPersistence
 ///   templates and schedules that named it are pointed at the projected ID,
 ///   and the row is deleted. An edited one stays as an authored skill and the
 ///   activation skips its component. Tools follow the same rule.
-/// - A row whose plugin is no longer in the library, or that no activation
-///   uses, is kept as an authored row rather than lost.
+/// - A row whose plugin is no longer in the library, that no activation
+///   uses, or that a workspace turned on by itself without the plugin, is
+///   kept as an authored row rather than lost.
+/// - Deleted rows' secret namespaces go through `PluginSecretCleanupOutbox`,
+///   recorded before the save.
 ///
 /// Every change is one save. A secret that cannot be copied aborts the whole
 /// migration before the save, so nothing is deleted with its settings
@@ -42,6 +45,7 @@ enum PluginActivationMigration {
 
     enum MigrationError: Error, Equatable {
         case secretCopyFailed(skill: String, key: String)
+        case cleanupUnrecordable
     }
 
     /// Runs the migration against the app's store when it has legacy state.
@@ -90,7 +94,7 @@ enum PluginActivationMigration {
         let skills = try modelContext.fetch(FetchDescriptor<Skill>())
         let tools = try modelContext.fetch(FetchDescriptor<LocalTool>())
         var report = Report()
-        var afterSave: [() -> Void] = []
+        var releasedSkillIDs: [UUID] = []
 
         do {
             for workspace in workspaces {
@@ -161,11 +165,19 @@ enum PluginActivationMigration {
                     retarget(skillID: skill.id, to: projectedID, in: workspace)
                 }
                 let skillID = skill.id.uuidString
-                for workspace in workspaces where workspace.enabledGlobalSkillIDs.contains(skillID) {
+                let usingIDs = Set(using.map(\.0.id))
+                for workspace in workspaces
+                where workspace.enabledGlobalSkillIDs.contains(skillID) && usingIDs.contains(workspace.id) {
                     WorkspaceCapabilityActivation.mutate(workspace) { $0.globalSkillIDs.removeAll { $0 == skillID } }
                 }
-                let cleanup = skill.keychainCleanup
-                afterSave.append { cleanup.run() }
+                // A workspace that turned this one shared row on without its
+                // plugin keeps it, as an authored row it alone still lists.
+                if workspaces.contains(where: { !usingIDs.contains($0.id) && $0.enabledGlobalSkillIDs.contains(skillID) }) {
+                    clearOrigin(skill)
+                    report.skillsKeptAsAuthored += 1
+                    continue
+                }
+                releasedSkillIDs.append(skill.id)
                 for connector in skill.connectors { connector.skill = nil }
                 for tool in skill.localTools { tool.skill = nil }
                 modelContext.delete(skill)
@@ -196,19 +208,38 @@ enum PluginActivationMigration {
                     continue
                 }
                 let toolID = tool.id.uuidString
-                for workspace in workspaces where workspace.enabledGlobalToolIDs.contains(toolID) {
+                let usingIDs = Set(using.map(\.0.id))
+                for workspace in workspaces
+                where workspace.enabledGlobalToolIDs.contains(toolID) && usingIDs.contains(workspace.id) {
                     WorkspaceCapabilityActivation.mutate(workspace) { $0.globalToolIDs.removeAll { $0 == toolID } }
+                }
+                if workspaces.contains(where: { !usingIDs.contains($0.id) && $0.enabledGlobalToolIDs.contains(toolID) }) {
+                    clearOrigin(tool)
+                    tool.skill = nil
+                    report.toolsKeptAsAuthored += 1
+                    continue
                 }
                 modelContext.delete(tool)
                 report.toolsProjected += 1
             }
 
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: nil, modelContext: modelContext)
+            // The deleted rows' secret namespaces are recorded before the
+            // save: once it lands, nothing in the store names them.
+            var saveError: Error?
+            let saved = PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext) {
+                do {
+                    try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: nil, modelContext: modelContext)
+                    return true
+                } catch {
+                    saveError = error
+                    return false
+                }
+            }
+            guard saved else { throw saveError ?? MigrationError.cleanupUnrecordable }
         } catch {
             modelContext.rollback()
             throw error
         }
-        afterSave.forEach { $0() }
         return report
     }
 

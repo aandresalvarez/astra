@@ -102,6 +102,7 @@ struct CapabilityUninstaller {
         // Remove never deletes a connector, so no connector namespace is
         // released here.
         let pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
+        var activationSecretSkillIDs: [UUID] = []
 
         for workspace in workspaces {
             let remainingWorkspacePackages = remainingPackages.filter {
@@ -126,16 +127,14 @@ struct CapabilityUninstaller {
                 workspace.enabledGlobalToolIDs.contains { removableGlobalToolIDs.contains($0) }
 
             // The activation's secret settings live under its projected
-            // skills' IDs; they go once the activation's deletion is saved.
+            // skills' IDs, which nothing can derive once the activation is
+            // gone: they are recorded before the save and cleaned after it.
             if let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
-                let projectedSkillIDs = package.skills.map {
+                activationSecretSkillIDs += package.skills.map {
                     PluginRuntimeProjection.derivedID(
                         activationID: activation.id,
                         componentID: CapabilityResourceOrigin.componentID(for: $0)
                     )
-                }
-                pendingKeychainCleanups.append {
-                    projectedSkillIDs.forEach { SkillSecretSeam.required.deleteAllSecrets(skillID: $0) }
                 }
             }
             WorkspaceCapabilityActivation.mutate(workspace) {
@@ -187,7 +186,11 @@ struct CapabilityUninstaller {
         // keeps its credentials; any that don't clear are retried at launch.
         guard ConnectorCredentialCleanup.deleteThenClean(
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
-            save: { persist(nil, modelContext) }
+            save: {
+                PluginSecretCleanupOutbox.deleteThenClean(activationSecretSkillIDs, modelContext: modelContext) {
+                    persist(nil, modelContext)
+                }
+            }
         ) else {
             // Abort before touching the keychain or the library file: the
             // deletes were not persisted, so removing either would strand
