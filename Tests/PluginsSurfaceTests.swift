@@ -34,10 +34,25 @@ struct PluginsSurfaceTests {
         let off = PluginsSurfaceConfirmation.turnOff(packageID: "jira").copy(name: "Jira", hasAccounts: true)
         #expect(off.verb == "Turn off")
         #expect(off.message.contains("in this workspace") && off.message.contains("saved keys"))
+        // Shared accounts aren't deleted by turning a plugin off, so the copy
+        // doesn't promise it.
+        #expect(off.message.contains("shared accounts are kept"))
         #expect(!PluginsSurfaceConfirmation.turnOff(packageID: "x").copy(name: "X", hasAccounts: false).message.contains("keys"))
         let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira", hasAccounts: true)
         #expect(remove.verb == "Remove")
         #expect(remove.message.contains("every workspace"))
+    }
+
+    @Test("Expanded plugin rows are remembered per workspace")
+    func expansionIsRemembered() throws {
+        let defaults = InMemoryDefaults()
+        let first = UUID()
+        let second = UUID()
+        PluginsSurfacePreferences.setExpandedPluginIDs(["jira", "github"], workspaceID: first, in: defaults)
+        #expect(PluginsSurfacePreferences.expandedPluginIDs(workspaceID: first, in: defaults) == ["jira", "github"])
+        #expect(PluginsSurfacePreferences.expandedPluginIDs(workspaceID: second, in: defaults).isEmpty)
+        PluginsSurfacePreferences.setExpandedPluginIDs([], workspaceID: first, in: defaults)
+        #expect(PluginsSurfacePreferences.expandedPluginIDs(workspaceID: first, in: defaults).isEmpty)
     }
 
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")

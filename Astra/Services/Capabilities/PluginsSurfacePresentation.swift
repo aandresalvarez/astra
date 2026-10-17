@@ -113,8 +113,10 @@ enum PluginsSurfaceConfirmation: Equatable {
     func copy(name: String, hasAccounts: Bool) -> (message: String, verb: String) {
         switch self {
         case .turnOff:
+            // What the disabler deletes: the accounts this workspace owns.
+            // A shared account (and its keys) stays for the other workspaces.
             let detail = hasAccounts
-                ? " Its accounts and saved keys in this workspace are deleted; turning it on again asks for them."
+                ? " The accounts it created in this workspace and their saved keys are deleted; shared accounts are kept. Turning it on again asks for the deleted ones."
                 : " Turning it on again restores it."
             return ("Turn off \(name) in this workspace?" + detail, "Turn off")
         case .remove:

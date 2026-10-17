@@ -99,12 +99,16 @@ struct PluginsSurfaceView: View {
         }
         .padding(16)
         .onAppear {
+            expanded = PluginsSurfacePreferences.expandedPluginIDs(workspaceID: workspace.id)
             refreshApprovalRecords()
             if catalog.packages.isEmpty {
                 catalog.loadApprovedCapabilities()
                 onCatalogChanged()
             }
             refreshStatuses()
+        }
+        .onChange(of: expanded) { _, ids in
+            PluginsSurfacePreferences.setExpandedPluginIDs(ids, workspaceID: workspace.id)
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
             refreshApprovalRecords()
