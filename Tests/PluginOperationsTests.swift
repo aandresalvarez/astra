@@ -166,6 +166,49 @@ struct PluginOperationsTests {
         #expect(try journal.pending().isEmpty)
     }
 
+    @Test("Import through the action service: a valid file is installed, a blocked one refused")
+    func importThroughActionService() throws {
+        let env = try Environment()
+        let package = Self.package(version: "1.0.0")
+        let data = try JSONEncoder().encode(package)
+        let report = CapabilityPackageValidator.validate(data: data, installedPackages: [], checkPrerequisites: false)
+        let service = CapabilityCatalogActionService(library: env.library)
+        let result = try service.importPlugin(report, workspace: env.workspace, modelContext: env.context, traceID: "t")
+        #expect(result.package.id == package.id)
+        #expect(env.library.installedPackage(id: package.id) != nil)
+
+        let blocked = CapabilityPackageValidator.validate(data: Data("{}".utf8), installedPackages: [], checkPrerequisites: false)
+        #expect(throws: CapabilityPackageImportError.self) {
+            try service.importPlugin(blocked, workspace: env.workspace, modelContext: env.context, traceID: "t")
+        }
+    }
+
+    @Test("An admin's review records the status for this version's digest")
+    func adminReviewRecordsStatus() throws {
+        let env = try Environment()
+        let store = CapabilityApprovalStore(directory: env.root.appendingPathComponent("approvals", isDirectory: true))
+        let package = Self.package(version: "1.0.0")
+        try CapabilityCatalogActionService(library: env.library)
+            .setApprovalStatus(.blocked, for: package, workspace: env.workspace, approvalStore: store)
+        let record = try #require(store.record(for: package))
+        #expect(record.status == .blocked)
+        #expect(record.sourceDigest == PluginUpdateService.digest(of: package))
+    }
+
+    @Test("A plugin that needs an account sign-in ASTRA can't do is listed without Add")
+    func oauthPluginIsNotOffered() throws {
+        let google = try #require(PluginCatalog.builtInPackages.first { $0.id == "google-workspace" })
+        let reason = try #require(PluginsSurfacePresentation.unavailableReason(for: google))
+        var input = PluginsSurfacePresentation.Input(
+            package: google, isEnabled: false, pendingSteps: 0, isVisible: true, isRemovable: false
+        )
+        input.unavailableReason = reason
+        let row = try #require(PluginsSurfacePresentation.makeState([input], query: "").available.first)
+        #expect(row.verb == nil)
+        #expect(row.subtitle == reason)
+        #expect(PluginsSurfacePresentation.unavailableReason(for: Self.package(version: "1.0.0")) == nil)
+    }
+
     @Test("The automatic pass moves renames but never releases; Update does")
     func automaticPassWithholdsReleases() throws {
         let env = try Environment()

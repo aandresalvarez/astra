@@ -32,8 +32,10 @@ struct CapabilityCatalogActionService {
         case connectAccount
     }
 
-    /// OAuth providers with a real sign-in flow (`CapabilityInstallSheetRouter`).
-    static let supportedOAuthProviders: Set<String> = [GoogleWorkspaceCapability.connectorBinding]
+    /// OAuth providers ASTRA can sign in to: none. The Google OAuth stack is
+    /// deleted (owner decision), so a plugin that needs an account sign-in
+    /// can't be added (`PluginsSurfacePresentation.unavailableReason`).
+    static let supportedOAuthProviders: Set<String> = []
 
     /// How Add handles `package`. A package that needs an account of a
     /// provider ASTRA can't sign in to is refused: the router's fallback
@@ -198,8 +200,7 @@ struct CapabilityCatalogActionService {
 
     /// The approval Add writes when the policy holds `package` for review:
     /// the person adding it is the reviewer. Returns the context to enable
-    /// against. An install flow that connects an account first (OAuth) takes
-    /// it the same way, so its enable isn't refused for want of approval.
+    /// against.
     func grantPendingApproval(
         for package: PluginPackage,
         policyContext: CapabilityCatalogPolicyContext,
@@ -300,6 +301,79 @@ struct CapabilityCatalogActionService {
     func deleteAccount(_ account: Connector, modelContext: ModelContext) throws {
         try PluginOperations.deleteAccount(account, modelContext: modelContext)
         CapabilityCatalogPersistenceEvents.post(.global)
+    }
+
+    /// Imports a validated plugin file. A newer version of an installed
+    /// plugin is an Update for every workspace (see
+    /// `CapabilityPackageImporter.importValidatedPackage`).
+    @discardableResult
+    func importPlugin(
+        _ report: CapabilityPackageValidationReport,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        traceID: String
+    ) throws -> CapabilityPackageImportResult {
+        guard report.canInstall else {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: CapabilityAudit.importJSONFailureFields(
+                report: report, workspace: workspace, traceID: traceID, result: "validation_blocked"
+            ), level: .warning)
+            throw CapabilityPackageImportError(report: report)
+        }
+        do {
+            let result = try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: modelContext)
+            AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
+                "source": "import_json",
+                "trace_id": traceID,
+                "package_id": result.package.id,
+                "package_name": result.package.name,
+                "package_version": result.package.version,
+                "workspace_id": workspace.id.uuidString
+            ])
+            return result
+        } catch {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: CapabilityAudit.importJSONFailureFields(
+                report: report, workspace: workspace, traceID: traceID, result: "import_failed",
+                errorType: String(describing: type(of: error))
+            ), level: .error)
+            throw error
+        }
+    }
+
+    /// An admin's catalog review of one version (digest) of a plugin.
+    func setApprovalStatus(
+        _ status: CapabilityApprovalStatus,
+        for package: PluginPackage,
+        workspace: Workspace,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore()
+    ) throws {
+        let traceID = AuditTrace.make("capability-approval")
+        do {
+            let record = try approvalStore.save(
+                package: package,
+                status: status,
+                approvedBy: "ASTRA local admin",
+                reviewNotes: "Updated from the Plugins review controls."
+            )
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
+                "source": "plugins_review",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "package_version": package.version,
+                "status": record.status.rawValue,
+                "workspace_id": workspace.id.uuidString,
+                "digest_prefix": String(record.sourceDigest.prefix(12))
+            ])
+        } catch {
+            AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
+                "source": "plugins_review",
+                "trace_id": traceID,
+                "package_id": package.id,
+                "status": status.rawValue,
+                "result": "failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            throw error
+        }
     }
 
     private func failureFields(

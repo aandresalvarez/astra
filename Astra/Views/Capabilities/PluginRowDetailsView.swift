@@ -17,7 +17,10 @@ struct PluginRowDetailsView<SetupRow: View>: View {
     let setupRow: (PluginComponent) -> SetupRow
     let onEditAccount: (UUID) -> Void
     let onConfirm: (PluginsSurfaceConfirmation) -> Void
+    let approvalRecords: [CapabilityApprovalRecord]
+    let policyContext: CapabilityCatalogPolicyContext
     let onTurnOff: () -> Void
+    let onSetApproval: (CapabilityApprovalStatus) -> Void
     let onUpdate: () -> Void
     let onChanged: () -> Void
     let onError: (String) -> Void
@@ -41,6 +44,7 @@ struct PluginRowDetailsView<SetupRow: View>: View {
             ForEach(Array(otherComponents.enumerated()), id: \.offset) { _, component in
                 setupRow(component)
             }
+            adminReview
             footer
         }
         .onAppear(perform: loadDrafts)
@@ -143,6 +147,30 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                     .tint(Stanford.lagunita)
                     .padding(.leading, 12)
             }
+        }
+    }
+
+    // MARK: - Admin review
+
+    /// An admin's review of this version: Approve, Deprecate or Block, keyed
+    /// to its digest (the approval store records which one was reviewed).
+    @ViewBuilder
+    private var adminReview: some View {
+        if let review = PluginCatalogApprovalState.adminReviewState(
+            for: row.package, policyContext: policyContext, approvalRecords: approvalRecords
+        ) {
+            HStack(spacing: 8) {
+                Text("Review").font(Stanford.ui(13))
+                Text(review.digestLabel).font(Stanford.caption(11)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Approve") { onSetApproval(.approved) }
+                    .disabled(review.record?.status == .approved)
+                Button("Deprecate") { onSetApproval(.deprecated) }
+                    .disabled(review.record?.status == .deprecated)
+                Button("Block", role: .destructive) { onSetApproval(.blocked) }
+                    .disabled(review.record?.status == .blocked)
+            }
+            .controlSize(.small)
         }
     }
 

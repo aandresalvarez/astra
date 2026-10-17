@@ -29,7 +29,7 @@ struct PreferenceDomainFitnessTests {
     ]
 
     /// Lower this as suites migrate to `InMemoryDefaults`. Never raise it.
-    private static let allowedSuiteConstructionSites = 51
+    private static let allowedSuiteConstructionSites = 50
 
     @Test("Test suites do not mint per-run UserDefaults domains")
     func testSuitesDoNotMintPerRunUserDefaultsDomains() throws {

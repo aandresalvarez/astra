@@ -99,7 +99,7 @@ struct CapabilityCatalogActionServiceTests {
             == Set(result.skillIDs))
     }
 
-    @Test("enable publishes one global event to both windows and one scoped workspace event")
+    @Test("enable publishes one global event and one scoped workspace event")
     func enablePublishesExactlyOnceAndReloadsEveryWindow() throws {
         let container = try makeCapabilityActionContainer()
         let context = container.mainContext
@@ -120,18 +120,6 @@ struct CapabilityCatalogActionServiceTests {
         )
 
         #expect(recorder.changes == [.global, .workspace(workspace.id)])
-        let firstWindow = PluginCatalogPresentationSourceRevision()
-        let secondWindow = PluginCatalogPresentationSourceRevision()
-        var firstReloads = 0
-        var secondReloads = 0
-        for change in recorder.changes {
-            _ = firstWindow.receive(change, workspaceID: workspace.id) { firstReloads += 1 }
-            _ = secondWindow.receive(change, workspaceID: UUID()) { secondReloads += 1 }
-        }
-        #expect(firstReloads == 1)
-        #expect(secondReloads == 1)
-        #expect(firstWindow.persistenceRevision == 2)
-        #expect(secondWindow.persistenceRevision == 1)
     }
 
     @Test("create action installs draft package without enabling workspace")

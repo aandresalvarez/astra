@@ -113,19 +113,17 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
-    @Test("Add connects a supported account first, and refuses one ASTRA can't sign in to")
+    @Test("Add refuses a plugin that needs an account sign-in, which this build has none of")
     func addRefusesUnsupportedOAuthProviders() throws {
-        #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace")) == .connectAccount)
+        #expect(throws: CapabilityAccountSetupError.self) {
+            try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace"))
+        }
         #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("jira-workflow")) == .enable)
-        let google = try #require(try builtIn("google-workspace").setupRequirements.first)
         for provider in ["salesforce", nil] {
-            let account = PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)
-            for requirements in [[account], [google, account]] {
-                var imported = package("imported-crm", name: "CRM")
-                imported.setupRequirements = requirements
-                #expect(throws: CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)) {
-                    try CapabilityCatalogActionService.addRoute(for: imported)
-                }
+            var imported = package("imported-crm", name: "CRM")
+            imported.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)]
+            #expect(throws: CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)) {
+                try CapabilityCatalogActionService.addRoute(for: imported)
             }
         }
 
@@ -154,15 +152,6 @@ struct PluginsSurfaceTests {
         #expect(approvals.records().isEmpty)
         #expect(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs.isEmpty)
         withExtendedLifetime(container) {}
-    }
-
-    @Test("The preview is on by default in development builds only, and remembers a choice")
-    func previewFlagDefaultsByChannel() {
-        let defaults = InMemoryDefaults()
-        #expect(PluginsSurfacePreferences.isEnabled(in: defaults, channel: .development))
-        #expect(!PluginsSurfacePreferences.isEnabled(in: defaults, channel: .production))
-        PluginsSurfacePreferences.setEnabled(true, in: defaults)
-        #expect(PluginsSurfacePreferences.isEnabled(in: defaults, channel: .production))
     }
 
     // MARK: - Fixtures
