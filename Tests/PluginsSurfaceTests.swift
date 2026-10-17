@@ -150,17 +150,30 @@ struct PluginsSurfaceTests {
         return try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: url))
     }
 
-    @Test("A plugin whose setup connects an account is listed without Add, saying where to add it")
-    func oauthSetupIsNotAddedHere() throws {
-        let google = try #require(PluginCatalog.builtInPackages.first { $0.id == "google-workspace" })
-        let reason = try #require(PluginsSurfacePresentation.unavailableReason(for: google))
-        let input = PluginsSurfacePresentation.Input(
-            package: google, isEnabled: false, pendingSteps: 0, isVisible: true, isRemovable: false,
-            unavailableReason: reason
-        )
-        let row = try #require(PluginsSurfacePresentation.makeState([input], query: "").available.first)
-        #expect(row.verb == nil)
-        #expect(row.subtitle == reason)
+    @Test("A manifest of another version, or one restricting a runtime ASTRA can't enforce, is refused")
+    func manifestsFailClosed() throws {
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        var future = PluginManifestConverter.manifest(from: jira)
+        future.manifestVersion = 2
+        #expect(throws: PluginManifestError.unsupportedVersion(2)) { try PluginManifestConverter.checkedPackage(from: future) }
+        var restricted = PluginManifestConverter.manifest(from: jira)
+        restricted.worksOn["cursor_cli"] = .unsupported
+        #expect(throws: PluginManifestError.unenforcedRuntimeRestriction(runtime: "cursor_cli")) {
+            try PluginManifestConverter.checkedPackage(from: restricted)
+        }
+        #expect((try? PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: jira))) != nil)
+    }
+
+    @Test("A repair or install link opens only an https page")
+    func repairURLsAreWebPages() throws {
+        #expect(RepairAction.isSafeRepairURL(try #require(URL(string: "https://cloud.google.com/sdk"))))
+        for unsafe in ["file:///etc/passwd", "smb://share/x", "x-custom://open", "http://example.com"] {
+            #expect(!RepairAction.isSafeRepairURL(try #require(URL(string: unsafe))), "\(unsafe)")
+        }
+        var package = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
+        package.prerequisites[0].installURL = URL(string: "file:///Applications/Calculator.app")
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Unsafe install link" })
     }
 
     @Test("Importing a Plugins 2.0 manifest file decodes it as a package")
