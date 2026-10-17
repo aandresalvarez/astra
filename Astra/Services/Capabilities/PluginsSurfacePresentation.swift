@@ -79,6 +79,13 @@ enum PluginsSurfacePresentation {
         return contents.isEmpty ? pending : "\(pending) · \(contents)"
     }
 
+    /// Whether a row offers Turn off, which never deletes. A standalone
+    /// workspace skill (`skill.<uuid>`) is on for as long as it exists, so it
+    /// is edited or deleted where it was written, not switched off here.
+    static func offersTurnOff(_ package: PluginPackage) -> Bool {
+        !(package.id.hasPrefix("skill.") && package.sourceMetadata?.kind == "workspace")
+    }
+
     /// Name, summary and tags, plus what is inside: skill names, tool names and
     /// commands, MCP servers, connector services. "bigquery" finds Google Cloud
     /// through its `bq` tool's description.
@@ -113,7 +120,9 @@ enum PluginsSurfaceConfirmation: Equatable {
     func copy(name: String, hasAccounts: Bool) -> (message: String, verb: String) {
         switch self {
         case .turnOff:
-            // The disabler deletes nothing: accounts, settings and keys stay.
+            // Turn off deletes nothing: accounts, settings and keys stay. A
+            // standalone workspace skill, which only deleting turns off, is
+            // not offered it (`PluginsSurfacePresentation.offersTurnOff`).
             return (
                 "Turn off \(name) in this workspace? Nothing is deleted: its accounts, settings and saved keys stay, and turning it on again restores it.",
                 "Turn off"

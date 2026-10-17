@@ -1164,8 +1164,11 @@ final class TaskLifecycleCoordinator {
                             dupConfig.tasks = freshExport.tasks
                         }
                     }
+                    // The file's projected skill IDs (in its templates and
+                    // schedules) were derived from the ID cleared above.
                     return WorkspaceConfigManager.importWorkspace(
-                        from: dupConfig, modelContext: modelContext, capabilityTrust: .validate(.live())
+                        from: dupConfig, modelContext: modelContext, capabilityTrust: .validate(.live()),
+                        sourceWorkspaceID: configID.flatMap(UUID.init(uuidString:))
                     )
                 }
             }

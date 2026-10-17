@@ -155,6 +155,49 @@ struct PluginActivationMigrationTests {
         #expect(try context.fetch(FetchDescriptor<PluginActivation>()).count == 5)
     }
 
+    @Test("A queued request runs with the plugins it was submitted with, not ones changed while it waited")
+    func queuedRequestKeepsSubmittedActivations() throws {
+        let fixture = try Fixture()
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let task = AgentTask(title: "A", goal: "Use Jira and Google Cloud", workspace: a)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        context.insert(request)
+        try context.save()
+        let submitted = TaskCapabilityResolver(task: task).resolvedScope(.fullInventory)
+
+        // While it waits, Google Cloud's setting changes and both plugins
+        // are turned off. Google Cloud's account is a shared row the live
+        // workspace no longer reaches.
+        let gcloud = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        let skillComponent = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        WorkspaceCapabilityActivation.updateActivation(for: "gcloud-workflow", in: a) {
+            WorkspaceCapabilityActivation.setConfigValue(
+                "edited-project", forKey: PluginActivation.settingKey(componentID: skillComponent, key: "GCP_PROJECT"), on: $0
+            )
+        }
+        WorkspaceCapabilityActivation.mutate(a) { $0.capabilityIDs.removeAll() }
+        try context.save()
+        #expect(!gcloud.isEnabled)
+        #expect(!TaskCapabilityResolver(task: task).resolvedScope(.fullInventory).connectors.contains { $0.id == fixture.sharedGCloudID })
+
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let scope = TaskCapabilityResolver(task: detached).resolvedScope(.fullInventory)
+        #expect(Set(scope.behaviorSkills.map(\.id)) == Set(submitted.behaviorSkills.map(\.id)))
+        #expect(Set(scope.connectors.map(\.id)) == Set(submitted.connectors.map(\.id)))
+        #expect(Set(scope.localTools.map(\.id)) == Set(submitted.localTools.map(\.id)))
+        let detachedGCloud = try #require(scope.behaviorSkills.first { $0.name == fixture.gcloud.skills[0].name })
+        #expect(detachedGCloud.environmentVariables["GCP_PROJECT"] == "skill-project")
+        // The request's own record survives an encode/decode round trip.
+        let decoded = try JSONDecoder().decode(
+            TaskExecutionPolicySnapshotV1.self, from: Data(try #require(request.executionPolicySnapshotJSON).utf8)
+        )
+        #expect(decoded.pluginActivations?.filter(\.isEnabled).count == 2)
+    }
+
     @Test("The workspace mirror carries activation settings, overrides and accounts")
     func mirrorRoundTripsActivations() throws {
         let fixture = try Fixture()
@@ -709,6 +752,72 @@ struct PluginActivationMigrationTests {
         #expect(newID != oldID)
         #expect(imported.schedules.first?.skillIDs == [newID.uuidString])
         #expect(imported.templates.first { $0.name == "Weekly GCP report" }?.defaultSkillIDs == [newID.uuidString])
+    }
+
+    @Test("A duplicated import remaps projected references from the file's workspace, not its new ID")
+    func duplicatedImportRemapsFromTheFileWorkspace() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        var config = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        // What Duplicate does (`TaskLifecycleCoordinator.importFromConfig`).
+        config.id = nil
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+            approvedPackageIDs: ["gcloud-workflow"],
+            installedPackageIDs: ["gcloud-workflow"],
+            availablePackIDs: [],
+            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
+            installedDigests: fixture.digests
+        )
+
+        let duplicate = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: fixture.context, capabilityTrust: .validate(verifier), sourceWorkspaceID: a.id
+        ).workspace
+        #expect(duplicate.id != a.id)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: duplicate))
+        let newID = PluginRuntimeProjection.derivedID(of: activation, componentID: component)
+        #expect(duplicate.schedules.first?.skillIDs == [newID.uuidString])
+        #expect(duplicate.templates.first { $0.name == "Weekly GCP report" }?.defaultSkillIDs == [newID.uuidString])
+    }
+
+    @Test("A chosen file's rejected activation still gets its own namespaces")
+    func rejectedImportedActivationIsReseeded() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let original = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        let config = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        let target = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(target)
+        var digests = fixture.digests
+        digests["gcloud-workflow"] = "another-copy"
+        let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+            approvedPackageIDs: ["gcloud-workflow"],
+            installedPackageIDs: ["gcloud-workflow"],
+            availablePackIDs: [],
+            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
+            installedDigests: digests
+        )
+
+        let imported = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier)
+        ).workspace
+        // Replace keeps the workspace's ID: without a seed, a later Add would
+        // derive the replaced workspace's namespaces and read its secrets.
+        #expect(imported.id == a.id)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: imported))
+        #expect(!activation.isEnabled)
+        #expect(activation.configuration.isEmpty && activation.bindings.isEmpty)
+        #expect(!activation.namespaceSeed.isEmpty)
+        #expect(activation.namespaceSeed != original.namespaceSeed)
+        #expect(PluginRuntimeProjection.derivedID(of: activation, componentID: component)
+            != PluginRuntimeProjection.derivedID(of: original, componentID: component))
     }
 
     @Test("A workspace that replaced the shared account with its own binds only its own")

@@ -347,7 +347,18 @@ public enum WorkspaceCapabilityActivation {
         to target: Workspace,
         accountsByID: [UUID: Connector]
     ) {
-        for record in activations(of: source).map(PluginActivationRecord.init) {
+        copyActivations(activations(of: source).map(PluginActivationRecord.init), of: source, to: target, accountsByID: accountsByID)
+    }
+
+    /// Copies `records` (activations `source` had when a request was
+    /// submitted, or has now) onto `target`, as `copyActivations(from:)` does.
+    public static func copyActivations(
+        _ records: [PluginActivationRecord],
+        of source: Workspace,
+        to target: Workspace,
+        accountsByID: [UUID: Connector]
+    ) {
+        for record in records {
             let activation = PluginActivation(
                 id: record.id,
                 pluginID: record.pluginID,
@@ -567,9 +578,10 @@ public enum WorkspaceCapabilityActivation {
     }
 }
 
-/// An activation's full content as a value, for snapshots and copies.
-public struct PluginActivationRecord: Equatable, Sendable {
-    public struct Binding: Equatable, Sendable {
+/// An activation's full content as a value, for snapshots and copies, and
+/// for the launch snapshot a queued request carries (`TaskTurnRequest`).
+public struct PluginActivationRecord: Codable, Equatable, Sendable {
+    public struct Binding: Codable, Equatable, Sendable {
         public let id: UUID
         public let componentID: String
         public let accountID: UUID?

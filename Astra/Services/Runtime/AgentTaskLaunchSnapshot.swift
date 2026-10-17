@@ -23,6 +23,10 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
     let templateHooksJSON: String
     let skillSnapshotsJSON: String
     let runtimePermissionGrantsJSON: String?
+    /// The plugin activations the launch runs with (see
+    /// `TaskExecutionPolicySnapshotV1.pluginActivations`); nil reads the live
+    /// workspace's.
+    let pluginActivations: [PluginActivationRecord]?
 
     init(task: AgentTask) {
         id = task.id
@@ -43,6 +47,9 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         templateHooksJSON = task.templateHooksJSON
         skillSnapshotsJSON = task.skillSnapshotsJSON
         runtimePermissionGrantsJSON = task.runtimePermissionGrantsJSON
+        pluginActivations = task.workspace.map {
+            WorkspaceCapabilityActivation.activations(of: $0).map(PluginActivationRecord.init)
+        }
     }
 
     init(
@@ -63,7 +70,8 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         executionEnvironmentSnapshotJSON: String?,
         templateHooksJSON: String,
         skillSnapshotsJSON: String,
-        runtimePermissionGrantsJSON: String?
+        runtimePermissionGrantsJSON: String?,
+        pluginActivations: [PluginActivationRecord]? = nil
     ) {
         self.id = id
         self.model = model
@@ -83,5 +91,6 @@ struct AgentTaskLaunchSnapshot: Codable, Sendable, Equatable {
         self.templateHooksJSON = templateHooksJSON
         self.skillSnapshotsJSON = skillSnapshotsJSON
         self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
+        self.pluginActivations = pluginActivations
     }
 }

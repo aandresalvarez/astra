@@ -133,6 +133,8 @@ extension WorkspaceConfigManager {
     ///
     /// Returns the projected-skill IDs a validated import re-minted (file ID
     /// → new ID), for the templates and schedules the file names them in.
+    /// `fileWorkspaceID` is the workspace the file's IDs were derived from,
+    /// which a Duplicate does not keep.
     @MainActor
     @discardableResult
     static func restoreActivationDetails(
@@ -141,11 +143,19 @@ extension WorkspaceConfigManager {
         connectorsByID: [String: Connector],
         skillsByID: [String: Skill],
         toolsByID: [String: LocalTool],
-        trust: CapabilityImportTrustPolicy
+        trust: CapabilityImportTrustPolicy,
+        fileWorkspaceID: UUID? = nil
     ) -> [String: String] {
         var projectedIDs: [String: String] = [:]
         for ref in config.installedPlugins ?? [] {
             guard let activation = WorkspaceCapabilityActivation.activation(for: ref.id, in: workspace) else { continue }
+            // A chosen file may keep the workspace's ID, so every activation
+            // it brings, accepted or not, gets its own namespaces: one left
+            // off and later added never reads the secrets of the workspace
+            // the file replaced.
+            if case .validate = trust {
+                WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
+            }
             // A chosen file's activation for another copy of the plugin than
             // the one installed here (or for an unrecorded one) restores
             // nothing: `reconcile` already left it off.
@@ -158,15 +168,12 @@ extension WorkspaceConfigManager {
             let declared: Set<String>?
             if case .validate(let verifier) = trust {
                 declared = verifier.declaredComponentIDs[ref.id] ?? []
-                // A chosen file keeps the workspace's ID, so its activation
-                // gets its own namespaces: it never reads the secrets of the
-                // workspace it may replace.
-                WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
                 // The file's projected IDs (its workspace, its seed) name the
                 // same components under the fresh seed.
                 for componentID in declared ?? [] {
                     let old = PluginActivation.projectedID(
-                        workspaceID: workspace.id, pluginID: ref.id, componentID: componentID, seed: ref.namespaceSeed ?? ""
+                        workspaceID: fileWorkspaceID ?? workspace.id, pluginID: ref.id,
+                        componentID: componentID, seed: ref.namespaceSeed ?? ""
                     )
                     let new = PluginActivation.projectedID(
                         workspaceID: workspace.id, pluginID: ref.id, componentID: componentID, seed: activation.namespaceSeed

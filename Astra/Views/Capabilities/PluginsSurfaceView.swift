@@ -236,7 +236,11 @@ struct PluginsSurfaceView: View {
             }
             if row.isEnabled || row.isRemovable {
                 HStack {
-                    if row.isEnabled {
+                    if row.isEnabled, !PluginsSurfacePresentation.offersTurnOff(package) {
+                        Text("Written in this workspace. Edit or delete it in Skills.")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    } else if row.isEnabled {
                         Toggle("On in this workspace", isOn: Binding(
                             get: { confirming != .turnOff(packageID: package.id) },
                             set: { if !$0 { confirming = .turnOff(packageID: package.id) } }
