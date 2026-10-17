@@ -219,10 +219,6 @@ enum CapabilityResourceOrigin {
     }
 
     private static func normalized(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: #"[^a-z0-9._-]+"#, with: "-", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        PluginComponent.defaultID(forName: value)
     }
 }

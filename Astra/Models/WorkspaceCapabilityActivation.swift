@@ -155,6 +155,19 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    /// Records each plugin template row's content digest (by component) as a
+    /// sync wrote it.
+    public static func setTemplateDigests(_ digests: [String: String], on activation: PluginActivation) {
+        setTemplateDigests(entries: digests.sorted { $0.key < $1.key }.map { "\($0.key)#\($0.value)" }, on: activation)
+    }
+
+    /// Restores recorded `componentID#digest` entries as they were stored.
+    public static func setTemplateDigests(entries: [String], on activation: PluginActivation) {
+        guard activation.templateDigests != entries else { return }
+        activation.templateDigests = entries
+        touch(activation)
+    }
+
     /// Records the components of the definition the activation was
     /// reconciled against.
     public static func setKnownComponents(_ componentIDs: [String], on activation: PluginActivation) {
@@ -445,6 +458,7 @@ public enum WorkspaceCapabilityActivation {
             activation.overridingRowIDs = live.map(\.rowID)
             activation.secretSettingKeys = record.secretSettingKeys
             activation.knownComponentIDs = record.knownComponentIDs
+            activation.templateDigests = record.templateDigests
             activation.namespaceSeed = record.namespaceSeed
             activation.revision = record.revision
             activation.updatedAt = record.updatedAt
@@ -658,6 +672,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
     public let overridingRowIDs: [String]
     public let secretSettingKeys: [String]
     public let knownComponentIDs: [String]
+    public let templateDigests: [String]
     public let namespaceSeed: String
     public let revision: Int
     public let createdAt: Date
@@ -676,6 +691,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         overridingRowIDs = activation.overridingRowIDs
         secretSettingKeys = activation.secretSettingKeys
         knownComponentIDs = activation.knownComponentIDs
+        templateDigests = activation.templateDigests
         namespaceSeed = activation.namespaceSeed
         revision = activation.revision
         createdAt = activation.createdAt
@@ -714,6 +730,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         if activation.knownComponentIDs != knownComponentIDs {
             activation.knownComponentIDs = knownComponentIDs
         }
+        if activation.templateDigests != templateDigests { activation.templateDigests = templateDigests }
         if activation.namespaceSeed != namespaceSeed { activation.namespaceSeed = namespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }

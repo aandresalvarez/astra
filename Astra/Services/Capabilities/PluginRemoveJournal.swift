@@ -12,7 +12,9 @@ import ASTRAModels
 /// Remove, a plugin that never had one included; one whose activations are
 /// still stored (the save never landed, or the plugin was added again) is
 /// dropped. An unreadable store or a library entry that can't be removed
-/// leaves the intent for the next launch.
+/// leaves the intent for the next launch. A journal that exists but can't be
+/// read is never rewritten: Remove refuses to start and launch keeps it, so
+/// the intents in it are not lost.
 @MainActor
 struct PluginRemoveJournal {
     let fileURL: URL
@@ -26,23 +28,35 @@ struct PluginRemoveJournal {
         self.init(fileURL: outbox.fileURL.deletingLastPathComponent().appendingPathComponent("PluginRemoveIntents.json"))
     }
 
-    func pending() -> [String] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    /// The intents on disk; none when there is no journal. Throws when the
+    /// journal exists but can't be read or decoded.
+    func pending() throws -> [String] {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        return try JSONDecoder().decode([String].self, from: Data(contentsOf: fileURL))
     }
 
     func begin(_ pluginID: String) throws {
-        try write(Array(Set(pending() + [pluginID])))
+        try write(Array(Set(try pending() + [pluginID])))
     }
 
     func finish(_ pluginID: String) {
-        try? write(pending().filter { $0 != pluginID })
+        guard let pending = try? pending() else { return }
+        try? write(pending.filter { $0 != pluginID })
     }
 
     /// Finishes interrupted Removes against `library`.
     static func resumePending(modelContext: ModelContext, library: CapabilityLibrary = CapabilityLibrary(), journal: PluginRemoveJournal? = nil) {
         guard let journal = journal ?? PluginRemoveJournal(for: modelContext) else { return }
-        let pending = journal.pending()
+        let pending: [String]
+        do {
+            pending = try journal.pending()
+        } catch {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "plugin_remove_resume", "result": "journal_unreadable_kept",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return
+        }
         guard !pending.isEmpty else { return }
         guard let activations = try? modelContext.fetch(FetchDescriptor<PluginActivation>()) else {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

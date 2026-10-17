@@ -105,7 +105,11 @@ public struct PluginComponent: Codable, Sendable {
     }
 
     public var kind: Kind
-    /// Stable within the plugin; derived from the payload's name or binary.
+    /// Stable within the plugin. For a skill, connector or tool it is the
+    /// component's identity: converting to a package carries it onto the
+    /// payload's `id` whenever it differs from the name-derived default, so
+    /// renaming a component that keeps its `id` keeps its settings,
+    /// accounts and secrets. Defaults to `defaultID(forName:)`.
     public var id: String
     public var name: String
     public var summary: String
@@ -118,6 +122,17 @@ public struct PluginComponent: Codable, Sendable {
     public var template: PluginTemplate?
     /// For `setup` components: a CLI prerequisite or an account requirement.
     public var requirement: PluginSetupRequirement?
+
+    /// The identity a component without an explicit `id` derives from its
+    /// name. `CapabilityResourceOrigin` normalizes with this same function,
+    /// so a default `id` and the name it came from name the same component.
+    public static func defaultID(forName name: String) -> String {
+        name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9._-]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
 
     public init(
         kind: Kind,
@@ -263,16 +278,16 @@ public enum PluginManifestConverter {
     public static func manifest(from package: PluginPackage) -> PluginManifest {
         var components: [PluginComponent] = []
         components += package.skills.map {
-            PluginComponent(kind: .skill, id: slug($0.name), name: $0.name, summary: $0.description, skill: $0)
+            PluginComponent(kind: .skill, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description, skill: $0)
         }
         components += package.connectors.map {
             PluginComponent(
-                kind: .connector, id: slug($0.name), name: $0.name, summary: $0.description,
+                kind: .connector, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description,
                 setup: connectorSetup($0), connector: $0
             )
         }
         components += package.localTools.map {
-            PluginComponent(kind: .tool, id: slug($0.name), name: $0.name, summary: $0.description, tool: $0)
+            PluginComponent(kind: .tool, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description, tool: $0)
         }
         components += package.mcpServers.map {
             PluginComponent(
@@ -321,9 +336,9 @@ public enum PluginManifestConverter {
             tags: manifest.tags,
             version: manifest.version,
             setupGuide: manifest.setupGuide,
-            skills: manifest.components.compactMap(\.skill),
-            connectors: manifest.components.compactMap(\.connector),
-            localTools: manifest.components.compactMap(\.tool),
+            skills: manifest.components.compactMap(identifiedSkill),
+            connectors: manifest.components.compactMap(identifiedConnector),
+            localTools: manifest.components.compactMap(identifiedTool),
             mcpServers: manifest.components.compactMap(\.mcp),
             templates: manifest.components.compactMap(\.template),
             setupRequirements: manifest.components.compactMap(\.requirement),
@@ -354,6 +369,38 @@ public enum PluginManifestConverter {
     /// repair or install step that does not come back out of the package
     /// unchanged would be dropped, and the plugin would read as ready without
     /// that step ever running. Such a manifest is refused instead.
+    /// The payload with the component's `id` as its identity. A default
+    /// `id` (the one its name derives) is left off, so a package converted
+    /// to a manifest and back is unchanged.
+    private static func identifiedSkill(_ component: PluginComponent) -> PluginSkill? {
+        guard var skill = component.skill else { return nil }
+        if component.id != PluginComponent.defaultID(forName: skill.name) || skill.id != nil { skill.id = component.id }
+        return skill
+    }
+
+    private static func identifiedConnector(_ component: PluginComponent) -> PluginConnector? {
+        guard var connector = component.connector else { return nil }
+        if component.id != PluginComponent.defaultID(forName: connector.name) || connector.id != nil { connector.id = component.id }
+        return connector
+    }
+
+    /// A tool without an `id` is identified by its type, command and name; one
+    /// that gains an `id` here also replaces that form, so the version that
+    /// renames it still finds the earlier one's state.
+    private static func identifiedTool(_ component: PluginComponent) -> PluginLocalTool? {
+        guard var tool = component.tool else { return nil }
+        if component.id != PluginComponent.defaultID(forName: tool.name) || tool.id != nil {
+            if tool.id == nil {
+                let earlier = ["tool", tool.toolType, tool.command, component.id]
+                    .map { PluginComponent.defaultID(forName: $0) }
+                    .joined(separator: ":")
+                tool.replaces = (tool.replaces ?? []) + [earlier]
+            }
+            tool.id = component.id
+        }
+        return tool
+    }
+
     public static func checkedPackage(from manifest: PluginManifest) throws -> PluginPackage {
         // Fail closed: a later version may carry meaning this converter
         // would silently drop.
