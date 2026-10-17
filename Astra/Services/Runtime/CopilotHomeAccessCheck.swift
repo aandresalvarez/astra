@@ -58,6 +58,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     var isHome = false
     /// The file `COPILOT_PROVIDERS_CONFIG` names.
     var isProvidersOverride = false
+    /// The default `providers.json` or the override: which one Copilot opens
+    /// depends on the launch's environment, known only at launch.
+    var isProvidersFile = false
     /// A macOS user-immutable or append-only flag blocks writes the mode bits
     /// allow; the fix clears it.
     var hasLockFlag = false
@@ -171,7 +174,8 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let repairable = problems.filter { $0.isRepairable && $0.symlinkTarget == nil && !$0.isMisplaced }
         // First: a locked entry refuses even a chown. Clearing another user's
         // flag needs sudo.
-        let locked = repairable.filter(\.hasLockFlag)
+        // Misplaced entries too: a locked entry cannot be moved aside either.
+        let locked = problems.filter { $0.isRepairable && $0.symlinkTarget == nil && $0.hasLockFlag }
         if !locked.isEmpty {
             let sudo = locked.contains { !$0.ownedByCurrentUser } ? "sudo " : ""
             commands.append("\(sudo)chflags nouchg,nouappnd \(Self.quotedPaths(locked))")
@@ -461,7 +465,7 @@ enum CopilotHomeAccessCheck {
                 let path = (resolvedHome as NSString).appendingPathComponent(child)
                 // The override has its own, read-only check.
                 if let overridePath, canonicalPath(path) == overridePath { continue }
-                if let problem = problem(
+                if var problem = problem(
                     at: path,
                     requiresWrite: !readOnlyConfigFileNames.contains(child),
                     isReadAtStartup: startup[child] != nil,
@@ -470,6 +474,7 @@ enum CopilotHomeAccessCheck {
                     fileManager: fileManager,
                     currentUserID: currentUserID
                 ) {
+                    problem.isProvidersFile = child == providersFileName
                     problems.append(problem)
                 }
             }
@@ -505,6 +510,7 @@ enum CopilotHomeAccessCheck {
             fileManager: fileManager, currentUserID: currentUserID
         ) {
             problem.isProvidersOverride = true
+            problem.isProvidersFile = true
             // The variable can name any file (`/etc/sudoers`); outside the
             // Copilot home no chown, chmod or move is ever suggested for it.
             problem.isRepairable = insideHome
@@ -526,6 +532,7 @@ enum CopilotHomeAccessCheck {
             isReadAtStartup: true
         )
         outside.isProvidersOverride = true
+        outside.isProvidersFile = true
         return [outside]
     }
 
@@ -550,13 +557,21 @@ enum CopilotHomeAccessCheck {
     }
 
     /// The readiness row for a report, or nil when nothing is wrong.
-    static func readinessCheck(for report: CopilotHomeAccessReport) -> RuntimeReadinessCheck? {
+    /// `providersFileBlocks: false` is for checks that run before the task's
+    /// own environment exists: a skill may still point COPILOT_PROVIDERS_CONFIG
+    /// at a working file, so a providers problem there is a warning and the
+    /// launch gate, which knows the environment, decides.
+    static func readinessCheck(
+        for report: CopilotHomeAccessReport,
+        providersFileBlocks: Bool = true
+    ) -> RuntimeReadinessCheck? {
         guard !report.isClean else { return nil }
+        let blocks = report.problems.contains { $0.blocksCopilot && (providersFileBlocks || !$0.isProvidersFile) }
         return RuntimeReadinessCheck(
             id: readinessCheckID,
             title: "Copilot settings folder",
             detail: report.cause,
-            state: report.blocksCopilot ? .blocked : .warning,
+            state: blocks ? .blocked : .warning,
             remediation: report.remediation
         )
     }
@@ -657,7 +672,9 @@ enum CopilotHomeAccessCheck {
             && ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
             && hasExtendedACL(path)
         problem.requiresWrite = requiresWrite
-        problem.hasLockFlag = requiresWrite && isLocked(attributes)
+        // A locked entry refuses writes, and a move aside as well.
+        problem.hasLockFlag = isLocked(attributes)
+            && (requiresWrite || access == .notADirectory || access == .wrongType)
         problem.isSpecialFile = !isDirectory && type != .typeRegular
         // An unreadable folder hides what is inside it, so its repair must
         // reach below it (a resumed session under session-state, say).
@@ -712,7 +729,8 @@ enum CopilotHomeAccessCheck {
         let readMode = isDirectory.boolValue ? (R_OK | X_OK) : R_OK
         let target = linkTarget(of: path, fileManager: fileManager)
         // `attributesOfItem` on the canonical path describes the real target.
-        let targetType = (try? fileManager.attributesOfItem(atPath: canonicalPath(path)))?[.type] as? FileAttributeType
+        let targetAttributes = try? fileManager.attributesOfItem(atPath: canonicalPath(path))
+        let targetType = targetAttributes?[.type] as? FileAttributeType
         let access: CopilotHomeAccessProblem.Access
         if targetExists, let expectedKind, !matches(expectedKind, type: targetType) {
             access = .wrongType
@@ -723,7 +741,7 @@ enum CopilotHomeAccessCheck {
             // counts. ASTRA does not widen the sandbox to follow it: a link
             // would then grant a task read access to whatever it points at.
             access = .linksOutsideHome
-        } else if requiresWrite, Darwin.access(path, W_OK) != 0 {
+        } else if requiresWrite, Darwin.access(path, W_OK) != 0 || isLocked(targetAttributes ?? [:]) {
             access = .unwritable
         } else {
             return nil
@@ -739,6 +757,7 @@ enum CopilotHomeAccessCheck {
             symlinkTarget: target
         )
         problem.isSpecialFile = targetExists && !isDirectory.boolValue && targetType != .typeRegular
+        problem.hasLockFlag = access == .unwritable && isLocked(targetAttributes ?? [:])
         return problem
     }
 

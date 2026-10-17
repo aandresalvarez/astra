@@ -206,7 +206,8 @@ struct RuntimeReadinessService {
         // config, so this is the only place the cause can surface before a
         // task fails.
         let report = CopilotHomeAccessCheck.inspect(home: copilotStateHome)
-        return CopilotHomeAccessCheck.readinessCheck(for: report).map { [$0] } ?? []
+        // No task environment exists yet; the launch gate rules on providers.
+        return CopilotHomeAccessCheck.readinessCheck(for: report, providersFileBlocks: false).map { [$0] } ?? []
     }
 
     /// A cached report with its uncached checks re-run now.

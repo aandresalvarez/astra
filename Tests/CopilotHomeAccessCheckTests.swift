@@ -777,6 +777,58 @@ struct CopilotHomeAccessCheckTests {
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
+    @Test("Readiness only warns about providers.json; the launch gate decides with the task's environment")
+    func providersFileBlocksOnlyAtLaunch() async throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+        try home.write("providers.json", mode: 0o000)
+        let usable = try home.write("skill-providers.json", mode: 0o600)
+        let service = await Self.readyCopilotService(home: home.path)
+
+        let readiness = await service.check(configuration: Self.copilotConfiguration)
+        #expect(readiness.state == .warning)
+
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil
+        ) != nil)
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil,
+            environment: [CopilotHomeAccessCheck.providersOverrideVariable: usable], workingDirectory: nil
+        ) == nil)
+    }
+
+    @Test("A symlinked state file whose target is locked is unwritable")
+    func lockedSymlinkTargetIsUnwritable() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let real = try home.write("store-real.db", mode: 0o600)
+        let link = (home.path as NSString).appendingPathComponent("session-store.db")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
+        try Self.shell("/usr/bin/chflags", ["uchg", real])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let problem = try #require(report.problems.first { $0.path == link })
+        #expect(problem.access == .unwritable)
+        #expect(problem.hasLockFlag)
+    }
+
+    @Test("A locked file-shaped home is unlocked before it is moved aside")
+    func lockedMisplacedHomeIsUnlockedFirst() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let notAFolder = try root.write("copilot-home", mode: 0o600)
+        try Self.shell("/usr/bin/chflags", ["uchg", notAFolder])
+
+        let report = CopilotHomeAccessCheck.inspect(home: notAFolder)
+
+        #expect(report.fixCommand
+            == "chflags nouchg,nouappnd '\(notAFolder)' && mv -n '\(notAFolder)' '\(notAFolder).bak'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(!FileManager.default.fileExists(atPath: notAFolder))
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()
