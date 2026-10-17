@@ -85,19 +85,35 @@ accounts) is not shipped and is superseded.
   plugin. It stores the manifest as authored, so `worksOn`, setup steps,
   component IDs and `manifestVersion` survive; `PluginPackage` remains an
   in-memory projection for consumers not yet moved. The validator requires a
-  unique `id` per component and a supported `manifestVersion`.
+  unique `id` per component and a supported `manifestVersion`, and refuses
+  an MCP server ID that another installed plugin already declares
+  (`.duplicateMCPServerID` in `CapabilityPackageValidator`): projected MCP
+  servers, provider configuration and permission names use the server ID
+  unqualified. The install blockers `PluginPackage` carries today
+  (`minAppVersion`, `requires`, `conflicts`, checked through
+  `installBlockers`) are manifest fields too (`PluginManifest`), so Add still
+  refuses an incompatible plugin.
 - **`PluginActivation`** (`@Model`): `workspace`, `pluginID`, `enabled`,
   `recordedVersion`, `recordedDigest`, `configValues` keyed
-  `componentID.key` for settings that belong to the workspace, not to an
-  account (a skill's environment value), `overriddenComponentIDs` (components
-  the person replaced with an authored row, which the projection skips), and
-  `revision`.
+  `componentID#KEY` for settings that belong to the workspace, not to an
+  account (a skill's environment value; the key is split on its last `#`,
+  and setting keys never contain `#`, so no two components' settings
+  collide), `secretSettingKeys` (which secret settings are in the Keychain),
+  `knownComponentIDs` (the components of the definition it was last
+  reconciled against), `overriddenComponentIDs` (components the person
+  replaced with an authored row, which the projection skips), and
+  `revision`. Deleting an activation deletes its bindings
+  (`@Relationship(deleteRule: .cascade)` on `PluginActivation.bindings`).
 - **`AccountBinding`** (`@Model`): `activation`, `componentID`, `account`
   (relationships), `isDefault`. A component can bind several accounts (two
-  Jira sites), one of them the default; deleting an account cascades to its
-  bindings, so no activation keeps a dangling ID.
+  Jira sites). A workspace has one default account per service across all
+  its plugins, not one per component: `WorkspaceCapabilityActivation.bind`
+  and `unbind` keep exactly one binding of each service the default, and
+  `defaultAccount(forService:in:)` reads it. Deleting an account cascades to
+  its bindings, so no activation keeps a dangling ID.
 - **`Account`** (`@Model`): `id` (UUID), `serviceType`, `alias` (unique per
-  service among the accounts a workspace can see), `baseURL`, `authMethod`,
+  normalized service among the accounts a workspace can see, checked on
+  every bind, a share into another workspace included), `baseURL`, `authMethod`,
   `credentialKeys`, `configValues` (per-account settings such as Jira
   projects or a tenant), and an owner: one workspace unless shared
   explicitly. `revision`.
@@ -118,7 +134,11 @@ accounts) is not shipped and is superseded.
   bound account, so editing an account's URL, alias or settings evicts it.
 - The projection skips the components listed in the activation's
   `overriddenComponentIDs`; the authored row that replaced each one is in the
-  inventory instead, so nothing is duplicated.
+  inventory instead, so nothing is duplicated. An override whose authored row
+  the store no longer has is ignored and the component projects again, so
+  deleting the replacement never silently drops the component; a detached
+  launch, whose copy lacks shared rows, keeps skipping it
+  (`PluginRuntimeProjection`).
 - It also emits the plugin's templates as read-only templates. A template
   the person edited is migrated to an authored one and overridden, like a
   skill.
@@ -143,10 +163,10 @@ accounts) is not shipped and is superseded.
 | Action | What changes | Notes |
 | --- | --- | --- |
 | Add | approval for the digest, library entry, one activation | one save; no credential prompt |
-| Update | library entry (new digest, re-approved), and `recordedVersion`/`recordedDigest` on **every** activation of the plugin | the library holds one version, so an update is global: every workspace with the plugin on is checked first, and one that refuses it (a pack rule) blocks the update with its reason. Removed components disappear because nothing derives them. A rename is never inferred: a component that was renamed lists its earlier IDs in `"replaces": ["old-id"]`, and only then do the old ID's settings, bindings and secrets move to it, and only when the kind and, for a connector, the service match. Any other changed or reused ID is a remove plus an add and starts empty; a `replaces` naming a component of another kind or service, or claimed by two components, is refused at validation |
+| Update | library entry (new digest, re-approved), and `recordedVersion`/`recordedDigest` on **every** activation of the plugin | the library holds one version, so an update is global: every workspace with an activation of the plugin, on or off, is checked first (`PluginUpdateService.refusals`), and one that refuses it (a pack rule, a missing dependency, a conflict) blocks the update with its reason. Removed components disappear because nothing derives them. A rename is never inferred: a component that was renamed lists its earlier ID in `"replaces": ["old-id"]`, and only then do the old ID's settings, bindings, override and secrets move to it (`moveComponentState`), and the templates and schedules that named its skill are rewritten (`retargetSkill`), and only when the kind and, for a connector, the service match. Any other changed or reused ID is a remove plus an add and starts empty; a `replaces` naming a component of another kind or service, naming more than one predecessor, or claimed by two components, is refused at validation. A connector that keeps its ID but no longer declares the sign-in method an account uses keeps the account bound and working, and the account is flagged on the row ("reconnect", `CapabilityPackageState`) as a pending step until the person reconnects it |
 | Turn off | `activation.enabled = false` | deletes nothing, so it needs no confirmation |
-| Remove | library entry, its activations, and the activations' secret settings | confirmed, says it reaches every workspace; accounts stay, listed under Accounts. The activation-owned Keychain entries are recorded in the durable cleanup outbox before the activations are deleted |
-| Delete account | the `Account`, its bindings (cascade), then its secrets | confirmed, naming the workspaces that use it; the only path that clears credentials |
+| Remove | library entry, its activations (their bindings cascade), and the activations' secret settings | offered only once the plugin is off in this workspace, and confirmed by name (`PluginsSurfaceConfirmation.remove`): it turns the plugin off in every workspace and deletes its settings there; its accounts and their credentials stay, listed under Accounts. The activation-owned Keychain entries are recorded in the durable cleanup outbox before the activations are deleted |
+| Delete account | the `Account` and its bindings (cascade), with its secrets recorded in the cleanup outbox before the save and cleaned after it | confirmed, naming the workspaces that use it; the only path that clears credentials |
 
 The state lives in three stores (library and approval files, SwiftData,
 Keychain), so no operation is one transaction. Each writes in a fixed order
@@ -155,26 +175,44 @@ reconciliation finishes or undoes what an exit interrupted:
 
 - **Add:** approval file, library entry, then activation. An approved entry
   with no activation is just an installed plugin; it shows under Available.
-- **Update:** library entry (the previous one kept as the rollback file the
-  library already writes), then the activations. An activation whose
-  `recordedDigest` differs from the library is shown as needing Update.
-  Components the new version dropped are removed from each activation like a
-  Remove of that component, in the same save that advances its digest: their
-  bindings and `configValues` are deleted and their activation-owned secrets
-  go through the cleanup outbox, so a later version that reintroduces the ID
-  starts empty.
+- **Update:** library entry, then the activations. Reconciling needs only
+  the new definition and the activation's own record (`knownComponentIDs`,
+  its setting keys and `secretSettingKeys`), never the previous manifest, so
+  an exit between the two is finished by the next launch's reconciliation;
+  the library's rollback snapshot (`makePackageStorageSnapshot`) is in
+  memory and only undoes an import that fails in the same process. An
+  activation whose recorded version, digest or component list differs from
+  the library, or whose plugin templates have drifted, is shown as needing
+  Update (`PluginUpdateService.needsReconcile`). Components the new version
+  dropped are removed from each activation like a Remove of that component,
+  in the same save that advances its digest: their bindings and
+  `configValues` are deleted and their activation-owned secrets go through
+  the cleanup outbox, so a later version that reintroduces the ID starts
+  empty. A key a kept skill no longer declares has its setting dropped in
+  that save, and its Keychain entry is recorded in the same cleanup outbox
+  (a `namespace#KEY` entry) before the save and deleted after it, or at the
+  next launch; a key a live activation records again is spared. Launch
+  never releases anything: the
+  automatic pass (`PluginUpdateService.Mode.automatic`) only moves renamed
+  components, and when a definition would drop something the activation
+  stays on its recorded version and the row offers Update.
 - **Remove:** a Remove intent for the plugin is written to the operation
-  journal first, then the activations are deleted, then the library entry,
-  then the intent is cleared. An intent found at launch finishes the Remove,
-  which tells it apart from an installed plugin that was never turned on. An
-  activation whose library entry is missing with no intent is shown as
-  "missing, add it again" and never resolves.
+  journal (`PluginRemoveJournal`) first, then the activations are deleted,
+  then the library entry, then the intent is cleared. At launch an intent
+  whose plugin no live activation names finishes the Remove, a plugin that
+  never had an activation included; one whose activations are still stored
+  (the save never landed, or the plugin was added again) is dropped; an
+  unreadable store or a library entry that can't be removed keeps it for the
+  next trusted launch. An activation whose library entry is missing with no
+  intent is shown as "missing, add it again" and never resolves.
 - **Delete account and Remove:** the Keychain entries they release are
   recorded in the durable cleanup outbox first, then the SwiftData deletion
   is saved, then the entries are cleaned, exactly as
   `ConnectorCredentialCleanup.deleteThenClean` does today (the record is
   undone if the save fails), so neither an orphaned secret nor a secret
-  deleted for a live owner is possible.
+  deleted for a live owner is possible. `PluginOperations.deleteAccount`
+  goes through `ConnectorCredentialCleanup.deleteThenClean`, and Remove
+  (`CapabilityUninstaller`) through `PluginSecretCleanupOutbox.deleteThenClean`.
 
 ### Migration V19 → V20 (custom stage)
 
@@ -196,25 +234,33 @@ The dev store is backed up first; the stage is one-way.
    `Account` with the **same UUID**, so its UUID secret namespace resolves
    unchanged; its config values move with it to `Account.configValues`.
    Credentials stored only under its stable entity ID are copied into the
-   account's UUID namespace in R1 (the stable entries are deleted in R2 with
-   the row), so the projection reads one namespace. Bindings come from
+   account's UUID namespace in R1, so the projection reads one namespace.
+   *(As built, the connector row is the account and the migration deletes no
+   connector row, so the stable namespace stays derivable from the row; it
+   is cleaned when the account is deleted, through the
+   `ConnectorKeychainCleanup` that `ConnectorCredentialCleanup` records
+   before the save. No connector namespace is released without a durable
+   record.)* Bindings come from
    ownership, not from what is enabled now: a workspace-owned connector binds
    to its workspace's activation of the plugin, and a global connector binds
    to every activation of its plugin in a workspace that had it enabled or
    installed, so a plugin that was turned off keeps its accounts. V19 stored
    no default account, so none is read: accounts are bound in creation
-   order and each component's oldest account becomes its default. A
-   component that ends up with more than one account shows that default on
+   order through `WorkspaceCapabilityActivation.bind`, and each service's
+   oldest account in the workspace becomes its one default, across plugins.
+   A service that ends up with more than one account shows that default on
    its Plugins row for the person to confirm or change.
 3. Environment values on plugin skills move to `activation.configValues`
-   under `componentID.key`. Secret ones are not in SwiftData (a skill keeps
+   under `componentID#KEY`. Secret ones are not in SwiftData (a skill keeps
    them in the Keychain under its UUID), so they move to a Keychain namespace
    owned by the activation and component (the projected skill's ID), and
    the projection reads them from there. A projected skill carries secret
    keys with empty values, exactly as a stored skill does, so
    `SkillSnapshotConfig` and `AgentTask.skillSnapshotsJSON` never hold a
    secret; the value resolves from the Keychain at execution. They are
-   copied before the save and the old namespace is cleaned after it.
+   copied before the save; the old skill rows' namespaces are recorded in
+   `PluginSecretCleanupOutbox` before the save and cleaned after it, and on
+   any failure the copied secrets are put back as they were.
 4. A plugin-origin skill, tool or template the person edited (it differs
    from the manifest) becomes an authored row with its origin stamps cleared,
    and its component ID is added to the activation's
@@ -241,8 +287,12 @@ Each is a decision R1 implements and its fixture tests.
 1. **Aliases.** A migrated account's alias is its connector name with the
    service's own words removed (the rule `ConnectorAccountResolver.names`
    already applies), falling back to the connector name. Same-service
-   collisions get " 2", " 3" in creation order. The two-Jira fixture asserts
-   two distinct aliases.
+   collisions get " 2", " 3" in creation order. The collision check covers
+   every account of the normalized service that a workspace the account
+   joins can see, across components and plugins, not one component's
+   accounts (`WorkspaceCapabilityActivation.bind`, which the migration, Add
+   and mirror restore all go through). The two-Jira fixture asserts two
+   distinct aliases.
 2. **Plaintext credentials.** Before the schema stage, launch runs the
    existing `StartupCredentialMigrationService` against the V19 store. If any
    connector still holds a plaintext credential afterwards, the store stays on
@@ -262,18 +312,26 @@ Each is a decision R1 implements and its fixture tests.
 5. **Cleanup ownership.** `ConnectorCredentialCleanup.Ownership` counts the
    namespaces accounts own, so deleting a migrated connector row in R2 never
    cleans the account's UUID namespace; R2 enqueues only the obsolete stable
-   namespace.
+   namespace. *(R2 merged into R1, which deletes no connector row; see step
+   2.)*
 6. **Accounts and workspace deletion.** A workspace-owned account is deleted
    with its workspace through the existing deletion outbox
    (`WorkspaceDeletionCleanupRecord` gains the account's namespaces). A shared
-   account has no owning workspace and is untouched by it.
+   account has no owning workspace and is untouched by it. The record also
+   holds every namespace the workspace's activations' projected skills may
+   hold secrets under (`PluginRuntimeProjection.secretNamespaces`, every
+   component the activation remembers), written before the save
+   (`WorkspaceDeletionCleanup`).
 7. **Old snapshots still decode.** The fields added to
    `ConnectorSnapshotConfig` (account ID, alias) are optional, and an
    old-snapshot fixture decodes unchanged.
 8. **Schedules keep their templates.** `TaskSchedule.templateID` is a
    `UUID`, so a projected template's ID is a UUID derived from the
-   activation ID and the component ID (the same derivation as a projected
-   skill's). When templates move to the projection, a schedule's
+   workspace ID, the plugin ID and the component ID (the same derivation as
+   a projected skill's, `PluginRuntimeProjection.derivedID`), never from
+   the activation ID, so Remove then Add in the same workspace yields the
+   same IDs and schedules and templates keep resolving. When templates move
+   to the projection, a schedule's
    `templateID` that pointed at a deleted plugin template row is rewritten
    to that UUID, and the scheduler resolves projected templates as well as
    `workspace.templates`. Template and schedule skill IDs that named a
@@ -293,7 +351,9 @@ Each is a decision R1 implements and its fixture tests.
     credential keys and per-account settings, everything but the
     credentials) and the bindings with their component and default.
     Recovery from the workspace's own mirror restores all of it, including
-    the activation's ID so its secret settings resolve again. A validated
+    the activation's ID, `knownComponentIDs` and `secretSettingKeys`; its
+    secret settings resolve again because the workspace keeps its ID. A
+    validated
     import restores them only for components the installed manifest still
     declares, binds them to the account rows the import itself created, and
     gives the activation a fresh ID; only credentials are entered again.
@@ -311,6 +371,16 @@ Each is a decision R1 implements and its fixture tests.
   result, not text), run that component's `verify` (a network check for a
   connector; for a CLI, its session-reading check). If it fails, stop with
   the component's repair. Text patterns only pick which component to check.
+- As built (`plugins2-repair`, merged into R1 and R3):
+  `CLISessionExpiryClassifier` has three built-in families (`googleCloud`, `gitHubEnvironmentToken`,
+  `gitHub`) and matches only a failed structured tool result of a command
+  that starts one of those CLIs, never agent text. Expiry for connector
+  components (the broker's structured auth failure) and for patterns a
+  manifest declares is not built: those components still fail the run
+  rather than entering repair, so the health loop is complete only for the
+  built-in Google Cloud and GitHub families. Neither is scheduled in R1-R5;
+  connector expiry needs connector `verify` first (see Health and repair
+  below).
 - Checks are read-only probes gated by approval and `canRun` (see Rules).
 - Retry after a repair resumes the provider session (already on `#508`).
 
@@ -366,8 +436,12 @@ stored.
    plugin off takes it out of every run without deleting it. Add creates a
    workspace-owned account unless the activation already has one; a migrated
    shared connector stays shared and is bound in every workspace that used
-   its plugin. The alias is the row's name; same-named accounts of one
-   component get " 2", " 3" at migration.
+   its plugin. The alias is the row's name; an account whose name another
+   account of the same normalized service already has, among the accounts
+   any workspace it joins can see (other components and plugins included),
+   is renamed " 2", " 3" when it is bound (`WorkspaceCapabilityActivation.bind`,
+   used by the migration, Add and mirror restore; new accounts take
+   `uniqueAlias`).
 2. **Component IDs are the runtime IDs already stamped on rows**
    (`skill:<name>`, `connector:<service>:<name>`, `tool:<type>:<command>:<name>`,
    from `CapabilityResourceOrigin`). The library still stores `PluginPackage`,
@@ -386,17 +460,24 @@ stored.
    V20 is additive (the legacy enablement arrays are renamed `legacy*` and
    kept, read only by the migration and cleared by it), so V19 stores
    lightweight-migrate. `PluginActivationMigration` runs synchronously at
-   launch before any capability resolution, and again after workspace
-   recovery. It is idempotent and one save; a secret it cannot copy aborts
-   it before anything is deleted, and the next launch retries. Requirement 2
+   launch before any capability resolution, and again after the
+   asynchronous workspace recovery import (`afterImport`). It is idempotent
+   and one save; a secret it cannot copy aborts it before anything is
+   deleted, the secrets already copied are put back on any failure, and the
+   next launch retries. Requirement 2
    (plaintext credentials) does not arise: no connector row is deleted.
    Dropping the `legacy*` fields is a later schema version.
 6. **Settings.** Non-secret plugin skill settings live in
-   `PluginActivation.configValues` (`componentID.KEY`); secret ones in the
-   Keychain under the projected skill's ID, which is a name-based UUID of
-   the activation ID and the component ID. The mirror carries the activation
-   ID, so recovery from the workspace's own mirror keeps that namespace; a
-   file the user imports gets a fresh activation, so a copy never shares its
+   `PluginActivation.configValues` (`componentID#KEY`, split on the last
+   `#`; an emptied setting is kept as an explicit empty value); secret ones
+   in the Keychain under the projected skill's ID, which is a name-based
+   UUID (SHA-256, version 5 layout) of the workspace ID, the plugin ID and
+   the component ID (`PluginRuntimeProjection.derivedID`). It survives
+   Remove then Add in the same workspace, so schedules and templates that
+   name it keep resolving; the cleanup outbox spares a namespace a live
+   activation names again. Recovery from the workspace's own mirror keeps
+   the workspace ID and so the namespace; a file the user imports into
+   another workspace derives other IDs, so a copy never shares its
    original's secrets.
 7. **Task pins.** A stored task never pins a projected skill (SwiftData
    would insert it). Plugin skills reach a run through the activation, so
@@ -438,47 +519,86 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   (stable identity) and `replaces` (identities it takes over). Without `id`
   the identity is the runtime one R1 used. The validator refuses two
   components with one identity, a `replaces` naming another kind (or, for a
-  connector, another service), one naming a component still declared, and
-  one claimed twice. The library still stores `PluginPackage`, with these
+  connector, another service), one naming a component still declared, one
+  claimed twice, and a component naming more than one predecessor
+  (`PluginUpdateService.replacesProblems`), so a rename never has to merge
+  two components' settings, accounts or secrets. MCP server IDs must be
+  unique across installed plugins (`.duplicateMCPServerID`). The library
+  still stores `PluginPackage`, with these
   optional fields; nothing changes for a package that omits them.
 - **Update is reconciliation.** `PluginUpdateService` brings each activation
   to the definition in the library: a component taken over through
   `replaces` keeps the old one's settings, bindings, override and secret
-  settings (copied to the new namespace before the save), and the templates
-  and schedules that named its skill are rewritten; a component the
+  settings (`moveComponentState`; secrets copied to the new namespace
+  before the save, a value the new component already has wins, and every
+  copy is put back by `PluginUpdateService.undo` if any activation's
+  reconciliation or the save fails), and the templates and schedules that
+  named its skill are rewritten (`retargetSkill`); a component the
   activation knew (`knownComponentIDs`) that is gone and not taken over is
-  released, its secret namespace journaled. Releasing deletes the
-  person's settings and secrets, so only an action of theirs does it: an
-  import they chose (which first refuses a version a workspace with the
-  plugin on would refuse: a pack rule, a missing dependency, a conflict, an
+  released, its secret namespace journaled. A setting a kept skill no
+  longer declares is released too (its Keychain entry journaled in
+  `PluginSecretCleanupOutbox` and deleted after the save), and the plugin's
+  templates follow the definition
+  (`PluginTemplateSync`; a template the definition dropped stays as an
+  authored row). Releasing deletes the
+  person's settings and secrets, so only an action of theirs does it
+  (`Mode.release`): an import they chose (which first refuses a version a
+  workspace with an activation of the plugin, on or off, would refuse: a
+  pack rule, a missing dependency, a conflict, an
   unsafe declaration, and restores the previous library entry if
-  reconciling fails), Add, or the row's Update. The automatic pass at
+  reconciling fails), Add, or the row's Update, scoped to its plugin. After
+  any reconcile, and after an account is deleted, the mirror of every
+  workspace it changed is exported. The automatic pass (`Mode.automatic`) at
   launch after the built-in sync, and after workspace recovery, only moves
   renamed components (nothing is lost) and records the new version when
   the definition drops nothing; when it would drop a component the
   activation stays on its recorded version and the row offers Update,
-  which names what goes.
+  which names what goes. The library holds one definition and the runtime
+  always projects that one (the approved digest), so a dropped component
+  stops running at once; "stays on its recorded version" means its
+  settings, accounts and secrets are kept, not that the old definition
+  runs. Keeping old definitions runnable per activation is not planned:
+  the approval is for the library's digest, and running two versions of
+  one plugin side by side is what the redesign removes.
 - **`knownComponentIDs`** is part of V20 (R1 and R3 ship together; no
   release has the model without it). The migration seeds it from the
   definition each activation was migrated against, Add and every
   reconciliation set it, and the workspace mirror carries it, so a dropped
   component is always identifiable, including one that only had secrets.
+  An activation restored without it (a mirror an older build wrote) is
+  reseeded at launch before any reconcile: `PluginActivationMigration`
+  treats an empty `knownComponentIDs` on a plugin with components as
+  pending. Reconcile also counts every component the activation's settings,
+  secrets, bindings and overrides name, so nothing it holds is missed.
 - **Remove** writes its intent (`PluginRemoveJournal`) before the save and
-  clears it after the library entry goes; launch finishes an interrupted one
-  and drops one whose activations were never deleted.
+  clears it after the library entry goes. On every trusted launch an intent
+  whose plugin no live activation names is finished, a plugin that never
+  had an activation included; one whose activations are still stored is
+  dropped; one whose store is unreadable or whose library entry can't be
+  removed is kept. Remove is offered only once the plugin is off in this
+  workspace and asks a named confirmation (`PluginsSurfaceConfirmation`).
 - **Accounts.** A plugin-created account is in scope only through a binding:
   after Turn off, Remove or a dropped component it stays, unbound and out of
   every run, until it is bound again or deleted. Add account, Make default
   and Delete account (confirmed, naming the workspaces that use it; the only
-  path that clears its credentials, through the connector cleanup outbox)
-  are on the row.
+  path that clears its credentials: `PluginOperations.deleteAccount`
+  records them in the connector cleanup outbox before the save) are on the
+  row. Make default sets the workspace's one default for the service,
+  across plugins.
 - **`PluginRow`.** The surface builds each row once from the package, the
   activation and the display state; Expand, Add, Update, Turn off, Remove,
   settings and accounts all take it. Turn off asks nothing. Plugin skill
   settings are edited on the expanded row (secret ones with
   `SecretEntryField`, into the Keychain).
-- **Still rows:** plugin templates (workspace rows owned by the plugin);
-  they move to the parity checklist in R4.
+- **Still rows:** plugin templates (workspace rows owned by the plugin).
+  R3 keeps them in step with the definition (`PluginTemplateSync`: the row
+  stamped with the plugin and component is rewritten on Update, a new one
+  is added, a dropped one stays as the person's), so installed content is
+  never stale after Update. Moving templates into the projection (an
+  edited template becoming an authored override, schedules rebound to
+  projected template IDs, requirement 8) is not part of R1-R5; until a
+  phase takes it, the "It also emits the plugin's templates" line under
+  Runtime describes the target, not what ships.
 
 ### How R4 was built (2026-10-16)
 
@@ -494,7 +614,7 @@ preview flag and its Settings toggle are deleted.
 | Import of a plugin file | "Import file..." reviews the file and imports it through the action service; a newer version of an installed plugin is an Update |
 | Account sign-in flows (Google OAuth) | **Dropped (owner, 2026-10-16).** The Google Workspace sign-in sheet, its setup presentation, the OAuth stack and the build script's client ID are deleted; a plugin whose setup needs an OAuth account is listed without Add, saying why |
 | Admin approve / deprecate / block | On the expanded row for admins, keyed to the version's digest |
-| Removal of inactive plugins | Remove is offered whether the plugin is on or off |
+| Removal of inactive plugins | Remove is offered for a plugin that is off in this workspace, whether or not it is on elsewhere or was ever on (R3 offers it only once the plugin is off here, since it reaches every workspace) |
 | Creating a plugin | **Kept (owner, 2026-10-16):** New > Create a plugin... (the wizard) and New > From an MCP server... |
 | Export source JSON, copy setup from another workspace, validate before Add | **Dropped (owner, 2026-10-16)** |
 | Category scopes, approval and risk filters, per-row risk labels | Replaced by the three status groups and search (UI section) |
@@ -522,7 +642,8 @@ thing, each with its own setup story, spread over three surfaces:
 | Skill | every workflow package | nothing beyond enabling | `skills` |
 | MCP server | `google-workspace` (Gmail, Drive, Calendar) | keep a process alive, complete OAuth | `mcpServers` |
 
-*(verified: `Astra/Resources/Capabilities/*.json`, 12 packages.)*
+*(verified: `Astra/Resources/Capabilities/*.json`, 10 packages; corrected
+2026-10-16 from 12, which counted the `assets` folder and `README.md`.)*
 
 Adding one takes five user steps (browse, read requirements, approve, enable
 per workspace, set up credentials) where Cowork and Codex take three (browse,
@@ -600,8 +721,9 @@ support).
   "name": "Jira",
   "version": "2.0.0",
   "summary": "Read issues and propose updates in Jira",
-  "worksOn": { "claude": "full", "codex": "full", "copilot": "full",
-               "cursor": "shell-only", "opencode": "shell-only", "antigravity": "shell-only" },
+  "worksOn": { "claude_code": "full", "codex_cli": "full", "copilot_cli": "full",
+               "cursor_cli": "shell-only", "opencode_cli": "shell-only",
+               "antigravity_cli": "shell-only" },
   "components": [
     { "kind": "skill", "id": "jira-agent", "path": "skills/jira-agent/SKILL.md" },
     { "kind": "connector", "id": "jira",
@@ -621,6 +743,12 @@ support).
   ]
 }
 ```
+
+`worksOn` is keyed by `AgentRuntimeID` raw values (`claude_code`,
+`codex_cli`, `copilot_cli`, `cursor_cli`, `opencode_cli`,
+`antigravity_cli`); a display name is not a key. A manifest also carries
+the install blockers a package has today (`minAppVersion`, `requires`,
+`conflicts`), which Add checks as before.
 
 Every `credentialForm` field declares where its value goes: `secret` (the
 Keychain, under the account), `account.baseURL`, `account.alias`, or
@@ -677,8 +805,14 @@ Rules:
 - `repair` is what the row's button does when `check` fails after the
   component was once healthy. It is usually `connect` again.
 - `worksOn` is mandatory. A plugin whose only components are `mcp` must say
-  `shell-only` or `unsupported` for the three runtimes without MCP delivery;
-  the UI shows it before the user adds the plugin.
+  `unsupported` for the three runtimes without MCP delivery, since nothing
+  in it reaches them; `shell-only` is reserved for a plugin with at least
+  one skill or tool the shell relay can use. The UI shows it before the
+  user adds the plugin. *(As built in R5: `PluginManifestConverter.defaultWorksOn`
+  gives `unsupported` on those runtimes to a plugin with MCP servers and no
+  skill, account or tool, and `shell-only` otherwise; the review sheet a
+  plugin file or a source plugin goes through shows the result before
+  import.)*
 - A `tool` is a transport, not an auth method. A Jira CLI is a `tool` under
   the Jira plugin with the shell policy; it is never shown as "another way to
   connect Jira". See [Cardinality](#cardinality).
@@ -708,9 +842,23 @@ Plugins 2.0 makes the model explicit:
 - **Workspace 1 — default Account 0..1 per service.** When a workspace has
   more than one account of a service, it names a default. The resolver uses
   the alias named in the task text, else the default, else it asks *before
-  launch*. The broker's refusal stays as the last line.
+  launch*. The broker's refusal stays as the last line. *(As built in R1
+  and R3: a workspace with any bound account of a service always has
+  exactly one default for it, across plugins (`bind` makes the first one
+  the default, `unbind` promotes the oldest remaining), so "neither" does
+  not arise for plugin accounts. No resolver narrows a launch to one
+  account yet (`ConnectorAccountResolver` was not carried into R1): every
+  bound account is in scope, default first
+  (`PluginActivation.accounts(forComponent:)`), and the broker refuses an
+  aliasless call when more than one is projected. Narrowing to the named
+  or default account before launch is not built and not scheduled in
+  R1-R5.)*
 - **Alias is required and visible** as soon as a service has two accounts,
-  which is the broker's rule promoted to the UI.
+  which is the broker's rule promoted to the UI. Aliases are unique per
+  normalized service among the accounts a workspace can see, so a name
+  always selects one account: `WorkspaceCapabilityActivation.bind` renames
+  a colliding account " 2", " 3" when it joins a workspace (sharing
+  included), and a new account takes `uniqueAlias`.
 
 This needs a new schema version (account is a new entity; today it is the
 `Connector` row). Follow the repository rule: add `Vn+1`, never edit a shipped
@@ -724,17 +872,27 @@ Target: three user steps, matching Cowork and Codex.
    Google Cloud because `bq` is one of its tools). Sources: built-ins plus any
    git source the user added.
 2. **Add.** One review sheet shows the components, what each one will be able
-   to do, and `worksOn` for the user's runtimes. One confirmation:
-   - runs `check` on every component and sorts them into ready / needs setup;
+   to do, and `worksOn` for the user's runtimes. One confirmation, in this
+   order (`CapabilityCatalogActionService.add`):
+   - runs `CapabilityCatalogPolicy.decision` and the install blockers, and
+     stops with their reasons if they refuse;
    - writes the approval record automatically (digest kept; it still catches
      tampering) with `approvedBy: "user"`;
-   - installs once into the library; nothing is enabled per workspace yet.
+   - installs once into the library and turns the plugin on in the
+     workspace it was added from (`CapabilityInstaller.install`, then
+     `enable`); other workspaces turn it on from the expanded row;
+   - only then runs `check` on every component and sorts them into ready /
+     needs setup: a check runs only for an approved digest whose decision
+     is `canRun` (see Manifest, Rules), so it never runs before the
+     approval exists.
 3. **Connect, lazily.** `connect` legs are never run on add. The plugin row
    shows "N steps pending"; the user runs them when they want, or the first
    task that needs the component triggers the existing first-use gate
    (`AgentRuntimeLaunchPreflight.swift:486`, *verified*).
 
-Enabling per workspace is a switch in the plugin's expanded row
+So adding a plugin for the current workspace stays three steps: Find, Add
+(which turns it on here), Connect. Enabling it in another workspace is a
+switch in the plugin's expanded row
 (`Workspaces (2)`), not a separate screen. The workspace rail becomes
 read-only for plugins: it shows what is on and what needs a step.
 
@@ -771,10 +929,18 @@ verify → detect**.
   preflight for every connector account in the launch's resolved capability
   set (not only the keyword-triggered `jira` entry in
   `triggerKeywordsByServiceType`; an enabled account the run does not use
-  never gates it, and its health refreshes only the Plugins UI), and
-  pattern matching on the
-  agent's stream for the plugin's own failure signatures, declared in the
-  manifest (`"authFailurePatterns": ["not logged in", "expired"]`).
+  never gates it, and its health refreshes only the Plugins UI, without
+  blocking; as built, preflight considers only the launch's scoped
+  connectors, `ConnectorPreflightService.connectorsRequiringPreflight`),
+  and the plugin's own failure signatures, declared in the manifest
+  (`"authFailurePatterns": ["not logged in", "expired"]`). Patterns are
+  matched only against a structured failure of the implicated component: a
+  failed tool result of a command that starts the component's own
+  executable, or the broker's structured auth failure for a connector.
+  They are never matched against arbitrary agent text, so a report that
+  mentions an expired certificate does not pause a run. *(As built,
+  `CLISessionExpiryClassifier` applies this rule to built-in patterns for
+  Google Cloud and GitHub; manifest-declared patterns are not read.)*
 - **Show** as the same row everywhere: in the Plugins surface, in the
   workspace rail, and inside a paused task.
 - **Repair** with one of three strategies the manifest declares:
@@ -793,8 +959,15 @@ verify → detect**.
   checks read session state — `gcloud config config-helper` token expiry,
   `gh auth status` — so they serve as verify; connector `verify` before
   Retry is not built yet.)*
-- `repairAction` becomes a typed reference (component id + strategy), so a
-  view can render it.
+- `repairAction` becomes a typed reference, so a view can render it. It
+  names the plugin ID and component ID (component IDs are unique only
+  within a plugin) and the strategy, and for a connector the account ID,
+  so a workspace with two accounts of a service repairs the one that
+  failed. *(As built, `RepairAction` carries the strategy, a display name
+  and the CLI's sign-in and check commands, no IDs: the built-in families
+  are CLI sessions, one per tool (Open question 2), so no account applies.
+  Connector repair, and with it the plugin and account IDs, waits for
+  connector `verify` and is not scheduled in R1-R5.)*
 
 ## UI
 
@@ -825,6 +998,14 @@ Available
   most one verb. `gcloud`, a Jira account and an MCP server look alike.
 - Verbs: `Add` (from a source), `Sign in` / `Connect` (a pending `connect`
   leg), `Remove`. Nothing else at the collapsed level.
+- `Remove` reaches every workspace, so it is offered only once the plugin
+  is off in this workspace, and it asks a named confirmation in place
+  before acting (`PluginsSurfaceConfirmation.remove`): the plugin turns off
+  in every workspace and its settings and secret settings there are
+  deleted; its accounts and their credentials stay, listed under Accounts,
+  and only `Delete account` (its own named confirmation, listing the
+  workspaces that use the account) clears them. Turn off deletes nothing
+  and asks nothing.
 - A connector component expanded shows an `Accounts` sub-list
   (`Stanford · API token · 3 workspaces`) and `Add account`.
 - Brand marks via `BrandMark` as in the rail.
@@ -836,7 +1017,7 @@ Available
 
 ## Sources
 
-- The 12 built-ins become the default source, read from the app bundle as
+- The ten built-ins become the default source, read from the app bundle as
   today, but the on-disk copy stops winning over the compiled one for content
   (`CapabilityLibrary.swift:481-530`, *static read*).
 - `Add source` takes a git URL or `owner/repo`. A source is a repository with
@@ -844,7 +1025,14 @@ Available
   modelled on Claude Code's `.claude-plugin/marketplace.json` so one file can
   serve both.
 - Updates: check per source on demand; detect local edits and warn before
-  overwriting, as Cowork does. The startup
+  overwriting, as Cowork does. *(As built in R3: a skill or tool the person
+  edits becomes an authored row that overrides the component, so an Update
+  never overwrites it. Plugin templates are still workspace rows, and the
+  row's Update rewrites a stamped template to the definition, edits
+  included; the automatic launch pass never does. Warning before that
+  overwrite is not built; it is a requirement for the change that moves
+  templates to the projection, where an edited template becomes an
+  authored override like a skill.)* The startup
   `CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions`
   (`ASTRAApp.swift:989`, *verified*) is retired; definition changes arrive
   only through a source update the user can see.
@@ -859,7 +1047,7 @@ Available
 | Approval | approval record written at add, same store | the view writing the store directly (`PluginCatalogView.swift:1153`, *static read*); `create(enableHere)` approving after enabling |
 | Enablement | one `PluginActivation` row per (plugin, workspace) | `enabledCapabilityIDs`, `enabledGlobalSkillIDs/ConnectorIDs/ToolIDs`, `enabledPackIDs`, `installedPluginIDs/Versions` on `Workspace` |
 | Accounts | `Account` rows under a service | the service/account conflation in `Connector` |
-| Workspace mirror | `.astra-workspace.json` keeps, per plugin, its id, the source it came from and the digest that was approved, plus account aliases; on import a plugin is enabled only when the installed one has the same source and digest, as `WorkspacePackageImportCoordinator` already validates against the installed library. *(Not built yet: the mirror keeps ids only. Installed IDs are unique case-insensitively and a source plugin can't reuse a built-in ID, which narrows a swapped plugin but doesn't close it.)* | the verbatim copy of enablement arrays and origin stamps (`WorkspaceConfigManager.swift:2056`, *verified*) |
+| Workspace mirror | `.astra-workspace.json` keeps, per plugin, its id, the source it came from and the digest that was approved, plus account aliases; on import a plugin is enabled only when the installed one has the same source and digest, as `WorkspacePackageImportCoordinator` already validates against the installed library. *(As built in R1 and R3: the mirror keeps each plugin's id and version and its activation whole (migration requirement 12): settings, overrides, `knownComponentIDs`, `secretSettingKeys`, and each account binding with its component and `isDefault` (`PluginAccountRef`), so recovery keeps the workspace's default account per service. The source and approved digest are not in it yet. Installed IDs are unique case-insensitively and a source plugin can't reuse a built-in ID, which narrows a swapped plugin but doesn't close it.)* | the verbatim copy of enablement arrays and origin stamps (`WorkspaceConfigManager.swift:2056`, *verified*) |
 
 Derived caches (composer snapshot, rail snapshot, browser policy cache) keep
 existing but observe `PluginActivation` changes, and every read of a workspace
@@ -874,7 +1062,7 @@ Each phase ships on its own PR and leaves `main` working.
 | 0 | Single owner for enablement as a service (`WorkspaceCapabilityActivation`, no schema change), config import validates against the library, workspace views guarded against a deleted model. **`aandresalvarez/astra#506`.** | the 2026-10-13 review's high item closed; zero writes to the enablement arrays outside the owner, and reads frozen per file by a registry that only ratchets down |
 | 1 | Manifest + converter that projects a plugin into today's rows; `PluginActivation` and `Account` entities together in one schema `Vn+1`, behind the phase 0 owner; reads move behind the owner; alias/default-account resolution replaces keyword ranking | runtime tests unchanged and green; the read registry is empty; a two-account Jira workspace launches with the chosen account |
 | 2 | New Plugins surface behind a dev flag; health loop with the three repair strategies; typed `repairAction` rendered in rail and task view | a `gcloud` session expired mid-task pauses, repairs from the task view, resumes |
-| 3 | Built-ins migrated to the manifest; git sources; startup repair retired; `worksOn` shown at add | all 12 built-ins add in one step on a fresh dev store |
+| 3 | Built-ins migrated to the manifest; git sources; startup repair retired; `worksOn` shown at add | all ten built-ins add in one step on a fresh dev store *(corrected from twelve, which counted assets)* |
 | 4 | Delete the old install/approve/enable path and `PluginCatalogView` | the install side (install, approve, enable, review, catalog, gallery, import, create and MCP-install services plus their UI) under half its size on `main` *(revised 2026-10-16 by the owner from "`Astra/Services/Capabilities` install side"; see below)* |
 
 ### How the phases landed
@@ -894,6 +1082,8 @@ reference.
   the workspace default; with neither it keeps every account in scope rather
   than blocking the launch. `connectorMatches` on service type is unchanged, so
   the cross-workspace reach under *Security considerations* is still open.
+  *(Superseded by R1: a default always exists per workspace and service;
+  see Cardinality.)*
 - **Phase 2 (`aandresalvarez/astra#508`).** The health loop is
   `PluginRepairCoordinator` (polls the check every 5 s, needs two passing
   checks, gives up at 300 s). A mid-run expiry is detected by
@@ -904,7 +1094,10 @@ reference.
   cancellation), so work done before the expiry, external writes included,
   isn't replayed. The
   `gcloud` check reads `config config-helper --format=value(credential.token_expiry)`
-  so the health view never prints a token.
+  so the health view never prints a token. Phase 2 is complete for those
+  CLI families only: Jira, REDCap and other connector components, and any
+  manifest-declared `authFailurePatterns`, are not classified, so their
+  expiry still fails the run (see the redesign's Health and repair).
 - **Phase 3.** The ten built-in files (not twelve; the earlier count included
   assets) are manifests, and the bundle reader accepts both shapes. Sources are
   a git URL, `owner/repo` or a folder, cloned shallow with `file:` transport
@@ -919,7 +1112,12 @@ reference.
   workspace accounts and templates are deleted, and configured values are
   kept for keys that remain. Workspace-local legacy copies of a
   built-in skill are no longer rewritten. Local-edit detection before an update
-  is not built.
+  is not built. *(Superseded by R3: Update is offered when the recorded
+  version, digest or component list differs from the library, or the
+  plugin's templates drifted (`PluginUpdateService.needsReconcile`), so
+  same-version content changes are caught too; for source plugins, T7 in
+  the threat model shows an equal version with a different digest as
+  changed. Local edits: see Sources.)*
 - **Phase 3 PR:** `aandresalvarez/astra#509`.
 - **Phase 4 (`aandresalvarez/astra#510`).** The Plugins surface is the only
   capability screen. Deleted with `PluginCatalogView` and its preview flag:
@@ -985,6 +1183,8 @@ strategy with a fake terminal launcher (2); mid-run pause on an auth pattern
    per tool.
 3. Keep `.astra-workspace.json` as a recovery mirror or drop plugin state from
    it entirely? Proposed: keep ids and aliases, drop everything else.
+   *(Settled by migration requirement 12: the mirror carries activations
+   whole, each binding's default included.)*
 4. Where does the alias the broker uses today come from? *(unverified; likely
    the connector name.)* Phase 1 must settle it before the `Account` migration.
 
