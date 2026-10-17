@@ -1091,6 +1091,18 @@ final class AgentRuntimeWorker {
             )
         }
         let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
+        // Only Copilot's silent exit 1 looks at its home; a skill can point
+        // COPILOT_PROVIDERS_CONFIG elsewhere, so that check needs the launch's
+        // scoped variables, resolved only once that failure has happened.
+        let copilotFailureEnvironment = selectedRuntime == .copilotCLI && result.exitCode == 1
+            ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: executionTask,
+                capabilityScope: capabilityResolutionSnapshot.providerLaunch,
+                contextText: providerLaunchContextText,
+                executionPolicy: executionPolicy,
+                runtimeRequirements: appliedRuntime.requirements
+            )) { _, scoped in scoped }
+            : nil
         let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
@@ -1105,8 +1117,9 @@ final class AgentRuntimeWorker {
             timedOut: result.timedOut,
             budgetExceeded: result.budgetExceeded,
             maxTurnsExceeded: result.maxTurnsExceeded,
-            copilotHomeAccess: selectedRuntime == .copilotCLI
-                ? { CopilotHomeAccessCheck.inspect(resumeSessionID: nativeContinuationSessionID) } : nil
+            copilotHomeAccess: copilotFailureEnvironment.map { environment in
+                { CopilotHomeAccessCheck.inspect(resumeSessionID: nativeContinuationSessionID, environment: environment) }
+            }
         )
         if let failureDiagnostic {
             AppLogger.audit(

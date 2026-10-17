@@ -43,7 +43,8 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.cause.contains("config.json"))
         #expect(report.cause.contains("mode 0"))
         #expect(report.cause.contains("sudo"))
-        #expect(report.fixCommand == "sudo chown \"$USER\":staff '\(config)' && chmod u+rw '\(config)'")
+        // config.json is read-only to Copilot, so read access is all it gets back.
+        #expect(report.fixCommand == "sudo chown \"$USER\":staff '\(config)' && chmod u+r '\(config)'")
         #expect(report.userMessage.contains("Run `\(report.fixCommand)` in Terminal"))
     }
 
@@ -56,7 +57,7 @@ struct CopilotHomeAccessCheckTests {
         let report = CopilotHomeAccessCheck.inspect(home: home.path)
 
         #expect(report.blocksCopilot)
-        #expect(report.fixCommand == "chmod u+rw '\(config)'")
+        #expect(report.fixCommand == "chmod u+r '\(config)'")
         #expect(!report.cause.contains("sudo"))
     }
 
@@ -249,7 +250,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.access == .unreadable)
         #expect(problem.hasACL)
         #expect(report.cause.contains("with an ACL"))
-        #expect(report.fixCommand == "chmod -N '\(config)' && chmod u+rw '\(config)'")
+        #expect(report.fixCommand == "chmod -N '\(config)' && chmod u+r '\(config)'")
         try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
@@ -477,6 +478,74 @@ struct CopilotHomeAccessCheckTests {
         #expect(broken.problems.contains { $0.path == override && $0.blocksCopilot })
     }
 
+    @Test("A writable file gets read and write back; a read-only config keeps its write bit off")
+    func repairKeepsReadOnlyConfigsReadOnly() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o000)
+        let store = try home.write("session-store.db", mode: 0o000)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.fixCommand == "chmod u+rw '\(store)' && chmod u+r '\(config)'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        let mode = try FileManager.default.attributesOfItem(atPath: config)[.posixPermissions] as? Int
+        #expect(mode == 0o400)
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+    }
+
+    @Test("An unreadable session-state is repaired down to the resumed session it hides")
+    func unreadableSessionStateRepairReachesSession() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let sessions = try home.makeDirectory("session-state", mode: 0o755)
+        let resumed = (sessions as NSString).appendingPathComponent("abc")
+        try FileManager.default.createDirectory(atPath: resumed, withIntermediateDirectories: false)
+        try home.setMode(0o000, of: resumed)
+        try home.setMode(0o000, of: sessions)
+        defer { try? home.setMode(0o755, of: sessions); try? home.setMode(0o755, of: resumed) }
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
+
+        #expect(report.problems.first?.hidesChildren == true)
+        #expect(report.fixCommand.contains("chmod -R u+rX '\(sessions)'"))
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(!CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc").blocksCopilot)
+    }
+
+    @Test("A folder-shaped providers override gets an unused backup name too")
+    func providersOverrideWrongTypeGetsUnusedBackup() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let override = try home.makeDirectory("providers-override", mode: 0o755)
+        try home.write("providers-override.bak", mode: 0o600)
+
+        let report = CopilotHomeAccessCheck.inspect(
+            home: home.path, environment: [CopilotHomeAccessCheck.providersOverrideVariable: override]
+        )
+
+        let problem = try #require(report.problems.first { $0.path == override })
+        #expect(problem.access == .wrongType)
+        #expect(problem.backupPath == "\(override).bak-2")
+        #expect(report.fixCommand.contains("mv -n '\(override)' '\(override).bak-2'"))
+    }
+
+    @Test("A FIFO where a config file belongs blocks as a special file")
+    func fifoConfigBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let fifo = (home.path as NSString).appendingPathComponent("config.json")
+        #expect(mkfifo(fifo, 0o600) == 0)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let problem = try #require(report.problems.first)
+        #expect(problem.access == .wrongType)
+        #expect(problem.isSpecialFile)
+        #expect(report.blocksCopilot)
+        #expect(report.cause.contains("special file (FIFO, socket or device), but Copilot expects a regular file"))
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()
@@ -541,7 +610,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(Set(report.problems.map(\.path)) == [configFolder, sessionFile])
         #expect(report.problems.allSatisfy { $0.access == .wrongType })
         #expect(report.blocksCopilot)
-        #expect(report.cause.contains("config.json is a folder, but Copilot expects a file there."))
+        #expect(report.cause.contains("config.json is a folder, but Copilot expects a regular file there."))
         #expect(report.cause.contains("session-state is a file, but Copilot expects a folder there."))
         #expect(report.fixCommand.contains("mv -n '\(configFolder)' '\(configFolder).bak'"))
         #expect(report.fixCommand.contains("mv -n '\(sessionFile)' '\(sessionFile).bak'"))
@@ -661,7 +730,7 @@ struct CopilotHomeAccessCheckTests {
         let check = try #require(report.checks.first { $0.id == "copilot-home-access" })
         #expect(check.state == .blocked)
         #expect(check.detail.contains("config.json"))
-        #expect(check.remediation?.contains("chmod u+rw") == true)
+        #expect(check.remediation?.contains("chmod u+r ") == true)
 
         try home.setMode(0o600, of: (home.path as NSString).appendingPathComponent("config.json"))
         let repaired = await service.check(configuration: Self.copilotConfiguration)

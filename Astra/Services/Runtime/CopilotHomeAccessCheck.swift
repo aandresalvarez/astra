@@ -45,9 +45,14 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     var backupPath: String?
     /// For `.danglingLink`: the link ends in a loop rather than a missing path.
     var isLinkLoop = false
-    /// An unreadable home whose children could not be listed: the fix must
-    /// restore read access below it too, not only on the home itself.
+    /// An unreadable folder whose children could not be listed: the fix must
+    /// restore read access below it too, not only on the folder itself.
     var hidesChildren = false
+    /// Whether Copilot writes this entry. A read-only config file is repaired
+    /// with read access only, so a hardened mode stays hardened.
+    var requiresWrite = true
+    /// For `.wrongType`: a FIFO, socket or device where a file belongs.
+    var isSpecialFile = false
 
     /// Fixed by moving the entry aside rather than by changing permissions.
     var isMisplaced: Bool {
@@ -117,8 +122,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let unwritable = problems.filter { $0.access == .unwritable }
         var sentences: [String] = []
         for misshapen in problems where misshapen.access == .wrongType {
-            let found = misshapen.isDirectory ? "a folder" : "a file"
-            let expected = misshapen.isDirectory ? "a file" : "a folder"
+            let found = misshapen.isSpecialFile
+                ? "a special file (FIFO, socket or device)"
+                : (misshapen.isDirectory ? "a folder" : "a file")
+            let expected = misshapen.isDirectory || misshapen.isSpecialFile ? "a regular file" : "a folder"
             let verb = misshapen.symlinkTarget == nil ? "is" : "links to"
             sentences.append("\(misshapen.displayPath) \(verb) \(found), but Copilot expects \(expected) there.")
         }
@@ -161,9 +168,13 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !directories.isEmpty {
             commands.append("chmod u+rwx \(Self.quotedPaths(directories))")
         }
-        let files = repairable.filter { !$0.isDirectory }
+        let files = repairable.filter { !$0.isDirectory && $0.requiresWrite }
         if !files.isEmpty {
             commands.append("chmod u+rw \(Self.quotedPaths(files))")
+        }
+        let readOnlyFiles = repairable.filter { !$0.isDirectory && !$0.requiresWrite }
+        if !readOnlyFiles.isEmpty {
+            commands.append("chmod u+r \(Self.quotedPaths(readOnlyFiles))")
         }
         // Read and traverse only: write stays as the user set it, so a
         // deliberately read-only config file is not loosened.
@@ -364,7 +375,7 @@ enum CopilotHomeAccessCheck {
         let startup = effectiveStartupEntries(present: Set(children), providersOverride: providersOverride)
         for child in children.sorted() {
             let path = (resolvedHome as NSString).appendingPathComponent(child)
-            if var problem = problem(
+            if let problem = problem(
                 at: path,
                 requiresWrite: !readOnlyConfigFileNames.contains(child),
                 isReadAtStartup: startup[child] != nil,
@@ -373,9 +384,6 @@ enum CopilotHomeAccessCheck {
                 fileManager: fileManager,
                 currentUserID: currentUserID
             ) {
-                if problem.isMisplaced {
-                    problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
-                }
                 problems.append(problem)
             }
         }
@@ -482,7 +490,7 @@ enum CopilotHomeAccessCheck {
         let access: CopilotHomeAccessProblem.Access
         if let forcedAccess {
             access = forcedAccess
-        } else if let expectedKind, isDirectory != (expectedKind == .directory) {
+        } else if let expectedKind, !matches(expectedKind, type: type) {
             access = .wrongType
         } else if Darwin.access(path, readMode) != 0 {
             access = .unreadable
@@ -492,7 +500,7 @@ enum CopilotHomeAccessCheck {
             return nil
         }
         let ownerID = (attributes[.ownerAccountID] as? NSNumber).map { uid_t($0.uint32Value) }
-        return CopilotHomeAccessProblem(
+        var problem = CopilotHomeAccessProblem(
             path: path,
             isDirectory: isDirectory,
             owner: attributes[.ownerAccountName] as? String,
@@ -502,6 +510,24 @@ enum CopilotHomeAccessCheck {
             isReadAtStartup: isReadAtStartup,
             hasACL: hasExtendedACL(path)
         )
+        problem.requiresWrite = requiresWrite
+        problem.isSpecialFile = !isDirectory && type != .typeRegular
+        // An unreadable folder hides what is inside it, so its repair must
+        // reach below it (a resumed session under session-state, say).
+        problem.hidesChildren = isDirectory && access == .unreadable
+        if problem.isMisplaced {
+            problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
+        }
+        return problem
+    }
+
+    /// Copilot reads a `.file` entry as JSON or SQLite, so only a regular
+    /// file will do; a FIFO, socket or device would hang or fail the read.
+    private static func matches(_ kind: EntryKind, type: FileAttributeType?) -> Bool {
+        switch kind {
+        case .directory: return type == .typeDirectory
+        case .file: return type == .typeRegular
+        }
     }
 
     /// Copilot follows a symlinked startup entry, so its target must be
@@ -520,8 +546,10 @@ enum CopilotHomeAccessCheck {
         let targetExists = fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
         let readMode = isDirectory.boolValue ? (R_OK | X_OK) : R_OK
         let target = linkTarget(of: path, fileManager: fileManager)
+        // `attributesOfItem` on the canonical path describes the real target.
+        let targetType = (try? fileManager.attributesOfItem(atPath: canonicalPath(path)))?[.type] as? FileAttributeType
         let access: CopilotHomeAccessProblem.Access
-        if targetExists, let expectedKind, isDirectory.boolValue != (expectedKind == .directory) {
+        if targetExists, let expectedKind, !matches(expectedKind, type: targetType) {
             access = .wrongType
         } else if !targetExists || Darwin.access(path, readMode) != 0 {
             access = .unreadable
@@ -535,7 +563,7 @@ enum CopilotHomeAccessCheck {
         } else {
             return nil
         }
-        return CopilotHomeAccessProblem(
+        var problem = CopilotHomeAccessProblem(
             path: path,
             isDirectory: isDirectory.boolValue,
             owner: nil,
@@ -545,6 +573,8 @@ enum CopilotHomeAccessCheck {
             isReadAtStartup: true,
             symlinkTarget: target
         )
+        problem.isSpecialFile = targetExists && !isDirectory.boolValue && targetType != .typeRegular
+        return problem
     }
 
     /// The fully resolved path, every intermediate link included, as the
