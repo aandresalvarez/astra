@@ -657,6 +657,17 @@ enum CapabilityPackageValidator {
                 ))
                 continue
             }
+            // The install link becomes a repair button: a web page only.
+            if let url = prerequisite.installURL, !RepairAction.isSafeRepairURL(url) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe install link",
+                    "\(prerequisite.displayName) links to \(url.scheme ?? "a non-web") address; install links must be https.",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
             guard checkPrerequisites else { continue }
             if detectExecutable(prerequisite.binary).isEmpty {
                 issues.append(issue(

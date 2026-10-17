@@ -108,7 +108,9 @@ public struct RepairAction: Codable, Sendable, Equatable {
                     checkExpect: check?.expect
                 )
             case .url:
-                guard let url = step.url else { continue }
+                // Only a web page: a package's install link must not open a
+                // file, a share or another app's scheme.
+                guard let url = step.url, isSafeRepairURL(url) else { continue }
                 return RepairAction(
                     strategy: .url, componentName: component.name, title: component.name, verb: verb,
                     detail: step.hint ?? "Open the page, then come back to ASTRA.",
@@ -138,5 +140,12 @@ public struct RepairAction: Codable, Sendable, Equatable {
 
     public static func decode(from payload: String) -> RepairAction? {
         try? JSONDecoder().decode(RepairAction.self, from: Data(payload.utf8))
+    }
+}
+
+public extension RepairAction {
+    /// An https URL with a host: the only kind a repair opens.
+    static func isSafeRepairURL(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == "https" && !(url.host ?? "").isEmpty
     }
 }
