@@ -90,8 +90,15 @@ assert_targets $'FeedbackReportContractTests\nFeedbackEvidencePrivacyTests\nFeed
 
 assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests' \
   "Tests/TaskDecisionDockPresentationTests.swift" \
-  "Astra/Services/Tasks/TaskDecisionDockPresentation.swift" \
+  "Astra/Services/Tasks/TaskDecisionDockPresentation.swift"
+
+assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests' \
   "Astra/Views/TaskMainView.swift"
+
+assert_targets $'ComposerAttachmentsTests\nTaskInputContinuityPromptTests' \
+  "Astra/Views/Components/TaskFilesPopoverView.swift" \
+  "Astra/Views/Components/TaskInputFilesView.swift" \
+  "Tests/ComposerAttachmentsTests.swift"
 
 assert_targets $'HeadlessChatScenarioTests\nFeedbackReportPresentationTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
   "Astra/Services/Runtime/AgentRuntimeWorker.swift" \

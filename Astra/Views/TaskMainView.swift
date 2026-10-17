@@ -1110,128 +1110,14 @@ struct TaskMainView: View {
     }
 
     private var taskFilesPopover: some View {
-        let items = headerFileItems
-
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "doc.text")
-                    .font(Stanford.ui(13, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-                Text("Task Files")
-                    .font(Stanford.body(13).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Spacer()
-                if !items.isEmpty {
-                    Text("\(items.count)")
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(Stanford.coolGrey)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-
-            Divider()
-
-            if items.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("No files yet")
-                        .font(Stanford.body(13).weight(.medium))
-                        .foregroundStyle(Stanford.black)
-                    Text("Generated and attached files will appear here.")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(12)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(items) { item in
-                            Button {
-                                openHeaderFileItem(item)
-                            } label: {
-                                HStack(spacing: 9) {
-                                    Image(systemName: item.destination?.systemImage ?? Formatters.fileIcon(for: item.path))
-                                        .font(Stanford.ui(13))
-                                        .foregroundStyle(item.destination == nil ? Stanford.coolGrey : Stanford.lagunita)
-                                        .frame(width: 18)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(item.name)
-                                            .font(Stanford.body(13).weight(.medium))
-                                            .foregroundStyle(Stanford.black)
-                                            .lineLimit(1)
-                                        Text(item.path)
-                                            .font(Stanford.caption(11))
-                                            .foregroundStyle(.tertiary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
-
-                                    Spacer(minLength: 8)
-
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text(item.source)
-                                            .font(Stanford.caption(10).weight(.medium))
-                                            .foregroundStyle(Stanford.lagunita)
-                                        let size = formatHeaderFileSize(item.size)
-                                        if !size.isEmpty {
-                                            Text(size)
-                                                .font(Stanford.caption(10))
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help(item.destination?.title ?? "Open in default app")
-
-                            if item.id != items.last?.id {
-                                Divider().padding(.leading, 39)
-                            }
-                        }
-                    }
-                }
-                .frame(maxHeight: 360)
-            }
-
-            Divider()
-
-            HStack(spacing: 8) {
-                Button {
-                    openHeaderTextFilesInShelf()
-                } label: {
-                    Label("Open in Files", systemImage: "square.split.2x1")
-                        .font(Stanford.caption(12).weight(.medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(canOpenHeaderTextShelfItems ? Stanford.lagunita : .secondary)
-                .disabled(!canOpenHeaderTextShelfItems)
-                .help("Open all text files in the Files shelf")
-
-                Spacer()
-
-                if !TaskWorkspaceAccess(task: task).taskFolder.isEmpty {
-                    Button {
-                        isShowingFilesPopover = false
-                        NSWorkspace.shared.open(URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder))
-                    } label: {
-                        Image(systemName: "folder")
-                            .font(Stanford.ui(12, weight: .medium))
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Stanford.lagunita)
-                    .help("Open task folder")
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-        }
-        .background(Stanford.panelBackground)
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        return TaskFilesPopoverView(task: task, items: headerFileItems,
+            canOpenTextFiles: canOpenHeaderTextShelfItems, formatSize: formatHeaderFileSize,
+            onOpenFile: openHeaderFileItem, onOpenTextFiles: openHeaderTextFilesInShelf,
+            onOpenFolder: folder.isEmpty ? nil : {
+                isShowingFilesPopover = false
+                NSWorkspace.shared.open(URL(fileURLWithPath: folder))
+            })
     }
 
     private var taskDiagnosticsPopover: some View {
@@ -4148,7 +4034,6 @@ struct TaskMainView: View {
 
                     SubtleDivider()
                 }
-                ComposerInputChipsView(task: task)
                 if !attachedFiles.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {

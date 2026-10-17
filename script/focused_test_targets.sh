@@ -77,9 +77,19 @@ target_for_path() {
       add_target "FeedbackReportPresentationTests"
       add_target "FeedbackCrashRecoveryTests"
       ;;
-    Tests/TaskDecisionDockPresentationTests.swift|Astra/Services/Tasks/TaskDecisionDockContextBuilder.swift|Astra/Services/Tasks/TaskDecisionDockPresentation.swift|Astra/Views/TaskDecisionDockView.swift|Astra/Views/TaskMainView.swift)
+    Astra/Views/TaskMainView.swift)
       add_target "TaskDecisionDockPresentationTests"
       add_target "FeedbackReportPresentationTests"
+      add_target "ComposerAttachmentsTests"
+      add_target "TaskInputContinuityPromptTests"
+      ;;
+    Tests/TaskDecisionDockPresentationTests.swift|Astra/Services/Tasks/TaskDecisionDockContextBuilder.swift|Astra/Services/Tasks/TaskDecisionDockPresentation.swift|Astra/Views/TaskDecisionDockView.swift)
+      add_target "TaskDecisionDockPresentationTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
+    Astra/Views/Components/TaskFilesPopoverView.swift|Astra/Views/Components/TaskInputFilesView.swift|Tests/ComposerAttachmentsTests.swift)
+      add_target "ComposerAttachmentsTests"
+      add_target "TaskInputContinuityPromptTests"
       ;;
     Tests/HeadlessChatProcessScenarioTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
       add_target "HeadlessChatScenarioTests"
