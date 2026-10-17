@@ -108,16 +108,21 @@ assert_targets $'LogDiagnosticsTests\nFeedbackEvidencePrivacyTests\nFeedbackCras
 assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests' \
   "Astra/Models/AppStorageKeys.swift"
 
-assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests\nTaskDecisionDockPresentationTests' \
+assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests\nTaskDecisionDockPresentationTests\nWorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
   "Astra/Models/AppStorageKeys.swift" \
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Views/ContentView.swift" \
   "Astra/Services/Feedback/FeedbackCrashOfferService.swift"
 
-assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests' \
+assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests\nWorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
   "Astra/ASTRAApp.swift" \
   "Astra/Views/ContentView.swift" \
   "Astra/Views/LogViewerView.swift"
+
+assert_targets $'WorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
+  "Astra/Views/WorkspaceCanvasItem.swift" \
+  "Tests/PanelLayoutGeometryTests.swift" \
+  "Tests/WorkspaceRightPanelLayoutTests.swift"
 
 assert_targets ""
 

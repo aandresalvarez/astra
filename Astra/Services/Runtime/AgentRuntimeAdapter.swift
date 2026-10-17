@@ -2181,7 +2181,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let copilotHome = configuredHome.isEmpty ? CopilotCLIRuntime.channelHome() : configuredHome
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
-        let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
+        let capabilities = await CopilotCLIRuntime.answeredCapabilities(executablePath: executable)
         let allowedTools = toolMode == .readOnly ? ["Read", "Glob", "Grep"] : []
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,

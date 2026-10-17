@@ -108,6 +108,50 @@ struct AgentUtilityRuntimeTests {
         #expect(FileManager.default.fileExists(atPath: copilotHome.path))
     }
 
+    @Test("Copilot utility asks again instead of acting on a probe that ran out of time")
+    func copilotUtilityReprobesAfterTimedOutProbe() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-reprobe-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        let release = root.appendingPathComponent("release")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let help = #"echo "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all-tools required for non-interactive mode""#
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+        \(CopilotCLICapabilityProbeTests.helpWaitingFor(release, then: help))
+          exit 0
+        fi
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Answered Copilot"}}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        // A main-actor read gives up on a `help` that cannot answer yet...
+        #expect(CopilotCLIRuntime.capabilities(executablePath: fakeCopilot.path) == .conservative)
+        try Data().write(to: release)
+
+        // ...and the utility run must not inherit that fallback: launched without the JSON
+        // flags, the stream would come back as raw JSON lines.
+        let result = await AgentUtilityRuntimeRunner.runPrompt(
+            "Plan the work",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path
+            ),
+            toolMode: .readOnly
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.output == "Answered Copilot")
+    }
+
     @Test("Copilot utility runtime extracts text from JSON stream")
     func copilotUtilityRuntimeExtractsText() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -411,6 +455,8 @@ struct AgentUtilityRuntimeTests {
         """
         try writeExecutableScript(at: fakeCopilot, contents: script)
 
+        // Answer the capability probe before the clock starts: the budget below is for the run.
+        _ = await CopilotCLIRuntime.answeredCapabilities(executablePath: fakeCopilot.path)
         let start = Date()
         let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
             "Summarize diff",
@@ -532,6 +578,8 @@ struct AgentUtilityRuntimeTests {
         """
         try writeExecutableScript(at: fakeCopilot, contents: script)
 
+        // Answer the capability probe before the clock starts: the budget below is for the run.
+        _ = await CopilotCLIRuntime.answeredCapabilities(executablePath: fakeCopilot.path)
         let start = Date()
         let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
             "Define the executable goal and plan now",
@@ -645,6 +693,8 @@ struct AgentUtilityRuntimeTests {
         """
         try writeExecutableScript(at: fakeCopilot, contents: script)
 
+        // Answer the capability probe before the clock starts: the budget below is for the run.
+        _ = await CopilotCLIRuntime.answeredCapabilities(executablePath: fakeCopilot.path)
         let start = Date()
         let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
             "Define the executable goal and plan now",

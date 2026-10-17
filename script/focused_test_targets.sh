@@ -158,6 +158,13 @@ target_for_path() {
       add_target "AppBundlePackagingTests"
       ;;
   esac
+
+  case "$path" in
+    Astra/Views/ContentView.swift|Astra/Views/WorkspaceCanvasItem.swift|Tests/PanelLayoutGeometryTests.swift|Tests/WorkspaceRightPanelLayoutTests.swift)
+      add_target "WorkspaceRightPanelLayoutTests"
+      add_target "PanelLayoutGeometryTests"
+      ;;
+  esac
 }
 
 for path in "$@"; do
