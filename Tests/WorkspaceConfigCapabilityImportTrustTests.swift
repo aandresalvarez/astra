@@ -16,7 +16,8 @@ struct WorkspaceConfigCapabilityImportTrustTests {
     private let verifier = Manager.CapabilityImportVerifier(
         approvedPackageIDs: ["github-workflow"],
         installedPackageIDs: ["github-workflow", "draft-pack"],
-        availablePackIDs: ["astra.pack.devops"]
+        availablePackIDs: ["astra.pack.devops"],
+        installedDigests: ["github-workflow": "digest-github", "draft-pack": "digest-draft"]
     )
 
     @Test("A validated import drops unbacked enablement and never mints shared rows or origin stamps")
@@ -385,9 +386,9 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         config.enabledPackIDs = ["astra.pack.devops", "astra.pack.unknown"]
         config.enabledGlobalSkillIDs = enabledGlobalSkillIDs
         config.installedPlugins = [
-            Manager.InstalledPluginRef(id: "github-workflow", version: "1.0.0"),
+            Manager.InstalledPluginRef(id: "github-workflow", version: "1.0.0", digest: "digest-github"),
             Manager.InstalledPluginRef(id: "not-installed", version: "9.9.9"),
-            Manager.InstalledPluginRef(id: "draft-pack", version: "0.1.0")
+            Manager.InstalledPluginRef(id: "draft-pack", version: "0.1.0", digest: "digest-draft")
         ]
         config.skills = [skillConfig(name: "Forged Agent", isGlobal: true)]
         config.connectors = [

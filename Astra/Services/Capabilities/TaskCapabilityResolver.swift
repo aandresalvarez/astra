@@ -110,6 +110,13 @@ struct TaskCapabilityResolver {
     private let additionalCredentialGrants: [PermissionGrant]
     private let runtime: AgentRuntimeID?
     private let secretStore: SecretStore
+    /// One projection per resolver, so every inventory read in a resolution
+    /// shares the same projected skills and the connectors wired to them.
+    private let projectionCache = ProjectionCache()
+
+    private final class ProjectionCache {
+        var value: PluginRuntimeProjection?
+    }
 
     init(
         task: AgentTask,
@@ -191,19 +198,29 @@ struct TaskCapabilityResolver {
         let enabledGlobalIDs = Set(task.workspace?.enabledGlobalConnectorIDs ?? [])
         let workspaceID = task.workspace?.id
         let packageSkills = enabledPackageSkills()
+        let projectedIDs = Set(enabledPackageConnectors().map(\.id))
+        // An account bound to one of this workspace's plugins reaches a run
+        // only through its binding (the projection), so turning the plugin
+        // off takes it out of scope.
+        let boundAccountIDs = boundAccountIDs()
         let fromSkills = (task.skills + packageSkills).flatMap(\.connectors).filter { connector in
+            if projectedIDs.contains(connector.id) { return true }
+            guard !boundAccountIDs.contains(connector.id) else { return false }
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
-                    || enabledPackageConnectorSpecs().contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
             }
             return connector.workspace?.id == workspaceID
         }
-        let standalone = task.workspace?.connectors.filter { $0.skill == nil && !$0.isGlobal } ?? []
-        var all = fromSkills + standalone + enabledPackageConnectors()
+        let standalone = task.workspace?.connectors.filter {
+            $0.skill == nil && !$0.isGlobal && !boundAccountIDs.contains($0.id)
+        } ?? []
+        var all = fromSkills + enabledPackageConnectors() + standalone
 
         if let ws = task.workspace, !ws.enabledGlobalConnectorIDs.isEmpty {
             let enabledIDs = Set(ws.enabledGlobalConnectorIDs)
-            all += globalConnectors().filter { enabledIDs.contains($0.id.uuidString) }
+            all += globalConnectors().filter {
+                enabledIDs.contains($0.id.uuidString) && !boundAccountIDs.contains($0.id)
+            }
         }
 
         var seen = Set<UUID>()
@@ -221,7 +238,12 @@ struct TaskCapabilityResolver {
     var allLocalTools: [LocalTool] {
         let packageSkills = enabledPackageSkills()
         let fromSkills = (task.skills + packageSkills).flatMap(\.localTools)
-        let standalone = task.workspace?.localTools.filter { $0.skill == nil && !$0.isGlobal } ?? []
+        // A tool an activation names as an override reaches a run only
+        // through the projection, while its plugin is on.
+        let overriding = task.workspace.map(WorkspaceCapabilities.overridingRowIDs(of:)) ?? []
+        let standalone = task.workspace?.localTools.filter {
+            $0.skill == nil && !$0.isGlobal && !overriding.contains($0.id)
+        } ?? []
         var all = fromSkills + standalone + enabledPackageLocalTools()
 
         if let ws = task.workspace, !ws.enabledGlobalToolIDs.isEmpty {
@@ -253,48 +275,37 @@ struct TaskCapabilityResolver {
     }
 
     private func enabledPackageSkills() -> [Skill] {
-        let packages = enabledCapabilityPackages()
-        let candidates = workspaceSkills() + globalSkills()
-        let directlyMatched = packages.flatMap { package in
-            package.skills.compactMap { pluginSkill in
-                CapabilityRuntimeResourceMatcher.preferredPackageSkill(
-                    pluginSkill,
-                    package: package,
-                    candidates: candidates
-                )
-            }
-        }
-        let resourceOwners = (enabledPackageConnectors().compactMap(\.skill) + enabledPackageLocalTools().compactMap(\.skill))
-            .filter { skill in
-                candidates.contains { $0.id == skill.id }
-            }
-        return uniqueSkills(directlyMatched + resourceOwners)
+        pluginProjection.skills
     }
 
     private func enabledPackageConnectors() -> [Connector] {
-        let specs = enabledPackageConnectorSpecs()
-        guard !specs.isEmpty else { return [] }
-        let candidates = workspaceConnectors() + globalConnectors()
-        return uniqueConnectors(candidates.filter { connector in
-            specs.contains { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
-        })
+        pluginProjection.connectors
     }
 
     private func enabledPackageLocalTools() -> [LocalTool] {
-        let specs = enabledPackageLocalToolSpecs()
-        guard !specs.isEmpty else { return [] }
-        let candidates = workspaceLocalTools() + globalLocalTools()
-        return uniqueTools(candidates.filter { tool in
-            specs.contains { CapabilityRuntimeResourceMatcher.toolMatches($0, tool: tool) }
-        })
+        pluginProjection.tools
     }
 
-    private func enabledPackageConnectorSpecs() -> [PluginConnector] {
-        enabledCapabilityPackages().flatMap(\.connectors)
+    /// The enabled plugins' skills and tools, built from the workspace's
+    /// activations, plus copies of their bound accounts wired to each
+    /// plugin's first skill.
+    private var pluginProjection: PluginRuntimeProjection {
+        if let cached = projectionCache.value { return cached }
+        let projection = PluginRuntimeProjection.project(
+            workspace: task.workspace,
+            packages: enabledCapabilityPackages(),
+            connectorMode: .runtimeCopies
+        )
+        projectionCache.value = projection
+        return projection
     }
 
-    private func enabledPackageLocalToolSpecs() -> [PluginLocalTool] {
-        enabledCapabilityPackages().flatMap(\.localTools)
+    private func boundAccountIDs() -> Set<UUID> {
+        guard let workspace = task.workspace else { return [] }
+        return Set(WorkspaceCapabilityActivation.activations(of: workspace)
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted }
+            .compactMap { $0.account?.id })
     }
 
     private func enabledCapabilityPackages() -> [PluginPackage] {
@@ -593,8 +604,14 @@ struct TaskCapabilityResolver {
             includeSkill(connector.skill)
         }
 
+        // An account several plugins bind stays for whichever of them is in
+        // scope, not only the plugin its copy is wired to.
+        let accountOwners = pluginProjection.accountOwnerSkillIDs
         let includedConnectors = connectors.filter { connector in
             if relevantConnectors.contains(where: { $0.id == connector.id }) {
+                return true
+            }
+            if let owners = accountOwners[connector.id], !owners.isDisjoint(with: includedSkillIDs) {
                 return true
             }
             guard let skill = canonicalSkill(connector.skill) else { return false }

@@ -93,7 +93,10 @@ struct CapabilityCatalogActionServiceTests {
         #expect(result.packageID == package.id)
         #expect(library.installedPackages().map(\.id) == [package.id])
         #expect(workspace.enabledCapabilityIDs == [package.id])
-        #expect(workspace.enabledGlobalSkillIDs == result.skillIDs.map(\.uuidString))
+        // Skills are projected from the activation, not enabled as shared rows.
+        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
+        #expect(Set(WorkspaceCapabilities(workspace: workspace, packageDefinitions: [package]).activeSkills.map(\.id))
+            == Set(result.skillIDs))
     }
 
     @Test("enable publishes one global event to both windows and one scoped workspace event")

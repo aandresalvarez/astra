@@ -35,7 +35,51 @@ struct CapabilityPackageState {
         uniqueTools(directlyLinkedTools + linkedSkills.flatMap(\.localTools))
     }
 
+    /// The workspace's activation of this package. When there is one, it
+    /// alone says whether the package is on and which rows it uses: its
+    /// projection and its bound accounts, never rows matched by name.
+    private var activation: PluginActivation? {
+        WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+    }
+
+    private var projection: PluginRuntimeProjection {
+        PluginRuntimeProjection.project(workspace: workspace, packages: [package])
+    }
+
+    /// The activation's accounts by connector component, or nil without one.
+    private var boundAccountIDs: [String: Set<UUID>]? {
+        activation.map(Self.boundAccountIDs(of:))
+    }
+
+    static func boundAccountIDs(of activation: PluginActivation) -> [String: Set<UUID>] {
+        var ids: [String: Set<UUID>] = [:]
+        for binding in activation.bindings where !binding.isDeleted {
+            guard let account = binding.account, !account.isDeleted else { continue }
+            ids[binding.componentID, default: []].insert(account.id)
+        }
+        return ids
+    }
+
+    /// Whether `connector` serves the `required` component. With an
+    /// activation only an account bound to that exact component does, as at
+    /// runtime: two components of one service never share an account, and
+    /// the projection leaves an unbound one out. Without one, any row of the
+    /// same kind does.
+    static func connector(
+        _ connector: Connector,
+        serves required: PluginConnector,
+        boundAccountIDs: [String: Set<UUID>]?
+    ) -> Bool {
+        guard let boundAccountIDs else {
+            return CapabilityRuntimeResourceMatcher.connectorMatches(required, connector: connector)
+        }
+        return boundAccountIDs[CapabilityResourceOrigin.componentID(for: required)]?.contains(connector.id) ?? false
+    }
+
     var isEnabled: Bool {
+        if let activation {
+            return activation.isEnabled
+        }
         if workspace.enabledCapabilityIDs.contains(package.id) {
             return true
         }
@@ -48,7 +92,9 @@ struct CapabilityPackageState {
             return true
         }
 
-        if linkedConnectors.contains(where: isConnectorEnabled) {
+        // A workspace's own account outlives its plugin (Remove keeps it), so
+        // only a shared one turned on here says the package is on.
+        if linkedConnectors.contains(where: { $0.isGlobal && isConnectorEnabled($0) }) {
             return true
         }
 
@@ -99,8 +145,9 @@ struct CapabilityPackageState {
     /// since): a pending step with nothing to edit, so Add sets it up again.
     var missingConnectors: [PluginConnector] {
         guard isEnabled else { return [] }
+        let bound = boundAccountIDs
         return package.connectors.filter { required in
-            !linkedConnectors.contains { CapabilityRuntimeResourceMatcher.connectorMatches(required, connector: $0) }
+            !linkedConnectors.contains { Self.connector($0, serves: required, boundAccountIDs: bound) }
         }
     }
 
@@ -108,10 +155,11 @@ struct CapabilityPackageState {
         guard isEnabled else { return [] }
 
         let activeConnectors = activeLinkedConnectors
+        let bound = boundAccountIDs
         let missingConnectorMessages = package.connectors.compactMap { requiredConnector -> String? in
-            guard CapabilityRuntimeResourceMatcher.connectorMatches(requiredConnector, connector: connector),
+            guard Self.connector(connector, serves: requiredConnector, boundAccountIDs: bound),
                   !activeConnectors.contains(where: {
-                      CapabilityRuntimeResourceMatcher.connectorMatches(requiredConnector, connector: $0)
+                      Self.connector($0, serves: requiredConnector, boundAccountIDs: bound)
                   }) else { return nil }
             return missingConnectorMessage(for: requiredConnector)
         }
@@ -122,8 +170,9 @@ struct CapabilityPackageState {
 
     private var activeLinkedConnectors: [Connector] {
         let activeConnectorIDs = Set(capabilities.activeConnectors.map(\.id))
+        let hasActivation = activation != nil
         return linkedConnectors.filter { connector in
-            activeConnectorIDs.contains(connector.id) || isConnectorEnabled(connector)
+            activeConnectorIDs.contains(connector.id) || (!hasActivation && isConnectorEnabled(connector))
         }
     }
 
@@ -134,6 +183,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedSkills: [Skill] {
+        if activation != nil { return projection.skills }
         let candidates = capabilities.workspaceSkills + capabilities.availableGlobalSkills
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
@@ -152,6 +202,9 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedConnectors: [Connector] {
+        if let activation {
+            return uniqueConnectors(activation.bindings.filter { !$0.isDeleted }.compactMap(\.account))
+        }
         let candidates = capabilities.workspaceConnectors + capabilities.availableGlobalConnectors
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
@@ -168,6 +221,7 @@ struct CapabilityPackageState {
     }
 
     private var directlyLinkedTools: [LocalTool] {
+        if activation != nil { return projection.tools }
         let candidates = capabilities.workspaceTools + capabilities.availableGlobalTools
         let originMatches = candidates.filter {
             CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
@@ -222,9 +276,10 @@ struct CapabilityPackageState {
     }
 
     private func missingPackageConnectorMessages(activeLinkedConnectors: [Connector]) -> [String] {
-        package.connectors.compactMap { packageConnector in
+        let bound = boundAccountIDs
+        return package.connectors.compactMap { packageConnector in
             let hasActiveConnector = activeLinkedConnectors.contains { connector in
-                CapabilityRuntimeResourceMatcher.connectorMatches(packageConnector, connector: connector)
+                Self.connector(connector, serves: packageConnector, boundAccountIDs: bound)
             }
             guard !hasActiveConnector else { return nil }
             return missingConnectorMessage(for: packageConnector)

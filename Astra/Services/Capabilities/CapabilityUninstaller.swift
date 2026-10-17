@@ -64,9 +64,11 @@ struct CapabilityUninstaller {
         let globalTools = try modelContext.fetch(FetchDescriptor<LocalTool>(
             predicate: #Predicate { $0.isGlobal == true }
         ))
+        let packageID = package.id
+        let stampedAccounts = try modelContext.fetch(FetchDescriptor<Connector>(
+            predicate: #Predicate { $0.originPackageID == packageID }
+        ))
 
-        let packageSkillNames = Set(package.skills.map(\.name))
-        let packageConnectorNames = Set(package.connectors.map(\.name))
         let packageTemplateNames = Set(package.templates.map(\.name))
 
         let matchedGlobalSkills = ownedOrLegacyMatches(
@@ -74,25 +76,25 @@ struct CapabilityUninstaller {
             packageID: package.id,
             hasOrigin: CapabilityResourceOrigin.hasOrigin,
             isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-            legacyMatches: { packageSkillNames.contains($0.name) }
+            // Plugin skills, tools and connectors are no longer rows: only a
+            // leftover stamped row is the plugin's. A same-named row without a
+            // stamp is the person's (an authored skill, or an edited plugin
+            // skill the migration kept), never the plugin's to delete.
+            legacyMatches: { _ in false }
         )
         let matchedGlobalConnectors = ownedOrLegacyMatches(
             globalConnectors,
             packageID: package.id,
             hasOrigin: CapabilityResourceOrigin.hasOrigin,
             isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-            legacyMatches: { connector in
-                package.connectors.contains { matches(connector, pluginConnector: $0) }
-            }
+            legacyMatches: { _ in false }
         )
         let matchedGlobalTools = ownedOrLegacyMatches(
             globalTools,
             packageID: package.id,
             hasOrigin: CapabilityResourceOrigin.hasOrigin,
             isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-            legacyMatches: { tool in
-                package.localTools.contains { matches(tool, pluginTool: $0) }
-            }
+            legacyMatches: { _ in false }
         )
 
         var result = RemovalResult(packageID: package.id)
@@ -101,9 +103,10 @@ struct CapabilityUninstaller {
         let membershipSnapshots = workspaces.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         // Wiped only after the SwiftData deletes are saved — see below.
         var pendingKeychainCleanups: [() -> Void] = []
-        // Snapshotted before the delete; run after the save, against the
-        // connectors that remain.
-        var pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
+        // Remove never deletes a connector, so no connector namespace is
+        // released here.
+        let pendingConnectorCleanups: [ConnectorKeychainCleanup] = []
+        var activationSecretSkillIDs: [UUID] = []
 
         for workspace in workspaces {
             let remainingWorkspacePackages = remainingPackages.filter {
@@ -127,6 +130,13 @@ struct CapabilityUninstaller {
                 workspace.enabledGlobalConnectorIDs.contains { removableGlobalConnectorIDs.contains($0) } ||
                 workspace.enabledGlobalToolIDs.contains { removableGlobalToolIDs.contains($0) }
 
+            // The activation's secret settings live under its projected
+            // skills' IDs, which nothing names once the activation is gone:
+            // they are recorded before the save and cleaned after it, every
+            // component it ever knew included.
+            if let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
+                activationSecretSkillIDs += PluginRuntimeProjection.secretNamespaces(of: activation, package: package)
+            }
             WorkspaceCapabilityActivation.mutate(workspace) {
                 $0.capabilityIDs.removeAll { $0 == package.id }
                 $0.globalSkillIDs.removeAll { removableGlobalSkillIDs.contains($0) }
@@ -135,21 +145,9 @@ struct CapabilityUninstaller {
                 $0.removeInstalledPlugin(id: package.id)
             }
 
-            let workspaceConnectors = ownedOrLegacyMatches(
-                workspace.connectors,
-                packageID: package.id,
-                hasOrigin: CapabilityResourceOrigin.hasOrigin,
-                isOwned: CapabilityResourceOrigin.isOwnedBy(_:packageID:),
-                legacyMatches: { packageConnectorNames.contains($0.name) }
-            )
-            .filter { connector in
-                !remainingWorkspacePackages.contains(where: { claims(connector, package: $0) })
-            }
-            for connector in workspaceConnectors {
-                pendingConnectorCleanups.append(connector.keychainCleanup)
-                result.removedConnectorIDs.append(connector.id)
-                modelContext.delete(connector)
-            }
+            // Connectors are accounts: removing a plugin deletes its
+            // activations (and with them the bindings), never the accounts or
+            // their credentials. Deleting an account is its own action.
 
             let workspaceTemplates = ownedOrLegacyMatches(
                 workspace.templates,
@@ -166,16 +164,17 @@ struct CapabilityUninstaller {
                 modelContext.delete(template)
             }
 
-            if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceConnectors.isEmpty || !workspaceTemplates.isEmpty {
+            if wasPackageEnabled || wasPackageRecorded || hadPackageGlobals || !workspaceTemplates.isEmpty {
                 workspace.updatedAt = Date()
                 result.disabledWorkspaceIDs.append(workspace.id)
             }
         }
 
-        for connector in matchedGlobalConnectors where !remainingPackages.contains(where: { claims(connector, package: $0) }) {
-            pendingConnectorCleanups.append(connector.keychainCleanup)
-            result.removedConnectorIDs.append(connector.id)
-            modelContext.delete(connector)
+        // The accounts stay with their credentials, but no longer as this
+        // plugin's: a later install of the same file has no activation yet,
+        // and a stamped account would make the plugin look on.
+        for account in stampedAccounts {
+            releaseProvenance(of: account, packageID: package.id)
         }
 
         for tool in matchedGlobalTools where !remainingPackages.contains(where: { claims(tool, package: $0) }) {
@@ -194,7 +193,11 @@ struct CapabilityUninstaller {
         // keeps its credentials; any that don't clear are retried at launch.
         guard ConnectorCredentialCleanup.deleteThenClean(
             pendingConnectorCleanups, modelContext: modelContext, store: connectorCleanupStore,
-            save: { persist(nil, modelContext) }
+            save: {
+                PluginSecretCleanupOutbox.deleteThenClean(activationSecretSkillIDs, modelContext: modelContext) {
+                    persist(nil, modelContext)
+                }
+            }
         ) else {
             // Abort before touching the keychain or the library file: the
             // deletes were not persisted, so removing either would strand
@@ -237,6 +240,32 @@ struct CapabilityUninstaller {
 
         CapabilityCatalogPersistenceEvents.post(.global)
         return result
+    }
+
+    /// Clears the plugin's origin stamp from an account it leaves behind.
+    /// The stamp also names a shared Keychain namespace, so credentials only
+    /// there are first copied into the row's own (which loads first); one
+    /// the copy can't reach keeps the stamp rather than be stranded.
+    private func releaseProvenance(of account: Connector, packageID: String) {
+        KeychainService.synchronizeConnectorCredentialNamespaces(connector: account)
+        let stranded = account.credentialKeys.contains { key in
+            KeychainService.load(key: key, connectorID: account.id) == nil
+                && KeychainService.load(key: key, connector: account) != nil
+        }
+        guard !stranded else {
+            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+                "source": "package_uninstall",
+                "package_id": packageID,
+                "result": "account_provenance_kept_credentials_not_copied"
+            ], level: .warning)
+            return
+        }
+        account.originPackageID = nil
+        account.originPackageVersion = nil
+        account.originComponentID = nil
+        account.originComponentKind = nil
+        account.originSourceKind = nil
+        account.updatedAt = Date()
     }
 
     private func matches(_ connector: Connector, pluginConnector: PluginConnector) -> Bool {

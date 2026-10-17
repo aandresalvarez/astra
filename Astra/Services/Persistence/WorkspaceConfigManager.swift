@@ -279,18 +279,6 @@ public enum WorkspaceConfigManager {
         public var exportedAt: Date
     }
 
-    public struct InstalledPluginRef: Codable, Sendable {
-        public init(id: String, version: String, name: String? = nil) {
-            self.id = id
-            self.version = version
-            self.name = name
-        }
-
-        public var id: String
-        public var version: String
-        public var name: String?
-    }
-
     public struct SkillConfig: Codable, Sendable {
         public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
             self.id = id
@@ -984,12 +972,7 @@ public enum WorkspaceConfigManager {
             .map(workspaceAppAutomationStateConfig)
         let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
-        var pluginRefs: [InstalledPluginRef] = []
-        for (idx, pluginID) in workspace.installedPluginIDs.enumerated() {
-            let ver = idx < workspace.installedPluginVersions.count
-                ? workspace.installedPluginVersions[idx] : "0.0.0"
-            pluginRefs.append(InstalledPluginRef(id: pluginID, version: ver))
-        }
+        let pluginRefs = installedPluginRefs(for: workspace)
 
         return WorkspaceConfig(
             id: workspace.id.uuidString,
@@ -1276,7 +1259,8 @@ public enum WorkspaceConfigManager {
         modelContext.insert(workspace)
         var activation = requestedActivation(from: config)
         var trustReport = CapabilityImportTrustReport()
-        reconcile(&activation, trust: capabilityTrust, modelContext: modelContext, report: &trustReport)
+        reconcile(&activation, pluginRefs: config.installedPlugins ?? [], trust: capabilityTrust,
+                  modelContext: modelContext, report: &trustReport)
 
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
@@ -1366,12 +1350,14 @@ public enum WorkspaceConfigManager {
         }
 
         WorkspaceCapabilityActivation.apply(activation, to: workspace)
+        let projectedIDs = restoreActivationDetails(from: config, into: workspace, connectorsByID: connectorsByID,
+                                 skillsByID: skillsByID, toolsByID: toolsByID, trust: capabilityTrust)
 
         for tc in config.templates ?? [] {
             let template = makeTemplate(from: tc, workspace: workspace)
             // Skill IDs from the file resolve to the rows it created (fresh
             // under `.validate`).
-            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
+            template.defaultSkillIDs = template.defaultSkillIDs.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
             sanitizeCreated(template, trust: capabilityTrust, report: &trustReport)
             modelContext.insert(template)
         }
@@ -1387,7 +1373,7 @@ public enum WorkspaceConfigManager {
         let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
             let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
-            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? $0 }
+            schedule.skillIDs = schedule.skillIDs.map { skillsByID[$0]?.id.uuidString ?? projectedIDs[$0] ?? $0 }
             modelContext.insert(schedule)
         }
 
@@ -1608,7 +1594,7 @@ public enum WorkspaceConfigManager {
         let enabledGlobalIDs = Set(workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
         let taskSkills = workspace.tasks.flatMap(\.skills)
         let enabledGlobals = globalSkills.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals) { $0.id }
+        let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals + overridingRows(of: workspace, among: globalSkills)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
@@ -1619,7 +1605,8 @@ public enum WorkspaceConfigManager {
     ) -> [Connector] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalConnectorIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalConnectors.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals) { $0.id }
+        let all = uniqueByID(workspace.connectors + skills.flatMap(\.connectors) + enabledGlobals
+            + boundAccounts(of: workspace)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
@@ -1630,7 +1617,8 @@ public enum WorkspaceConfigManager {
     ) -> [LocalTool] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalTools.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals) { $0.id }
+        let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals
+            + overridingRows(of: workspace, among: globalTools)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 

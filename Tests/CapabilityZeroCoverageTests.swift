@@ -222,7 +222,7 @@ struct CapabilitySetupCopierZeroCoverageTests {
         connector.configValues = ["ABC,DEF"]
         connector.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
         workspace.connectors.append(connector)
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         context.insert(workspace)
         try context.save()
 

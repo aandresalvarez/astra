@@ -51,6 +51,13 @@ enum TaskExecutionLaunchSnapshotApplicator {
             sources: cloneSources,
             workspace: workspace
         )
+        if let workspace, let live = source.workspace {
+            WorkspaceCapabilityActivation.copyActivations(
+                from: live,
+                to: workspace,
+                accountsByID: Dictionary(workspace.connectors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            )
+        }
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
         task.id = source.id
         task.inputs = source.inputs
@@ -252,7 +259,13 @@ enum TaskExecutionLaunchSnapshotApplicator {
         )
         workspace.id = source.id
         workspace.lastUsedSkillNames = source.lastUsedSkillNames
-        WorkspaceCapabilityActivation.apply(WorkspaceCapabilityActivation.state(of: source), to: workspace)
+        // Plugin activations are copied whole once the launch graph exists,
+        // so their bindings can point at its account copies.
+        var state = WorkspaceCapabilityActivation.state(of: source)
+        state.capabilityIDs = []
+        state.pluginIDs = []
+        state.pluginVersions = []
+        WorkspaceCapabilityActivation.apply(state, to: workspace)
         workspace.shelfVisibilityOverrideIDs = source.shelfVisibilityOverrideIDs
         workspace.shelfVisibilityOverrideValues = source.shelfVisibilityOverrideValues
         workspace.memories = source.memories
@@ -329,7 +342,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return artifact
     }
 
-    private static func detachedSkill(_ source: Skill) -> Skill {
+    nonisolated static func detachedSkill(_ source: Skill) -> Skill {
         let skill = Skill(
             name: source.name,
             icon: source.icon,
@@ -354,7 +367,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return skill
     }
 
-    private static func detachedConnector(
+    nonisolated static func detachedConnector(
         _ source: Connector,
         workspace: Workspace? = nil,
         skill: Skill? = nil
@@ -387,7 +400,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return connector
     }
 
-    private static func detachedLocalTool(
+    nonisolated static func detachedLocalTool(
         _ source: LocalTool,
         workspace: Workspace? = nil,
         skill: Skill? = nil

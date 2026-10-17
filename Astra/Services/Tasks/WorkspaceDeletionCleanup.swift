@@ -110,6 +110,22 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         )
     }
 
+    /// Secret plugin settings live under each activation's projected skill
+    /// IDs; they go with the workspace.
+    @MainActor
+    private static func activationSkillCleanups(_ workspace: Workspace) -> [SkillKeychainCleanup] {
+        let activations = WorkspaceCapabilityActivation.activations(of: workspace)
+        guard !activations.isEmpty else { return [] }
+        let packages = Dictionary(
+            CapabilityRuntimeResourceMatcher.packageDefinitions().map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return activations.flatMap { activation in
+            PluginRuntimeProjection.secretNamespaces(of: activation, package: packages[activation.pluginID])
+                .map { SkillKeychainCleanup(skillID: $0) }
+        }
+    }
+
     @MainActor
     init(_ workspace: Workspace) {
         workspaceID = workspace.id
@@ -119,7 +135,7 @@ struct WorkspaceDeletionCleanupRecord: Codable, Equatable {
         mirrorFileIDs = []
         connectors = workspace.connectors.map(\.keychainCleanup)
             + workspace.skills.flatMap { $0.connectors.map(\.keychainCleanup) }
-        skills = workspace.skills.map(\.keychainCleanup)
+        skills = workspace.skills.map(\.keychainCleanup) + Self.activationSkillCleanups(workspace)
         folderWasResolvedOnRead = false
     }
 }
@@ -469,7 +485,10 @@ enum WorkspaceDeletionCleanupService {
             ], level: .error)
             return false
         }
-        let liveSkills = Set(skills.map(\.id))
+        // Stored rows, and the namespaces live activations name: a workspace
+        // imported over this one under its ID projects into the same ones.
+        guard let liveProjected = PluginSecretCleanupOutbox.liveSkillIDs(modelContext: modelContext) else { return false }
+        let liveSkills = Set(skills.map(\.id)).union(liveProjected)
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so

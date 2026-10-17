@@ -78,27 +78,79 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.activeConnectors.map(\.name) == ["Attached API", "Local Jira", "Shared GCP"])
     }
 
-    @Test("active resources include enabled package definitions even when per-resource IDs drift")
+    @Test("active resources come from the activation: projected skills and bound accounts")
     @MainActor
-    func activeResourcesIncludeEnabledPackageDefinitions() {
+    func activeResourcesComeFromTheActivation() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
         let workspace = Workspace(name: "Package Active", primaryPath: "/tmp/package-active")
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        context.insert(workspace)
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
 
-        let jiraSkill = Skill(name: "Jira Agent", allowedTools: ["Read", "Bash"])
-        jiraSkill.isGlobal = true
+        let boundJira = Connector(name: "Configured Jira", serviceType: "jira")
+        boundJira.workspace = workspace
+        context.insert(boundJira)
+        let unboundJira = Connector(name: "Other Jira", serviceType: "jira")
+        unboundJira.isGlobal = true
+        context.insert(unboundJira)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        WorkspaceCapabilityActivation.bind(boundJira, toComponent: "connector:jira:jira", of: activation)
 
-        let jiraConnector = Connector(name: "Configured Jira", serviceType: "jira")
-        jiraConnector.isGlobal = true
-        jiraConnector.skill = jiraSkill
-
-        let capabilities = WorkspaceCapabilities(
-            workspace: workspace,
-            globalSkills: [jiraSkill],
-            globalConnectors: [jiraConnector]
-        )
+        let capabilities = WorkspaceCapabilities(workspace: workspace, globalConnectors: [unboundJira])
 
         #expect(capabilities.activeSkills.map(\.name) == ["Jira Agent"])
+        // Matched by binding, never by service type: the shared Jira row
+        // this workspace did not bind stays out.
         #expect(capabilities.activeConnectors.map(\.name) == ["Configured Jira"])
+
+        // Turning the plugin off takes its account out of scope.
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs = [] }
+        #expect(WorkspaceCapabilities(workspace: workspace).activeConnectors.isEmpty)
+    }
+
+    @Test("package state checks each connector component against its own accounts")
+    @MainActor
+    func packageStateChecksAccountsPerComponent() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Two Jira Components", primaryPath: "/tmp/two-jira-components")
+        context.insert(workspace)
+        func jira(_ name: String) -> PluginConnector {
+            PluginConnector(
+                name: name, serviceType: "jira", icon: "list.clipboard", description: "Jira API", baseURL: "",
+                authMethod: "none", credentialHints: [], configHints: [], notes: ""
+            )
+        }
+        let package = PluginPackage(
+            id: "two-jira-workflow", name: "Two Jira", icon: "list.clipboard", description: "Two Jira sites",
+            author: "Tests", category: "Tests", tags: [], version: "1.0.0", skills: [],
+            connectors: [jira("Jira Cloud"), jira("Jira Server")], localTools: [], templates: [],
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        workspace.testEnabledCapabilityIDs = [package.id]
+        let account = Connector(name: "Jira Cloud", serviceType: "jira", authMethod: "none")
+        account.workspace = workspace
+        context.insert(account)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        WorkspaceCapabilityActivation.bind(
+            account, toComponent: CapabilityResourceOrigin.componentID(for: package.connectors[0]), of: activation
+        )
+
+        // The server component has no account: the runtime leaves it out, so
+        // the Cloud account of the same service doesn't count for it.
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: [package])
+        #expect(capabilities.projection.unboundConnectorComponents[package.id]
+            == [CapabilityResourceOrigin.componentID(for: package.connectors[1])])
+        let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+        let expected = ["Jira Server: connector not active for this workspace"]
+        #expect(state.missingConnectors.map(\.name) == ["Jira Server"])
+        #expect(state.readiness.messages == expected)
+        #expect(state.attentionMessages(for: account).isEmpty)
+        let rail = CapabilityRailPackageSnapshotState(
+            package: package,
+            index: CapabilityRailWorkspaceResourceIndex(workspace: workspace, capabilities: capabilities)
+        )
+        #expect(rail.readiness.messages == expected)
     }
 
     @Test("enabled pack IDs do not grant capability package resources")
@@ -145,11 +197,11 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.activeSkills.isEmpty)
     }
 
-    @Test("enabled package skills include matched tool owner when package skill name changes")
+    @Test("the projection follows the current definition and ignores legacy rows of the same plugin")
     @MainActor
-    func enabledPackageSkillsIncludeMatchedToolOwnerWhenPackageSkillNameChanges() {
+    func projectionIgnoresLegacyRows() {
         let workspace = Workspace(name: "Package Rename", primaryPath: "/tmp/package-rename")
-        workspace.enabledCapabilityIDs = ["stanford-healthcare-graph-mail"]
+        workspace.testEnabledCapabilityIDs = ["stanford-healthcare-graph-mail"]
 
         let legacySkill = Skill(
             name: "Stanford Graph Mail Agent",
@@ -157,13 +209,7 @@ struct WorkspaceCapabilitiesTests {
             behaviorInstructions: "Use the Stanford Graph mail helper."
         )
         legacySkill.isGlobal = true
-
-        let graphTool = LocalTool(
-            name: "stanford-graph-mail",
-            toolDescription: "Read SHC mail through Graph",
-            toolType: "cli",
-            command: "stanford-graph-mail"
-        )
+        let graphTool = LocalTool(name: "stanford-graph-mail", toolType: "cli", command: "stanford-graph-mail")
         graphTool.isGlobal = true
         graphTool.skill = legacySkill
 
@@ -202,12 +248,14 @@ struct WorkspaceCapabilitiesTests {
         let capabilities = WorkspaceCapabilities(
             workspace: workspace,
             globalSkills: [legacySkill],
-            globalTools: [graphTool]
+            globalTools: [graphTool],
+            packageDefinitions: [package]
         )
         let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
 
-        #expect(capabilities.activeSkills.map(\.name) == ["Stanford Graph Mail Agent"])
-        #expect(state.linkedSkills.map(\.name) == ["Stanford Graph Mail Agent"])
+        #expect(capabilities.activeSkills.map(\.name) == ["Stanford Health Care Graph Mail Agent"])
+        #expect(capabilities.activeTools.map(\.id) != [graphTool.id])
+        #expect(state.linkedSkills.map(\.name) == ["Stanford Health Care Graph Mail Agent"])
     }
 
     @Test("active connectors ignore unenabled global skill attachments")
@@ -380,7 +428,7 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.attentionMessages(for: connector).isEmpty)
     }
 
-    @Test("package state prefers origin metadata over name matches")
+    @Test("package state links the plugin's projected skill, never stamped or same-named rows")
     @MainActor
     func packageStatePrefersOriginMetadata() {
         let workspace = Workspace(name: "Origin State", primaryPath: "/tmp/origin-state")
@@ -393,7 +441,7 @@ struct WorkspaceCapabilitiesTests {
         ownedSkill.originComponentID = "skill:jira-agent"
         ownedSkill.originComponentKind = "skill"
 
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         workspace.enabledGlobalSkillIDs = [ownedSkill.id.uuidString]
 
         let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
@@ -403,8 +451,14 @@ struct WorkspaceCapabilitiesTests {
         )
         let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
 
-        #expect(state.linkedSkills.map(\.name) == ["Renamed Jira Agent"])
-        #expect(state.skillIDStrings == [ownedSkill.id.uuidString])
+        let activation = WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace)
+        let projectedID = activation.map {
+            PluginRuntimeProjection.derivedID(of: $0, componentID: "skill:jira-agent")
+        }
+        #expect(state.linkedSkills.map(\.name) == ["Jira Agent"])
+        #expect(state.skillIDStrings == Set(projectedID.map { [$0.uuidString] } ?? []))
+        #expect(!state.skillIDStrings.contains(legacySkill.id.uuidString))
+        #expect(!state.skillIDStrings.contains(ownedSkill.id.uuidString))
         #expect(state.isEnabled)
     }
 
@@ -586,7 +640,7 @@ struct WorkspaceCapabilitiesTests {
             workspace: workspace
         ).isEmpty)
 
-        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        workspace.testEnabledCapabilityIDs = ["jira-workflow"]
         #expect(CapabilityCatalogInventory.configuredPackages(
             catalogPackages: [jira, github],
             capabilities: capabilities,
@@ -697,9 +751,9 @@ struct WorkspaceCapabilitiesTests {
         ).isEmpty)
     }
 
-    @Test("disabling a package removes matching local skill activation")
+    @Test("turning a plugin off keeps an authored workspace skill of the same name")
     @MainActor
-    func disablingPackageRemovesMatchingLocalSkillActivation() throws {
+    func turningOffKeepsAuthoredSkill() throws {
         let container = try makeCapabilitiesPersistenceContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Local Package Match", primaryPath: "/tmp/local-package-match")
@@ -710,7 +764,7 @@ struct WorkspaceCapabilitiesTests {
         context.insert(skill)
 
         let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
 
         let capabilities = WorkspaceCapabilities(workspace: workspace)
         #expect(CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
@@ -724,9 +778,11 @@ struct WorkspaceCapabilitiesTests {
         )
         try context.save()
 
-        #expect(result.removedWorkspaceSkillIDs == [skill.id])
+        #expect(result.persisted)
+        #expect(result.removedWorkspaceSkillIDs.isEmpty)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
-        #expect(workspace.skills.filter { $0.id == skill.id }.isEmpty)
+        #expect(workspace.installedPluginIDs == [package.id])
+        #expect(workspace.skills.map(\.id) == [skill.id])
         #expect(CapabilityPackageState(
             package: package,
             workspace: workspace,
@@ -771,39 +827,43 @@ struct WorkspaceCapabilitiesTests {
         ).isEnabled == false)
     }
 
-    @Test("disabling package uses origin metadata before legacy name matching")
+    @Test("turning a plugin off deletes nothing: accounts, settings and shared skills stay")
     @MainActor
-    func disablingPackageUsesOriginMetadataBeforeLegacyNameMatching() throws {
+    func turningOffDeletesNothing() throws {
         let container = try makeCapabilitiesPersistenceContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Disable Origin", primaryPath: "/tmp/disable-origin")
         context.insert(workspace)
 
-        let legacySkill = Skill(name: "Jira Agent", allowedTools: ["Read"])
-        legacySkill.isGlobal = true
-        context.insert(legacySkill)
-
-        let ownedSkill = Skill(name: "Jira Agent Copy", allowedTools: ["Read"])
-        ownedSkill.isGlobal = true
-        ownedSkill.originPackageID = "jira-workflow"
-        ownedSkill.originComponentID = "skill:jira-agent"
-        ownedSkill.originComponentKind = "skill"
-        context.insert(ownedSkill)
+        let sharedSkill = Skill(name: "Jira Agent", allowedTools: ["Read"])
+        sharedSkill.isGlobal = true
+        context.insert(sharedSkill)
+        let account = Connector(name: "Jira", serviceType: "jira")
+        account.workspace = workspace
+        context.insert(account)
 
         let package = makeCapabilityPackage(id: "jira-workflow", skillName: "Jira Agent")
-        workspace.enabledCapabilityIDs = [package.id]
-        workspace.enabledGlobalSkillIDs = [legacySkill.id.uuidString, ownedSkill.id.uuidString]
+        workspace.testEnabledCapabilityIDs = [package.id]
+        workspace.enabledGlobalSkillIDs = [sharedSkill.id.uuidString]
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        WorkspaceCapabilityActivation.bind(account, toComponent: "connector:jira:jira", of: activation)
+        WorkspaceCapabilityActivation.setConfigValue("ENG", forKey: "skill:jira-agent#JIRA_PROJECTS", on: activation)
+        try context.save()
 
         let result = CapabilityActivationDisabler().disable(
             package,
             in: workspace,
-            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [legacySkill, ownedSkill]),
+            capabilities: WorkspaceCapabilities(workspace: workspace, globalSkills: [sharedSkill]),
             modelContext: context,
             availablePackages: [package]
         )
 
-        #expect(result.disabledSkillIDs == [ownedSkill.id])
-        #expect(workspace.enabledGlobalSkillIDs == [legacySkill.id.uuidString])
+        #expect(result == .init(packageID: package.id))
+        #expect(workspace.enabledGlobalSkillIDs == [sharedSkill.id.uuidString])
+        #expect(activation.isEnabled == false)
+        #expect(activation.accounts(forComponent: "connector:jira:jira").map(\.id) == [account.id])
+        #expect(activation.configuration(forComponent: "skill:jira-agent") == ["JIRA_PROJECTS": "ENG"])
+        #expect(workspace.connectors.map(\.id) == [account.id])
     }
 
     @Test("disabling one package keeps shared skill active when another enabled package claims it")
@@ -820,7 +880,7 @@ struct WorkspaceCapabilitiesTests {
 
         let firstPackage = makeCapabilityPackage(id: "first-package", skillName: "Shared Analyst")
         let secondPackage = makeCapabilityPackage(id: "second-package", skillName: "Shared Analyst")
-        workspace.enabledCapabilityIDs = [firstPackage.id, secondPackage.id]
+        workspace.testEnabledCapabilityIDs = [firstPackage.id, secondPackage.id]
         workspace.enabledGlobalSkillIDs = [skill.id.uuidString]
 
         let result = CapabilityActivationDisabler().disable(
@@ -882,7 +942,7 @@ struct WorkspaceCapabilitiesTests {
         let skill = Skill(name: "Pack Analyst", allowedTools: ["Read"])
         skill.isGlobal = true
         let package = makeCapabilityPackage(id: "local.test/pack-analyst", skillName: "Pack Analyst")
-        workspace.enabledCapabilityIDs = [package.id]
+        workspace.testEnabledCapabilityIDs = [package.id]
         workspace.enabledPackIDs = ["astra.pack.policy-test"]
         let packPolicy = makeCapabilityPackPolicy(restrictions: [
             AstraPackPolicyRestriction(

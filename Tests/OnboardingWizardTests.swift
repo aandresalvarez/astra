@@ -343,7 +343,7 @@ struct OnboardingWizardTests {
         let container = try makeCapabilitySetupCopyContainer()
         let context = container.mainContext
         let source = Workspace(name: "Clinical Ops", primaryPath: "/tmp/clinical-ops")
-        source.enabledCapabilityIDs = [
+        source.testEnabledCapabilityIDs = [
             "jira-workflow",
             "github-workflow",
             "gcloud-workflow",
@@ -443,7 +443,7 @@ struct OnboardingWizardTests {
         let container = try makeCapabilitySetupCopyContainer()
         let context = container.mainContext
         let source = Workspace(name: "Legacy REDCap", primaryPath: "/tmp/legacy-redcap")
-        source.enabledCapabilityIDs = ["redcap-workflow"]
+        source.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(source)
 
         let redcap = Connector(
@@ -540,7 +540,7 @@ struct OnboardingWizardTests {
         context.insert(jira)
 
         let deletedConnectorID = UUID()
-        source.enabledCapabilityIDs = ["redcap-workflow"]
+        source.testEnabledCapabilityIDs = ["redcap-workflow"]
         source.enabledGlobalConnectorIDs = [deletedConnectorID.uuidString, jira.id.uuidString]
 
         let store = MockSecretStore()
@@ -615,7 +615,7 @@ struct OnboardingWizardTests {
         let container = try makeCapabilitySetupCopyContainer()
         let context = container.mainContext
         let source = Workspace(name: "Empty REDCap", primaryPath: "/tmp/empty-redcap")
-        source.enabledCapabilityIDs = ["redcap-workflow"]
+        source.testEnabledCapabilityIDs = ["redcap-workflow"]
         context.insert(source)
 
         let redcap = Connector(

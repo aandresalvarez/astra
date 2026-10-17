@@ -13,6 +13,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case invalidPackageID
         case duplicatePackageID
         case duplicatePackageFilename
+        case invalidComponentIdentity
         case invalidVersion
         case localSourceNormalized
         case missingGovernance
@@ -330,6 +331,20 @@ enum CapabilityPackageValidator {
                 "Package filename collision",
                 "Package ID \(package.id) maps to the same filename as installed package \(collision.id).",
                 component: package.id
+            ))
+        }
+
+        // Settings, accounts and secrets are keyed by component identity, so
+        // two components may not share one.
+        let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
+        let duplicates = Dictionary(grouping: componentIDs, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
+        for duplicate in duplicates {
+            issues.append(issue(
+                .blocker,
+                .invalidComponentIdentity,
+                "Duplicate component",
+                "Two components share the identity \(duplicate); give one of them its own id.",
+                component: duplicate
             ))
         }
 

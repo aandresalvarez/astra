@@ -76,8 +76,8 @@ private func makeAnalystCapabilityPackage() -> PluginPackage {
 @Suite("Capability Installer")
 @MainActor
 struct CapabilityInstallerTests {
-    @Test("install writes app-local package and enables shared definitions")
-    func installWritesLibraryAndEnablesSharedDefinitions() throws {
+    @Test("install writes the package to the library and records an activation, not plugin rows")
+    func installWritesLibraryAndRecordsActivation() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Capability Workspace", primaryPath: "/tmp/capability-workspace")
@@ -87,57 +87,49 @@ struct CapabilityInstallerTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let package = makeAnalystCapabilityPackage()
-        let installer = CapabilityInstaller(library: library)
-        let result = try installer.install(
+        let result = try CapabilityInstaller(library: library).install(
             package,
             into: workspace,
             modelContext: context,
             configInputs: ["GCP_PROJECT": "astra-dev"]
         )
 
-        let skills = try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
-        let globalConnectors = try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true }))
-        let tools = try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true }))
-
         #expect(library.installedPackages().map(\.id) == [package.id])
-        #expect(workspace.skills.isEmpty)
-        #expect(workspace.connectors.map(\.name) == ["Google Cloud"])
-        #expect(workspace.localTools.isEmpty)
-        #expect(workspace.enabledGlobalSkillIDs == result.skillIDs.map(\.uuidString))
+        #expect(try context.fetch(FetchDescriptor<Skill>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<LocalTool>()).isEmpty)
+        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
         #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
         #expect(workspace.enabledGlobalToolIDs.isEmpty)
         #expect(workspace.enabledCapabilityIDs == [package.id])
         #expect(workspace.installedVersion(of: package.id) == package.version)
 
-        let skill = try #require(skills.first)
-        #expect(globalConnectors.isEmpty)
+        // The connector component's account is a workspace row bound to the
+        // activation; the configured value lives on it.
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
         let connector = try #require(workspace.connectors.first)
-        let tool = try #require(tools.first)
-        #expect(skill.name == "BigQuery Analyst")
-        #expect(skill.environmentVariables["GCP_PROJECT"] == "")
+        #expect(workspace.connectors.map(\.name) == ["Google Cloud"])
+        #expect(activation.accounts(forComponent: "connector:google_cloud:google-cloud").map(\.id) == [connector.id])
         #expect(connector.skill == nil)
         #expect(connector.config == ["GCP_PROJECT": "astra-dev"])
-        #expect(tool.skill?.id == skill.id)
         #expect(result.connectorIDs == [connector.id])
-        #expect(result.localToolIDs == [tool.id])
 
-        let capabilities = WorkspaceCapabilities(
-            workspace: workspace,
-            globalSkills: skills,
-            globalConnectors: globalConnectors,
-            globalTools: tools
-        )
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages())
+        let skill = try #require(capabilities.activeSkills.first)
+        let tool = try #require(capabilities.activeTools.first)
         #expect(capabilities.activeSkills.map(\.name) == ["BigQuery Analyst"])
         #expect(capabilities.activeConnectors.map(\.name) == ["Google Cloud"])
         #expect(capabilities.activeTools.map(\.name) == ["bq"])
-
-        let task = AgentTask(title: "Use GCP", goal: "List projects", workspace: workspace)
-        task.skills = [skill]
-        let resolver = TaskCapabilityResolver(task: task).resolver
-        #expect(resolver.resolvedEnvironmentVariables["GCP_PROJECT"] == "")
+        #expect(skill.modelContext == nil)
+        #expect(result.skillIDs == [skill.id])
+        #expect(result.localToolIDs == [tool.id])
+        #expect(tool.skill?.id == skill.id)
+        // The value went to the account, not the skill: the package has a
+        // connector, so the skill's own setting stays at its default.
+        #expect(skill.environmentVariables["GCP_PROJECT"] == "")
+        #expect(activation.configKeys.isEmpty)
     }
 
-    @Test("install records exact origin metadata on package resources")
+    @Test("install records exact origin metadata on projected resources, accounts and templates")
     func installRecordsOriginMetadataOnResources() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
@@ -168,22 +160,18 @@ struct CapabilityInstallerTests {
 
         try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
 
-        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
-        )).first)
-        let connector = try #require(try context.fetch(FetchDescriptor<Connector>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
-        )).first)
-        let tool = try #require(try context.fetch(FetchDescriptor<LocalTool>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "bq" }
-        )).first)
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages())
+        let skill = try #require(capabilities.activeSkills.first { $0.name == "BigQuery Analyst" })
+        let connector = try #require(workspace.connectors.first { $0.name == "Google Cloud" })
+        let tool = try #require(capabilities.activeTools.first { $0.name == "bq" })
         let template = try #require(workspace.templates.first { $0.name == "BQ Summary" })
 
         #expect(skill.originPackageID == package.id)
         #expect(skill.originPackageVersion == "1.2.3")
         #expect(skill.originComponentID == "skill:bigquery-analyst")
         #expect(skill.originComponentKind == "skill")
-        #expect(skill.originSourceKind == "local")
+        #expect(skill.originSourceKind == PluginRuntimeProjection.projectedSourceKind)
+        #expect(PluginRuntimeProjection.isProjected(skill))
 
         #expect(connector.originPackageID == package.id)
         #expect(connector.originComponentID == "connector:google_cloud:google-cloud")
@@ -192,6 +180,7 @@ struct CapabilityInstallerTests {
         #expect(tool.originPackageID == package.id)
         #expect(tool.originComponentID == "tool:cli:bq:bq")
         #expect(tool.originComponentKind == "local_tool")
+        #expect(PluginRuntimeProjection.isProjected(tool))
 
         #expect(template.originPackageID == package.id)
         #expect(template.originComponentID == "template:bq-summary")
@@ -221,9 +210,7 @@ struct CapabilityInstallerTests {
             baseURLOverrides: ["Jira": baseURL]
         )
 
-        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "Jira Agent" }
-        )).first)
+        let skill = try #require(WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages()).activeSkills.first { $0.name == "Jira Agent" })
         let connector = try #require(workspace.connectors.first { $0.name == "Jira" })
 
         #expect(skill.environmentVariables["JIRA_BASE_URL"] == "")
@@ -234,7 +221,6 @@ struct CapabilityInstallerTests {
         ])
 
         let task = AgentTask(title: "Use Jira", goal: "List tickets", workspace: workspace)
-        task.skills = [skill]
         let resolver = TaskCapabilityResolver(task: task).resolver
         #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_BASE_URL"] == baseURL)
         #expect(resolver.resolvedEnvironmentVariables["JIRA_JIRA_PROJECTS"] == "ENG, OPS")
@@ -277,9 +263,6 @@ struct CapabilityInstallerTests {
             baseURLOverrides: ["Jira": "https://second.atlassian.net"]
         )
 
-        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "Jira Agent" }
-        )).first)
         let firstConnector = try #require(firstWorkspace.connectors.first { $0.name == "Jira" })
         let secondConnector = try #require(secondWorkspace.connectors.first { $0.name == "Jira" })
         let globalConnectors = try context.fetch(FetchDescriptor<Connector>(
@@ -292,10 +275,7 @@ struct CapabilityInstallerTests {
         #expect(secondConnector.config["JIRA_BASE_URL"] == "https://second.atlassian.net")
 
         let firstTask = AgentTask(title: "First", goal: "List tickets", workspace: firstWorkspace)
-        firstTask.skills = [skill]
         let secondTask = AgentTask(title: "Second", goal: "List tickets", workspace: secondWorkspace)
-        secondTask.skills = [skill]
-
         let firstEnv = TaskCapabilityResolver(task: firstTask).resolver.resolvedEnvironmentVariables
         let secondEnv = TaskCapabilityResolver(task: secondTask).resolver.resolvedEnvironmentVariables
         #expect(firstEnv["JIRA_JIRA_BASE_URL"] == "https://first.atlassian.net")
@@ -304,10 +284,12 @@ struct CapabilityInstallerTests {
         #expect(secondEnv["JIRA_JIRA_PROJECTS"] == "TWO")
         #expect(firstEnv["JIRA_PROJECTS"] == nil)
         #expect(secondEnv["JIRA_PROJECTS"] == nil)
+        #expect(Set(TaskCapabilityResolver(task: firstTask).allConnectors.map(\.id)) == [firstConnector.id])
+        #expect(Set(TaskCapabilityResolver(task: secondTask).allConnectors.map(\.id)) == [secondConnector.id])
     }
 
-    @Test("install once can enable the same shared capability in multiple workspaces")
-    func installReusesSharedDefinitionsAcrossWorkspaces() throws {
+    @Test("one library entry serves every workspace, each with its own activation")
+    func installSharesLibraryEntryAcrossWorkspaces() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
         let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/first-capability")
@@ -323,22 +305,21 @@ struct CapabilityInstallerTests {
         let firstResult = try installer.install(package, into: firstWorkspace, modelContext: context)
         let secondResult = try installer.install(package, into: secondWorkspace, modelContext: context)
 
-        let skills = try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
-        let connectors = try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true }))
-        let tools = try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true }))
-
-        #expect(skills.count == 1)
-        #expect(connectors.count == 1)
-        #expect(tools.count == 1)
-        #expect(firstResult.skillIDs == secondResult.skillIDs)
-        #expect(firstWorkspace.enabledGlobalSkillIDs == secondWorkspace.enabledGlobalSkillIDs)
+        #expect(try context.fetch(FetchDescriptor<Skill>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<LocalTool>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).count == 2)
+        // Projected IDs are per activation, so settings and secrets never
+        // cross workspaces.
+        #expect(Set(firstResult.skillIDs).isDisjoint(with: secondResult.skillIDs))
+        #expect(firstResult.connectorIDs != secondResult.connectorIDs)
         #expect(firstWorkspace.enabledCapabilityIDs == [package.id])
         #expect(secondWorkspace.enabledCapabilityIDs == [package.id])
         #expect(library.installedPackages().count == 1)
     }
 
-    @Test("updating a capability refreshes shared definitions without duplicating them")
-    func updateRefreshesSharedDefinitionsWithoutDuplicates() throws {
+    @Test("adding a newer version refreshes the projection and keeps the activation")
+    func updateRefreshesProjectionWithoutRows() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Update", primaryPath: "/tmp/update-capability")
@@ -357,25 +338,26 @@ struct CapabilityInstallerTests {
         let firstResult = try installer.install(package, into: workspace, modelContext: context)
         let updatedResult = try installer.install(updatedPackage, into: workspace, modelContext: context)
 
-        let skills = try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true }))
-        let tools = try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true }))
-
-        #expect(skills.count == 1)
-        #expect(tools.count == 1)
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: [updatedPackage])
+        let skill = try #require(capabilities.activeSkills.first)
+        let tool = try #require(capabilities.activeTools.first)
+        #expect(try context.fetch(FetchDescriptor<Skill>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).count == 1)
         #expect(firstResult.skillIDs == updatedResult.skillIDs)
-        #expect(skills.first?.behaviorInstructions == "Use BigQuery carefully and explain cost.")
-        #expect(tools.first?.arguments == "--format=json")
-        #expect(skills.first?.originPackageVersion == "1.1.0")
-        #expect(tools.first?.originPackageVersion == "1.1.0")
+        #expect(firstResult.connectorIDs == updatedResult.connectorIDs)
+        #expect(skill.behaviorInstructions == "Use BigQuery carefully and explain cost.")
+        #expect(tool.arguments == "--format=json")
+        #expect(skill.originPackageVersion == "1.1.0")
         #expect(library.installedVersion(of: package.id) == "1.1.0")
+        #expect(workspace.installedVersion(of: package.id) == "1.1.0")
         #expect(workspace.enabledCapabilityIDs == [package.id])
     }
 
-    @Test("updating a capability chooses the newest package-owned duplicate")
-    func updateChoosesNewestPackageOwnedDuplicate() throws {
+    @Test("Add ignores legacy plugin rows instead of rewriting them")
+    func addLeavesLegacyRowsAlone() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
-        let workspace = Workspace(name: "Duplicate Update", primaryPath: "/tmp/duplicate-update")
+        let workspace = Workspace(name: "Legacy rows", primaryPath: "/tmp/duplicate-update")
         context.insert(workspace)
 
         let (library, root) = makeCapabilityInstallerLibrary()
@@ -384,40 +366,24 @@ struct CapabilityInstallerTests {
         var package = makeAnalystCapabilityPackage()
         package.version = "1.1.0"
         let pluginSkill = try #require(package.skills.first)
-        let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
-
-        let newest = Skill(name: pluginSkill.name, behaviorInstructions: "Newest")
-        newest.isGlobal = true
-        newest.originPackageID = package.id
-        newest.originPackageVersion = "1.0.0"
-        newest.originComponentID = componentID
-        newest.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
-        context.insert(newest)
-
-        let stale = Skill(name: pluginSkill.name, behaviorInstructions: "Stale")
-        stale.isGlobal = true
-        stale.originPackageID = package.id
-        stale.originPackageVersion = "0.9.0"
-        stale.originComponentID = componentID
-        stale.originComponentKind = CapabilityResourceComponentKind.skill.rawValue
-        context.insert(stale)
+        let legacy = Skill(name: pluginSkill.name, behaviorInstructions: "Legacy")
+        legacy.isGlobal = true
+        legacy.originPackageID = package.id
+        legacy.originPackageVersion = "1.0.0"
+        legacy.originComponentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
+        context.insert(legacy)
         try context.save()
 
-        let result = try CapabilityInstaller(library: library).install(
-            package,
-            into: workspace,
-            modelContext: context
-        )
+        let result = try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
 
-        #expect(result.skillIDs == [newest.id])
-        #expect(newest.originPackageVersion == "1.1.0")
-        #expect(newest.behaviorInstructions == pluginSkill.behaviorInstructions)
-        #expect(stale.originPackageVersion == "0.9.0")
-        #expect(stale.behaviorInstructions == "Stale")
+        #expect(!result.skillIDs.contains(legacy.id))
+        #expect(legacy.originPackageVersion == "1.0.0")
+        #expect(legacy.behaviorInstructions == "Legacy")
+        #expect(!workspace.enabledGlobalSkillIDs.contains(legacy.id.uuidString))
     }
 
-    @Test("connector-only and tool-only packages enable standalone shared elements")
-    func standaloneElementPackagesEnableGlobalIDs() throws {
+    @Test("connector-only and tool-only packages project standalone elements")
+    func standaloneElementPackagesProject() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Standalone", primaryPath: "/tmp/standalone-capability")
@@ -431,20 +397,18 @@ struct CapabilityInstallerTests {
         package.skills = []
         package.templates = []
 
-        let installer = CapabilityInstaller(library: library)
-        let result = try installer.install(package, into: workspace, modelContext: context)
-
-        let connectors = try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true }))
-        let tools = try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true }))
+        let result = try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
 
         #expect(workspace.enabledGlobalSkillIDs.isEmpty)
-        #expect(workspace.enabledGlobalConnectorIDs == result.connectorIDs.map(\.uuidString))
-        #expect(workspace.enabledGlobalToolIDs == result.localToolIDs.map(\.uuidString))
+        #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
+        #expect(workspace.enabledGlobalToolIDs.isEmpty)
         #expect(workspace.enabledCapabilityIDs == [package.id])
 
-        let capabilities = WorkspaceCapabilities(workspace: workspace, globalConnectors: connectors, globalTools: tools)
-        #expect(capabilities.activeConnectors.map(\.name) == ["Google Cloud"])
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages())
+        #expect(capabilities.activeConnectors.map(\.id) == result.connectorIDs)
         #expect(capabilities.activeTools.map(\.name) == ["bq"])
+        #expect(capabilities.activeTools.first?.skill == nil)
+        #expect(capabilities.activeTools.map(\.id) == result.localToolIDs)
     }
 
     @Test("installer blocks packages with unsatisfied dependencies")
@@ -755,8 +719,8 @@ struct CapabilityInstallerTests {
         }
     }
 
-    @Test("uninstall removes local package and owned shared resources")
-    func uninstallRemovesLocalPackageAndOwnedSharedResources() throws {
+    @Test("uninstall removes the package, its activations and templates, and keeps its accounts")
+    func uninstallRemovesPackageAndKeepsAccounts() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
         let workspace = Workspace(name: "Remove", primaryPath: "/tmp/remove-capability")
@@ -784,103 +748,23 @@ struct CapabilityInstallerTests {
         ]
 
         try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
-        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
-        )).first)
-        let connector = try #require(try context.fetch(FetchDescriptor<Connector>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
-        )).first)
-        let canAssertRealKeychain = AstraSecureKeychainTestSupport.isAvailable
-        let tempKeychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
-        let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
-        let connectorID = connector.id
-        let skillID = skill.id
-        if canAssertRealKeychain {
-            AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: tempBootstrap)
-        }
-        defer {
-            if canAssertRealKeychain {
-                AstraSecureKeychainTestSupport.cleanup(
-                    keychainPath: tempKeychainPath,
-                    bootstrapService: tempBootstrap,
-                    services: KeychainSecretStore.connectorEntityIDs(for: connector) + [
-                        KeychainSecretStore.skillEntityID(for: skillID)
-                    ]
-                )
-            }
-        }
-
-        func withTemporaryKeychain<T>(_ body: () throws -> T) rethrows -> T {
-            guard canAssertRealKeychain else {
-                return try body()
-            }
-            return try AstraSecureKeychainStore.$keychainPathOverride.withValue(tempKeychainPath) {
-                try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(tempBootstrap) {
-                    try body()
-                }
-            }
-        }
-
-        withTemporaryKeychain {
-            if canAssertRealKeychain {
-                #expect(connector.saveCredential(key: "GCP_TOKEN", value: "ya29.aQd3fF1kTestOnlyValue"))
-                #expect(KeychainService.exists(key: "GCP_TOKEN", connector: connector))
-            }
-        }
+        let connector = try #require(workspace.connectors.first { $0.name == "Google Cloud" })
         #expect(workspace.templates.map(\.name) == ["BQ Summary"])
 
-        let result = try withTemporaryKeychain {
-            try CapabilityUninstaller(library: library).remove(package, modelContext: context)
-        }
+        let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
 
         #expect(result.packageID == package.id)
         #expect(result.disabledWorkspaceIDs == [workspace.id])
-        #expect(result.removedSkillIDs == [skillID])
-        #expect(result.removedConnectorIDs == [connectorID])
-        #expect(result.removedToolIDs.count == 1)
+        #expect(result.removedConnectorIDs.isEmpty)
         #expect(result.removedTemplateIDs.count == 1)
         #expect(library.installedPackage(id: package.id) == nil)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
         #expect(workspace.installedPluginIDs.isEmpty)
-        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
-        #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
-        #expect(workspace.enabledGlobalToolIDs.isEmpty)
         #expect(workspace.templates.isEmpty)
-        #expect(try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
-        #expect(try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
-        #expect(try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
-        withTemporaryKeychain {
-            if canAssertRealKeychain {
-                #expect(!KeychainService.exists(key: "GCP_TOKEN", connector: connector))
-            }
-        }
-    }
-
-    @Test("uninstall prefers origin metadata before legacy name matching")
-    func uninstallPrefersOriginMetadataBeforeLegacyNameMatching() throws {
-        let container = try makeCapabilityInstallerContainer()
-        let context = container.mainContext
-        let workspace = Workspace(name: "Remove Origin", primaryPath: "/tmp/remove-origin")
-        context.insert(workspace)
-
-        let (library, root) = makeCapabilityInstallerLibrary()
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let package = makeAnalystCapabilityPackage()
-        try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
-
-        let ownedSkill = try #require(try context.fetch(FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
-        )).first)
-        let legacySkill = Skill(name: "BigQuery Analyst", allowedTools: ["Read"])
-        legacySkill.isGlobal = true
-        context.insert(legacySkill)
-
-        let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
-
-        #expect(result.removedSkillIDs == [ownedSkill.id])
-        #expect(try context.fetch(FetchDescriptor<Skill>()).contains { $0.id == legacySkill.id })
-        #expect(try context.fetch(FetchDescriptor<Skill>()).contains { $0.id == ownedSkill.id } == false)
+        #expect(try context.fetch(FetchDescriptor<PluginActivation>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<AccountBinding>()).isEmpty)
+        // Accounts outlive the plugin; deleting one is its own action.
+        #expect(workspace.connectors.map(\.id) == [connector.id])
     }
 
     @Test("uninstall rejects built-in packages")
@@ -903,8 +787,8 @@ struct CapabilityInstallerTests {
         #expect(library.installedPackage(id: package.id) != nil)
     }
 
-    @Test("uninstall keeps shared resources claimed by another package")
-    func uninstallKeepsResourcesClaimedByAnotherPackage() throws {
+    @Test("uninstall leaves another plugin's activations alone")
+    func uninstallKeepsOtherPluginActivations() throws {
         let container = try makeCapabilityInstallerContainer()
         let context = container.mainContext
         let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/remove-first")
@@ -922,34 +806,17 @@ struct CapabilityInstallerTests {
 
         try CapabilityInstaller(library: library).install(firstPackage, into: firstWorkspace, modelContext: context)
         try CapabilityInstaller(library: library).install(secondPackage, into: secondWorkspace, modelContext: context)
+        let secondAccount = try #require(secondWorkspace.connectors.first)
 
-        let skill = try #require(try context.fetch(FetchDescriptor<Skill>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "BigQuery Analyst" }
-        )).first)
-        let connector = try #require(try context.fetch(FetchDescriptor<Connector>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
-        )).first)
-        let tool = try #require(try context.fetch(FetchDescriptor<LocalTool>(
-            predicate: #Predicate { $0.isGlobal == true && $0.name == "bq" }
-        )).first)
+        _ = try CapabilityUninstaller(library: library).remove(firstPackage, modelContext: context)
 
-        let result = try CapabilityUninstaller(library: library).remove(firstPackage, modelContext: context)
-
-        #expect(result.removedSkillIDs.isEmpty)
-        #expect(result.removedConnectorIDs.isEmpty)
-        #expect(result.removedToolIDs.isEmpty)
         #expect(firstWorkspace.enabledCapabilityIDs.isEmpty)
-        #expect(firstWorkspace.enabledGlobalSkillIDs.isEmpty)
-        #expect(firstWorkspace.enabledGlobalConnectorIDs.isEmpty)
-        #expect(firstWorkspace.enabledGlobalToolIDs.isEmpty)
         #expect(secondWorkspace.enabledCapabilityIDs == [secondPackage.id])
-        #expect(secondWorkspace.enabledGlobalSkillIDs == [skill.id.uuidString])
-        #expect(secondWorkspace.enabledGlobalConnectorIDs == [connector.id.uuidString])
-        #expect(secondWorkspace.enabledGlobalToolIDs.isEmpty)
         #expect(library.installedPackage(id: firstPackage.id) == nil)
         #expect(library.installedPackage(id: secondPackage.id) != nil)
-        #expect(try context.fetch(FetchDescriptor<Skill>()).filter { $0.id == skill.id }.count == 1)
-        #expect(try context.fetch(FetchDescriptor<Connector>()).filter { $0.id == connector.id }.count == 1)
-        #expect(try context.fetch(FetchDescriptor<LocalTool>()).filter { $0.id == tool.id }.count == 1)
+        let secondActivation = try #require(WorkspaceCapabilityActivation.activation(for: secondPackage.id, in: secondWorkspace))
+        #expect(secondActivation.bindings.compactMap(\.account?.id) == [secondAccount.id])
+        #expect(WorkspaceCapabilities(workspace: secondWorkspace, packageDefinitions: library.installedPackages()).activeSkills.map(\.name) == ["BigQuery Analyst"])
     }
+
 }

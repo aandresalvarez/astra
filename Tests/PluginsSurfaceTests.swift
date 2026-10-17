@@ -29,18 +29,19 @@ struct PluginsSurfaceTests {
         #expect(state.available.allSatisfy { $0.verb == .add })
     }
 
-    @Test("Turning off and removing ask first, naming what is deleted and how far it reaches")
+    @Test("Turning off and removing say exactly what they delete and what stays")
     func destructiveActionsConfirm() {
         let off = PluginsSurfaceConfirmation.turnOff(packageID: "jira").copy(name: "Jira", hasAccounts: true)
         #expect(off.verb == "Turn off")
-        #expect(off.message.contains("in this workspace") && off.message.contains("saved keys"))
-        // Shared accounts aren't deleted by turning a plugin off, so the copy
-        // doesn't promise it.
-        #expect(off.message.contains("shared accounts are kept"))
-        #expect(!PluginsSurfaceConfirmation.turnOff(packageID: "x").copy(name: "X", hasAccounts: false).message.contains("keys"))
+        // Turning off deletes nothing.
+        #expect(off.message.contains("in this workspace") && off.message.contains("Nothing is deleted"))
+        #expect(!off.message.contains("are deleted"))
         let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira", hasAccounts: true)
         #expect(remove.verb == "Remove")
         #expect(remove.message.contains("every workspace"))
+        // Remove keeps accounts and their keys; only Delete account clears them.
+        #expect(remove.message.contains("saved keys stay"))
+        #expect(!PluginsSurfaceConfirmation.remove(packageID: "x").copy(name: "X", hasAccounts: false).message.contains("keys"))
     }
 
     @Test("Expanded plugin rows are remembered per workspace")

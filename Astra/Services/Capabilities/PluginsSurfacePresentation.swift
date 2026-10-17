@@ -113,15 +113,19 @@ enum PluginsSurfaceConfirmation: Equatable {
     func copy(name: String, hasAccounts: Bool) -> (message: String, verb: String) {
         switch self {
         case .turnOff:
-            // What the disabler deletes: the accounts this workspace owns.
-            // A shared account (and its keys) stays for the other workspaces.
-            let detail = hasAccounts
-                ? " The accounts it created in this workspace and their saved keys are deleted; shared accounts are kept. Turning it on again asks for the deleted ones."
-                : " Turning it on again restores it."
-            return ("Turn off \(name) in this workspace?" + detail, "Turn off")
-        case .remove:
+            // The disabler deletes nothing: accounts, settings and keys stay.
             return (
-                "Remove \(name) from ASTRA? It turns off in every workspace, and the accounts and saved keys it created there are deleted; shared accounts, ones another plugin also uses, and connected sign-ins are kept. You can add it again later.",
+                "Turn off \(name) in this workspace? Nothing is deleted: its accounts, settings and saved keys stay, and turning it on again restores it.",
+                "Turn off"
+            )
+        case .remove:
+            // Remove deletes activations (settings, secret settings); the
+            // accounts and their credentials stay until deleted one by one.
+            let accounts = hasAccounts
+                ? " Its accounts and their saved keys stay; delete an account from Accounts to clear it."
+                : ""
+            return (
+                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted.\(accounts) You can add it again later.",
                 "Remove"
             )
         }

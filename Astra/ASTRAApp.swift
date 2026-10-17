@@ -823,6 +823,7 @@ public struct ASTRAApp: App {
         if startupBlocker == nil {
             if !isUITesting {
                 LegacyWorkspaceCanvasItemPreferenceMigration.migrate(modelContainer: modelContainer)
+                PluginActivationMigration.migrateIfNeeded(modelContext: modelContainer.mainContext)
             }
             StartupCredentialMigrationService.schedule(modelContainer: modelContainer)
         }
@@ -934,7 +935,12 @@ public struct ASTRAApp: App {
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
                 vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
-                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
+                afterImport: {
+                    // A mirror an older build wrote recreates plugin rows:
+                    // fold them onto activations before anything runs.
+                    PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
+                    settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true)
+                },
                 // A pending deletion, one made while recovery loads included,
                 // keeps its mirror out by path or, wherever a copy of it is
                 // now, as across volumes where its identity doesn't follow,
@@ -973,24 +979,16 @@ public struct ASTRAApp: App {
                     WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
                     ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                    PluginSecretCleanupOutbox.resumePending(modelContext: modelContext)
                     WorkspaceDeletionCleanupService.dropUnconfirmed(
                         modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
                     )
                 }
             }
         }
-        // Approved-package disk sync is owned by PluginCatalog.loadApprovedCapabilities()
-        // (runtime.loadPluginCatalog()), which runs synchronously in
-        // ContentView.handleAppear BEFORE this deferred Task. By the time we get
-        // here the Capabilities directory is already seeded/pruned, so the repair
-        // pass below sees a populated directory and its installedIDs early-out works.
-        // Re-syncing here would just rewrite every built-in JSON a second time.
-        let capabilityLibrary = CapabilityLibrary()
-        CapabilityDefinitionRepairService.refreshInstalledApprovedDefinitions(
-            modelContext: modelContext,
-            library: capabilityLibrary,
-            approvedPackages: PluginCatalog.builtInPackages
-        )
+        // Recovery may have re-created plugin rows from a mirror an older build
+        // wrote; fold them onto activations now rather than next launch.
+        PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
         settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
     }

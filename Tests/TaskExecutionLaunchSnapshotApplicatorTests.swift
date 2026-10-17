@@ -105,26 +105,8 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
             name: "Production retry",
             primaryPath: "/tmp/production-retry"
         )
-        workspace.enabledCapabilityIDs = [githubPackage.id, gcloudPackage.id]
+        workspace.testEnabledCapabilityIDs = [githubPackage.id, gcloudPackage.id]
         context.insert(workspace)
-
-        let githubSkill = Skill(
-            name: "GitHub Agent",
-            skillDescription: "Inspect GitHub through host control.",
-            allowedTools: ["Read", "Glob", "Grep"],
-            behaviorInstructions: "Use the GitHub host-control tool."
-        )
-        githubSkill.isGlobal = true
-        context.insert(githubSkill)
-
-        let gcloudSkill = Skill(
-            name: "GCloud Agent",
-            skillDescription: "Inspect Google Cloud.",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use gcloud for cloud inspection."
-        )
-        gcloudSkill.isGlobal = true
-        context.insert(gcloudSkill)
 
         let gcloudConnector = Connector(
             name: "Google Cloud",
@@ -136,25 +118,12 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         gcloudConnector.isGlobal = true
         gcloudConnector.configKeys = ["GCP_PROJECT"]
         gcloudConnector.configValues = ["astra-test-project"]
-        gcloudConnector.skill = gcloudSkill
         context.insert(gcloudConnector)
-
-        let gcloudTools = gcloudPackage.localTools.map { definition in
-            let tool = LocalTool(
-                name: definition.name,
-                toolDescription: definition.description,
-                icon: definition.icon,
-                toolType: definition.toolType,
-                command: definition.command,
-                arguments: definition.arguments
-            )
-            tool.isGlobal = true
-            tool.skill = gcloudSkill
-            context.insert(tool)
-            return tool
-        }
-        let gcloudTool = try #require(
-            gcloudTools.first { $0.command == "gcloud" }
+        let gcloudActivation = try #require(WorkspaceCapabilityActivation.activation(for: gcloudPackage.id, in: workspace))
+        WorkspaceCapabilityActivation.bind(
+            gcloudConnector,
+            toComponent: CapabilityResourceOrigin.componentID(for: gcloudPackage.connectors[0]),
+            of: gcloudActivation
         )
 
         let unrelatedSkill = Skill(name: "Unrelated Agent")
@@ -170,13 +139,6 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         let unrelatedTool = LocalTool(name: "unrelated", command: "unrelated")
         unrelatedTool.isGlobal = true
         context.insert(unrelatedTool)
-
-        workspace.enabledGlobalSkillIDs = [
-            githubSkill.id.uuidString,
-            gcloudSkill.id.uuidString
-        ]
-        workspace.enabledGlobalConnectorIDs = [gcloudConnector.id.uuidString]
-        workspace.enabledGlobalToolIDs = gcloudTools.map { $0.id.uuidString }
 
         let task = AgentTask(
             title: "Inspect GitHub and Google Cloud",
@@ -210,73 +172,36 @@ struct TaskExecutionLaunchSnapshotApplicatorTests {
         let detachedProviderScope = detachedResolver.resolvedScope(
             .providerLaunch(contextText: task.goal)
         )
-        let liveFullSkillIDs = Set(liveFullScope.behaviorSkills.map { $0.id })
-        let detachedFullSkillIDs = Set(detachedFullScope.behaviorSkills.map { $0.id })
-        let liveFullConnectorIDs = Set(liveFullScope.connectors.map { $0.id })
-        let detachedFullConnectorIDs = Set(detachedFullScope.connectors.map { $0.id })
-        let liveFullToolIDs = Set(liveFullScope.localTools.map { $0.id })
-        let detachedFullToolIDs = Set(detachedFullScope.localTools.map { $0.id })
-        let liveProviderSkillIDs = Set(liveProviderScope.behaviorSkills.map { $0.id })
-        let detachedProviderSkillIDs = Set(detachedProviderScope.behaviorSkills.map { $0.id })
-        let liveProviderConnectorIDs = Set(liveProviderScope.connectors.map { $0.id })
-        let detachedProviderConnectorIDs = Set(detachedProviderScope.connectors.map { $0.id })
-        let liveProviderToolIDs = Set(liveProviderScope.localTools.map { $0.id })
-        let detachedProviderToolIDs = Set(detachedProviderScope.localTools.map { $0.id })
 
         #expect(detached.modelContext == nil)
-        #expect(liveFullSkillIDs == detachedFullSkillIDs)
-        #expect(liveFullConnectorIDs == detachedFullConnectorIDs)
-        #expect(liveFullToolIDs == detachedFullToolIDs)
-        #expect(liveProviderSkillIDs == detachedProviderSkillIDs)
-        #expect(liveProviderConnectorIDs == detachedProviderConnectorIDs)
-        #expect(liveProviderToolIDs == detachedProviderToolIDs)
+        #expect(Set(liveFullScope.behaviorSkills.map(\.id)) == Set(detachedFullScope.behaviorSkills.map(\.id)))
+        #expect(Set(liveFullScope.connectors.map(\.id)) == Set(detachedFullScope.connectors.map(\.id)))
+        #expect(Set(liveFullScope.localTools.map(\.id)) == Set(detachedFullScope.localTools.map(\.id)))
+        #expect(Set(liveProviderScope.behaviorSkills.map(\.id)) == Set(detachedProviderScope.behaviorSkills.map(\.id)))
+        #expect(Set(liveProviderScope.connectors.map(\.id)) == Set(detachedProviderScope.connectors.map(\.id)))
+        #expect(Set(liveProviderScope.localTools.map(\.id)) == Set(detachedProviderScope.localTools.map(\.id)))
         #expect(
             liveProviderScope.resolver.resolvedEnvironmentVariables ==
                 detachedProviderScope.resolver.resolvedEnvironmentVariables
         )
 
-        let detachedWorkspace = try #require(detached.workspace)
-        let detachedGitHubSkill = try #require(
-            detachedWorkspace.skills.first { $0.id == githubSkill.id }
-        )
-        let detachedGCloudSkill = try #require(
-            detachedWorkspace.skills.first { $0.id == gcloudSkill.id }
-        )
-        let detachedConnector = try #require(
-            detachedWorkspace.connectors.first { $0.id == gcloudConnector.id }
-        )
-        let detachedTool = try #require(
-            detachedWorkspace.localTools.first { $0.id == gcloudTool.id }
-        )
-
-        #expect(detachedGitHubSkill !== githubSkill)
-        #expect(detachedGCloudSkill !== gcloudSkill)
+        // Both plugins' skills are projected, the bound shared account rides
+        // along, and the detached copies wire only to each other.
+        let liveSkillNames = Set(liveFullScope.behaviorSkills.map(\.name))
+        #expect(liveSkillNames.isSuperset(of: Set((githubPackage.skills + gcloudPackage.skills).map(\.name))))
+        let detachedConnector = try #require(detachedFullScope.connectors.first { $0.id == gcloudConnector.id })
         #expect(detachedConnector !== gcloudConnector)
-        #expect(detachedTool !== gcloudTool)
-        #expect(detachedConnector.skill === detachedGCloudSkill)
-        #expect(detachedTool.skill === detachedGCloudSkill)
-        #expect(detachedConnector.workspace === detachedWorkspace)
-        #expect(detachedTool.workspace === detachedWorkspace)
-        #expect(
-            detachedGCloudSkill.connectors.filter { $0.id == gcloudConnector.id }.count == 1
-        )
-        #expect(
-            detachedGCloudSkill.localTools.filter { $0.id == gcloudTool.id }.count == 1
-        )
-
-        #expect(githubSkill.workspace == nil)
-        #expect(gcloudSkill.workspace == nil)
+        #expect(detachedConnector.config["GCP_PROJECT"] == "astra-test-project")
+        let detachedGCloudTool = try #require(detachedFullScope.localTools.first { $0.command == "gcloud" })
+        #expect(detachedGCloudTool.skill?.name == gcloudPackage.skills[0].name)
+        #expect(detachedGCloudTool.skill?.modelContext == nil)
+        #expect(gcloudConnector.skill == nil)
         #expect(gcloudConnector.workspace == nil)
-        #expect(gcloudTools.allSatisfy { $0.workspace == nil })
-        #expect(gcloudConnector.skill === gcloudSkill)
-        #expect(gcloudTool.skill === gcloudSkill)
-        #expect(!workspace.skills.contains { $0.id == githubSkill.id || $0.id == gcloudSkill.id })
         #expect(!workspace.connectors.contains { $0.id == gcloudConnector.id })
-        #expect(!workspace.localTools.contains { $0.id == gcloudTool.id })
 
-        #expect(!detachedWorkspace.skills.contains { $0.id == unrelatedSkill.id })
-        #expect(!detachedWorkspace.connectors.contains { $0.id == unrelatedConnector.id })
-        #expect(!detachedWorkspace.localTools.contains { $0.id == unrelatedTool.id })
+        #expect(!detachedFullScope.behaviorSkills.contains { $0.id == unrelatedSkill.id })
+        #expect(!detachedFullScope.connectors.contains { $0.id == unrelatedConnector.id })
+        #expect(!detachedFullScope.localTools.contains { $0.id == unrelatedTool.id })
 
         let issues = CapabilityRuntimeIntegrityService.issues(
             for: detached,

@@ -353,6 +353,10 @@ public final class Skill {
 public struct SkillKeychainCleanup: Codable, Equatable, Sendable {
     public let skillID: UUID
 
+    public init(skillID: UUID) {
+        self.skillID = skillID
+    }
+
     @discardableResult
     public func run() -> Bool {
         let cleared = SkillSecretSeam.required.deleteAllSecretsReportingResult(skillID: skillID)
