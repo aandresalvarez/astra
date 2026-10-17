@@ -83,7 +83,8 @@ struct PanelLayoutGeometryTests {
     func canvasShelfUsesCompositedLayout() {
         let mode = WorkspaceRightPanelLayoutMode.resolve(
             panel: .canvas(.markdown),
-            usesInspectorOverlay: false
+            usesInspectorOverlay: false,
+            detailPresentation: .existingTask
         )
 
         #expect(mode == .compositedCanvas)
@@ -96,11 +97,13 @@ struct PanelLayoutGeometryTests {
         let workspaceID = UUID()
         let docked = WorkspaceRightPanelLayoutMode.resolve(
             panel: .context(workspaceID),
-            usesInspectorOverlay: false
+            usesInspectorOverlay: false,
+            detailPresentation: .existingTask
         )
         let overlay = WorkspaceRightPanelLayoutMode.resolve(
             panel: .context(workspaceID),
-            usesInspectorOverlay: true
+            usesInspectorOverlay: true,
+            detailPresentation: .existingTask
         )
 
         #expect(docked == .dockedContext)

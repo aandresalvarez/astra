@@ -102,6 +102,29 @@ target_for_path() {
       add_target "AgentRuntimeAdapterTests"
       add_target "FeedbackReportPresentationTests"
       ;;
+    Astra/Services/Runtime/CodexMCPLaunchProjection.swift|Tests/CodexMCPConfigRendererTests.swift)
+      add_target "CodexMCPConfigRendererTests"
+      add_target "MCPRuntimeProjectionTests"
+      ;;
+    Astra/Views/ShelfFileNavigatorPresentation.swift|Astra/Views/ShelfMarkdownPanelView.swift|Tests/ShelfMarkdownPanelLayoutTests.swift)
+      add_target "ShelfMarkdownPanelLayoutTests"
+      add_target "ShelfChromeTests"
+      ;;
+    Astra/Views/SidebarTask*.swift|Astra/Views/TaskSidebarView.swift|Tests/SidebarTaskStore*.swift|Tests/SidebarTaskSourceObservationTests.swift)
+      add_target "SidebarTaskStoreTests"
+      add_target "SidebarTaskStoreSignalIntegrationTests"
+      add_target "SidebarTaskSourceObservationTests"
+      ;;
+    Astra/Services/Settings/AppUpdateSafety.swift|Tests/RunningTaskCountPredicateTests.swift)
+      add_target "RunningTaskCountPredicateTests"
+      ;;
+    Astra/Services/Persistence/OrphanedV12StoreMigrator.swift|Tests/OrphanedV12StoreMigratorTests.swift)
+      add_target "OrphanedV12StoreMigratorTests"
+      ;;
+    Astra/Services/Persistence/SwiftDataDeletionPreparation.swift|Astra/Services/Tasks/TaskWorktreeService.swift|Astra/Services/Tasks/TaskLifecycleCoordinator.swift|Tests/SwiftDataDeletionPreparationTests.swift|Tests/NewTaskWorktree*.swift)
+      add_target "SwiftDataDeletionPreparationTests"
+      add_target "NewTaskWorktree"
+      ;;
     Tests/FeedbackEvidencePrivacyTests.swift|Astra/Services/Feedback/*)
       add_target "FeedbackEvidencePrivacyTests"
       ;;
@@ -133,6 +156,13 @@ target_for_path() {
       add_target "ReleaseBuildNumberDerivationTests"
       add_target "ReleaseUpdateScriptTests"
       add_target "AppBundlePackagingTests"
+      ;;
+  esac
+
+  case "$path" in
+    Astra/Views/ContentView.swift|Astra/Views/WorkspaceCanvasItem.swift|Tests/PanelLayoutGeometryTests.swift|Tests/WorkspaceRightPanelLayoutTests.swift)
+      add_target "WorkspaceRightPanelLayoutTests"
+      add_target "PanelLayoutGeometryTests"
       ;;
   esac
 }

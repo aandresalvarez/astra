@@ -108,23 +108,53 @@ assert_targets $'LogDiagnosticsTests\nFeedbackEvidencePrivacyTests\nFeedbackCras
 assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests' \
   "Astra/Models/AppStorageKeys.swift"
 
-assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests\nTaskDecisionDockPresentationTests' \
+assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests\nTaskDecisionDockPresentationTests\nWorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
   "Astra/Models/AppStorageKeys.swift" \
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Views/ContentView.swift" \
   "Astra/Services/Feedback/FeedbackCrashOfferService.swift"
 
-assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests' \
+assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests\nWorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
   "Astra/ASTRAApp.swift" \
   "Astra/Views/ContentView.swift" \
   "Astra/Views/LogViewerView.swift"
+
+assert_targets $'WorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
+  "Astra/Views/WorkspaceCanvasItem.swift" \
+  "Tests/PanelLayoutGeometryTests.swift" \
+  "Tests/WorkspaceRightPanelLayoutTests.swift"
 
 assert_targets ""
 
 assert_targets "" \
   "Astra/Services/Runtime/AgentRuntimeAdapter.swift"
 
+assert_targets $'CodexMCPConfigRendererTests\nMCPRuntimeProjectionTests' \
+  "Astra/Services/Runtime/CodexMCPLaunchProjection.swift" \
+  "Tests/CodexMCPConfigRendererTests.swift"
+
+assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests' \
+  "Astra/Views/ShelfFileNavigatorPresentation.swift" \
+  "Astra/Views/ShelfMarkdownPanelView.swift" \
+  "Tests/ShelfMarkdownPanelLayoutTests.swift"
+
 assert_targets $'ReleaseBuildNumberDerivationTests\nReleaseUpdateScriptTests\nAppBundlePackagingTests' \
   ".github/workflows/release.yml" \
   "script/build_and_run.sh" \
   "Tests/ReleaseBuildNumberDerivationTests.swift"
+
+assert_targets $'SidebarTaskStoreTests\nSidebarTaskStoreSignalIntegrationTests\nSidebarTaskSourceObservationTests' \
+  "Astra/Views/SidebarTaskChangeObservation.swift" \
+  "Tests/SidebarTaskSourceObservationTests.swift"
+
+assert_targets "RunningTaskCountPredicateTests" \
+  "Astra/Services/Settings/AppUpdateSafety.swift"
+
+assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree' \
+  "Astra/Services/Persistence/SwiftDataDeletionPreparation.swift" \
+  "Astra/Services/Tasks/TaskWorktreeService.swift" \
+  "Astra/Services/Tasks/TaskLifecycleCoordinator.swift"
+
+assert_targets "OrphanedV12StoreMigratorTests" \
+  "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
+  "Tests/OrphanedV12StoreMigratorTests.swift"

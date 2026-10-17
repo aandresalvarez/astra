@@ -192,7 +192,6 @@ enum CodexMCPConfigRenderer {
             .sorted()
         if !enabledTools.isEmpty {
             fields.append("enabled_tools=\(tomlArray(enabledTools))")
-            fields.append("default_tools_enabled=false")
         }
         let disabledTools = server.excludedTools
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
