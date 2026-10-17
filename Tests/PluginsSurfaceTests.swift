@@ -51,6 +51,18 @@ struct PluginsSurfaceTests {
         #expect(state.actionNeeded.first?.subtitle.hasPrefix("Update to") == true)
     }
 
+    @Test("Expanded plugin rows are remembered per workspace")
+    func expansionIsRemembered() throws {
+        let defaults = InMemoryDefaults()
+        let first = UUID()
+        let second = UUID()
+        PluginsSurfacePreferences.setExpandedPluginIDs(["jira", "github"], workspaceID: first, in: defaults)
+        #expect(PluginsSurfacePreferences.expandedPluginIDs(workspaceID: first, in: defaults) == ["jira", "github"])
+        #expect(PluginsSurfacePreferences.expandedPluginIDs(workspaceID: second, in: defaults).isEmpty)
+        PluginsSurfacePreferences.setExpandedPluginIDs([], workspaceID: first, in: defaults)
+        #expect(PluginsSurfacePreferences.expandedPluginIDs(workspaceID: first, in: defaults).isEmpty)
+    }
+
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
     func searchReachesComponents() throws {
         let gcloud = try builtIn("gcloud-workflow")
