@@ -278,7 +278,7 @@ struct PluginsSurfaceView: View {
             if let failing, GitHubRepositoryAccessRepairButton.supports(failing.prerequisite, status: statuses[failing.prerequisite.id]) {
                 GitHubRepositoryAccessRepairButton(workingDirectory: workspace.resolvedWorkingPath) { refreshStatuses() }
             } else if let failing, let repair = failing.repair {
-                if repairs.phase(for: repair) == .waiting {
+                if repairs.phase(for: repair, owner: "\(package.id)/\(component.id)") == .waiting {
                     Text("Checking…").font(Stanford.caption(11)).foregroundStyle(.secondary)
                 } else {
                     // What the button runs is shown before it runs.
@@ -288,7 +288,7 @@ struct PluginsSurfaceView: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
-                    Button(repair.verb) { repairs.start(repair) { refreshStatuses() } }
+                    Button(repair.verb) { repairs.start(repair, owner: "\(package.id)/\(component.id)") { refreshStatuses() } }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
@@ -392,18 +392,14 @@ struct PluginsSurfaceView: View {
     private func add(_ packageID: String) {
         guard let package = packages.first(where: { $0.id == packageID }) else { return }
         errorMessage = nil
-        if package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) {
-            // The same one-step approval as Add, before the flow enables it.
-            do {
+        do {
+            if try CapabilityCatalogActionService.addRoute(for: package) == .connectAccount {
+                // The same one-step approval as Add, before the flow enables it.
                 accountSetupContext = try CapabilityCatalogActionService().grantPendingApproval(for: package, policyContext: policyContext)
                 accountSetupPackage = package
                 refreshApprovalRecords()
-            } catch {
-                errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
+                return
             }
-            return
-        }
-        do {
             try CapabilityCatalogActionService().add(
                 package,
                 workspace: workspace,

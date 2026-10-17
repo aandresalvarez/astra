@@ -105,6 +105,49 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Add connects a supported account first, and refuses one ASTRA can't sign in to")
+    func addRefusesUnsupportedOAuthProviders() throws {
+        #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace")) == .connectAccount)
+        #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("jira-workflow")) == .enable)
+        let google = try #require(try builtIn("google-workspace").setupRequirements.first)
+        for provider in ["salesforce", nil] {
+            let account = PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)
+            for requirements in [[account], [google, account]] {
+                var imported = package("imported-crm", name: "CRM")
+                imported.setupRequirements = requirements
+                #expect(throws: CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)) {
+                    try CapabilityCatalogActionService.addRoute(for: imported)
+                }
+            }
+        }
+
+        // The one-step Add refuses it too, before approving or enabling.
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Add", primaryPath: "/tmp/plugins-add-oauth")
+        context.insert(workspace)
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-plugins-add-oauth-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let approvals = CapabilityApprovalStore(directory: root.appendingPathComponent("approvals"))
+        var imported = package("imported-crm", name: "CRM", governance: .localDraft())
+        imported.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: "salesforce")]
+        #expect(throws: CapabilityAccountSetupError.self) {
+            try CapabilityCatalogActionService(library: CapabilityLibrary(directory: root.appendingPathComponent("library"))).add(
+                imported, workspace: workspace, modelContext: context,
+                policyContext: .currentUser(workspace: workspace, approvalRecords: []),
+                approvalStore: approvals, traceID: "trace-add-oauth"
+            )
+        }
+        #expect(approvals.records().isEmpty)
+        #expect(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs.isEmpty)
+        withExtendedLifetime(container) {}
+    }
+
     @Test("The preview is on by default in development builds only, and remembers a choice")
     func previewFlagDefaultsByChannel() {
         let defaults = InMemoryDefaults()

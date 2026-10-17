@@ -78,6 +78,40 @@ struct PluginManifestTests {
         }
     }
 
+    @Test("A component ID the package would re-derive is refused, not silently replaced")
+    func undeclarableComponentIDsAreRefused() throws {
+        // Unmodified conversions keep passing: their IDs are the derived ones.
+        for file in try builtInFiles() {
+            let original = try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: file))
+            let manifest = PluginManifestConverter.manifest(from: original)
+            #expect(throws: Never.self, "\(file.lastPathComponent)") { try PluginManifestConverter.checkedPackage(from: manifest) }
+        }
+        let jira = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
+        let workspace = PluginManifestConverter.manifest(from: try builtIn("google-workspace"))
+        for (manifest, kind) in [(jira, PluginComponent.Kind.skill), (jira, .connector), (workspace, .mcp)] {
+            var renamed = manifest
+            let index = try #require(renamed.components.firstIndex { $0.kind == kind })
+            renamed.components[index].id = "stable-\(kind.rawValue)-id"
+            #expect(throws: PluginManifestError.unrepresentableComponentID(
+                component: renamed.components[index].name, id: "stable-\(kind.rawValue)-id"
+            )) { try PluginManifestConverter.decodePackage(from: JSONEncoder().encode(renamed)) }
+        }
+        // A tool or template declaring its own ID is refused the same way.
+        var package = try builtIn("gcloud-workflow")
+        package.templates = [PluginTemplate(
+            name: "Weekly Report", icon: "doc", description: "", mainGoal: "Report", beforeGoal: "", afterGoal: "",
+            mainBudget: 1, beforeBudget: 0, afterBudget: 0, variablesJSON: "[]", passContextToMain: false, passContextToAfter: false
+        )]
+        let derived = PluginManifestConverter.manifest(from: package)
+        #expect(throws: Never.self) { try PluginManifestConverter.checkedPackage(from: derived) }
+        for kind in [PluginComponent.Kind.tool, .template] {
+            var declared = derived
+            let index = try #require(declared.components.firstIndex { $0.kind == kind })
+            declared.components[index].id = "stable-\(kind.rawValue)-id"
+            #expect(throws: PluginManifestError.self, "\(kind)") { try PluginManifestConverter.checkedPackage(from: declared) }
+        }
+    }
+
     @Test("A hint's first backticked command is the repair command")
     func firstCommandExtraction() {
         #expect(PluginManifestConverter.firstCommand("Run `gh auth login`.") == "gh auth login")
