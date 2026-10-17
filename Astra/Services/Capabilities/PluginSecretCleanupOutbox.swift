@@ -73,7 +73,13 @@ struct PluginSecretCleanupOutbox {
     /// Cleans every recorded namespace nothing live names and drops it from
     /// the record; one still in use (re-added, restored) is dropped uncleaned.
     private static func settle(_ skillIDs: [UUID], modelContext: ModelContext, outbox: PluginSecretCleanupOutbox?) {
-        let live = liveSkillIDs(modelContext: modelContext)
+        // What is live can't be told without the store: every record stays.
+        guard let live = liveSkillIDs(modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "plugin_secret_cleanup", "reason": "store_unreadable_kept"
+            ], level: .error)
+            return
+        }
         var settled = Set<UUID>()
         for id in skillIDs {
             if live.contains(id) || SkillKeychainCleanup(skillID: id).run() {
@@ -85,14 +91,17 @@ struct PluginSecretCleanupOutbox {
     }
 
     /// Skill IDs whose namespaces something still reads: stored skill rows,
-    /// and every live activation's projected skills.
-    static func liveSkillIDs(modelContext: ModelContext) -> Set<UUID> {
-        var live = Set(((try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []).map(\.id))
+    /// and every live activation's projected skills; nil when the store
+    /// can't be read.
+    static func liveSkillIDs(modelContext: ModelContext) -> Set<UUID>? {
+        guard let skills = try? modelContext.fetch(FetchDescriptor<Skill>()),
+              let activations = try? modelContext.fetch(FetchDescriptor<PluginActivation>()) else { return nil }
+        var live = Set(skills.map(\.id))
         let packages = Dictionary(
             CapabilityRuntimeResourceMatcher.packageDefinitions().map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        for activation in (try? modelContext.fetch(FetchDescriptor<PluginActivation>())) ?? [] where !activation.isDeleted {
+        for activation in activations where !activation.isDeleted {
             live.formUnion(PluginRuntimeProjection.secretNamespaces(of: activation, package: packages[activation.pluginID]))
         }
         return live
