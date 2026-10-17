@@ -1127,6 +1127,24 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.fixCommand.hasPrefix("chmod -N '\(parent)'"))
     }
 
+    @Test("An error in Copilot's own startup log is evidence: the home is not blamed")
+    func startupLogErrorKeepsItsOwnDiagnosis() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o000)
+        func category(startupEvidence: String?) -> AgentRuntimeFailureCategory {
+            AgentRuntimeFailureDiagnostic.classify(
+                runtime: .copilotCLI, model: "gpt-5", exitCode: 1,
+                rawError: "", providerVersion: nil, stream: nil,
+                startupEvidence: startupEvidence,
+                copilotHomeAccess: { CopilotHomeAccessCheck.inspect(home: home.path) }
+            ).category
+        }
+
+        #expect(category(startupEvidence: nil) == .providerHomeAccessDenied)
+        #expect(category(startupEvidence: "[ERROR] something else went wrong") != .providerHomeAccessDenied)
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()

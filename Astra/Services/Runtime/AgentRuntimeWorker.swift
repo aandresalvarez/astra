@@ -636,6 +636,30 @@ final class AgentRuntimeWorker {
             workspaceAccess: executionWorkspaceAccess,
             approvedSandboxReadablePaths: approvedSandboxPaths)
         run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(runEnvironment.runSnapshot)
+        let inputProjection = TaskInputManifest(inputs: executionTask.inputs)
+        let inputFolder = TaskWorkspaceAccess(task: executionTask).taskFolder
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try inputProjection.persist(taskFolder: inputFolder)
+            }.value
+        } catch {
+            run.status = .failed
+            run.completedAt = Date()
+            run.stopReason = "input_manifest_failed"
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
+            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error,
+                payload: "Could not prepare the selected input index: \(error.localizedDescription)", run: run))
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext,
+                taskID: task.id, auditFields: ["operation": "input_manifest_failed"])
+            return
+        }
+        guard !cancellationRequested, task.status != .cancelled else {
+            if run.status == .running || task.status != .cancelled {
+                TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            }
+            return
+        }
         let basePrompt = (auditPhase == .resume && approvedPlan == nil
             ? AgentPromptBuilder.buildFreshFollowUpPrompt(message: sessionMessage ?? startPayload,
                 task: executionTask, executionPolicy: executionPolicy)
@@ -1090,6 +1114,16 @@ final class AgentRuntimeWorker {
                 exitCode: result.exitCode
             )
         }
+        var startupEvidence: String?
+        if selectedRuntime == .copilotCLI, result.exitCode != 0, !cancellationRequested,
+           !result.timedOut, streamSnapshot?.rawLineCount == 0,
+           (result.error ?? "").isEmpty, (result.providerFailureOutput ?? "").isEmpty {
+            let directory = CopilotStartupEvidence.directory(
+                taskFolder: TaskWorkspaceAccess(task: executionTask).taskFolder, runID: run.id)
+            startupEvidence = await Task.detached(priority: .utility) {
+                CopilotStartupEvidence.read(directory: directory, since: startTime)
+            }.value
+        }
         let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
         // Only Copilot's silent exit 1 looks at its home, with the launch's own
         // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere),
@@ -1103,7 +1137,7 @@ final class AgentRuntimeWorker {
                 runtimeRequirements: appliedRuntime.requirements
             )) { _, scoped in scoped }
             : nil
-        let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
+        let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled || cancellationRequested || task.status == .cancelled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
             exitCode: result.exitCode,
@@ -1116,7 +1150,7 @@ final class AgentRuntimeWorker {
             stream: streamSnapshot,
             timedOut: result.timedOut,
             budgetExceeded: result.budgetExceeded,
-            maxTurnsExceeded: result.maxTurnsExceeded,
+            maxTurnsExceeded: result.maxTurnsExceeded, startupEvidence: startupEvidence,
             copilotHomeAccess: copilotFailureEnvironment.map { environment in
                 // A file the sandbox would have hidden was already refused
                 // at launch (`guardedSandboxedPlan`), so no boundary here.

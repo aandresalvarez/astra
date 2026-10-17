@@ -90,17 +90,28 @@ assert_targets $'FeedbackReportContractTests\nFeedbackEvidencePrivacyTests\nFeed
 
 assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests' \
   "Tests/TaskDecisionDockPresentationTests.swift" \
-  "Astra/Services/Tasks/TaskDecisionDockPresentation.swift" \
+  "Astra/Services/Tasks/TaskDecisionDockPresentation.swift"
+
+assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
   "Astra/Views/TaskMainView.swift"
 
-assert_targets $'HeadlessChatScenarioTests\nFeedbackReportPresentationTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
+assert_targets $'ComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
+  "Astra/Views/Components/TaskFilesPopoverView.swift" \
+  "Astra/Views/Components/TaskInputFilesView.swift" \
+  "Tests/ComposerAttachmentsTests.swift"
+
+assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
+  "Astra/Services/Tasks/TaskAttachmentFilesReader.swift" \
+  "Tests/TaskAttachmentFilesReaderTests.swift"
+
+assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
   "Astra/Services/Runtime/AgentRuntimeWorker.swift" \
   "Tests/HeadlessChatProcessScenarioTests.swift" \
   "Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift" \
   "Astra/Services/Runtime/ProviderMessages.swift" \
   "Tests/AgentRuntimeAdapterTests.swift"
 
-assert_targets $'LogDiagnosticsTests\nFeedbackEvidencePrivacyTests\nFeedbackCrashRecoveryTests' \
+assert_targets $'DiagnosticCoverageRegressionTests\nPendingP2RegressionTests\nLogDiagnosticsTests\nFeedbackEvidencePrivacyTests\nFeedbackCrashRecoveryTests' \
   "Astra/Services/Diagnostics/LogDiagnosticsService.swift" \
   "Astra/Services/Diagnostics/PersistedLogEntryParser.swift" \
   "Astra/Services/Diagnostics/CrashDiagnosticsService.swift"
@@ -133,10 +144,14 @@ assert_targets $'CodexMCPConfigRendererTests\nMCPRuntimeProjectionTests' \
   "Astra/Services/Runtime/CodexMCPLaunchProjection.swift" \
   "Tests/CodexMCPConfigRendererTests.swift"
 
-assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests' \
+assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests\nTaskAttachmentFilesReaderTests\nShelfAttachmentHistoryTests' \
   "Astra/Views/ShelfFileNavigatorPresentation.swift" \
   "Astra/Views/ShelfMarkdownPanelView.swift" \
   "Tests/ShelfMarkdownPanelLayoutTests.swift"
+
+assert_targets $'ShelfAttachmentHistoryTests\nTaskAttachmentFilesReaderTests' \
+  "Astra/Views/ShelfAttachmentHistoryModifier.swift" \
+  "Tests/ShelfAttachmentHistoryTests.swift"
 
 assert_targets $'ReleaseBuildNumberDerivationTests\nReleaseUpdateScriptTests\nAppBundlePackagingTests' \
   ".github/workflows/release.yml" \
@@ -150,7 +165,7 @@ assert_targets $'SidebarTaskStoreTests\nSidebarTaskStoreSignalIntegrationTests\n
 assert_targets "RunningTaskCountPredicateTests" \
   "Astra/Services/Settings/AppUpdateSafety.swift"
 
-assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree' \
+assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree\nPendingP2RegressionTests\nSpecEngineTests' \
   "Astra/Services/Persistence/SwiftDataDeletionPreparation.swift" \
   "Astra/Services/Tasks/TaskWorktreeService.swift" \
   "Astra/Services/Tasks/TaskLifecycleCoordinator.swift"
@@ -158,3 +173,65 @@ assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree' \
 assert_targets "OrphanedV12StoreMigratorTests" \
   "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
   "Tests/OrphanedV12StoreMigratorTests.swift"
+
+assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nAgentUtilityRuntimeTests\nProcessMonitorTests' \
+  "Astra/Services/Runtime/AgentProcessPipeReader.swift" \
+  "Astra/Services/Runtime/AgentExecutionScopedProcess.swift" \
+  "Tests/AgentExecutionScopedProcessTests.swift" \
+  "Astra/Services/Runtime/AgentRuntimeProcessRunner.swift" \
+  "Tests/AgentRuntimePipeCompletionTests.swift"
+
+assert_targets $'UsageDashboardStoreTests\nUsageDashboardRenderingTests' \
+  "Astra/Views/UsageDashboardView.swift" \
+  "Astra/Views/UsageDashboardTaskTable.swift" \
+  "Astra/Views/UsageDashboardStore.swift" \
+  "Astra/Views/UsageDashboardSummary.swift" \
+  "Tests/UsageDashboardStoreTests.swift" \
+  "Tests/UsageDashboardRenderingTests.swift" \
+  "Tests/LargeHistoryResponsivenessTests.swift"
+
+assert_targets "StreamVolumeAccountingTests" "Tests/RuntimeProgressSignalTests.swift"
+
+assert_targets $'TaskTextOnlyDeliverableTests\nTaskDeliverableExpectationTests\nDeliverableExpectationCoverageTests\nTaskDeliverableVerificationServiceTests\nTaskDeliverableFollowUpTests\nTaskExecutionResourceClaimResolverTests' \
+  "Astra/Services/Validation/TaskDeliverableExpectation.swift" \
+  "Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift" \
+  "Astra/Services/Tasks/TaskIntentLanguagePolicy.swift" \
+  "Tests/TaskTextOnlyDeliverableTests.swift"
+
+assert_targets $'TaskInputContinuityPromptTests\nBuildPromptTests\nAgentRuntimeAttachmentProjectionTests\nRuntimeAttachmentPolicyRegressionTests\nPromptContextPreviewPresentationTests' \
+  "Astra/Services/Runtime/AgentPromptBuilder.swift" \
+  "Astra/Services/Runtime/TaskInputManifest.swift" \
+  "Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift" \
+  "Astra/Services/Tasks/PromptContextSectionProvider.swift" \
+  "Astra/Views/PromptContextPreviewView.swift" \
+  "Tests/TaskInputContinuityPromptTests.swift" \
+  "Tests/AgentRuntimeWorkerTests.swift"
+
+assert_targets $'HostFileAccessBrokerTests\nShelfPreviewFailureTests\nShelfMarkdownAsyncLoadingTests' \
+  "ASTRACore/HostFileAccessBroker.swift" \
+  "Astra/Services/Browser/ShelfPreviewFailure.swift"
+
+assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests' \
+  "Astra/Services/Runtime/AgentRuntimeRunPersistence.swift" \
+  "Astra/Services/Persistence/TaskOutputDiscovery.swift"
+
+assert_targets $'PendingP2RegressionTests\nSpecEngineTests\nAntigravityCLIRuntimeTests' \
+  "Astra/Services/Tasks/TaskTitleGenerationService.swift" \
+  "Astra/Services/Runtime/AntigravityCLIRuntime.swift"
+
+assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree\nPendingP2RegressionTests\nSpecEngineTests' \
+  "Astra/Services/Tasks/TaskLifecycleCoordinator.swift"
+
+assert_targets $'DiagnosticCoverageRegressionTests\nPendingP2RegressionTests\nLogDiagnosticsTests\nFeedbackEvidencePrivacyTests' \
+  "Astra/Services/Diagnostics/LogDiagnosticsCollection.swift" \
+  "Astra/Services/Diagnostics/LogDiagnosticsPreparationService.swift"
+
+assert_targets $'CopilotCLICommandPlanningTests\nPendingP2RegressionTests' \
+  "Astra/Services/Runtime/CopilotCLIRuntime.swift"
+
+assert_targets $'ShelfFileIndexControllerTests\nFilesShelfResponsivenessTelemetryTests\nUIResponsivenessDiagnosticsTests\nShelfAttachmentHistoryTests' \
+  "Astra/Views/ShelfFileIndexController.swift" \
+  "Astra/Views/ShelfAttachmentRootResolver.swift" \
+  "Tests/ShelfFileIndexControllerTests.swift" \
+  "Astra/Services/Diagnostics/FilesShelfResponsivenessTelemetry.swift" \
+  "Astra/Services/Diagnostics/UIResponsivenessDiagnostics.swift"
