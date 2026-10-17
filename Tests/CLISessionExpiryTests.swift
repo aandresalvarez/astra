@@ -121,6 +121,47 @@ struct CLISessionExpiryTests {
         #expect(monitor.runtimeStopReason == nil)
     }
 
+    @Test("A pipeline that masks the CLI's failure still stops the run")
+    func maskedPipelineFailureStopsTheRun() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(
+            .toolUse(name: "Bash", id: "toolu_pipe", input: ["command": "gcloud projects list | cat"]),
+            process: nil
+        )
+        // `cat` exits 0, so the shell reports success for the whole line.
+        let kill = monitor.processEvent(
+            .toolResult(toolId: "toolu_pipe", content: gcloudReauth, isError: false),
+            process: nil
+        )
+        #expect(kill == true)
+        #expect(monitor.runtimeStopReason == "capability_session_expired")
+    }
+
+    @Test("A successful line counts only when a later command decided its exit status")
+    func successfulLinesNeedAMaskedCLI() {
+        for command in [
+            "gcloud projects list | cat", "gcloud projects list 2>&1 | head -5", "(gcloud projects list) | cat",
+            "gcloud projects list || true", "gcloud projects list; echo done", "cd /tmp && bq ls |& tee out.txt"
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: gcloudReauth, command: command, failed: false) != nil, "missed: \(command)")
+        }
+        for command in [
+            "cat notes.md", "echo \"Reauthentication failed. Please run gcloud auth login\" | cat",
+            "gcloud projects list", "cd /tmp && gcloud projects list", "gcloud projects list && echo ok",
+            "gcloud projects list 2>&1", "gcloud projects list &>out.txt", "gcloud projects list;"
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: gcloudReauth, command: command, failed: false) == nil, "stopped: \(command)")
+        }
+        // A redirection's `&` is not an operator that ends a command.
+        #expect(CLISessionExpiryClassifier.simpleCommands("gcloud auth list 2>&1") == [["gcloud", "auth", "list", "2>&1"]])
+
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        _ = monitor.processEvent(.toolUse(name: "Bash", id: "toolu_cat", input: ["command": "cat notes.md"]), process: nil)
+        let kill = monitor.processEvent(.toolResult(toolId: "toolu_cat", content: gcloudReauth, isError: false), process: nil)
+        #expect(kill == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
     @Test("The run's repair event reaches the dock, scoped to that run")
     func stopEvidenceReadsTheRunsRepair() throws {
         let task = AgentTask(title: "Export", goal: "List projects")

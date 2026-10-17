@@ -151,6 +151,60 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("A task closed, deleted or rerun while the repair check runs is not continued")
+    func repairCheckRevalidatesTheTask() async throws {
+        for change in ["close", "delete", "newer run"] {
+            for useRetry in [false, true] {
+                let env = try makeEnvironment()
+                defer { try? FileManager.default.removeItem(atPath: env.root) }
+                let workspace = Workspace(name: "Left During Check", primaryPath: env.root)
+                let task = AgentTask(title: "Expired", goal: "List projects", workspace: workspace, runtime: .claudeCode)
+                task.status = .failed
+                task.sessionId = "claude-session-1"
+                env.context.insert(workspace)
+                env.context.insert(task)
+                let run = TaskRun(task: task)
+                run.status = .failed
+                run.stopReason = "capability_session_expired"
+                run.completedAt = Date()
+                env.context.insert(run)
+                env.context.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.System.runtimeRepairRequired,
+                    payload: CLISessionExpiryClassifier.googleCloud.repair.encoded(),
+                    run: run
+                ))
+                try env.context.save()
+                // The person acts while the check is still running; then it passes.
+                let coordinator = env.coordinator
+                let context = env.context
+                let leave: @MainActor () -> Void = {
+                    switch change {
+                    case "close": coordinator.setDoneState(task, to: true)
+                    case "delete": context.delete(task)
+                    default:
+                        let newer = TaskRun(task: task)
+                        newer.startedAt = run.startedAt.addingTimeInterval(1)
+                        context.insert(newer)
+                    }
+                    try? context.save()
+                }
+                env.coordinator.repairCheck = { _ in
+                    await leave()
+                    return true
+                }
+
+                if useRetry {
+                    await env.coordinator.retryTask(task)?.value
+                } else {
+                    await env.coordinator.resumeTask(task)?.value
+                }
+                let requests = try env.context.fetch(FetchDescriptor<TaskTurnRequest>())
+                #expect(requests.isEmpty, "\(change), retry: \(useRetry)")
+            }
+        }
+    }
+
     @Test("A rejected GH_TOKEN stop offers no sign-in, but Resume and Retry still wait for its check")
     func tokenStopIsCheckedBeforeContinuing() async throws {
         for useRetry in [false, true] {

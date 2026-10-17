@@ -165,9 +165,10 @@ final class TaskLifecycleCoordinator {
         }
         repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
         let check = repairCheck
+        let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
             let works = await check(repair)
-            guard let self else { return }
+            guard let self, origin.stillHolds(for: task, audit: .taskRetried) else { return }
             if works {
                 _ = self.retryVerifiedTask(task)
             } else {
@@ -357,14 +358,54 @@ final class TaskLifecycleCoordinator {
         }
         repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
         let check = repairCheck
+        let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
             let works = await check(repair)
-            guard let self else { return }
+            guard let self, origin.stillHolds(for: task, audit: .taskResumed) else { return }
             if works {
                 _ = self.resumeVerifiedTask(task)
             } else {
                 self.recordRepairStillNeeded(task, repair: repair)
             }
+        }
+    }
+
+    /// The task as Resume or Retry found it before the repair check, which can
+    /// take seconds. If the person closed or deleted the task meanwhile, or a
+    /// newer run started or the status moved on, the check's answer is about a
+    /// task they already left, so nothing continues and nothing is recorded.
+    private struct RepairCheckOrigin {
+        let taskID: UUID
+        let status: TaskStatus
+        let isDone: Bool
+        let latestRunID: UUID?
+
+        init(_ task: AgentTask) {
+            taskID = task.id
+            status = task.status
+            isDone = task.isDone
+            latestRunID = task.runs.max(by: { $0.startedAt < $1.startedAt })?.id
+        }
+
+        @MainActor
+        func stillHolds(for task: AgentTask, audit event: AuditEvent) -> Bool {
+            let reason: String? = if task.isDeleted || task.modelContext == nil {
+                "task_deleted"
+            } else if task.isDone != isDone {
+                "task_closed"
+            } else if task.status != status {
+                "status_changed"
+            } else if task.runs.max(by: { $0.startedAt < $1.startedAt })?.id != latestRunID {
+                "newer_run"
+            } else {
+                nil
+            }
+            guard let reason else { return true }
+            AppLogger.audit(event, category: "UI", taskID: taskID, fields: [
+                "outcome": "skipped_after_repair_check",
+                "reason": reason
+            ], level: .warning)
+            return false
         }
     }
 
