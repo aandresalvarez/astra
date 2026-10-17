@@ -1782,6 +1782,55 @@ struct CopilotWorkerExecutionTests {
         #expect(run.inputTokens == 5)
     }
 
+    @Test("A stop during the Copilot capability warm-up launches nothing")
+    func stopDuringCapabilityWarmUpLaunchesNothing() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+        let release = harness.rootURL.appendingPathComponent("release")
+        let probes = harness.rootURL.appendingPathComponent("help-probes")
+        let launched = harness.rootURL.appendingPathComponent("launched")
+        let help = #"echo "--output-format=FORMAT --stream=MODE --no-ask-user""#
+        let copilotPath = try harness.writeExecutable(named: "copilot", script: """
+            #!/bin/sh
+            if [ "$1" = "help" ]; then
+              echo probe >> \(Self.shQuote(probes.path))
+            \(CopilotCLICapabilityProbeTests.helpWaitingFor(release, then: help))
+              exit 0
+            fi
+            touch \(Self.shQuote(launched.path))
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"launched"}}'
+            exit 0
+            """)
+        defer { CopilotCLIRuntime.invalidateCapabilitiesCache(executablePath: copilotPath) }
+        func probeCount() -> Int {
+            ((try? String(contentsOf: probes, encoding: .utf8)) ?? "").split(separator: "\n").count
+        }
+
+        // Leave an unanswered memo so admission's main-actor reads take it, and the only
+        // probe the launch starts is the warm-up's.
+        #expect(await CopilotCLICapabilityProbeTests.briefCapabilitiesOffMain(executablePath: copilotPath) == .conservative)
+        let probesBeforeLaunch = probeCount()
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Say hello", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+        let launch = Task { await harness.execute(task: task, worker: worker) }
+        // Polls, not seconds: a hang breaker that load can only push later.
+        var polls = 0
+        while probeCount() == probesBeforeLaunch, polls < 2_400 {
+            polls += 1
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        try #require(probeCount() > probesBeforeLaunch, "the warm-up never probed")
+
+        // The stop has no process to terminate yet; the warm-up then gets its answer.
+        worker.cancel()
+        try Data().write(to: release)
+        _ = await launch.value
+
+        #expect(task.runs.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: launched.path))
+    }
+
     @Test("Worker records Copilot data message deltas as visible output")
     func fakeCopilotDataMessageDeltasRecordOutput() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
