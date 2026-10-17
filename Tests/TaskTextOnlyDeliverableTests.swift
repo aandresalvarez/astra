@@ -25,6 +25,11 @@ struct TaskTextOnlyDeliverableTests {
         "Create a document describing a dashboard.",
         "Generate a checklist for reviewing an HTML file.",
         "Write a report about generating a CSV file.",
+        "Write a paragraph about an HTML file.",
+        "Write a paragraph about the contents of a CSS file.",
+        "Write a report about a CSV file.",
+        "Explain how to save a paragraph into an HTML file.",
+        "Do not write a paragraph about testing into an HTML file.",
         "Write a summary about an app and do not create a file.",
         "Do not create a file and build an app.",
         "Do not create a file; write five sentences about an app."
@@ -94,6 +99,21 @@ struct TaskTextOnlyDeliverableTests {
         #expect(!TaskDeliverableExpectation.requiresDeliverableArtifact(AgentTask(title: "Task", goal: goal)))
     }
 
+    @Test("Explicit file destinations retain their format after a text topic", arguments: [
+        "Write a paragraph about testing into an HTML file.",
+        "Write a short summary about the app as a CSS file.",
+        "Write a report about testing into a CSV file.",
+        "Write a paragraph about testing into a JSON file.",
+        "Write a paragraph about testing as an XML file.",
+        "Write a paragraph about testing in a PDF file.",
+        "Write a paragraph about testing into a Parquet file.",
+        "Write a paragraph about testing as a .txt file.",
+        "Write a paragraph about testing into CSV files."
+    ])
+    func qualifiedFileDestinationsRequireArtifacts(goal: String) {
+        #expect(TaskDeliverableExpectation.requiresStandaloneArtifact(AgentTask(title: "Task", goal: goal)))
+    }
+
     @Test("Context fields cannot lend an artifact noun to a text request")
     func contextDoesNotChangeTextRequest() {
         let task = AgentTask(title: "Desktop app overview", goal: "Write five numbered sentences.")
@@ -104,7 +124,8 @@ struct TaskTextOnlyDeliverableTests {
     @Test("Text requests neither rewrite the provider prompt nor block successful completion", arguments: [
         "Write five numbered sentences about testing a desktop app. Answer only in this chat.",
         "Write an explanation of how to build a website.",
-        "Write the following:\n1. five sentences about an app\n2. a summary of a website"
+        "Write the following:\n1. five sentences about an app\n2. a summary of a website",
+        "Write a paragraph about an HTML file."
     ])
     func textRequestCompletesWithoutAFile(goal: String) async throws {
         let fixture = try fixture(goal: goal)
@@ -127,6 +148,9 @@ struct TaskTextOnlyDeliverableTests {
         "Create the following artifacts:\n- a website",
         "Create:\n1. a website",
         "Write the following files:\n1. a short summary about an app",
+        "Write a paragraph about testing into an HTML file.",
+        "Write a short summary about the app as a CSS file.",
+        "Write a report about testing into a CSV file.",
         "Create:\n1. a summary about testing\n2. a website"
     ])
     func missingArtifactIsStillBlocked(goal: String) async throws {

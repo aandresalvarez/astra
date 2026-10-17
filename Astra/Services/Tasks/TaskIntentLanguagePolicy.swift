@@ -54,6 +54,9 @@ enum TaskIntentLanguagePolicy {
         let filenameDots = instructions.replacingOccurrences(
             of: #"(?<=[\p{L}\p{N}_/\-])\.(?=[\p{L}\p{N}])"#,
             with: "\u{001E}", options: .regularExpression
+        ).replacingOccurrences(
+            of: #"\.(?=[a-z][a-z0-9_+-]*\s+files?\b)"#,
+            with: "\u{001E}", options: [.regularExpression, .caseInsensitive]
         )
         for protectedClause in clauses(in: filenameDots) {
             let clause = protectedClause.replacingOccurrences(of: "\u{001E}", with: ".")

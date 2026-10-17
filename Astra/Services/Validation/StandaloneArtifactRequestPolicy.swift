@@ -60,9 +60,11 @@ enum StandaloneArtifactRequestPolicy {
                 options: .regularExpression
               ) else { return object }
         // An explicitly requested delivery format can follow the subject:
-        // "a paragraph about the app into a text file" still owes that file.
+        // "a paragraph about the app into an HTML file" still owes that file.
+        // A format identifier qualifies the destination; it need not be one
+        // of the prose modifiers or a format ASTRA already knows how to probe.
         if let destination = object.range(
-            of: #"\b(?:as|in|into|to)\s+(?:(?:a|an|the|new|plain|text|markdown)\s+)*file\b"#,
+            of: #"\b(?:as|in|into|to)\s+(?:(?:a|an|the|new|plain|text|markdown)\s+)*(?:\.?[a-z][a-z0-9_+-]*\s+)?files?\b"#,
             options: .regularExpression
         ) {
             return String(object[destination])
