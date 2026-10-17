@@ -16,17 +16,15 @@ enum WorkspaceSavedExportSnapshot {
         }
         // Provider sandboxes can write general temp roots. Keep the copy
         // inside the store owner's protection boundary, alongside the store.
-        let root = source.url.deletingLastPathComponent().appendingPathComponent(".astra-mirror-\(UUID())")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent("snapshot.store")
-        try WorkspacePersistenceWork.measure("mirror_store_snapshot", workspaceID: workspaceID) {
-            try WorkspaceRecoveryService.copyStoreSnapshot(from: source.url, to: url)
+        return try WorkspaceSnapshotDirectory.withDirectory(beside: source.url) { root in
+            let url = root.appendingPathComponent("snapshot.store")
+            try WorkspacePersistenceWork.measure("mirror_store_snapshot", workspaceID: workspaceID) {
+                try WorkspaceRecoveryService.copyStoreSnapshot(from: source.url, to: url)
+            }
+            let snapshot = try ModelContainer(for: container.schema, configurations: [
+                ModelConfiguration(schema: container.schema, url: url, allowsSave: false, cloudKitDatabase: .none)
+            ])
+            return try body(snapshot)
         }
-        let snapshot = try ModelContainer(for: container.schema, configurations: [
-            ModelConfiguration(schema: container.schema, url: url, allowsSave: false, cloudKitDatabase: .none)
-        ])
-        return try body(snapshot)
     }
 }

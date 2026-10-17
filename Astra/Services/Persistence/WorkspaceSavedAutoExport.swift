@@ -3,25 +3,6 @@ import SwiftData
 import ASTRACore
 import ASTRAModels
 
-/// Reading a later bookkeeping save would cross the caller's explicit
-/// save-without-export boundary. Only a successful source-context save
-/// invalidates this projection; a failed save leaves the last durable rows
-/// unchanged. The writer crosses the saving actor before accepting a snapshot,
-/// so a read racing a successful commit cannot outrun its didSave notification.
-/// The observer touches only a scheduling ticket, never domain state.
-final class WorkspaceSavedExportLease {
-    private let observation: NSObjectProtocol
-
-    @MainActor
-    init(context: ModelContext, ticket: WorkspaceAutoExportGate.Ticket) {
-        observation = NotificationCenter.default.addObserver(forName: ModelContext.didSave, object: context, queue: nil) { _ in
-            WorkspaceAutoExportGate.shared.invalidateIfCurrent(ticket)
-        }
-    }
-
-    deinit { NotificationCenter.default.removeObserver(observation) }
-}
-
 /// A queued projection does not own the store. Resolve this weak reference only
 /// when the reader actor starts work, so a busy export queue cannot prolong a
 /// closed owner's main context and autosave timer. Swift weak access is atomic;
@@ -63,6 +44,17 @@ actor WorkspaceSavedAutoExport {
         return try WorkspaceSavedExportSnapshot.read(container: container, workspaceID: workspaceID.uuidString) {
             guard !Task.isCancelled else { return nil }
             return try Self.prepareRows(container: $0, workspaceID: workspaceID)
+        }
+    }
+
+    /// A failed quit-time save must not mirror the source context's unsaved
+    /// edits. Termination may synchronously read only its committed authority.
+    @MainActor static func prepareForTermination(container: ModelContainer, workspaceID: UUID) throws -> Prepared? {
+        if container.configurations.allSatisfy(\.isStoredInMemoryOnly) {
+            return try prepareRows(container: container, workspaceID: workspaceID)
+        }
+        return try WorkspaceSavedExportSnapshot.read(container: container, workspaceID: workspaceID.uuidString) {
+            try prepareRows(container: $0, workspaceID: workspaceID)
         }
     }
 

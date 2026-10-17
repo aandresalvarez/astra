@@ -72,6 +72,14 @@ struct RunFinalizationResponsivenessTests {
             workspace.name = "After fix"
             #expect(WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: read))
         }
+        // A second workspace save must inspect only its changed rows, even
+        // while this 600-task mirror is still queued on the shared context.
+        let otherID = workspaces[1].id
+        let other = try #require(read.fetch(FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == otherID })).first)
+        measure("unrelated_save_with_large_mirror_pending") {
+            other.name = "Unrelated edit"
+            #expect(WorkspacePersistenceCoordinator.saveWithoutAutoExport(modelContext: read))
+        }
         let deadline = ContinuousClock.now + .seconds(30)
         while WorkspacePersistenceCoordinator.pendingExportWorkspaceCount > 0, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))

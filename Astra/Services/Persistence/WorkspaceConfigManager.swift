@@ -1147,7 +1147,7 @@ public enum WorkspaceConfigManager {
         )
     }
 
-    private static func writeResult(_ config: WorkspaceConfig, workspaceID: String, to url: URL) -> WorkspaceConfigExportResult {
+    static func writeResult(_ config: WorkspaceConfig, workspaceID: String, to url: URL) -> WorkspaceConfigExportResult {
         do {
             try write(config, to: url)
             return exportResult(status: .exported, workspaceID: workspaceID, url: url, error: nil)

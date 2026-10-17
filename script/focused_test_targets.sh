@@ -32,11 +32,13 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
-    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
+    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
       add_target "WorkspaceSavedAutoExportTests"
       add_target "WorkspaceSavedExportSnapshotTests"
       add_target "WorkspaceSavedExportReviewTests"
+      add_target "WorkspaceSavedExportPendingTests"
+      add_target "WorkspaceSnapshotDirectoryTests"
       add_target "WorkspaceExportTerminationFlushTests"
       add_target "AgentRuntimeRunPersistenceTests"
       add_target "TaskThreadChangeObserverTests"
@@ -262,6 +264,8 @@ target_for_path() {
       add_target "WorkspaceSavedAutoExportTests"
       add_target "WorkspaceSavedExportSnapshotTests"
       add_target "WorkspaceSavedExportReviewTests"
+      add_target "WorkspaceSavedExportPendingTests"
+      add_target "WorkspaceSnapshotDirectoryTests"
       add_target "WorkspaceExportTerminationFlushTests"
       add_target "TaskThreadChangeObserverTests"
       ;;
