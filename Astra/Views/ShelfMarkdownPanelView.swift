@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
@@ -63,7 +62,6 @@ struct ShelfMarkdownPanelView: View {
     @AppStorage(AppStorageKeys.markdownShelfFileNavigatorPinned) private var isFileNavigatorPinned = false
     @State private var fileNavigatorOrganization = ShelfFileNavigatorOrganization.stored
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.modelContext) private var modelContext
     @State private var historyAttachments: (taskID: UUID, paths: [String])?
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
@@ -121,15 +119,8 @@ struct ShelfMarkdownPanelView: View {
                 FilesShelfResponsivenessTelemetry.chromeReady(scope: responsivenessScope)
             }
         }
-        .task(id: "\(task?.id.uuidString ?? "none"):\(task?.status.rawValue ?? "none")") {
-            guard let taskID = task?.id else { historyAttachments = nil; return }
-            do {
-                let paths = try await TaskAttachmentFilesReader.paths(taskID: taskID, container: modelContext.container)
-                guard !Task.isCancelled, task?.id == taskID else { return }
-                historyAttachments = (taskID, paths)
-            } catch {
-                AppLogger.error("Files attachment history could not be read: \(error.localizedDescription)", category: "UI")
-            }
+        .shelfAttachmentHistory(task: task) { taskID, paths in
+            historyAttachments = taskID.map { ($0, paths) }
         }
         .task(id: fileSearchText) {
             // Apply clears immediately; debounce non-empty queries so typing

@@ -144,10 +144,14 @@ assert_targets $'CodexMCPConfigRendererTests\nMCPRuntimeProjectionTests' \
   "Astra/Services/Runtime/CodexMCPLaunchProjection.swift" \
   "Tests/CodexMCPConfigRendererTests.swift"
 
-assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests\nTaskAttachmentFilesReaderTests' \
+assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests\nTaskAttachmentFilesReaderTests\nShelfAttachmentHistoryTests' \
   "Astra/Views/ShelfFileNavigatorPresentation.swift" \
   "Astra/Views/ShelfMarkdownPanelView.swift" \
   "Tests/ShelfMarkdownPanelLayoutTests.swift"
+
+assert_targets $'ShelfAttachmentHistoryTests\nTaskAttachmentFilesReaderTests' \
+  "Astra/Views/ShelfAttachmentHistoryModifier.swift" \
+  "Tests/ShelfAttachmentHistoryTests.swift"
 
 assert_targets $'ReleaseBuildNumberDerivationTests\nReleaseUpdateScriptTests\nAppBundlePackagingTests' \
   ".github/workflows/release.yml" \

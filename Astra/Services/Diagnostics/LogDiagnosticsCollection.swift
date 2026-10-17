@@ -47,7 +47,8 @@ enum LogDiagnosticsCollector {
             }
         var coverage = LogDiagnosticsCoverage(availableFiles: files.count)
         var entries = inMemory
-        // Timestamp participates: repeated failures in different seconds remain evidence.
+        // Match the representation actually written to disk, including its
+        // timestamp precision and abbreviated task identity.
         var seen = Set(entries.map(signature))
         var selectedFiles = 0
         for file in files {
@@ -90,8 +91,32 @@ enum LogDiagnosticsCollector {
         return LogDiagnosticsCollection(entries: entries, coverage: coverage)
     }
 
-    private static func signature(_ entry: LogEntry) -> String {
-        "\(entry.timestamp.timeIntervalSince1970)|\(entry.level)|\(entry.category)|\(entry.taskID?.uuidString ?? "")|\(entry.message)"
+    private struct EntryIdentity: Hashable {
+        let timestamp: String
+        let level: String
+        let category: String
+        let task: String?
+        let message: String
+    }
+
+    private static func signature(_ entry: LogEntry) -> EntryIdentity {
+        var task = entry.taskID.map { String($0.uuidString.prefix(8)).uppercased() }
+        var message = entry.message
+        if task == nil, message.hasPrefix("task_short=") {
+            let parts = message.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: false)
+            let short = String(parts[0].dropFirst("task_short=".count))
+            if short.count == 8, short.allSatisfy(\.isHexDigit) {
+                task = short.uppercased()
+                message = parts.count > 1 ? String(parts[1]) : ""
+            }
+        }
+        return EntryIdentity(
+            timestamp: String(entry.persistedFormatted.prefix { $0 != "]" }),
+            level: entry.level,
+            category: entry.category.split(separator: " ").first.map(String.init) ?? entry.category,
+            task: task,
+            message: String(message.drop(while: \.isWhitespace))
+        )
     }
 
     private static func modificationDate(_ url: URL) -> Date {

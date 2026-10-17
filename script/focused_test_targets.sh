@@ -97,6 +97,10 @@ target_for_path() {
       add_target "TaskAttachmentFilesReaderTests"
       add_target "ComposerAttachmentsTests"
       ;;
+    Astra/Views/ShelfAttachmentHistoryModifier.swift|Tests/ShelfAttachmentHistoryTests.swift)
+      add_target "ShelfAttachmentHistoryTests"
+      add_target "TaskAttachmentFilesReaderTests"
+      ;;
     Tests/HeadlessChatProcessScenarioTests.swift|Tests/RuntimeCancellationDiagnosticTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
       add_target "RuntimeCancellationDiagnosticTests"
       add_target "HeadlessChatScenarioTests"
@@ -152,6 +156,7 @@ target_for_path() {
       add_target "ShelfMarkdownPanelLayoutTests"
       add_target "ShelfChromeTests"
       add_target "TaskAttachmentFilesReaderTests"
+      add_target "ShelfAttachmentHistoryTests"
       ;;
     Astra/Views/SidebarTask*.swift|Astra/Views/TaskSidebarView.swift|Tests/SidebarTaskStore*.swift|Tests/SidebarTaskSourceObservationTests.swift)
       add_target "SidebarTaskStoreTests"
