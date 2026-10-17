@@ -2923,6 +2923,8 @@ public enum WorkspaceConfigManager {
         )
 
         if let skillIDs, !skillIDs.isEmpty {
+            var restoredSnapshotIDs: [String: Skill] = [:]
+            defer { remapSnapshots(of: task, to: restoredSnapshotIDs) }
             for id in skillIDs {
                 if let skill = skillsByID[id] {
                     appendUnique(skill, to: &task.skills)
@@ -2942,6 +2944,7 @@ public enum WorkspaceConfigManager {
                     )
                     skillsByID[restored.id.uuidString] = restored
                     skillsByID[id] = restored
+                    restoredSnapshotIDs[id] = restored
                     if skillsByName[restored.name] == nil {
                         skillsByName[restored.name] = restored
                     }

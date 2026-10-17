@@ -54,6 +54,7 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         #expect(template.originPackageID == nil)
 
         #expect(result.capabilityTrust.capabilitiesUnavailable == ["not-installed", "draft-pack"])
+        #expect(result.capabilityTrust.pluginsUnavailable == ["not-installed"])
         #expect(result.capabilityTrust.packsUnavailable == ["astra.pack.unknown"])
         #expect(result.capabilityTrust.unknownSharedRowIDs.count == 1)
         #expect(result.capabilityTrust.originStampsStripped == 4)
@@ -199,6 +200,65 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         _ = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier))
 
         #expect(connector.skill?.id == owner.id)
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("Any origin field a validated import strips is counted, and a built-in name earns no shared scope")
+    @MainActor
+    func validatedImportCountsEveryOriginFieldAndLocalizesBuiltInNames() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        var config = minimalConfig()
+        var versionOnly = skillConfig(name: "Version Only", isGlobal: false)
+        versionOnly.originPackageID = nil
+        versionOnly.originComponentID = nil
+        versionOnly.originComponentKind = nil
+        versionOnly.originSourceKind = nil
+        let builtInName = try #require(Skill.builtInNames.sorted().first)
+        var impostor = skillConfig(name: builtInName, isGlobal: true)
+        impostor.originPackageID = nil
+        impostor.originPackageVersion = nil
+        impostor.originComponentID = nil
+        impostor.originComponentKind = nil
+        impostor.originSourceKind = nil
+        config.skills = [versionOnly, impostor]
+
+        let result = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier))
+
+        #expect(result.capabilityTrust.originStampsStripped == 1)
+        let created = try #require(result.workspace.skills.first { $0.name == builtInName })
+        #expect(!created.isGlobal)
+        #expect(!created.isBuiltIn)
+        withExtendedLifetime(container) {}
+    }
+
+    @Test("A skill restored from a task snapshot is what the snapshot names afterwards")
+    @MainActor
+    func restoredSnapshotNamesTheRestoredRow() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        var config = minimalConfig()
+        let snapshotID = UUID().uuidString
+        let now = Date()
+        config.tasks = [Manager.TaskConfig(
+            title: "Old task", goal: "Export", status: "completed", inputs: [], constraints: [],
+            acceptanceCriteria: [], tokenBudget: 1000, tokensUsed: 0, model: "m", costUSD: 0, maxTurns: 5,
+            createdAt: now, updatedAt: now, runs: [], events: [],
+            skillIDs: [snapshotID], skillNames: [],
+            skillSnapshots: [SkillSnapshotConfig(
+                id: snapshotID, name: "Snapshot Agent", icon: "sparkles", description: "", allowedTools: [],
+                disallowedTools: [], customTools: [], behaviorInstructions: "Help.", environmentKeys: [],
+                environmentValues: [], isGlobal: false, connectorIDs: [], localToolIDs: [],
+                connectorSnapshots: [], localToolSnapshots: [], createdAt: now, updatedAt: now
+            )]
+        )]
+
+        let workspace = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier)).workspace
+        let task = try #require(workspace.tasks.first)
+        let restored = try #require(task.skills.first)
+        #expect(restored.id.uuidString != snapshotID)
+        #expect(task.skillSnapshots.map(\.id) == [restored.id.uuidString])
+        #expect(task.skillSnapshots.map(\.name) == [restored.name])
         withExtendedLifetime(container) {}
     }
 
