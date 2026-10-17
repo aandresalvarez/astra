@@ -14,8 +14,7 @@ enum StandaloneArtifactRequestPolicy {
         "sentence", "sentences", "paragraph", "paragraphs", "line", "lines", "text", "answer", "answers",
         "summary", "summaries", "explanation", "explanations", "description", "descriptions", "report", "reports",
         "document", "documents", "diagram", "diagrams", "guide", "guides", "checklist", "checklists",
-        "list", "lists", "outline", "outlines", "tutorial", "tutorials", "notes", "email", "message", "poem", "story", "json", "sql",
-        "about", "regarding", "concerning", "how", "why", "what", "whether"
+        "list", "lists", "outline", "outlines", "tutorial", "tutorials", "notes", "email", "message", "poem", "story", "json", "sql"
     ]
     private static let answerModifiers: Set<String> = [
         "a", "an", "the", "some", "several", "few", "many", "one", "two", "three", "four", "five", "six",
@@ -42,15 +41,20 @@ enum StandaloneArtifactRequestPolicy {
                     return action.object.split { !$0.isLetter && !$0.isNumber }
                         .prefix(3).map(String.init) == ["this", "in", "files"]
                 }
-                return namesArtifact(requestedObject(action.object))
+                return namesArtifact(requestedObject(action.object, verb: action.verb))
             }
         }
     }
 
-    private static func requestedObject(_ object: String) -> String {
+    private static func requestedObject(_ object: String, verb: String) -> String {
         let words = object.split { !$0.isLetter && !$0.isNumber }.map(String.init)
         let head = words.first { !answerModifiers.contains($0) && !$0.allSatisfy(\.isNumber) }
-        guard let head, answerObjects.contains(head),
+        // "Write about an app" implicitly requests prose. A nominal modifier
+        // in "generate a what-if dashboard" is still part of the artifact.
+        let implicitProse = verb == "write" && object.range(
+            of: #"^\s*(?:about|regarding|concerning|how|why|what|whether)\s+"#, options: .regularExpression
+        ) != nil
+        guard let head, answerObjects.contains(head) || implicitProse,
               let topic = object.range(
                 of: #"\b(?:about|on|of|for|how|why|what|whether|regarding|concerning|describing|explaining|discussing|covering|containing)\b"#,
                 options: .regularExpression

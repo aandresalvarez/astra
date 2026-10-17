@@ -38,6 +38,9 @@ struct TaskTextOnlyDeliverableTests {
 
     @Test("Creation requests retain their deliverable requirement", arguments: [
         "Build a local app so the team can install it.",
+        "Generate a what-if dashboard.",
+        "Create an about web page.",
+        "Write a how-to app.",
         "Put this in files.",
         "Create a UI for browsing tickets.",
         "Createan app for the team.",
