@@ -21,12 +21,13 @@ struct OrphanedV12StoreMigratorTests {
     let eventID = UUID(uuidString: "00000000-0000-0000-0000-000000000105")!
     let artifactID = UUID(uuidString: "00000000-0000-0000-0000-000000000106")!
 
+    let sourceContainer = try ModelContainer(
+      for: Schema(versionedSchema: ASTRASchemaV12RuntimeOnly.self),
+      configurations: [ModelConfiguration(url: sourceURL)]
+    )
     do {
-      var sourceContainer: ModelContainer? = try ModelContainer(
-        for: Schema(versionedSchema: ASTRASchemaV12RuntimeOnly.self),
-        configurations: [ModelConfiguration(url: sourceURL)]
-      )
-      let sourceContext = try #require(sourceContainer?.mainContext)
+      let sourceContext = ModelContext(sourceContainer)
+      sourceContext.autosaveEnabled = false
 
       let workspace = ASTRASchemaV12RuntimeOnly.Workspace()
       workspace.id = workspaceID
@@ -72,10 +73,15 @@ struct OrphanedV12StoreMigratorTests {
       sourceContext.insert(artifact)
 
       try sourceContext.save()
-      sourceContainer = nil
     }
 
+    // Keep the frozen writer alive through the comparison. Closing it during
+    // migration can checkpoint its WAL and change the main file independently
+    // of the read-only migrator. Compare both files to catch actual writes.
     let sourceBytes = try Data(contentsOf: sourceURL)
+    let sourceWALURL = URL(fileURLWithPath: sourceURL.path + "-wal")
+    let sourceWALBytes = FileManager.default.fileExists(atPath: sourceWALURL.path)
+      ? try Data(contentsOf: sourceWALURL) : nil
     #expect(
       PersistentStoreCompatibilityService.assess(
         storeURL: sourceURL,
@@ -98,6 +104,9 @@ struct OrphanedV12StoreMigratorTests {
     #expect(report.destinationStoreURL == destinationURL)
     #expect(report.sourceShapeRaw == "runtime_selection_only_v12")
     #expect(try Data(contentsOf: sourceURL) == sourceBytes)
+    let remainingWALBytes = FileManager.default.fileExists(atPath: sourceWALURL.path)
+      ? try Data(contentsOf: sourceWALURL) : nil
+    #expect(remainingWALBytes == sourceWALBytes)
     #expect(
       try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL) == .runtimeSelectionOnlyV12)
 
@@ -131,6 +140,7 @@ struct OrphanedV12StoreMigratorTests {
     #expect(migrationRecord.sourceSchemaVersion == 12)
     #expect(migrationRecord.sourceShapeRaw == "runtime_selection_only_v12")
     #expect(migrationRecord.destinationSchemaVersion == ASTRASchema.currentVersion)
+    withExtendedLifetime(sourceContainer) {}
   }
 
   @MainActor

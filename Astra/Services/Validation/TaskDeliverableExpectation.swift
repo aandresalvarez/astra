@@ -15,53 +15,12 @@ enum TaskDeliverableExpectation {
             return false
         }
 
-        let text = [
+        return StandaloneArtifactRequestPolicy.requiresArtifact(in: [
             persistentDeliverableText(from: task.title),
             persistentDeliverableText(from: task.goal),
             persistentDeliverableText(from: task.inputs.joined(separator: " ")),
             persistentDeliverableText(from: task.acceptanceCriteria.joined(separator: " "))
-        ]
-            .joined(separator: " ")
-            .lowercased()
-
-        let artifactActionWords: Set<String> = [
-            "write", "create", "creat", "cerate", "crefate", "build", "buid", "make", "generate", "save"
-        ]
-        let artifactActionPhrases = [
-            "put this in files", "write this in files"
-        ]
-        guard TaskIntentLanguagePolicy.containsAffirmativeAction(
-            in: text,
-            words: artifactActionWords,
-            phrases: artifactActionPhrases
-        ) || containsJoinedArticleAction(text, Array(artifactActionWords)) else {
-            return false
-        }
-
-        // Distinctive enough to match anywhere in the text.
-        let artifactPhrases = [
-            "web page", "webpage", "html", "javascript", "css", ".html", ".js", ".css",
-            "demo app", "game", "script", "file", "slide deck", "slides", "presentation", "deck",
-            "user interface", "web site", "spreadsheet", "wireframe", "mockup", "prototype",
-            "dashboard", "notebook", "readme"
-        ]
-        // Short nouns have to match as whole words. Substring matching would
-        // turn "ui" into a hit for "build", "guide" and "require", and "app"
-        // into a hit for "happens" and "appropriate".
-        let artifactWords = ["app", "ui", "website", "csv"]
-
-        // The action word above already established that the user asked for
-        // something to be produced; this only decides whether the thing is the
-        // kind that lands on disk. The vocabulary is precise rather than broad
-        // because the two mistakes do not cost the same. Missing an artifact
-        // request tightens a watchdog window. Inventing one rewrites the prompt
-        // around a file the user never asked for — the first-action contract in
-        // `AgentPromptBuilder` — and then blocks completion when that file does
-        // not appear. So nouns that name a *shape* of answer as readily as a
-        // file — "report", "document", "diagram", a format like "json" or "sql"
-        // — stay out, and only nouns that can scarcely be delivered any other
-        // way are in.
-        return containsAny(text, artifactPhrases) || containsAnyWholeWord(text, artifactWords)
+        ])
     }
 
     static func requiresDeliverableArtifact(_ task: AgentTask) -> Bool {
@@ -425,16 +384,6 @@ enum TaskDeliverableExpectation {
     private static func containsAnyWholeWord(_ text: String, _ words: [String]) -> Bool {
         let tokens = Set(text.split { !$0.isLetter && !$0.isNumber }.map(String.init))
         return words.contains { tokens.contains($0) }
-    }
-
-    private static func containsJoinedArticleAction(_ text: String, _ words: [String]) -> Bool {
-        let tokens = text.split { !$0.isLetter && !$0.isNumber }.map(String.init)
-        let joinedArticleWords = words.flatMap { word in
-            ["\(word)a", "\(word)an"]
-        }
-        return tokens.contains { token in
-            joinedArticleWords.contains(String(token))
-        }
     }
 
     private static func explicitDeliverableListSegment(from line: String) -> String? {

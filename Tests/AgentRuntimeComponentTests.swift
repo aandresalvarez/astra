@@ -1183,15 +1183,16 @@ struct AgentRuntimeRunPersistenceTests {
         task.status = .completed
         run.status = .completed
 
+        let traceID = AgentRuntimeRunPersistence.traceID(for: run)
         let fields = AgentRuntimeRunPersistence.finalizationPhaseFields(
             phase: "artifact_reconciliation",
             task: task,
             run: run,
-            traceID: "run-finalize-safe-trace"
+            traceID: traceID
         )
         let parentFields = AgentRuntimeRunPersistence.finalizationParentFields(
             ["task_id": fields["task_id"]!],
-            traceID: "run-finalize-safe-trace"
+            traceID: traceID
         )
 
         #expect(fields["phase"] == "artifact_reconciliation")
@@ -1199,7 +1200,9 @@ struct AgentRuntimeRunPersistenceTests {
         #expect(fields["run_status"] == "completed")
         #expect(fields["task_id"]?.count == 8)
         #expect(fields["run_id"]?.count == 8)
-        #expect(fields["trace_id"] == "run-finalize-safe-trace")
+        #expect(fields["trace_id"] == traceID)
+        #expect(LogSanitizer.sanitizeFields(fields)["trace_id"] == traceID)
+        #expect(FeedbackEvidenceSanitizer.sanitize(traceID, maximumBytes: 1_000).text == traceID)
         #expect(parentFields["trace_id"] == fields["trace_id"])
         #expect(fields["title"] == nil)
         #expect(fields["goal"] == nil)

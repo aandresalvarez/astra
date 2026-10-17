@@ -25,7 +25,7 @@ extension CopilotCLIRuntimeAdapter {
                 // Warm the capability probe off the main actor. Composer admission reads it
                 // synchronously on `@MainActor` for every debounced keystroke; memoising
                 // here means that path finds an answer instead of spawning `copilot help`.
-                CopilotCLIRuntime.warmCapabilities(executablePath: executable)
+                await CopilotCLIRuntime.warmCapabilities(executablePath: executable)
             }
             checks.append(copilotAccountDeferredCheck())
         }

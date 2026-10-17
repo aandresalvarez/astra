@@ -1,5 +1,33 @@
 # Run finalization responsiveness — October 15–16, 2026
 
+## October 17 update on current main
+
+The PR now includes main `709f56a90222` (including #522). Run finalization keeps
+main's stable per-run trace IDs and its discovery scan/queue/resume measurements.
+Focused routing selects both the saved-export suites and `TaskOutputDiscoveryTests`
+for runtime persistence changes, rather than allowing the earlier shell case to
+shadow the new discovery coverage.
+
+The updated same-run opt-in benchmark measured 1,503.69 ms wall / 1,500.61 ms
+main-thread CPU for synchronous projection versus 28.74 ms wall / 28.58 ms CPU
+for save-and-enqueue. The main actor serviced 139 heartbeat ticks while the real
+background export completed; the maximum gap was 28.80 ms. The exported JSON
+contained the new workspace name and all 600 expected tasks. Fixture totals
+remain 2,180 tasks, 5,518 runs, and 56,621 events. These are local synthetic
+measurements, not population percentiles or total-export speedups.
+
+Review regressions use a real read-only SwiftData store to fail each of the four
+coordinator save APIs and a direct raw save. All five retain the last durable
+projection and export its saved rows, never the failed edits. A successful
+explicit write clears its superseded pending projection; a failed write stays
+owed. Older completions cannot clear a newer saved or debounced request. The
+writer fences with the saving main actor before accepting snapshots, while
+encoding and filesystem work remain off-main.
+
+The measurements and local suite counts in the October 15–16 sections below
+are historical validation of the original implementation. Current full-suite,
+native Dev and remote CI results are tracked separately on PR #511.
+
 ## Finding and scope
 
 At `19bb27e668d4`, `WorkspacePersistenceCoordinator.saveAndAutoExport`
@@ -104,9 +132,12 @@ current-main persistence/model objects while the full app build completed.
 - Requests stay pending through the file write. Termination invalidates queued
   tickets and synchronously saves/exports current state. A late worker cannot
   overwrite the termination mirror or resurrect a deleted workspace.
-- A source-context `willSave` observation invalidates a pending read before it
-  can see a later bookkeeping save that intentionally omits the mirror. It
-  changes only the export ticket. Superseded/failed projections remain owed
+- A source-context `didSave` observation invalidates a pending read only after
+  a successful commit. Failed saves, including direct raw saves, leave the last
+  durable projection valid. Before accepting a value snapshot, the writer
+  crosses the main actor's save boundary, so a concurrent read cannot outrun
+  the successful commit's notification. Encoding and filesystem writes stay
+  on the writer actor. Superseded/failed projections remain owed
   until the next explicit export request or termination; they do not trigger
   hidden retries or domain transitions. Continuous saves can delay the mirror.
 - Queued and deferred saved-projection requests hold weak persistence owners.
@@ -116,11 +147,14 @@ current-main persistence/model objects while the full app build completed.
   only while its source context and container are alive.
 - Explicit snapshot callers of `WorkspaceConfigManager.autoExport` retain their
   existing context semantics, including potentially unsaved state. Their tickets
-  also supersede older coordinator projections.
+  also supersede older coordinator projections. A successful write retires the
+  covered pending projection through the coordinator; failed writes and newer
+  saved or debounced requests remain owed.
 - Persistence signposts and thresholded diagnostics distinguish `swiftdata_save`,
   `mirror_snapshot`, `mirror_encode`, and `mirror_write`. Finalization publishes
-  synchronous main-thread phase markers and measures asynchronous discovery
-  separately. Elapsed discovery and parent finalization timings include waits.
+  synchronous main-thread phase markers and preserves main's stable per-run
+  trace identity and separate discovery scan/queue/resume timings. Elapsed
+  discovery and parent finalization timings include waits.
   Frequent transcript pre-read saves retain their existing silent success path;
   the new timing audits do not add work to that streaming refresh path.
 

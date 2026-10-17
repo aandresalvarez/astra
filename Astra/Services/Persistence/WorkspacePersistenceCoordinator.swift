@@ -15,6 +15,7 @@ public enum WorkspacePersistenceCoordinator {
         // container only while actually reading; termination drains live owners.
         weak var context: ModelContext?
         weak var container: ModelContainer?
+        let ticket: WorkspaceAutoExportGate.Ticket?
         let task: Task<Void, Never>
     }
 
@@ -203,7 +204,7 @@ public enum WorkspacePersistenceCoordinator {
         let requestID = UUID()
         pendingExports[workspaceID]?.task.cancel()
         pendingExports[workspaceID] = PendingExport(
-            id: requestID, workspace: workspace, context: modelContext, container: container,
+            id: requestID, workspace: workspace, context: modelContext, container: container, ticket: ticket,
             task: Task { @MainActor in
                 defer { withExtendedLifetime(lease) {} }
                 guard !Task.isCancelled else { return }
@@ -225,6 +226,17 @@ public enum WorkspacePersistenceCoordinator {
         ], level: .debug)
     }
 
+    /// A successful explicit snapshot can finish the work owed by an older
+    /// coordinator request. Failed writes and later/debounced saves stay owed.
+    static func autoExportDidWrite(_ ticket: WorkspaceAutoExportGate.Ticket) {
+        guard let id = UUID(uuidString: ticket.workspaceID),
+              let pending = pendingExports[id], let previous = pending.ticket,
+              previous.generation <= ticket.generation,
+              WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return }
+        if previous.generation < ticket.generation { pending.task.cancel() }
+        pendingExports[id] = nil
+    }
+
     public static func scheduleAutoExport(
         workspace: Workspace?,
         modelContext: ModelContext,
@@ -243,6 +255,7 @@ public enum WorkspacePersistenceCoordinator {
             workspace: workspace,
             context: modelContext,
             container: container,
+            ticket: nil,
             task: Task { @MainActor in
                 defer { withExtendedLifetime(container) {} }
                 do {

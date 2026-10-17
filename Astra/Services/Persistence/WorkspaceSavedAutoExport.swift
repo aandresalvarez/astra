@@ -4,16 +4,17 @@ import ASTRACore
 import ASTRAModels
 
 /// Reading a later bookkeeping save would cross the caller's explicit
-/// save-without-export boundary. Invalidate this projection before any later
-/// source-context save (including autosave/raw saves), then let the next
-/// explicit save-and-export request refresh the mirror. The observer touches
-/// only a thread-safe scheduling ticket, never domain state or managed models.
+/// save-without-export boundary. Only a successful source-context save
+/// invalidates this projection; a failed save leaves the last durable rows
+/// unchanged. The writer crosses the saving actor before accepting a snapshot,
+/// so a read racing a successful commit cannot outrun its didSave notification.
+/// The observer touches only a scheduling ticket, never domain state.
 final class WorkspaceSavedExportLease {
     private let observation: NSObjectProtocol
 
     @MainActor
     init(context: ModelContext, ticket: WorkspaceAutoExportGate.Ticket) {
-        observation = NotificationCenter.default.addObserver(forName: ModelContext.willSave, object: context, queue: nil) { _ in
+        observation = NotificationCenter.default.addObserver(forName: ModelContext.didSave, object: context, queue: nil) { _ in
             WorkspaceAutoExportGate.shared.invalidateIfCurrent(ticket)
         }
     }

@@ -103,8 +103,13 @@ actor WorkspaceAutoExportWriter {
         to url: URL,
         workspaceID: String,
         ticket: WorkspaceAutoExportGate.Ticket
-    ) -> Bool {
-        guard !Task.isCancelled, WorkspaceAutoExportGate.shared.isCurrent(ticket) else { return false }
+    ) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        // Projection may have observed a concurrent store commit before the
+        // source context posts didSave. Its main-actor save must finish before
+        // this snapshot is accepted. Encoding and filesystem I/O remain here.
+        let current = await MainActor.run { WorkspaceAutoExportGate.shared.isCurrent(ticket) }
+        guard !Task.isCancelled, current else { return false }
         do {
             let data = try WorkspacePersistenceWork.measure("mirror_encode", workspaceID: workspaceID) {
                 try encoder.encode(config)
@@ -113,7 +118,9 @@ actor WorkspaceAutoExportWriter {
             let written = try WorkspacePersistenceWork.measure("mirror_write", workspaceID: workspaceID) {
                 try WorkspaceAutoExportGate.shared.writeIfCurrent(ticket, data: data, to: url)
             }
-            if !written {
+            if written {
+                await WorkspacePersistenceCoordinator.autoExportDidWrite(ticket)
+            } else {
                 AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                     "result": "auto_export_skipped",
                     "reason": "superseded_or_deleted",
