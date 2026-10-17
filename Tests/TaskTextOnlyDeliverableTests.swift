@@ -13,6 +13,7 @@ struct TaskTextOnlyDeliverableTests {
         "Write five numbered sentences about testing a desktop app.",
         "Write about a desktop app.",
         "Write what the app does.",
+        "Put the app in the foreground.",
         "Write exactly 60 numbered lines. Each line should contain a different short sentence about testing a desktop app with a large synthetic chat history.",
         "Write a summary of the app's UI.",
         "Write an explanation of how to build a website.",
@@ -37,6 +38,7 @@ struct TaskTextOnlyDeliverableTests {
 
     @Test("Creation requests retain their deliverable requirement", arguments: [
         "Build a local app so the team can install it.",
+        "Put this in files.",
         "Create a UI for browsing tickets.",
         "Createan app for the team.",
         "Create:\n- a desktop app",

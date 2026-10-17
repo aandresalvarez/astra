@@ -4,7 +4,7 @@ import Foundation
 /// ("sentences about an app") is not itself a requested artifact.
 enum StandaloneArtifactRequestPolicy {
     private static let creationActions: Set<String> = [
-        "write", "create", "creat", "cerate", "crefate", "build", "buid", "make", "generate", "save", "put"
+        "write", "create", "creat", "cerate", "crefate", "build", "buid", "make", "generate", "save"
     ]
     private static let informationalActions: Set<String> = [
         "explain", "describe", "discuss", "summarize", "summarise", "review", "analyze", "analyse", "propose",
@@ -33,9 +33,15 @@ enum StandaloneArtifactRequestPolicy {
     static func requiresArtifact(in fields: [String]) -> Bool {
         fields.contains { field in
             TaskIntentLanguagePolicy.affirmativeActionObjects(
-                in: field, words: creationActions.union(informationalActions)
+                in: field, words: creationActions.union(informationalActions).union(["put"])
             ).contains { action in
                 guard !informationalActions.contains(action.verb) else { return false }
+                if action.verb == "put" {
+                    // This is an explicit delivery instruction, unlike an
+                    // app-control request such as "put the app in front".
+                    return action.object.split { !$0.isLetter && !$0.isNumber }
+                        .prefix(3).map(String.init) == ["this", "in", "files"]
+                }
                 return namesArtifact(requestedObject(action.object))
             }
         }
