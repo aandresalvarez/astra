@@ -1642,7 +1642,9 @@ final class AgentRuntimeWorker {
     /// invisible from the outside until someone notices a run that never moves.
     static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
-        if stopReason.isDockerRuntimeBlocked {
+        // A launch refused before Copilot started (its home is unusable)
+        // fails the task, as the readiness preflight's own refusal does.
+        if stopReason.isDockerRuntimeBlocked || reason == CopilotHomeAccessCheck.launchStopReason {
             return true
         }
         return [

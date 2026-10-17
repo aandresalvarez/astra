@@ -1403,6 +1403,56 @@ struct CopilotHomeAccessCheckTests {
         #expect(blocker(writeDenied: [home.path]) != nil)
     }
 
+    @Test("A state file inside the home that the boundary write-denies blocks; a read-only config does not")
+    func directStateEntryDeniedBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        let store = try home.write("session-store.db", mode: 0o600)
+        func report(writeDenied: [String], readDenied: [String] = []) -> CopilotHomeAccessReport {
+            CopilotHomeAccessCheck.inspect(
+                home: home.path,
+                sandboxReceipt: ExecutionSandboxBoundaryReceipt(
+                    writableRoots: [home.path], writeDeniedRoots: writeDenied, readScope: .enforce,
+                    readableRoots: [home.path], readDeniedRoots: readDenied
+                )
+            )
+        }
+
+        let deniedStore = report(writeDenied: [store])
+        #expect(deniedStore.problems.map(\.access) == [.sandboxDenied])
+        #expect(deniedStore.blocksCopilot)
+        #expect(deniedStore.fixCommand.isEmpty)
+        #expect(deniedStore.cause.contains("read-only input"))
+        #expect(!report(writeDenied: [config]).blocksCopilot)
+        #expect(report(writeDenied: [], readDenied: [config]).blocksCopilot)
+    }
+
+    @Test("A missing home under a linked parent names the folder the link points to")
+    func linkedCreationParentNamesTarget() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let real = try root.makeDirectory("real-user", mode: 0o555)
+        defer { try? root.setMode(0o755, of: real) }
+        let userLink = (root.path as NSString).appendingPathComponent("alice")
+        try FileManager.default.createSymbolicLink(atPath: userLink, withDestinationPath: real)
+        let home = (userLink as NSString).appendingPathComponent(".copilot")
+
+        let report = CopilotHomeAccessCheck.inspect(home: home)
+
+        let problem = try #require(report.problems.first)
+        #expect(problem.access == .cannotCreateHome)
+        #expect(problem.symlinkTarget != nil)
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("writable again, or replace the link at"))
+    }
+
+    @Test("A launch the home guard refused fails the task instead of pausing it")
+    func homeGuardStopIsTerminal() {
+        #expect(AgentRuntimeWorker.isTerminalRuntimeStop(CopilotHomeAccessCheck.launchStopReason))
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()
@@ -1494,7 +1544,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "../session-state").isClean)
     }
 
-    @Test("The composer's cached readiness re-checks the Copilot home on every answer")
+    @Test("The composer's cached readiness re-checks the Copilot home on every answer, as a warning")
     func availabilityCacheRechecksHome() async throws {
         let home = try FakeCopilotHome()
         defer { home.remove() }
@@ -1509,7 +1559,9 @@ struct CopilotHomeAccessCheckTests {
         #expect(await service.states(configuration: configuration, cache: cache)[.copilotCLI] == .ready)
 
         try home.setMode(0o000, of: config)
-        #expect(await service.states(configuration: configuration, cache: cache)[.copilotCLI] == .blocked)
+        // A warning, not a block: the composer's answer is global, and only
+        // the final-plan guard knows whether this launch reads the host home.
+        #expect(await service.states(configuration: configuration, cache: cache)[.copilotCLI] == .warning)
 
         // The cache never stored the block, so the repair shows at once too.
         try home.setMode(0o600, of: config)

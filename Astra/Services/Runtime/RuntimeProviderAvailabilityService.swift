@@ -157,8 +157,12 @@ struct RuntimeProviderAvailabilityService {
         _ states: [AgentRuntimeID: RuntimeReadinessState]
     ) -> [AgentRuntimeID: RuntimeReadinessState] {
         var refreshed = states
+        // A warning at most: this answer is global, but whether the host home
+        // matters depends on the launch (a container never reads it). The
+        // final-plan guard blocks the launches it would actually break.
         for (runtime, state) in states {
-            refreshed[runtime] = readinessService.refreshingUncachedChecks(state, runtime: runtime)
+            let checked = readinessService.refreshingUncachedChecks(.ready, runtime: runtime)
+            refreshed[runtime] = state.combined(with: checked == .blocked ? .warning : checked)
         }
         return refreshed
     }

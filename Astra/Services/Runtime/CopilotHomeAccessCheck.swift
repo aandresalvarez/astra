@@ -23,6 +23,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         /// A startup entry links outside the Copilot home. Readable here, but a
         /// sandboxed task is granted only `~/.copilot` and cannot follow it.
         case linksOutsideHome
+        /// The launch's sandbox explicitly denies an access Copilot needs here
+        /// (a task passed it in as a read-only input, say).
+        case sandboxDenied
     }
 
     var path: String
@@ -106,7 +109,7 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// Kills every Copilot turn before it prints a byte.
     var blocksCopilot: Bool {
         switch access {
-        case .notADirectory, .cannotCreateHome, .wrongType, .danglingLink: return true
+        case .notADirectory, .cannotCreateHome, .wrongType, .danglingLink, .sandboxDenied: return true
         case .unreadable: return isReadAtStartup
         case .unwritable, .linksOutsideHome: return false
         }
@@ -199,6 +202,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         }
         if !unwritable.isEmpty {
             sentences.append("Copilot cannot write \(Self.listed(unwritable)).")
+        }
+        let denied = problems.filter { $0.access == .sandboxDenied }
+        if !denied.isEmpty {
+            sentences.append("This task's sandbox does not let Copilot use \(Self.listed(denied)), which it must read or write; it was likely passed in as a read-only input. Remove it from the task's inputs.")
         }
         let outside = problems.filter { $0.access == .linksOutsideHome && !$0.isProvidersOverride }
         if !outside.isEmpty {
@@ -303,7 +310,7 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
                 continue
             }
             let target = ((linked.symlinkTarget ?? "") as NSString).abbreviatingWithTildeInPath
-            let ability = linked.access == .unwritable ? "writable" : "readable"
+            let ability = linked.access == .unwritable || linked.access == .cannotCreateHome ? "writable" : "readable"
             sentences.append("Make \(target) \(ability) again, or replace the link at \(linked.displayPath).")
         }
         return sentences.joined(separator: " ")
@@ -488,10 +495,13 @@ enum CopilotHomeAccessCheck {
         // that passes ~/.copilot in as a read-only input denies writing it),
         // since the launch grants the home itself.
         let canonicalHome = canonicalPath(resolvedHome)
-        let explicitlyDenied = sandboxReceipt.map {
-            Self.isWithin(canonicalHome, roots: $0.writeDeniedRoots + $0.readDeniedRoots)
-        } ?? false
-        if let sandboxReceipt, explicitlyDenied || (reachedIndirectly && (
+        if let sandboxReceipt {
+            problems += explicitDenials(
+                home: trimmedHome, resolvedHome: resolvedHome, resumeSessionID: resumeSessionID,
+                receipt: sandboxReceipt, fileManager: fileManager
+            )
+        }
+        if let sandboxReceipt, (reachedIndirectly && (
             sandboxReceipt.explains(RuntimeSandboxFileDenial(operation: .read, path: canonicalHome, detail: ""))
             // Copilot writes its session state there too.
             || sandboxReceipt.explains(RuntimeSandboxFileDenial(operation: .write, path: canonicalHome, detail: ""))
@@ -548,6 +558,41 @@ enum CopilotHomeAccessCheck {
         var orderedReport = CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
         orderedReport.sandboxReceipt = sandboxReceipt
         return orderedReport
+    }
+
+    /// The home and each startup entry Copilot needs, judged against the
+    /// boundary's explicit denials: read for all of them, write for those it
+    /// writes. The launch grants the home itself, so only explicit denials
+    /// (a read-only task input covering the home or a state file) count.
+    private static func explicitDenials(
+        home: String,
+        resolvedHome: String,
+        resumeSessionID: String?,
+        receipt: ExecutionSandboxBoundaryReceipt,
+        fileManager: FileManager
+    ) -> [CopilotHomeAccessProblem] {
+        var entries: [(path: String, requiresWrite: Bool)] = [(home, true)]
+        for (name, _) in startupEntries.sorted(by: { $0.key < $1.key }) {
+            let path = (resolvedHome as NSString).appendingPathComponent(name)
+            guard (try? fileManager.attributesOfItem(atPath: path)) != nil else { continue }
+            entries.append((path, !readOnlyConfigFileNames.contains(name)))
+        }
+        if let sessionID = resumeSessionID, !sessionID.isEmpty, !sessionID.contains("/") {
+            entries.append(((resolvedHome as NSString).appendingPathComponent("session-state/\(sessionID)"), true))
+        }
+        return entries.compactMap { entry in
+            let canonical = canonicalPath(entry.path)
+            let deniedRead = isWithin(canonical, roots: receipt.readDeniedRoots)
+            let deniedWrite = entry.requiresWrite && isWithin(canonical, roots: receipt.writeDeniedRoots)
+            guard deniedRead || deniedWrite else { return nil }
+            var denied = CopilotHomeAccessProblem(
+                path: entry.path, isDirectory: false, owner: nil, ownedByCurrentUser: true,
+                posixPermissions: nil, access: .sandboxDenied, isReadAtStartup: true
+            )
+            denied.requiresWrite = entry.requiresWrite
+            denied.isRepairable = false
+            return denied
+        }
     }
 
     private static func isWithin(_ path: String, roots: [String]) -> Bool {
@@ -795,10 +840,16 @@ enum CopilotHomeAccessCheck {
         guard Darwin.access(parent, W_OK | X_OK) != 0 || lockState(of: parent, followLinks: true).any else {
             return nil
         }
-        return problem(
+        var blocked = problem(
             at: parent, requiresWrite: true, isReadAtStartup: true,
             fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .cannotCreateHome
         )
+        // A linked parent (a symlinked home folder): the folder it points to
+        // is what needs fixing, and is named in the advice.
+        if blocked?.pathIsLink == true {
+            blocked?.symlinkTarget = canonicalPath(parent)
+        }
+        return blocked
     }
 
     /// `<home>.bak`, or the first `<home>.bak-N` that does not exist yet.
