@@ -24,7 +24,7 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         case linksOutsideHome
     }
 
-    let path: String
+    var path: String
     let isDirectory: Bool
     let owner: String?
     let ownedByCurrentUser: Bool
@@ -53,6 +53,15 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     var requiresWrite = true
     /// For `.wrongType`: a FIFO, socket or device where a file belongs.
     var isSpecialFile = false
+    /// The Copilot home itself, whose recursive repair must stay read-only so
+    /// hardened config files below it keep their mode.
+    var isHome = false
+    /// The file `COPILOT_PROVIDERS_CONFIG` names.
+    var isProvidersOverride = false
+    /// False under a symlinked home ASTRA cannot vouch for (one that links to
+    /// a folder the user does not own): no command is suggested there, so the
+    /// fix can never chown or chmod an unrelated or system folder.
+    var isRepairable = true
 
     /// Fixed by moving the entry aside rather than by changing permissions.
     var isMisplaced: Bool {
@@ -135,9 +144,12 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !unwritable.isEmpty {
             sentences.append("Copilot cannot write \(Self.listed(unwritable)).")
         }
-        let outside = problems.filter { $0.access == .linksOutsideHome }
+        let outside = problems.filter { $0.access == .linksOutsideHome && !$0.isProvidersOverride }
         if !outside.isEmpty {
             sentences.append("\(Self.listed(outside)) point outside the Copilot folder, so a task run under a sandboxed policy cannot read them.")
+        }
+        if let override = problems.first(where: { $0.access == .linksOutsideHome && $0.isProvidersOverride }) {
+            sentences.append("COPILOT_PROVIDERS_CONFIG names \(override.displayPath), outside the Copilot folder, so a task run under a sandboxed policy cannot read it.")
         }
         if problems.contains(where: { !$0.ownedByCurrentUser && $0.symlinkTarget == nil }) {
             sentences.append("This usually happens after Copilot was run with sudo.")
@@ -152,7 +164,7 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// alone leaves a mode-000 file just as unreadable as before.
     var fixCommand: String {
         var commands: [String] = []
-        let repairable = problems.filter { $0.symlinkTarget == nil && !$0.isMisplaced }
+        let repairable = problems.filter { $0.isRepairable && $0.symlinkTarget == nil && !$0.isMisplaced }
         let foreign = repairable.filter { !$0.ownedByCurrentUser }
         if !foreign.isEmpty {
             // Recursive only inside the Copilot home: the parent a missing home
@@ -176,14 +188,20 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !readOnlyFiles.isEmpty {
             commands.append("chmod u+r \(Self.quotedPaths(readOnlyFiles))")
         }
-        // Read and traverse only: write stays as the user set it, so a
-        // deliberately read-only config file is not loosened.
-        let hiding = repairable.filter(\.hidesChildren)
-        if !hiding.isEmpty {
-            commands.append("chmod -R u+rX \(Self.quotedPaths(hiding))")
+        // Below the home: read and traverse only, so a deliberately read-only
+        // config file is not loosened.
+        let hidingHome = repairable.filter { $0.hidesChildren && $0.isHome }
+        if !hidingHome.isEmpty {
+            commands.append("chmod -R u+rX \(Self.quotedPaths(hidingHome))")
+        }
+        // Below a state folder (session-state): Copilot writes there, so
+        // write comes back too.
+        let hidingState = repairable.filter { $0.hidesChildren && !$0.isHome }
+        if !hidingState.isEmpty {
+            commands.append("chmod -R u+rwX \(Self.quotedPaths(hidingState))")
         }
         // Moves last: renaming an entry needs its parent repaired first.
-        for misplaced in problems where misplaced.isMisplaced {
+        for misplaced in problems where misplaced.isMisplaced && misplaced.isRepairable {
             let backup = misplaced.backupPath ?? misplaced.path + ".bak"
             // `-n` so an earlier backup is never overwritten.
             commands.append("mv -n \(Self.quoted(misplaced.path)) \(Self.quoted(backup))")
@@ -199,6 +217,7 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !command.isEmpty {
             sentences.append("Run `\(command)` in Terminal.")
         }
+        sentences += manualRemediation
         for linked in problems where linked.symlinkTarget != nil && !linked.isMisplaced {
             if linked.access == .wrongType {
                 sentences.append("Replace the link at \(linked.displayPath).")
@@ -213,6 +232,20 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             sentences.append("Make \(target) \(ability) again, or replace the link at \(linked.displayPath).")
         }
         return sentences.joined(separator: " ")
+    }
+
+    /// Advice for problems no command is suggested for.
+    private var manualRemediation: [String] {
+        var sentences: [String] = []
+        let unvouched = problems.filter { !$0.isRepairable && $0.symlinkTarget == nil }
+        if !unvouched.isEmpty {
+            let homePath = (home as NSString).abbreviatingWithTildeInPath
+            sentences.append("\(homePath) links to a folder you do not own, so ASTRA suggests no command; restore access to \(Self.listed(unvouched)) yourself or point \(homePath) at a folder you own.")
+        }
+        if problems.contains(where: { $0.access == .linksOutsideHome && $0.isProvidersOverride }) {
+            sentences.append("To use sandboxed policies, keep the providers file inside the Copilot folder.")
+        }
+        return sentences
     }
 
     /// Cause plus fix, for blocker text.
@@ -321,11 +354,35 @@ enum CopilotHomeAccessCheck {
         guard !trimmedHome.isEmpty else {
             return CopilotHomeAccessReport(home: home, problems: [])
         }
-        // A symlinked home is used through its target, so the target is what
-        // must be a writable folder.
         let homeIsLink = (try? fileManager.attributesOfItem(atPath: trimmedHome))?[.type] as? FileAttributeType
             == .typeSymbolicLink
         let resolvedHome = homeIsLink ? linkTarget(of: trimmedHome, fileManager: fileManager) : trimmedHome
+        var problems = homeProblems(
+            home: trimmedHome, resolvedHome: resolvedHome, homeIsLink: homeIsLink,
+            resumeSessionID: resumeSessionID, providersOverride: providersOverride,
+            fileManager: fileManager, currentUserID: currentUserID
+        )
+        // The override replaces the default file, so it is what must be
+        // readable, whether or not the home exists yet.
+        if let providersOverride {
+            problems += overrideProblems(
+                providersOverride, home: resolvedHome, fileManager: fileManager, currentUserID: currentUserID
+            )
+        }
+        // Blocking entries first: they are the ones that kill the CLI.
+        let ordered = problems.filter(\.blocksCopilot) + problems.filter { !$0.blocksCopilot }
+        return CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
+    }
+
+    private static func homeProblems(
+        home trimmedHome: String,
+        resolvedHome: String,
+        homeIsLink: Bool,
+        resumeSessionID: String?,
+        providersOverride: String?,
+        fileManager: FileManager,
+        currentUserID: uid_t
+    ) -> [CopilotHomeAccessProblem] {
         // `fileExists` follows links, so it is false for a link to nothing and
         // for a link loop alike.
         if homeIsLink, !fileManager.fileExists(atPath: trimmedHome),
@@ -337,54 +394,61 @@ enum CopilotHomeAccessCheck {
             dangling.isLinkLoop = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.type] as? FileAttributeType
                 == .typeSymbolicLink
             dangling.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
-            return CopilotHomeAccessReport(home: trimmedHome, problems: [dangling])
+            return [dangling]
         }
         var isDirectory: ObjCBool = false
         // A missing home is fine as long as Copilot can create it.
         guard fileManager.fileExists(atPath: resolvedHome, isDirectory: &isDirectory) else {
             let parent = creationProblem(for: trimmedHome, fileManager: fileManager, currentUserID: currentUserID)
-            return CopilotHomeAccessReport(home: trimmedHome, problems: parent.map { [$0] } ?? [])
+            return parent.map { [$0] } ?? []
         }
-        var problems: [CopilotHomeAccessProblem] = []
         guard isDirectory.boolValue else {
             var problem = problem(
                 at: trimmedHome, requiresWrite: true, isReadAtStartup: true,
                 fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .notADirectory
             )
             problem?.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
-            return CopilotHomeAccessReport(home: trimmedHome, problems: problem.map { [$0] } ?? [])
+            return problem.map { [$0] } ?? []
         }
-        if let homeProblem = problem(
+        var problems: [CopilotHomeAccessProblem] = []
+        if var homeProblem = problem(
             at: resolvedHome, requiresWrite: true, isReadAtStartup: true,
             fileManager: fileManager, currentUserID: currentUserID
         ) {
+            homeProblem.isHome = true
+            // A linked home is the link's to fix, not its target's: the
+            // target may be an unrelated or system folder (`/etc`), and a
+            // recursive chown of it would be destructive.
+            if homeIsLink {
+                homeProblem.path = trimmedHome
+                homeProblem.symlinkTarget = resolvedHome
+                homeProblem.hidesChildren = false
+            }
             // An unreadable home hides everything inside it, and the fix for
             // the home (a recursive chown) covers its children too. A home
             // that is only unwritable can still hide an unreadable config, so
             // its children are still checked.
-            guard homeProblem.access == .unwritable else {
-                var hiding = homeProblem
-                hiding.hidesChildren = hiding.isDirectory
-                return CopilotHomeAccessReport(home: trimmedHome, problems: [hiding])
-            }
+            guard homeProblem.access == .unwritable else { return [homeProblem] }
             problems.append(homeProblem)
         }
-        guard let children = try? fileManager.contentsOfDirectory(atPath: resolvedHome) else {
-            return CopilotHomeAccessReport(home: trimmedHome, problems: problems)
-        }
-        let startup = effectiveStartupEntries(present: Set(children), providersOverride: providersOverride)
-        for child in children.sorted() {
-            let path = (resolvedHome as NSString).appendingPathComponent(child)
-            if let problem = problem(
-                at: path,
-                requiresWrite: !readOnlyConfigFileNames.contains(child),
-                isReadAtStartup: startup[child] != nil,
-                expectedKind: startup[child],
-                home: resolvedHome,
-                fileManager: fileManager,
-                currentUserID: currentUserID
-            ) {
-                problems.append(problem)
+        if let children = try? fileManager.contentsOfDirectory(atPath: resolvedHome) {
+            let startup = effectiveStartupEntries(present: Set(children), providersOverride: providersOverride)
+            let overridePath = providersOverride.map(canonicalPath)
+            for child in children.sorted() {
+                let path = (resolvedHome as NSString).appendingPathComponent(child)
+                // The override has its own, read-only check.
+                if let overridePath, canonicalPath(path) == overridePath { continue }
+                if let problem = problem(
+                    at: path,
+                    requiresWrite: !readOnlyConfigFileNames.contains(child),
+                    isReadAtStartup: startup[child] != nil,
+                    expectedKind: startup[child],
+                    home: resolvedHome,
+                    fileManager: fileManager,
+                    currentUserID: currentUserID
+                ) {
+                    problems.append(problem)
+                }
             }
         }
         if let sessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -392,21 +456,51 @@ enum CopilotHomeAccessCheck {
             let session = (resolvedHome as NSString).appendingPathComponent("session-state/\(sessionID)")
             if let problem = problem(
                 at: session, requiresWrite: true, isReadAtStartup: true, expectedKind: .directory,
-                fileManager: fileManager, currentUserID: currentUserID
+                home: resolvedHome, fileManager: fileManager, currentUserID: currentUserID
             ) {
                 problems.append(problem)
             }
         }
-        // The override replaces the default file, so it is what must be readable.
-        if let providersOverride, let problem = problem(
-            at: providersOverride, requiresWrite: false, isReadAtStartup: true, expectedKind: .file,
+        // A linked home owned by someone else may be a shared or system
+        // folder: report what is wrong there, but suggest no command for it.
+        let targetOwner = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.ownerAccountID] as? NSNumber
+        if homeIsLink, targetOwner.map({ uid_t($0.uint32Value) != currentUserID }) ?? true {
+            for index in problems.indices { problems[index].isRepairable = false }
+        }
+        return problems
+    }
+
+    private static func overrideProblems(
+        _ override: String,
+        home: String,
+        fileManager: FileManager,
+        currentUserID: uid_t
+    ) -> [CopilotHomeAccessProblem] {
+        if var problem = problem(
+            at: override, requiresWrite: false, isReadAtStartup: true, expectedKind: .file,
             fileManager: fileManager, currentUserID: currentUserID
         ) {
-            problems.append(problem)
+            problem.isProvidersOverride = true
+            return [problem]
         }
-        // Blocking entries first: they are the ones that kill the CLI.
-        let ordered = problems.filter(\.blocksCopilot) + problems.filter { !$0.blocksCopilot }
-        return CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
+        // Readable here, but a sandboxed task is granted only the Copilot
+        // home. ASTRA does not widen the sandbox to it: the variable would
+        // then grant the whole task read access to any file it names.
+        guard !canonicalPath(override).hasPrefix(canonicalPath(home) + "/"),
+              let attributes = try? fileManager.attributesOfItem(atPath: override) else {
+            return []
+        }
+        var outside = CopilotHomeAccessProblem(
+            path: override,
+            isDirectory: false,
+            owner: attributes[.ownerAccountName] as? String,
+            ownedByCurrentUser: true,
+            posixPermissions: (attributes[.posixPermissions] as? NSNumber)?.intValue,
+            access: .linksOutsideHome,
+            isReadAtStartup: true
+        )
+        outside.isProvidersOverride = true
+        return [outside]
     }
 
     /// The readiness row for a report, or nil when nothing is wrong.
@@ -507,9 +601,14 @@ enum CopilotHomeAccessCheck {
             ownedByCurrentUser: ownerID.map { $0 == currentUserID } ?? true,
             posixPermissions: (attributes[.posixPermissions] as? NSNumber)?.intValue,
             access: access,
-            isReadAtStartup: isReadAtStartup,
-            hasACL: hasExtendedACL(path)
+            isReadAtStartup: isReadAtStartup
         )
+        // An ACL is blamed (and removed by the fix) only when the owner's mode
+        // bits already allow the access that failed; otherwise the mode bits
+        // are the cause, and a legitimate sharing ACL is left alone.
+        problem.hasACL = problem.ownedByCurrentUser
+            && ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
+            && hasExtendedACL(path)
         problem.requiresWrite = requiresWrite
         problem.isSpecialFile = !isDirectory && type != .typeRegular
         // An unreadable folder hides what is inside it, so its repair must
@@ -519,6 +618,20 @@ enum CopilotHomeAccessCheck {
             problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
         }
         return problem
+    }
+
+    private static func ownerBitsAllow(
+        _ access: CopilotHomeAccessProblem.Access,
+        isDirectory: Bool,
+        mode: Int?
+    ) -> Bool {
+        guard let mode else { return false }
+        let traverse = isDirectory ? 0o100 : 0
+        switch access {
+        case .unreadable: return mode & (0o400 | traverse) == (0o400 | traverse)
+        case .unwritable: return mode & (0o200 | traverse) == (0o200 | traverse)
+        default: return false
+        }
     }
 
     /// Copilot reads a `.file` entry as JSON or SQLite, so only a regular

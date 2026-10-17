@@ -316,9 +316,13 @@ struct CopilotHomeAccessCheckTests {
         try root.setMode(0o555, of: folder)
         defer { try? root.setMode(0o755, of: folder); try? root.setMode(0o600, of: config) }
         let readOnly = CopilotHomeAccessCheck.inspect(home: linkToFolder)
-        #expect(readOnly.problems.map(\.path) == [config, folder])
+        #expect(readOnly.problems.map(\.path) == [config, linkToFolder])
         #expect(readOnly.problems.map(\.access) == [.unreadable, .unwritable])
+        #expect(readOnly.problems.last?.symlinkTarget == folder)
         #expect(readOnly.blocksCopilot)
+        // The linked folder is advised, never chmod-ed or chown-ed by the fix.
+        #expect(!readOnly.fixCommand.contains("'\(folder)'"))
+        #expect(readOnly.remediation.contains("replace the link at"))
     }
 
     @Test("A home symlink to nothing blocks and the link is moved aside")
@@ -508,7 +512,7 @@ struct CopilotHomeAccessCheckTests {
         let report = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
 
         #expect(report.problems.first?.hidesChildren == true)
-        #expect(report.fixCommand.contains("chmod -R u+rX '\(sessions)'"))
+        #expect(report.fixCommand.contains("chmod -R u+rwX '\(sessions)'"))
         try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(!CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc").blocksCopilot)
     }
@@ -544,6 +548,136 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.isSpecialFile)
         #expect(report.blocksCopilot)
         #expect(report.cause.contains("special file (FIFO, socket or device), but Copilot expects a regular file"))
+    }
+
+    @Test("A home linked to a folder the user does not own never gets a chown or chmod")
+    func foreignLinkedHomeGetsNoCommands() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let target = try root.makeDirectory("someone-elses", mode: 0o755)
+        let config = (target as NSString).appendingPathComponent("config.json")
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: config))
+        try root.setMode(0o000, of: config)
+        defer { try? root.setMode(0o600, of: config) }
+        let link = (root.path as NSString).appendingPathComponent("home-link")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+
+        // Another uid stands in for "the link target belongs to someone else".
+        let report = CopilotHomeAccessCheck.inspect(home: link, currentUserID: getuid() + 1)
+
+        #expect(report.blocksCopilot)
+        #expect(report.problems.allSatisfy { !$0.isRepairable })
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("links to a folder you do not own"))
+    }
+
+    @Test("A linked home the user cannot read is advised, not recursively chowned")
+    func unreadableLinkedHomeIsAdvised() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let target = try root.makeDirectory("locked", mode: 0o000)
+        defer { try? root.setMode(0o755, of: target) }
+        let link = (root.path as NSString).appendingPathComponent("home-link")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+
+        let report = CopilotHomeAccessCheck.inspect(home: link, currentUserID: getuid() + 1)
+
+        #expect(report.problems.map(\.path) == [link])
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("readable again, or replace the link at"))
+    }
+
+    @Test("Hidden session state gets write back; the home's recursive repair stays read-only")
+    func hiddenStateRepairRestoresWrite() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let sessions = try home.makeDirectory("session-state", mode: 0o755)
+        let resumed = (sessions as NSString).appendingPathComponent("abc")
+        try FileManager.default.createDirectory(atPath: resumed, withIntermediateDirectories: false)
+        try home.setMode(0o000, of: resumed)
+        try home.setMode(0o000, of: sessions)
+        defer { try? home.setMode(0o755, of: sessions); try? home.setMode(0o755, of: resumed) }
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
+        #expect(report.fixCommand.contains("chmod -R u+rwX '\(sessions)'"))
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc").isClean)
+    }
+
+    @Test("A sharing ACL is kept when the mode bits are what deny the owner")
+    func sharingACLKeptWhenModeBitsDeny() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o000)
+        try Self.shell("/bin/chmod", ["+a", "user:nobody allow read", config])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.problems.first?.hasACL == false)
+        #expect(!report.fixCommand.contains("chmod -N"))
+    }
+
+    @Test("The providers override is checked even before the home exists, and only once")
+    func providersOverrideCheckedOnce() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let missingHome = (root.path as NSString).appendingPathComponent(".copilot")
+        let override = try root.write("providers.json", mode: 0o000)
+
+        let absent = CopilotHomeAccessCheck.inspect(
+            home: missingHome, environment: [CopilotHomeAccessCheck.providersOverrideVariable: override]
+        )
+        #expect(absent.problems.map(\.path) == [override])
+        #expect(absent.blocksCopilot)
+
+        // An override inside the home is one problem, repaired read-only.
+        try FileManager.default.createDirectory(atPath: missingHome, withIntermediateDirectories: false)
+        let inside = (missingHome as NSString).appendingPathComponent("registry.json")
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: inside))
+        try root.setMode(0o000, of: inside)
+        let report = CopilotHomeAccessCheck.inspect(
+            home: missingHome, environment: [CopilotHomeAccessCheck.providersOverrideVariable: inside]
+        )
+        #expect(report.problems.filter { $0.path == inside }.count == 1)
+        #expect(report.fixCommand == "chmod u+r '\(inside)'")
+        try root.setMode(0o600, of: inside)
+    }
+
+    @Test("A readable providers override outside the home warns about sandboxed policies")
+    func providersOverrideOutsideHomeWarns() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let override = try elsewhere.write("providers.json", mode: 0o600)
+
+        let report = CopilotHomeAccessCheck.inspect(
+            home: home.path, environment: [CopilotHomeAccessCheck.providersOverrideVariable: override]
+        )
+
+        #expect(report.problems.map(\.access) == [.linksOutsideHome])
+        #expect(!report.blocksCopilot)
+        #expect(report.cause.contains("COPILOT_PROVIDERS_CONFIG names"))
+        #expect(report.remediation.contains("keep the providers file inside the Copilot folder"))
+    }
+
+    @Test("A resumed session linked outside the home is reported against the sandbox boundary")
+    func resumedSessionLinkOutsideHomeWarns() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let sessions = try home.makeDirectory("session-state", mode: 0o755)
+        let outside = try elsewhere.makeDirectory("abc", mode: 0o755)
+        try FileManager.default.createSymbolicLink(
+            atPath: (sessions as NSString).appendingPathComponent("abc"), withDestinationPath: outside
+        )
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
+
+        #expect(report.problems.map(\.access) == [.linksOutsideHome])
     }
 
     @Test("A home symlink loop blocks like a dangling link")
