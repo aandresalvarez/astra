@@ -224,4 +224,22 @@ struct PluginOperationsReviewTests {
         #expect(weekly.originPackageID == nil)
         #expect(weekly.originComponentID == nil)
     }
+
+    @Test("A connector setting named like a credential is refused: settings are plain text in the mirror")
+    func credentialNamedSettingsAreRefused() throws {
+        var package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let index = try #require(package.connectors.firstIndex { !$0.configHints.isEmpty })
+        let clean = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(!clean.blockers.contains { $0.title == "Credential stored as a setting" })
+        var hint = package.connectors[index].configHints[0]
+        hint.key = "JIRA_API_TOKEN"
+        package.connectors[index].configHints.append(hint)
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Credential stored as a setting" })
+        // A project key is a name, not a credential.
+        hint.key = "PROJECT_KEY"
+        package.connectors[index].configHints[package.connectors[index].configHints.count - 1] = hint
+        let named = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(!named.blockers.contains { $0.title == "Credential stored as a setting" })
+    }
 }
