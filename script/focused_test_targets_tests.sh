@@ -176,3 +176,9 @@ assert_targets $'UsageDashboardStoreTests\nUsageDashboardRenderingTests' \
   "Tests/LargeHistoryResponsivenessTests.swift"
 
 assert_targets "StreamVolumeAccountingTests" "Tests/RuntimeProgressSignalTests.swift"
+
+assert_targets $'TaskTextOnlyDeliverableTests\nDeliverableExpectationCoverageTests\nTaskDeliverableVerificationServiceTests\nTaskDeliverableFollowUpTests\nTaskExecutionResourceClaimResolverTests' \
+  "Astra/Services/Validation/TaskDeliverableExpectation.swift" \
+  "Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift" \
+  "Astra/Services/Tasks/TaskIntentLanguagePolicy.swift" \
+  "Tests/TaskTextOnlyDeliverableTests.swift"

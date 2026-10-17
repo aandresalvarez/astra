@@ -125,6 +125,13 @@ target_for_path() {
     Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
       ;;
+    Astra/Services/Validation/TaskDeliverableExpectation.swift|Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift|Astra/Services/Tasks/TaskIntentLanguagePolicy.swift|Tests/TaskTextOnlyDeliverableTests.swift)
+      add_target "TaskTextOnlyDeliverableTests"
+      add_target "DeliverableExpectationCoverageTests"
+      add_target "TaskDeliverableVerificationServiceTests"
+      add_target "TaskDeliverableFollowUpTests"
+      add_target "TaskExecutionResourceClaimResolverTests"
+      ;;
     Astra/Views/UsageDashboard*.swift|Tests/UsageDashboard*.swift|Tests/LargeHistoryResponsivenessTests.swift)
       add_target "UsageDashboardStoreTests"
       add_target "UsageDashboardRenderingTests"

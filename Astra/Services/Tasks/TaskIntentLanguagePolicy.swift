@@ -36,6 +36,46 @@ enum TaskIntentLanguagePolicy {
         return false
     }
 
+    /// Keep an action with its object, rather than borrowing a noun from a
+    /// different instruction. Nested verbs stay in that object's description;
+    /// an explicit coordinated instruction starts a new action.
+    static func affirmativeActionObjects(in text: String, words: Set<String>) -> [(verb: String, object: String)] {
+        let forms = words.flatMap { [$0, "\($0)a", "\($0)an"] }
+            .sorted { $0.count > $1.count }
+            .map(NSRegularExpression.escapedPattern(for:))
+            .joined(separator: "|")
+        let actionPattern = "\\b(?:\(forms))\\b"
+        let coordination = "\\band\\s+(?=(?:(?:also|please|do|not|never)\\s+)*\(actionPattern))"
+        var result: [(verb: String, object: String)] = []
+        // A creation header governs its first list item, not an unrelated
+        // later clause: "Create:\n- a website" is one requested object.
+        let instructions = text.replacingOccurrences(
+            of: "(\(actionPattern))(?:\\s+the\\s+following)?\\s*:\\s*(?:[-*]\\s*)?",
+            with: "$1 ", options: [.regularExpression, .caseInsensitive]
+        )
+        for clause in clauses(in: instructions) {
+            let parts = clause.replacingOccurrences(of: coordination, with: "\u{001F}", options: .regularExpression)
+                .components(separatedBy: "\u{001F}")
+            var precedingText = ""
+            for part in parts {
+                guard let action = part.range(of: actionPattern, options: .regularExpression) else {
+                    precedingText += part + " "
+                    continue
+                }
+                let prefix = precedingText + part[..<action.lowerBound]
+                // Carry a prohibition on the action across "and", without
+                // treating "not too long" inside its object as a prohibition
+                // on the next independent request.
+                precedingText = prefix + " "
+                guard !tokens(prefix).contains(where: negationWords.contains) else { continue }
+                let matched = String(part[action])
+                guard let verb = words.first(where: { matched == $0 || matched == $0 + "a" || matched == $0 + "an" }) else { continue }
+                result.append((verb, String(part[action.upperBound...])))
+            }
+        }
+        return result
+    }
+
     private static func clauses(in text: String) -> [String] {
         let normalized = text.lowercased()
             .replacingOccurrences(of: "don’t", with: "do not")
