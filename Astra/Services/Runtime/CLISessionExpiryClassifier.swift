@@ -14,8 +14,10 @@ import ASTRAModels
 /// It fires only when the command that produced the output starts one of the
 /// known CLIs and that command failed (the process monitor checks the tool
 /// result's error flag), so an agent reading documentation or an issue body
-/// that quotes these errors does not stop the run. Patterns are whole
-/// diagnostics, not fragments.
+/// that quotes these errors does not stop the run. A line that succeeded
+/// still counts when a later command decided its exit status
+/// (`gcloud projects list | cat`), which hides the CLI's own failure.
+/// Patterns are whole diagnostics, not fragments.
 enum CLISessionExpiryClassifier {
     struct Family: Equatable, Sendable {
         let commands: [String]
@@ -111,17 +113,19 @@ enum CLISessionExpiryClassifier {
     }
 
     /// A stop when `content` is a sign-in failure printed by a command that
-    /// runs one of the known CLIs.
-    static func stop(content: String, command: String?) -> Stop? {
-        guard let family = family(content: content, command: command) else { return nil }
+    /// runs one of the known CLIs. `failed` is the tool result's error flag:
+    /// when the line succeeded, the CLI must have run where its own exit
+    /// status was masked (`masksExitStatus`).
+    static func stop(content: String, command: String?, failed: Bool = true) -> Stop? {
+        guard let family = family(content: content, command: command, failed: failed) else { return nil }
         return Stop(reason: TaskRunStopReason.capabilitySessionExpired.rawValue, message: family.stopMessage)
     }
 
-    static func family(content: String, command: String?) -> Family? {
+    static func family(content: String, command: String?, failed: Bool = true) -> Family? {
         guard let command, !command.isEmpty else { return nil }
         let lowered = content.lowercased()
         return families.first { family in
-            family.commands.contains { runs($0, in: command) }
+            family.commands.contains { failed ? runs($0, in: command) : masksExitStatus(of: $0, in: command) }
                 && family.patterns.contains { lowered.contains($0) }
         }
     }
@@ -138,14 +142,121 @@ enum CLISessionExpiryClassifier {
     /// `time`, `sudo`, compared by basename so `/opt/homebrew/bin/gcloud`
     /// counts. An argument that merely names the CLI does not.
     static func runs(_ cli: String, in command: String) -> Bool {
-        let separators = CharacterSet(charactersIn: ";&|\n()`")
-        for segment in command.components(separatedBy: separators) {
-            var words = segment.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-            stripWrappers(&words)
-            guard let executable = words.first?.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) else { continue }
-            if (executable as NSString).lastPathComponent == cli { return true }
+        simpleCommands(command).contains { executes(cli, $0) }
+    }
+
+    /// Operators after which a later command decides the line's exit status:
+    /// a pipe, `||`, `;`, `&` or a newline. Not `&&`, which stops at a failure.
+    private static let statusMaskingSeparators: Set<String> = ["|", "|&", "||", ";", "&", "\n"]
+
+    /// True when `command` runs `cli` with another command after it that
+    /// decides the line's exit status, so the CLI could fail while the line
+    /// succeeds. A CLI that runs last, alone or after `&&`, does not count:
+    /// its own success is the line's.
+    static func masksExitStatus(of cli: String, in command: String) -> Bool {
+        let segments = segments(command)
+        return segments.dropLast().contains { segment in
+            statusMaskingSeparators.contains(segment.separator) && executes(cli, segment.words)
         }
-        return false
+    }
+
+    private static func executes(_ cli: String, _ simpleCommand: [String]) -> Bool {
+        var words = simpleCommand
+        stripWrappers(&words)
+        guard let executable = words.first else { return false }
+        return (executable as NSString).lastPathComponent == cli
+    }
+
+    /// The simple commands of a shell line, each as its words, with quoting
+    /// honored: a separator or a space inside quotes is part of a word, and
+    /// the quotes themselves are removed. `$( … )` and backticks start a
+    /// new command, as their contents run too.
+    static func simpleCommands(_ line: String) -> [[String]] {
+        segments(line).map(\.words)
+    }
+
+    /// A simple command and the operator that ended it: `|`, `|&`, `||`,
+    /// `&&`, `;`, `&`, a newline, a parenthesis or a backtick, or "" at the
+    /// end of the line. A subshell's `)` takes the operator that follows it.
+    struct Segment: Equatable {
+        var words: [String]
+        var separator: String
+    }
+
+    static func segments(_ line: String) -> [Segment] {
+        var segments: [Segment] = []
+        var words: [String] = []
+        var word = ""
+        var inWord = false
+        var quote: Character?
+        var escaped = false
+        let characters = Array(line)
+        var index = 0
+        func endWord() {
+            if inWord { words.append(word) }
+            word = ""
+            inWord = false
+        }
+        func endCommand(_ separator: String) {
+            endWord()
+            words.removeAll { $0 == "$" }
+            if !words.isEmpty {
+                segments.append(Segment(words: words, separator: separator))
+            } else if segments.last?.separator == ")" {
+                segments[segments.count - 1].separator = separator
+            }
+            words = []
+        }
+        while index < characters.count {
+            let character = characters[index]
+            index += 1
+            let next = index < characters.count ? characters[index] : nil
+            if escaped {
+                word.append(character)
+                inWord = true
+                escaped = false
+                continue
+            }
+            if let open = quote {
+                if character == open {
+                    quote = nil
+                } else if character == "\\" && open == "\"" {
+                    escaped = true
+                } else {
+                    word.append(character)
+                }
+                continue
+            }
+            switch character {
+            case "\\":
+                escaped = true
+            case "'", "\"":
+                quote = character
+                inWord = true
+            case " ", "\t":
+                endWord()
+            case "&" where word.hasSuffix(">") || word.hasSuffix("<") || next == ">":
+                // `2>&1`, `<&3` and `&>file` are redirections, not operators.
+                if next == ">" { endWord() }
+                word.append(character)
+                inWord = true
+            case "&", "|":
+                var separator = String(character)
+                if let next, next == "&" || next == "|" {
+                    separator.append(next)
+                    index += 1
+                }
+                endCommand(separator)
+            case ";", "\n", "(", ")", "`":
+                endCommand(String(character))
+            default:
+                // `$(` ends at the `(`, which starts the substituted command.
+                word.append(character)
+                inWord = true
+            }
+        }
+        endCommand("")
+        return segments
     }
 
     /// Wrappers and the options each takes a value for, so `env -i gcloud`
