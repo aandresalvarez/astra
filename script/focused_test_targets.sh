@@ -82,6 +82,7 @@ target_for_path() {
       add_target "FeedbackReportPresentationTests"
       add_target "ComposerAttachmentsTests"
       add_target "TaskInputContinuityPromptTests"
+      add_target "TaskAttachmentFilesReaderTests"
       ;;
     Tests/TaskDecisionDockPresentationTests.swift|Astra/Services/Tasks/TaskDecisionDockContextBuilder.swift|Astra/Services/Tasks/TaskDecisionDockPresentation.swift|Astra/Views/TaskDecisionDockView.swift)
       add_target "TaskDecisionDockPresentationTests"
@@ -90,6 +91,11 @@ target_for_path() {
     Astra/Views/TaskInputFileMetadata.swift|Astra/Views/Components/TaskFilesPopoverView.swift|Astra/Views/Components/TaskInputFilesView.swift|Tests/ComposerAttachmentsTests.swift)
       add_target "ComposerAttachmentsTests"
       add_target "TaskInputContinuityPromptTests"
+      add_target "TaskAttachmentFilesReaderTests"
+      ;;
+    Astra/Services/Tasks/TaskAttachmentFilesReader.swift|Tests/TaskAttachmentFilesReaderTests.swift)
+      add_target "TaskAttachmentFilesReaderTests"
+      add_target "ComposerAttachmentsTests"
       ;;
     Tests/HeadlessChatProcessScenarioTests.swift|Tests/RuntimeCancellationDiagnosticTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
       add_target "RuntimeCancellationDiagnosticTests"
@@ -145,6 +151,7 @@ target_for_path() {
     Astra/Views/ShelfFileNavigatorPresentation.swift|Astra/Views/ShelfMarkdownPanelView.swift|Tests/ShelfMarkdownPanelLayoutTests.swift)
       add_target "ShelfMarkdownPanelLayoutTests"
       add_target "ShelfChromeTests"
+      add_target "TaskAttachmentFilesReaderTests"
       ;;
     Astra/Views/SidebarTask*.swift|Astra/Views/TaskSidebarView.swift|Tests/SidebarTaskStore*.swift|Tests/SidebarTaskSourceObservationTests.swift)
       add_target "SidebarTaskStoreTests"

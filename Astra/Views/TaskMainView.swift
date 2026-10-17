@@ -1038,7 +1038,11 @@ struct TaskMainView: View {
         }
         return (runChangePaths
             + threadViewModel.generatedFilePaths
-            + task.inputs).joined(separator: "|")
+            + task.inputs
+            + currentThreadSnapshot.sortedEvents.filter {
+                TaskAttachmentLedger.userAuthoredMessageTypes.contains($0.type)
+                    || $0.type == TaskEventTypes.Conversation.attachments.rawValue
+            }.map { $0.id.uuidString }).joined(separator: "|")
     }
 
     private func recomputeHeaderFileItems() async {
@@ -1048,14 +1052,24 @@ struct TaskMainView: View {
         let access = TaskWorkspaceAccess(task: task)
         let taskFolder = access.taskFolder
         let workspacePath = access.effectiveWorkspacePath
+        let taskID = task.id
+        let container = modelContext.container
         let items = await Task.detached(priority: .userInitiated) {
-            TaskFileIndex.headerItems(
+            let indexed = TaskFileIndex.headerItems(
                 runs: runs,
                 generatedFilePaths: generatedFilePaths,
                 inputs: inputs,
                 taskFolder: taskFolder,
                 workspacePath: workspacePath
             )
+            do {
+                let context = ModelContext(container)
+                let paths = try TaskAttachmentFilesReader.paths(taskID: taskID, modelContext: context)
+                return TaskAttachmentFilesReader.merging(paths: paths, with: indexed)
+            } catch {
+                AppLogger.error("Attachment history could not be read: \(error.localizedDescription)", category: "UI")
+                return indexed
+            }
         }.value
         // Under `.task(id:)`: don't apply a result whose inputs are now stale.
         guard !Task.isCancelled else { return }

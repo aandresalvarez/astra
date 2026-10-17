@@ -104,7 +104,7 @@ struct TaskFilesPopoverView: View {
     private func fileRow(_ item: TaskFileItem) -> some View {
         Button { onOpenFile(item) } label: {
             HStack(spacing: 9) {
-                Image(systemName: item.destination?.systemImage ?? Formatters.fileIcon(for: item.path))
+                Image(systemName: item.isDirectory ? "folder" : (item.destination?.systemImage ?? Formatters.fileIcon(for: item.path)))
                     .font(Stanford.ui(13))
                     .foregroundStyle(item.destination == nil ? Stanford.coolGrey : Stanford.lagunita)
                     .frame(width: 18)

@@ -1,40 +1,9 @@
 import AppKit
 import SwiftUI
+import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
-
-enum ShelfFileNavigatorContentPresentation: Equatable {
-    case noWorkspacePaths
-    case scanning
-    case emptyScope
-    case populatedList
-
-    static func resolve(
-        hasConfiguredRoots: Bool,
-        hasVisibleFileRoots: Bool,
-        isSearchingFiles: Bool,
-        isScanningFiles: Bool
-    ) -> ShelfFileNavigatorContentPresentation {
-        if !hasConfiguredRoots {
-            return .noWorkspacePaths
-        }
-        if isScanningFiles && !hasVisibleFileRoots {
-            return .scanning
-        }
-        if !hasVisibleFileRoots && !isSearchingFiles {
-            return .emptyScope
-        }
-        return .populatedList
-    }
-
-    var usesListSurface: Bool {
-        switch self {
-        case .noWorkspacePaths, .scanning, .emptyScope, .populatedList:
-            true
-        }
-    }
-}
 
 enum ShelfTabStripPolicy {
     /// Every open file gets a tab with its own close button - even a lone
@@ -94,6 +63,8 @@ struct ShelfMarkdownPanelView: View {
     @AppStorage(AppStorageKeys.markdownShelfFileNavigatorPinned) private var isFileNavigatorPinned = false
     @State private var fileNavigatorOrganization = ShelfFileNavigatorOrganization.stored
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.modelContext) private var modelContext
+    @State private var historyAttachments: (taskID: UUID, paths: [String])?
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
     @State private var wrapLines = true
@@ -148,6 +119,16 @@ struct ShelfMarkdownPanelView: View {
             await Task.yield()
             if let responsivenessScope {
                 FilesShelfResponsivenessTelemetry.chromeReady(scope: responsivenessScope)
+            }
+        }
+        .task(id: "\(task?.id.uuidString ?? "none"):\(task?.status.rawValue ?? "none")") {
+            guard let taskID = task?.id else { historyAttachments = nil; return }
+            do {
+                let paths = try await TaskAttachmentFilesReader.paths(taskID: taskID, container: modelContext.container)
+                guard !Task.isCancelled, task?.id == taskID else { return }
+                historyAttachments = (taskID, paths)
+            } catch {
+                AppLogger.error("Files attachment history could not be read: \(error.localizedDescription)", category: "UI")
             }
         }
         .task(id: fileSearchText) {
@@ -968,6 +949,7 @@ struct ShelfMarkdownPanelView: View {
             taskPart = [
                 task.id.uuidString,
                 task.inputs.joined(separator: "|"),
+                currentHistoryAttachmentPaths.joined(separator: "|"),
                 TaskWorkspaceAccess(task: task).taskFolder
             ].joined(separator: "|")
         } else {
@@ -1073,7 +1055,8 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private func refreshFileIndex(force: Bool = false, reason: String = "menu_refresh") {
-        let roots = orderedFileRoots(WorkspaceFileIndexService.roots(workspace: workspace, task: task))
+        let roots = orderedFileRoots(WorkspaceFileIndexService.roots(
+            workspace: workspace, task: task, additionalInputPaths: currentHistoryAttachmentPaths))
         expandedRootIDs = []
         fileIndex.refresh(
             allRoots: roots,
@@ -1084,6 +1067,10 @@ struct ShelfMarkdownPanelView: View {
             taskID: task?.id,
             responsivenessScope: responsivenessScope
         )
+    }
+
+    private var currentHistoryAttachmentPaths: [String] {
+        historyAttachments?.taskID == task?.id ? (historyAttachments?.paths ?? []) : []
     }
 
     private func normalizeFileNavigatorScope() {

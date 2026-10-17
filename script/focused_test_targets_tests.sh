@@ -92,13 +92,17 @@ assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTe
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Services/Tasks/TaskDecisionDockPresentation.swift"
 
-assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests' \
+assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
   "Astra/Views/TaskMainView.swift"
 
-assert_targets $'ComposerAttachmentsTests\nTaskInputContinuityPromptTests' \
+assert_targets $'ComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
   "Astra/Views/Components/TaskFilesPopoverView.swift" \
   "Astra/Views/Components/TaskInputFilesView.swift" \
   "Tests/ComposerAttachmentsTests.swift"
+
+assert_targets $'TaskAttachmentFilesReaderTests\nComposerAttachmentsTests' \
+  "Astra/Services/Tasks/TaskAttachmentFilesReader.swift" \
+  "Tests/TaskAttachmentFilesReaderTests.swift"
 
 assert_targets $'RuntimeCancellationDiagnosticTests\nHeadlessChatScenarioTests\nFeedbackReportPresentationTests\nAgentRuntimeFailureDiagnosticsTests\nAgentRuntimeAdapterTests' \
   "Astra/Services/Runtime/AgentRuntimeWorker.swift" \
@@ -140,7 +144,7 @@ assert_targets $'CodexMCPConfigRendererTests\nMCPRuntimeProjectionTests' \
   "Astra/Services/Runtime/CodexMCPLaunchProjection.swift" \
   "Tests/CodexMCPConfigRendererTests.swift"
 
-assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests' \
+assert_targets $'ShelfMarkdownPanelLayoutTests\nShelfChromeTests\nTaskAttachmentFilesReaderTests' \
   "Astra/Views/ShelfFileNavigatorPresentation.swift" \
   "Astra/Views/ShelfMarkdownPanelView.swift" \
   "Tests/ShelfMarkdownPanelLayoutTests.swift"
