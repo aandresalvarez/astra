@@ -138,14 +138,70 @@ enum CLISessionExpiryClassifier {
     /// `time`, `sudo`, compared by basename so `/opt/homebrew/bin/gcloud`
     /// counts. An argument that merely names the CLI does not.
     static func runs(_ cli: String, in command: String) -> Bool {
-        let separators = CharacterSet(charactersIn: ";&|\n()`")
-        for segment in command.components(separatedBy: separators) {
-            var words = segment.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        for var words in simpleCommands(command) {
             stripWrappers(&words)
-            guard let executable = words.first?.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) else { continue }
+            guard let executable = words.first else { continue }
             if (executable as NSString).lastPathComponent == cli { return true }
         }
         return false
+    }
+
+    /// The simple commands of a shell line, each as its words, with quoting
+    /// honored: a separator or a space inside quotes is part of a word, and
+    /// the quotes themselves are removed. `$( … )` and backticks start a
+    /// new command, as their contents run too.
+    static func simpleCommands(_ line: String) -> [[String]] {
+        var commands: [[String]] = []
+        var words: [String] = []
+        var word = ""
+        var inWord = false
+        var quote: Character?
+        var escaped = false
+        func endWord() {
+            if inWord { words.append(word) }
+            word = ""
+            inWord = false
+        }
+        func endCommand() {
+            endWord()
+            if !words.isEmpty { commands.append(words) }
+            words = []
+        }
+        for character in line {
+            if escaped {
+                word.append(character)
+                inWord = true
+                escaped = false
+                continue
+            }
+            if let open = quote {
+                if character == open {
+                    quote = nil
+                } else if character == "\\" && open == "\"" {
+                    escaped = true
+                } else {
+                    word.append(character)
+                }
+                continue
+            }
+            switch character {
+            case "\\":
+                escaped = true
+            case "'", "\"":
+                quote = character
+                inWord = true
+            case " ", "\t":
+                endWord()
+            case ";", "&", "|", "\n", "(", ")", "`":
+                endCommand()
+            default:
+                // `$(` ends at the `(`, which starts the substituted command.
+                word.append(character)
+                inWord = true
+            }
+        }
+        endCommand()
+        return commands.map { $0.filter { $0 != "$" } }.filter { !$0.isEmpty }
     }
 
     /// Wrappers and the options each takes a value for, so `env -i gcloud`

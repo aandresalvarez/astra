@@ -121,7 +121,7 @@ enum PluginsSurfaceConfirmation: Equatable {
             return ("Turn off \(name) in this workspace?" + detail, "Turn off")
         case .remove:
             return (
-                "Remove \(name) from ASTRA? It turns off in every workspace, and the accounts and saved keys it created there are deleted. You can add it again later.",
+                "Remove \(name) from ASTRA? It turns off in every workspace, and the accounts and saved keys it created there are deleted; shared accounts, ones another plugin also uses, and connected sign-ins are kept. You can add it again later.",
                 "Remove"
             )
         }

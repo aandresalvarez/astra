@@ -51,6 +51,11 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.runs("gcloud", in: "env -u HOME X=1 gcloud auth list"))
         #expect(!CLISessionExpiryClassifier.runs("gcloud", in: "env --help"))
         #expect(!CLISessionExpiryClassifier.runs("gh", in: "sudo -u gh whoami"))
+        // Quoting is honored: a quoted space or separator is inside a word.
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "env NOTE='x y' gh pr list"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo '; gh pr list'"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo \"a | gh\""))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "cd 'my repo' && \"gh\" pr list"))
     }
 
     @Test("A bad GH_TOKEN stops with advice about the variable, not a sign-in")
@@ -66,6 +71,11 @@ struct CLISessionExpiryTests {
         #expect(family.repair.checkBinary == "gh")
         #expect(family.repair.detail.contains("GH_TOKEN"))
         #expect(!family.repair.detail.contains("gh auth login"))
+        // A token the check is given never goes into a stored repair.
+        var checked = family.repair
+        checked.checkEnvironment = ["GH_TOKEN": "secret-token"]
+        #expect(!checked.encoded().contains("secret-token"))
+        #expect(RepairAction.decode(from: checked.encoded())?.checkEnvironment == nil)
     }
 
     @Test("gh logged out is a GitHub session expiry")
