@@ -182,3 +182,12 @@ assert_targets $'TaskTextOnlyDeliverableTests\nTaskDeliverableExpectationTests\n
   "Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift" \
   "Astra/Services/Tasks/TaskIntentLanguagePolicy.swift" \
   "Tests/TaskTextOnlyDeliverableTests.swift"
+
+assert_targets $'TaskInputContinuityPromptTests\nBuildPromptTests\nAgentRuntimeAttachmentProjectionTests\nRuntimeAttachmentPolicyRegressionTests\nPromptContextPreviewPresentationTests' \
+  "Astra/Services/Runtime/AgentPromptBuilder.swift" \
+  "Astra/Services/Runtime/PromptInputContextReader.swift" \
+  "Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift" \
+  "Astra/Services/Tasks/PromptContextSectionProvider.swift" \
+  "Astra/Views/PromptContextPreviewView.swift" \
+  "Tests/TaskInputContinuityPromptTests.swift" \
+  "Tests/AgentRuntimeWorkerTests.swift"

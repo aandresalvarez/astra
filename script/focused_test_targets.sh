@@ -125,6 +125,13 @@ target_for_path() {
     Tests/RuntimeProgressSignalTests.swift)
       add_target "StreamVolumeAccountingTests"
       ;;
+    Astra/Services/Runtime/AgentPromptBuilder.swift|Astra/Services/Runtime/PromptInputContextReader.swift|Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift|Astra/Services/Tasks/PromptContextSectionProvider.swift|Astra/Views/PromptContextPreviewView.swift|Tests/TaskInputContinuityPromptTests.swift|Tests/AgentRuntimeWorkerTests.swift)
+      add_target "TaskInputContinuityPromptTests"
+      add_target "BuildPromptTests"
+      add_target "AgentRuntimeAttachmentProjectionTests"
+      add_target "RuntimeAttachmentPolicyRegressionTests"
+      add_target "PromptContextPreviewPresentationTests"
+      ;;
     Astra/Services/Validation/TaskDeliverableExpectation.swift|Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift|Astra/Services/Tasks/TaskIntentLanguagePolicy.swift|Tests/TaskTextOnlyDeliverableTests.swift)
       add_target "TaskTextOnlyDeliverableTests"
       add_target "TaskDeliverableExpectationTests"
