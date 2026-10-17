@@ -63,6 +63,7 @@ final class ShelfFileIndexController: ObservableObject {
 
     func refresh(
         allRoots: [WorkspaceFileRoot],
+        additionalInputPaths: [String] = [],
         scope: ShelfFileNavigatorScope,
         includeHidden: Bool,
         force: Bool,
@@ -79,38 +80,46 @@ final class ShelfFileIndexController: ObservableObject {
         errors = []
         isTruncated = false
 
-        guard !selectedRoots.isEmpty else {
-            apply(
-                .init(roots: [], nodes: [], errors: [], isTruncated: false),
-                displayedNodesByRoot: [:],
-                source: .fresh
-            )
-            isScanning = false
-            if let responsivenessScope {
-                FilesShelfResponsivenessTelemetry.firstResultsReady(
-                    scope: responsivenessScope,
-                    fileScope: scope.rawValue,
-                    cacheState: "not_applicable",
-                    rootCount: 0,
-                    nodeCount: 0
-                )
-                FilesShelfResponsivenessTelemetry.indexReady(
-                    scope: responsivenessScope,
-                    fileScope: scope.rawValue,
-                    cacheState: "not_applicable",
-                    rootCount: 0,
-                    nodeCount: 0,
-                    errorCount: 0,
-                    isTruncated: false
-                )
-            }
-            return
-        }
-
         let requestedAt = DispatchTime.now().uptimeNanoseconds
         scanTask = Task { [weak self] in
             guard let self else { return }
             FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "dispatch", startedAt: requestedAt)
+            let rootsStartedAt = DispatchTime.now().uptimeNanoseconds
+            let historyRoots = await ShelfAttachmentRootResolver.resolve(paths: additionalInputPaths)
+            guard !Task.isCancelled else { return }
+            let resolvedRoots = ShelfAttachmentRootResolver.merging(historyRoots, into: allRoots)
+            self.allRoots = resolvedRoots
+            let selectedRoots = Self.roots(resolvedRoots, for: scope)
+            self.roots = selectedRoots
+            FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "root_resolution", startedAt: rootsStartedAt)
+            guard !selectedRoots.isEmpty else {
+                apply(
+                    .init(roots: [], nodes: [], errors: [], isTruncated: false),
+                    displayedNodesByRoot: [:],
+                    source: .fresh
+                )
+                isScanning = false
+                if let responsivenessScope {
+                    FilesShelfResponsivenessTelemetry.firstResultsReady(
+                        scope: responsivenessScope,
+                        fileScope: scope.rawValue,
+                        cacheState: "not_applicable",
+                        rootCount: 0,
+                        nodeCount: 0
+                    )
+                    FilesShelfResponsivenessTelemetry.indexReady(
+                        scope: responsivenessScope,
+                        fileScope: scope.rawValue,
+                        cacheState: "not_applicable",
+                        rootCount: 0,
+                        nodeCount: 0,
+                        errorCount: 0,
+                        isTruncated: false
+                    )
+                }
+                return
+            }
+
             var presentedCachedSnapshot = false
 
             let cacheStartedAt = DispatchTime.now().uptimeNanoseconds

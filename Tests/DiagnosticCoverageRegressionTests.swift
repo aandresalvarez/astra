@@ -74,6 +74,25 @@ struct DiagnosticCoverageRegressionTests {
         #expect(collection.coverage.markdown.contains("not proof"))
     }
 
+    @Test("Expanding tails charges only distinct evidence and leaves room for later files")
+    func overlappingReadsDoNotExhaustCoverageBudget() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let size = LogDiagnosticsCollector.maximumFileBytes
+        let padding = Data(repeating: 65, count: size)
+        for name in ["astra.log", "astra.1.log", "astra.2.log"] {
+            try padding.write(to: root.appendingPathComponent(name))
+        }
+        let signal = "[2026-10-16T20:00:00.000Z] [ERROR] [Worker] older-evidence=retained"
+        try signal.write(to: root.appendingPathComponent("task-signal.log"), atomically: true, encoding: .utf8)
+        let collection = LogDiagnosticsCollector.collect(inMemory: [], directory: root, includeAppLogs: true)
+        #expect(collection.coverage.bytesRead == size * 3 + signal.utf8.count)
+        #expect(collection.coverage.sampledFiles == 4)
+        #expect(collection.coverage.omittedFiles == 0)
+        #expect(collection.coverage.truncatedFiles == 0)
+        #expect(collection.entries.contains { $0.message == "older-evidence=retained" })
+    }
+
     private func directory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-diagnostics-coverage-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -1046,11 +1046,11 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private func refreshFileIndex(force: Bool = false, reason: String = "menu_refresh") {
-        let roots = orderedFileRoots(WorkspaceFileIndexService.roots(
-            workspace: workspace, task: task, additionalInputPaths: currentHistoryAttachmentPaths))
+        let roots = orderedFileRoots(WorkspaceFileIndexService.roots(workspace: workspace, task: task))
         expandedRootIDs = []
         fileIndex.refresh(
             allRoots: roots,
+            additionalInputPaths: currentHistoryAttachmentPaths,
             scope: effectiveFileNavigatorScope,
             includeHidden: showHiddenWorkspacePaths,
             force: force,

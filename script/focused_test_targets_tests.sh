@@ -165,7 +165,7 @@ assert_targets $'SidebarTaskStoreTests\nSidebarTaskStoreSignalIntegrationTests\n
 assert_targets "RunningTaskCountPredicateTests" \
   "Astra/Services/Settings/AppUpdateSafety.swift"
 
-assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree' \
+assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree\nPendingP2RegressionTests\nSpecEngineTests' \
   "Astra/Services/Persistence/SwiftDataDeletionPreparation.swift" \
   "Astra/Services/Tasks/TaskWorktreeService.swift" \
   "Astra/Services/Tasks/TaskLifecycleCoordinator.swift"
@@ -219,6 +219,9 @@ assert_targets $'PendingP2RegressionTests\nSpecEngineTests\nAntigravityCLIRuntim
   "Astra/Services/Tasks/TaskTitleGenerationService.swift" \
   "Astra/Services/Runtime/AntigravityCLIRuntime.swift"
 
+assert_targets $'SwiftDataDeletionPreparationTests\nNewTaskWorktree\nPendingP2RegressionTests\nSpecEngineTests' \
+  "Astra/Services/Tasks/TaskLifecycleCoordinator.swift"
+
 assert_targets $'DiagnosticCoverageRegressionTests\nPendingP2RegressionTests\nLogDiagnosticsTests\nFeedbackEvidencePrivacyTests' \
   "Astra/Services/Diagnostics/LogDiagnosticsCollection.swift" \
   "Astra/Services/Diagnostics/LogDiagnosticsPreparationService.swift"
@@ -226,7 +229,9 @@ assert_targets $'DiagnosticCoverageRegressionTests\nPendingP2RegressionTests\nLo
 assert_targets $'CopilotCLICommandPlanningTests\nPendingP2RegressionTests' \
   "Astra/Services/Runtime/CopilotCLIRuntime.swift"
 
-assert_targets $'ShelfFileIndexControllerTests\nFilesShelfResponsivenessTelemetryTests\nUIResponsivenessDiagnosticsTests' \
+assert_targets $'ShelfFileIndexControllerTests\nFilesShelfResponsivenessTelemetryTests\nUIResponsivenessDiagnosticsTests\nShelfAttachmentHistoryTests' \
   "Astra/Views/ShelfFileIndexController.swift" \
+  "Astra/Views/ShelfAttachmentRootResolver.swift" \
+  "Tests/ShelfFileIndexControllerTests.swift" \
   "Astra/Services/Diagnostics/FilesShelfResponsivenessTelemetry.swift" \
   "Astra/Services/Diagnostics/UIResponsivenessDiagnostics.swift"

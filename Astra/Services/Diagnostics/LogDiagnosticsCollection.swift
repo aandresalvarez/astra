@@ -14,8 +14,8 @@ struct LogDiagnosticsCoverage: Equatable, Sendable {
         ## Evidence coverage
 
         - Log files available: \(availableFiles); sampled: \(sampledFiles); omitted: \(omittedFiles).
-        - Truncated files: \(truncatedFiles); unreadable: \(unreadableFiles); bytes read: \(bytesRead).
-        - Collection is bounded to 8 MiB per file, 32 MiB total, and 80 files. A selected time window can stop a file read earlier. Omitted or truncated evidence is not proof that no other failures occurred.
+        - Truncated files: \(truncatedFiles); unreadable: \(unreadableFiles); distinct bytes read: \(bytesRead).
+        - Evidence collection is bounded to 8 MiB per file, 32 MiB total, and 80 files. Expanding tail reads can reread bytes without charging them twice. A selected time window can stop a file read earlier. Omitted or truncated evidence is not proof that no other failures occurred.
         """
     }
 }
@@ -72,15 +72,16 @@ enum LogDiagnosticsCollector {
                 while true {
                     let data = try broker.readData(at: file, maxBytes: limit, keeping: .suffix,
                         intent: .astraManagedStorage(root: directory))
+                    // Expanding a suffix rereads its previous bytes. The
+                    // evidence budget counts distinct retained bytes per file.
+                    coverage.bytesRead += max(0, data.count - readCount)
                     readCount = data.count
-                    coverage.bytesRead += data.count
                     var lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
                     if fileSize > data.count, !lines.isEmpty { lines.removeFirst() }
                     parsed = PersistedLogEntryParser.parseLines(lines, dateAnchor: modificationDate(file))
                     let coversWindow = interval.map { window in parsed.first.map { $0.timestamp <= window.start } ?? false } ?? false
                     if data.count < limit || limit >= fileSize || coversWindow || limit >= cap { break }
                     let next = min(limit * 2, cap)
-                    guard next <= maximumTotalBytes - coverage.bytesRead else { break }
                     limit = next
                 }
                 coverage.sampledFiles += 1

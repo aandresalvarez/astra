@@ -125,6 +125,12 @@ target_for_path() {
       add_target "SpecEngineTests"
       add_target "AntigravityCLIRuntimeTests"
       ;;
+    Astra/Services/Tasks/TaskLifecycleCoordinator.swift)
+      add_target "SwiftDataDeletionPreparationTests"
+      add_target "NewTaskWorktree"
+      add_target "PendingP2RegressionTests"
+      add_target "SpecEngineTests"
+      ;;
     ASTRACore/HostFileAccessBroker.swift|Astra/Services/Browser/ShelfPreviewFailure.swift|Astra/Services/Browser/ShelfMarkdownSession.swift|Tests/ShelfPreviewFailureTests.swift)
       add_target "HostFileAccessBrokerTests"
       add_target "ShelfPreviewFailureTests"
@@ -147,10 +153,11 @@ target_for_path() {
       add_target "CodexMCPConfigRendererTests"
       add_target "MCPRuntimeProjectionTests"
       ;;
-    Astra/Views/ShelfFileIndexController.swift|Astra/Services/Diagnostics/UIResponsivenessDiagnostics.swift|Astra/Services/Diagnostics/FilesShelfResponsivenessTelemetry.swift)
+    Astra/Views/ShelfFileIndexController.swift|Astra/Views/ShelfAttachmentRootResolver.swift|Tests/ShelfFileIndexControllerTests.swift|Astra/Services/Diagnostics/UIResponsivenessDiagnostics.swift|Astra/Services/Diagnostics/FilesShelfResponsivenessTelemetry.swift)
       add_target "ShelfFileIndexControllerTests"
       add_target "FilesShelfResponsivenessTelemetryTests"
       add_target "UIResponsivenessDiagnosticsTests"
+      add_target "ShelfAttachmentHistoryTests"
       ;;
     Astra/Views/ShelfFileNavigatorPresentation.swift|Astra/Views/ShelfMarkdownPanelView.swift|Tests/ShelfMarkdownPanelLayoutTests.swift)
       add_target "ShelfMarkdownPanelLayoutTests"
@@ -198,7 +205,7 @@ target_for_path() {
     Astra/Services/Persistence/OrphanedV12StoreMigrator.swift|Tests/OrphanedV12StoreMigratorTests.swift)
       add_target "OrphanedV12StoreMigratorTests"
       ;;
-    Astra/Services/Persistence/SwiftDataDeletionPreparation.swift|Astra/Services/Tasks/TaskWorktreeService.swift|Astra/Services/Tasks/TaskLifecycleCoordinator.swift|Tests/SwiftDataDeletionPreparationTests.swift|Tests/NewTaskWorktree*.swift)
+    Astra/Services/Persistence/SwiftDataDeletionPreparation.swift|Astra/Services/Tasks/TaskWorktreeService.swift|Tests/SwiftDataDeletionPreparationTests.swift|Tests/NewTaskWorktree*.swift)
       add_target "SwiftDataDeletionPreparationTests"
       add_target "NewTaskWorktree"
       ;;
