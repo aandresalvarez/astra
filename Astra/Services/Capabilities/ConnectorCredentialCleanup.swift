@@ -183,13 +183,19 @@ enum ConnectorCredentialCleanup {
         store: ConnectorCredentialCleanupStore? = nil,
         save: () -> Bool
     ) -> Bool {
-        let membership = WorkspaceCapabilityActivation.snapshot(workspace)
+        var seen = Set<UUID>()
+        let affected = ([workspace] + WorkspaceCapabilityActivation.workspacesBinding(connector))
+            .filter { seen.insert($0.id).inserted }
+        let memberships = affected.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         WorkspaceCapabilityActivation.mutate(workspace) { $0.globalConnectorIDs.removeAll { $0 == connector.id.uuidString } }
+        WorkspaceCapabilityActivation.releaseAccount(connector)
         let cleanup = connector.keychainCleanup
         modelContext.delete(connector)
         guard deleteThenClean([cleanup], modelContext: modelContext, store: store, save: save) else {
             modelContext.rollback()
-            WorkspaceCapabilityActivation.restore(membership, to: workspace)
+            for (affectedWorkspace, membership) in memberships {
+                WorkspaceCapabilityActivation.restore(membership, to: affectedWorkspace)
+            }
             return false
         }
         return true
