@@ -139,4 +139,46 @@ struct WorkspaceSavedExportReviewTests {
         #expect(mirror.name == "Later request")
         #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
     }
+    @Test("A failed explicit preparation preserves the previous queued snapshot", arguments: [false, true])
+    func failedPreparationKeepsQueuedSnapshot(registryFailure: Bool) async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: root.path).url)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspace.id.uuidString)
+        if registryFailure {
+            let registry = try #require(WorkspaceMirrorRegistry(for: context))
+            try Data("Blocks the registry directory".utf8).write(to: registry.directory)
+            WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: context)
+        } else {
+            // A store-fetch error has the same nil snapshot result. Keep the
+            // writer queued deterministically until the failed attempt returns.
+            WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: context, makeSnapshot: { nil })
+        }
+        #expect(WorkspaceAutoExportGate.shared.isCurrent(ticket))
+        #expect(await WorkspaceAutoExportWriter.shared.write(config, to: url,
+            workspaceID: workspace.id.uuidString, ticket: ticket))
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        #expect(try decoder.decode(WorkspaceConfigManager.WorkspaceConfig.self,
+            from: Data(contentsOf: url)).name == "Last saved")
+    }
+
+    @Test("An explicit export attempt after deletion retires a queued snapshot")
+    func deletedPreparationRetiresQueuedSnapshot() async throws {
+        let (root, container, workspace) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        let url = try #require(WorkspaceConfigManager.autoExportTarget(for: root.path).url)
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspace.id.uuidString)
+        SwiftDataDeletionPreparation.prepare(workspace)
+        context.delete(workspace)
+        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: context)
+        #expect(!WorkspaceAutoExportGate.shared.isCurrent(ticket))
+        #expect(await WorkspaceAutoExportWriter.shared.write(config, to: url,
+            workspaceID: workspace.id.uuidString, ticket: ticket) == false)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
 }

@@ -58,7 +58,7 @@ for path in \
   Tests/WorkspaceExportTerminationFlushTests.swift \
   Tests/RunFinalizationResponsivenessTests.swift \
   Tests/RuntimeSettlementReviewRegressionTests.swift; do
-  assert_targets $'RuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportReviewTests\nWorkspaceExportTerminationFlushTests\nAgentRuntimeRunPersistenceTests\nTaskThreadChangeObserverTests' "$path"
+  assert_targets $'RuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceExportTerminationFlushTests\nAgentRuntimeRunPersistenceTests\nTaskThreadChangeObserverTests' "$path"
 done
 
 assert_targets "FeedbackEvidencePrivacyTests" \
@@ -229,7 +229,7 @@ assert_targets $'HostFileAccessBrokerTests\nShelfPreviewFailureTests\nShelfMarkd
 assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests' \
   "Astra/Services/Persistence/TaskOutputDiscovery.swift"
 
-assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests\nRuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportReviewTests\nWorkspaceExportTerminationFlushTests\nTaskThreadChangeObserverTests' \
+assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests\nRuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceExportTerminationFlushTests\nTaskThreadChangeObserverTests' \
   "Astra/Services/Runtime/AgentRuntimeRunPersistence.swift"
 
 assert_targets $'PendingP2RegressionTests\nSpecEngineTests\nAntigravityCLIRuntimeTests' \
@@ -252,3 +252,8 @@ assert_targets $'ShelfFileIndexControllerTests\nFilesShelfResponsivenessTelemetr
   "Tests/ShelfFileIndexControllerTests.swift" \
   "Astra/Services/Diagnostics/FilesShelfResponsivenessTelemetry.swift" \
   "Astra/Services/Diagnostics/UIResponsivenessDiagnostics.swift"
+
+assert_targets $'GitHubReviewPublicationTests\nSwiftDataDeletionPreparationTests' \
+  "Astra/Services/Persistence/SwiftDataTaskRollbackPreparation.swift" \
+  "Astra/Services/Git/GitHubReviewPublicationService.swift" \
+  "Tests/GitHubReviewPublicationTests.swift"

@@ -1051,14 +1051,26 @@ public enum WorkspaceConfigManager {
     }
 
     public static func autoExport(workspace: Workspace, modelContext: ModelContext) {
+        autoExport(workspace: workspace, modelContext: modelContext) {
+            export(workspace: workspace, modelContext: modelContext)
+        }
+    }
+
+    // The preparation boundary can fail before a replacement snapshot exists.
+    // Keep the prior queued write alive until this whole preparation succeeds.
+    static func autoExport(workspace: Workspace, modelContext: ModelContext,
+                           makeSnapshot: () -> WorkspaceConfig?) {
+        let workspaceID = workspace.id.uuidString
+        guard !workspace.isDeleted else {
+            WorkspaceAutoExportGate.shared.retire(workspaceID: workspaceID)
+            return
+        }
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
             return
         }
-        let workspaceID = workspace.id.uuidString
-        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspaceID)
-        guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
+        guard let config = makeSnapshot() else { return }
         // Recorded before the mirror lands, so recovery after a lost store
         // probes this folder even when no scanned root holds it. A folder
         // that can't be recorded gets no mirror: one recovery can't find
@@ -1067,6 +1079,7 @@ public enum WorkspaceConfigManager {
             logAutoExportSkipped(workspace: workspace, reason: "mirror_registry_unwritable")
             return
         }
+        let ticket = WorkspaceAutoExportGate.shared.beginExport(for: workspaceID)
         Task.detached(priority: .utility) {
             await WorkspaceAutoExportWriter.shared.write(config, to: url, workspaceID: workspaceID, ticket: ticket)
         }

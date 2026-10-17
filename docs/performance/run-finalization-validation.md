@@ -8,10 +8,10 @@ Focused routing selects both the saved-export suites and `TaskOutputDiscoveryTes
 for runtime persistence changes, rather than allowing the earlier shell case to
 shadow the new discovery coverage.
 
-The updated same-run opt-in benchmark measured 1,503.69 ms wall / 1,500.61 ms
-main-thread CPU for synchronous projection versus 28.74 ms wall / 28.58 ms CPU
-for save-and-enqueue. The main actor serviced 139 heartbeat ticks while the real
-background export completed; the maximum gap was 28.80 ms. The exported JSON
+The updated same-run opt-in benchmark measured 1,489.81 ms wall / 1,487.00 ms
+main-thread CPU for synchronous projection versus 28.08 ms wall / 27.85 ms CPU
+for save-and-enqueue. The main actor serviced 149 heartbeat ticks while the real
+background export completed; the maximum gap was 28.12 ms. The exported JSON
 contained the new workspace name and all 600 expected tasks. Fixture totals
 remain 2,180 tasks, 5,518 runs, and 56,621 events. These are local synthetic
 measurements, not population percentiles or total-export speedups.
@@ -23,6 +23,33 @@ explicit write clears its superseded pending projection; a failed write stays
 owed. Older completions cannot clear a newer saved or debounced request. The
 writer fences with the saving main actor before accepting snapshots, while
 encoding and filesystem work remain off-main.
+
+Explicit export preparation now issues its replacement ticket only after both
+snapshot construction and mirror registration succeed. Regressions reproduce
+both a nil snapshot (the store-fetch failure boundary) and a real blocked
+registry; either failure preserves the prior queued snapshot and its actual
+JSON write. Deletion still retires prior writes separately.
+
+A fresh background context did not protect lazy relationship rows from a
+concurrent delete. A disk-backed regression now pauses after reading relationship
+identifiers, deletes the event or entire workspace in the live store, and then
+continues the projection. The original read aborted; the immutable snapshot
+keeps the earlier rows readable. Disk-backed projection now uses ASTRA's
+existing SQLite backup service, opens the temporary copy read-only, and removes
+it after producing the value config. The temporary directory has mode 0700.
+Snapshot copying and projection remain off-main; snapshotting adds background
+I/O proportional to store size. In-memory preview/test stores have no SQLite
+snapshot and serialize their projection with main-actor edits instead.
+
+Removing synchronous projection also exposed a receipt-recovery dependency:
+SwiftData rollback can restore lazy to-many relationship futures as arrays and
+abort on the next access. The confirmed GitHub-review receipt transaction now
+resolves only the affected task's relationships before its first reversible
+edit, through the same helper used for reversible deletion. It does not scan the
+workspace. The failure reproduced even with auto-export disabled. Regression
+coverage reopens faulted tasks with empty/populated relationships in both
+in-memory and disk-backed stores, injects the receipt-save failure, and checks
+one network post, durable recovery, and preserved artifacts/skills.
 
 The measurements and local suite counts in the October 15–16 sections below
 are historical validation of the original implementation. Current full-suite,

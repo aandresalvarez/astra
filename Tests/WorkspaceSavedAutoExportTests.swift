@@ -32,7 +32,7 @@ struct WorkspaceSavedAutoExportTests {
         return (root, container, workspace, task)
     }
 
-    @Test("Projection uses fresh saved rows off the main thread", arguments: [false, true])
+    @Test("Projection uses saved rows, off-main for disk and serialized with edits for memory", arguments: [false, true])
     func savedProjection(memory: Bool) async throws {
         let (root, container, workspace, task) = try fixture(memory: memory)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -40,7 +40,7 @@ struct WorkspaceSavedAutoExportTests {
         let expected = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: container.mainContext))
         task.title = "Unsaved"
         let first = try #require(try await reader.prepare(container: container, workspaceID: workspace.id))
-        #expect(!first.ranOnMainThread)
+        #expect(first.ranOnMainThread == memory)
         #expect(first.config.tasks?.first?.title == "First")
         #expect(first.config.tasks?.first?.events.map(\.id) == expected.tasks?.first?.events.map(\.id))
         #expect(first.config.tasks?.first?.runs.map(\.id) == expected.tasks?.first?.runs.map(\.id))

@@ -32,13 +32,18 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
-    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
+    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
       add_target "WorkspaceSavedAutoExportTests"
+      add_target "WorkspaceSavedExportSnapshotTests"
       add_target "WorkspaceSavedExportReviewTests"
       add_target "WorkspaceExportTerminationFlushTests"
       add_target "AgentRuntimeRunPersistenceTests"
       add_target "TaskThreadChangeObserverTests"
+      ;;
+    Astra/Services/Persistence/SwiftDataTaskRollbackPreparation.swift|Astra/Services/Git/GitHubReviewPublicationService.swift|Tests/GitHubReviewPublicationTests.swift)
+      add_target "GitHubReviewPublicationTests"
+      add_target "SwiftDataDeletionPreparationTests"
       ;;
     Tests/RuntimeFeedbackSnapshotTests.swift|Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift)
       add_target "RuntimeFeedbackSnapshotTests"
@@ -255,6 +260,7 @@ target_for_path() {
     Astra/Services/Runtime/AgentRuntimeRunPersistence.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
       add_target "WorkspaceSavedAutoExportTests"
+      add_target "WorkspaceSavedExportSnapshotTests"
       add_target "WorkspaceSavedExportReviewTests"
       add_target "WorkspaceExportTerminationFlushTests"
       add_target "TaskThreadChangeObserverTests"
