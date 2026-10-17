@@ -39,6 +39,8 @@ enum PluginsSurfacePresentation {
         /// Hidden or blocked by policy; such packages are not listed.
         var isVisible: Bool
         var isRemovable: Bool
+        /// Why this surface can't add it; shown instead of Add.
+        var unavailableReason: String? = nil
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -55,7 +57,7 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.isEnabled ? nil : .add
+                verb: input.isEnabled || input.unavailableReason != nil ? nil : .add
             )
             if !input.isEnabled {
                 state.available.append(row)
@@ -72,11 +74,19 @@ enum PluginsSurfacePresentation {
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
         let contents = input.package.contentParts.joined(separator: ", ")
+        if let reason = input.unavailableReason, !input.isEnabled { return reason }
         guard input.isEnabled, input.pendingSteps > 0 else {
             return contents.isEmpty ? input.package.description : contents
         }
         let pending = input.pendingSteps == 1 ? "1 step pending" : "\(input.pendingSteps) steps pending"
         return contents.isEmpty ? pending : "\(pending) · \(contents)"
+    }
+
+    /// Why a plugin can't be added here: one whose setup connects an account
+    /// is added from the catalog, whose install flow does that.
+    static func unavailableReason(for package: PluginPackage) -> String? {
+        guard package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) else { return nil }
+        return "Needs an account sign-in: add it from the catalog, which connects the account."
     }
 
     /// Name, summary and tags, plus what is inside: skill names, tool names and
