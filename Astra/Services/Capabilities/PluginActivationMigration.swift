@@ -21,8 +21,9 @@ import ASTRAPersistence
 /// - An unedited plugin skill's settings move to each activation that used
 ///   it (secret ones into the Keychain under the projected skill's ID), the
 ///   templates and schedules that named it are pointed at the projected ID,
-///   and the row is deleted. An edited one stays as an authored skill and the
-///   activation skips its component. Tools follow the same rule.
+///   and the row is deleted. An edited one stays as an authored skill the
+///   activation names as its component's override, on only while the
+///   activation is. Tools follow the same rule.
 /// - A row whose plugin is no longer in the library, that no activation
 ///   uses, or that a workspace turned on by itself without the plugin, is
 ///   kept as an authored row rather than lost.
@@ -144,6 +145,15 @@ enum PluginActivationMigration {
                     )
                 }
             }
+            // Template rows the plugin wrote and the person left as they
+            // are, so a later Update can tell them from edited ones.
+            for workspace in workspaces {
+                for activation in WorkspaceCapabilityActivation.activations(of: workspace)
+                where activation.templateDigests.isEmpty {
+                    guard let package = packagesByID[activation.pluginID] else { continue }
+                    PluginTemplateSync.recordUnedited(package, in: workspace, on: activation)
+                }
+            }
             var activationsByPlugin: [String: [(Workspace, PluginActivation)]] = [:]
             for workspace in workspaces {
                 for activation in WorkspaceCapabilityActivation.activations(of: workspace) {
@@ -212,11 +222,13 @@ enum PluginActivationMigration {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
                 if isEdited(skill, spec: spec, package: package) {
                     clearOrigin(skill)
+                    // The override is on exactly while its activation is
+                    // (the projection brings the row in): a shared-list
+                    // membership would keep it on after the plugin is off.
+                    let skillID = skill.id.uuidString
                     for (workspace, activation) in using {
                         WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: skill.id, on: activation)
-                        if skill.isGlobal, activation.isEnabled {
-                            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalSkill(skill.id.uuidString) }
-                        }
+                        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalSkillIDs.removeAll { $0 == skillID } }
                     }
                     report.skillsKeptAsAuthored += 1
                     continue
@@ -273,12 +285,13 @@ enum PluginActivationMigration {
                 }
                 if isEdited(tool, spec: spec) {
                     clearOrigin(tool)
+                    // Its skill row may be deleted above: the projection wires
+                    // the runtime's copy to the plugin's first skill instead.
                     tool.skill = nil
+                    let toolID = tool.id.uuidString
                     for (workspace, activation) in using {
                         WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: tool.id, on: activation)
-                        if tool.isGlobal, activation.isEnabled {
-                            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableGlobalTool(tool.id.uuidString) }
-                        }
+                        WorkspaceCapabilityActivation.mutate(workspace) { $0.globalToolIDs.removeAll { $0 == toolID } }
                     }
                     report.toolsKeptAsAuthored += 1
                     continue

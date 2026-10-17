@@ -72,4 +72,46 @@ struct CapabilityUninstallerTests {
         #expect(library.installedPackage(id: package.id) == nil)
         #expect(workspace.enabledCapabilityIDs.isEmpty)
     }
+
+    @Test("an account kept on removal no longer makes the plugin look on when it is installed again")
+    func keptAccountIsReleasedFromTheRemovedPlugin() throws {
+        let container = try makeCapabilityUninstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Kept Account", primaryPath: "/tmp/capability-kept-account")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityUninstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let package = PluginPackage(
+            id: "kept-account-package", name: "Kept Account", icon: "server.rack", description: "Account test",
+            author: "Tests", category: "Tests", tags: [], version: "1.0.0", skills: [],
+            connectors: [PluginConnector(
+                name: "Ticket Desk", serviceType: "ticket_desk", icon: "server.rack", description: "Tickets",
+                baseURL: "https://tickets.example.test", authMethod: "none", credentialHints: [], configHints: [], notes: ""
+            )],
+            localTools: [], templates: [],
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        try CapabilityInstaller(library: library).install(package, into: workspace, modelContext: context)
+        let account = try #require(workspace.connectors.first)
+        #expect(account.originPackageID == package.id)
+
+        try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+
+        // The account and its namespace stay, without the plugin's stamp.
+        #expect(try context.fetch(FetchDescriptor<Connector>()).map(\.id) == [account.id])
+        #expect(account.originPackageID == nil && account.originComponentID == nil)
+
+        // The same file installed again has no activation here: the
+        // leftover account doesn't make it look on.
+        try library.install(package)
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages())
+        #expect(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil)
+        #expect(!CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities).isEnabled)
+        let rail = CapabilityRailPackageSnapshotState(
+            package: package,
+            index: CapabilityRailWorkspaceResourceIndex(workspace: workspace, capabilities: capabilities)
+        )
+        #expect(!rail.isEnabled)
+    }
 }

@@ -90,12 +90,30 @@ final class PluginRepairCoordinator: ObservableObject {
 
     func cancelAll() {
         polls.values.forEach { $0.cancel() }
+        // A cancelled poll will never move its phase on: a view shown again
+        // would say "Checking…" forever.
+        for key in polls.keys where phases[key] == .waiting { phases[key] = nil }
         polls.removeAll()
     }
 
     /// Re-runs the component's check exactly as the health check does.
     nonisolated static func liveCheck(_ repair: RepairAction) async -> Bool {
         guard let binary = repair.checkBinary else { return true }
+        // With the stopped run's variables, the check runs the CLI as that
+        // run did: a token the task projected, not ASTRA's own login.
+        if let environment = repair.checkEnvironment, !environment.isEmpty {
+            let path = RuntimePathResolver.detectExecutablePath(named: binary)
+            guard !path.isEmpty else { return false }
+            let merged = ProcessInfo.processInfo.environment.merging(environment) { _, projected in projected }
+            let result = await ProcessBinaryRunner().run(
+                path: path, args: repair.checkArguments ?? ["--version"], timeout: 10, environment: merged
+            )
+            guard result.exitCode == 0 else { return false }
+            if repair.checkExpect == SemanticCheck.stdoutNonEmpty.rawValue {
+                return !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return true
+        }
         let status = await EnvironmentHealthChecker().check(
             binary: binary,
             livenessArgs: repair.checkArguments ?? ["--version"],

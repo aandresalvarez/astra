@@ -195,6 +195,7 @@ struct CapabilityInstaller {
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         var savedSkillSecrets: [SavedSkillSecret] = []
         var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
+        var restoreReconciled: () -> Void = {}
         // Everything from here through persist() is one transaction: staging a
         // skill/connector/tool can throw (credential save denied, activation
         // swap failure, ...) partway through the loops below, after earlier
@@ -222,6 +223,9 @@ struct CapabilityInstaller {
             // Adding a version this workspace had at another one is an Update
             // for it: renamed components keep their state, dropped ones
             // release theirs, and the version and digest are recorded.
+            // rollback() and the activation snapshot don't cover templates,
+            // schedules and the synced account fields reconciling writes.
+            restoreReconciled = PluginUpdateService.captureState(of: [workspace])
             let reconciliation = try PluginUpdateService.reconcile(
                 activation,
                 in: workspace,
@@ -348,6 +352,7 @@ struct CapabilityInstaller {
             // rollback() drops the inserted resources; restore() undoes the
             // membership-array mutations it does not revert.
             modelContext.rollback()
+            restoreReconciled()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             restoreSkillSecrets(savedSkillSecrets)
             PluginUpdateService.undo(renamedSecrets)

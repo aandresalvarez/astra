@@ -47,11 +47,26 @@ public final class PluginActivation {
     /// gets a fresh one, so a file imported over a workspace under its ID
     /// never reads the secrets that workspace's activation stored.
     public var namespaceSeed: String
+    /// Each plugin template row's content digest as the last sync wrote it,
+    /// `componentID#digest`. A stamped row whose content no longer matches
+    /// was edited by the person: a sync keeps it as their own row
+    /// (`PluginTemplateSync`) instead of overwriting it.
+    public var templateDigests: [String] = []
     public var revision: Int
     public var createdAt: Date
     public var updatedAt: Date
 
     public var workspace: Workspace?
+
+    /// The digest `templateDigests` records for one template component.
+    public func templateDigest(forComponent componentID: String) -> String? {
+        templateDigests.lazy
+            .compactMap { entry -> String? in
+                guard let separator = entry.lastIndex(of: "#"), entry[..<separator] == componentID else { return nil }
+                return String(entry[entry.index(after: separator)...])
+            }
+            .first
+    }
 
     @Relationship(deleteRule: .cascade, inverse: \AccountBinding.activation)
     public var bindings: [AccountBinding] = []
@@ -76,6 +91,7 @@ public final class PluginActivation {
         self.secretSettingKeys = []
         self.knownComponentIDs = []
         self.namespaceSeed = ""
+        self.templateDigests = []
         self.revision = 0
         self.createdAt = createdAt
         self.updatedAt = createdAt

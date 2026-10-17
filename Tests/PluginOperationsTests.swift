@@ -155,7 +155,7 @@ struct PluginOperationsTests {
         try journal.begin(package.id)
         PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
         #expect(env.library.installedPackage(id: package.id) != nil)
-        #expect(journal.pending().isEmpty)
+        #expect(try journal.pending().isEmpty)
 
         // Saved, then the exit came before the library entry went.
         WorkspaceCapabilityActivation.mutate(env.workspace) { $0 = WorkspaceCapabilityActivationState() }
@@ -163,7 +163,7 @@ struct PluginOperationsTests {
         try journal.begin(package.id)
         PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
         #expect(env.library.installedPackage(id: package.id) == nil)
-        #expect(journal.pending().isEmpty)
+        #expect(try journal.pending().isEmpty)
     }
 
     @Test("Import through the action service: a valid file is installed, a blocked one refused")
@@ -374,6 +374,35 @@ struct PluginOperationsTests {
         }
     }
 
+    @Test("Update keeps a plugin template the person edited as their own and writes the definition's beside it")
+    func editedTemplateSurvivesUpdate() throws {
+        let env = try Environment()
+        var v1 = Self.package(version: "1.0.0")
+        v1.templates = [Self.template("Weekly", goal: "Write it"), Self.template("Daily", goal: "Note it")]
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        #expect(activation.templateDigests.count == 2)
+        let weekly = try #require(env.workspace.templates.first { $0.name == "Weekly" })
+        let daily = try #require(env.workspace.templates.first { $0.name == "Daily" })
+        weekly.mainGoal = "Write it my way"
+
+        var v2 = Self.package(version: "2.0.0")
+        v2.templates = [Self.template("Weekly", goal: "Write it better"), Self.template("Daily", goal: "Note it well")]
+        try env.importUpdate(v2)
+        // The edited row is the person's now; the unedited one follows.
+        #expect(weekly.mainGoal == "Write it my way")
+        #expect(weekly.originPackageID == nil)
+        #expect(daily.mainGoal == "Note it well")
+        #expect(daily.originPackageID == v2.id)
+        #expect(env.workspace.templates.contains { $0.name == "Weekly" && $0.mainGoal == "Write it better" && $0.originPackageID == v2.id })
+        #expect(PluginTemplateSync.isInSync(v2, in: env.workspace))
+
+        // The workspace's own mirror keeps the digests, so recovery still
+        // tells an edit from the plugin's own content.
+        let config = try #require(WorkspaceConfigManager.export(workspace: env.workspace, modelContext: env.context))
+        #expect(config.installedPlugins?.first { $0.id == v2.id }?.templateDigests == activation.templateDigests)
+    }
+
     @Test("Update never takes over a template the person authored under the same name")
     func authoredTemplateIsNotTakenOver() throws {
         let env = try Environment()
@@ -520,6 +549,88 @@ struct PluginOperationsTests {
         #expect(state.connectorsNeedingAttention.map(\.id) == [account.id])
     }
 
+    @Test("Update is refused, before anything changes, when a workspace with the plugin would refuse it")
+    func updatePreflightsEveryActivation() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        var v2 = Self.package(version: "2.0.0")
+        v2.requires = ["not-installed-plugin"]
+        v2.connectors = []
+        try env.library.install(v2, sourceMetadata: .builtIn())
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        #expect(throws: PluginUpdateService.UpdateError.self) {
+            try CapabilityCatalogActionService(library: env.library).update(v2, modelContext: env.context)
+        }
+        #expect(activation.recordedVersion == "1.0.0")
+        #expect(!activation.bindings.isEmpty)
+    }
+
+    @Test("A connector replaces identity is checked with the same service spelling as its component ID")
+    func replacesServiceNormalization() {
+        var package = Self.package(version: "2.0.0")
+        package.connectors[0].serviceType = "Issue Tracker"
+        package.connectors[0].id = "tracker"
+        package.connectors[0].replaces = ["old"]
+        #expect(PluginUpdateService.replacesProblems(in: package).isEmpty)
+    }
+
+    @Test("Two templates with one identity are refused")
+    func duplicateTemplatesAreRefused() {
+        var package = Self.package(version: "1.0.0")
+        package.templates = [Self.template("Daily Report", goal: "a"), Self.template("daily-report", goal: "b")]
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(report.blockers.contains { $0.title == "Duplicate template" })
+    }
+
+    @Test("A manifest component keeps its identity through a rename that keeps its id, and a round trip changes nothing")
+    func manifestComponentIDsAreTheIdentity() throws {
+        let gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
+        let first = PluginManifestConverter.manifest(from: gcloud)
+        let roundTrip = try PluginManifestConverter.checkedPackage(from: first)
+        #expect(try CapabilityApprovalDigest.digest(for: roundTrip) == CapabilityApprovalDigest.digest(for: gcloud))
+
+        var renamed = first
+        for index in renamed.components.indices {
+            renamed.components[index].name += " renamed"
+            renamed.components[index].skill?.name += " renamed"
+            renamed.components[index].connector?.name += " renamed"
+            renamed.components[index].tool?.name += " renamed"
+        }
+        let next = try PluginManifestConverter.checkedPackage(from: renamed)
+        #expect(next.skills.map(CapabilityResourceOrigin.componentID(for:)) == gcloud.skills.map(CapabilityResourceOrigin.componentID(for:)))
+        #expect(next.connectors.map(CapabilityResourceOrigin.componentID(for:))
+            == gcloud.connectors.map(CapabilityResourceOrigin.componentID(for:)))
+        // A tool's name-derived identity includes its type and command; the
+        // renamed one carries an id and replaces that form.
+        #expect(!gcloud.localTools.isEmpty)
+        for (before, after) in zip(gcloud.localTools, next.localTools) {
+            #expect(after.replaces?.contains(CapabilityResourceOrigin.componentID(for: before)) == true)
+        }
+    }
+
+    @Test("An Update whose installed copy can't be copied aside is refused and leaves the installed copy")
+    func updateNeedsARestorableSnapshot() throws {
+        let env = try Environment()
+        try env.library.install(Self.package(version: "1.0.0"), sourceMetadata: .localLibrary())
+        let library = CapabilityLibrary(directory: env.library.directory, fileManager: SnapshotRefusingFileManager())
+        let report = CapabilityPackageValidator.validate(
+            package: Self.package(version: "2.0.0"), installedPackages: library.installedPackages(), checkPrerequisites: false
+        )
+        #expect(throws: CapabilityPackageSnapshotUnavailable(packageID: "ops.report")) {
+            try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: env.context)
+        }
+        #expect(env.library.installedPackage(id: "ops.report")?.version == "1.0.0")
+    }
+
+    /// Fails only the copy that sets an installed package aside.
+    final class SnapshotRefusingFileManager: FileManager, @unchecked Sendable {
+        override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+            if dstURL.path.contains("astra-capability-snapshot-") { throw CocoaError(.fileWriteNoPermission) }
+            try super.copyItem(at: srcURL, to: dstURL)
+        }
+    }
+
     @Test("An MCP server ID another installed plugin declares is refused")
     func mcpServerIDsAreUniqueAcrossPlugins() {
         var installed = Self.package(version: "1.0.0")
@@ -541,14 +652,23 @@ struct PluginOperationsTests {
         try journal.begin(package.id)
         PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
         #expect(env.library.installedPackage(id: package.id) == nil)
-        #expect(journal.pending().isEmpty)
+        #expect(try journal.pending().isEmpty)
 
         // The library refuses to delete a built-in: the intent is kept.
         let builtIn = try #require(PluginCatalog.builtInPackages.first)
         try env.library.install(builtIn, sourceMetadata: .builtIn())
         try journal.begin(builtIn.id)
         PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
-        #expect(journal.pending() == [builtIn.id])
+        #expect(try journal.pending() == [builtIn.id])
+
+        // A journal that can't be read is never rewritten: a new Remove
+        // refuses to start, and launch leaves the file as it is.
+        let unreadable = Data("not json".utf8)
+        try unreadable.write(to: journal.fileURL)
+        #expect(throws: (any Error).self) { try journal.begin(package.id) }
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        journal.finish(builtIn.id)
+        #expect(try Data(contentsOf: journal.fileURL) == unreadable)
     }
 
     @Test("Deleting an account refreshes the mirror of every workspace that used it")

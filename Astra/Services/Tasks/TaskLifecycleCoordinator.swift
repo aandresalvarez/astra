@@ -160,13 +160,15 @@ final class TaskLifecycleCoordinator {
         // Resume, so it waits for the same check (`resumeTask`).
         let latest = task.runs.max(by: { $0.startedAt < $1.startedAt })
         guard latest?.typedStopReason == .capabilitySessionExpired,
-              let repair = pendingRepair(for: task), repair.checkBinary != nil else {
+              var repair = pendingRepair(for: task), repair.checkBinary != nil else {
             return retryVerifiedTask(task)
         }
+        repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
         let check = repairCheck
+        let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
             let works = await check(repair)
-            guard let self else { return }
+            guard let self, origin.stillHolds(for: task, audit: .taskRetried) else { return }
             if works {
                 _ = self.retryVerifiedTask(task)
             } else {
@@ -351,19 +353,73 @@ final class TaskLifecycleCoordinator {
     /// carry the repair. When the check fails, the task records why and stays
     /// on the stopped run, whose repair is still offered.
     func resumeTask(_ task: AgentTask) -> Task<Void, Never>? {
-        guard let repair = pendingRepair(for: task), repair.checkBinary != nil else {
+        guard var repair = pendingRepair(for: task), repair.checkBinary != nil else {
             return resumeVerifiedTask(task)
         }
+        repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
         let check = repairCheck
+        let origin = RepairCheckOrigin(task)
         return Task { @MainActor [weak self] in
             let works = await check(repair)
-            guard let self else { return }
+            guard let self, origin.stillHolds(for: task, audit: .taskResumed) else { return }
             if works {
                 _ = self.resumeVerifiedTask(task)
             } else {
                 self.recordRepairStillNeeded(task, repair: repair)
             }
         }
+    }
+
+    /// The task as Resume or Retry found it before the repair check, which can
+    /// take seconds. If the person closed or deleted the task meanwhile, or a
+    /// newer run started or the status moved on, the check's answer is about a
+    /// task they already left, so nothing continues and nothing is recorded.
+    private struct RepairCheckOrigin {
+        let taskID: UUID
+        let status: TaskStatus
+        let isDone: Bool
+        let latestRunID: UUID?
+
+        init(_ task: AgentTask) {
+            taskID = task.id
+            status = task.status
+            isDone = task.isDone
+            latestRunID = task.runs.max(by: { $0.startedAt < $1.startedAt })?.id
+        }
+
+        @MainActor
+        func stillHolds(for task: AgentTask, audit event: AuditEvent) -> Bool {
+            let reason: String? = if task.isDeleted || task.modelContext == nil {
+                "task_deleted"
+            } else if task.isDone != isDone {
+                "task_closed"
+            } else if task.status != status {
+                "status_changed"
+            } else if task.runs.max(by: { $0.startedAt < $1.startedAt })?.id != latestRunID {
+                "newer_run"
+            } else {
+                nil
+            }
+            guard let reason else { return true }
+            AppLogger.audit(event, category: "UI", taskID: taskID, fields: [
+                "outcome": "skipped_after_repair_check",
+                "reason": reason
+            ], level: .warning)
+            return false
+        }
+    }
+
+    /// The token variables the task's skills give `gh` (which override any
+    /// sign-in), so a repair check judges the token the resumed run gets.
+    private func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
+        guard binary == "gh" else { return nil }
+        var environment: [String: String] = [:]
+        for skill in TaskCapabilityResolver(task: task).allBehaviorSkills {
+            for (key, value) in skill.environmentVariables where ["GH_TOKEN", "GITHUB_TOKEN"].contains(key) && !value.isEmpty {
+                environment[key] = value
+            }
+        }
+        return environment.isEmpty ? nil : environment
     }
 
     /// The repair the task's latest run stopped for, if it stopped for one.

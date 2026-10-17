@@ -46,6 +46,36 @@ struct CapabilityPackageState {
         PluginRuntimeProjection.project(workspace: workspace, packages: [package])
     }
 
+    /// The activation's accounts by connector component, or nil without one.
+    private var boundAccountIDs: [String: Set<UUID>]? {
+        activation.map(Self.boundAccountIDs(of:))
+    }
+
+    static func boundAccountIDs(of activation: PluginActivation) -> [String: Set<UUID>] {
+        var ids: [String: Set<UUID>] = [:]
+        for binding in activation.bindings where !binding.isDeleted {
+            guard let account = binding.account, !account.isDeleted else { continue }
+            ids[binding.componentID, default: []].insert(account.id)
+        }
+        return ids
+    }
+
+    /// Whether `connector` serves the `required` component. With an
+    /// activation only an account bound to that exact component does, as at
+    /// runtime: two components of one service never share an account, and
+    /// the projection leaves an unbound one out. Without one, any row of the
+    /// same kind does.
+    static func connector(
+        _ connector: Connector,
+        serves required: PluginConnector,
+        boundAccountIDs: [String: Set<UUID>]?
+    ) -> Bool {
+        guard let boundAccountIDs else {
+            return CapabilityRuntimeResourceMatcher.connectorMatches(required, connector: connector)
+        }
+        return boundAccountIDs[CapabilityResourceOrigin.componentID(for: required)]?.contains(connector.id) ?? false
+    }
+
     var isEnabled: Bool {
         if let activation {
             return activation.isEnabled
@@ -62,7 +92,9 @@ struct CapabilityPackageState {
             return true
         }
 
-        if linkedConnectors.contains(where: isConnectorEnabled) {
+        // A workspace's own account outlives its plugin (Remove keeps it), so
+        // only a shared one turned on here says the package is on.
+        if linkedConnectors.contains(where: { $0.isGlobal && isConnectorEnabled($0) }) {
             return true
         }
 
@@ -113,8 +145,9 @@ struct CapabilityPackageState {
     /// since): a pending step with nothing to edit, so Add sets it up again.
     var missingConnectors: [PluginConnector] {
         guard isEnabled else { return [] }
+        let bound = boundAccountIDs
         return package.connectors.filter { required in
-            !linkedConnectors.contains { CapabilityRuntimeResourceMatcher.connectorMatches(required, connector: $0) }
+            !linkedConnectors.contains { Self.connector($0, serves: required, boundAccountIDs: bound) }
         }
     }
 
@@ -122,10 +155,11 @@ struct CapabilityPackageState {
         guard isEnabled else { return [] }
 
         let activeConnectors = activeLinkedConnectors
+        let bound = boundAccountIDs
         let missingConnectorMessages = package.connectors.compactMap { requiredConnector -> String? in
-            guard CapabilityRuntimeResourceMatcher.connectorMatches(requiredConnector, connector: connector),
+            guard Self.connector(connector, serves: requiredConnector, boundAccountIDs: bound),
                   !activeConnectors.contains(where: {
-                      CapabilityRuntimeResourceMatcher.connectorMatches(requiredConnector, connector: $0)
+                      Self.connector($0, serves: requiredConnector, boundAccountIDs: bound)
                   }) else { return nil }
             return missingConnectorMessage(for: requiredConnector)
         }
@@ -138,8 +172,12 @@ struct CapabilityPackageState {
     /// definition no longer declares keeps working until the person
     /// reconnects it, but has no setup or repair path: it needs a step.
     private func authMethodMessages(for connector: Connector) -> [String] {
-        guard connector.originPackageID == package.id,
-              let spec = package.connectors.first(where: { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }),
+        // The account's own component, from its binding; a loose match only
+        // when it has none (two components of one service differ).
+        let boundComponent = activation?.bindings.first { !$0.isDeleted && $0.account?.id == connector.id }?.componentID
+        let spec = boundComponent.flatMap { id in package.connectors.first { CapabilityResourceOrigin.componentID(for: $0) == id } }
+            ?? package.connectors.first { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }
+        guard connector.originPackageID == package.id, let spec,
               !spec.authMethod.isEmpty, spec.authMethod != connector.authMethod else { return [] }
         return ["\(connector.name): this version signs in with \(spec.authMethod); reconnect the account"]
     }
@@ -252,9 +290,10 @@ struct CapabilityPackageState {
     }
 
     private func missingPackageConnectorMessages(activeLinkedConnectors: [Connector]) -> [String] {
-        package.connectors.compactMap { packageConnector in
+        let bound = boundAccountIDs
+        return package.connectors.compactMap { packageConnector in
             let hasActiveConnector = activeLinkedConnectors.contains { connector in
-                CapabilityRuntimeResourceMatcher.connectorMatches(packageConnector, connector: connector)
+                Self.connector(connector, serves: packageConnector, boundAccountIDs: bound)
             }
             guard !hasActiveConnector else { return nil }
             return missingConnectorMessage(for: packageConnector)
