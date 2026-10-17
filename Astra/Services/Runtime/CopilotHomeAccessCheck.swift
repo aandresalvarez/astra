@@ -13,6 +13,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         /// The state home is missing and `path`, its nearest existing parent,
         /// does not let the user create it.
         case cannotCreateHome
+        /// A startup entry is a folder where Copilot expects a file, or the
+        /// other way round.
+        case wrongType
     }
 
     let path: String
@@ -31,13 +34,19 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// must be readable, and ASTRA never suggests changing a file outside the
     /// Copilot home.
     var symlinkTarget: String?
-    /// For `.notADirectory`: an unused name to move the file aside to.
+    /// For `.notADirectory` and `.wrongType`: an unused name to move the
+    /// entry aside to.
     var backupPath: String?
+
+    /// Fixed by moving the entry aside rather than by changing permissions.
+    var isMisplaced: Bool {
+        (access == .notADirectory || access == .wrongType) && symlinkTarget == nil
+    }
 
     /// Kills every Copilot turn before it prints a byte.
     var blocksCopilot: Bool {
         switch access {
-        case .notADirectory, .cannotCreateHome: return true
+        case .notADirectory, .cannotCreateHome, .wrongType: return true
         case .unreadable: return isReadAtStartup
         case .unwritable: return false
         }
@@ -92,6 +101,12 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let unreadable = problems.filter { $0.access == .unreadable }
         let unwritable = problems.filter { $0.access == .unwritable }
         var sentences: [String] = []
+        for misshapen in problems where misshapen.access == .wrongType {
+            let found = misshapen.isDirectory ? "a folder" : "a file"
+            let expected = misshapen.isDirectory ? "a file" : "a folder"
+            let verb = misshapen.symlinkTarget == nil ? "is" : "links to"
+            sentences.append("\(misshapen.displayPath) \(verb) \(found), but Copilot expects \(expected) there.")
+        }
         if !unreadable.isEmpty {
             sentences.append("Copilot cannot read \(unreadable.map(\.describedPath).joined(separator: ", ")).")
         }
@@ -110,14 +125,14 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// then every entry gets its owner permission bits back, because a chown
     /// alone leaves a mode-000 file just as unreadable as before.
     var fixCommand: String {
-        if let misplaced = problems.first(where: { $0.access == .notADirectory }) {
+        var commands: [String] = []
+        for misplaced in problems where misplaced.isMisplaced {
             let backup = misplaced.backupPath ?? misplaced.path + ".bak"
             // `-n` so an earlier backup is never overwritten.
-            return "mv -n \(Self.quoted(misplaced.path)) \(Self.quoted(backup))"
+            commands.append("mv -n \(Self.quoted(misplaced.path)) \(Self.quoted(backup))")
         }
-        let repairable = problems.filter { $0.symlinkTarget == nil }
+        let repairable = problems.filter { $0.symlinkTarget == nil && !$0.isMisplaced }
         let foreign = repairable.filter { !$0.ownedByCurrentUser }
-        var commands: [String] = []
         if !foreign.isEmpty {
             // Recursive only inside the Copilot home: the parent a missing home
             // would be created in is usually the user's whole home folder.
@@ -148,6 +163,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             sentences.append("Run `\(command)` in Terminal.")
         }
         for linked in problems where linked.symlinkTarget != nil {
+            if linked.access == .wrongType {
+                sentences.append("Replace the link at \(linked.displayPath).")
+                continue
+            }
             let target = ((linked.symlinkTarget ?? "") as NSString).abbreviatingWithTildeInPath
             sentences.append("Make \(target) readable again, or replace the link at \(linked.displayPath).")
         }
@@ -191,24 +210,32 @@ enum CopilotHomeAccessCheck {
         CopilotCLIRuntime.configWriteDenyPaths(userHome: "/").map { ($0 as NSString).lastPathComponent }
     )
 
+    enum EntryKind: Sendable { case file, directory }
+
     /// Top-level entries of a Copilot CLI 1.0.x home that hold its config or
-    /// session state. Only these can block a launch when unreadable; anything
-    /// else in the folder (backups, caches, other tools' files) is a warning.
-    static let startupEntryNames: Set<String> = readOnlyConfigFileNames.union([
-        "settings.json",
-        "permissions-config.json",
-        // The extensionless name older CLI releases used; still loaded.
-        "permissions-config",
-        "session-state",
-        "session-store.db",
-        "session-store.db-wal",
-        "session-store.db-shm"
-    ])
+    /// session state, and the type Copilot needs each to be. Only these can
+    /// block a launch; anything else in the folder (backups, caches, other
+    /// tools' files) is at most a warning.
+    static let startupEntries: [String: EntryKind] = readOnlyConfigFileNames
+        .reduce(into: [
+            "settings.json": .file,
+            "permissions-config.json": .file,
+            // The extensionless name older CLI releases used; still loaded.
+            "permissions-config": .file,
+            "session-state": .directory,
+            "session-store.db": .file,
+            "session-store.db-wal": .file,
+            "session-store.db-shm": .file
+        ]) { entries, name in entries[name] = .file }
 
     static let readinessCheckID = "copilot-home-access"
 
+    /// `resumeSessionID`, when the turn resumes a native Copilot session, adds
+    /// that one `session-state/<id>` folder to the check; the rest of the
+    /// session history is not walked.
     static func inspect(
         home: String = CopilotCLIRuntime.defaultHome(),
+        resumeSessionID: String? = nil,
         fileManager: FileManager = .default,
         currentUserID: uid_t = getuid()
     ) -> CopilotHomeAccessReport {
@@ -216,9 +243,14 @@ enum CopilotHomeAccessCheck {
         guard !trimmedHome.isEmpty else {
             return CopilotHomeAccessReport(home: home, problems: [])
         }
+        // A symlinked home is used through its target, so the target is what
+        // must be a writable folder.
+        let homeIsLink = (try? fileManager.attributesOfItem(atPath: trimmedHome))?[.type] as? FileAttributeType
+            == .typeSymbolicLink
+        let resolvedHome = homeIsLink ? linkTarget(of: trimmedHome, fileManager: fileManager) : trimmedHome
         var isDirectory: ObjCBool = false
         // A missing home is fine as long as Copilot can create it.
-        guard fileManager.fileExists(atPath: trimmedHome, isDirectory: &isDirectory) else {
+        guard fileManager.fileExists(atPath: resolvedHome, isDirectory: &isDirectory) else {
             let parent = creationProblem(for: trimmedHome, fileManager: fileManager, currentUserID: currentUserID)
             return CopilotHomeAccessReport(home: trimmedHome, problems: parent.map { [$0] } ?? [])
         }
@@ -232,7 +264,7 @@ enum CopilotHomeAccessCheck {
             return CopilotHomeAccessReport(home: trimmedHome, problems: problem.map { [$0] } ?? [])
         }
         if let homeProblem = problem(
-            at: trimmedHome, requiresWrite: true, isReadAtStartup: true,
+            at: resolvedHome, requiresWrite: true, isReadAtStartup: true,
             fileManager: fileManager, currentUserID: currentUserID
         ) {
             // An unreadable home hides everything inside it, and the fix for
@@ -244,17 +276,31 @@ enum CopilotHomeAccessCheck {
             }
             problems.append(homeProblem)
         }
-        guard let children = try? fileManager.contentsOfDirectory(atPath: trimmedHome) else {
+        guard let children = try? fileManager.contentsOfDirectory(atPath: resolvedHome) else {
             return CopilotHomeAccessReport(home: trimmedHome, problems: problems)
         }
         for child in children.sorted() {
-            let path = (trimmedHome as NSString).appendingPathComponent(child)
-            if let problem = problem(
+            let path = (resolvedHome as NSString).appendingPathComponent(child)
+            if var problem = problem(
                 at: path,
                 requiresWrite: !readOnlyConfigFileNames.contains(child),
-                isReadAtStartup: startupEntryNames.contains(child),
+                isReadAtStartup: startupEntries[child] != nil,
+                expectedKind: startupEntries[child],
                 fileManager: fileManager,
                 currentUserID: currentUserID
+            ) {
+                if problem.isMisplaced {
+                    problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
+                }
+                problems.append(problem)
+            }
+        }
+        if let sessionID = resumeSessionID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !sessionID.isEmpty, !sessionID.contains("/"), sessionID != ".", sessionID != ".." {
+            let session = (resolvedHome as NSString).appendingPathComponent("session-state/\(sessionID)")
+            if let problem = problem(
+                at: session, requiresWrite: true, isReadAtStartup: true, expectedKind: .directory,
+                fileManager: fileManager, currentUserID: currentUserID
             ) {
                 problems.append(problem)
             }
@@ -329,6 +375,7 @@ enum CopilotHomeAccessCheck {
         at path: String,
         requiresWrite: Bool,
         isReadAtStartup: Bool,
+        expectedKind: EntryKind? = nil,
         fileManager: FileManager,
         currentUserID: uid_t,
         forcedAccess: CopilotHomeAccessProblem.Access? = nil
@@ -336,14 +383,19 @@ enum CopilotHomeAccessCheck {
         // `attributesOfItem` does not follow symlinks.
         guard let attributes = try? fileManager.attributesOfItem(atPath: path) else { return nil }
         let type = attributes[.type] as? FileAttributeType
-        if type == .typeSymbolicLink {
-            return symlinkProblem(at: path, isReadAtStartup: isReadAtStartup, fileManager: fileManager)
+        // A forced verdict is about the entry itself, link or not.
+        if type == .typeSymbolicLink, forcedAccess == nil {
+            return symlinkProblem(
+                at: path, isReadAtStartup: isReadAtStartup, expectedKind: expectedKind, fileManager: fileManager
+            )
         }
         let isDirectory = type == .typeDirectory
         let readMode = isDirectory ? (R_OK | X_OK) : R_OK
         let access: CopilotHomeAccessProblem.Access
         if let forcedAccess {
             access = forcedAccess
+        } else if let expectedKind, isDirectory != (expectedKind == .directory) {
+            access = .wrongType
         } else if Darwin.access(path, readMode) != 0 {
             access = .unreadable
         } else if requiresWrite, Darwin.access(path, W_OK) != 0 {
@@ -370,26 +422,43 @@ enum CopilotHomeAccessCheck {
     private static func symlinkProblem(
         at path: String,
         isReadAtStartup: Bool,
+        expectedKind: EntryKind?,
         fileManager: FileManager
     ) -> CopilotHomeAccessProblem? {
         guard isReadAtStartup else { return nil }
         var isDirectory: ObjCBool = false
         let targetExists = fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
         let readMode = isDirectory.boolValue ? (R_OK | X_OK) : R_OK
-        guard !targetExists || Darwin.access(path, readMode) != 0 else { return nil }
-        let destination = (try? fileManager.destinationOfSymbolicLink(atPath: path)) ?? path
-        let target = destination.hasPrefix("/")
-            ? destination
-            : ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(destination)
+        let access: CopilotHomeAccessProblem.Access
+        if targetExists, let expectedKind, isDirectory.boolValue != (expectedKind == .directory) {
+            access = .wrongType
+        } else if !targetExists || Darwin.access(path, readMode) != 0 {
+            access = .unreadable
+        } else {
+            return nil
+        }
         return CopilotHomeAccessProblem(
             path: path,
             isDirectory: isDirectory.boolValue,
             owner: nil,
             ownedByCurrentUser: true,
             posixPermissions: nil,
-            access: .unreadable,
+            access: access,
             isReadAtStartup: true,
-            symlinkTarget: (target as NSString).standardizingPath
+            symlinkTarget: linkTarget(of: path, fileManager: fileManager)
         )
+    }
+
+    /// Where a symlink finally points, following up to eight hops. Absolute,
+    /// standardized, but `/var` is not rewritten to `/private/var`.
+    private static func linkTarget(of path: String, fileManager: FileManager) -> String {
+        var current = path
+        for _ in 0..<8 {
+            guard let destination = try? fileManager.destinationOfSymbolicLink(atPath: current) else { break }
+            current = destination.hasPrefix("/")
+                ? destination
+                : ((current as NSString).deletingLastPathComponent as NSString).appendingPathComponent(destination)
+        }
+        return (current as NSString).standardizingPath
     }
 }

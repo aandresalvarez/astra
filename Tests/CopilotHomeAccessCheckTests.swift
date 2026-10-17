@@ -284,6 +284,75 @@ struct CopilotHomeAccessCheckTests {
         #expect(diagnostic.stderrWasWarningOnly)
     }
 
+    @Test("A symlinked home is judged by its target's type and write access")
+    func symlinkedHomeChecksTarget() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let fileTarget = try root.write("not-a-folder", mode: 0o600)
+        let linkToFile = (root.path as NSString).appendingPathComponent("home-link-file")
+        try FileManager.default.createSymbolicLink(atPath: linkToFile, withDestinationPath: fileTarget)
+
+        let toFile = CopilotHomeAccessCheck.inspect(home: linkToFile)
+        #expect(toFile.problems.map(\.access) == [.notADirectory])
+        #expect(toFile.fixCommand == "mv -n '\(linkToFile)' '\(linkToFile).bak'")
+
+        let folder = try root.makeDirectory("real-home", mode: 0o755)
+        let config = (folder as NSString).appendingPathComponent("config.json")
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: config))
+        let linkToFolder = (root.path as NSString).appendingPathComponent("home-link-folder")
+        try FileManager.default.createSymbolicLink(atPath: linkToFolder, withDestinationPath: folder)
+        #expect(CopilotHomeAccessCheck.inspect(home: linkToFolder).isClean)
+
+        try root.setMode(0o000, of: config)
+        try root.setMode(0o555, of: folder)
+        defer { try? root.setMode(0o755, of: folder); try? root.setMode(0o600, of: config) }
+        let readOnly = CopilotHomeAccessCheck.inspect(home: linkToFolder)
+        #expect(readOnly.problems.map(\.path) == [config, folder])
+        #expect(readOnly.problems.map(\.access) == [.unreadable, .unwritable])
+        #expect(readOnly.blocksCopilot)
+    }
+
+    @Test("A startup entry of the wrong type blocks and is moved aside")
+    func wrongTypeStartupEntriesBlock() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let configFolder = try home.makeDirectory("config.json", mode: 0o755)
+        let sessionFile = try home.write("session-state", mode: 0o600)
+        try home.makeDirectory("some-cache", mode: 0o755)
+        try home.write("notes.txt", mode: 0o600)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(Set(report.problems.map(\.path)) == [configFolder, sessionFile])
+        #expect(report.problems.allSatisfy { $0.access == .wrongType })
+        #expect(report.blocksCopilot)
+        #expect(report.cause.contains("config.json is a folder, but Copilot expects a file there."))
+        #expect(report.cause.contains("session-state is a file, but Copilot expects a folder there."))
+        #expect(report.fixCommand.contains("mv -n '\(configFolder)' '\(configFolder).bak'"))
+        #expect(report.fixCommand.contains("mv -n '\(sessionFile)' '\(sessionFile).bak'"))
+        #expect(!report.fixCommand.contains("chmod"))
+    }
+
+    @Test("Only the resumed session folder is checked below session-state")
+    func resumedSessionFolderIsChecked() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let sessions = try home.makeDirectory("session-state", mode: 0o755)
+        let resumed = (sessions as NSString).appendingPathComponent("abc-123")
+        let other = (sessions as NSString).appendingPathComponent("old-456")
+        for folder in [resumed, other] {
+            try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: false)
+            try home.setMode(0o000, of: folder)
+        }
+        defer { for folder in [resumed, other] { try? home.setMode(0o755, of: folder) } }
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+        let resuming = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc-123")
+        #expect(resuming.problems.map(\.path) == [resumed])
+        #expect(resuming.blocksCopilot)
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "../session-state").isClean)
+    }
+
     @Test("The composer's cached readiness re-checks the Copilot home on every answer")
     func availabilityCacheRechecksHome() async throws {
         let home = try FakeCopilotHome()

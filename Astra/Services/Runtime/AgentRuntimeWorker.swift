@@ -1105,7 +1105,8 @@ final class AgentRuntimeWorker {
             timedOut: result.timedOut,
             budgetExceeded: result.budgetExceeded,
             maxTurnsExceeded: result.maxTurnsExceeded,
-            copilotHomeAccess: selectedRuntime == .copilotCLI ? { CopilotHomeAccessCheck.inspect() } : nil
+            copilotHomeAccess: selectedRuntime == .copilotCLI
+                ? { CopilotHomeAccessCheck.inspect(resumeSessionID: nativeContinuationSessionID) } : nil
         )
         if let failureDiagnostic {
             AppLogger.audit(
