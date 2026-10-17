@@ -8,9 +8,11 @@ import SwiftData
 /// `PluginActivation`s and their library definitions.
 ///
 /// No SwiftData row exists for a plugin's skill or tool. Each one is built
-/// here as a never-inserted model whose ID is derived from the activation and
-/// the component, so it is stable across launches, distinct per workspace, and
-/// names the Keychain namespace that holds the component's secret settings.
+/// here as a never-inserted model whose ID is derived from the workspace, the
+/// plugin and the component, so it is stable across launches and reinstalls
+/// (schedules and templates that name it keep resolving), distinct per
+/// workspace, and names the Keychain namespace that holds the component's
+/// secret settings.
 /// Its non-secret settings come from `PluginActivation.configValues`.
 ///
 /// A connector component resolves to the connector rows bound to it
@@ -63,11 +65,25 @@ struct PluginRuntimeProjection {
             var primarySkill: Skill?
             for (index, spec) in package.skills.enumerated() {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
-                guard !overridden.contains(componentID) else {
+                if overridden.contains(componentID) {
                     if let row = overridingSkill(for: componentID, of: activation, in: workspace) {
-                        skills.append(row)
+                        // The authored row that replaced the first skill
+                        // still owns the plugin's resources. A stored row
+                        // can't own a never-inserted one, so the runtime gets
+                        // a detached copy.
+                        if index == 0, row.modelContext == nil {
+                            primarySkill = row
+                            skills.append(row)
+                        } else if index == 0, connectorMode == .runtimeCopies {
+                            let copy = TaskExecutionLaunchSnapshotApplicator.detachedSkill(row)
+                            primarySkill = copy
+                            skills.append(copy)
+                        } else {
+                            skills.append(row)
+                        }
+                        continue
                     }
-                    continue
+                    if !overrideRowIsGone(in: workspace) { continue }
                 }
                 let skill = makeSkill(spec, package: package, activation: activation, componentID: componentID)
                 if index == 0 { primarySkill = skill }
@@ -95,11 +111,12 @@ struct PluginRuntimeProjection {
             }
             for spec in package.localTools {
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
-                guard !overridden.contains(componentID) else {
+                if overridden.contains(componentID) {
                     if let row = overridingTool(for: componentID, of: activation, in: workspace) {
                         tools.append(row)
+                        continue
                     }
-                    continue
+                    if !overrideRowIsGone(in: workspace) { continue }
                 }
                 tools.append(makeTool(spec, package: package, activation: activation, componentID: componentID, skill: primarySkill))
             }
@@ -113,11 +130,16 @@ struct PluginRuntimeProjection {
     }
 
     /// The stable ID of a component's projected skill or tool in one
-    /// activation: a name-based UUID (version 5 layout) over both IDs.
-    static func derivedID(activationID: UUID, componentID: String) -> UUID {
+    /// workspace: a name-based UUID (version 5 layout) over the workspace,
+    /// plugin and component IDs. Removing and adding the plugin again yields
+    /// the same IDs; the Remove cleanup spares a namespace a live activation
+    /// names again (`PluginSecretCleanupOutbox`).
+    static func derivedID(workspaceID: UUID, pluginID: String, componentID: String) -> UUID {
         var hasher = SHA256()
-        hasher.update(data: Data("astra.plugin-component|".utf8))
-        hasher.update(data: Data(activationID.uuidString.utf8))
+        hasher.update(data: Data("astra.plugin-component.v2|".utf8))
+        hasher.update(data: Data(workspaceID.uuidString.utf8))
+        hasher.update(data: Data("|".utf8))
+        hasher.update(data: Data(pluginID.utf8))
         hasher.update(data: Data("|".utf8))
         hasher.update(data: Data(componentID.utf8))
         var bytes = Array(hasher.finalize().prefix(16))
@@ -127,6 +149,40 @@ struct PluginRuntimeProjection {
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
         ))
+    }
+
+    /// `derivedID` for a component of `activation`. An activation always has
+    /// a workspace; one detached from it falls back to its own ID.
+    static func derivedID(of activation: PluginActivation, componentID: String) -> UUID {
+        derivedID(
+            workspaceID: activation.workspace?.id ?? activation.id,
+            pluginID: activation.pluginID,
+            componentID: componentID
+        )
+    }
+
+    /// The component IDs a definition declares: skills, connectors, tools.
+    static func componentIDs(of package: PluginPackage) -> [String] {
+        package.skills.map { CapabilityResourceOrigin.componentID(for: $0) }
+            + package.connectors.map { CapabilityResourceOrigin.componentID(for: $0) }
+            + package.localTools.map { CapabilityResourceOrigin.componentID(for: $0) }
+    }
+
+    /// Every Keychain namespace an activation's components may hold secret
+    /// settings under: the definition's skills when it is installed, plus
+    /// every component the activation itself remembers (known components,
+    /// settings, secrets, overrides), so cleanup does not depend on the
+    /// library still having the plugin or the component.
+    static func secretNamespaces(of activation: PluginActivation, package: PluginPackage?) -> [UUID] {
+        var componentIDs = (package?.skills ?? []).map { CapabilityResourceOrigin.componentID(for: $0) }
+        componentIDs += activation.knownComponentIDs
+        componentIDs += activation.configKeys.compactMap(PluginActivation.componentID(ofSettingKey:))
+        componentIDs += activation.secretSettingKeys.compactMap(PluginActivation.componentID(ofSettingKey:))
+        componentIDs += activation.overriddenComponentIDs
+        var seen = Set<String>()
+        return componentIDs
+            .filter { seen.insert($0).inserted }
+            .map { derivedID(of: activation, componentID: $0) }
     }
 
     /// True for a skill this projection built rather than a stored row.
@@ -142,6 +198,14 @@ struct PluginRuntimeProjection {
     static let projectedSourceKind = "plugin_activation"
 
     // MARK: - Private
+
+    /// An override whose row the store no longer has gives the component
+    /// back to the plugin, so deleting the replacement never silently drops
+    /// it. A detached launch can't tell (shared rows are not in its copy):
+    /// it keeps skipping the component, and the launch carries the row.
+    private static func overrideRowIsGone(in workspace: Workspace) -> Bool {
+        workspace.modelContext != nil
+    }
 
     /// The authored row an override names: the workspace's own (or, in a
     /// detached launch, its copy), else a shared row from the store.
@@ -188,7 +252,7 @@ struct PluginRuntimeProjection {
             customTools: spec.customTools,
             behaviorInstructions: spec.behaviorInstructions
         )
-        skill.id = derivedID(activationID: activation.id, componentID: componentID)
+        skill.id = derivedID(of: activation, componentID: componentID)
         let configured = activation.configuration(forComponent: componentID)
         skill.environmentKeys = spec.environmentKeys
         skill.environmentValues = spec.environmentKeys.enumerated().map { index, key in
@@ -220,7 +284,7 @@ struct PluginRuntimeProjection {
             command: spec.command,
             arguments: spec.arguments
         )
-        tool.id = derivedID(activationID: activation.id, componentID: componentID)
+        tool.id = derivedID(of: activation, componentID: componentID)
         tool.isGlobal = true
         CapabilityResourceOrigin.stamp(tool, package: package, componentID: componentID)
         tool.originSourceKind = projectedSourceKind

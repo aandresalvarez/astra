@@ -109,29 +109,63 @@ public enum WorkspaceCapabilityActivation {
         }
     }
 
-    /// Sets one non-secret setting (`componentID.KEY`); an empty value removes it.
-    public static func setConfigValue(_ value: String, forKey key: String, on activation: PluginActivation) {
+    /// Sets one non-secret setting (`PluginActivation.settingKey`); nil
+    /// removes it, so the plugin's default applies. An empty value is kept:
+    /// it is the person clearing a setting whose default is not empty.
+    public static func setConfigValue(_ value: String?, forKey key: String, on activation: PluginActivation) {
         var keys = activation.configKeys
         var values = activation.configValues
         while values.count < keys.count { values.append("") }
         if let index = keys.firstIndex(of: key) {
-            if value.isEmpty {
+            if let value {
+                values[index] = value
+            } else {
                 keys.remove(at: index)
                 values.remove(at: index)
-            } else {
-                values[index] = value
             }
-        } else if !value.isEmpty {
+        } else if let value {
             keys.append(key)
             values.append(value)
         }
+        guard activation.configKeys != keys || activation.configValues != values else { return }
         if activation.configKeys != keys { activation.configKeys = keys }
         if activation.configValues != values { activation.configValues = values }
         touch(activation)
     }
 
-    /// Binds `account` to a connector component. The first account bound to a
-    /// component, or one bound with `isDefault`, becomes its default.
+    /// Records (or, with `stored` false, forgets) that a secret setting
+    /// (`PluginActivation.settingKey`) has a value in the Keychain.
+    public static func setSecretRecorded(_ stored: Bool, forKey key: String, on activation: PluginActivation) {
+        var keys = activation.secretSettingKeys
+        if stored {
+            guard !keys.contains(key) else { return }
+            keys.append(key)
+        } else {
+            guard keys.contains(key) else { return }
+            keys.removeAll { $0 == key }
+        }
+        activation.secretSettingKeys = keys
+        touch(activation)
+    }
+
+    /// Records the components of the definition the activation was
+    /// reconciled against.
+    public static func setKnownComponents(_ componentIDs: [String], on activation: PluginActivation) {
+        var unique: [String] = []
+        for id in componentIDs where !unique.contains(id) { unique.append(id) }
+        guard activation.knownComponentIDs != unique else { return }
+        activation.knownComponentIDs = unique
+        touch(activation)
+    }
+
+    /// Binds `account` to a connector component.
+    ///
+    /// A workspace has one default account per service, across all its
+    /// plugins: the first account of a service bound in a workspace, or one
+    /// bound with `isDefault`, becomes it. Account names (aliases) are unique
+    /// per service among the accounts a workspace can see, so a task or the
+    /// broker can name one; an account whose name another one there already
+    /// has is renamed " 2", " 3" before it is bound.
     public static func bind(
         _ account: Connector,
         toComponent componentID: String,
@@ -139,12 +173,16 @@ public enum WorkspaceCapabilityActivation {
         isDefault: Bool = false
     ) {
         let existing = activation.bindings.filter { !$0.isDeleted && $0.componentID == componentID }
+        let sameService = sameServiceBindings(as: account, in: activation)
         if let binding = existing.first(where: { $0.account?.id == account.id }) {
-            if isDefault { makeDefault(binding, among: existing) }
+            if isDefault { makeDefault(binding, among: sameService) }
             touch(activation)
             return
         }
-        let binding = AccountBinding(componentID: componentID, isDefault: existing.isEmpty || isDefault)
+        disambiguateAlias(of: account, joining: activation)
+        let hasDefault = sameService.contains { $0.isDefault && $0.account?.id != account.id }
+        let accountIsDefault = sameService.contains { $0.isDefault && $0.account?.id == account.id }
+        let binding = AccountBinding(componentID: componentID, isDefault: !hasDefault || isDefault || accountIsDefault)
         if let context = activation.modelContext {
             context.insert(binding)
         }
@@ -153,28 +191,57 @@ public enum WorkspaceCapabilityActivation {
         if !activation.bindings.contains(where: { $0 === binding }) {
             activation.bindings.append(binding)
         }
-        if binding.isDefault { makeDefault(binding, among: existing + [binding]) }
+        if binding.isDefault, isDefault || !hasDefault {
+            makeDefault(binding, among: sameService + [binding])
+        }
         touch(activation)
     }
 
-    /// Removes every binding of `account` from `activation`, promoting the
-    /// oldest remaining account of each component to default.
+    /// Removes every binding of `account` from `activation`. When that leaves
+    /// the account's service without a default in the workspace, its oldest
+    /// remaining account becomes it.
     public static func unbind(_ account: Connector, from activation: PluginActivation) {
         let removed = activation.bindings.filter { !$0.isDeleted && $0.account?.id == account.id }
         guard !removed.isEmpty else { return }
+        let removedIDs = Set(removed.map(\.id))
         for binding in removed {
             activation.bindings.removeAll { $0 === binding }
             binding.modelContext?.delete(binding)
         }
-        for componentID in Set(removed.map(\.componentID)) {
-            let remaining = activation.bindings
-                .filter { !$0.isDeleted && $0.componentID == componentID }
-                .sorted { $0.createdAt < $1.createdAt }
-            if let first = remaining.first, !remaining.contains(where: \.isDefault) {
-                first.isDefault = true
+        let remaining = sameServiceBindings(as: account, in: activation)
+            .filter { !removedIDs.contains($0.id) && $0.account?.id != account.id }
+        if !remaining.contains(where: \.isDefault),
+           let first = remaining.min(by: { $0.createdAt < $1.createdAt }),
+           let promoted = first.account {
+            for binding in remaining where binding.account?.id == promoted.id {
+                binding.isDefault = true
+                if let owner = binding.activation, owner !== activation { touch(owner) }
             }
         }
         touch(activation)
+    }
+
+    /// The workspace's default account for `serviceType`, if one is bound.
+    public static func defaultAccount(forService serviceType: String, in workspace: Workspace) -> Connector? {
+        let service = normalizedService(serviceType)
+        return activations(of: workspace)
+            .flatMap(\.bindings)
+            .first { !$0.isDeleted && $0.isDefault && normalizedService($0.account?.serviceType) == service }?
+            .account
+    }
+
+    /// A name for an account of `serviceType` no other account of that
+    /// service in the workspace has: `name`, else "name 2", "name 3".
+    public static func uniqueAlias(
+        _ name: String,
+        serviceType: String,
+        in workspace: Workspace,
+        excluding accountID: UUID? = nil
+    ) -> String {
+        let taken = Set(visibleAccounts(ofService: serviceType, in: [workspace])
+            .filter { $0.id != accountID }
+            .map { normalizedAlias($0.name) })
+        return uniqueName(name, avoiding: taken)
     }
 
     /// Marks a component as replaced by the authored row `rowID` (or, with
@@ -264,6 +331,8 @@ public enum WorkspaceCapabilityActivation {
             activation.configValues = record.configValues
             activation.overriddenComponentIDs = record.overriddenComponentIDs
             activation.overridingRowIDs = record.overridingRowIDs
+            activation.secretSettingKeys = record.secretSettingKeys
+            activation.knownComponentIDs = record.knownComponentIDs
             activation.revision = record.revision
             activation.updatedAt = record.updatedAt
             activation.workspace = target
@@ -358,11 +427,74 @@ public enum WorkspaceCapabilityActivation {
         }
     }
 
+    /// Makes `binding`'s account the default: every binding of it is
+    /// default, and every other account's binding among `bindings` is not.
     private static func makeDefault(_ binding: AccountBinding, among bindings: [AccountBinding]) {
-        for other in bindings where other !== binding && other.isDefault {
-            other.isDefault = false
+        let accountID = binding.account?.id
+        for other in bindings where other !== binding {
+            let shouldBeDefault = accountID != nil && other.account?.id == accountID
+            guard other.isDefault != shouldBeDefault else { continue }
+            other.isDefault = shouldBeDefault
+            if let owner = other.activation, owner !== binding.activation { touch(owner) }
         }
         if !binding.isDefault { binding.isDefault = true }
+    }
+
+    /// Bindings in `activation`'s workspace (or, without one, in the
+    /// activation) whose account serves the same service as `account`.
+    private static func sameServiceBindings(as account: Connector, in activation: PluginActivation) -> [AccountBinding] {
+        let service = normalizedService(account.serviceType)
+        let scope = activation.workspace.map { activations(of: $0) } ?? [activation]
+        return scope
+            .flatMap(\.bindings)
+            .filter { !$0.isDeleted && normalizedService($0.account?.serviceType) == service }
+    }
+
+    /// Renames `account` when another account of its service that some
+    /// workspace it will be visible in already sees has its name.
+    private static func disambiguateAlias(of account: Connector, joining activation: PluginActivation) {
+        var workspaces: [Workspace] = activation.workspace.map { [$0] } ?? []
+        for binding in account.accountBindings where !binding.isDeleted {
+            if let workspace = binding.activation?.workspace, !workspaces.contains(where: { $0 === workspace }) {
+                workspaces.append(workspace)
+            }
+        }
+        let others = visibleAccounts(ofService: account.serviceType, in: workspaces).filter { $0.id != account.id }
+        let taken = Set(others.map { normalizedAlias($0.name) })
+        guard taken.contains(normalizedAlias(account.name)) else { return }
+        account.name = uniqueName(account.name, avoiding: taken)
+        account.updatedAt = Date()
+    }
+
+    /// The accounts of a service the workspaces' plugins are bound to, plus
+    /// the workspaces' own connector rows of that service.
+    private static func visibleAccounts(ofService serviceType: String, in workspaces: [Workspace]) -> [Connector] {
+        let service = normalizedService(serviceType)
+        var seen = Set<UUID>()
+        var accounts: [Connector] = []
+        for workspace in workspaces {
+            let bound = activations(of: workspace).flatMap(\.bindings).filter { !$0.isDeleted }.compactMap(\.account)
+            for account in bound + workspace.connectors
+            where !account.isDeleted && normalizedService(account.serviceType) == service && seen.insert(account.id).inserted {
+                accounts.append(account)
+            }
+        }
+        return accounts
+    }
+
+    private static func uniqueName(_ name: String, avoiding taken: Set<String>) -> String {
+        guard taken.contains(normalizedAlias(name)) else { return name }
+        var suffix = 2
+        while taken.contains(normalizedAlias("\(name) \(suffix)")) { suffix += 1 }
+        return "\(name) \(suffix)"
+    }
+
+    private static func normalizedService(_ serviceType: String?) -> String {
+        (serviceType ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func normalizedAlias(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func touch(_ activation: PluginActivation) {
@@ -390,6 +522,8 @@ public struct PluginActivationRecord: Equatable, Sendable {
     public let configValues: [String]
     public let overriddenComponentIDs: [String]
     public let overridingRowIDs: [String]
+    public let secretSettingKeys: [String]
+    public let knownComponentIDs: [String]
     public let revision: Int
     public let createdAt: Date
     public let updatedAt: Date
@@ -405,6 +539,8 @@ public struct PluginActivationRecord: Equatable, Sendable {
         configValues = activation.configValues
         overriddenComponentIDs = activation.overriddenComponentIDs
         overridingRowIDs = activation.overridingRowIDs
+        secretSettingKeys = activation.secretSettingKeys
+        knownComponentIDs = activation.knownComponentIDs
         revision = activation.revision
         createdAt = activation.createdAt
         updatedAt = activation.updatedAt
@@ -435,6 +571,12 @@ public struct PluginActivationRecord: Equatable, Sendable {
         }
         if activation.overridingRowIDs != overridingRowIDs {
             activation.overridingRowIDs = overridingRowIDs
+        }
+        if activation.secretSettingKeys != secretSettingKeys {
+            activation.secretSettingKeys = secretSettingKeys
+        }
+        if activation.knownComponentIDs != knownComponentIDs {
+            activation.knownComponentIDs = knownComponentIDs
         }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }

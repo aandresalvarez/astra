@@ -6,8 +6,9 @@ import ASTRAModels
 ///
 /// Besides the plugin ID and version, each entry keeps what the activation
 /// owns for the workspace: its non-secret settings, the components the person
-/// replaced with an authored row, and which connector rows are the accounts
-/// of each connector component. Launch recovery restores all of it; a file
+/// replaced with an authored row, which connector rows are the accounts of
+/// each connector component, the components of the definition it was last
+/// reconciled against, and which secret settings it stored. Launch recovery restores all of it; a file
 /// the user picks restores it only for components the installed plugin still
 /// declares, against the rows the import itself created.
 extension WorkspaceConfigManager {
@@ -20,7 +21,9 @@ extension WorkspaceConfigManager {
             overriddenComponentIDs: [String]? = nil,
             overridingRowIDs: [String]? = nil,
             accounts: [PluginAccountRef]? = nil,
-            activationID: String? = nil
+            activationID: String? = nil,
+            knownComponentIDs: [String]? = nil,
+            secretSettingKeys: [String]? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -30,19 +33,28 @@ extension WorkspaceConfigManager {
             self.overriddenComponentIDs = overriddenComponentIDs
             self.overridingRowIDs = overridingRowIDs
             self.accounts = accounts
+            self.knownComponentIDs = knownComponentIDs
+            self.secretSettingKeys = secretSettingKeys
         }
 
         public var id: String
         public var version: String
         public var name: String?
-        /// Non-secret settings keyed `componentID.KEY`.
+        /// Non-secret settings keyed `componentID#KEY`.
         public var settings: [String: String]?
         public var overriddenComponentIDs: [String]?
         public var overridingRowIDs: [String]?
         public var accounts: [PluginAccountRef]?
-        /// The activation's own ID, which names its projected components'
-        /// Keychain namespaces. Restored only from the workspace's own mirror.
+        /// The activation's own ID. Restored only from the workspace's own
+        /// mirror.
         public var activationID: String?
+        /// The components of the definition the activation was last
+        /// reconciled against, so an Update after recovery still knows which
+        /// ones it drops.
+        public var knownComponentIDs: [String]?
+        /// The secret settings (`componentID#KEY`) the activation stored in
+        /// the Keychain. The values themselves are never in the file.
+        public var secretSettingKeys: [String]?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -83,7 +95,9 @@ extension WorkspaceConfigManager {
                 overriddenComponentIDs: activation.overriddenComponentIDs.isEmpty ? nil : activation.overriddenComponentIDs,
                 overridingRowIDs: activation.overridingRowIDs.isEmpty ? nil : activation.overridingRowIDs,
                 accounts: accounts.isEmpty ? nil : accounts,
-                activationID: activation.id.uuidString
+                activationID: activation.id.uuidString,
+                knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
+                secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys
             )
         }
     }
@@ -118,9 +132,21 @@ extension WorkspaceConfigManager {
             }
             func allowed(_ componentID: String) -> Bool { declared?.contains(componentID) ?? true }
 
-            for (key, value) in (ref.settings ?? [:]).sorted(by: { $0.key < $1.key }) {
-                guard let dot = key.lastIndex(of: "."), allowed(String(key[..<dot])) else { continue }
+            func allowedSetting(_ key: String) -> Bool {
+                PluginActivation.componentID(ofSettingKey: key).map(allowed) ?? false
+            }
+            for (key, value) in (ref.settings ?? [:]).sorted(by: { $0.key < $1.key }) where allowedSetting(key) {
                 WorkspaceCapabilityActivation.setConfigValue(value, forKey: key, on: activation)
+            }
+            for key in ref.secretSettingKeys ?? [] where allowedSetting(key) {
+                WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: key, on: activation)
+            }
+            // A chosen file's history is limited to what the installed
+            // definition declares; a missing one is seeded at launch from the
+            // library (`PluginActivationMigration`).
+            let known = (ref.knownComponentIDs ?? []).filter(allowed)
+            if !known.isEmpty {
+                WorkspaceCapabilityActivation.setKnownComponents(activation.knownComponentIDs + known, on: activation)
             }
             let overridden = ref.overriddenComponentIDs ?? []
             let rows = ref.overridingRowIDs ?? []

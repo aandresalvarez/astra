@@ -935,7 +935,12 @@ public struct ASTRAApp: App {
                 excludedByIdentity: { movedDeletionMirrors = $0.map(\.path) },
                 vouchedWithoutScan: { recoveryVouchedWithoutScan = true },
                 registeredFolders: registryComplete ? mirrorRegistry.map { $0.folders() } ?? [] : nil,
-                afterImport: { settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true) },
+                afterImport: {
+                    // A mirror an older build wrote recreates plugin rows:
+                    // fold them onto activations before anything runs.
+                    PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
+                    settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true)
+                },
                 // A pending deletion, one made while recovery loads included,
                 // keeps its mirror out by path or, wherever a copy of it is
                 // now, as across volumes where its identity doesn't follow,

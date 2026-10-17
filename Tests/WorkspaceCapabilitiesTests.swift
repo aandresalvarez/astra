@@ -408,7 +408,7 @@ struct WorkspaceCapabilitiesTests {
 
         let activation = WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace)
         let projectedID = activation.map {
-            PluginRuntimeProjection.derivedID(activationID: $0.id, componentID: "skill:jira-agent")
+            PluginRuntimeProjection.derivedID(of: $0, componentID: "skill:jira-agent")
         }
         #expect(state.linkedSkills.map(\.name) == ["Jira Agent"])
         #expect(state.skillIDStrings == Set(projectedID.map { [$0.uuidString] } ?? []))
@@ -800,7 +800,7 @@ struct WorkspaceCapabilitiesTests {
         workspace.enabledGlobalSkillIDs = [sharedSkill.id.uuidString]
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
         WorkspaceCapabilityActivation.bind(account, toComponent: "connector:jira:jira", of: activation)
-        WorkspaceCapabilityActivation.setConfigValue("ENG", forKey: "skill:jira-agent.JIRA_PROJECTS", on: activation)
+        WorkspaceCapabilityActivation.setConfigValue("ENG", forKey: "skill:jira-agent#JIRA_PROJECTS", on: activation)
         try context.save()
 
         let result = CapabilityActivationDisabler().disable(

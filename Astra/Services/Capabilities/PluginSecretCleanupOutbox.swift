@@ -93,12 +93,7 @@ struct PluginSecretCleanupOutbox {
             uniquingKeysWith: { first, _ in first }
         )
         for activation in (try? modelContext.fetch(FetchDescriptor<PluginActivation>())) ?? [] where !activation.isDeleted {
-            for skill in packages[activation.pluginID]?.skills ?? [] {
-                live.insert(PluginRuntimeProjection.derivedID(
-                    activationID: activation.id,
-                    componentID: CapabilityResourceOrigin.componentID(for: skill)
-                ))
-            }
+            live.formUnion(PluginRuntimeProjection.secretNamespaces(of: activation, package: packages[activation.pluginID]))
         }
         return live
     }
