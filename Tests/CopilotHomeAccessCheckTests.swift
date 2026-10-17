@@ -76,7 +76,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.access == .unwritable)
         #expect(!report.blocksCopilot)
         #expect(report.cause.contains("Copilot cannot write"))
-        #expect(report.fixCommand == "sudo chown -R \"$USER\" '\(sessions)' && chmod u+rwx '\(sessions)'")
+        #expect(report.fixCommand == "sudo chown \"$USER\" '\(sessions)' && chmod u+rwx '\(sessions)'")
         #expect(CopilotHomeAccessCheck.readinessCheck(for: report)?.state == .warning)
     }
 
@@ -92,7 +92,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.problems.map(\.path) == [home.path])
         #expect(report.blocksCopilot)
         #expect(report.fixCommand
-            == "sudo chown -R \"$USER\" '\(home.path)' && chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
+            == "sudo chown \"$USER\" '\(home.path)' && chmod u+rwx '\(home.path)'")
     }
 
     @Test("Read-only Copilot config files are a hardened setup, not a problem")
@@ -405,7 +405,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
-    @Test("Repairing an unreadable home also restores read access to what it hid")
+    @Test("Repairing an unreadable home touches only the home; the next check finds what it hid")
     func unreadableHomeRepairReachesChildren() throws {
         let home = try FakeCopilotHome()
         defer { home.remove() }
@@ -415,10 +415,14 @@ struct CopilotHomeAccessCheckTests {
         let report = CopilotHomeAccessCheck.inspect(home: home.path)
 
         #expect(report.problems.map(\.path) == [home.path])
-        // It may hide entries owned by someone else, so ownership comes back too.
-        #expect(report.fixCommand
-            == "sudo chown -R \"$USER\" '\(home.path)' && chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
-        try Self.runSkippingChown(report.fixCommand)
+        // Never recursive: what is inside was not inspected (hard links).
+        #expect(report.fixCommand == "chmod u+rwx '\(home.path)'")
+        #expect(report.remediation.contains("could not be checked"))
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+
+        let next = CopilotHomeAccessCheck.inspect(home: home.path)
+        #expect(next.problems.map(\.path) == [(home.path as NSString).appendingPathComponent("config.json")])
+        try Self.shell("/bin/sh", ["-c", next.fixCommand])
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
@@ -502,7 +506,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
-    @Test("An unreadable session-state is repaired down to the resumed session it hides")
+    @Test("An unreadable session-state is repaired, then the resumed session it hid")
     func unreadableSessionStateRepairReachesSession() throws {
         let home = try FakeCopilotHome()
         defer { home.remove() }
@@ -516,8 +520,12 @@ struct CopilotHomeAccessCheckTests {
         let report = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
 
         #expect(report.problems.first?.hidesChildren == true)
-        #expect(report.fixCommand.contains("chmod -R u+rwX '\(sessions)'"))
-        try Self.runSkippingChown(report.fixCommand)
+        #expect(report.fixCommand == "chmod u+rwx '\(sessions)'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+
+        let next = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
+        #expect(next.problems.map(\.path) == [resumed])
+        try Self.shell("/bin/sh", ["-c", next.fixCommand])
         #expect(!CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc").blocksCopilot)
     }
 
@@ -590,24 +598,6 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.blocksCopilot)
         #expect(report.fixCommand.isEmpty)
         #expect(report.remediation.contains("readable again, or replace the link at"))
-    }
-
-    @Test("Hidden session state gets write back; the home's recursive repair stays read-only")
-    func hiddenStateRepairRestoresWrite() throws {
-        let home = try FakeCopilotHome()
-        defer { home.remove() }
-        let sessions = try home.makeDirectory("session-state", mode: 0o755)
-        let resumed = (sessions as NSString).appendingPathComponent("abc")
-        try FileManager.default.createDirectory(atPath: resumed, withIntermediateDirectories: false)
-        try home.setMode(0o000, of: resumed)
-        try home.setMode(0o000, of: sessions)
-        defer { try? home.setMode(0o755, of: sessions); try? home.setMode(0o755, of: resumed) }
-
-        let report = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
-        #expect(report.fixCommand.contains("chmod -R u+rwX '\(sessions)'"))
-        try Self.runSkippingChown(report.fixCommand)
-
-        #expect(CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc").isClean)
     }
 
     @Test("A sharing ACL is kept when the mode bits are what deny the owner")
@@ -866,7 +856,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(CopilotHomeAccessCheck.inspect(home: missingHome).isClean)
     }
 
-    @Test("An unreadable folder Copilot does not write below gets read access back, not write")
+    @Test("An unreadable unknown folder is repaired on its own, never recursively")
     func unknownHiddenFolderGetsReadOnlyRepair() throws {
         let home = try FakeCopilotHome()
         defer { home.remove() }
@@ -874,8 +864,8 @@ struct CopilotHomeAccessCheckTests {
 
         let report = CopilotHomeAccessCheck.inspect(home: home.path)
 
-        #expect(report.fixCommand.contains("chmod -R u+rX '\(agents)'"))
-        #expect(!report.fixCommand.contains("u+rwX"))
+        #expect(report.fixCommand == "chmod u+rwx '\(agents)'")
+        #expect(!report.fixCommand.contains("-R"))
     }
 
     @Test("A locked dangling home link is unlocked with -h before it is moved")
@@ -1074,6 +1064,67 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.hasLockFlag)
         #expect(!problem.hasACL)
         #expect(!report.fixCommand.contains("chmod -N"))
+    }
+
+    @Test("A hard link hidden in an unreadable home is never reached by the fix")
+    func hiddenHardLinkIsNotRecursedInto() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let shared = try elsewhere.write("shared", mode: 0o600)
+        try FileManager.default.linkItem(
+            atPath: shared, toPath: (home.path as NSString).appendingPathComponent("config.json")
+        )
+        try home.setMode(0o000, of: home.path)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+
+        #expect(!report.fixCommand.contains("-R"))
+        try home.setMode(0o700, of: home.path)
+        let next = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+        #expect(next.isClean || next.fixCommand.isEmpty)
+    }
+
+    @Test("Trust follows a link chain longer than eight hops to its real target")
+    func longLinkChainIsFullyResolved() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let target = try root.makeDirectory("final", mode: 0o755)
+        let config = (target as NSString).appendingPathComponent("config.json")
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: config))
+        try root.setMode(0o000, of: config)
+        defer { try? root.setMode(0o600, of: config) }
+        var next = target
+        for hop in 0..<10 {
+            let link = (root.path as NSString).appendingPathComponent("hop-\(hop)")
+            try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: next)
+            next = link
+        }
+
+        // Another uid owns nothing here, so the target is untrusted: no command.
+        let foreign = CopilotHomeAccessCheck.inspect(home: next, currentUserID: getuid() + 1)
+        #expect(foreign.blocksCopilot)
+        #expect(foreign.fixCommand.isEmpty)
+        // The user owns the real target: its config gets a command.
+        let own = CopilotHomeAccessCheck.inspect(home: next)
+        #expect(own.fixCommand.contains("config.json"))
+    }
+
+    @Test("A denying ACL on a missing home's parent is removed by the fix")
+    func parentACLBlockingCreationIsRemoved() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let parent = try root.makeDirectory("parent", mode: 0o755)
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny add_subdirectory", parent])
+        defer { _ = try? Self.shell("/bin/chmod", ["-N", parent]) }
+        let missingHome = (parent as NSString).appendingPathComponent(".copilot")
+
+        let report = CopilotHomeAccessCheck.inspect(home: missingHome)
+
+        #expect(report.problems.map(\.access) == [.cannotCreateHome])
+        #expect(report.problems.first?.hasACL == true)
+        #expect(report.fixCommand.hasPrefix("chmod -N '\(parent)'"))
     }
 
     @Test("A home symlink loop blocks like a dangling link")
@@ -1335,13 +1386,6 @@ struct CopilotHomeAccessCheckTests {
         )
         #expect(clean.category == .providerProcessFailed)
         #expect(clean.userMessage.contains("failed before ASTRA received a visible assistant response"))
-    }
-
-    /// Runs a fix without its `sudo chown` step: the test already owns
-    /// everything, and cannot sudo.
-    private static func runSkippingChown(_ command: String) throws {
-        let rest = command.components(separatedBy: " && ").filter { !$0.hasPrefix("sudo chown") }
-        try shell("/bin/sh", ["-c", rest.joined(separator: " && ")])
     }
 
     private static func shell(_ executable: String, _ arguments: [String]) throws {

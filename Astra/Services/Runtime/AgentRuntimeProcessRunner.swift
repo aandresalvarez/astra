@@ -643,7 +643,7 @@ final class AgentRuntimeProcessRunner {
         timeoutResult: (@Sendable (_ timeoutSeconds: TimeInterval) -> AgentUtilityRunResult)? = nil
     ) async -> AgentUtilityRunResult {
         let resolvedPlan: AgentUtilityLaunchPlan
-        switch sandboxedUtilityPlan(utilityPlan) {
+        switch guardedSandboxedUtilityPlan(utilityPlan) {
         case .plan(let plan):
             resolvedPlan = plan
         case .blocked(let result):

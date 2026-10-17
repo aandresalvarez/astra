@@ -45,8 +45,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     var backupPath: String?
     /// For `.danglingLink`: the link ends in a loop rather than a missing path.
     var isLinkLoop = false
-    /// An unreadable folder whose children could not be listed: the fix must
-    /// restore read access below it too, not only on the folder itself.
+    /// An unreadable folder whose children could not be listed. The fix
+    /// repairs the folder alone, never recursively (what is inside was not
+    /// inspected and may hold hard links), and the next check looks inside.
     var hidesChildren = false
     /// Whether Copilot writes this entry. A read-only config file is repaired
     /// with read access only, so a hardened mode stays hardened.
@@ -213,16 +214,14 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             let sudo = (locked + lockedLinks).contains { !$0.ownedByCurrentUser } ? "sudo " : ""
             commands.append("\(sudo)chflags -h nouchg,nouappnd \(Self.quotedPaths(locked + lockedLinks))")
         }
-        // An unreadable folder may hide entries owned by someone else, which a
-        // plain chmod -R cannot repair, so it gets its ownership back too.
-        let foreign = repairable.filter { !$0.ownedByCurrentUser || $0.hidesChildren }
+        // Never recursive: what lies below a folder was not inspected (it may
+        // hold hard links to files elsewhere), so only the entries reported
+        // here are changed, and the next check looks inside.
+        let foreign = repairable.filter { !$0.ownedByCurrentUser }
         if !foreign.isEmpty {
-            // Recursive only inside the Copilot home: the parent a missing home
-            // would be created in is usually the user's whole home folder.
-            let recursive = foreign.contains { $0.isDirectory && $0.access != .cannotCreateHome } ? " -R" : ""
             // Owner only: changing the group too would hand the entry's group
             // bits to everyone in `staff`.
-            commands.append("sudo chown\(recursive) \"$USER\" \(Self.quotedPaths(foreign))")
+            commands.append("sudo chown \"$USER\" \(Self.quotedPaths(foreign))")
         }
         let withACL = repairable.filter(\.hasACL)
         if !withACL.isEmpty {
@@ -239,19 +238,6 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let readOnlyFiles = repairable.filter { !$0.isDirectory && !$0.requiresWrite }
         if !readOnlyFiles.isEmpty {
             commands.append("chmod u+r \(Self.quotedPaths(readOnlyFiles))")
-        }
-        // Below the home: read and traverse only, so a deliberately read-only
-        // config file is not loosened.
-        // The same for any folder Copilot does not write below.
-        let hidingReadOnly = repairable.filter { $0.hidesChildren && !Self.isMutableState($0) }
-        if !hidingReadOnly.isEmpty {
-            commands.append("chmod -R u+rX \(Self.quotedPaths(hidingReadOnly))")
-        }
-        // Below a state folder Copilot writes into (session-state, a resumed
-        // session): write comes back too.
-        let hidingState = repairable.filter { $0.hidesChildren && Self.isMutableState($0) }
-        if !hidingState.isEmpty {
-            commands.append("chmod -R u+rwX \(Self.quotedPaths(hidingState))")
         }
         // Moves last: renaming an entry needs its parent repaired first.
         for misplaced in problems where misplaced.isMisplaced && misplaced.isRepairable {
@@ -330,10 +316,6 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let shown = problems.prefix(CopilotHomeAccessCheck.maximumListedProblems).map(\.describedPath)
         let hidden = problems.count - shown.count
         return (shown + (hidden > 0 ? ["and \(hidden) more"] : [])).joined(separator: ", ")
-    }
-
-    private static func isMutableState(_ problem: CopilotHomeAccessProblem) -> Bool {
-        !problem.isHome && problem.isReadAtStartup && problem.requiresWrite
     }
 
     private static func quoted(_ path: String) -> String {
@@ -459,7 +441,9 @@ enum CopilotHomeAccessCheck {
         // and the parent a missing home would be created in. Anything else,
         // a linked system folder or an override naming `/etc/sudoers`, is
         // reported with advice only.
-        let targetOwner = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.ownerAccountID] as? NSNumber
+        // The fully resolved target, every hop and intermediate link included:
+        // trust is never decided from a partially resolved chain.
+        let targetOwner = (try? fileManager.attributesOfItem(atPath: canonicalPath(resolvedHome)))?[.ownerAccountID] as? NSNumber
         let homeTrusted = !homeIsLink || targetOwner.map { uid_t($0.uint32Value) == currentUserID } ?? false
         let trustedRoot = canonicalPath(resolvedHome)
         // The providers override never gets a command: it can name any path,
@@ -765,7 +749,8 @@ enum CopilotHomeAccessCheck {
         // refuses a write on a locked entry, and a sharing ACL must survive
         // the unlock. If an ACL denies too, the next check will say so.
         let locked = lockState(of: path, followLinks: false).any
-        let accessRefused = access == .unreadable || (access == .unwritable && writeDenied(path) && !locked)
+        let accessRefused = access == .unreadable
+            || ((access == .unwritable || access == .cannotCreateHome) && writeDenied(path) && !locked)
         problem.hasACL = accessRefused
             && ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
             && hasExtendedACL(path)
@@ -826,6 +811,8 @@ enum CopilotHomeAccessCheck {
         switch access {
         case .unreadable: return mode & (0o400 | traverse) == (0o400 | traverse)
         case .unwritable: return mode & (0o200 | traverse) == (0o200 | traverse)
+        // Creating the home needs write and search on its parent.
+        case .cannotCreateHome: return mode & 0o300 == 0o300
         default: return false
         }
     }
@@ -915,6 +902,12 @@ enum CopilotHomeAccessCheck {
             current = destination.hasPrefix("/")
                 ? destination
                 : ((current as NSString).deletingLastPathComponent as NSString).appendingPathComponent(destination)
+        }
+        // A longer chain: the kernel's own resolution, so every later use sees
+        // the real target rather than an intermediate link.
+        if (try? fileManager.destinationOfSymbolicLink(atPath: current)) != nil, let resolved = realpath(current, nil) {
+            defer { free(resolved) }
+            return String(cString: resolved)
         }
         return (current as NSString).standardizingPath
     }
