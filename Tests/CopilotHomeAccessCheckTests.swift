@@ -1479,6 +1479,47 @@ struct CopilotHomeAccessCheckTests {
         #expect(report(readDenied: [override], environment: overridden).blocksCopilot)
     }
 
+    @Test("An explicit read re-allow wins over a denied ancestor")
+    func readReallowWinsOverDeniedAncestor() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+        func report(allowed: [String]) -> CopilotHomeAccessReport {
+            CopilotHomeAccessCheck.inspect(
+                home: home.path,
+                sandboxReceipt: ExecutionSandboxBoundaryReceipt(
+                    writableRoots: [home.path], writeDeniedRoots: [], readScope: .enforce,
+                    readableRoots: [home.path],
+                    readDeniedRoots: [(home.path as NSString).deletingLastPathComponent],
+                    readAllowedRoots: allowed
+                )
+            )
+        }
+
+        #expect(report(allowed: []).blocksCopilot)
+        #expect(!report(allowed: [home.path]).blocksCopilot)
+    }
+
+    @Test("An append-only parent still lets a missing home be created, but not a malformed one be moved")
+    func appendOnlyParentAllowsCreationNotMove() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let parent = try root.makeDirectory("parent", mode: 0o755)
+        try Self.shell("/usr/bin/chflags", ["uappnd", parent])
+        defer { _ = try? Self.shell("/usr/bin/chflags", ["nouappnd", parent]) }
+        let home = (parent as NSString).appendingPathComponent(".copilot")
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home).isClean)
+
+        try Self.shell("/usr/bin/chflags", ["nouappnd", parent])
+        try Data("x".utf8).write(to: URL(fileURLWithPath: home))
+        try Self.shell("/usr/bin/chflags", ["uappnd", parent])
+        let malformed = CopilotHomeAccessCheck.inspect(home: home)
+        #expect(malformed.problems.contains { $0.access == .cannotCreateHome })
+        #expect(malformed.fixCommand.hasPrefix("chflags -h nouchg,nouappnd '\(parent)'"))
+        try Self.shell("/usr/bin/chflags", ["nouappnd", parent])
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()

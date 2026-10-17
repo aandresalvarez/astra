@@ -588,7 +588,10 @@ enum CopilotHomeAccessCheck {
         }
         return entries.compactMap { entry in
             let canonical = canonicalPath(entry.path)
+            // An explicit re-allow wins over a denied ancestor, as it does in
+            // the applied profile (`ExecutionSandboxBoundaryReceipt.explains`).
             let deniedRead = isWithin(canonical, roots: receipt.readDeniedRoots)
+                && !isWithin(canonical, roots: receipt.readAllowedRoots)
             let deniedWrite = entry.requiresWrite && isWithin(canonical, roots: receipt.writeDeniedRoots)
             guard deniedRead || deniedWrite else { return nil }
             var denied = CopilotHomeAccessProblem(
@@ -649,7 +652,9 @@ enum CopilotHomeAccessCheck {
                 == .typeSymbolicLink
             dangling.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
             // Moving it aside needs write and search on its parent.
-            let parent = creationProblem(for: trimmedHome, fileManager: fileManager, currentUserID: currentUserID)
+            let parent = creationProblem(
+                for: trimmedHome, forMove: true, fileManager: fileManager, currentUserID: currentUserID
+            )
             return [dangling] + (parent.map { [$0] } ?? [])
         }
         var isDirectory: ObjCBool = false
@@ -665,7 +670,9 @@ enum CopilotHomeAccessCheck {
             )
             problem?.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
             // Moving it aside needs write and search on its parent.
-            let parent = creationProblem(for: trimmedHome, fileManager: fileManager, currentUserID: currentUserID)
+            let parent = creationProblem(
+                for: trimmedHome, forMove: true, fileManager: fileManager, currentUserID: currentUserID
+            )
             return (problem.map { [$0] } ?? []) + (parent.map { [$0] } ?? [])
         }
         var problems: [CopilotHomeAccessProblem] = []
@@ -820,8 +827,12 @@ enum CopilotHomeAccessCheck {
     /// the user create folders in it. `AgentRuntimeProcessRunner` ignores a
     /// failed `createDirectory`, so without this the CLI would be launched
     /// with no usable home.
+    /// `forMove`: the parent must also let an entry be removed (moving a
+    /// malformed home aside), which an append-only flag forbids; creating a
+    /// missing home only needs entries to be added, which it allows.
     private static func creationProblem(
         for home: String,
+        forMove: Bool = false,
         fileManager: FileManager,
         currentUserID: uid_t
     ) -> CopilotHomeAccessProblem? {
@@ -842,8 +853,9 @@ enum CopilotHomeAccessCheck {
             blocked?.isRepairable = false
             return blocked
         }
-        // A lock flag forbids creating entries even where `access` says yes.
-        guard Darwin.access(parent, W_OK | X_OK) != 0 || lockState(of: parent, followLinks: true).any else {
+        // A lock flag forbids it even where `access` says yes.
+        let locks = lockState(of: parent, followLinks: true)
+        guard Darwin.access(parent, W_OK | X_OK) != 0 || (forMove ? locks.any : locks.immutable) else {
             return nil
         }
         var blocked = problem(
@@ -998,6 +1010,9 @@ enum CopilotHomeAccessCheck {
     struct LockState {
         var user = false
         var system = false
+        /// uchg or schg: nothing can be added to or removed from the entry.
+        /// Append-only (uappnd, sappnd) still lets entries be added.
+        var immutable = false
         var any: Bool { user || system }
     }
 
@@ -1013,7 +1028,8 @@ enum CopilotHomeAccessCheck {
         let systemImmutable: UInt32 = 0x0002_0000, systemAppend: UInt32 = 0x0004_0000
         return LockState(
             user: flags & (userImmutable | userAppend) != 0,
-            system: flags & (systemImmutable | systemAppend) != 0
+            system: flags & (systemImmutable | systemAppend) != 0,
+            immutable: flags & (userImmutable | systemImmutable) != 0
         )
     }
 
