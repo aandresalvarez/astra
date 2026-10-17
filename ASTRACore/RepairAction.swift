@@ -67,6 +67,12 @@ public struct RepairAction: Codable, Sendable, Equatable {
     /// shell syntax: `gcloud auth login` yes, `curl … | sh` no. The same rule
     /// as a declared local tool (`LocalToolSecurityPolicy`).
     public static func isSafeTerminalCommand(_ command: String, binary: String?, allowsInstaller: Bool) -> Bool {
+        // Terminal runs the command exactly as written, so a newline (or any
+        // other control character) would start a second command that the
+        // word-by-word check below never sees. Only plain spaces separate words.
+        guard !command.unicodeScalars.contains(where: {
+            CharacterSet.newlines.contains($0) || CharacterSet.controlCharacters.contains($0)
+        }) else { return false }
         let words = command.split(whereSeparator: \.isWhitespace).map(String.init)
         guard let executable = words.first else { return false }
         guard LocalToolSecurityPolicy.unsafeInvocationReason(
