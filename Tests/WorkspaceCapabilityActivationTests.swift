@@ -224,6 +224,41 @@ struct WorkspaceCapabilityActivationTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Removing the default's activation or deleting the default account elects the next one")
+    @MainActor
+    func cascadesElectANewDefault() throws {
+        let (container, workspace) = try makeManagedWorkspace()
+        let context = container.mainContext
+        let stanford = Connector(name: "Stanford", serviceType: "jira")
+        let coral = Connector(name: "Coral", serviceType: "jira")
+        let site = Connector(name: "Site", serviceType: "jira")
+        [stanford, coral, site].forEach(context.insert)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability("jira-workflow")
+            $0.enableCapability("jira-ops")
+        }
+        let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace))
+        let ops = try #require(WorkspaceCapabilityActivation.activation(for: "jira-ops", in: workspace))
+        WorkspaceCapabilityActivation.bind(stanford, toComponent: "connector:jira:jira", of: jira)
+        WorkspaceCapabilityActivation.bind(coral, toComponent: "connector:jira:ops", of: ops)
+        WorkspaceCapabilityActivation.bind(site, toComponent: "connector:jira:ops", of: ops)
+        try context.save()
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == stanford.id)
+
+        // Removing the plugin that held the default.
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.capabilityIDs.removeAll { $0 == "jira-workflow" }; $0.removeInstalledPlugin(id: "jira-workflow") }
+        #expect(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: workspace) == nil)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == coral.id)
+
+        // Deleting the default account from Configure.
+        let deleted = ConnectorCredentialCleanup.deleteConnector(coral, in: workspace, modelContext: context) {
+            (try? context.save()) != nil
+        }
+        #expect(deleted)
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "jira", in: workspace)?.id == site.id)
+        withExtendedLifetime(container) {}
+    }
+
     @Test("Accounts of one service a workspace sees get distinct names")
     @MainActor
     func aliasesAreUniquePerServiceInAWorkspace() throws {

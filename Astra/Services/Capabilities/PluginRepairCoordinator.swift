@@ -45,18 +45,33 @@ final class PluginRepairCoordinator: ObservableObject {
         self.requiredPasses = requiredPasses
     }
 
-    static func key(_ repair: RepairAction) -> String {
-        "\(repair.componentName)|\(repair.command ?? repair.url?.absoluteString ?? repair.strategy.rawValue)"
+    /// One poll per owner and repair contract. `owner` names the package (and
+    /// component) the row belongs to: two plugins can declare the same
+    /// component name and command, and must not share, or cancel, one poll.
+    /// The whole check is part of the key, so the same command checked two
+    /// ways is two polls. The check environment is not: it is set per check
+    /// and can hold a token.
+    static func key(_ repair: RepairAction, owner: String) -> String {
+        [
+            owner,
+            repair.componentName,
+            repair.strategy.rawValue,
+            repair.command ?? "",
+            repair.url?.absoluteString ?? "",
+            repair.checkBinary ?? "",
+            (repair.checkArguments ?? []).joined(separator: "\u{1E}"),
+            repair.checkExpect ?? ""
+        ].joined(separator: "\u{1F}")
     }
 
-    func phase(for repair: RepairAction) -> Phase? {
-        phases[Self.key(repair)]
+    func phase(for repair: RepairAction, owner: String) -> Phase? {
+        phases[Self.key(repair, owner: owner)]
     }
 
     /// Runs `repair` and, when it has a check, polls until it passes.
     /// `onVerified` runs once, on the main actor, after the check passes.
-    func start(_ repair: RepairAction, onVerified: @escaping @MainActor () -> Void = {}) {
-        let key = Self.key(repair)
+    func start(_ repair: RepairAction, owner: String, onVerified: @escaping @MainActor () -> Void = {}) {
+        let key = Self.key(repair, owner: owner)
         polls[key]?.cancel()
         run(repair)
         guard repair.checkBinary != nil else {

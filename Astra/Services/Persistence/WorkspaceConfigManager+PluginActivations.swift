@@ -226,6 +226,10 @@ extension WorkspaceConfigManager {
             }
             for account in ref.accounts ?? [] where allowed(account.componentID) {
                 guard let connector = connectorsByID[account.connectorID] else { continue }
+                // A chosen file binds only a row it created, for the
+                // component's own service.
+                if case .validate(let verifier) = trust,
+                   !verifier.acceptsAccount(connector, componentID: account.componentID, pluginID: ref.id) { continue }
                 WorkspaceCapabilityActivation.bind(
                     connector,
                     toComponent: account.componentID,

@@ -56,8 +56,20 @@ struct WorkspaceCapabilities {
         })
     }
 
+    /// A row an activation names as a component's override is on exactly
+    /// while that activation is (the projection brings it in), so it never
+    /// counts as one of the workspace's own. Lists still show it.
     var activeSkills: [Skill] {
-        uniqueSkills(workspaceSkills + enabledGlobalSkills + enabledPackageSkills)
+        let overriding = Self.overridingRowIDs(of: workspace)
+        return uniqueSkills(workspaceSkills.filter { !overriding.contains($0.id) } + enabledGlobalSkills + enabledPackageSkills)
+    }
+
+    /// Rows any of the workspace's activations, on or off, names as a
+    /// component's override.
+    static func overridingRowIDs(of workspace: Workspace) -> Set<UUID> {
+        Set(WorkspaceCapabilityActivation.activations(of: workspace)
+            .flatMap(\.overridingRowIDs)
+            .compactMap(UUID.init(uuidString:)))
     }
 
     var workspaceConnectors: [Connector] {
@@ -136,8 +148,9 @@ struct WorkspaceCapabilities {
     }
 
     var activeTools: [LocalTool] {
-        let attached = activeSkills.flatMap(\.localTools)
-        return uniqueTools(workspaceTools + attached + enabledGlobalTools + projection.tools)
+        let overriding = Self.overridingRowIDs(of: workspace)
+        let ambient = (workspaceTools + activeSkills.flatMap(\.localTools)).filter { !overriding.contains($0.id) }
+        return uniqueTools(ambient + enabledGlobalTools + projection.tools)
     }
 
     private var enabledPackages: [PluginPackage] {
