@@ -279,6 +279,17 @@ struct PluginsSurfaceTests {
         #expect((try? PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: jira))) != nil)
     }
 
+    @Test("A manifest that conditions a runtime on a recent CLI where ASTRA derives full is refused")
+    func recentCLIConditionIsNotDropped() throws {
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        var conditional = PluginManifestConverter.manifest(from: jira)
+        #expect(conditional.worksOn["cursor_cli"] == .full)
+        conditional.worksOn["cursor_cli"] = .fullWithRecentCLI
+        #expect(throws: PluginManifestError.unenforcedRuntimeRestriction(runtime: "cursor_cli")) {
+            try PluginManifestConverter.checkedPackage(from: conditional)
+        }
+    }
+
     @Test("A manifest component must carry exactly its kind's definition")
     func manifestPayloadsMatchKinds() throws {
         let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
