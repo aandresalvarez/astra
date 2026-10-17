@@ -270,6 +270,7 @@ struct WorkspaceRightRailView: View {
     @State private var capabilityError: String?
     @State private var folderRefusal: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
+    @State private var prerequisiteScanGeneration = 0 // only the latest scan publishes
     @StateObject private var repairs = PluginRepairCoordinator()
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
@@ -1285,6 +1286,8 @@ struct WorkspaceRightRailView: View {
                 capabilities: currentCapabilities
             ).isEnabled
         }
+        prerequisiteScanGeneration += 1
+        let generation = prerequisiteScanGeneration
         Task { @MainActor in
             let cache = PreflightCache()
             var statuses: [String: HealthStatus] = [:]
@@ -1296,6 +1299,7 @@ struct WorkspaceRightRailView: View {
                 )
                 statuses.merge(packageStatuses) { _, new in new }
             }
+            guard generation == prerequisiteScanGeneration else { return }
             capabilityPrerequisiteStatuses = statuses
         }
     }

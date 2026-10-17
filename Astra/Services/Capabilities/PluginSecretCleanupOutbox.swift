@@ -85,8 +85,14 @@ struct PluginSecretCleanupOutbox {
         modelContext: ModelContext,
         outbox: PluginSecretCleanupOutbox?
     ) {
-        let live = liveSkillIDs(modelContext: modelContext)
-        let liveKeys = liveSecretKeys(modelContext: modelContext)
+        // What is live can't be told without the store: every record stays.
+        guard let live = liveSkillIDs(modelContext: modelContext),
+              let liveKeys = liveSecretKeys(modelContext: modelContext) else {
+            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                "scope": "plugin_secret_cleanup", "reason": "store_unreadable_kept"
+            ], level: .error)
+            return
+        }
         var settled = Set<String>()
         for id in skillIDs where live.contains(id) || SkillKeychainCleanup(skillID: id).run() {
             settled.insert(id.uuidString)
@@ -99,10 +105,12 @@ struct PluginSecretCleanupOutbox {
         try? outbox.writeEntries(pending.filter { !settled.contains($0) })
     }
 
-    /// The secret settings live activations record, by namespace.
-    static func liveSecretKeys(modelContext: ModelContext) -> Set<PluginUpdateService.StaleSecret> {
+    /// The secret settings live activations record, by namespace; nil when
+    /// the store can't be read.
+    static func liveSecretKeys(modelContext: ModelContext) -> Set<PluginUpdateService.StaleSecret>? {
+        guard let activations = try? modelContext.fetch(FetchDescriptor<PluginActivation>()) else { return nil }
         var live = Set<PluginUpdateService.StaleSecret>()
-        for activation in (try? modelContext.fetch(FetchDescriptor<PluginActivation>())) ?? [] where !activation.isDeleted {
+        for activation in activations where !activation.isDeleted {
             for settingKey in activation.secretSettingKeys {
                 guard let componentID = PluginActivation.componentID(ofSettingKey: settingKey) else { continue }
                 live.insert(PluginUpdateService.StaleSecret(
@@ -119,14 +127,17 @@ struct PluginSecretCleanupOutbox {
     }
 
     /// Skill IDs whose namespaces something still reads: stored skill rows,
-    /// and every live activation's projected skills.
-    static func liveSkillIDs(modelContext: ModelContext) -> Set<UUID> {
-        var live = Set(((try? modelContext.fetch(FetchDescriptor<Skill>())) ?? []).map(\.id))
+    /// and every live activation's projected skills; nil when the store
+    /// can't be read.
+    static func liveSkillIDs(modelContext: ModelContext) -> Set<UUID>? {
+        guard let skills = try? modelContext.fetch(FetchDescriptor<Skill>()),
+              let activations = try? modelContext.fetch(FetchDescriptor<PluginActivation>()) else { return nil }
+        var live = Set(skills.map(\.id))
         let packages = Dictionary(
             CapabilityRuntimeResourceMatcher.packageDefinitions().map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        for activation in (try? modelContext.fetch(FetchDescriptor<PluginActivation>())) ?? [] where !activation.isDeleted {
+        for activation in activations where !activation.isDeleted {
             live.formUnion(PluginRuntimeProjection.secretNamespaces(of: activation, package: packages[activation.pluginID]))
         }
         return live

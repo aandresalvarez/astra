@@ -470,11 +470,54 @@ struct PluginOperationsTests {
         #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "tracker", in: env.workspace)?.id == otherAccount.id)
     }
 
-    @Test("A component may take over one predecessor only")
-    func onePredecessorPerComponent() {
-        var package = Self.package(version: "2.0.0")
-        package.skills[0].replaces = ["old-a", "old-b"]
-        #expect(PluginUpdateService.replacesProblems(in: package).contains { $0.contains("more than one component") })
+    @Test("A component may list a chain of predecessors; two that both still hold state are refused")
+    func predecessorChains() throws {
+        var chained = Self.package(version: "3.0.0")
+        chained.skills[0].id = "c-agent"
+        chained.skills[0].replaces = ["report-agent", "b-agent"]
+        #expect(PluginUpdateService.replacesProblems(in: chained).isEmpty)
+
+        // A straight to C: A's settings move.
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        try env.importUpdate(chained)
+        #expect(activation.configuration(forComponent: "skill:c-agent") == ["PROJECT": "alpha"])
+
+        // Both A and B holding state: Update refuses and nothing changes.
+        let twoLive = try Environment()
+        var ab = Self.package(version: "1.0.0")
+        var b = ab.skills[0]
+        b.id = "b-agent"
+        b.name = "B Agent"
+        ab.skills.append(b)
+        try twoLive.install(ab)
+        for skill in ab.skills {
+            try PluginOperations.setSetting("PROJECT", to: skill.name, of: skill, pluginID: ab.id, in: twoLive.workspace, modelContext: twoLive.context)
+        }
+        let twoActivation = try #require(WorkspaceCapabilityActivation.activation(for: ab.id, in: twoLive.workspace))
+        #expect(throws: PluginUpdateService.UpdateError.ambiguousRename(component: "skill:c-agent")) {
+            try PluginUpdateService.reconcileAll(modelContext: twoLive.context, packages: [chained], mode: .release)
+        }
+        #expect(twoActivation.recordedVersion == "1.0.0")
+        #expect(twoActivation.configuration(forComponent: "skill:report-agent") == ["PROJECT": "Report Agent"])
+    }
+
+    @Test("An account whose sign-in method the new version no longer declares needs a step")
+    func droppedAuthMethodNeedsReconnect() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        let account = try #require(env.workspace.connectors.first)
+        var v2 = Self.package(version: "2.0.0")
+        v2.connectors[0].authMethod = "oauth"
+        try env.importUpdate(v2)
+        #expect(account.authMethod == "bearer")
+        let state = CapabilityPackageState(package: v2, workspace: env.workspace, capabilities: WorkspaceCapabilities(workspace: env.workspace, packageDefinitions: [v2]))
+        #expect(state.attentionMessages(for: account).contains { $0.contains("reconnect") })
+        #expect(state.connectorsNeedingAttention.map(\.id) == [account.id])
     }
 
     @Test("An MCP server ID another installed plugin declares is refused")

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -78,6 +79,31 @@ public final class PluginActivation {
         self.revision = 0
         self.createdAt = createdAt
         self.updatedAt = createdAt
+    }
+
+    /// The ID of a component's projected skill or tool, which also names
+    /// its Keychain namespace: a name-based UUID (version 5 layout) over the
+    /// workspace, plugin and component IDs, plus the activation's namespace
+    /// seed when it has one.
+    public static func projectedID(workspaceID: UUID, pluginID: String, componentID: String, seed: String = "") -> UUID {
+        var hasher = SHA256()
+        hasher.update(data: Data("astra.plugin-component.v2|".utf8))
+        hasher.update(data: Data(workspaceID.uuidString.utf8))
+        hasher.update(data: Data("|".utf8))
+        hasher.update(data: Data(pluginID.utf8))
+        hasher.update(data: Data("|".utf8))
+        hasher.update(data: Data(componentID.utf8))
+        if !seed.isEmpty {
+            hasher.update(data: Data("|".utf8))
+            hasher.update(data: Data(seed.utf8))
+        }
+        var bytes = Array(hasher.finalize().prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 
     /// A setting's key. Setting keys (environment variable names) never
