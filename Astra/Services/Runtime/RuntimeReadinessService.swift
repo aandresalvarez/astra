@@ -9,6 +9,13 @@ enum RuntimeReadinessState: String, Sendable, Equatable {
     /// A warning means a probe was inconclusive, so the launch preflight may
     /// still try the provider. Only a confirmed blocker prevents submission.
     var allowsTaskLaunch: Bool { self != .blocked }
+
+    /// The more severe of the two.
+    func combined(with other: RuntimeReadinessState) -> RuntimeReadinessState {
+        if self == .blocked || other == .blocked { return .blocked }
+        if self == .warning || other == .warning { return .warning }
+        return .ready
+    }
 }
 
 enum RuntimeReadinessScope: Sendable, Equatable {
@@ -33,6 +40,12 @@ struct RuntimeReadinessCheck: Identifiable, Sendable, Equatable {
 
 struct RuntimeReadinessReport: Sendable, Equatable {
     let checks: [RuntimeReadinessCheck]
+
+    /// The report without its uncached checks: what a readiness cache may
+    /// store. `RuntimeReadinessService.refreshingUncachedChecks` re-runs them.
+    var cacheable: RuntimeReadinessReport {
+        RuntimeReadinessReport(checks: checks.filter { !RuntimeReadinessService.uncachedCheckIDs.contains($0.id) })
+    }
 
     var state: RuntimeReadinessState {
         if checks.contains(where: { $0.state == .blocked }) { return .blocked }
@@ -172,12 +185,44 @@ struct RuntimeReadinessService {
             runner: runner,
             timeout: timeout,
             detectExecutable: detectExecutable,
-            isExecutable: isExecutable,
-            copilotStateHome: copilotStateHome
+            isExecutable: isExecutable
         )
-        return await AgentRuntimeAdapterRegistry
+        let probed = await AgentRuntimeAdapterRegistry
             .descriptorReadiness(for: configuration.runtime)
             .readinessReport(configuration: configuration, probes: probes)
+        return RuntimeReadinessReport(checks: probed.checks + uncachedChecks(for: configuration.runtime))
+    }
+
+    /// Checks of local state the user can break at any moment, and cheap
+    /// enough to re-run every time. Both readiness caches store reports
+    /// without them (`cacheable`) and re-run them on every hit, so a
+    /// `~/.copilot/config.json` that turns root-owned after a ready probe is
+    /// caught on the next launch instead of five minutes later.
+    static let uncachedCheckIDs: Set<String> = [CopilotHomeAccessCheck.readinessCheckID]
+
+    func uncachedChecks(for runtime: AgentRuntimeID) -> [RuntimeReadinessCheck] {
+        guard runtime == .copilotCLI else { return [] }
+        // Copilot exits 1 with no output at all when it cannot read its own
+        // config, so this is the only place the cause can surface before a
+        // task fails.
+        let report = CopilotHomeAccessCheck.inspect(home: copilotStateHome)
+        return CopilotHomeAccessCheck.readinessCheck(for: report).map { [$0] } ?? []
+    }
+
+    /// A cached report with its uncached checks re-run now.
+    func refreshingUncachedChecks(
+        _ report: RuntimeReadinessReport,
+        runtime: AgentRuntimeID
+    ) -> RuntimeReadinessReport {
+        RuntimeReadinessReport(checks: report.cacheable.checks + uncachedChecks(for: runtime))
+    }
+
+    /// A cached readiness state with the uncached checks re-run now.
+    func refreshingUncachedChecks(
+        _ state: RuntimeReadinessState,
+        runtime: AgentRuntimeID
+    ) -> RuntimeReadinessState {
+        uncachedChecks(for: runtime).reduce(state) { $0.combined(with: $1.state) }
     }
 
     private static func defaultDetectExecutable(_ binary: String) -> String {

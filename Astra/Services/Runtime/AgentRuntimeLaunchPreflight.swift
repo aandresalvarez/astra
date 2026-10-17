@@ -737,10 +737,10 @@ enum AgentRuntimeLaunchPreflight {
         let cached = await verdictCache?.hit(for: configuration)
         let report: RuntimeReadinessReport
         if let cached {
-            report = cached.report
+            report = readinessService.refreshingUncachedChecks(cached.report, runtime: configuration.runtime)
         } else {
             report = await readinessService.check(configuration: configuration)
-            await verdictCache?.record(report, for: configuration)
+            await verdictCache?.record(report.cacheable, for: configuration)
         }
         return preflightRuntimeReadinessBeforeLaunchResult(
             task: task,

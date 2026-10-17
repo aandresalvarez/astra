@@ -893,22 +893,17 @@ struct RuntimeReadinessProbeContext {
     let detectExecutable: @Sendable (String) -> String
     let isExecutable: @Sendable (String) -> Bool
     let processEnvironment: [String: String]
-    /// Copilot's state home (`~/.copilot`). Injected so tests never inspect
-    /// the real one.
-    let copilotStateHome: String
 
     init(
         runner: any BinaryRunner,
         timeout: TimeInterval,
         detectExecutable: @Sendable @escaping (String) -> String,
-        isExecutable: @Sendable @escaping (String) -> Bool,
-        copilotStateHome: String = CopilotCLIRuntime.defaultHome()
+        isExecutable: @Sendable @escaping (String) -> Bool
     ) {
         self.runner = runner
         self.timeout = timeout
         self.detectExecutable = detectExecutable
         self.isExecutable = isExecutable
-        self.copilotStateHome = copilotStateHome
         self.processEnvironment = RuntimeProcessEnvironment.enriched()
     }
 

@@ -28,13 +28,6 @@ extension CopilotCLIRuntimeAdapter {
                 await CopilotCLIRuntime.warmCapabilities(executablePath: executable)
             }
             checks.append(copilotAccountDeferredCheck())
-            // Copilot exits 1 with no output at all when it cannot read its
-            // own config, so this is the only place the cause can surface
-            // before a task fails.
-            let homeAccess = CopilotHomeAccessCheck.inspect(home: probes.copilotStateHome)
-            if let check = CopilotHomeAccessCheck.readinessCheck(for: homeAccess) {
-                checks.append(check)
-            }
         }
         return RuntimeReadinessReport(checks: checks)
     }

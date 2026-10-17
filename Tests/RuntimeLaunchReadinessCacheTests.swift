@@ -265,4 +265,41 @@ struct LaunchReadinessPreflightCacheTests {
         #expect(fixture.run.stopReason == "runtime_readiness_failed")
         #expect(await cache.hit(for: readinessConfiguration()) == nil)
     }
+
+    /// A ready verdict cached for Copilot must not hide a config that went
+    /// root-owned since: the home is re-checked on every cache hit.
+    @Test("A cached Copilot verdict still blocks when its config became unreadable", .enabled(if: getuid() != 0))
+    func cachedCopilotVerdictRechecksHome() async throws {
+        let fixture = try fixture()
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/copilot --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.98\n", stderr: "")
+        )
+        let service = RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { _ in "/opt/copilot" },
+            isExecutable: { _ in true },
+            copilotStateHome: home.path
+        )
+        let cache = RuntimeLaunchReadinessCache()
+        let configuration = readinessConfiguration(.copilotCLI, executablePath: "/opt/copilot")
+        func launch() async -> Bool {
+            await AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunch(
+                task: fixture.task, run: fixture.run, modelContext: fixture.container.mainContext,
+                phase: "resume", configuration: configuration,
+                readinessService: service, verdictCache: cache
+            )
+        }
+
+        #expect(await launch())
+        let probes = await runner.recordedCalls().count
+        try home.setMode(0o000, of: config)
+
+        #expect(await launch() == false)
+        #expect(await runner.recordedCalls().count == probes, "served from the cache, yet still blocked")
+    }
 }

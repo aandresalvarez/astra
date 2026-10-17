@@ -139,6 +139,86 @@ struct CopilotHomeAccessCheckTests {
         #expect(diagnostic.category == .providerProcessFailed)
     }
 
+    @Test("An unreadable file Copilot never opens warns instead of blocking")
+    func strayUnreadableFileOnlyWarns() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+        let stray = try home.write("config.json.bak", mode: 0o000)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.problems.map(\.path) == [stray])
+        #expect(report.problems.first?.access == .unreadable)
+        #expect(!report.blocksCopilot)
+        #expect(CopilotHomeAccessCheck.readinessCheck(for: report)?.state == .warning)
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI, model: "gpt-5", exitCode: 1,
+            rawError: "", providerVersion: nil, stream: nil,
+            copilotHomeAccess: { report }
+        )
+        #expect(diagnostic.category == .providerProcessFailed)
+    }
+
+    @Test("A Copilot home that is a file blocks and is moved aside")
+    func fileInPlaceOfHomeBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let notAFolder = try home.write("copilot-home", mode: 0o600)
+
+        let report = CopilotHomeAccessCheck.inspect(home: notAFolder)
+
+        #expect(report.problems.map(\.access) == [.notADirectory])
+        #expect(report.blocksCopilot)
+        #expect(report.cause.contains("is a file, not a folder"))
+        #expect(report.fixCommand == "mv '\(notAFolder)' '\(notAFolder).bak'")
+        #expect(CopilotHomeAccessCheck.readinessCheck(for: report)?.state == .blocked)
+    }
+
+    @Test("The composer's cached readiness re-checks the Copilot home on every answer")
+    func availabilityCacheRechecksHome() async throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        let service = RuntimeProviderAvailabilityService(readinessService: await Self.readyCopilotService(home: home.path))
+        let cache = RuntimeReadinessStateCache()
+        let configuration = RuntimeProviderAvailabilityConfiguration(
+            claudePath: "", copilotPath: "", claudeProvider: .anthropic,
+            vertexProjectID: "", vertexRegion: "", vertexOpusModel: "", vertexSonnetModel: "", vertexHaikuModel: ""
+        )
+
+        #expect(await service.states(configuration: configuration, cache: cache)[.copilotCLI] == .ready)
+
+        try home.setMode(0o000, of: config)
+        #expect(await service.states(configuration: configuration, cache: cache)[.copilotCLI] == .blocked)
+
+        // The cache never stored the block, so the repair shows at once too.
+        try home.setMode(0o600, of: config)
+        #expect(await service.states(configuration: configuration, cache: cache)[.copilotCLI] == .ready)
+        #expect(await cache.states(for: configuration, maxAge: 300)?[.copilotCLI] == .ready)
+    }
+
+    @Test("A cached launch verdict re-checks the Copilot home before it is trusted")
+    func launchCacheRechecksHome() async throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        let service = await Self.readyCopilotService(home: home.path)
+        let cache = RuntimeLaunchReadinessCache()
+
+        let probed = await service.check(configuration: Self.copilotConfiguration)
+        #expect(probed.state == .ready)
+        await cache.record(probed.cacheable, for: Self.copilotConfiguration)
+
+        try home.setMode(0o000, of: config)
+        let hit = try #require(await cache.hit(for: Self.copilotConfiguration))
+        let refreshed = service.refreshingUncachedChecks(hit.report, runtime: .copilotCLI)
+        #expect(refreshed.state == .blocked)
+        #expect(refreshed.checks.contains { $0.id == CopilotHomeAccessCheck.readinessCheckID })
+        // A blocked report must never be what the cache keeps.
+        #expect(!probed.cacheable.checks.contains { $0.id == CopilotHomeAccessCheck.readinessCheckID })
+    }
+
     @Test("Once ownership is back, the rest of the fix command restores access")
     func fixCommandRestoresPermissionBits() throws {
         let home = try FakeCopilotHome()
@@ -265,6 +345,22 @@ struct CopilotHomeAccessCheckTests {
         #expect(clean.userMessage.contains("failed before ASTRA received a visible assistant response"))
     }
 
+    /// A readiness service whose Copilot CLI probe always answers, so the
+    /// home check alone decides the verdict.
+    private static func readyCopilotService(home: String) async -> RuntimeReadinessService {
+        let runner = StubBinaryRunner()
+        await runner.setResponse(
+            forKey: "/opt/homebrew/bin/copilot --version",
+            result: RunResult(outcome: .exited(code: 0), stdout: "1.0.98\n", stderr: "")
+        )
+        return RuntimeReadinessService(
+            runner: runner,
+            detectExecutable: { $0 == "copilot" ? "/opt/homebrew/bin/copilot" : "" },
+            isExecutable: { $0 == "/opt/homebrew/bin/copilot" },
+            copilotStateHome: home
+        )
+    }
+
     private static let copilotConfiguration = RuntimeReadinessConfiguration(
         runtime: .copilotCLI,
         claudePath: "",
@@ -280,7 +376,7 @@ struct CopilotHomeAccessCheckTests {
 
 /// A temp folder standing in for `~/.copilot`. `remove()` restores owner
 /// permissions first so a mode-000 entry cannot leak a folder per run.
-private struct FakeCopilotHome {
+struct FakeCopilotHome {
     let path: String
 
     init() throws {

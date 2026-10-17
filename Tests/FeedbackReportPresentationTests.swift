@@ -1602,6 +1602,7 @@ struct FeedbackReportPresentationTests {
             (.failed, "quota_exhausted", "quota_limited", "The provider stopped the run because its quota was unavailable."),
             (.failed, "model_unavailable", "misconfigured", "The selected runtime or provider configuration was unavailable."),
             (.failed, "unsupported_output_format", "misconfigured", "The selected runtime or provider configuration was unavailable."),
+            (.failed, "provider_home_access_denied", "misconfigured", "The selected runtime or provider configuration was unavailable."),
             (.failed, TaskRunStopReason.providerPermissionUnresumable.rawValue, "permission_denied", "The provider could not continue with the approved permissions."),
             (.failed, "sandbox_credential_access_blocked", "permission_denied", "The provider could not continue with the approved permissions."),
             (.failed, "network_failed", "provider_process_failed", "The provider run stopped after a network failure."),

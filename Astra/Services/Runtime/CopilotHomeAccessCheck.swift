@@ -7,6 +7,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         case unreadable
         /// Copilot can read it but cannot save to it.
         case unwritable
+        /// The state home exists but is a file, so Copilot has nowhere to
+        /// keep its config.
+        case notADirectory
     }
 
     let path: String
@@ -15,6 +18,18 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     let ownedByCurrentUser: Bool
     let posixPermissions: Int?
     let access: Access
+    /// Whether Copilot reads this entry when it starts. An unreadable entry it
+    /// never opens (a stray `config.json.bak`) is worth a warning, not a block.
+    let isReadAtStartup: Bool
+
+    /// Kills every Copilot turn before it prints a byte.
+    var blocksCopilot: Bool {
+        switch access {
+        case .notADirectory: return true
+        case .unreadable: return isReadAtStartup
+        case .unwritable: return false
+        }
+    }
 
     var displayPath: String {
         (path as NSString).abbreviatingWithTildeInPath
@@ -35,17 +50,21 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
 
     var isClean: Bool { problems.isEmpty }
 
-    /// An unreadable entry kills every Copilot turn before it prints a byte.
-    /// An unwritable one may only fail when Copilot saves state, so it is a
-    /// warning, not a launch blocker.
+    /// An unreadable startup entry kills every Copilot turn before it prints
+    /// a byte. An unwritable one may only fail when Copilot saves state, and an
+    /// unreadable one it never opens does not fail at all, so both are
+    /// warnings, not launch blockers.
     var blocksCopilot: Bool {
-        problems.contains { $0.access == .unreadable }
+        problems.contains(where: \.blocksCopilot)
     }
 
     /// One sentence naming what is wrong, e.g. "Copilot cannot read
     /// ~/.copilot/config.json (owned by root, mode 600)."
     var cause: String {
         guard !problems.isEmpty else { return "" }
+        if let misplaced = problems.first(where: { $0.access == .notADirectory }) {
+            return "\(misplaced.displayPath) is a file, not a folder, so Copilot has nowhere to keep its settings."
+        }
         let unreadable = problems.filter { $0.access == .unreadable }
         let unwritable = problems.filter { $0.access == .unwritable }
         var sentences: [String] = []
@@ -66,6 +85,11 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// its owner permission bits back, because a chown alone leaves a mode-000
     /// file just as unreadable as before.
     var fixCommand: String {
+        if let misplaced = problems.first(where: { $0.access == .notADirectory }) {
+            let path = RuntimeRemediationCatalog.shellQuoted(misplaced.path)
+            let backup = RuntimeRemediationCatalog.shellQuoted(misplaced.path + ".bak")
+            return "mv \(path) \(backup)"
+        }
         let foreign = problems.filter { !$0.ownedByCurrentUser }
         var commands: [String] = []
         if !foreign.isEmpty {
@@ -124,6 +148,20 @@ enum CopilotHomeAccessCheck {
         CopilotCLIRuntime.configWriteDenyPaths(userHome: "/").map { ($0 as NSString).lastPathComponent }
     )
 
+    /// Top-level entries of a Copilot CLI 1.0.x home that hold its config or
+    /// session state. Only these can block a launch when unreadable; anything
+    /// else in the folder (backups, caches, other tools' files) is a warning.
+    static let startupEntryNames: Set<String> = readOnlyConfigFileNames.union([
+        "settings.json",
+        "permissions-config.json",
+        "session-state",
+        "session-store.db",
+        "session-store.db-wal",
+        "session-store.db-shm"
+    ])
+
+    static let readinessCheckID = "copilot-home-access"
+
     static func inspect(
         home: String = CopilotCLIRuntime.defaultHome(),
         fileManager: FileManager = .default,
@@ -139,7 +177,17 @@ enum CopilotHomeAccessCheck {
             return CopilotHomeAccessReport(home: trimmedHome, problems: [])
         }
         var problems: [CopilotHomeAccessProblem] = []
-        if let homeProblem = problem(at: trimmedHome, requiresWrite: true, fileManager: fileManager, currentUserID: currentUserID) {
+        guard isDirectory.boolValue else {
+            let problem = problem(
+                at: trimmedHome, requiresWrite: true, isReadAtStartup: true,
+                fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .notADirectory
+            )
+            return CopilotHomeAccessReport(home: trimmedHome, problems: problem.map { [$0] } ?? [])
+        }
+        if let homeProblem = problem(
+            at: trimmedHome, requiresWrite: true, isReadAtStartup: true,
+            fileManager: fileManager, currentUserID: currentUserID
+        ) {
             // An unreadable home hides everything inside it, and the fix for
             // the home (a recursive chown) covers its children too. A home
             // that is only unwritable can still hide an unreadable config, so
@@ -149,19 +197,25 @@ enum CopilotHomeAccessCheck {
             }
             problems.append(homeProblem)
         }
-        guard isDirectory.boolValue,
-              let children = try? fileManager.contentsOfDirectory(atPath: trimmedHome) else {
+        guard let children = try? fileManager.contentsOfDirectory(atPath: trimmedHome) else {
             return CopilotHomeAccessReport(home: trimmedHome, problems: problems)
         }
         for child in children.sorted() {
             let path = (trimmedHome as NSString).appendingPathComponent(child)
-            let requiresWrite = !readOnlyConfigFileNames.contains(child)
-            if let problem = problem(at: path, requiresWrite: requiresWrite, fileManager: fileManager, currentUserID: currentUserID) {
+            if let problem = problem(
+                at: path,
+                requiresWrite: !readOnlyConfigFileNames.contains(child),
+                isReadAtStartup: startupEntryNames.contains(child),
+                fileManager: fileManager,
+                currentUserID: currentUserID
+            ) {
                 problems.append(problem)
             }
         }
-        // Unreadable entries first: they are the ones that kill the CLI.
-        let ordered = problems.filter { $0.access == .unreadable } + problems.filter { $0.access == .unwritable }
+        // Blocking entries first: they are the ones that kill the CLI.
+        let ordered = problems.filter(\.blocksCopilot)
+            + problems.filter { !$0.blocksCopilot && $0.access == .unreadable }
+            + problems.filter { $0.access == .unwritable }
         return CopilotHomeAccessReport(
             home: trimmedHome,
             problems: Array(ordered.prefix(maximumReportedProblems))
@@ -172,7 +226,7 @@ enum CopilotHomeAccessCheck {
     static func readinessCheck(for report: CopilotHomeAccessReport) -> RuntimeReadinessCheck? {
         guard !report.isClean else { return nil }
         return RuntimeReadinessCheck(
-            id: "copilot-home-access",
+            id: readinessCheckID,
             title: "Copilot settings folder",
             detail: report.cause,
             state: report.blocksCopilot ? .blocked : .warning,
@@ -183,8 +237,10 @@ enum CopilotHomeAccessCheck {
     private static func problem(
         at path: String,
         requiresWrite: Bool,
+        isReadAtStartup: Bool,
         fileManager: FileManager,
-        currentUserID: uid_t
+        currentUserID: uid_t,
+        forcedAccess: CopilotHomeAccessProblem.Access? = nil
     ) -> CopilotHomeAccessProblem? {
         // `attributesOfItem` does not follow symlinks; a link's target lives
         // outside Copilot's home and is not this check's to judge.
@@ -194,7 +250,9 @@ enum CopilotHomeAccessCheck {
         let isDirectory = type == .typeDirectory
         let readMode = isDirectory ? (R_OK | X_OK) : R_OK
         let access: CopilotHomeAccessProblem.Access
-        if Darwin.access(path, readMode) != 0 {
+        if let forcedAccess {
+            access = forcedAccess
+        } else if Darwin.access(path, readMode) != 0 {
             access = .unreadable
         } else if requiresWrite, Darwin.access(path, W_OK) != 0 {
             access = .unwritable
@@ -208,7 +266,8 @@ enum CopilotHomeAccessCheck {
             owner: attributes[.ownerAccountName] as? String,
             ownedByCurrentUser: ownerID.map { $0 == currentUserID } ?? true,
             posixPermissions: (attributes[.posixPermissions] as? NSNumber)?.intValue,
-            access: access
+            access: access,
+            isReadAtStartup: isReadAtStartup
         )
     }
 }
