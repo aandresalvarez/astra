@@ -891,6 +891,61 @@ struct CopilotHomeAccessCheckTests {
         #expect((try? FileManager.default.attributesOfItem(atPath: link)) == nil)
     }
 
+    @Test("An override inside a linked home the user does not own gets no command either")
+    func overrideUnderUntrustedLinkedHomeIsNotRepaired() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let target = try root.makeDirectory("someone-elses", mode: 0o755)
+        let registry = (target as NSString).appendingPathComponent("providers.json")
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: registry))
+        try root.setMode(0o000, of: registry)
+        defer { try? root.setMode(0o600, of: registry) }
+        let link = (root.path as NSString).appendingPathComponent("home-link")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+
+        // Another uid stands in for "the link target belongs to someone else".
+        let report = CopilotHomeAccessCheck.inspect(
+            home: link,
+            environment: [CopilotHomeAccessCheck.providersOverrideVariable: registry],
+            currentUserID: getuid() + 1
+        )
+
+        #expect(report.blocksCopilot)
+        #expect(report.problems.allSatisfy { !$0.isRepairable })
+        #expect(report.fixCommand.isEmpty)
+    }
+
+    @Test("A repair of an unreadable folder says what it hid will be checked next")
+    func hiddenEntriesAreCheckedAfterRepair() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.setMode(0o000, of: home.path)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.remediation.contains("could not be checked; once it is readable ASTRA checks them"))
+    }
+
+    @Test("A locked broken startup link is unlocked so it can be replaced")
+    func lockedBrokenStartupLinkIsUnlocked() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let link = (home.path as NSString).appendingPathComponent("config.json")
+        try FileManager.default.createSymbolicLink(
+            atPath: link, withDestinationPath: (home.path as NSString).appendingPathComponent("missing.json")
+        )
+        try Self.shell("/usr/bin/chflags", ["-h", "uchg", link])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let problem = try #require(report.problems.first { $0.path == link })
+        #expect(problem.linkIsLocked)
+        #expect(report.fixCommand == "chflags -h nouchg,nouappnd '\(link)'")
+        #expect(report.remediation.contains("replace the link at"))
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(!CopilotHomeAccessCheck.lockState(of: link, followLinks: false).any)
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()

@@ -64,6 +64,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// A macOS user-immutable or append-only flag blocks writes the mode bits
     /// allow; the fix clears it.
     var hasLockFlag = false
+    /// The symlink itself (not its target) carries a user lock, so it cannot
+    /// be replaced until `chflags -h` unlocks it.
+    var linkIsLocked = false
     /// A system lock (schg/sappnd): only root can clear it, sometimes only
     /// from recovery, so the fix never tries; the user is told instead.
     var hasSystemLockFlag = false
@@ -183,9 +186,11 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let locked = problems.filter {
             $0.isRepairable && $0.hasLockFlag && ($0.symlinkTarget == nil || $0.isMisplaced)
         }
-        if !locked.isEmpty {
-            let sudo = locked.contains { !$0.ownedByCurrentUser } ? "sudo " : ""
-            commands.append("\(sudo)chflags -h nouchg,nouappnd \(Self.quotedPaths(locked))")
+        // A broken startup link the user must replace is unlocked too.
+        let lockedLinks = problems.filter { $0.isRepairable && $0.linkIsLocked && !locked.contains($0) }
+        if !(locked + lockedLinks).isEmpty {
+            let sudo = (locked + lockedLinks).contains { !$0.ownedByCurrentUser } ? "sudo " : ""
+            commands.append("\(sudo)chflags -h nouchg,nouappnd \(Self.quotedPaths(locked + lockedLinks))")
         }
         // An unreadable folder may hide entries owned by someone else, which a
         // plain chmod -R cannot repair, so it gets its ownership back too.
@@ -272,11 +277,14 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
             !$0.isRepairable && $0.symlinkTarget == nil && !$0.isProvidersOverride && !$0.hasSystemLockFlag
         }
         if let override = problems.first(where: { !$0.isRepairable && $0.isProvidersOverride }) {
-            sentences.append("COPILOT_PROVIDERS_CONFIG names \(override.displayPath), outside the Copilot folder, so ASTRA suggests no command for it; fix it yourself or point the variable at a file you own.")
+            sentences.append("COPILOT_PROVIDERS_CONFIG names \(override.displayPath), which is not in a Copilot folder ASTRA manages, so ASTRA suggests no command for it; fix it yourself or point the variable at a file you own.")
         }
         if !unvouched.isEmpty {
             let homePath = (home as NSString).abbreviatingWithTildeInPath
             sentences.append("\(homePath) links to a folder you do not own, so ASTRA suggests no command; restore access to \(Self.listed(unvouched)) yourself or point \(homePath) at a folder you own.")
+        }
+        if let hiding = problems.first(where: { $0.hidesChildren && $0.isRepairable }) {
+            sentences.append("Entries inside \(hiding.displayPath) could not be checked; once it is readable ASTRA checks them and suggests anything still needed.")
         }
         if problems.contains(where: { $0.access == .linksOutsideHome && $0.isProvidersOverride }) {
             sentences.append("To use sandboxed policies, keep the providers file inside the Copilot folder.")
@@ -416,9 +424,32 @@ enum CopilotHomeAccessCheck {
                 providersOverride, home: resolvedHome, fileManager: fileManager, currentUserID: currentUserID
             )
         }
+        // One rule decides where a command may be suggested, after every
+        // branch has reported: only inside a Copilot home ASTRA trusts (a real
+        // folder, or a link to one the user owns), plus the home entry itself
+        // and the parent a missing home would be created in. Anything else,
+        // a linked system folder or an override naming `/etc/sudoers`, is
+        // reported with advice only.
+        let targetOwner = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.ownerAccountID] as? NSNumber
+        let homeTrusted = !homeIsLink || targetOwner.map { uid_t($0.uint32Value) == currentUserID } ?? false
+        let trustedRoot = canonicalPath(resolvedHome)
+        for index in problems.indices {
+            let problem = problems[index]
+            let entry = canonicalEntryPath(problem.path)
+            let inside = homeTrusted && (entry == trustedRoot || entry.hasPrefix(trustedRoot + "/"))
+            let isHomeEntry = problem.path == trimmedHome || problem.access == .cannotCreateHome
+            if !(inside || isHomeEntry) { problems[index].isRepairable = false }
+        }
         // Blocking entries first: they are the ones that kill the CLI.
         let ordered = problems.filter(\.blocksCopilot) + problems.filter { !$0.blocksCopilot }
         return CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
+    }
+
+    /// The canonical path of an entry's folder plus its own name: a link is
+    /// placed where it sits, not where it points.
+    private static func canonicalEntryPath(_ path: String) -> String {
+        let parent = canonicalPath((path as NSString).deletingLastPathComponent)
+        return (parent as NSString).appendingPathComponent((path as NSString).lastPathComponent)
     }
 
     private static func homeProblems(
@@ -509,12 +540,6 @@ enum CopilotHomeAccessCheck {
                 problems.append(problem)
             }
         }
-        // A linked home owned by someone else may be a shared or system
-        // folder: report what is wrong there, but suggest no command for it.
-        let targetOwner = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.ownerAccountID] as? NSNumber
-        if homeIsLink, targetOwner.map({ uid_t($0.uint32Value) != currentUserID }) ?? true {
-            for index in problems.indices { problems[index].isRepairable = false }
-        }
         return problems
     }
 
@@ -533,7 +558,6 @@ enum CopilotHomeAccessCheck {
             problem.isProvidersFile = true
             // The variable can name any file (`/etc/sudoers`); outside the
             // Copilot home no chown, chmod or move is ever suggested for it.
-            problem.isRepairable = insideHome
             return [problem]
         }
         // Readable here, but a sandboxed task is granted only the Copilot
@@ -802,6 +826,13 @@ enum CopilotHomeAccessCheck {
         )
         problem.isSpecialFile = targetExists && !isDirectory.boolValue && targetType != .typeRegular
         problem.hasLockFlag = access == .unwritable && lockState(of: path, followLinks: true).any
+        // A link the user has to replace (broken or the wrong type) must be
+        // unlocked first.
+        let linkLocks = lockState(of: path, followLinks: false)
+        if access == .unreadable || access == .wrongType {
+            problem.linkIsLocked = linkLocks.user
+            problem.hasSystemLockFlag = linkLocks.system
+        }
         return problem
     }
 
