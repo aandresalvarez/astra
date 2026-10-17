@@ -470,11 +470,35 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
 - **Still rows:** plugin templates (workspace rows owned by the plugin);
   they move to the parity checklist in R4.
 
+### How R4 was built (2026-10-16)
+
+R4 is on `plugins2-r4`, stacked on R3. The Plugins screen is the only
+capability screen: `PluginCatalogView`, its install sheet and router, the
+prerequisite badge, the catalog-only presentation and cache types, the
+preview flag and its Settings toggle are deleted.
+
+| Parity item | Home, or the owner's call |
+| --- | --- |
+| Confirmations | Remove and Delete account confirm, naming what goes and what stays; Turn off deletes nothing and asks nothing |
+| Deep links from the rail | A plugin the rail (or an MCP install) asks for opens expanded and scrolled to |
+| Import of a plugin file | "Import file..." reviews the file and imports it through the action service; a newer version of an installed plugin is an Update |
+| Account sign-in flows (Google OAuth) | **Dropped (owner, 2026-10-16).** The Google Workspace sign-in sheet, its setup presentation, the OAuth stack and the build script's client ID are deleted; a plugin whose setup needs an OAuth account is listed without Add, saying why |
+| Admin approve / deprecate / block | On the expanded row for admins, keyed to the version's digest |
+| Removal of inactive plugins | Remove is offered whether the plugin is on or off |
+| Creating a plugin | **Kept (owner, 2026-10-16):** New > Create a plugin... (the wizard) and New > From an MCP server... |
+| Export source JSON, copy setup from another workspace, validate before Add | **Dropped (owner, 2026-10-16)** |
+| Category scopes, approval and risk filters, per-row risk labels | Replaced by the three status groups and search (UI section) |
+
+Chat `/mcp` plugin creation, which the superseded phase 4 removed, stays:
+it is a way to create a plugin, which the owner kept.
+
 ### Owner decisions (2026-10-16)
 
 1. Edited plugin skills survive the migration as authored skills.
 2. An account belongs to one workspace unless shared explicitly.
 3. `#507`, `#509` and `#510` are closed as superseded; R0 is under way.
+4. R4 parity: creating a plugin is kept; Google OAuth sign-in, export, copy
+   setup and validate-before-Add are dropped.
 
 ## Problem
 
