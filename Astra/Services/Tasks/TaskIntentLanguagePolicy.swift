@@ -53,7 +53,15 @@ enum TaskIntentLanguagePolicy {
             of: "(\(actionPattern))(?:\\s+the\\s+following)?\\s*:\\s*(?:[-*]\\s*)?",
             with: "$1 ", options: [.regularExpression, .caseInsensitive]
         )
-        for clause in clauses(in: instructions) {
+        // A filename's dot belongs to the requested object, rather than ending
+        // the instruction before its extension ("create preview.html"). Keep
+        // the existing action-only parser's clause behavior unchanged.
+        let filenameDots = instructions.replacingOccurrences(
+            of: #"(?<=[\p{L}\p{N}_/\-])\.(?=[\p{L}\p{N}])"#,
+            with: "\u{001E}", options: .regularExpression
+        )
+        for protectedClause in clauses(in: filenameDots) {
+            let clause = protectedClause.replacingOccurrences(of: "\u{001E}", with: ".")
             let parts = clause.replacingOccurrences(of: coordination, with: "\u{001F}", options: .regularExpression)
                 .components(separatedBy: "\u{001F}")
             var precedingText = ""

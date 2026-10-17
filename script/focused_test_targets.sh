@@ -127,6 +127,7 @@ target_for_path() {
       ;;
     Astra/Services/Validation/TaskDeliverableExpectation.swift|Astra/Services/Validation/StandaloneArtifactRequestPolicy.swift|Astra/Services/Tasks/TaskIntentLanguagePolicy.swift|Tests/TaskTextOnlyDeliverableTests.swift)
       add_target "TaskTextOnlyDeliverableTests"
+      add_target "TaskDeliverableExpectationTests"
       add_target "DeliverableExpectationCoverageTests"
       add_target "TaskDeliverableVerificationServiceTests"
       add_target "TaskDeliverableFollowUpTests"

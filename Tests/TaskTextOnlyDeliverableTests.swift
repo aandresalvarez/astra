@@ -74,7 +74,10 @@ struct TaskTextOnlyDeliverableTests {
     ])
     func textRequestCompletesWithoutAFile(goal: String) async throws {
         let fixture = try fixture(goal: goal)
-        defer { withExtendedLifetime(fixture.container) {} }
+        defer {
+            try? FileManager.default.removeItem(at: fixture.root)
+            withExtendedLifetime(fixture.container) {}
+        }
         fixture.run.setOutput("Here is the requested text response.")
         #expect(!AgentPromptBuilder.buildPrompt(for: fixture.task).contains("Artifact first-action requirement:"))
         let verification = await TaskDeliverableVerificationService.evaluate(
@@ -88,7 +91,10 @@ struct TaskTextOnlyDeliverableTests {
     @Test("Real creation still rewrites the prompt and fails verification when its file is missing")
     func missingArtifactIsStillBlocked() async throws {
         let fixture = try fixture(goal: "Write five sentences about an app and create a website.")
-        defer { withExtendedLifetime(fixture.container) {} }
+        defer {
+            try? FileManager.default.removeItem(at: fixture.root)
+            withExtendedLifetime(fixture.container) {}
+        }
         fixture.run.setOutput("Here are five sentences.")
         #expect(AgentPromptBuilder.buildPrompt(for: fixture.task).contains("Artifact first-action requirement:"))
         let verification = await TaskDeliverableVerificationService.evaluate(
@@ -98,16 +104,19 @@ struct TaskTextOnlyDeliverableTests {
         #expect(TaskCompletionPolicy.decideSuccessfulCompletion(task: fixture.task, run: fixture.run).shouldBlockCompletion)
     }
 
-    private func fixture(goal: String) throws -> (container: ModelContainer, task: AgentTask, run: TaskRun) {
+    private func fixture(goal: String) throws -> (root: URL, container: ModelContainer, task: AgentTask, run: TaskRun) {
         let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
-        let workspace = Workspace(name: "Text intent", primaryPath: NSTemporaryDirectory())
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-text-intent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Text intent", primaryPath: root.path)
         let task = AgentTask(title: "Task", goal: goal, workspace: workspace)
         let run = TaskRun(task: task)
         container.mainContext.insert(workspace)
         container.mainContext.insert(task)
         container.mainContext.insert(run)
         try container.mainContext.save()
-        return (container, task, run)
+        return (root, container, task, run)
     }
 }
