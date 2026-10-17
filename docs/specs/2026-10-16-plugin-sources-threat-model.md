@@ -104,7 +104,12 @@ R5 is on `plugins2-r5`, stacked on R4. Each row above has a test in
   digest of the copy the source installed
   (`PluginSourceCatalog.contentDigest`). A record whose digest no longer
   matches the installed copy, say after a file was imported over it, does
-  not count, so only that source's own copy is "from" it.
+  not count, so only that source's own copy is "from" it. An import
+  journals the record before the library write: `beginProvenance` keeps the
+  copy the record names and adds the incoming one as `pendingDigest`, and
+  only after the library write does `recordProvenance` settle on the new
+  digest. An exit between the two leaves whichever copy the library holds
+  recognised as the source's own, so it can still be updated from there.
 - **Updates (T7).** Shown in the Sources section: "Review update" for a
   greater version, "Changed: review" for the same version with another
   digest. The import replaces only the copy installed from the same source.

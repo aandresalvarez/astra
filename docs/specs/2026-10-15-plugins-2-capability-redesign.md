@@ -129,9 +129,14 @@ accounts) is not shipped and is superseded.
 ### Runtime
 
 - `PluginRuntimeProjection` turns a workspace's enabled activations, their
-  library manifests and their bound accounts into value types, cached by the
-  activation's `revision`, the library digest and the `revision` of every
-  bound account, so editing an account's URL, alias or settings evicts it.
+  library manifests and their bound accounts into value types. It is not
+  cached itself; the cache that holds its result, the rail's
+  (`CapabilityRailSnapshotSignature`), is keyed by each activation's
+  `revision` and on/off state, the library packages, and every workspace and
+  shared skill, connector and tool row (ID, name, `updatedAt`). Editing an
+  account's URL, alias or settings changes its row, and deleting the
+  authored row an override names removes it from that key, so either
+  evicts the cached projection.
 - The projection skips the components listed in the activation's
   `overriddenComponentIDs`; the authored row that replaced each one is in the
   inventory instead, so nothing is duplicated. An override whose authored row
@@ -183,7 +188,15 @@ reconciliation finishes or undoes what an exit interrupted:
   memory and only undoes an import that fails in the same process. An
   activation whose recorded version, digest or component list differs from
   the library, or whose plugin templates have drifted, is shown as needing
-  Update (`PluginUpdateService.needsReconcile`). Components the new version
+  Update (`PluginUpdateService.needsReconcile`). A component ID encodes
+  the component's kind and, where it has one, its service or command
+  (`skill:<name>`, `connector:<service>:<name>`,
+  `tool:<type>:<command>:<name>`, `template:<name>`;
+  `CapabilityResourceOrigin.componentID(for:)`), so a version that reuses a
+  connector's name for another service, or a name for another kind, declares
+  a different ID: reconciliation sees the old one dropped and the new one
+  added, and no binding, setting or secret crosses between them. That needs
+  nothing beyond `knownComponentIDs`. Components the new version
   dropped are removed from each activation like a Remove of that component,
   in the same save that advances its digest: their bindings and
   `configValues` are deleted and their activation-owned secrets go through
@@ -355,8 +368,12 @@ Each is a decision R1 implements and its fixture tests.
     secret settings resolve again because the workspace keeps its ID. A
     validated
     import restores them only for components the installed manifest still
-    declares, binds them to the account rows the import itself created, and
-    gives the activation a fresh ID; only credentials are entered again.
+    declares, binds them to the account rows the import itself created
+    (with fresh UUIDs, since a connector's Keychain namespace is derived from
+    its ID, so a copy imported on the same Mac never resolves the original's
+    credentials), and gives the activation a fresh ID and namespace seed;
+    only credentials are entered again. Recovery from the workspace's own
+    mirror keeps account IDs.
 
 9. **Legacy component IDs.** Rows made by the current installer carry
    `originComponentID` values from `CapabilityResourceOrigin.componentID(for:)`
@@ -594,7 +611,13 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   R3 keeps them in step with the definition (`PluginTemplateSync`: the row
   stamped with the plugin and component is rewritten on Update, a new one
   is added, a dropped one stays as the person's), so installed content is
-  never stale after Update. Moving templates into the projection (an
+  never stale after Update. A sync never overwrites an edit: the activation
+  records each template row's content digest as the sync wrote it
+  (`PluginActivation.templateDigests`, seeded by the migration for rows that
+  still match the definition), and a stamped row whose content no longer
+  has that digest, or that has no digest and differs from the definition,
+  is unstamped and kept as the person's own row before the definition's
+  template is written as a new row. Moving templates into the projection (an
   edited template becoming an authored override, schedules rebound to
   projected template IDs, requirement 8) is not part of R1-R5; until a
   phase takes it, the "It also emits the plugin's templates" line under
@@ -1047,7 +1070,7 @@ Available
 | Approval | approval record written at add, same store | the view writing the store directly (`PluginCatalogView.swift:1153`, *static read*); `create(enableHere)` approving after enabling |
 | Enablement | one `PluginActivation` row per (plugin, workspace) | `enabledCapabilityIDs`, `enabledGlobalSkillIDs/ConnectorIDs/ToolIDs`, `enabledPackIDs`, `installedPluginIDs/Versions` on `Workspace` |
 | Accounts | `Account` rows under a service | the service/account conflation in `Connector` |
-| Workspace mirror | `.astra-workspace.json` keeps, per plugin, its id, the source it came from and the digest that was approved, plus account aliases; on import a plugin is enabled only when the installed one has the same source and digest, as `WorkspacePackageImportCoordinator` already validates against the installed library. *(As built in R1 and R3: the mirror keeps each plugin's id and version and its activation whole (migration requirement 12): settings, overrides, `knownComponentIDs`, `secretSettingKeys`, and each account binding with its component and `isDefault` (`PluginAccountRef`), so recovery keeps the workspace's default account per service. The source and approved digest are not in it yet. Installed IDs are unique case-insensitively and a source plugin can't reuse a built-in ID, which narrows a swapped plugin but doesn't close it.)* | the verbatim copy of enablement arrays and origin stamps (`WorkspaceConfigManager.swift:2056`, *verified*) |
+| Workspace mirror | `.astra-workspace.json` keeps, per plugin, its id, the source it came from and the digest that was approved, plus account aliases; on import a plugin is enabled only when the installed one has the same source and digest, as `WorkspacePackageImportCoordinator` already validates against the installed library. *(As built in R1 and R3: the mirror keeps each plugin's id and version and its activation whole (migration requirement 12): settings, overrides, `knownComponentIDs`, `secretSettingKeys`, and each account binding with its component and `isDefault` (`PluginAccountRef`), so recovery keeps the workspace's default account per service. Each activation also carries the approval digest the workspace accepted (`InstalledPluginRef.digest`). A chosen file's activation whose digest is missing or differs from the installed copy's comes in off, with none of its settings, overrides or account bindings, and is reported as changed (`CapabilityImportVerifier.installedDigests`). The digest covers the content, so it also pins the source: provenance is itself keyed by content digest (R5), and two copies with one digest are the same bytes.)* | the verbatim copy of enablement arrays and origin stamps (`WorkspaceConfigManager.swift:2056`, *verified*) |
 
 Derived caches (composer snapshot, rail snapshot, browser policy cache) keep
 existing but observe `PluginActivation` changes, and every read of a workspace
