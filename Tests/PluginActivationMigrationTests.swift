@@ -201,7 +201,8 @@ struct PluginActivationMigrationTests {
             declaredComponentIDs: [
                 "jira-workflow": Set(fixture.jira.connectors.map(CapabilityResourceOrigin.componentID(for:))),
                 "gcloud-workflow": Set(fixture.gcloud.skills.map(CapabilityResourceOrigin.componentID(for:)))
-            ]
+            ],
+            installedDigests: fixture.digests
         )
         let validated = WorkspaceConfigManager.importWorkspaceResult(
             from: forged,
@@ -471,7 +472,8 @@ struct PluginActivationMigrationTests {
             approvedPackageIDs: ["gcloud-workflow"],
             installedPackageIDs: ["gcloud-workflow"],
             availablePackIDs: [],
-            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))]
+            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
+            installedDigests: fixture.digests
         )
         let validated = WorkspaceConfigManager.importWorkspaceResult(
             from: config, modelContext: other.mainContext, capabilityTrust: .validate(verifier)
@@ -482,6 +484,49 @@ struct PluginActivationMigrationTests {
         #expect(validatedActivation.secretSettingKeys.isEmpty)
         #expect(PluginRuntimeProjection.derivedID(of: validatedActivation, componentID: component)
             != PluginRuntimeProjection.derivedID(of: original, componentID: component))
+    }
+
+    @Test("A chosen file's activation for another copy of the plugin stays off and brings nothing")
+    func importedActivationNeedsTheInstalledDigest() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let config = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        let digest = try #require(config.installedPlugins?.first { $0.id == "gcloud-workflow" }?.digest)
+        #expect(digest == fixture.digests["gcloud-workflow"])
+
+        for installedDigest in ["another-copy", digest] {
+            let target = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            Self.retained.append(target)
+            var digests = fixture.digests
+            digests["gcloud-workflow"] = installedDigest
+            let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+                approvedPackageIDs: ["gcloud-workflow"],
+                installedPackageIDs: ["gcloud-workflow"],
+                availablePackIDs: [],
+                declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
+                installedDigests: digests
+            )
+            let result = WorkspaceConfigManager.importWorkspaceResult(
+                from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier)
+            )
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: result.workspace))
+            if installedDigest == digest {
+                #expect(activation.isEnabled)
+                #expect(activation.recordedDigest == digest)
+                #expect(!activation.configuration.isEmpty)
+                #expect(result.capabilityTrust.pluginsChanged.isEmpty)
+            } else {
+                #expect(!activation.isEnabled)
+                #expect(activation.recordedDigest.isEmpty)
+                #expect(activation.configuration.isEmpty && activation.bindings.isEmpty)
+                #expect(result.capabilityTrust.pluginsChanged == ["gcloud-workflow"])
+            }
+        }
     }
 
     @Test("The mirror carries a shared row an override names even when nothing else enables it")
@@ -528,7 +573,8 @@ struct PluginActivationMigrationTests {
             approvedPackageIDs: ["gcloud-workflow"],
             installedPackageIDs: ["gcloud-workflow"],
             availablePackIDs: [],
-            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))]
+            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))],
+            installedDigests: fixture.digests
         )
         let imported = WorkspaceConfigManager.importWorkspaceResult(
             from: config, modelContext: target.mainContext, capabilityTrust: .validate(verifier)
@@ -613,6 +659,12 @@ private struct Fixture {
     let container: ModelContainer
     let context: ModelContext
     let packages: [PluginPackage]
+    /// Each fixture package's approval digest, as the live verifier reads it.
+    var digests: [String: String] {
+        Dictionary(uniqueKeysWithValues: packages.compactMap { package in
+            (try? CapabilityApprovalDigest.digest(for: package)).map { (package.id, $0) }
+        })
+    }
     let jira: PluginPackage
     let gcloud: PluginPackage
     let aID = UUID()

@@ -32,17 +32,23 @@ extension WorkspaceConfigManager {
         /// Each installed package's component IDs; an imported activation
         /// keeps settings, bindings and overrides only for these.
         public var declaredComponentIDs: [String: Set<String>]
+        /// Each installed package's approval digest. An imported activation
+        /// recorded against another digest (another copy under the same ID)
+        /// stays off and brings none of its settings or accounts.
+        public var installedDigests: [String: String]
 
         public init(
             approvedPackageIDs: Set<String>,
             installedPackageIDs: Set<String>,
             availablePackIDs: Set<String>,
-            declaredComponentIDs: [String: Set<String>] = [:]
+            declaredComponentIDs: [String: Set<String>] = [:],
+            installedDigests: [String: String] = [:]
         ) {
             self.approvedPackageIDs = approvedPackageIDs
             self.installedPackageIDs = installedPackageIDs
             self.availablePackIDs = availablePackIDs
             self.declaredComponentIDs = declaredComponentIDs
+            self.installedDigests = installedDigests
         }
     }
 
@@ -51,6 +57,9 @@ extension WorkspaceConfigManager {
         public var capabilitiesUnavailable: [String] = []
         public var packsUnavailable: [String] = []
         public var pluginsUnavailable: [String] = []
+        /// Plugins whose activation names another copy than the installed
+        /// one: kept, but off and without their details.
+        public var pluginsChanged: [String] = []
         public var unknownSharedRowIDs: [String] = []
         public var originStampsStripped = 0
         public var sharedRowsLocalized = 0
@@ -64,6 +73,7 @@ extension WorkspaceConfigManager {
                 "capabilities_unavailable": capabilitiesUnavailable.joined(separator: ", "),
                 "packs_unavailable": packsUnavailable.joined(separator: ", "),
                 "plugins_unavailable": pluginsUnavailable.joined(separator: ", "),
+                "plugins_changed": pluginsChanged.joined(separator: ", "),
                 "unknown_shared_row_count": String(unknownSharedRowIDs.count),
                 "origin_stamps_stripped": String(originStampsStripped),
                 "shared_rows_localized": String(sharedRowsLocalized)
@@ -87,9 +97,18 @@ extension WorkspaceConfigManager {
     /// Drops what this machine cannot back: packages that are not installed
     /// and approved, packs it does not have, and shared rows that do not exist
     /// here. Shared rows the import itself reuses are re-enabled afterwards.
+    /// True when a chosen file's activation was recorded against the copy
+    /// installed here. The workspace's own mirror is always its own copy.
+    static func isAcceptedCopy(_ ref: InstalledPluginRef, trust: CapabilityImportTrustPolicy) -> Bool {
+        guard case .validate(let verifier) = trust else { return true }
+        guard let digest = ref.digest, !digest.isEmpty else { return false }
+        return verifier.installedDigests[ref.id] == digest
+    }
+
     @MainActor
     static func reconcile(
         _ state: inout WorkspaceCapabilityActivationState,
+        pluginRefs: [InstalledPluginRef],
         trust: CapabilityImportTrustPolicy,
         modelContext: ModelContext,
         report: inout CapabilityImportTrustReport
@@ -99,6 +118,12 @@ extension WorkspaceConfigManager {
         state.capabilityIDs.removeAll { !verifier.approvedPackageIDs.contains($0) }
         report.packsUnavailable = state.packIDs.filter { !verifier.availablePackIDs.contains($0) }
         state.packIDs.removeAll { !verifier.availablePackIDs.contains($0) }
+        // Another copy under the same ID never inherits the file's enablement.
+        let changed = Set(pluginRefs.filter {
+            verifier.installedPackageIDs.contains($0.id) && !isAcceptedCopy($0, trust: trust)
+        }.map(\.id))
+        report.pluginsChanged = state.pluginIDs.filter(changed.contains)
+        state.capabilityIDs.removeAll(where: changed.contains)
 
         var keptIDs: [String] = []
         var keptVersions: [String] = []

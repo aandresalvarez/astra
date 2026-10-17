@@ -1259,7 +1259,8 @@ public enum WorkspaceConfigManager {
         modelContext.insert(workspace)
         var activation = requestedActivation(from: config)
         var trustReport = CapabilityImportTrustReport()
-        reconcile(&activation, trust: capabilityTrust, modelContext: modelContext, report: &trustReport)
+        reconcile(&activation, pluginRefs: config.installedPlugins ?? [], trust: capabilityTrust,
+                  modelContext: modelContext, report: &trustReport)
 
         var connectorsByID: [String: Connector] = [:]
         var connectorsByName: [String: Connector] = [:]
