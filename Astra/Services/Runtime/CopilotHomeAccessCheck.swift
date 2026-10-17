@@ -117,6 +117,13 @@ enum CopilotHomeAccessCheck {
     /// Keeps blocker text readable when a whole tree went root-owned.
     static let maximumReportedProblems = 5
 
+    /// Config files Copilot only reads during a task. ASTRA already denies
+    /// task-side writes to them (`configWriteDenyPaths`), so a user who made
+    /// them read-only has a working, hardened setup, not a broken one.
+    static let readOnlyConfigFileNames: Set<String> = Set(
+        CopilotCLIRuntime.configWriteDenyPaths(userHome: "/").map { ($0 as NSString).lastPathComponent }
+    )
+
     static func inspect(
         home: String = CopilotCLIRuntime.defaultHome(),
         fileManager: FileManager = .default,
@@ -131,19 +138,25 @@ enum CopilotHomeAccessCheck {
         guard fileManager.fileExists(atPath: trimmedHome, isDirectory: &isDirectory) else {
             return CopilotHomeAccessReport(home: trimmedHome, problems: [])
         }
-        if let problem = problem(at: trimmedHome, fileManager: fileManager, currentUserID: currentUserID) {
-            // An unusable home hides everything inside it, and the fix for the
-            // home (a recursive chown) covers its children too.
-            return CopilotHomeAccessReport(home: trimmedHome, problems: [problem])
+        var problems: [CopilotHomeAccessProblem] = []
+        if let homeProblem = problem(at: trimmedHome, requiresWrite: true, fileManager: fileManager, currentUserID: currentUserID) {
+            // An unreadable home hides everything inside it, and the fix for
+            // the home (a recursive chown) covers its children too. A home
+            // that is only unwritable can still hide an unreadable config, so
+            // its children are still checked.
+            guard homeProblem.access == .unwritable else {
+                return CopilotHomeAccessReport(home: trimmedHome, problems: [homeProblem])
+            }
+            problems.append(homeProblem)
         }
         guard isDirectory.boolValue,
               let children = try? fileManager.contentsOfDirectory(atPath: trimmedHome) else {
-            return CopilotHomeAccessReport(home: trimmedHome, problems: [])
+            return CopilotHomeAccessReport(home: trimmedHome, problems: problems)
         }
-        var problems: [CopilotHomeAccessProblem] = []
         for child in children.sorted() {
             let path = (trimmedHome as NSString).appendingPathComponent(child)
-            if let problem = problem(at: path, fileManager: fileManager, currentUserID: currentUserID) {
+            let requiresWrite = !readOnlyConfigFileNames.contains(child)
+            if let problem = problem(at: path, requiresWrite: requiresWrite, fileManager: fileManager, currentUserID: currentUserID) {
                 problems.append(problem)
             }
         }
@@ -169,6 +182,7 @@ enum CopilotHomeAccessCheck {
 
     private static func problem(
         at path: String,
+        requiresWrite: Bool,
         fileManager: FileManager,
         currentUserID: uid_t
     ) -> CopilotHomeAccessProblem? {
@@ -182,7 +196,7 @@ enum CopilotHomeAccessCheck {
         let access: CopilotHomeAccessProblem.Access
         if Darwin.access(path, readMode) != 0 {
             access = .unreadable
-        } else if Darwin.access(path, W_OK) != 0 {
+        } else if requiresWrite, Darwin.access(path, W_OK) != 0 {
             access = .unwritable
         } else {
             return nil

@@ -93,6 +93,52 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.fixCommand == "sudo chown -R \"$USER\":staff '\(home.path)' && chmod u+rwx '\(home.path)'")
     }
 
+    @Test("Read-only Copilot config files are a hardened setup, not a problem")
+    func readOnlyConfigFilesAreClean() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o400)
+        try home.write("mcp-config.json", mode: 0o444)
+
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+        // Write access is waived, read access is not.
+        try home.setMode(0o000, of: config)
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).blocksCopilot)
+    }
+
+    @Test("A home that is only unwritable still has its children checked")
+    func unwritableHomeStillChecksChildren() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o000)
+        try home.setMode(0o555, of: home.path)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+
+        #expect(report.problems.map(\.path) == [config, home.path])
+        #expect(report.problems.map(\.access) == [.unreadable, .unwritable])
+        #expect(report.blocksCopilot)
+        #expect(CopilotHomeAccessCheck.readinessCheck(for: report)?.state == .blocked)
+        #expect(report.fixCommand.contains("'\(config)'"))
+        #expect(report.fixCommand.contains("'\(home.path)'"))
+    }
+
+    @Test("A silent exit with only an unwritable entry keeps the generic diagnosis")
+    func unwritableOnlyDoesNotExplainSilentExit() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+        try home.makeDirectory("session-state", mode: 0o555)
+
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .copilotCLI, model: "gpt-5", exitCode: 1,
+            rawError: "", providerVersion: nil, stream: nil,
+            copilotHomeAccess: { CopilotHomeAccessCheck.inspect(home: home.path) }
+        )
+
+        #expect(diagnostic.category == .providerProcessFailed)
+    }
+
     @Test("Once ownership is back, the rest of the fix command restores access")
     func fixCommandRestoresPermissionBits() throws {
         let home = try FakeCopilotHome()

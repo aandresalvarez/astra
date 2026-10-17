@@ -109,6 +109,8 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         // A completely silent non-zero exit is all Copilot gives when it cannot
         // read its own config: no stderr, no stdout, no log. Only then is the
         // state home inspected, so a failure with any real evidence keeps it.
+        // Only an unreadable entry explains the exit; an unwritable one is a
+        // readiness warning, not proof of cause.
         var homeAccess: CopilotHomeAccessReport?
         if category == .providerProcessFailed,
            exitCode != 0,
@@ -116,7 +118,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
            resultOutput.isEmpty,
            (stream?.rawLineCount ?? 0) == 0,
            let report = copilotHomeAccess?(),
-           !report.isClean {
+           report.blocksCopilot {
             category = .providerHomeAccessDenied
             homeAccess = report
         }
