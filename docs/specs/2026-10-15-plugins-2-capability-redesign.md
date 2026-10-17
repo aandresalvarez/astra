@@ -110,7 +110,14 @@ accounts) is not shipped and is superseded.
   its plugins, not one per component: `WorkspaceCapabilityActivation.bind`
   and `unbind` keep exactly one binding of each service the default, and
   `defaultAccount(forService:in:)` reads it. Deleting an account cascades to
-  its bindings, so no activation keeps a dangling ID.
+  its bindings, so no activation keeps a dangling ID; a cascade alone would
+  skip the promotion `unbind` does, so every deletion unbinds first:
+  Delete account unbinds it from every activation, Configure's delete and
+  the legacy Turn off call `WorkspaceCapabilityActivation.releaseAccount`,
+  and removing an activation
+  (Remove, a snapshot restore) unbinds each of its accounts. A service whose
+  default was among them gets its oldest remaining account in the same
+  save.
 - **`Account`** (`@Model`): `id` (UUID), `serviceType`, `alias` (unique per
   normalized service among the accounts a workspace can see, checked on
   every bind, a share into another workspace included), `baseURL`, `authMethod`,
@@ -550,7 +557,13 @@ R3 is on `plugins2-r3`, stacked on R1 (`#518`).
   before the save, a value the new component already has wins, and every
   copy is put back by `PluginUpdateService.undo` if any activation's
   reconciliation or the save fails), and the templates and schedules that
-  named its skill are rewritten (`retargetSkill`); a component the
+  named its skill are rewritten (`retargetSkill`). The predecessor's own
+  namespace is journaled in `PluginSecretCleanupOutbox` before the save and
+  deleted after it once no activation owns it, so a rename leaves no
+  ownerless credentials; a failed save keeps it. The automatic launch pass
+  copies every secret the predecessor recorded, declared or not, and moves
+  the markers, so nothing is deleted before the person's Update releases a
+  key the new version no longer declares; a component the
   activation knew (`knownComponentIDs`) that is gone and not taken over is
   released, its secret namespace journaled. A setting a kept skill no
   longer declares is released too (its Keychain entry journaled in
@@ -777,7 +790,15 @@ Every `credentialForm` field declares where its value goes: `secret` (the
 Keychain, under the account), `account.baseURL`, `account.alias`, or
 `account.config` (a non-secret per-account setting). The validator rejects
 a form with a field that declares none, so no value is ever classified by
-its name, and a token can never land in SwiftData.
+its name, and a token can never land in SwiftData. A declared destination
+is not trusted on its own either: `account.config` is plain text and goes
+into the workspace mirror, so a field there whose key names a credential
+(`RunSecretRedaction.isSecretKey`, the rule the Keychain itself uses) is
+refused. *(As built, a connector declares its fields as `credentialHints`,
+which go to the Keychain, and `configHints`, plain settings;
+`CapabilityPackageValidator` refuses a config hint named like a credential,
+"Credential stored as a setting", so a package can't route a token to a
+plain setting.)*
 
 A CLI extension declares the same contract with different legs:
 
