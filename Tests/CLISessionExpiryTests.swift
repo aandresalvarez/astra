@@ -178,6 +178,24 @@ struct CLISessionExpiryTests {
         #expect(monitor.runtimeStopReason == nil)
     }
 
+    @Test("A substitution inside another command masks the CLI's failure; an assignment does not")
+    func substitutionInsideAnotherCommandMasksTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in [
+            "echo \"$(gh auth token)\"", "echo $(gh auth token)", "printf '%s' \"`gh auth token`\"",
+            "echo \"$(echo $(gh auth token))\""
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "missed: \(command)")
+        }
+        #expect(CLISessionExpiryClassifier.stop(content: gcloudReauth, command: "printf '%s' \"$(gcloud projects list)\"", failed: false) != nil)
+        for command in [
+            "token=$(gh auth token)", "token=\"$(gh auth token)\"", "(gh auth token)", "$(gh auth token)",
+            "gh api \"$(gh auth token)\"", "cat notes.md", "echo '$(gh auth token)'"
+        ] {
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) == nil, "stopped: \(command)")
+        }
+    }
+
     @Test("The run's repair event reaches the dock, scoped to that run")
     func stopEvidenceReadsTheRunsRepair() throws {
         let task = AgentTask(title: "Export", goal: "List projects")

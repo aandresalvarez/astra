@@ -505,11 +505,14 @@ public enum PluginManifestConverter {
         return present == [component.kind]
     }
 
+    /// How much a runtime may do, least first. Full only with a recent CLI
+    /// is a condition, so it ranks below unconditional `full`.
     private static func rank(_ support: PluginRuntimeSupport) -> Int {
         switch support {
         case .unsupported: 0
         case .shellOnly: 1
-        case .fullWithRecentCLI, .full: 2
+        case .fullWithRecentCLI: 2
+        case .full: 3
         }
     }
 
