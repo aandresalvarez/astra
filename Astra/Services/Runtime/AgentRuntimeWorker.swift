@@ -725,9 +725,8 @@ final class AgentRuntimeWorker {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot, launchResourcePlan: launchResourcePlan
         )
         // OpenCode, Antigravity and Cursor keep their stores under HOME (OpenCode also XDG_DATA_HOME / OPENCODE_DB), which an attached skill may redirect for the launch.
-        // Copilot reads COPILOT_PROVIDERS_CONFIG, which a skill may set; its home check below needs it.
         let baseLaunchEnvironment = ProcessInfo.processInfo.environment.merging(["HOME": providerSessionStoreHome]) { _, home in home }
-        let providerLaunchEnvironment = [.openCodeCLI, .antigravityCLI, .cursorCLI, .copilotCLI].contains(selectedRuntime)
+        let providerLaunchEnvironment = [.openCodeCLI, .antigravityCLI, .cursorCLI].contains(selectedRuntime)
             ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: executionTask,
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch,
@@ -748,21 +747,6 @@ final class AgentRuntimeWorker {
             environment: providerLaunchEnvironment
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
-        // Under an enforced read scope, a startup entry Copilot reads from
-        // outside its home is unreachable, so it blocks rather than warns.
-        let copilotSandboxEnforcesReads = selectedRuntime == .copilotCLI && processRunner.sandboxEnforcesReads(
-            runtime: selectedRuntime, permissionPolicy: launchPermissionPolicy, executionPolicy: executionPolicy
-        )
-        if selectedRuntime == .copilotCLI,
-           let blocker = CopilotHomeAccessCheck.launchBlocker(
-               resumeSessionID: nativeContinuationSessionID, environment: providerLaunchEnvironment,
-               workingDirectory: executionPath, sandboxEnforcesReads: copilotSandboxEnforcesReads
-           ),
-           !AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunchResult(
-               task: task, run: run, modelContext: modelContext, phase: auditPhase, report: blocker
-           ).didPass {
-            return
-        }
         // What a launch without the resume sends, kept in case a resumed turn comes back empty.
         let historyGuidance = runtimeCapabilityProfile.canDeliverHostControlPlane
             && appliedRuntime.requirements.offeredHostControlTools.contains("history")
@@ -1108,9 +1092,17 @@ final class AgentRuntimeWorker {
         }
         let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
         // Only Copilot's silent exit 1 looks at its home, with the launch's own
-        // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere).
+        // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere),
+        // resolved only once that failure has happened.
         let copilotFailureEnvironment = selectedRuntime == .copilotCLI && result.exitCode == 1
-            ? providerLaunchEnvironment : nil
+            ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: executionTask,
+                capabilityScope: capabilityResolutionSnapshot.providerLaunch,
+                contextText: providerLaunchContextText,
+                executionPolicy: executionPolicy,
+                runtimeRequirements: appliedRuntime.requirements
+            )) { _, scoped in scoped }
+            : nil
         let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
@@ -1126,9 +1118,10 @@ final class AgentRuntimeWorker {
             budgetExceeded: result.budgetExceeded,
             maxTurnsExceeded: result.maxTurnsExceeded,
             copilotHomeAccess: copilotFailureEnvironment.map { environment in
+                // A file the sandbox would have hidden was already refused
+                // at launch (`guardedSandboxedPlan`), so no boundary here.
                 { CopilotHomeAccessCheck.inspect(
-                    resumeSessionID: nativeContinuationSessionID, environment: environment,
-                    workingDirectory: executionPath, sandboxEnforcesReads: copilotSandboxEnforcesReads
+                    resumeSessionID: nativeContinuationSessionID, environment: environment, workingDirectory: executionPath
                 ) }
             }
         )

@@ -64,6 +64,12 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// A macOS user-immutable or append-only flag blocks writes the mode bits
     /// allow; the fix clears it.
     var hasLockFlag = false
+    /// For `.linksOutsideHome`: the canonical file Copilot actually reads,
+    /// judged against the launch's sandbox boundary.
+    var readPath: String?
+    /// A file with other hard links: chown and chmod act on the shared inode,
+    /// so they would change every other name for it too. Advice only.
+    var hasOtherHardLinks = false
     /// `path` is itself a symlink. chmod and chown follow links, so no such
     /// command is ever generated for it; only `chflags -h` and `mv` act on it.
     var pathIsLink = false
@@ -118,14 +124,17 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
 struct CopilotHomeAccessReport: Equatable, Sendable {
     let home: String
     let problems: [CopilotHomeAccessProblem]
-    /// The launch's sandbox enforces its read scope, so an entry Copilot
-    /// reads from outside the home is unreachable, not just a warning.
-    var sandboxEnforcesReads = false
+    /// The sandbox boundary the launch really applies. An entry Copilot reads
+    /// from outside its home blocks only when this boundary would deny it.
+    var sandboxReceipt: ExecutionSandboxBoundaryReceipt?
 
     var isClean: Bool { problems.isEmpty }
 
     func blocks(_ problem: CopilotHomeAccessProblem) -> Bool {
-        problem.blocksCopilot || (sandboxEnforcesReads && problem.access == .linksOutsideHome)
+        if problem.blocksCopilot { return true }
+        guard problem.access == .linksOutsideHome, let sandboxReceipt else { return false }
+        let denial = RuntimeSandboxFileDenial(operation: .read, path: problem.readPath ?? problem.path, detail: "")
+        return sandboxReceipt.explains(denial)
     }
 
     /// An unreadable startup entry kills every Copilot turn before it prints
@@ -281,12 +290,17 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// Advice for problems no command is suggested for.
     private var manualRemediation: [String] {
         var sentences: [String] = []
+        let hardLinked = problems.filter(\.hasOtherHardLinks)
+        if !hardLinked.isEmpty {
+            sentences.append("\(Self.listed(hardLinked)) also exist under another name (hard links), so changing them would change those too; ASTRA suggests no command for them.")
+        }
         let systemLocked = problems.filter(\.hasSystemLockFlag)
         if !systemLocked.isEmpty {
             sentences.append("\(Self.listed(systemLocked)) carry a system lock flag (schg or sappnd), which only an administrator can clear; ASTRA suggests no command for it.")
         }
         let unvouched = problems.filter {
-            !$0.isRepairable && $0.symlinkTarget == nil && !$0.isProvidersOverride && !$0.hasSystemLockFlag
+            !$0.isRepairable && $0.symlinkTarget == nil && !$0.isProvidersOverride
+                && !$0.hasSystemLockFlag && !$0.hasOtherHardLinks
         }
         if let override = problems.first(where: { !$0.isRepairable && $0.isProvidersOverride }) {
             sentences.append("COPILOT_PROVIDERS_CONFIG names \(override.displayPath), which is not in a Copilot folder ASTRA manages, so ASTRA suggests no command for it; fix it yourself or point the variable at a file you own.")
@@ -396,6 +410,8 @@ enum CopilotHomeAccessCheck {
     }
 
     static let readinessCheckID = "copilot-home-access"
+    /// The stop reason when the launch is refused before Copilot starts.
+    static let launchStopReason = "runtime_readiness_failed"
 
     /// `resumeSessionID`, when the turn resumes a native Copilot session, adds
     /// that one `session-state/<id>` folder to the check; the rest of the
@@ -405,7 +421,7 @@ enum CopilotHomeAccessCheck {
         resumeSessionID: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         workingDirectory: String? = nil,
-        sandboxEnforcesReads: Bool = false,
+        sandboxReceipt: ExecutionSandboxBoundaryReceipt? = nil,
         fileManager: FileManager = .default,
         currentUserID: uid_t = getuid()
     ) -> CopilotHomeAccessReport {
@@ -458,16 +474,16 @@ enum CopilotHomeAccessCheck {
             // as /Users when the user's own home is missing.
             let isOwnedHomeParent = problem.access == .cannotCreateHome
                 && problem.path == homeParent && problem.ownedByCurrentUser
-            if problem.isProvidersOverride || !(inside || isHomeEntry || isOwnedHomeParent) {
+            if problem.isProvidersOverride || problem.hasOtherHardLinks || !(inside || isHomeEntry || isOwnedHomeParent) {
                 problems[index].isRepairable = false
             }
         }
         var report = CopilotHomeAccessReport(home: trimmedHome, problems: problems)
-        report.sandboxEnforcesReads = sandboxEnforcesReads
+        report.sandboxReceipt = sandboxReceipt
         // Blocking entries first: they are the ones that kill the CLI.
         let ordered = problems.filter(report.blocks) + problems.filter { !report.blocks($0) }
         var orderedReport = CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
-        orderedReport.sandboxEnforcesReads = sandboxEnforcesReads
+        orderedReport.sandboxReceipt = sandboxReceipt
         return orderedReport
     }
 
@@ -603,6 +619,7 @@ enum CopilotHomeAccessCheck {
         )
         outside.isProvidersOverride = true
         outside.isProvidersFile = true
+        outside.readPath = canonicalPath(override)
         var linkInfo = stat()
         outside.pathIsLink = lstat(override, &linkInfo) == 0 && (linkInfo.st_mode & S_IFMT) == S_IFLNK
         return [outside]
@@ -618,12 +635,12 @@ enum CopilotHomeAccessCheck {
         resumeSessionID: String?,
         environment: [String: String],
         workingDirectory: String?,
-        sandboxEnforcesReads: Bool = false,
+        sandboxReceipt: ExecutionSandboxBoundaryReceipt? = nil,
         fileManager: FileManager = .default
     ) -> RuntimeReadinessReport? {
         let report = inspect(
             home: home, resumeSessionID: resumeSessionID, environment: environment,
-            workingDirectory: workingDirectory, sandboxEnforcesReads: sandboxEnforcesReads, fileManager: fileManager
+            workingDirectory: workingDirectory, sandboxReceipt: sandboxReceipt, fileManager: fileManager
         )
         guard report.blocksCopilot, let check = readinessCheck(for: report) else { return nil }
         return RuntimeReadinessReport(checks: [check])
@@ -723,7 +740,7 @@ enum CopilotHomeAccessCheck {
             access = .wrongType
         } else if Darwin.access(path, readMode) != 0 {
             access = .unreadable
-        } else if requiresWrite, Darwin.access(path, W_OK) != 0 || lockState(of: path, followLinks: false).any {
+        } else if requiresWrite, writeDenied(path) || lockState(of: path, followLinks: false).any {
             // BSD flags override the mode bits, and `access` may not see them.
             access = .unwritable
         } else {
@@ -744,8 +761,16 @@ enum CopilotHomeAccessCheck {
         // are the cause, and a legitimate sharing ACL is left alone.
         // Ownership does not matter here: the fix makes the user the owner
         // first, and a chown leaves a denying ACL in place.
-        problem.hasACL = ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
+        // Only when nothing else explains the refusal: macOS `access` also
+        // refuses a write on a locked entry, and a sharing ACL must survive
+        // the unlock. If an ACL denies too, the next check will say so.
+        let locked = lockState(of: path, followLinks: false).any
+        let accessRefused = access == .unreadable || (access == .unwritable && writeDenied(path) && !locked)
+        problem.hasACL = accessRefused
+            && ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
             && hasExtendedACL(path)
+        var linkCount = stat()
+        problem.hasOtherHardLinks = !isDirectory && lstat(path, &linkCount) == 0 && linkCount.st_nlink > 1
         problem.requiresWrite = requiresWrite
         problem.pathIsLink = type == .typeSymbolicLink
         // A locked entry refuses writes, and a move aside as well.
@@ -763,6 +788,10 @@ enum CopilotHomeAccessCheck {
             problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
         }
         return problem
+    }
+
+    private static func writeDenied(_ path: String) -> Bool {
+        Darwin.access(path, W_OK) != 0
     }
 
     struct LockState {
@@ -856,6 +885,7 @@ enum CopilotHomeAccessCheck {
         )
         problem.isSpecialFile = targetExists && !isDirectory.boolValue && targetType != .typeRegular
         problem.pathIsLink = true
+        problem.readPath = canonicalPath(path)
         problem.hasLockFlag = access == .unwritable && lockState(of: path, followLinks: true).any
         // A link the user has to replace (broken or the wrong type) must be
         // unlocked first.

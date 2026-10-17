@@ -1002,26 +1002,78 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.fixCommand.isEmpty)
     }
 
-    @Test("Under an enforced read scope, a startup entry read from outside the home blocks")
-    func outsideEntryBlocksWhenSandboxEnforcesReads() throws {
+    @Test("A startup entry read from outside the home blocks only where the real sandbox boundary denies it")
+    func outsideEntryJudgedByLaunchBoundary() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let workspace = try FakeCopilotHome()
+        defer { workspace.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let link = (home.path as NSString).appendingPathComponent("config.json")
+        func boundary(_ scope: ExecutionSandboxReadScope) -> ExecutionSandboxBoundaryReceipt {
+            ExecutionSandboxBoundaryReceipt(
+                writableRoots: [], writeDeniedRoots: [], readScope: scope,
+                readableRoots: [home.path, workspace.path]
+            )
+        }
+        func blocker(_ receipt: ExecutionSandboxBoundaryReceipt?) -> RuntimeReadinessReport? {
+            CopilotHomeAccessCheck.launchBlocker(
+                home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil,
+                sandboxReceipt: receipt
+            )
+        }
+
+        // Outside every readable root: blocks under an enforced read scope only.
+        try FileManager.default.createSymbolicLink(
+            atPath: link, withDestinationPath: try elsewhere.write("config.json", mode: 0o600)
+        )
+        #expect(blocker(nil) == nil)
+        #expect(blocker(boundary(.open)) == nil)
+        #expect(blocker(boundary(.enforce)) != nil)
+
+        // Under the workspace, which the profile grants: never blocks.
+        try FileManager.default.removeItem(atPath: link)
+        try FileManager.default.createSymbolicLink(
+            atPath: link, withDestinationPath: try workspace.write("config.json", mode: 0o600)
+        )
+        #expect(blocker(boundary(.enforce)) == nil)
+    }
+
+    @Test("A hard-linked file is never chowned or chmod-ed: it would change its other names too")
+    func hardLinkedFileGetsNoCommand() throws {
         let home = try FakeCopilotHome()
         defer { home.remove() }
         let elsewhere = try FakeCopilotHome()
         defer { elsewhere.remove() }
-        let external = try elsewhere.write("config.json", mode: 0o600)
-        try FileManager.default.createSymbolicLink(
-            atPath: (home.path as NSString).appendingPathComponent("config.json"), withDestinationPath: external
-        )
+        let shared = try elsewhere.write("shared", mode: 0o600)
+        let config = (home.path as NSString).appendingPathComponent("config.json")
+        try FileManager.default.linkItem(atPath: shared, toPath: config)
+        try home.setMode(0o000, of: config)
+        defer { try? home.setMode(0o600, of: config) }
 
-        #expect(!CopilotHomeAccessCheck.inspect(home: home.path).blocksCopilot)
-        #expect(CopilotHomeAccessCheck.inspect(home: home.path, sandboxEnforcesReads: true).blocksCopilot)
-        #expect(CopilotHomeAccessCheck.launchBlocker(
-            home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil
-        ) == nil)
-        #expect(CopilotHomeAccessCheck.launchBlocker(
-            home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil,
-            sandboxEnforcesReads: true
-        ) != nil)
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+
+        #expect(report.problems.first?.hasOtherHardLinks == true)
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("hard links"))
+    }
+
+    @Test("A sharing ACL survives when only a lock flag blocks writing")
+    func lockOnlyDenialKeepsACL() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let store = try home.write("session-store.db", mode: 0o600)
+        try Self.shell("/bin/chmod", ["+a", "user:nobody allow read", store])
+        try Self.shell("/usr/bin/chflags", ["uchg", store])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let problem = try #require(report.problems.first)
+        #expect(problem.hasLockFlag)
+        #expect(!problem.hasACL)
+        #expect(!report.fixCommand.contains("chmod -N"))
     }
 
     @Test("A home symlink loop blocks like a dangling link")

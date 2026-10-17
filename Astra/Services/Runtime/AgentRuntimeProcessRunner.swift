@@ -62,8 +62,6 @@ private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
 protocol AgentRuntimeProcessRunning: AnyObject {
     func cancel()
     func isHostControlBrokerAvailable() -> Bool
-    /// See `AgentRuntimeProcessRunner+SandboxReads.swift`.
-    @MainActor func sandboxEnforcesReads(runtime: AgentRuntimeID, permissionPolicy: PermissionPolicy, executionPolicy: AgentRuntimeExecutionPolicy) -> Bool
 
     @MainActor
     func runRuntimeProcess(
@@ -99,7 +97,7 @@ final class AgentRuntimeProcessRunner {
     typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var currentProcess: AgentRuntimeProcessControl?
-    let sandboxSettingsProvider: SandboxSettingsProvider
+    private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
     private let dockerRuntimeProvider: DockerRuntimeProvider
     private let hostControlBrokerSessionManager: any HostControlBrokerSessionManaging
@@ -809,7 +807,7 @@ final class AgentRuntimeProcessRunner {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
             let plan: AgentRuntimeProcessLaunchPlan
-            switch sandboxedPlan(adapter: adapter, context: launchContext) {
+            switch guardedSandboxedPlan(adapter: adapter, context: launchContext) {
             case .plan(let resolvedPlan):
                 plan = resolvedPlan
             case .blocked(let blockedResult):
@@ -837,7 +835,7 @@ final class AgentRuntimeProcessRunner {
         }
 
         let plan: AgentRuntimeProcessLaunchPlan
-        switch sandboxedPlan(adapter: adapter, context: launchContext) {
+        switch guardedSandboxedPlan(adapter: adapter, context: launchContext) {
         case .plan(let resolvedPlan):
             plan = resolvedPlan
         case .blocked(let blockedResult):
