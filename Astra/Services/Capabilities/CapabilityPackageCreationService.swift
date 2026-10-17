@@ -85,22 +85,32 @@ struct CapabilityPackageCreationService {
                 enablePolicyContext.approvalRecords.append(pendingApprovalRecord)
             }
 
-            let installationResult = try installer.install(
-                validatedPackage,
-                into: workspace,
-                modelContext: modelContext,
-                credentialInputs: credentialInputs,
-                configInputs: configInputs,
-                baseURLOverrides: baseURLOverrides,
-                allowCredentialUserInteraction: allowCredentialUserInteraction,
-                policyContext: enablePolicyContext,
-                traceID: traceID,
-                announceCatalogMutation: false
-            )
-            let approvalRecord = try saveApprovalRecordIfNeeded(
+            // The approval is written before the library entry it covers: an
+            // exit between the two must not leave a new version installed
+            // with no approval for its digest.
+            let approval = try saveApprovalRecordIfNeeded(
                 pendingApprovalRecord,
                 package: validatedPackage
             )
+            let installationResult: CapabilityInstaller.InstallationResult
+            do {
+                installationResult = try installer.install(
+                    validatedPackage,
+                    into: workspace,
+                    modelContext: modelContext,
+                    credentialInputs: credentialInputs,
+                    configInputs: configInputs,
+                    baseURLOverrides: baseURLOverrides,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction,
+                    policyContext: enablePolicyContext,
+                    traceID: traceID,
+                    announceCatalogMutation: false
+                )
+            } catch {
+                approval?.revert()
+                throw error
+            }
+            let approvalRecord = approval?.record
             CapabilityCatalogPersistenceEvents.post(.global)
             return CapabilityPackageCreationResult(
                 package: validatedPackage,
@@ -140,9 +150,9 @@ struct CapabilityPackageCreationService {
     private func saveApprovalRecordIfNeeded(
         _ pendingRecord: CapabilityApprovalRecord?,
         package: PluginPackage
-    ) throws -> CapabilityApprovalRecord? {
+    ) throws -> (record: CapabilityApprovalRecord, revert: () -> Void)? {
         guard let pendingRecord else { return nil }
-        return try approvalStore.save(
+        return try approvalStore.saveBeforeDependentWrite(
             package: package,
             status: pendingRecord.status,
             approvedBy: pendingRecord.approvedBy,

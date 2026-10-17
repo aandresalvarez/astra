@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 
 /// Applies the immutable launch configuration captured by a durable request.
@@ -37,7 +38,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
             executionEnvironmentSnapshotJSON: policy.executionEnvironmentSnapshotJSON,
             templateHooksJSON: policy.templateHooksJSON,
             skillSnapshotsJSON: policy.skillSnapshotsJSON,
-            runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON
+            runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON,
+            pluginActivations: policy.pluginActivations
         )
     }
 
@@ -45,15 +47,23 @@ enum TaskExecutionLaunchSnapshotApplicator {
     /// task-shaped interface without giving them a writable SwiftData object.
     static func detachedTask(_ snapshot: AgentTaskLaunchSnapshot, from source: AgentTask) -> AgentTask {
         let resolvedInventory = TaskCapabilityResolver(task: source).resourceInventory
-        let cloneSources = capabilityCloneSources(source: source, resolvedInventory: resolvedInventory)
+        let cloneSources = capabilityCloneSources(
+            source: source,
+            resolvedInventory: resolvedInventory,
+            frozen: frozenRows(of: snapshot, source: source)
+        )
         let workspace = source.workspace.map(detachedWorkspace)
         let capabilityGraph = detachedCapabilityGraph(
             sources: cloneSources,
             workspace: workspace
         )
         if let workspace, let live = source.workspace {
+            // The activations frozen at submission, when the request has
+            // them: a plugin turned off, on or reconfigured while it waited
+            // does not change the run.
             WorkspaceCapabilityActivation.copyActivations(
-                from: live,
+                snapshot.pluginActivations ?? WorkspaceCapabilityActivation.activations(of: live).map(PluginActivationRecord.init),
+                of: live,
                 to: workspace,
                 accountsByID: Dictionary(workspace.connectors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             )
@@ -173,29 +183,64 @@ enum TaskExecutionLaunchSnapshotApplicator {
         let skillsByID: [UUID: Skill]
     }
 
-    /// The live workspace remains authoritative for capability enablement. At
-    /// dispatch, project exactly its resolved inventory into the unmanaged
-    /// launch graph so later planners do not need a SwiftData ModelContext.
+    /// Rows the frozen activations name: the accounts they bind and the
+    /// authored rows that replaced a component.
+    private struct FrozenActivationRows {
+        var accounts: [Connector] = []
+        var skills: [Skill] = []
+        var localTools: [LocalTool] = []
+    }
+
+    /// The rows the frozen activations name that the live inventory may no
+    /// longer reach (a shared account or edited shared skill of a plugin
+    /// turned off since), so the launch copy resolves them as submitted.
+    private static func frozenRows(of snapshot: AgentTaskLaunchSnapshot, source: AgentTask) -> FrozenActivationRows {
+        guard let records = snapshot.pluginActivations?.filter(\.isEnabled),
+              let context = source.modelContext ?? source.workspace?.modelContext else { return FrozenActivationRows() }
+        let accountIDs = Array(Set(records.flatMap(\.bindings).compactMap(\.accountID)))
+        let rowIDs = Array(Set(records.flatMap(\.overridingRowIDs).compactMap(UUID.init(uuidString:))))
+        var rows = FrozenActivationRows()
+        if !accountIDs.isEmpty {
+            let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { accountIDs.contains($0.id) })
+            rows.accounts = ((try? context.fetch(descriptor)) ?? []).filter { !$0.isDeleted }
+        }
+        if !rowIDs.isEmpty {
+            let skills = FetchDescriptor<Skill>(predicate: #Predicate { rowIDs.contains($0.id) })
+            rows.skills = ((try? context.fetch(skills)) ?? []).filter { !$0.isDeleted }
+            let tools = FetchDescriptor<LocalTool>(predicate: #Predicate { rowIDs.contains($0.id) })
+            rows.localTools = ((try? context.fetch(tools)) ?? []).filter { !$0.isDeleted }
+        }
+        return rows
+    }
+
+    /// The live workspace remains authoritative for capability enablement
+    /// other than plugin activations, which a request freezes at submission.
+    /// At dispatch, project exactly its resolved inventory (and the frozen
+    /// activations' accounts) into the unmanaged launch graph so later
+    /// planners do not need a SwiftData ModelContext.
     private static func capabilityCloneSources(
         source: AgentTask,
-        resolvedInventory: TaskCapabilityResolver.ResourceInventory
+        resolvedInventory: TaskCapabilityResolver.ResourceInventory,
+        frozen: FrozenActivationRows = FrozenActivationRows()
     ) -> CapabilityCloneSources {
         let workspaceSkills = source.workspace?.skills ?? []
         let workspaceConnectors = source.workspace?.connectors ?? []
         let workspaceLocalTools = source.workspace?.localTools ?? []
 
         var skills = uniqueSkills(
-            workspaceSkills + source.skills + resolvedInventory.behaviorSkills
+            workspaceSkills + source.skills + resolvedInventory.behaviorSkills + frozen.skills
         )
         var connectors = uniqueConnectors(
             workspaceConnectors +
                 (workspaceSkills + source.skills).flatMap(\.connectors) +
-                resolvedInventory.connectors
+                resolvedInventory.connectors +
+                frozen.accounts
         )
         var localTools = uniqueLocalTools(
             workspaceLocalTools +
                 (workspaceSkills + source.skills).flatMap(\.localTools) +
-                resolvedInventory.localTools
+                resolvedInventory.localTools +
+                frozen.localTools
         )
 
         skills = uniqueSkills(
@@ -209,13 +254,13 @@ enum TaskExecutionLaunchSnapshotApplicator {
             connectors: connectors,
             localTools: localTools,
             workspaceSkillIDs: Set(
-                (workspaceSkills + resolvedInventory.behaviorSkills).map(\.id)
+                (workspaceSkills + resolvedInventory.behaviorSkills + frozen.skills).map(\.id)
             ),
             workspaceConnectorIDs: Set(
-                (workspaceConnectors + resolvedInventory.connectors).map(\.id)
+                (workspaceConnectors + resolvedInventory.connectors + frozen.accounts).map(\.id)
             ),
             workspaceLocalToolIDs: Set(
-                (workspaceLocalTools + resolvedInventory.localTools).map(\.id)
+                (workspaceLocalTools + resolvedInventory.localTools + frozen.localTools).map(\.id)
             )
         )
     }

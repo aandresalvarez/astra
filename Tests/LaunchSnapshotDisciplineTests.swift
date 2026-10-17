@@ -61,6 +61,10 @@ struct LaunchSnapshotDisciplineTests {
         "validationStrategy"
     ]
 
+    /// Snapshot fields that are not task fields: the workspace state a launch
+    /// copy is built with. `detachedTask` reads each one off the snapshot.
+    private static let snapshotOwnedWorkspaceFields: Set<String> = ["pluginActivations"]
+
     // MARK: - Freeze chain
 
     @Test("Snapshot-owned field set is consistent across the whole freeze chain")
@@ -73,7 +77,7 @@ struct LaunchSnapshotDisciplineTests {
         //    which detachedTask copies from the source task, not the snapshot).
         let snapshotProperties = try Set(
             capturedNames(in: snapshotSource, pattern: #"(?m)^    let ([A-Za-z_]\w*):"#)
-        ).subtracting(["id"])
+        ).subtracting(["id"]).subtracting(Self.snapshotOwnedWorkspaceFields)
         #expect(
             snapshotProperties == Self.snapshotOwnedFields,
             "AgentTaskLaunchSnapshot gained or lost a field. Update snapshotOwnedFields and re-audit the allowlists below: \(symmetricDifference(snapshotProperties, Self.snapshotOwnedFields))"
@@ -87,6 +91,13 @@ struct LaunchSnapshotDisciplineTests {
             applied == Self.snapshotOwnedFields,
             "TaskExecutionLaunchSnapshotApplicator.detachedTask must assign every snapshot-owned field from the snapshot: \(symmetricDifference(applied, Self.snapshotOwnedFields))"
         )
+
+        for field in Self.snapshotOwnedWorkspaceFields {
+            #expect(
+                applicatorSource.contains("snapshot.\(field)") && requestSource.contains("public let \(field):"),
+                "\(field) must be captured by TaskExecutionPolicySnapshotV1 and applied from the snapshot by detachedTask."
+            )
+        }
 
         // 3. Every field is actually captured at admission time — otherwise the
         //    "frozen" value is whatever the live task happened to hold later.

@@ -117,6 +117,13 @@ enum PluginsSurfacePresentation {
         return "Needs an account sign-in that ASTRA can't do."
     }
 
+    /// Whether a row offers Turn off, which never deletes. A standalone
+    /// workspace skill (`skill.<uuid>`) is on for as long as it exists, so it
+    /// is edited or deleted where it was written, not switched off here.
+    static func offersTurnOff(_ package: PluginPackage) -> Bool {
+        !(package.id.hasPrefix("skill.") && package.sourceMetadata?.kind == "workspace")
+    }
+
     /// Name, summary and tags, plus what is inside: skill names, tool names and
     /// commands, MCP servers, connector services. "bigquery" finds Google Cloud
     /// through its `bq` tool's description.
@@ -130,6 +137,16 @@ enum PluginsSurfacePresentation {
             + package.mcpServers.flatMap { [$0.displayName, $0.id] }
             + package.connectors.flatMap { [$0.name, $0.serviceType] }
         return haystack.contains { $0.lowercased().contains(needle) }
+    }
+
+    /// The required accounts an added plugin has no working sign-in for: a
+    /// pending step each. Google is the only provider ASTRA signs in to, so
+    /// any other stays pending.
+    static func pendingAccounts(for package: PluginPackage, googleAccountConnected: Bool) -> [PluginSetupRequirement] {
+        package.setupRequirements.filter {
+            $0.kind == .oauthAccount && $0.required
+                && !($0.provider == GoogleWorkspaceCapability.connectorBinding && googleAccountConnected)
+        }
     }
 }
 

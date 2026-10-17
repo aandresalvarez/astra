@@ -113,6 +113,20 @@ struct PluginRepairTests {
         #expect(working == nil)
     }
 
+    @Test("A failing prerequisite gets its own repair when another shares its name")
+    func railMatchesPrerequisitesByCheckIdentity() throws {
+        var package = try gcloudPackage()
+        let first = CLIPrerequisite(binary: "gcloud", displayName: "CLI", purpose: "", authHint: "Run `gcloud auth login`.")
+        let second = CLIPrerequisite(binary: "gh", displayName: "CLI", purpose: "", authHint: "Run `gh auth login`.")
+        package.prerequisites = [first, second]
+        let repair = CapabilityRailRepair.repair(for: package, statuses: [
+            first.id: .healthy(path: "/usr/bin/gcloud", version: "512.0"),
+            second.id: .unauthenticated(detail: "Not logged in")
+        ])
+        #expect(repair?.command == "gh auth login")
+        #expect(repair?.checkBinary == "gh")
+    }
+
     @Test("A connector's repair asks for its credentials")
     func connectorRepairIsACredentialForm() throws {
         let manifest = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
@@ -161,6 +175,17 @@ struct PluginRepairTests {
             )
         )
         #expect(RepairAction.from(hostile) == nil)
+    }
+
+    @Test("A Terminal repair runs the declared CLI, not a same-named file elsewhere")
+    func terminalRepairRejectsLookalikeExecutables() {
+        for lookalike in ["/tmp/gcloud auth login", "./gcloud auth login", "~/bin/gcloud auth login", "gcloud.sh auth login"] {
+            #expect(!RepairAction.isSafeTerminalCommand(lookalike, binary: "gcloud", allowsInstaller: true), "\(lookalike)")
+        }
+        #expect(!RepairAction.isSafeTerminalCommand("/tmp/brew install gh", binary: "gh", allowsInstaller: true))
+        // A declared path is the CLI only at exactly that path.
+        #expect(RepairAction.isSafeTerminalCommand("/opt/gcloud/bin/gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("/tmp/gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
     }
 }
 

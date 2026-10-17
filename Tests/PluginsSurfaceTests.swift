@@ -11,6 +11,8 @@ import ASTRAModels
 @Suite("Plugins surface")
 @MainActor
 struct PluginsSurfaceTests {
+    private static var retained: [ModelContainer] = []
+
     @Test("Added plugins with work left need action, the rest are ready, the others are available to add")
     func groupsByWhatIsLeft() {
         let state = PluginsSurfacePresentation.makeState([
@@ -70,6 +72,54 @@ struct PluginsSurfaceTests {
         synthetic.sourceMetadata = CapabilitySourceMetadata(id: "workspace", displayName: "Workspace", kind: "workspace", trustLevel: "local")
         #expect(!PluginsSurfaceView.isRemovable(synthetic))
         #expect(PluginsSurfaceView.isRemovable(package("imported.plugin", name: "Imported")))
+    }
+
+    @Test("A standalone skill's row turns off deleting nothing, and a workspace's own skill offers no Turn off")
+    func standaloneSkillRowsTurnOffWithoutDeleting() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(container)
+        let context = container.mainContext
+        let workspace = Workspace(name: "Standalone", primaryPath: "/tmp/plugins-standalone")
+        context.insert(workspace)
+        let own = Skill(name: "Local Analyst", allowedTools: ["Read"])
+        own.workspace = workspace
+        // The shared row's connector matches this workspace's own one by
+        // service, which the legacy disabler would delete with it.
+        let sharedNotes = Connector(name: "Notes", serviceType: "notes")
+        sharedNotes.isGlobal = true
+        let shared = Skill(name: "Shared Analyst", allowedTools: ["Read"])
+        shared.isGlobal = true
+        let workspaceNotes = Connector(name: "Notes", serviceType: "notes")
+        workspaceNotes.workspace = workspace
+        [own, shared].forEach { context.insert($0) }
+        [sharedNotes, workspaceNotes].forEach { context.insert($0) }
+        shared.connectors = [sharedNotes]
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableGlobalSkill(shared.id.uuidString)
+            $0.enableGlobalConnector(sharedNotes.id.uuidString)
+        }
+        try context.save()
+        let capabilities = WorkspaceCapabilities(workspace: workspace, globalSkills: [shared], globalConnectors: [sharedNotes])
+        let rows = CapabilityCatalogInventory.configuredPackages(catalogPackages: [], capabilities: capabilities, workspace: workspace)
+        let ownRow = try #require(rows.first { $0.id == "skill.\(own.id.uuidString.lowercased())" })
+        let sharedRow = try #require(rows.first { $0.id == "skill.\(shared.id.uuidString.lowercased())" })
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-plugins-standalone-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = CapabilityCatalogActionService(library: CapabilityLibrary(directory: root))
+
+        #expect(!PluginsSurfacePresentation.offersTurnOff(ownRow))
+        #expect(!service.disable(ownRow, workspace: workspace, capabilities: capabilities, modelContext: context).persisted)
+        #expect(PluginsSurfacePresentation.offersTurnOff(sharedRow))
+        #expect(service.disable(sharedRow, workspace: workspace, capabilities: capabilities, modelContext: context).persisted)
+
+        #expect(!workspace.enabledGlobalSkillIDs.contains(shared.id.uuidString))
+        #expect(Set(try context.fetch(FetchDescriptor<Skill>()).map(\.id)) == [own.id, shared.id])
+        #expect(Set(try context.fetch(FetchDescriptor<Connector>()).map(\.id)) == [sharedNotes.id, workspaceNotes.id])
     }
 
     @Test("Search reaches inside a plugin: bigquery finds Google Cloud through its bq tool")
@@ -152,6 +202,31 @@ struct PluginsSurfaceTests {
         #expect(approvals.records().isEmpty)
         #expect(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs.isEmpty)
         withExtendedLifetime(container) {}
+    }
+
+    @Test("An optional account neither sends Add through account setup nor refuses it")
+    func addIgnoresOptionalOAuthRequirements() throws {
+        let google = try #require(try builtIn("google-workspace").setupRequirements.first)
+        for provider in [google.provider, "salesforce"] {
+            var imported = package("imported-optional", name: "Optional")
+            imported.setupRequirements = [
+                PluginSetupRequirement(id: "acct", kind: .oauthAccount, displayName: "Account", provider: provider, required: false)
+            ]
+            #expect(try CapabilityCatalogActionService.addRoute(for: imported) == .enable)
+        }
+    }
+
+    @Test("A required account with no working sign-in is a pending step")
+    func requiredOAuthAccountsArePendingUntilConnected() throws {
+        let google = try builtIn("google-workspace")
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: google, googleAccountConnected: false).count == 1)
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: google, googleAccountConnected: true).isEmpty)
+        var optional = google
+        optional.setupRequirements = optional.setupRequirements.map { var r = $0; r.required = false; return r }
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: optional, googleAccountConnected: false).isEmpty)
+        var crm = package("imported-crm", name: "CRM")
+        crm.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM", provider: "salesforce")]
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: crm, googleAccountConnected: true).map(\.id) == ["crm"])
     }
 
     // MARK: - Fixtures

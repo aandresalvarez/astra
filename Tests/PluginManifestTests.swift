@@ -122,6 +122,24 @@ struct PluginManifestTests {
         #expect(throws: PluginManifestError.self) { try PluginManifestConverter.checkedPackage(from: template) }
     }
 
+    @Test("Two connectors sharing a name keep their own setup: each is checked against its own ID")
+    func sameNamedConnectorsKeepTheirOwnSetup() throws {
+        var package = try builtIn("jira-workflow")
+        let index = try #require(package.connectors.firstIndex { !$0.credentialHints.isEmpty })
+        var second = package.connectors[index]
+        package.connectors[index].id = "jira-cloud"
+        second.id = "jira-server"
+        second.credentialHints = [.init(key: "JIRA_SERVER_PAT", hint: "Personal access token")]
+        package.connectors.insert(second, at: index + 1)
+        let manifest = PluginManifestConverter.manifest(from: package)
+        let forms = manifest.components.filter { $0.kind == .connector && $0.name == second.name }.map(\.setup.connect?.fields)
+        #expect(forms.count == 2 && forms[0] != forms[1])
+
+        let checked = try PluginManifestConverter.checkedPackage(from: manifest)
+        #expect(checked.connectors[index].id == "jira-cloud")
+        #expect(checked.connectors[index + 1].credentialHints.map(\.key) == ["JIRA_SERVER_PAT"])
+    }
+
     @Test("A hint's first backticked command is the repair command")
     func firstCommandExtraction() {
         #expect(PluginManifestConverter.firstCommand("Run `gh auth login`.") == "gh auth login")

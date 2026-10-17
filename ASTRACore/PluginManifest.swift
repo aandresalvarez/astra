@@ -476,8 +476,12 @@ public enum PluginManifestConverter {
                 throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
             }
         }
+        // Matched by the ID checked above (two connectors may share a name);
+        // a setup step's ID isn't carried, so it is matched by its name.
         for component in manifest.components where !component.setup.isEmpty {
-            let kept = carried.first { $0.kind == component.kind && $0.name == component.name }?.setup
+            let kept = carried.first {
+                $0.kind == component.kind && (component.kind == .setup ? $0.name == component.name : $0.id == component.id)
+            }?.setup
             guard kept == component.setup else {
                 throw PluginManifestError.unrepresentableSetup(component: component.name)
             }
@@ -549,6 +553,13 @@ public enum PluginManifestConverter {
                 install: PluginSetupStep(kind: .url, url: prerequisite.installURL, hint: prerequisite.installHint)
             )
         )
+    }
+
+    /// The `CLIPrerequisite.id` (binary, arguments, context) a setup
+    /// component checks; nil for one that runs no CLI. Health is keyed by it,
+    /// so a failure finds its own component even when two share a name.
+    public static func prerequisiteID(of component: PluginComponent) -> String? {
+        component.kind == .setup ? prerequisite(component)?.id : nil
     }
 
     private static func prerequisite(_ component: PluginComponent) -> CLIPrerequisite? {

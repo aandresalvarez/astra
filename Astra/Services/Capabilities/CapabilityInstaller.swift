@@ -18,6 +18,9 @@ struct CapabilityInstaller {
         /// above because the remedy is different: nothing about this install
         /// can recover it, and they have to re-enter the value.
         case credentialRestoreFailed(packageID: String, keys: [String])
+        /// An earlier Remove's secrets are still waiting to be cleared from
+        /// the Keychain; a new activation would derive the same namespaces.
+        case secretCleanupPending(packageID: String)
 
         var errorDescription: String? {
             switch self {
@@ -31,6 +34,8 @@ struct CapabilityInstaller {
                 let reason = verdict.message(forKey: key)
                     ?? "\(key) is not a valid credential for this connector."
                 return "Enabling \(id) was stopped: \(reason)"
+            case .secretCleanupPending(let id):
+                return "\(id) can't be added yet: the secrets it had here before haven't been cleared from the Keychain. Try again."
             case .credentialRestoreFailed(let id, let keys):
                 let names = keys.joined(separator: ", ")
                 return """
@@ -51,13 +56,18 @@ struct CapabilityInstaller {
 
     let library: CapabilityLibrary
     let appVersion: SemanticVersion
+    /// Where skill secret settings are stored; nil reads the registered
+    /// seam when used, so building an installer never needs it.
+    private let skillSecretsOverride: (any SkillSecretPersisting.Type)?
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
-        appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0)
+        appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
+        skillSecrets: (any SkillSecretPersisting.Type)? = nil
     ) {
         self.library = library
         self.appVersion = appVersion
+        self.skillSecretsOverride = skillSecrets
     }
 
     @discardableResult
@@ -193,6 +203,12 @@ struct CapabilityInstaller {
             return try enableSkillRow(skillID, package: package, workspace: workspace, modelContext: modelContext, persist: persist)
         }
 
+        // A new activation derives the namespaces a Remove may not have
+        // finished clearing: settle them first, and wait while one is pending.
+        if WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) == nil,
+           !PluginSecretCleanupOutbox.settleBeforeAdding(package, to: workspace, modelContext: modelContext) {
+            throw InstallationError.secretCleanupPending(packageID: package.id)
+        }
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         var savedSkillSecrets: [SavedSkillSecret] = []
         var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
@@ -355,13 +371,23 @@ struct CapabilityInstaller {
             modelContext.rollback()
             restoreReconciled()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
-            restoreSkillSecrets(savedSkillSecrets)
+            let unrestored = restoreSkillSecrets(savedSkillSecrets)
             PluginUpdateService.undo(renamedSecrets)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"
             fields["error_type"] = String(describing: type(of: error))
+            if !unrestored.isEmpty { fields["unrestored_secret_count"] = String(unrestored.count) }
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
+            // A secret setting the rollback could not put back is reported
+            // ahead of the failure that caused it, as a connector credential's
+            // is (`saveConnectorCredentials`): the activation is restored, the
+            // Keychain is not.
+            if !unrestored.isEmpty {
+                var keys = Set(unrestored)
+                if case .credentialRestoreFailed(_, let others)? = error as? InstallationError { keys.formUnion(others) }
+                throw InstallationError.credentialRestoreFailed(packageID: package.id, keys: keys.sorted())
+            }
             throw error
         }
     }
@@ -485,7 +511,7 @@ struct CapabilityInstaller {
                 continue
             }
             guard !value.isEmpty else { continue }
-            let persistence = SkillSecretSeam.required
+            let persistence = skillSecrets
             let previous = persistence.loadSecretValue(key: key, skillID: projectedID, store: KeychainSecretStore())
             guard persistence.saveSecretValue(
                 value,
@@ -501,11 +527,19 @@ struct CapabilityInstaller {
         }
     }
 
-    private func restoreSkillSecrets(_ saved: [SavedSkillSecret]) {
-        let persistence = SkillSecretSeam.required
+    private var skillSecrets: any SkillSecretPersisting.Type {
+        skillSecretsOverride ?? SkillSecretSeam.required
+    }
+
+    /// Puts back what a failed enable overwrote, returning the keys whose
+    /// previous state (a value, or no value) it could not restore.
+    private func restoreSkillSecrets(_ saved: [SavedSkillSecret]) -> [String] {
+        let persistence = skillSecrets
+        var unrestored: [String] = []
         for secret in saved.reversed() {
+            let restored: Bool
             if let previous = secret.previousValue {
-                persistence.saveSecretValue(
+                restored = persistence.saveSecretValue(
                     previous,
                     key: secret.key,
                     skillID: secret.skillID,
@@ -513,9 +547,11 @@ struct CapabilityInstaller {
                     allowUserInteraction: false
                 )
             } else {
-                persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
+                restored = persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
             }
+            if !restored { unrestored.append(secret.key) }
         }
+        return unrestored
     }
 
     private func upsertWorkspaceConnector(
