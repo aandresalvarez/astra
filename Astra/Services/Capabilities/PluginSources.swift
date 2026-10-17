@@ -201,12 +201,14 @@ enum PluginSourceFetchError: Error, Equatable, LocalizedError {
     case gitNotFound
     case cloneFailed(String)
     case timedOut
+    case tooLarge
 
     var errorDescription: String? {
         switch self {
         case .gitNotFound: "git is not installed."
         case .cloneFailed(let detail): "git couldn't fetch the source: \(detail)"
         case .timedOut: "Fetching the source took too long."
+        case .tooLarge: "The source is larger than ASTRA reads for plugins."
         }
     }
 }
@@ -223,6 +225,12 @@ struct PluginSourceFetcher {
     /// The only transports git may use. Tests add `file` for a local bare
     /// repository; nothing else changes it.
     var allowedProtocols: [String] = ["https", "ssh"]
+    /// What a source may take on disk while it downloads, and what its
+    /// checkout may hold (T11): a repository over either is refused before
+    /// any file is checked out.
+    var maxDownloadBytes: Int = 64 * 1024 * 1024
+    var maxCheckoutBytes: Int = 64 * 1024 * 1024
+    var maxCheckoutFiles: Int = 10_000
 
     func fetch(_ source: PluginSource, store: PluginSourceStore) async throws {
         guard source.kind == .git else { return }
@@ -232,17 +240,37 @@ struct PluginSourceFetcher {
         try fileManager.createDirectory(at: store.root, withIntermediateDirectories: true)
         let staging = store.root.appendingPathComponent(".\(source.id)-\(UUID().uuidString)", isDirectory: true)
         defer { try? fileManager.removeItem(at: staging) }
-        let result = await runner.run(
-            path: git,
-            args: Self.cloneArguments(location: source.location, into: staging.path, allowedProtocols: allowedProtocols),
-            timeout: timeout,
-            environment: Self.environment()
+
+        // 1. Download without a checkout, stopped if it grows past the bound.
+        let result = try await runBounded(
+            git, Self.cloneArguments(location: source.location, into: staging.path, allowedProtocols: allowedProtocols),
+            watching: staging, fileManager: fileManager
         )
         if result.timedOut { throw PluginSourceFetchError.timedOut }
         guard result.exitCode == 0, fileManager.fileExists(atPath: staging.path) else {
-            let detail = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw PluginSourceFetchError.cloneFailed(detail.isEmpty ? "git exited \(result.exitCode ?? -1)" : String(detail.prefix(300)))
+            throw PluginSourceFetchError.cloneFailed(Self.detail(result))
         }
+        // 2. Measure what a checkout would write, from the tree, first.
+        let tree = await runner.run(
+            path: git,
+            args: Self.hardening(allowedProtocols: allowedProtocols) + ["-C", staging.path, "ls-tree", "-r", "-l", "--full-tree", "HEAD"],
+            timeout: timeout,
+            environment: Self.environment()
+        )
+        guard tree.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(tree)) }
+        let sizes = Self.blobSizes(tree.stdout)
+        guard sizes.count <= maxCheckoutFiles, sizes.reduce(0, +) <= maxCheckoutBytes else {
+            throw PluginSourceFetchError.tooLarge
+        }
+        // 3. Check out under the same isolated configuration.
+        let checkout = await runner.run(
+            path: git,
+            args: Self.hardening(allowedProtocols: allowedProtocols) + ["-C", staging.path, "checkout", "--quiet", "HEAD", "--", "."],
+            timeout: timeout,
+            environment: Self.environment()
+        )
+        guard checkout.exitCode == 0 else { throw PluginSourceFetchError.cloneFailed(Self.detail(checkout)) }
+
         let target = store.cloneDirectory(for: source)
         if fileManager.fileExists(atPath: target.path) {
             _ = try fileManager.replaceItemAt(target, withItemAt: staging)
@@ -251,6 +279,64 @@ struct PluginSourceFetcher {
         }
     }
 
+    /// Runs git while watching how much `directory` holds; past
+    /// `maxDownloadBytes` the run is cancelled and the fetch refused.
+    private func runBounded(
+        _ git: String,
+        _ args: [String],
+        watching directory: URL,
+        fileManager: FileManager
+    ) async throws -> RunResult {
+        let limit = maxDownloadBytes
+        let (runner, timeout) = (self.runner, self.timeout)
+        return try await withThrowingTaskGroup(of: RunResult?.self) { group in
+            group.addTask {
+                await runner.run(path: git, args: args, timeout: timeout, environment: Self.environment())
+            }
+            group.addTask {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    if Self.size(of: directory) > limit { throw PluginSourceFetchError.tooLarge }
+                }
+                return nil
+            }
+            defer { group.cancelAll() }
+            while let next = try await group.next() {
+                if let result = next { return result }
+            }
+            throw PluginSourceFetchError.cloneFailed("git did not finish")
+        }
+    }
+
+    static func size(of directory: URL) -> Int {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total = 0
+        for case let url as URL in enumerator {
+            total += (try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]).totalFileAllocatedSize) ?? 0
+        }
+        return total
+    }
+
+    /// Blob sizes from `git ls-tree -r -l`: `<mode> blob <sha> <size>\t<path>`.
+    static func blobSizes(_ listing: String) -> [Int] {
+        listing.split(separator: "\n").compactMap { line in
+            let fields = line.split(separator: "\t", maxSplits: 1).first?.split(separator: " ", omittingEmptySubsequences: true) ?? []
+            guard fields.count >= 4, fields[1] == "blob" else { return nil }
+            return Int(fields[3])
+        }
+    }
+
+    private static func detail(_ result: RunResult) -> String {
+        let text = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? "git exited \(result.exitCode ?? -1)" : String(text.prefix(300))
+    }
+
+    /// `-c` settings every git call of a fetch gets. With the user's own git
+    /// configuration not read at all (`environment`), nothing it names (a
+    /// filter driver, a hooks path, an fsmonitor) runs; credentials come only
+    /// from the system keychain helper or the SSH agent.
     static func hardening(allowedProtocols: [String] = ["https", "ssh"]) -> [String] {
         ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never"]
             + allowedProtocols.flatMap { ["-c", "protocol.\($0).allow=always"] }
@@ -258,21 +344,26 @@ struct PluginSourceFetcher {
                 "-c", "filter.lfs.smudge=",
                 "-c", "filter.lfs.process=",
                 "-c", "filter.lfs.required=false",
+                "-c", "credential.helper=osxkeychain",
                 "-c", "credential.interactive=never"
             ]
     }
 
     /// The argument vector, ending `-- <location> <dir>` so the location is
-    /// never read as an option (T2).
+    /// never read as an option (T2). No checkout: files are written only
+    /// after the tree is measured.
     static func cloneArguments(location: String, into path: String, allowedProtocols: [String] = ["https", "ssh"]) -> [String] {
         hardening(allowedProtocols: allowedProtocols)
-            + ["clone", "--depth", "1", "--no-recurse-submodules", "--quiet", "--", location, path]
+            + ["clone", "--depth", "1", "--no-checkout", "--no-recurse-submodules", "--quiet", "--", location, path]
     }
 
     static func environment(base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var environment = ["PATH": base["PATH"] ?? "/usr/bin:/bin", "HOME": base["HOME"] ?? NSHomeDirectory()]
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["GIT_CONFIG_NOSYSTEM"] = "1"
+        // Neither ~/.gitconfig nor the XDG one: a global filter driver,
+        // hook path or alias never applies to an untrusted checkout.
+        environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
         environment["GIT_LFS_SKIP_SMUDGE"] = "1"
         if let agent = base["SSH_AUTH_SOCK"] { environment["SSH_AUTH_SOCK"] = agent }
         return environment

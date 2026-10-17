@@ -65,17 +65,22 @@ struct PluginSourcesTests {
         for pair in [
             "core.hooksPath=/dev/null", "core.fsmonitor=false", "protocol.allow=never",
             "protocol.https.allow=always", "protocol.ssh.allow=always", "filter.lfs.smudge=",
-            "filter.lfs.process=", "filter.lfs.required=false", "credential.interactive=never"
+            "filter.lfs.process=", "filter.lfs.required=false", "credential.interactive=never",
+            "credential.helper=osxkeychain"
         ] {
             #expect(call.args.contains(pair), "missing -c \(pair)")
         }
         #expect(!call.args.contains("protocol.file.allow=always"))
         #expect(call.args.contains("--no-recurse-submodules"))
         #expect(call.args.contains("--depth"))
+        #expect(call.args.contains("--no-checkout"))
         let environment = try #require(call.environment)
         #expect(environment["GIT_TERMINAL_PROMPT"] == "0")
         #expect(environment["GIT_CONFIG_NOSYSTEM"] == "1")
-        #expect(Set(environment.keys).isSubset(of: ["PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_LFS_SKIP_SMUDGE", "SSH_AUTH_SOCK"]))
+        #expect(environment["GIT_CONFIG_GLOBAL"] == "/dev/null")
+        #expect(Set(environment.keys).isSubset(of: [
+            "PATH", "HOME", "GIT_TERMINAL_PROMPT", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_LFS_SKIP_SMUDGE", "SSH_AUTH_SOCK"
+        ]))
         #expect(call.timeout <= 300)
     }
 
@@ -101,6 +106,49 @@ struct PluginSourcesTests {
         try await fetcher.fetch(source, store: fixture.store)
         #expect(FileManager.default.fileExists(atPath: fixture.store.cloneDirectory(for: source).appendingPathComponent("capability.json").path))
         #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test("T3: a filter driver the person's git config defines never runs on a source's checkout")
+    func globalFilterDoesNotRun() async throws {
+        guard let git = Self.git() else { return }
+        let fixture = try Fixture()
+        let marker = fixture.root.appendingPathComponent("filter-ran")
+        let repository = try fixture.bareRepository(with: [
+            "capability.json": try Self.packageJSON(id: "filtered", version: "1.0.0"),
+            ".gitattributes": Data("* filter=demo\n".utf8)
+        ])
+        let home = fixture.root.appendingPathComponent("filter-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let smudge = home.appendingPathComponent("smudge.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\ncat\n".write(to: smudge, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: smudge.path)
+        try "[filter \"demo\"]\n\tsmudge = \(smudge.path)\n"
+            .write(to: home.appendingPathComponent(".gitconfig"), atomically: true, encoding: .utf8)
+        var fetcher = PluginSourceFetcher(gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        fetcher.runner = EnvironmentOverridingRunner(home: home.path)
+        let source = PluginSource(id: "filtered", kind: .git, location: repository.path, displayName: "filtered", addedAt: Date())
+        try await fetcher.fetch(source, store: fixture.store)
+        #expect(FileManager.default.fileExists(atPath: fixture.store.cloneDirectory(for: source).appendingPathComponent("capability.json").path))
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @Test("T11: a repository over the size bound is refused before anything is checked out")
+    func oversizedRepositoryIsRefused() async throws {
+        guard let git = Self.git() else { return }
+        let fixture = try Fixture()
+        let repository = try fixture.bareRepository(with: [
+            "capability.json": try Self.packageJSON(id: "huge", version: "1.0.0"),
+            "blob.bin": Data((0..<200_000).map { UInt8(truncatingIfNeeded: $0 &* 2654435761 >> 13) })
+        ])
+        var fetcher = PluginSourceFetcher(gitPath: { git })
+        fetcher.allowedProtocols = ["file"]
+        fetcher.maxCheckoutBytes = 64 * 1024
+        let source = PluginSource(id: "huge", kind: .git, location: repository.path, displayName: "huge", addedAt: Date())
+        await #expect(throws: PluginSourceFetchError.tooLarge) { try await fetcher.fetch(source, store: fixture.store) }
+        #expect(!FileManager.default.fileExists(atPath: fixture.store.cloneDirectory(for: source).path))
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: fixture.store.root.path)) ?? []
+        #expect(leftovers.allSatisfy { !$0.hasPrefix(".") })
     }
 
     // MARK: - T4: paths
