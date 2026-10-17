@@ -417,10 +417,13 @@ public enum PluginManifestConverter {
         ]
         let present = payloads.filter(\.value).map(\.key)
         if component.kind == .setup {
-            // A setup step stands alone, or carries its setup requirement.
-            return present.isEmpty
+            // A setup step carries its setup requirement or declares steps of
+            // its own; one with neither would be dropped in conversion. Whether
+            // those steps are representable is checked after conversion.
+            return present.isEmpty && (component.requirement != nil || !component.setup.isEmpty)
         }
-        return present == [component.kind]
+        // A requirement on any other kind would become a second component.
+        return present == [component.kind] && component.requirement == nil
     }
 
     /// How much a runtime may do, least first. Full only with a recent CLI

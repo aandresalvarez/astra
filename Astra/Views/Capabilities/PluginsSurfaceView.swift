@@ -426,7 +426,10 @@ struct PluginsSurfaceView: View {
         do {
             if try CapabilityCatalogActionService.addRoute(for: package) == .connectAccount {
                 // The same one-step approval as Add, before the flow enables it.
-                accountSetupContext = try CapabilityCatalogActionService().grantPendingApproval(for: package, policyContext: policyContext)
+                accountSetupContext = try CapabilityCatalogActionService().grantPendingApproval(
+                    for: package, workspace: workspace, policyContext: policyContext,
+                    source: "plugins_add_connect_account", traceID: AuditTrace.make("plugins-add")
+                )
                 accountSetupPackage = package
                 refreshApprovalRecords()
                 return

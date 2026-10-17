@@ -57,6 +57,17 @@ enum CLISessionExpiryClassifier {
                 checkExpect: checkBinary == "gcloud" ? SemanticCheck.stdoutNonEmpty.rawValue : nil
             )
         }
+
+        /// The same family signing in to and checking a GitHub Enterprise
+        /// host (`enterpriseHost` validated) instead of github.com.
+        func onHost(_ host: String) -> Family {
+            Family(
+                commands: commands, displayName: displayName,
+                signInCommand: "\(signInCommand) --hostname \(host)", checkBinary: checkBinary,
+                checkArguments: ["auth", "status", "--hostname", host], patterns: patterns,
+                offersSignIn: offersSignIn, customStopMessage: customStopMessage
+            )
+        }
     }
 
     static let googleCloud = Family(
@@ -126,16 +137,71 @@ enum CLISessionExpiryClassifier {
     static func family(content: String, command: String?, failed: Bool = true) -> Family? {
         guard let command, !command.isEmpty else { return nil }
         let lowered = content.lowercased()
-        return families.first { family in
+        let family = families.first { family in
             family.commands.contains { failed ? runs($0, in: command) : masksExitStatus(of: $0, in: command) }
                 && family.patterns.contains { lowered.contains($0) }
         }
+        // A GitHub Enterprise host the command targeted is the one to sign
+        // in to and check; github.com's login says nothing about it.
+        if family == gitHub, let host = gitHubHost(in: command) { return gitHub.onHost(host) }
+        return family
     }
 
     /// The family whose stop message this is; the message is ASTRA's own.
     static func family(forStopMessage message: String?) -> Family? {
         guard let message else { return nil }
-        return families.first { $0.stopMessage == message }
+        if let family = families.first(where: { $0.stopMessage == message }) { return family }
+        // An enterprise stop names its host in the sign-in command.
+        let prefix = "`\(gitHub.signInCommand) --hostname "
+        guard let start = message.range(of: prefix),
+              let end = message[start.upperBound...].firstIndex(of: "`"),
+              let host = enterpriseHost(String(message[start.upperBound..<end])) else { return nil }
+        let hosted = gitHub.onHost(host)
+        return hosted.stopMessage == message ? hosted : nil
+    }
+
+    /// The GitHub Enterprise host a `gh` call in `command` targets: its
+    /// `--hostname` flag, else a `GH_HOST=` assignment before it. Nil for
+    /// github.com or a value that is not a plain host name.
+    static func gitHubHost(in command: String) -> String? {
+        for words in simpleCommands(command) {
+            var rest = words
+            var assignments: [String] = []
+            stripWrappers(&rest, assignments: &assignments)
+            guard let executable = rest.first, (executable as NSString).lastPathComponent == "gh" else { continue }
+            var declared = assignments.last { $0.hasPrefix("GH_HOST=") }.map { String($0.dropFirst("GH_HOST=".count)) }
+            let arguments = Array(rest.dropFirst())
+            for (index, argument) in arguments.enumerated() {
+                if argument == "--hostname", index + 1 < arguments.count {
+                    declared = arguments[index + 1]
+                } else if argument.hasPrefix("--hostname=") {
+                    declared = String(argument.dropFirst("--hostname=".count))
+                }
+            }
+            if let host = declared.flatMap(enterpriseHost) { return host }
+        }
+        return nil
+    }
+
+    /// A GitHub check still aimed at github.com while the resumed run's
+    /// `GH_HOST` names an enterprise host checks that host instead: `gh`
+    /// sends that run's calls there.
+    static func checkingLaunchHost(_ repair: RepairAction) -> RepairAction {
+        guard repair.checkBinary == "gh", repair.checkArguments == gitHub.checkArguments,
+              let host = repair.checkEnvironment?["GH_HOST"].flatMap(enterpriseHost) else { return repair }
+        var hosted = repair
+        hosted.checkArguments = gitHub.onHost(host).checkArguments
+        return hosted
+    }
+
+    /// `candidate` lowercased when it is a plain host name (with an optional
+    /// port) other than github.com, so it is safe as one Terminal argument.
+    private static func enterpriseHost(_ candidate: String) -> String? {
+        let host = candidate.lowercased()
+        guard host != "github.com", host.count <= 253,
+              host.range(of: #"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$"#, options: .regularExpression) != nil
+        else { return nil }
+        return host
     }
 
     /// True when `command` executes `cli`: the command word of one of its
@@ -322,9 +388,10 @@ enum CLISessionExpiryClassifier {
     }
 
     /// Wrappers and the options each takes a value for, so `env -i gcloud`
-    /// and `sudo -u build gh` find the command they run.
+    /// and `sudo -u build gh` find the command they run. `env -S` is not
+    /// here: its operand is the command itself (`envSplitString`).
     private static let wrapperValueOptions: [String: Set<String>] = [
-        "env": ["-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"],
+        "env": ["-u", "-C", "-P", "--unset", "--chdir"],
         "sudo": ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--user", "--group", "--host", "--prompt", "--chdir"],
         "command": [],
         "exec": ["-a"],
@@ -336,9 +403,15 @@ enum CLISessionExpiryClassifier {
     /// Drops leading assignments, wrappers with their options, and command
     /// substitutions, leaving the executable first.
     static func stripWrappers(_ words: inout [String]) {
+        var assignments: [String] = []
+        stripWrappers(&words, assignments: &assignments)
+    }
+
+    /// `stripWrappers`, collecting the `VAR=value` assignments it dropped.
+    static func stripWrappers(_ words: inout [String], assignments: inout [String]) {
         while let first = words.first {
             if first.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil {
-                words.removeFirst()
+                assignments.append(words.removeFirst())
                 continue
             }
             if first.hasPrefix("$(") {
@@ -351,9 +424,64 @@ enum CLISessionExpiryClassifier {
             while let option = words.first, option.hasPrefix("-") {
                 words.removeFirst()
                 if option == "--" { break }
+                if name == "env", let split = envSplitString(option, rest: &words) {
+                    words.insert(contentsOf: split, at: 0)
+                    continue
+                }
                 // `-u name` takes the next word; `-uname` and `--user=name` don't.
                 if valueOptions.contains(option), !option.contains("=") { _ = words.isEmpty ? nil : words.removeFirst() }
             }
         }
+    }
+
+    /// The words of `env -S`'s operand, which env splits into the arguments
+    /// it runs (`env -S 'gh auth token'` runs `gh`), or nil for any other
+    /// option. Takes the next word from `rest` when the operand is separate.
+    private static func envSplitString(_ option: String, rest: inout [String]) -> [String]? {
+        let operand: String
+        if option == "-S" || option == "--split-string" {
+            guard !rest.isEmpty else { return [] }
+            operand = rest.removeFirst()
+        } else if option.hasPrefix("--split-string=") {
+            operand = String(option.dropFirst("--split-string=".count))
+        } else if option.hasPrefix("-S") {
+            operand = String(option.dropFirst(2))
+        } else {
+            return nil
+        }
+        return splitStringWords(operand)
+    }
+
+    /// Whitespace-separated words, honoring quotes and backslashes as env
+    /// does for `-S`; no shell operators apply inside it.
+    private static func splitStringWords(_ operand: String) -> [String] {
+        var words: [String] = []
+        var word = ""
+        var inWord = false
+        var quote: Character?
+        var escaped = false
+        for character in operand {
+            if escaped {
+                word.append(character)
+                escaped = false
+            } else if let open = quote {
+                if character == open { quote = nil } else { word.append(character) }
+            } else if character == "\\" {
+                escaped = true
+                inWord = true
+            } else if character == "'" || character == "\"" {
+                quote = character
+                inWord = true
+            } else if character == " " || character == "\t" {
+                if inWord { words.append(word) }
+                word = ""
+                inWord = false
+            } else {
+                word.append(character)
+                inWord = true
+            }
+        }
+        if inWord { words.append(word) }
+        return words
     }
 }

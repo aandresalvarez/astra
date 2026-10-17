@@ -78,6 +78,32 @@ struct PluginManifestTests {
         }
     }
 
+    @Test("An empty setup component, or a requirement on another kind, is refused rather than dropped or split")
+    func emptyOrMisplacedSetupPayloadIsRefused() throws {
+        let base = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
+        #expect(throws: Never.self) { try PluginManifestConverter.checkedPackage(from: base) }
+
+        var empty = base
+        empty.components.append(PluginComponent(kind: .setup, id: "account", name: "Account"))
+        #expect(throws: PluginManifestError.mismatchedPayload(component: "Account")) {
+            try PluginManifestConverter.checkedPackage(from: empty)
+        }
+
+        let requirement = PluginSetupRequirement(id: "jira-account", kind: .oauthAccount, displayName: "Jira account")
+        var withRequirement = base
+        withRequirement.components.append(PluginComponent(
+            kind: .setup, id: requirement.id, name: requirement.displayName, requirement: requirement
+        ))
+        #expect(throws: Never.self) { try PluginManifestConverter.checkedPackage(from: withRequirement) }
+
+        var misplaced = base
+        let skillIndex = try #require(misplaced.components.firstIndex { $0.kind == .skill })
+        misplaced.components[skillIndex].requirement = requirement
+        #expect(throws: PluginManifestError.mismatchedPayload(component: misplaced.components[skillIndex].name)) {
+            try PluginManifestConverter.checkedPackage(from: misplaced)
+        }
+    }
+
     @Test("A component ID the package would re-derive is refused, not silently replaced")
     func undeclarableComponentIDsAreRefused() throws {
         // Unmodified conversions keep passing: their IDs are the derived ones.
