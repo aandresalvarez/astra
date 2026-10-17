@@ -34,6 +34,9 @@ struct PluginsSurfaceView: View {
     /// Only the latest health scan may publish; an older one finishing last
     /// would bring back failures a repair already fixed.
     @State private var statusGeneration = 0
+    /// A plugin whose setup connects an account goes through its install
+    /// flow, which does that.
+    @State private var accountSetupPackage: PluginPackage?
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -74,8 +77,7 @@ struct PluginsSurfaceView: View {
                 pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
                     + failingSetup(for: package).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
-                isRemovable: Self.isRemovable(package),
-                unavailableReason: PluginsSurfacePresentation.unavailableReason(for: package)
+                isRemovable: Self.isRemovable(package)
             )
             // Any drift an Update would settle: version, digest, components
             // or templates.
@@ -135,6 +137,19 @@ struct PluginsSurfaceView: View {
         }
         .padding(16)
         .onDisappear { repairs.cancelAll() }
+        .sheet(item: $accountSetupPackage) { package in
+            CapabilityInstallSheetRouter(
+                package: package,
+                workspace: workspace,
+                policyContext: policyContext,
+                onDismiss: { accountSetupPackage = nil },
+                onInstalled: { _ in
+                    accountSetupPackage = nil
+                    onCatalogChanged()
+                    refreshStatuses()
+                }
+            )
+        }
         .onAppear {
             expanded = PluginsSurfacePreferences.expandedPluginIDs(workspaceID: workspace.id)
             refreshApprovalRecords()
@@ -375,6 +390,10 @@ struct PluginsSurfaceView: View {
     private func add(_ row: PluginRow) {
         let package = row.package
         errorMessage = nil
+        if package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) {
+            accountSetupPackage = package
+            return
+        }
         do {
             try CapabilityCatalogActionService().add(
                 package,

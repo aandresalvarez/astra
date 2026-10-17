@@ -56,8 +56,6 @@ enum PluginsSurfacePresentation {
         var isVisible: Bool
         var isRemovable: Bool
         var needsUpdate: Bool = false
-        /// Why this surface can't add it; shown instead of Add.
-        var unavailableReason: String? = nil
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -74,7 +72,7 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: !input.isEnabled ? (input.unavailableReason == nil ? .add : nil) : (input.needsUpdate ? .update : nil)
+                verb: !input.isEnabled ? .add : (input.needsUpdate ? .update : nil)
             )
             if !input.isEnabled {
                 state.available.append(row)
@@ -91,7 +89,6 @@ enum PluginsSurfacePresentation {
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
         let contents = input.package.contentParts.joined(separator: ", ")
-        if let reason = input.unavailableReason, !input.isEnabled { return reason }
         if input.isEnabled, input.needsUpdate {
             return contents.isEmpty ? "Update to \(input.package.version)" : "Update to \(input.package.version) · \(contents)"
         }
@@ -100,13 +97,6 @@ enum PluginsSurfacePresentation {
         }
         let pending = input.pendingSteps == 1 ? "1 step pending" : "\(input.pendingSteps) steps pending"
         return contents.isEmpty ? pending : "\(pending) · \(contents)"
-    }
-
-    /// Why a plugin can't be added here: one whose setup connects an account
-    /// is added from the catalog, whose install flow does that.
-    static func unavailableReason(for package: PluginPackage) -> String? {
-        guard package.setupRequirements.contains(where: { $0.kind == .oauthAccount }) else { return nil }
-        return "Needs an account sign-in: add it from the catalog, which connects the account."
     }
 
     /// Name, summary and tags, plus what is inside: skill names, tool names and
@@ -143,8 +133,10 @@ enum PluginsSurfaceConfirmation: Equatable {
     func copy(name: String, workspaces: [String] = []) -> (message: String, verb: String) {
         switch self {
         case .remove:
+            // Remove deletes activations (settings, secret settings); the
+            // accounts and their credentials stay until deleted one by one.
             return (
-                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts stay; delete them separately. You can add it again later.",
+                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts and their saved keys stay; delete an account to clear it. You can add it again later.",
                 "Remove"
             )
         case .deleteAccount:
