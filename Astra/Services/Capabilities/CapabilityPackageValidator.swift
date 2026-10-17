@@ -513,6 +513,19 @@ enum CapabilityPackageValidator {
         issues: inout [CapabilityPackageValidationIssue]
     ) {
         for connector in connectors {
+            // A setting is stored as plain text and exported with the
+            // workspace: a credential-named key must be a credential hint
+            // (the Keychain), whatever the package says.
+            for hint in connector.configHints where RunSecretRedaction.isSecretKey(hint.key) {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeConnector,
+                    "Credential stored as a setting",
+                    "\(name) declares \(hint.key) as a plain setting; a credential must be a credential field, kept in the Keychain.",
+                    component: name
+                ))
+            }
             guard let reason = ConnectorSecurityPolicy.credentialTransportViolation(
                 baseURL: connector.baseURL,
                 authMethod: connector.authMethod,

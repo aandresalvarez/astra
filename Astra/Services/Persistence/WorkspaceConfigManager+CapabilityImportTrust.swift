@@ -36,19 +36,51 @@ extension WorkspaceConfigManager {
         /// recorded against another digest (another copy under the same ID)
         /// stays off and brings none of its settings or accounts.
         public var installedDigests: [String: String]
+        /// Each installed package's connector components, by component ID.
+        /// An imported account is bound only to a component it is an account
+        /// of (`acceptsAccount`).
+        public var connectorComponents: [String: [String: ConnectorComponent]]
+
+        public struct ConnectorComponent: Sendable, Equatable {
+            public var serviceType: String
+            public var name: String
+
+            public init(serviceType: String, name: String) {
+                self.serviceType = serviceType
+                self.name = name
+            }
+        }
 
         public init(
             approvedPackageIDs: Set<String>,
             installedPackageIDs: Set<String>,
             availablePackIDs: Set<String>,
             declaredComponentIDs: [String: Set<String>] = [:],
-            installedDigests: [String: String] = [:]
+            installedDigests: [String: String] = [:],
+            connectorComponents: [String: [String: ConnectorComponent]] = [:]
         ) {
             self.approvedPackageIDs = approvedPackageIDs
             self.installedPackageIDs = installedPackageIDs
             self.availablePackIDs = availablePackIDs
             self.declaredComponentIDs = declaredComponentIDs
             self.installedDigests = installedDigests
+            self.connectorComponents = connectorComponents
+        }
+
+        /// True when `connector` may be bound as an account of the installed
+        /// plugin's connector component: a row the import created (a shared
+        /// row it reused keeps its credentials to itself) for the component's
+        /// own service. A custom or unnamed service also needs the
+        /// component's name. Projection and readiness trust a binding, so the
+        /// file's word that a row is an account is never enough.
+        public func acceptsAccount(_ connector: Connector, componentID: String, pluginID: String) -> Bool {
+            guard !connector.isGlobal,
+                  let component = connectorComponents[pluginID]?[componentID] else { return false }
+            func normalized(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            let service = normalized(component.serviceType)
+            guard normalized(connector.serviceType) == service else { return false }
+            guard service.isEmpty || service == "custom" else { return true }
+            return !normalized(component.name).isEmpty && normalized(connector.name) == normalized(component.name)
         }
     }
 

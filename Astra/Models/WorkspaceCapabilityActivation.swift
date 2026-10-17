@@ -221,6 +221,25 @@ public enum WorkspaceCapabilityActivation {
     /// `componentID` when given). When that leaves the account's service
     /// without a default in the workspace, its oldest remaining account
     /// becomes it.
+    /// The workspaces whose activations bind `account`.
+    public static func workspacesBinding(_ account: Connector) -> [Workspace] {
+        var seen = Set<UUID>()
+        return account.accountBindings
+            .filter { !$0.isDeleted }
+            .compactMap { $0.activation?.workspace }
+            .filter { seen.insert($0.id).inserted }
+    }
+
+    /// Unbinds `account` from every activation, before it is deleted: the
+    /// cascade would drop its bindings without electing a new default.
+    public static func releaseAccount(_ account: Connector) {
+        var seen = Set<UUID>()
+        for activation in account.accountBindings.filter({ !$0.isDeleted }).compactMap(\.activation)
+        where seen.insert(activation.id).inserted {
+            unbind(account, from: activation)
+        }
+    }
+
     public static func unbind(_ account: Connector, from activation: PluginActivation, componentID: String? = nil) {
         let removed = activation.bindings.filter {
             !$0.isDeleted && $0.account?.id == account.id && (componentID == nil || $0.componentID == componentID)
@@ -567,6 +586,14 @@ public enum WorkspaceCapabilityActivation {
     }
 
     private static func remove(_ activation: PluginActivation, from workspace: Workspace) {
+        // The bindings go with the activation (cascade); unbinding first
+        // gives a service whose default was one of them its oldest
+        // remaining account instead.
+        var seen = Set<UUID>()
+        for account in activation.bindings.filter({ !$0.isDeleted }).compactMap(\.account)
+        where seen.insert(account.id).inserted {
+            unbind(account, from: activation)
+        }
         workspace.pluginActivations.removeAll { $0 === activation }
         if let context = activation.modelContext {
             context.delete(activation)

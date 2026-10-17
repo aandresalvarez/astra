@@ -35,8 +35,14 @@ struct PluginRemoveJournal {
         return try JSONDecoder().decode([String].self, from: Data(contentsOf: fileURL))
     }
 
-    func begin(_ pluginID: String) throws {
-        try write(Array(Set(try pending() + [pluginID])))
+    /// Records the intent. Returns whether it is new: a retry of a Remove
+    /// whose intent is already recorded must not clear it if the retry fails.
+    @discardableResult
+    func begin(_ pluginID: String) throws -> Bool {
+        let pending = try pending()
+        guard !pending.contains(pluginID) else { return false }
+        try write(pending + [pluginID])
+        return true
     }
 
     func finish(_ pluginID: String) {

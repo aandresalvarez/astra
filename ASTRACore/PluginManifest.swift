@@ -174,6 +174,9 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
     case unenforcedRuntimeRestriction(runtime: String)
     /// A component without its kind's payload, or with another kind's.
     case mismatchedPayload(component: String)
+    /// A component ID the package can't carry: it would be re-derived from
+    /// the payload's name, so the declared ID would not survive conversion.
+    case unrepresentableComponentID(component: String, id: String)
 
     public var errorDescription: String? {
         switch self {
@@ -185,6 +188,8 @@ public enum PluginManifestError: Error, Equatable, LocalizedError {
             "\(component) doesn't carry the definition its kind needs, so the plugin can't be installed."
         case .unenforcedRuntimeRestriction(let runtime):
             "The plugin says it doesn't work on \(runtime), and ASTRA can't keep it off that runtime yet."
+        case .unrepresentableComponentID(let component, let id):
+            "\(component) declares the ID \"\(id)\", which ASTRA can't keep yet, so the plugin can't be installed."
         }
     }
 }
@@ -370,44 +375,72 @@ public enum PluginManifestConverter {
         return try decoder.decode(PluginPackage.self, from: data)
     }
 
-    /// `package(from:)`, refusing a manifest whose setup steps the package
-    /// cannot carry. The package keeps setup only as CLI prerequisites and
-    /// connector credential hints, so a declared check, verify, connect,
-    /// repair or install step that does not come back out of the package
-    /// unchanged would be dropped, and the plugin would read as ready without
-    /// that step ever running. Such a manifest is refused instead.
     /// The payload with the component's `id` as its identity. A default
     /// `id` (the one its name derives) is left off, so a package converted
-    /// to a manifest and back is unchanged.
+    /// to a manifest and back is unchanged. A payload that gains an `id`
+    /// here also replaces the identity its name derives: an earlier ASTRA
+    /// dropped the component's `id`, so an activation it made keys this
+    /// component's settings, accounts and secrets by that name.
     private static func identifiedSkill(_ component: PluginComponent) -> PluginSkill? {
         guard var skill = component.skill else { return nil }
-        if component.id != PluginComponent.defaultID(forName: skill.name) || skill.id != nil { skill.id = component.id }
+        if component.id != PluginComponent.defaultID(forName: skill.name) || skill.id != nil {
+            if skill.id == nil {
+                skill.replaces = adding(identity(["skill", skill.name]), to: skill.replaces, unless: identity(["skill", component.id]))
+            }
+            skill.id = component.id
+        }
         return skill
     }
 
     private static func identifiedConnector(_ component: PluginComponent) -> PluginConnector? {
         guard var connector = component.connector else { return nil }
-        if component.id != PluginComponent.defaultID(forName: connector.name) || connector.id != nil { connector.id = component.id }
+        if component.id != PluginComponent.defaultID(forName: connector.name) || connector.id != nil {
+            if connector.id == nil {
+                connector.replaces = adding(
+                    identity(["connector", connector.serviceType, connector.name]),
+                    to: connector.replaces,
+                    unless: identity(["connector", connector.serviceType, component.id])
+                )
+            }
+            connector.id = component.id
+        }
         return connector
     }
 
     /// A tool without an `id` is identified by its type, command and name; one
-    /// that gains an `id` here also replaces that form, so the version that
-    /// renames it still finds the earlier one's state.
+    /// that gains an `id` here also replaces that form, both with the name
+    /// its `id` derives from (a version that renamed it) and with its own
+    /// name (an earlier ASTRA that dropped the `id`).
     private static func identifiedTool(_ component: PluginComponent) -> PluginLocalTool? {
         guard var tool = component.tool else { return nil }
         if component.id != PluginComponent.defaultID(forName: tool.name) || tool.id != nil {
             if tool.id == nil {
-                let earlier = ["tool", tool.toolType, tool.command, component.id]
-                    .map { PluginComponent.defaultID(forName: $0) }
-                    .joined(separator: ":")
-                tool.replaces = (tool.replaces ?? []) + [earlier]
+                let current = identity(["tool", component.id])
+                for name in [component.id, tool.name] {
+                    tool.replaces = adding(identity(["tool", tool.toolType, tool.command, name]), to: tool.replaces, unless: current)
+                }
             }
             tool.id = component.id
         }
         return tool
     }
 
+    /// A component identity in `CapabilityResourceOrigin.componentID`'s form.
+    private static func identity(_ parts: [String]) -> String {
+        parts.map { PluginComponent.defaultID(forName: $0) }.joined(separator: ":")
+    }
+
+    private static func adding(_ identity: String, to replaces: [String]?, unless current: String) -> [String]? {
+        guard identity != current, !(replaces ?? []).contains(identity) else { return replaces }
+        return (replaces ?? []) + [identity]
+    }
+
+    /// `package(from:)`, refusing a manifest whose setup steps the package
+    /// cannot carry. The package keeps setup only as CLI prerequisites and
+    /// connector credential hints, so a declared check, verify, connect,
+    /// repair or install step that does not come back out of the package
+    /// unchanged would be dropped, and the plugin would read as ready without
+    /// that step ever running. Such a manifest is refused instead.
     public static func checkedPackage(from manifest: PluginManifest) throws -> PluginPackage {
         // Fail closed: a later version may carry meaning this converter
         // would silently drop.
@@ -432,6 +465,17 @@ public enum PluginManifestConverter {
             }
         }
         let carried = self.manifest(from: package).components
+        // The package keeps no component IDs: each comes back derived from
+        // its payload (a name's slug, an MCP server's own ID). A declared ID
+        // that differs would be replaced, and a later rename would then
+        // change the component's identity, so it is refused instead.
+        for kind in [PluginComponent.Kind.skill, .connector, .tool, .mcp, .template] {
+            let derived = carried.filter { $0.kind == kind }
+            for (index, component) in manifest.components.filter({ $0.kind == kind }).enumerated()
+            where index >= derived.count || derived[index].id != component.id {
+                throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
+            }
+        }
         for component in manifest.components where !component.setup.isEmpty {
             let kept = carried.first { $0.kind == component.kind && $0.name == component.name }?.setup
             guard kept == component.setup else {

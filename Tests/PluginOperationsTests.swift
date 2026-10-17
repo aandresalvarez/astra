@@ -120,7 +120,7 @@ struct PluginOperationsTests {
 
         try PluginOperations.makeDefault(second, componentID: component, pluginID: package.id, in: workspace, modelContext: env.context)
         #expect(activation.accounts(forComponent: component).first?.id == second.id)
-        #expect(PluginOperations.workspacesUsing(second).map(\.id) == [workspace.id])
+        #expect(try PluginOperations.workspacesUsing(second).map(\.id) == [workspace.id])
 
         try PluginOperations.deleteAccount(second, modelContext: env.context)
         #expect(activation.accounts(forComponent: component).map(\.id) == [first.id])
@@ -475,7 +475,7 @@ struct PluginOperationsTests {
         env.context.insert(other)
         WorkspaceCapabilityActivation.mutate(other) { $0.enableGlobalConnector(account.id.uuidString) }
         try env.context.save()
-        #expect(Set(PluginOperations.workspacesUsing(account).map(\.id)) == [env.workspace.id, other.id])
+        #expect(try Set(PluginOperations.workspacesUsing(account).map(\.id)) == [env.workspace.id, other.id])
     }
 
     @Test("Dropping the component whose account is the service default promotes another account")

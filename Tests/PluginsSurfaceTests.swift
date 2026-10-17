@@ -113,6 +113,47 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("Add refuses a plugin that needs an account sign-in, which this build has none of")
+    func addRefusesUnsupportedOAuthProviders() throws {
+        #expect(throws: CapabilityAccountSetupError.self) {
+            try CapabilityCatalogActionService.addRoute(for: builtIn("google-workspace"))
+        }
+        #expect(try CapabilityCatalogActionService.addRoute(for: builtIn("jira-workflow")) == .enable)
+        for provider in ["salesforce", nil] {
+            var imported = package("imported-crm", name: "CRM")
+            imported.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: provider)]
+            #expect(throws: CapabilityAccountSetupError.unsupportedProvider(account: "CRM account", provider: provider)) {
+                try CapabilityCatalogActionService.addRoute(for: imported)
+            }
+        }
+
+        // The one-step Add refuses it too, before approving or enabling.
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Add", primaryPath: "/tmp/plugins-add-oauth")
+        context.insert(workspace)
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-plugins-add-oauth-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let approvals = CapabilityApprovalStore(directory: root.appendingPathComponent("approvals"))
+        var imported = package("imported-crm", name: "CRM", governance: .localDraft())
+        imported.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: "salesforce")]
+        #expect(throws: CapabilityAccountSetupError.self) {
+            try CapabilityCatalogActionService(library: CapabilityLibrary(directory: root.appendingPathComponent("library"))).add(
+                imported, workspace: workspace, modelContext: context,
+                policyContext: .currentUser(workspace: workspace, approvalRecords: []),
+                approvalStore: approvals, traceID: "trace-add-oauth"
+            )
+        }
+        #expect(approvals.records().isEmpty)
+        #expect(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs.isEmpty)
+        withExtendedLifetime(container) {}
+    }
+
     // MARK: - Fixtures
 
     private func input(

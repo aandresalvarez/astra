@@ -21,9 +21,9 @@ struct PluginRepairTests {
             maxWait: 20
         )
         let repair = CLISessionExpiryClassifier.googleCloud.repair
-        coordinator.start(repair) { verified += 1 }
-        #expect(coordinator.phase(for: repair) == .waiting)
-        await waitUntil { coordinator.phase(for: repair) == .verified }
+        coordinator.start(repair, owner: "gcloud-workflow") { verified += 1 }
+        #expect(coordinator.phase(for: repair, owner: "gcloud-workflow") == .waiting)
+        await waitUntil { coordinator.phase(for: repair, owner: "gcloud-workflow") == .verified }
         #expect(runs == ["gcloud auth login"])
         #expect(verified == 1)
         #expect(await checks.calls == 5)
@@ -35,9 +35,9 @@ struct PluginRepairTests {
             check: { _ in false }, run: { _ in }, sleep: { _ in }, interval: 1, maxWait: 3
         )
         let repair = CLISessionExpiryClassifier.googleCloud.repair
-        coordinator.start(repair)
-        await waitUntil { coordinator.phase(for: repair) == .timedOut }
-        #expect(coordinator.phase(for: repair) == .timedOut)
+        coordinator.start(repair, owner: "gcloud-workflow")
+        await waitUntil { coordinator.phase(for: repair, owner: "gcloud-workflow") == .timedOut }
+        #expect(coordinator.phase(for: repair, owner: "gcloud-workflow") == .timedOut)
     }
 
     @Test("Cancelling the polls clears their waiting phase")
@@ -46,10 +46,34 @@ struct PluginRepairTests {
             check: { _ in false }, run: { _ in }, sleep: { _ in try? await Task.sleep(nanoseconds: 50_000_000) }, interval: 1, maxWait: 100
         )
         let repair = CLISessionExpiryClassifier.googleCloud.repair
-        coordinator.start(repair)
-        #expect(coordinator.phase(for: repair) == .waiting)
+        coordinator.start(repair, owner: "gcloud-workflow")
+        #expect(coordinator.phase(for: repair, owner: "gcloud-workflow") == .waiting)
         coordinator.cancelAll()
-        #expect(coordinator.phase(for: repair) == nil)
+        #expect(coordinator.phase(for: repair, owner: "gcloud-workflow") == nil)
+    }
+
+    @Test("Two plugins' repairs with the same name and command poll separately, and both finish")
+    func samePresentationRepairsDoNotAlias() async {
+        var verified: [String] = []
+        let coordinator = PluginRepairCoordinator(
+            check: { _ in true }, run: { _ in }, sleep: { _ in await Task.yield() }, interval: 1, maxWait: 20
+        )
+        let repair = CLISessionExpiryClassifier.googleCloud.repair
+        var otherCheck = repair
+        otherCheck.checkArguments = ["auth", "list", "--format=value(account)"]
+        // Different packages with one contract, and one package checked two ways.
+        let starts = [(repair, "plugin-a"), (repair, "plugin-b"), (otherCheck, "plugin-a")]
+        for (index, (action, owner)) in starts.enumerated() {
+            coordinator.start(action, owner: owner) { verified.append("\(index)") }
+        }
+        for (action, owner) in starts {
+            #expect(coordinator.phase(for: action, owner: owner) == .waiting, "\(owner)")
+        }
+        await waitUntil { starts.allSatisfy { coordinator.phase(for: $0.0, owner: $0.1) == .verified } }
+        for (action, owner) in starts {
+            #expect(coordinator.phase(for: action, owner: owner) == .verified, "\(owner)")
+        }
+        #expect(verified.sorted() == ["0", "1", "2"])
     }
 
     @Test("A repair with nothing to check just runs")
@@ -57,9 +81,9 @@ struct PluginRepairTests {
         var runs = 0
         let coordinator = PluginRepairCoordinator(check: { _ in false }, run: { _ in runs += 1 }, sleep: { _ in })
         let repair = RepairAction(strategy: .url, componentName: "Docs", title: "Docs", verb: "Open", detail: "")
-        coordinator.start(repair)
+        coordinator.start(repair, owner: "gcloud-workflow")
         #expect(runs == 1)
-        #expect(coordinator.phase(for: repair) == nil)
+        #expect(coordinator.phase(for: repair, owner: "gcloud-workflow") == nil)
     }
 
     @Test("A missing CLI offers Install; an expired sign-in offers Sign in; a working one offers nothing")

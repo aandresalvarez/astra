@@ -98,26 +98,29 @@ struct CapabilityPackageImporter {
             checkPrerequisites: false
         )
         guard currentReport.canInstall else {
+            library.discardPackageStorageSnapshot(previousStorage)
             throw CapabilityPackageImportError(report: currentReport)
         }
-        if let source = currentReport.source {
-            try library.install(source)
-        } else {
-            try library.install(package, sourceMetadata: .localLibrary())
-        }
-        if let modelContext {
-            do {
+        do {
+            if let source = currentReport.source {
+                try library.install(source)
+            } else {
+                try library.install(package, sourceMetadata: .localLibrary())
+            }
+            if let modelContext {
                 // The person chose this version: what it dropped is released.
                 try PluginUpdateService.reconcileAll(
                     modelContext: modelContext,
                     packages: library.installedPackages().filter { $0.id == package.id },
                     mode: .release
                 )
-            } catch {
-                library.restorePackageStorage(previousStorage)
-                throw error
             }
+        } catch {
+            // The snapshot outlives a restore only when the restore fails.
+            library.restorePackageStorage(previousStorage)
+            throw error
         }
+        library.discardPackageStorageSnapshot(previousStorage)
         CapabilityCatalogPersistenceEvents.post(.global)
         return CapabilityPackageImportResult(
             package: package,

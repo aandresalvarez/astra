@@ -170,7 +170,8 @@ enum CLISessionExpiryClassifier {
     /// The simple commands of a shell line, each as its words, with quoting
     /// honored: a separator or a space inside quotes is part of a word, and
     /// the quotes themselves are removed. `$( … )` and backticks start a
-    /// new command, as their contents run too.
+    /// new command, as their contents run too, inside double quotes as well;
+    /// inside single quotes they are literal text.
     static func simpleCommands(_ line: String) -> [[String]] {
         segments(line).map(\.words)
     }
@@ -190,6 +191,10 @@ enum CLISessionExpiryClassifier {
         var inWord = false
         var quote: Character?
         var escaped = false
+        // Substitutions opened inside double quotes, innermost last: the
+        // character that closes each, and the `(` depth inside it. Closing
+        // one reopens the double quote it interrupted.
+        var substitutions: [(closer: Character, depth: Int)] = []
         let characters = Array(line)
         var index = 0
         func endWord() {
@@ -222,8 +227,19 @@ enum CLISessionExpiryClassifier {
                     quote = nil
                 } else if character == "\\" && open == "\"" {
                     escaped = true
+                } else if open == "\"", character == "`" || (character == "$" && next == "(") {
+                    // `"$(gh auth token)"` still runs `gh`: leave the quote
+                    // for the substitution, as an unquoted `$(` would.
+                    if character == "$" {
+                        word.append(character)
+                        index += 1
+                    }
+                    endCommand(character == "`" ? "`" : "(")
+                    substitutions.append((closer: character == "`" ? "`" : ")", depth: 0))
+                    quote = nil
                 } else {
                     word.append(character)
+                    inWord = true
                 }
                 continue
             }
@@ -247,6 +263,14 @@ enum CLISessionExpiryClassifier {
                     index += 1
                 }
                 endCommand(separator)
+            case ")" where substitutions.last?.closer == ")" && substitutions.last?.depth == 0,
+                 "`" where substitutions.last?.closer == "`":
+                endCommand(String(character))
+                substitutions.removeLast()
+                quote = "\""
+            case "(" where substitutions.last?.closer == ")", ")" where substitutions.last?.closer == ")":
+                substitutions[substitutions.count - 1].depth += character == "(" ? 1 : -1
+                endCommand(String(character))
             case ";", "\n", "(", ")", "`":
                 endCommand(String(character))
             default:

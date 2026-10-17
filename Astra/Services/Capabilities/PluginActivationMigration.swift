@@ -214,17 +214,19 @@ enum PluginActivationMigration {
                 let package = packagesByID[pluginID]
                 let spec = package?.skills.first { matches($0, skill: skill) }
                 let using = targets(pluginID: pluginID, owner: skill.isGlobal ? nil : skill.workspace)
-                guard let package, let spec, !using.isEmpty else {
+                guard package != nil, let spec, !using.isEmpty else {
                     clearOrigin(skill)
                     report.skillsKeptAsAuthored += 1
                     continue
                 }
                 let componentID = CapabilityResourceOrigin.componentID(for: spec)
-                if isEdited(skill, spec: spec, package: package) {
+                if isEdited(skill, spec: spec) {
                     clearOrigin(skill)
                     // The override is on exactly while its activation is
                     // (the projection brings the row in): a shared-list
-                    // membership would keep it on after the plugin is off.
+                    // membership would keep it on after the plugin is off. A
+                    // workspace's own row stays in its lists but out of its
+                    // ambient inventory (`WorkspaceCapabilities`).
                     let skillID = skill.id.uuidString
                     for (workspace, activation) in using {
                         WorkspaceCapabilityActivation.setOverridden(true, componentID: componentID, rowID: skill.id, on: activation)
@@ -494,15 +496,13 @@ enum PluginActivationMigration {
         return CapabilityRuntimeResourceMatcher.toolMatches(spec, tool: tool)
     }
 
-    /// A row made from the plugin's current version that no longer matches
-    /// it was edited by the person. A row from another version can't be told
-    /// apart from the version's own changes, and the startup repair kept those
-    /// rows in step with the library, so it is treated as unedited.
-    private static func isEdited(_ skill: Skill, spec: PluginSkill, package: PluginPackage) -> Bool {
-        guard trimmed(skill.originPackageVersion).isEmpty || skill.originPackageVersion == package.version else {
-            return false
-        }
-        return skill.name != spec.name
+    /// A row that no longer matches the plugin's current definition was
+    /// edited by the person. A row stamped with another version is compared
+    /// the same way: the person may have edited it after the last startup
+    /// repair, and the version's own changes can't be told apart from theirs.
+    /// Keeping it as an override is recoverable; deleting it is not.
+    private static func isEdited(_ skill: Skill, spec: PluginSkill) -> Bool {
+        skill.name != spec.name
             || Set(skill.environmentKeys) != Set(spec.environmentKeys)
             || skill.icon != spec.icon
             || skill.skillDescription != spec.description
