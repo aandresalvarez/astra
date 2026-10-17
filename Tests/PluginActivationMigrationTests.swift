@@ -221,7 +221,8 @@ struct PluginActivationMigrationTests {
         // History survives only for declared components.
         #expect(Set(gcloud.knownComponentIDs).isSubset(of: Set(fixture.gcloud.skills.map(CapabilityResourceOrigin.componentID(for:)))))
         #expect(!gcloud.knownComponentIDs.isEmpty)
-        #expect(gcloud.secretSettingKeys == [secretKey])
+        // A chosen file gets fresh namespaces, so no secret is carried.
+        #expect(gcloud.secretSettingKeys.isEmpty)
     }
 
     private struct Summary: Equatable {
@@ -424,6 +425,73 @@ struct PluginActivationMigrationTests {
         }))
     }
 
+    @Test("A plugin skill whose icon the person changed stays an authored row")
+    func editedSkillIconIsKept() throws {
+        let fixture = try Fixture(editedSkillIcon: "star")
+        let report = try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        #expect(report.skillsProjected == 0)
+        let skill = try #require(try fixture.context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.gcloudSkillID })
+        #expect(skill.icon == "star")
+        #expect(skill.originPackageID == nil)
+    }
+
+    @Test("A validated import gets its own secret namespaces; the workspace's own mirror keeps them")
+    func validatedImportGetsFreshNamespaces() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let original = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        let component = CapabilityResourceOrigin.componentID(for: fixture.gcloud.skills[0])
+        let config = try #require(WorkspaceConfigManager.export(workspace: a, modelContext: fixture.context))
+        let target = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(target)
+
+        let recovered = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: target.mainContext, capabilityTrust: .preserveRecordedState
+        ).workspace
+        let recoveredActivation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: recovered))
+        #expect(PluginRuntimeProjection.derivedID(of: recoveredActivation, componentID: component)
+            == PluginRuntimeProjection.derivedID(of: original, componentID: component))
+
+        let other = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        Self.retained.append(other)
+        let verifier = WorkspaceConfigManager.CapabilityImportVerifier(
+            approvedPackageIDs: ["gcloud-workflow"],
+            installedPackageIDs: ["gcloud-workflow"],
+            availablePackIDs: [],
+            declaredComponentIDs: ["gcloud-workflow": Set(PluginRuntimeProjection.componentIDs(of: fixture.gcloud))]
+        )
+        let validated = WorkspaceConfigManager.importWorkspaceResult(
+            from: config, modelContext: other.mainContext, capabilityTrust: .validate(verifier)
+        ).workspace
+        #expect(validated.id == a.id)
+        let validatedActivation = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: validated))
+        #expect(!validatedActivation.namespaceSeed.isEmpty)
+        #expect(validatedActivation.secretSettingKeys.isEmpty)
+        #expect(PluginRuntimeProjection.derivedID(of: validatedActivation, componentID: component)
+            != PluginRuntimeProjection.derivedID(of: original, componentID: component))
+    }
+
+    @Test("The mirror carries a shared row an override names even when nothing else enables it")
+    func mirrorCarriesOverrideRows() throws {
+        let fixture = try Fixture()
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: fixture.packages)
+        let c = try fixture.workspace(fixture.cID)
+        let jira = try #require(WorkspaceCapabilityActivation.activation(for: "jira-workflow", in: c))
+        #expect(jira.overridingRowIDs.contains(fixture.editedJiraSkillID.uuidString))
+        #expect(!c.enabledGlobalSkillIDs.contains(fixture.editedJiraSkillID.uuidString))
+        let config = try #require(WorkspaceConfigManager.export(workspace: c, modelContext: fixture.context))
+        #expect(config.skills.contains { $0.id == fixture.editedJiraSkillID.uuidString })
+    }
+
     @Test("A failed migration takes back the secrets it copied")
     func failedMigrationRestoresCopiedSecrets() throws {
         guard AstraSecureKeychainTestSupport.isAvailable else { return }
@@ -489,7 +557,8 @@ private struct Fixture {
         gcloudSkillSecret: String? = nil,
         componentOnlyWorkspace: Bool = false,
         gcloudSkillProject: String = "skill-project",
-        editedToolDescription: String? = nil
+        editedToolDescription: String? = nil,
+        editedSkillIcon: String? = nil
     ) throws {
         jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
@@ -559,7 +628,7 @@ private struct Fixture {
             let gcloudSkillSpec = gcloud.skills[0]
             let skill = V19.Skill()
             skill.name = gcloudSkillSpec.name
-            skill.icon = gcloudSkillSpec.icon
+            skill.icon = editedSkillIcon ?? gcloudSkillSpec.icon
             skill.skillDescription = gcloudSkillSpec.description
             skill.allowedTools = gcloudSkillSpec.allowedTools
             skill.customTools = gcloudSkillSpec.customTools

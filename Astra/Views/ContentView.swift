@@ -2680,7 +2680,6 @@ struct ContentView: View {
         enterUITestComposerIfNeeded()
         sceneSelection.openLaunchComposerOnce()
         rightPanel.finishLaunchLanding()
-        runtime.startScheduler(modelContext: modelContext)
         runtime.loadPluginCatalog()
         refreshRunningTaskCount()
         handlePendingExternalRoute()
@@ -2702,6 +2701,7 @@ struct ContentView: View {
         // after this frame is presented. Run-once-guarded inside.
         Task { @MainActor in
             await ASTRAApp.recoverInterruptedWork(modelContext: modelContext, taskQueue: runtime.taskQueue)
+            runtime.startScheduler(modelContext: modelContext)
             runtime.taskQueue.replayRecoveredTurns(modelContext: modelContext)
             refreshRunningTaskCount()
             await ASTRAApp.runDeferredStartupMigrations(modelContext: modelContext)

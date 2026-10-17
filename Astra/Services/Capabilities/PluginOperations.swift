@@ -72,6 +72,7 @@ enum PluginOperations {
         if Skill.isSecretEnvironmentKey(key) {
             let skillID = PluginRuntimeProjection.derivedID(of: activation, componentID: componentID)
             let persistence = SkillSecretSeam.required
+            let previous = persistence.loadSecretValue(key: key, skillID: skillID, store: KeychainSecretStore())
             if value.isEmpty {
                 guard persistence.deleteSecret(key: key, skillID: skillID) else {
                     throw OperationError.secretDeleteFailed(key: key)
@@ -81,7 +82,17 @@ enum PluginOperations {
             }
             // Which secrets exist is recorded, so cleanup and Update find them.
             WorkspaceCapabilityActivation.setSecretRecorded(!value.isEmpty, forKey: settingKey, on: activation)
-            try save(workspace, modelContext: modelContext, restoring: snapshot)
+            do {
+                try save(workspace, modelContext: modelContext, restoring: snapshot)
+            } catch {
+                // The record went back to what it was; so does the Keychain.
+                if let previous {
+                    persistence.saveSecretValue(previous, key: key, skillID: skillID, skillName: skill.name, allowUserInteraction: false)
+                } else {
+                    persistence.deleteSecret(key: key, skillID: skillID)
+                }
+                throw error
+            }
             return
         }
         WorkspaceCapabilityActivation.setConfigValue(value, forKey: settingKey, on: activation)
@@ -145,14 +156,17 @@ enum PluginOperations {
         try save(workspace, modelContext: modelContext, restoring: snapshot)
     }
 
-    /// The workspaces whose plugins use `account`, for the delete
-    /// confirmation to name.
+    /// Every workspace deleting `account` reaches, for the delete
+    /// confirmation to name: its owner, the workspaces whose plugins bind
+    /// it, and those that list it as a shared connector.
     static func workspacesUsing(_ account: Connector) -> [Workspace] {
         var seen = Set<UUID>()
-        return account.accountBindings
-            .filter { !$0.isDeleted }
-            .compactMap { $0.activation?.workspace }
-            .filter { seen.insert($0.id).inserted }
+        let id = account.id.uuidString
+        let listing = account.modelContext.flatMap { try? $0.fetch(FetchDescriptor<Workspace>()) }?
+            .filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) } ?? []
+        let bound = account.accountBindings.filter { !$0.isDeleted }.compactMap { $0.activation?.workspace }
+        return ([account.workspace].compactMap { $0 } + bound + listing)
+            .filter { !$0.isDeleted && seen.insert($0.id).inserted }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 

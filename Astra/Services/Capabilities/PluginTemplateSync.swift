@@ -42,8 +42,9 @@ enum PluginTemplateSync {
         return written
     }
 
-    /// The row for one declared template: the stamped one, else a row of the
-    /// same name, else a new one; its content is the definition's.
+    /// The row for one declared template: the one stamped with this plugin
+    /// and component, else a new one; its content is the definition's. A
+    /// same-named row the person authored is never taken over.
     static func upsert(
         _ spec: PluginTemplate,
         package: PluginPackage,
@@ -52,7 +53,6 @@ enum PluginTemplateSync {
     ) -> TaskTemplate {
         let componentID = CapabilityResourceOrigin.componentID(for: spec)
         let template = workspace.templates.first { !$0.isDeleted && $0.originPackageID == package.id && $0.originComponentID == componentID }
-            ?? workspace.templates.first { !$0.isDeleted && $0.name == spec.name }
             ?? TaskTemplate(
                 name: spec.name,
                 mainGoal: spec.mainGoal,

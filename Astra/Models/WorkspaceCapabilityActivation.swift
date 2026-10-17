@@ -148,6 +148,13 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    /// Sets the seed mixed into the activation's projected IDs.
+    public static func setNamespaceSeed(_ seed: String, on activation: PluginActivation) {
+        guard activation.namespaceSeed != seed else { return }
+        activation.namespaceSeed = seed
+        touch(activation)
+    }
+
     /// Records the components of the definition the activation was
     /// reconciled against.
     public static func setKnownComponents(_ componentIDs: [String], on activation: PluginActivation) {
@@ -197,11 +204,14 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
-    /// Removes every binding of `account` from `activation`. When that leaves
-    /// the account's service without a default in the workspace, its oldest
-    /// remaining account becomes it.
-    public static func unbind(_ account: Connector, from activation: PluginActivation) {
-        let removed = activation.bindings.filter { !$0.isDeleted && $0.account?.id == account.id }
+    /// Removes the bindings of `account` from `activation` (only those of
+    /// `componentID` when given). When that leaves the account's service
+    /// without a default in the workspace, its oldest remaining account
+    /// becomes it.
+    public static func unbind(_ account: Connector, from activation: PluginActivation, componentID: String? = nil) {
+        let removed = activation.bindings.filter {
+            !$0.isDeleted && $0.account?.id == account.id && (componentID == nil || $0.componentID == componentID)
+        }
         guard !removed.isEmpty else { return }
         let removedIDs = Set(removed.map(\.id))
         for binding in removed {
@@ -209,7 +219,7 @@ public enum WorkspaceCapabilityActivation {
             binding.modelContext?.delete(binding)
         }
         let remaining = sameServiceBindings(as: account, in: activation)
-            .filter { !removedIDs.contains($0.id) && $0.account?.id != account.id }
+            .filter { !removedIDs.contains($0.id) }
         if !remaining.contains(where: \.isDefault),
            let first = remaining.min(by: { $0.createdAt < $1.createdAt }),
            let promoted = first.account {
@@ -297,9 +307,12 @@ public enum WorkspaceCapabilityActivation {
             if !secrets.contains(target) { secrets.append(target) }
         }
         if activation.secretSettingKeys != secrets { activation.secretSettingKeys = secrets }
-        let boundToNew = Set(activation.bindings.filter { !$0.isDeleted && $0.componentID == new }.compactMap { $0.account?.id })
+        let newBindings = activation.bindings.filter { !$0.isDeleted && $0.componentID == new }
         for binding in activation.bindings where !binding.isDeleted && binding.componentID == old {
-            if let id = binding.account?.id, boundToNew.contains(id) {
+            if let id = binding.account?.id, let kept = newBindings.first(where: { $0.account?.id == id }) {
+                // The account is bound to `new` already; it keeps the
+                // default it had through `old`.
+                if binding.isDefault { kept.isDefault = true }
                 activation.bindings.removeAll { $0 === binding }
                 binding.modelContext?.delete(binding)
             } else {
@@ -321,9 +334,15 @@ public enum WorkspaceCapabilityActivation {
     /// (the accounts stay) and an override (the authored row stays).
     public static func dropComponentState(_ componentID: String, on activation: PluginActivation) {
         dropSettings(on: activation) { PluginActivation.componentID(ofSettingKey: $0) == componentID }
+        // Through `unbind`, so the workspace's default for the service moves
+        // to a remaining account when the dropped binding held it.
         for binding in activation.bindings where !binding.isDeleted && binding.componentID == componentID {
-            activation.bindings.removeAll { $0 === binding }
-            binding.modelContext?.delete(binding)
+            if let account = binding.account {
+                unbind(account, from: activation, componentID: componentID)
+            } else {
+                activation.bindings.removeAll { $0 === binding }
+                binding.modelContext?.delete(binding)
+            }
         }
         setOverridden(false, componentID: componentID, on: activation)
         touch(activation)
@@ -421,6 +440,7 @@ public enum WorkspaceCapabilityActivation {
             activation.overridingRowIDs = record.overridingRowIDs
             activation.secretSettingKeys = record.secretSettingKeys
             activation.knownComponentIDs = record.knownComponentIDs
+            activation.namespaceSeed = record.namespaceSeed
             activation.revision = record.revision
             activation.updatedAt = record.updatedAt
             activation.workspace = target
@@ -612,6 +632,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
     public let overridingRowIDs: [String]
     public let secretSettingKeys: [String]
     public let knownComponentIDs: [String]
+    public let namespaceSeed: String
     public let revision: Int
     public let createdAt: Date
     public let updatedAt: Date
@@ -629,6 +650,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         overridingRowIDs = activation.overridingRowIDs
         secretSettingKeys = activation.secretSettingKeys
         knownComponentIDs = activation.knownComponentIDs
+        namespaceSeed = activation.namespaceSeed
         revision = activation.revision
         createdAt = activation.createdAt
         updatedAt = activation.updatedAt
@@ -666,6 +688,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         if activation.knownComponentIDs != knownComponentIDs {
             activation.knownComponentIDs = knownComponentIDs
         }
+        if activation.namespaceSeed != namespaceSeed { activation.namespaceSeed = namespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }
         if current.map(Self.bindingKey) != bindings.map(Self.bindingKey) {

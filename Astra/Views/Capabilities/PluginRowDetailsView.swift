@@ -102,7 +102,12 @@ struct PluginRowDetailsView<SetupRow: View>: View {
         let accounts = row.activation?.accounts(forComponent: componentID) ?? []
         VStack(alignment: .leading, spacing: 4) {
             componentHeader(connector.name, kind: "Account")
-            ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
+            ForEach(accounts, id: \.id) { account in
+                // The workspace has one default per service, which may be
+                // another plugin's account: the binding says, not the order.
+                let isDefault = row.activation?.bindings.contains {
+                    !$0.isDeleted && $0.componentID == componentID && $0.account?.id == account.id && $0.isDefault
+                } ?? false
                 HStack(spacing: 8) {
                     Text(account.name).font(Stanford.ui(12))
                     if !account.baseURL.isEmpty {
@@ -111,11 +116,11 @@ struct PluginRowDetailsView<SetupRow: View>: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    if index == 0, accounts.count > 1 {
+                    if isDefault {
                         Text("Default").font(Stanford.caption(11)).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if index > 0 {
+                    if !isDefault {
                         Button("Make default") { makeDefault(account, componentID: componentID) }
                             .controlSize(.small)
                     }

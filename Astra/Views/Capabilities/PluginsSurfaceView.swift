@@ -71,7 +71,8 @@ struct PluginsSurfaceView: View {
             var input = PluginsSurfacePresentation.Input(
                 package: package,
                 isEnabled: packageState.isEnabled,
-                pendingSteps: packageState.connectorsNeedingAttention.count + failingSetup(for: package).count,
+                pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
+                    + failingSetup(for: package).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
                 isRemovable: Self.isRemovable(package)
             )
@@ -255,10 +256,10 @@ struct PluginsSurfaceView: View {
 
     private func componentRow(_ component: PluginComponent, package: PluginPackage, isEnabled: Bool) -> some View {
         let failing = isEnabled ? failingSetup(for: package).first { $0.component.name == component.name } : nil
-        let connector = isEnabled && component.kind == .connector
+        let packageState = isEnabled && component.kind == .connector
             ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
-                .connectorsNeedingAttention.first { $0.name == component.name }
             : nil
+        let connector = packageState?.connectorsNeedingAttention.first { $0.name == component.name }
         return HStack(spacing: 8) {
             Text(component.name).font(Stanford.ui(13))
             Text(kindLabel(component.kind)).font(Stanford.caption(11)).foregroundStyle(.secondary)
