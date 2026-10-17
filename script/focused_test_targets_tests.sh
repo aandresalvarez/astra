@@ -168,6 +168,7 @@ assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nA
 
 assert_targets $'UsageDashboardStoreTests\nUsageDashboardRenderingTests' \
   "Astra/Views/UsageDashboardView.swift" \
+  "Astra/Views/UsageDashboardTaskTable.swift" \
   "Astra/Views/UsageDashboardStore.swift" \
   "Astra/Views/UsageDashboardSummary.swift" \
   "Tests/UsageDashboardStoreTests.swift" \

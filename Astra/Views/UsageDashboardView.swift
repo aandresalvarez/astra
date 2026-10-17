@@ -32,17 +32,15 @@ struct UsageDashboardView: View {
     }
 }
 
-/// The native macOS list owns virtualization and accessible navigation.
-/// LazyVStack's accessible end-jump traps in SwiftUICore on macOS 27; an
-/// eager stack instead builds the entire archive. Each list row is one child,
-/// and no managed models enter the render graph.
+/// Totals remain visible while the native fixed-height table scrolls the
+/// archive. Neither managed models nor self-sizing history enter the graph.
 struct UsageDashboardContent<Row: View>: View {
     let summary: UsageDashboardSummary
     @Binding var timeFilter: TimeFilter
     let row: (UsageDashboardSummary.TaskRow) -> Row
 
     var body: some View {
-        List {
+        VStack(alignment: .leading, spacing: 20) {
             HStack {
                 Text("Usage Dashboard")
                     .font(Stanford.heading(22))
@@ -85,14 +83,11 @@ struct UsageDashboardContent<Row: View>: View {
                     .foregroundStyle(Stanford.black)
                     .padding(.top, 8)
 
-                ForEach(summary.tasks) { task in
-                    row(task)
-                        .padding(.vertical, 4)
-                }
+                UsageDashboardTaskTable(tasks: summary.tasks, rowHeight: 52 * Stanford.uiScale, row: row)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .listStyle(.plain)
-        .listRowSeparator(.hidden)
+        .padding()
     }
 }
 

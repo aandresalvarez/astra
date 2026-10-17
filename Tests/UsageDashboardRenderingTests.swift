@@ -25,6 +25,15 @@ struct UsageDashboardRenderingTests {
         #expect(larger.rows <= smaller.rows * 2 + 64)
     }
 
+    @Test("Jumping to the last row uses fixed geometry and constructs only the destination viewport")
+    func jumpToEndDoesNotMeasureTheArchive() {
+        let result = measureUsageRendering(summary(count: 2180), jumpToLast: true)
+        #expect(result.tableRows == 2180)
+        #expect(result.fixedGeometry)
+        #expect(result.renderedLastRow)
+        #expect(result.jumpRows < 100, "A jump must not create the preceding archived rows")
+    }
+
     private func summary(count: Int) -> UsageDashboardSummary {
         let rows = (0..<count).map { index in
             UsageDashboardSummary.TaskRow(id: UUID(), title: "Chat \(index)", status: .completed,
@@ -37,7 +46,7 @@ struct UsageDashboardRenderingTests {
 }
 
 @MainActor
-func measureUsageRendering(_ summary: UsageDashboardSummary) -> (rows: Int, uniqueRows: Int, elapsed: Duration) {
+func measureUsageRendering(_ summary: UsageDashboardSummary, jumpToLast: Bool = false) -> (rows: Int, uniqueRows: Int, elapsed: Duration, jumpRows: Int, renderedLastRow: Bool, fixedGeometry: Bool, tableRows: Int) {
     // A plain counter observes row construction without adding render state or
     // exposing a production-only testing hook in the dashboard.
     final class Counter { var rows = 0; var ids = Set<UUID>() }
@@ -53,5 +62,25 @@ func measureUsageRendering(_ summary: UsageDashboardSummary) -> (rows: Int, uniq
     window.contentView = host
     defer { window.contentView = nil; host.removeFromSuperview() }
     let elapsed = ContinuousClock().measure { host.layoutSubtreeIfNeeded() }
-    return (counter.rows, counter.ids.count, elapsed)
+    func findTable(_ view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        return view.subviews.lazy.compactMap(findTable).first
+    }
+    let beforeJump = counter.rows
+    let table = findTable(host)
+    let lastIndex = summary.tasks.count - 1
+    let fixedGeometry = table.map { table in
+        guard !table.usesAutomaticRowHeights, lastIndex > 0 else { return false }
+        let origin = table.rect(ofRow: 0).minY
+        let step = table.rect(ofRow: 1).minY - origin
+        return step > 0 && abs(table.rect(ofRow: lastIndex).minY - (origin + CGFloat(lastIndex) * step)) < 1
+    } ?? false
+    if jumpToLast, lastIndex >= 0 {
+        table?.scrollRowToVisible(lastIndex)
+        table?.layoutSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
+    }
+    return (counter.rows, counter.ids.count, elapsed, counter.rows - beforeJump,
+            summary.tasks.last.map { counter.ids.contains($0.id) } ?? false,
+            fixedGeometry, table?.numberOfRows ?? 0)
 }
