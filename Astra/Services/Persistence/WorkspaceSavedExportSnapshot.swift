@@ -14,7 +14,9 @@ enum WorkspaceSavedExportSnapshot {
               let source = container.configurations.first, !source.isStoredInMemoryOnly else {
             throw SnapshotError.unsupportedStoreConfiguration
         }
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-mirror-\(UUID())")
+        // Provider sandboxes can write general temp roots. Keep the copy
+        // inside the store owner's protection boundary, alongside the store.
+        let root = source.url.deletingLastPathComponent().appendingPathComponent(".astra-mirror-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }

@@ -8,10 +8,10 @@ Focused routing selects both the saved-export suites and `TaskOutputDiscoveryTes
 for runtime persistence changes, rather than allowing the earlier shell case to
 shadow the new discovery coverage.
 
-The updated same-run opt-in benchmark measured 1,489.81 ms wall / 1,487.00 ms
-main-thread CPU for synchronous projection versus 28.08 ms wall / 27.85 ms CPU
-for save-and-enqueue. The main actor serviced 149 heartbeat ticks while the real
-background export completed; the maximum gap was 28.12 ms. The exported JSON
+The updated same-run opt-in benchmark measured 1,507.47 ms wall / 1,502.93 ms
+main-thread CPU for synchronous projection versus 28.80 ms wall / 28.65 ms CPU
+for save-and-enqueue. The main actor serviced 148 heartbeat ticks while the real
+background export completed; the maximum gap was 28.86 ms. The exported JSON
 contained the new workspace name and all 600 expected tasks. Fixture totals
 remain 2,180 tasks, 5,518 runs, and 56,621 events. These are local synthetic
 measurements, not population percentiles or total-export speedups.
@@ -36,7 +36,9 @@ identifiers, deletes the event or entire workspace in the live store, and then
 continues the projection. The original read aborted; the immutable snapshot
 keeps the earlier rows readable. Disk-backed projection now uses ASTRA's
 existing SQLite backup service, opens the temporary copy read-only, and removes
-it after producing the value config. The temporary directory has mode 0700.
+it after producing the value config. The temporary directory lives beside the
+source store, within its owner's protection boundary rather than provider-writable
+temp roots, and has mode 0700. Regressions check placement, permissions and cleanup.
 Snapshot copying and projection remain off-main; snapshotting adds background
 I/O proportional to store size. In-memory preview/test stores have no SQLite
 snapshot and serialize their projection with main-actor edits instead.

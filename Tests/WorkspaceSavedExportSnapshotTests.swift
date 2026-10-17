@@ -27,6 +27,14 @@ struct WorkspaceSavedExportSnapshotTests {
         let read = Task.detached {
             defer { ready.continuation.finish() }
             return try WorkspaceSavedExportSnapshot.read(container: container) { snapshot in
+                let snapshotURL = try #require(snapshot.configurations.first?.url)
+                // Database copies must inherit their store owner's protected
+                // location, never the temp roots granted to provider CLIs.
+                #expect(snapshotURL.deletingLastPathComponent().deletingLastPathComponent()
+                    == container.configurations.first?.url.deletingLastPathComponent())
+                let attributes = try FileManager.default.attributesOfItem(
+                    atPath: snapshotURL.deletingLastPathComponent().path)
+                #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
                 let reader = ModelContext(snapshot)
                 reader.autosaveEnabled = false
                 let owner = try #require(reader.fetch(FetchDescriptor<Workspace>()).first)
@@ -34,7 +42,7 @@ struct WorkspaceSavedExportSnapshotTests {
                 let events = try #require(owner.tasks.first).events
                 ready.continuation.yield(())
                 resume.wait()
-                return events.map(\.payload)
+                return (payloads: events.map(\.payload), directory: snapshotURL.deletingLastPathComponent())
             }
         }
         for await _ in ready.stream { break }
@@ -47,7 +55,9 @@ struct WorkspaceSavedExportSnapshotTests {
         do { try context.save() }
         catch { resume.signal(); _ = try? await read.value; throw error }
         resume.signal()
-        #expect(try await read.value == ["Saved before deletion"])
+        let result = try await read.value
+        #expect(result.payloads == ["Saved before deletion"])
+        #expect(!FileManager.default.fileExists(atPath: result.directory.path))
         #expect(try context.fetchCount(FetchDescriptor<TaskEvent>()) == 0)
     }
 }
