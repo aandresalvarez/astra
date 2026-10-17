@@ -496,6 +496,15 @@ public struct PluginSetupRequirement: Codable, Equatable, Sendable, Identifiable
 }
 
 public struct PluginSkill: Codable, Sendable {
+    /// Stable component identity within the plugin (Plugins 2.0). Optional:
+    /// without it the identity derives from the name, as rows stamped by
+    /// earlier installers recorded it. Changing it is a rename only when the
+    /// new component lists the old identity in `replaces`.
+    public var id: String? = nil
+    /// Component identities this one takes over in an Update: their
+    /// settings, accounts and secrets move to it. A bare value is an `id`;
+    /// a value with a colon is a full component identity.
+    public var replaces: [String]? = nil
     public var name: String
     public var icon: String
     public var description: String
@@ -522,6 +531,15 @@ public struct PluginSkill: Codable, Sendable {
 }
 
 public struct PluginConnector: Codable, Sendable {
+    /// Stable component identity within the plugin (Plugins 2.0). Optional:
+    /// without it the identity derives from the name, as rows stamped by
+    /// earlier installers recorded it. Changing it is a rename only when the
+    /// new component lists the old identity in `replaces`.
+    public var id: String? = nil
+    /// Component identities this one takes over in an Update: their
+    /// settings, accounts and secrets move to it. A bare value is an `id`;
+    /// a value with a colon is a full component identity.
+    public var replaces: [String]? = nil
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -579,6 +597,15 @@ public struct PluginConnector: Codable, Sendable {
 }
 
 public struct PluginLocalTool: Codable, Sendable {
+    /// Stable component identity within the plugin (Plugins 2.0). Optional:
+    /// without it the identity derives from the name, as rows stamped by
+    /// earlier installers recorded it. Changing it is a rename only when the
+    /// new component lists the old identity in `replaces`.
+    public var id: String? = nil
+    /// Component identities this one takes over in an Update: their
+    /// settings, accounts and secrets move to it. A bare value is an `id`;
+    /// a value with a colon is a full component identity.
+    public var replaces: [String]? = nil
     public var name: String
     public var description: String
     public var icon: String

@@ -1054,7 +1054,7 @@ struct PluginCatalogView: View {
             return
         }
         do {
-            let result = try CapabilityPackageImporter().importValidatedPackage(report)
+            let result = try CapabilityPackageImporter().importValidatedPackage(report, modelContext: modelContext)
             openPackageEditor(result.package.id)
             importReview = nil
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [

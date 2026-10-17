@@ -209,10 +209,11 @@ struct TaskCapabilityResolver {
             if connector.isGlobal {
                 return enabledGlobalIDs.contains(connector.id.uuidString)
             }
-            return connector.workspace?.id == workspaceID
+            return connector.workspace?.id == workspaceID && !WorkspaceCapabilities.isPluginAccount(connector)
         }
         let standalone = task.workspace?.connectors.filter {
             $0.skill == nil && !$0.isGlobal && !boundAccountIDs.contains($0.id)
+                && !WorkspaceCapabilities.isPluginAccount($0)
         } ?? []
         var all = fromSkills + enabledPackageConnectors() + standalone
 

@@ -939,6 +939,9 @@ public struct ASTRAApp: App {
                     // A mirror an older build wrote recreates plugin rows:
                     // fold them onto activations before anything runs.
                     PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
+                    // Recovered activations meet the library's definitions:
+                    // renames move, nothing is released (`PluginUpdateService`).
+                    reconcilePluginActivations(modelContext: modelContext)
                     settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: true)
                 },
                 // A pending deletion, one made while recovery loads included,
@@ -971,6 +974,10 @@ public struct ASTRAApp: App {
                 // namespace: credential cleanups wait, and their records make
                 // the next launch scan.
                 WorkspaceRecoveryTrust.set(recoveryVouchedWithoutScan ? .vouchedWithoutScan : .trusted)
+                // An interrupted Remove only needs the store's activations,
+                // which a recovery that loaded every mirror vouches for; it
+                // releases no credential, so it doesn't wait for a scan.
+                PluginRemoveJournal.resumePending(modelContext: modelContext)
                 // Only a scan vouches for credential owners: on a launch that
                 // skipped it, even a cleanup recorded meanwhile waits. Each
                 // pass spares what the other's pending records hold, so an
@@ -989,8 +996,24 @@ public struct ASTRAApp: App {
         // Recovery may have re-created plugin rows from a mirror an older build
         // wrote; fold them onto activations now rather than next launch.
         PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
+        // The built-in sync in ContentView.handleAppear may have brought new
+        // definitions; every activation is reconciled with what is installed.
+        reconcilePluginActivations(modelContext: modelContext)
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
         settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
+    }
+
+    /// The automatic reconcile: renamed components move, and an activation
+    /// records the new definition only when nothing would be released.
+    @MainActor
+    private static func reconcilePluginActivations(modelContext: ModelContext) {
+        do {
+            try PluginUpdateService.reconcileAll(modelContext: modelContext, mode: .automatic)
+        } catch {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "operation": "plugin_reconcile", "error_type": String(describing: error)
+            ], level: .error)
+        }
     }
 
     /// Settles the runs and turn requests a crash or quit left in flight.
@@ -1013,6 +1036,10 @@ public struct ASTRAApp: App {
     @MainActor private static var runtimeSettlementAutoExportWorkspaces = true
     @MainActor private static var worktreeCleanupRecovery: Task<Void, Never>?
 
+    /// Settles interrupted work and reconciles plugin activations with the
+    /// library (`runDeferredStartupWork`). `ContentView` starts the task
+    /// scheduler only after this, so an overdue schedule never launches
+    /// against a definition its activation hasn't met yet.
     @MainActor
     static func recoverInterruptedWork(modelContext: ModelContext, taskQueue: TaskQueue) async {
         runDeferredStartupWork(modelContext: modelContext)

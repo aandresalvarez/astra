@@ -25,7 +25,8 @@ extension WorkspaceConfigManager {
             knownComponentIDs: [String]? = nil,
             secretSettingKeys: [String]? = nil,
             namespaceSeed: String? = nil,
-            digest: String? = nil
+            digest: String? = nil,
+            templateDigests: [String]? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -39,6 +40,7 @@ extension WorkspaceConfigManager {
             self.secretSettingKeys = secretSettingKeys
             self.namespaceSeed = namespaceSeed
             self.digest = digest
+            self.templateDigests = templateDigests
         }
 
         public var id: String
@@ -66,6 +68,9 @@ extension WorkspaceConfigManager {
         /// chosen file's activation stays off, with none of its details,
         /// unless this matches the installed copy (`CapabilityImportVerifier`).
         public var digest: String?
+        /// The template rows' content digests (`componentID#digest`). Restored
+        /// only from the workspace's own mirror, whose rows keep their stamps.
+        public var templateDigests: [String]?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -121,7 +126,8 @@ extension WorkspaceConfigManager {
                 knownComponentIDs: activation.knownComponentIDs.isEmpty ? nil : activation.knownComponentIDs,
                 secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys,
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
-                digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest
+                digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
+                templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests
             )
         }
     }
@@ -177,6 +183,7 @@ extension WorkspaceConfigManager {
                 if let seed = ref.namespaceSeed, !seed.isEmpty {
                     WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)
                 }
+                WorkspaceCapabilityActivation.setTemplateDigests(entries: ref.templateDigests ?? [], on: activation)
                 declared = nil
                 // The workspace's own mirror keeps the activation's identity,
                 // so its secret settings resolve again. A chosen file never

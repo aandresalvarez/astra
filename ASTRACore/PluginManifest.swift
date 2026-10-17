@@ -105,7 +105,11 @@ public struct PluginComponent: Codable, Sendable {
     }
 
     public var kind: Kind
-    /// Stable within the plugin; derived from the payload's name or binary.
+    /// Stable within the plugin. For a skill, connector or tool it is the
+    /// component's identity: converting to a package carries it onto the
+    /// payload's `id` whenever it differs from the name-derived default, so
+    /// renaming a component that keeps its `id` keeps its settings,
+    /// accounts and secrets. Defaults to `defaultID(forName:)`.
     public var id: String
     public var name: String
     public var summary: String
@@ -118,6 +122,17 @@ public struct PluginComponent: Codable, Sendable {
     public var template: PluginTemplate?
     /// For `setup` components: a CLI prerequisite or an account requirement.
     public var requirement: PluginSetupRequirement?
+
+    /// The identity a component without an explicit `id` derives from its
+    /// name. `CapabilityResourceOrigin` normalizes with this same function,
+    /// so a default `id` and the name it came from name the same component.
+    public static func defaultID(forName name: String) -> String {
+        name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9._-]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
 
     public init(
         kind: Kind,
@@ -272,16 +287,16 @@ public enum PluginManifestConverter {
     public static func manifest(from package: PluginPackage) -> PluginManifest {
         var components: [PluginComponent] = []
         components += package.skills.map {
-            PluginComponent(kind: .skill, id: slug($0.name), name: $0.name, summary: $0.description, skill: $0)
+            PluginComponent(kind: .skill, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description, skill: $0)
         }
         components += package.connectors.map {
             PluginComponent(
-                kind: .connector, id: slug($0.name), name: $0.name, summary: $0.description,
+                kind: .connector, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description,
                 setup: connectorSetup($0), connector: $0
             )
         }
         components += package.localTools.map {
-            PluginComponent(kind: .tool, id: slug($0.name), name: $0.name, summary: $0.description, tool: $0)
+            PluginComponent(kind: .tool, id: $0.id ?? PluginComponent.defaultID(forName: $0.name), name: $0.name, summary: $0.description, tool: $0)
         }
         components += package.mcpServers.map {
             PluginComponent(
@@ -330,9 +345,9 @@ public enum PluginManifestConverter {
             tags: manifest.tags,
             version: manifest.version,
             setupGuide: manifest.setupGuide,
-            skills: manifest.components.compactMap(\.skill),
-            connectors: manifest.components.compactMap(\.connector),
-            localTools: manifest.components.compactMap(\.tool),
+            skills: manifest.components.compactMap(identifiedSkill),
+            connectors: manifest.components.compactMap(identifiedConnector),
+            localTools: manifest.components.compactMap(identifiedTool),
             mcpServers: manifest.components.compactMap(\.mcp),
             templates: manifest.components.compactMap(\.template),
             setupRequirements: manifest.components.compactMap(\.requirement),
@@ -355,6 +370,66 @@ public enum PluginManifestConverter {
             return try checkedPackage(from: decoder.decode(PluginManifest.self, from: data))
         }
         return try decoder.decode(PluginPackage.self, from: data)
+    }
+
+    /// The payload with the component's `id` as its identity. A default
+    /// `id` (the one its name derives) is left off, so a package converted
+    /// to a manifest and back is unchanged. A payload that gains an `id`
+    /// here also replaces the identity its name derives: an earlier ASTRA
+    /// dropped the component's `id`, so an activation it made keys this
+    /// component's settings, accounts and secrets by that name.
+    private static func identifiedSkill(_ component: PluginComponent) -> PluginSkill? {
+        guard var skill = component.skill else { return nil }
+        if component.id != PluginComponent.defaultID(forName: skill.name) || skill.id != nil {
+            if skill.id == nil {
+                skill.replaces = adding(identity(["skill", skill.name]), to: skill.replaces, unless: identity(["skill", component.id]))
+            }
+            skill.id = component.id
+        }
+        return skill
+    }
+
+    private static func identifiedConnector(_ component: PluginComponent) -> PluginConnector? {
+        guard var connector = component.connector else { return nil }
+        if component.id != PluginComponent.defaultID(forName: connector.name) || connector.id != nil {
+            if connector.id == nil {
+                connector.replaces = adding(
+                    identity(["connector", connector.serviceType, connector.name]),
+                    to: connector.replaces,
+                    unless: identity(["connector", connector.serviceType, component.id])
+                )
+            }
+            connector.id = component.id
+        }
+        return connector
+    }
+
+    /// A tool without an `id` is identified by its type, command and name; one
+    /// that gains an `id` here also replaces that form, both with the name
+    /// its `id` derives from (a version that renamed it) and with its own
+    /// name (an earlier ASTRA that dropped the `id`).
+    private static func identifiedTool(_ component: PluginComponent) -> PluginLocalTool? {
+        guard var tool = component.tool else { return nil }
+        if component.id != PluginComponent.defaultID(forName: tool.name) || tool.id != nil {
+            if tool.id == nil {
+                let current = identity(["tool", component.id])
+                for name in [component.id, tool.name] {
+                    tool.replaces = adding(identity(["tool", tool.toolType, tool.command, name]), to: tool.replaces, unless: current)
+                }
+            }
+            tool.id = component.id
+        }
+        return tool
+    }
+
+    /// A component identity in `CapabilityResourceOrigin.componentID`'s form.
+    private static func identity(_ parts: [String]) -> String {
+        parts.map { PluginComponent.defaultID(forName: $0) }.joined(separator: ":")
+    }
+
+    private static func adding(_ identity: String, to replaces: [String]?, unless current: String) -> [String]? {
+        guard identity != current, !(replaces ?? []).contains(identity) else { return replaces }
+        return (replaces ?? []) + [identity]
     }
 
     /// `package(from:)`, refusing a manifest whose setup steps the package

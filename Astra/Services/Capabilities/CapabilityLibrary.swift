@@ -8,6 +8,10 @@ struct CapabilityLibrary {
         var packageDirectoryURL: URL
         var existingStorageURL: URL?
         var snapshotURL: URL?
+
+        /// False when there was an installed copy and it couldn't be copied
+        /// aside: a restore would leave the new copy in place.
+        var canRestore: Bool { existingStorageURL == nil || snapshotURL != nil }
     }
 
     enum RemovalError: Error, Equatable, LocalizedError {
@@ -416,6 +420,13 @@ struct CapabilityLibrary {
                 return
             }
         }
+        try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
+    }
+
+    /// Deletes a snapshot that is no longer needed: the change it guarded
+    /// was kept, or never started.
+    func discardPackageStorageSnapshot(_ snapshot: PackageStorageSnapshot) {
+        guard let snapshotURL = snapshot.snapshotURL else { return }
         try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
     }
 

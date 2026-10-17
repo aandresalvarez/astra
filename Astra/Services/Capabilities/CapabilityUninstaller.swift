@@ -37,7 +37,8 @@ struct CapabilityUninstaller {
         _ requestedPackage: PluginPackage,
         modelContext: ModelContext,
         persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist,
-        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil
+        connectorCleanupStore: ConnectorCredentialCleanupStore? = nil,
+        removeJournal: PluginRemoveJournal? = nil
     ) throws -> RemovalResult {
         let installedPackages = library.installedPackages()
         guard var package = installedPackages.first(where: { $0.id == requestedPackage.id }) else {
@@ -97,6 +98,10 @@ struct CapabilityUninstaller {
             legacyMatches: { _ in false }
         )
 
+        // The Remove's intent outlives an exit between the save below and
+        // the library removal at the end.
+        let removeJournal = removeJournal ?? PluginRemoveJournal(for: modelContext)
+        let recordedIntent = try removeJournal?.begin(package.id) ?? false
         var result = RemovalResult(packageID: package.id)
         // Membership arrays are mutated per workspace below; rollback does not
         // revert them, so snapshot for the save-failure path.
@@ -134,8 +139,16 @@ struct CapabilityUninstaller {
             // skills' IDs, which nothing names once the activation is gone:
             // they are recorded before the save and cleaned after it, every
             // component it ever knew included.
-            if let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) {
+            let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+            if let activation {
                 activationSecretSkillIDs += PluginRuntimeProjection.secretNamespaces(of: activation, package: package)
+            }
+            // Read before the activation goes: they tell a template the
+            // person edited from the plugin's own.
+            var templateDigests: [String: String] = [:]
+            for row in PluginTemplateSync.stamped(package.id, in: workspace) {
+                guard let componentID = row.originComponentID else { continue }
+                templateDigests[componentID] = activation?.templateDigest(forComponent: componentID)
             }
             WorkspaceCapabilityActivation.mutate(workspace) {
                 $0.capabilityIDs.removeAll { $0 == package.id }
@@ -160,6 +173,13 @@ struct CapabilityUninstaller {
                 !remainingWorkspacePackages.contains(where: { claims(template, package: $0) })
             }
             for template in workspaceTemplates {
+                // A plugin template the person edited is theirs: it stays,
+                // no longer the plugin's, as Update would leave it.
+                if CapabilityResourceOrigin.isOwnedBy(template, packageID: package.id),
+                   PluginTemplateSync.isEdited(template, of: package, recorded: templateDigests[template.originComponentID ?? ""]) {
+                    PluginTemplateSync.unstamp(template)
+                    continue
+                }
                 result.removedTemplateIDs.append(template.id)
                 modelContext.delete(template)
             }
@@ -204,6 +224,9 @@ struct CapabilityUninstaller {
             // resources (file gone) or credentials (records still present).
             modelContext.rollback()
             membershipSnapshots.forEach { WorkspaceCapabilityActivation.restore($1, to: $0) }
+            // An intent an earlier Remove recorded stays: its deletions may
+            // be saved, and launch finishes them.
+            if recordedIntent { removeJournal?.finish(package.id) }
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
@@ -219,6 +242,7 @@ struct CapabilityUninstaller {
         // make the caller report a failed uninstall that actually succeeded.
         do {
             _ = try library.removePackage(id: package.id)
+            removeJournal?.finish(package.id)
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "package_uninstall",

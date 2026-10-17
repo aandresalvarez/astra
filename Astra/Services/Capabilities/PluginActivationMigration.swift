@@ -145,6 +145,15 @@ enum PluginActivationMigration {
                     )
                 }
             }
+            // Template rows the plugin wrote and the person left as they
+            // are, so a later Update can tell them from edited ones.
+            for workspace in workspaces {
+                for activation in WorkspaceCapabilityActivation.activations(of: workspace)
+                where activation.templateDigests.isEmpty {
+                    guard let package = packagesByID[activation.pluginID] else { continue }
+                    PluginTemplateSync.recordUnedited(package, in: workspace, on: activation)
+                }
+            }
             var activationsByPlugin: [String: [(Workspace, PluginActivation)]] = [:]
             for workspace in workspaces {
                 for activation in WorkspaceCapabilityActivation.activations(of: workspace) {

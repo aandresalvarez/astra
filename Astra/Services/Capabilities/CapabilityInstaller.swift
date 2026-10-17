@@ -134,6 +134,7 @@ struct CapabilityInstaller {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
             throw error
         }
+        library.discardPackageStorageSnapshot(packageStorageSnapshot)
         var installedFields = [
             "package_id": package.id,
             "package_name": package.name,
@@ -194,6 +195,8 @@ struct CapabilityInstaller {
 
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
         var savedSkillSecrets: [SavedSkillSecret] = []
+        var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
+        var restoreReconciled: () -> Void = {}
         // Everything from here through persist() is one transaction: staging a
         // skill/connector/tool can throw (credential save denied, activation
         // swap failure, ...) partway through the loops below, after earlier
@@ -215,28 +218,23 @@ struct CapabilityInstaller {
                 $0.enableCapability(package.id)
                 $0.recordInstalledPlugin(id: package.id, version: package.version)
             }
-            WorkspaceCapabilityActivation.recordAccepted(
-                pluginID: package.id,
-                version: package.version,
-                digest: (try? CapabilityApprovalDigest.digest(for: package)) ?? "",
-                in: workspace
-            )
             guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
-            WorkspaceCapabilityActivation.setKnownComponents(
-                activation.knownComponentIDs + PluginRuntimeProjection.componentIDs(of: package),
-                on: activation
+            // Adding a version this workspace had at another one is an Update
+            // for it: renamed components keep their state, dropped ones
+            // release theirs, and the version and digest are recorded.
+            // rollback() and the activation snapshot don't cover templates,
+            // schedules and the synced account fields reconciling writes.
+            restoreReconciled = PluginUpdateService.captureState(of: [workspace])
+            let reconciliation = try PluginUpdateService.reconcile(
+                activation,
+                in: workspace,
+                to: package,
+                mode: .release,
+                copied: &renamedSecrets
             )
-            // An account bound to a connector component this version no
-            // longer declares is released (the account itself stays), so it
-            // is back in the workspace's own scope rather than unreachable.
-            let declaredConnectors = Set(package.connectors.map { CapabilityResourceOrigin.componentID(for: $0) })
-            for binding in activation.bindings where !binding.isDeleted && !declaredConnectors.contains(binding.componentID) {
-                if let account = binding.account {
-                    WorkspaceCapabilityActivation.unbind(account, from: activation, componentID: binding.componentID)
-                }
-            }
+            let releasedSkillIDs = reconciliation.released
 
             let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
             let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
@@ -316,13 +314,14 @@ struct CapabilityInstaller {
                 )
             }
 
-            for pluginTemplate in package.templates {
-                let template = upsertWorkspaceTemplate(pluginTemplate, package: package, workspace: workspace, modelContext: modelContext)
+            for template in PluginTemplateSync.sync(package, in: workspace, modelContext: modelContext) {
                 appendUnique(template.id, to: &templateIDs)
             }
 
             workspace.updatedAt = Date()
-            guard persist(workspace, modelContext) else {
+            guard PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, keys: reconciliation.staleSecrets, modelContext: modelContext, save: {
+                persist(workspace, modelContext)
+            }) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
             var enabledFields = [
@@ -354,8 +353,10 @@ struct CapabilityInstaller {
             // rollback() drops the inserted resources; restore() undoes the
             // membership-array mutations it does not revert.
             modelContext.rollback()
+            restoreReconciled()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
             restoreSkillSecrets(savedSkillSecrets)
+            PluginUpdateService.undo(renamedSecrets)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
             fields["result"] = "enable_failed_rolled_back"
@@ -696,42 +697,6 @@ struct CapabilityInstaller {
         return configKeys.contains { key in
             !(configInputs[key] ?? "").isEmpty
         }
-    }
-
-    private func upsertWorkspaceTemplate(
-        _ pluginTemplate: PluginTemplate,
-        package: PluginPackage,
-        workspace: Workspace,
-        modelContext: ModelContext
-    ) -> TaskTemplate {
-        let template = workspace.templates.first { $0.name == pluginTemplate.name } ?? TaskTemplate(
-            name: pluginTemplate.name,
-            mainGoal: pluginTemplate.mainGoal,
-            workspace: workspace,
-            icon: pluginTemplate.icon,
-            templateDescription: pluginTemplate.description
-        )
-        if template.modelContext == nil {
-            modelContext.insert(template)
-        }
-        template.icon = pluginTemplate.icon
-        template.templateDescription = pluginTemplate.description
-        template.mainGoal = pluginTemplate.mainGoal
-        template.beforeGoal = pluginTemplate.beforeGoal
-        template.afterGoal = pluginTemplate.afterGoal
-        template.mainBudget = pluginTemplate.mainBudget
-        template.beforeBudget = pluginTemplate.beforeBudget
-        template.afterBudget = pluginTemplate.afterBudget
-        template.variablesJSON = pluginTemplate.variablesJSON
-        template.passContextToMain = pluginTemplate.passContextToMain
-        template.passContextToAfter = pluginTemplate.passContextToAfter
-        CapabilityResourceOrigin.stamp(
-            template,
-            package: package,
-            componentID: CapabilityResourceOrigin.componentID(for: pluginTemplate)
-        )
-        template.updatedAt = Date()
-        return template
     }
 
     private func existingWorkspaceConnector(

@@ -13,7 +13,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case invalidPackageID
         case duplicatePackageID
         case duplicatePackageFilename
-        case invalidComponentIdentity
+        case duplicateMCPServerID
         case invalidVersion
         case localSourceNormalized
         case missingGovernance
@@ -28,6 +28,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case packageUpdate
         case invalidIconAsset
         case missingIconAsset
+        case invalidComponentIdentity
     }
 
     var severity: Severity
@@ -267,6 +268,35 @@ enum CapabilityPackageValidator {
             return
         }
 
+        // Settings, accounts and secrets are keyed by component identity, so
+        // two components may not share one, and a rename must be declared
+        // unambiguously (`replaces`).
+        let componentIDs = PluginUpdateService.componentIDs(of: package)
+        let duplicates = Dictionary(grouping: componentIDs, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
+        for duplicate in duplicates {
+            issues.append(issue(
+                .blocker,
+                .invalidComponentIdentity,
+                "Duplicate component",
+                "Two components share the identity \(duplicate); give one of them its own id.",
+                component: duplicate
+            ))
+        }
+        // Templates are matched to their rows by identity too.
+        let templateIDs = package.templates.map(CapabilityResourceOrigin.componentID(for:))
+        for duplicate in Dictionary(grouping: templateIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
+            issues.append(issue(
+                .blocker,
+                .invalidComponentIdentity,
+                "Duplicate template",
+                "Two templates share the identity \(duplicate); give one of them another name.",
+                component: duplicate
+            ))
+        }
+        for problem in PluginUpdateService.replacesProblems(in: package) {
+            issues.append(issue(.blocker, .invalidComponentIdentity, "Invalid replaces", problem))
+        }
+
         if !isValidPackageIDLiteral(rawID) {
             issues.append(issue(
                 .blocker,
@@ -334,18 +364,23 @@ enum CapabilityPackageValidator {
             ))
         }
 
-        // Settings, accounts and secrets are keyed by component identity, so
-        // two components may not share one.
-        let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
-        let duplicates = Dictionary(grouping: componentIDs, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
-        for duplicate in duplicates {
-            issues.append(issue(
-                .blocker,
-                .invalidComponentIdentity,
-                "Duplicate component",
-                "Two components share the identity \(duplicate); give one of them its own id.",
-                component: duplicate
-            ))
+        // Projected MCP servers, provider configuration and permission names
+        // use the server ID unqualified: one ID across two plugins would
+        // drop a server or point a permission at the wrong plugin.
+        for server in package.mcpServers {
+            let serverID = server.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let owner = installedPackages.first(where: { other in
+                other.id.lowercased() != normalizedID
+                    && other.mcpServers.contains { $0.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == serverID }
+            }) {
+                issues.append(issue(
+                    .blocker,
+                    .duplicateMCPServerID,
+                    "MCP server ID in use",
+                    "MCP server \(server.id) is already declared by installed plugin \(owner.id).",
+                    component: server.id
+                ))
+            }
         }
 
         if !isValidSemanticVersionLiteral(package.version) {
@@ -478,6 +513,19 @@ enum CapabilityPackageValidator {
         issues: inout [CapabilityPackageValidationIssue]
     ) {
         for connector in connectors {
+            // A setting is stored as plain text and exported with the
+            // workspace: a credential-named key must be a credential hint
+            // (the Keychain), whatever the package says.
+            for hint in connector.configHints where RunSecretRedaction.isSecretKey(hint.key) {
+                let name = displayName(connector.name, fallback: connector.serviceType)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeConnector,
+                    "Credential stored as a setting",
+                    "\(name) declares \(hint.key) as a plain setting; a credential must be a credential field, kept in the Keychain.",
+                    component: name
+                ))
+            }
             guard let reason = ConnectorSecurityPolicy.credentialTransportViolation(
                 baseURL: connector.baseURL,
                 authMethod: connector.authMethod,

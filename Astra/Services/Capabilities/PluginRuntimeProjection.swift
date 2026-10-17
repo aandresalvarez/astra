@@ -166,7 +166,7 @@ struct PluginRuntimeProjection {
     }
 
     /// The component IDs a definition declares: skills, connectors, tools.
-    static func componentIDs(of package: PluginPackage) -> [String] {
+    nonisolated static func componentIDs(of package: PluginPackage) -> [String] {
         package.skills.map { CapabilityResourceOrigin.componentID(for: $0) }
             + package.connectors.map { CapabilityResourceOrigin.componentID(for: $0) }
             + package.localTools.map { CapabilityResourceOrigin.componentID(for: $0) }

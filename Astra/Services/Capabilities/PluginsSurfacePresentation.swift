@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// The Plugins 2.0 surface as plain values: one list in three groups, status
 /// carried by the group heading, one verb per row (Plugins 2.0 spec, UI).
@@ -9,6 +10,9 @@ import ASTRACore
 struct PluginsSurfaceRow: Equatable, Identifiable {
     enum Verb: Equatable {
         case add
+        /// The workspace still runs an earlier definition (a reconcile that
+        /// could not finish): bring it up to the library's.
+        case update
     }
 
     let id: String
@@ -21,12 +25,24 @@ struct PluginsSurfaceRow: Equatable, Identifiable {
     let verb: Verb?
 }
 
+/// One plugin as the surface acts on it, built once per render with its
+/// display row: Expand, Add, Update, Turn off and Remove all take this, so
+/// nothing resolves the package or the activation again by ID.
+struct PluginRow: Identifiable {
+    let package: PluginPackage
+    let activation: PluginActivation?
+    let display: PluginsSurfaceRow
+
+    var id: String { package.id }
+}
+
 struct PluginsSurfaceState: Equatable {
     var actionNeeded: [PluginsSurfaceRow] = []
     var ready: [PluginsSurfaceRow] = []
     var available: [PluginsSurfaceRow] = []
 
     var isEmpty: Bool { actionNeeded.isEmpty && ready.isEmpty && available.isEmpty }
+    var allRows: [PluginsSurfaceRow] { actionNeeded + ready + available }
 }
 
 enum PluginsSurfacePresentation {
@@ -39,6 +55,7 @@ enum PluginsSurfacePresentation {
         /// Hidden or blocked by policy; such packages are not listed.
         var isVisible: Bool
         var isRemovable: Bool
+        var needsUpdate: Bool = false
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -55,11 +72,11 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.isEnabled ? nil : .add
+                verb: !input.isEnabled ? .add : (input.needsUpdate ? .update : nil)
             )
             if !input.isEnabled {
                 state.available.append(row)
-            } else if input.pendingSteps > 0 {
+            } else if input.pendingSteps > 0 || input.needsUpdate {
                 state.actionNeeded.append(row)
             } else {
                 state.ready.append(row)
@@ -72,6 +89,9 @@ enum PluginsSurfacePresentation {
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
         let contents = input.package.contentParts.joined(separator: ", ")
+        if input.isEnabled, input.needsUpdate {
+            return contents.isEmpty ? "Update to \(input.package.version)" : "Update to \(input.package.version) · \(contents)"
+        }
         guard input.isEnabled, input.pendingSteps > 0 else {
             return contents.isEmpty ? input.package.description : contents
         }
@@ -97,37 +117,33 @@ enum PluginsSurfacePresentation {
 
 /// The second tap before a destructive row action: it names what goes and
 /// what stays (`docs/design-system/lean-ui-system.md`, Interaction Rules).
+/// Turning a plugin off deletes nothing, so it needs none.
 enum PluginsSurfaceConfirmation: Equatable {
-    /// Turning a plugin off here removes the accounts and keys it created in
-    /// this workspace.
-    case turnOff(packageID: String)
     /// Removing it from ASTRA turns it off in every workspace.
     case remove(packageID: String)
+    /// Deleting an account removes it, and its saved keys, everywhere.
+    case deleteAccount(packageID: String, accountID: UUID)
 
     var packageID: String {
         switch self {
-        case .turnOff(let id), .remove(let id): id
+        case .remove(let id), .deleteAccount(let id, _): id
         }
     }
 
-    func copy(name: String, hasAccounts: Bool) -> (message: String, verb: String) {
+    func copy(name: String, workspaces: [String] = []) -> (message: String, verb: String) {
         switch self {
-        case .turnOff:
-            // The disabler deletes nothing: accounts, settings and keys stay.
-            return (
-                "Turn off \(name) in this workspace? Nothing is deleted: its accounts, settings and saved keys stay, and turning it on again restores it.",
-                "Turn off"
-            )
         case .remove:
             // Remove deletes activations (settings, secret settings); the
             // accounts and their credentials stay until deleted one by one.
-            let accounts = hasAccounts
-                ? " Its accounts and their saved keys stay; delete an account from Accounts to clear it."
-                : ""
             return (
-                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted.\(accounts) You can add it again later.",
+                "Remove \(name) from ASTRA? It turns off in every workspace and its settings there are deleted. Its accounts and their saved keys stay; delete an account to clear it. You can add it again later.",
                 "Remove"
             )
+        case .deleteAccount:
+            let reach = workspaces.isEmpty
+                ? ""
+                : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
+            return ("Delete the account \(name) and its saved keys?\(reach)", "Delete")
         }
     }
 }

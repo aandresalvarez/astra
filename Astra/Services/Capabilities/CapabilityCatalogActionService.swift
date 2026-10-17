@@ -50,6 +50,7 @@ struct CapabilityCatalogActionService {
     let installer: CapabilityInstaller
     let creationService: CapabilityPackageCreationService
     let uninstaller: CapabilityUninstaller
+    let library: CapabilityLibrary
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
@@ -58,6 +59,7 @@ struct CapabilityCatalogActionService {
         self.installer = CapabilityInstaller(library: library, appVersion: appVersion)
         self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion)
         self.uninstaller = CapabilityUninstaller(library: library)
+        self.library = library
     }
 
     /// Writes the package's shareable source JSON to `url`. The exported
@@ -238,6 +240,66 @@ struct CapabilityCatalogActionService {
         )
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return result
+    }
+
+    /// The row's Update: brings every workspace's activations of `package`
+    /// to its definition in the library, releasing what it dropped.
+    func update(_ package: PluginPackage, modelContext: ModelContext) throws {
+        let definition = library.installedPackages().filter { $0.id == package.id }
+        // Refused for every workspace if one with an activation of it would
+        // refuse this definition, as an import is, before anything changes.
+        if let refusal = PluginUpdateService.refusals(for: definition.first ?? package, modelContext: modelContext).first {
+            throw refusal
+        }
+        try PluginUpdateService.reconcileAll(
+            modelContext: modelContext,
+            packages: definition.isEmpty ? [package] : definition,
+            mode: .release
+        )
+        CapabilityCatalogPersistenceEvents.post(.global)
+    }
+
+    /// A plugin skill's setting in one workspace (secret ones to the Keychain).
+    func setSetting(
+        _ key: String,
+        to value: String,
+        of skill: PluginSkill,
+        package: PluginPackage,
+        workspace: Workspace,
+        modelContext: ModelContext
+    ) throws {
+        try PluginOperations.setSetting(key, to: value, of: skill, pluginID: package.id, in: workspace, modelContext: modelContext)
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+    }
+
+    /// A new account for a connector component, bound in this workspace.
+    @discardableResult
+    func addAccount(
+        for connector: PluginConnector,
+        of package: PluginPackage,
+        workspace: Workspace,
+        modelContext: ModelContext
+    ) throws -> Connector {
+        let account = try PluginOperations.addAccount(for: connector, of: package, in: workspace, modelContext: modelContext)
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+        return account
+    }
+
+    func makeDefault(
+        _ account: Connector,
+        componentID: String,
+        package: PluginPackage,
+        workspace: Workspace,
+        modelContext: ModelContext
+    ) throws {
+        try PluginOperations.makeDefault(account, componentID: componentID, pluginID: package.id, in: workspace, modelContext: modelContext)
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+    }
+
+    /// Deletes an account in every workspace, with its credentials.
+    func deleteAccount(_ account: Connector, modelContext: ModelContext) throws {
+        try PluginOperations.deleteAccount(account, modelContext: modelContext)
+        CapabilityCatalogPersistenceEvents.post(.global)
     }
 
     private func failureFields(

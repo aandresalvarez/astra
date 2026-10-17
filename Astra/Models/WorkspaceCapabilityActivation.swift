@@ -155,6 +155,19 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    /// Records each plugin template row's content digest (by component) as a
+    /// sync wrote it.
+    public static func setTemplateDigests(_ digests: [String: String], on activation: PluginActivation) {
+        setTemplateDigests(entries: digests.sorted { $0.key < $1.key }.map { "\($0.key)#\($0.value)" }, on: activation)
+    }
+
+    /// Restores recorded `componentID#digest` entries as they were stored.
+    public static func setTemplateDigests(entries: [String], on activation: PluginActivation) {
+        guard activation.templateDigests != entries else { return }
+        activation.templateDigests = entries
+        touch(activation)
+    }
+
     /// Records the components of the definition the activation was
     /// reconciled against.
     public static func setKnownComponents(_ componentIDs: [String], on activation: PluginActivation) {
@@ -298,6 +311,103 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    /// Moves everything an activation keeps for component `old` (settings,
+    /// recorded secret keys, account bindings, an override) to component
+    /// `new`, for a rename an Update declares. What `new` already has wins:
+    /// its own setting keeps its value, an account bound to both stays bound
+    /// once, and its own override stays.
+    public static func moveComponentState(from old: String, to new: String, on activation: PluginActivation) {
+        func renamed(_ key: String) -> String? {
+            guard PluginActivation.componentID(ofSettingKey: key) == old else { return nil }
+            return PluginActivation.settingKey(componentID: new, key: String(key.dropFirst(old.count + 1)))
+        }
+        var keys: [String] = []
+        var values: [String] = []
+        let destination = Set(activation.configKeys.filter { PluginActivation.componentID(ofSettingKey: $0) == new })
+        for (index, key) in activation.configKeys.enumerated() {
+            let value = index < activation.configValues.count ? activation.configValues[index] : ""
+            let target = renamed(key) ?? key
+            guard renamed(key) == nil || !destination.contains(target), !keys.contains(target) else { continue }
+            keys.append(target)
+            values.append(value)
+        }
+        if activation.configKeys != keys { activation.configKeys = keys }
+        if activation.configValues != values { activation.configValues = values }
+        var secrets: [String] = []
+        for key in activation.secretSettingKeys {
+            let target = renamed(key) ?? key
+            if !secrets.contains(target) { secrets.append(target) }
+        }
+        if activation.secretSettingKeys != secrets { activation.secretSettingKeys = secrets }
+        let newBindings = activation.bindings.filter { !$0.isDeleted && $0.componentID == new }
+        for binding in activation.bindings where !binding.isDeleted && binding.componentID == old {
+            if let id = binding.account?.id, let kept = newBindings.first(where: { $0.account?.id == id }) {
+                // The account is bound to `new` already; it keeps the
+                // default it had through `old`.
+                if binding.isDefault { kept.isDefault = true }
+                activation.bindings.removeAll { $0 === binding }
+                binding.modelContext?.delete(binding)
+            } else {
+                binding.componentID = new
+            }
+        }
+        if activation.overriddenComponentIDs.contains(old) {
+            let row = activation.overridingRowID(forComponent: old)
+            setOverridden(false, componentID: old, on: activation)
+            if !activation.overriddenComponentIDs.contains(new) {
+                setOverridden(true, componentID: new, rowID: row, on: activation)
+            }
+        }
+        touch(activation)
+    }
+
+    /// Releases everything an activation keeps for a component its plugin
+    /// no longer declares: settings, recorded secret keys, account bindings
+    /// (the accounts stay) and an override (the authored row stays).
+    public static func dropComponentState(_ componentID: String, on activation: PluginActivation) {
+        dropSettings(on: activation) { PluginActivation.componentID(ofSettingKey: $0) == componentID }
+        // Through `unbind`, so the workspace's default for the service moves
+        // to a remaining account when the dropped binding held it.
+        for binding in activation.bindings where !binding.isDeleted && binding.componentID == componentID {
+            if let account = binding.account {
+                unbind(account, from: activation, componentID: componentID)
+            } else {
+                activation.bindings.removeAll { $0 === binding }
+                binding.modelContext?.delete(binding)
+            }
+        }
+        setOverridden(false, componentID: componentID, on: activation)
+        touch(activation)
+    }
+
+    /// Drops the settings (and recorded secret keys) of `componentID` whose
+    /// keys its definition no longer declares.
+    public static func dropSettings(
+        of componentID: String,
+        notIn declared: Set<String>,
+        on activation: PluginActivation
+    ) {
+        let before = (activation.configKeys, activation.secretSettingKeys)
+        dropSettings(on: activation) { key in
+            PluginActivation.componentID(ofSettingKey: key) == componentID
+                && !declared.contains(String(key.dropFirst(componentID.count + 1)))
+        }
+        if before != (activation.configKeys, activation.secretSettingKeys) { touch(activation) }
+    }
+
+    private static func dropSettings(on activation: PluginActivation, where shouldDrop: (String) -> Bool) {
+        var keys: [String] = []
+        var values: [String] = []
+        for (index, key) in activation.configKeys.enumerated() where !shouldDrop(key) {
+            keys.append(key)
+            values.append(index < activation.configValues.count ? activation.configValues[index] : "")
+        }
+        if activation.configKeys != keys { activation.configKeys = keys }
+        if activation.configValues != values { activation.configValues = values }
+        let secrets = activation.secretSettingKeys.filter { !shouldDrop($0) }
+        if activation.secretSettingKeys != secrets { activation.secretSettingKeys = secrets }
+    }
+
     /// The enablement state, every activation's full record and the
     /// workspace's `updatedAt`, for undoing in-memory changes after a failed
     /// save.
@@ -367,6 +477,7 @@ public enum WorkspaceCapabilityActivation {
             activation.overridingRowIDs = live.map(\.rowID)
             activation.secretSettingKeys = record.secretSettingKeys
             activation.knownComponentIDs = record.knownComponentIDs
+            activation.templateDigests = record.templateDigests
             activation.namespaceSeed = record.namespaceSeed
             activation.revision = record.revision
             activation.updatedAt = record.updatedAt
@@ -588,6 +699,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
     public let overridingRowIDs: [String]
     public let secretSettingKeys: [String]
     public let knownComponentIDs: [String]
+    public let templateDigests: [String]
     public let namespaceSeed: String
     public let revision: Int
     public let createdAt: Date
@@ -606,6 +718,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         overridingRowIDs = activation.overridingRowIDs
         secretSettingKeys = activation.secretSettingKeys
         knownComponentIDs = activation.knownComponentIDs
+        templateDigests = activation.templateDigests
         namespaceSeed = activation.namespaceSeed
         revision = activation.revision
         createdAt = activation.createdAt
@@ -644,6 +757,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         if activation.knownComponentIDs != knownComponentIDs {
             activation.knownComponentIDs = knownComponentIDs
         }
+        if activation.templateDigests != templateDigests { activation.templateDigests = templateDigests }
         if activation.namespaceSeed != namespaceSeed { activation.namespaceSeed = namespaceSeed }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }
