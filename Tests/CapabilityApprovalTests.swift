@@ -128,6 +128,24 @@ struct CapabilityApprovalTests {
         #expect(prod.contains("Astra/CapabilityApprovals"))
         #expect(dev != prod)
     }
+
+    @Test("reverting an approval saved ahead of a failed write restores what it replaced")
+    func revertingAnApprovalSavedAheadRestoresWhatItReplaced() throws {
+        let (store, root) = makeApprovalStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = makeApprovalPackage()
+
+        let fresh = try store.saveBeforeDependentWrite(package: package, status: .approved, approvedBy: "user")
+        #expect(store.record(for: package) == fresh.record)
+        fresh.revert()
+        #expect(store.records().isEmpty)
+
+        let blocked = try store.save(package: package, status: .blocked, approvedBy: "Security")
+        let replacing = try store.saveBeforeDependentWrite(package: package, status: .approved, approvedBy: "user")
+        #expect(store.record(for: package)?.status == .approved)
+        replacing.revert()
+        #expect(store.records() == [blocked])
+    }
 }
 
 private func makeApprovalStore() -> (CapabilityApprovalStore, URL) {

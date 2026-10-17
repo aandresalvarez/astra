@@ -1092,11 +1092,13 @@ struct ArchitectureFitnessTests {
         let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
         #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
             "WorkspacePersistenceCoordinator.saveAndAutoExport"))
+        // The approval goes before the library write it covers, and the one
+        // global event after both.
+        let approvalSave = try #require(creation.range(of: "let approval = try saveApprovalRecordIfNeeded"))
         let suppressedInstall = try #require(creation.range(of: "announceCatalogMutation: false"))
-        let approvalSave = try #require(creation.range(of: "let approvalRecord = try saveApprovalRecordIfNeeded"))
-        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: approvalSave.lowerBound..<creation.endIndex))
-        #expect(suppressedInstall.lowerBound < approvalSave.lowerBound)
-        #expect(approvalSave.lowerBound < globalPost.lowerBound)
+        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: suppressedInstall.lowerBound..<creation.endIndex))
+        #expect(approvalSave.lowerBound < suppressedInstall.lowerBound)
+        #expect(suppressedInstall.lowerBound < globalPost.lowerBound)
         #expect(catalogView.contains("CapabilityPersistence.saveResourceMutation(workspace: workspace"))
     }
 
