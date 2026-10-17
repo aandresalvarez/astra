@@ -64,6 +64,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// A macOS user-immutable or append-only flag blocks writes the mode bits
     /// allow; the fix clears it.
     var hasLockFlag = false
+    /// `path` is itself a symlink. chmod and chown follow links, so no such
+    /// command is ever generated for it; only `chflags -h` and `mv` act on it.
+    var pathIsLink = false
     /// The symlink itself (not its target) carries a user lock, so it cannot
     /// be replaced until `chflags -h` unlocks it.
     var linkIsLocked = false
@@ -115,15 +118,22 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
 struct CopilotHomeAccessReport: Equatable, Sendable {
     let home: String
     let problems: [CopilotHomeAccessProblem]
+    /// The launch's sandbox enforces its read scope, so an entry Copilot
+    /// reads from outside the home is unreachable, not just a warning.
+    var sandboxEnforcesReads = false
 
     var isClean: Bool { problems.isEmpty }
+
+    func blocks(_ problem: CopilotHomeAccessProblem) -> Bool {
+        problem.blocksCopilot || (sandboxEnforcesReads && problem.access == .linksOutsideHome)
+    }
 
     /// An unreadable startup entry kills every Copilot turn before it prints
     /// a byte. An unwritable one may only fail when Copilot saves state, and an
     /// unreadable one it never opens does not fail at all, so both are
     /// warnings, not launch blockers.
     var blocksCopilot: Bool {
-        problems.contains(where: \.blocksCopilot)
+        problems.contains(where: blocks)
     }
 
     /// What is wrong, e.g. "Copilot cannot read ~/.copilot/config.json
@@ -178,7 +188,9 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// alone leaves a mode-000 file just as unreadable as before.
     var fixCommand: String {
         var commands: [String] = []
-        let repairable = problems.filter { $0.isRepairable && $0.symlinkTarget == nil && !$0.isMisplaced }
+        let repairable = problems.filter {
+            $0.isRepairable && $0.symlinkTarget == nil && !$0.pathIsLink && !$0.isMisplaced
+        }
         // First: a locked entry refuses even a chown, and a move aside too, so
         // misplaced entries (a dangling home link among them) are unlocked
         // here as well. `-h` acts on a link itself, never on what it points
@@ -393,6 +405,7 @@ enum CopilotHomeAccessCheck {
         resumeSessionID: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         workingDirectory: String? = nil,
+        sandboxEnforcesReads: Bool = false,
         fileManager: FileManager = .default,
         currentUserID: uid_t = getuid()
     ) -> CopilotHomeAccessReport {
@@ -433,16 +446,29 @@ enum CopilotHomeAccessCheck {
         let targetOwner = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.ownerAccountID] as? NSNumber
         let homeTrusted = !homeIsLink || targetOwner.map { uid_t($0.uint32Value) == currentUserID } ?? false
         let trustedRoot = canonicalPath(resolvedHome)
+        // The providers override never gets a command: it can name any path,
+        // the home itself included, and the fix there is the variable.
+        let homeParent = (trimmedHome as NSString).deletingLastPathComponent
         for index in problems.indices {
             let problem = problems[index]
             let entry = canonicalEntryPath(problem.path)
             let inside = homeTrusted && (entry == trustedRoot || entry.hasPrefix(trustedRoot + "/"))
-            let isHomeEntry = problem.path == trimmedHome || problem.access == .cannotCreateHome
-            if !(inside || isHomeEntry) { problems[index].isRepairable = false }
+            let isHomeEntry = problem.path == trimmedHome && problem.access != .cannotCreateHome
+            // Only the direct, user-owned parent: never a shared ancestor such
+            // as /Users when the user's own home is missing.
+            let isOwnedHomeParent = problem.access == .cannotCreateHome
+                && problem.path == homeParent && problem.ownedByCurrentUser
+            if problem.isProvidersOverride || !(inside || isHomeEntry || isOwnedHomeParent) {
+                problems[index].isRepairable = false
+            }
         }
+        var report = CopilotHomeAccessReport(home: trimmedHome, problems: problems)
+        report.sandboxEnforcesReads = sandboxEnforcesReads
         // Blocking entries first: they are the ones that kill the CLI.
-        let ordered = problems.filter(\.blocksCopilot) + problems.filter { !$0.blocksCopilot }
-        return CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
+        let ordered = problems.filter(report.blocks) + problems.filter { !report.blocks($0) }
+        var orderedReport = CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
+        orderedReport.sandboxEnforcesReads = sandboxEnforcesReads
+        return orderedReport
     }
 
     /// The canonical path of an entry's folder plus its own name: a link is
@@ -577,6 +603,8 @@ enum CopilotHomeAccessCheck {
         )
         outside.isProvidersOverride = true
         outside.isProvidersFile = true
+        var linkInfo = stat()
+        outside.pathIsLink = lstat(override, &linkInfo) == 0 && (linkInfo.st_mode & S_IFMT) == S_IFLNK
         return [outside]
     }
 
@@ -590,11 +618,12 @@ enum CopilotHomeAccessCheck {
         resumeSessionID: String?,
         environment: [String: String],
         workingDirectory: String?,
+        sandboxEnforcesReads: Bool = false,
         fileManager: FileManager = .default
     ) -> RuntimeReadinessReport? {
         let report = inspect(
             home: home, resumeSessionID: resumeSessionID, environment: environment,
-            workingDirectory: workingDirectory, fileManager: fileManager
+            workingDirectory: workingDirectory, sandboxEnforcesReads: sandboxEnforcesReads, fileManager: fileManager
         )
         guard report.blocksCopilot, let check = readinessCheck(for: report) else { return nil }
         return RuntimeReadinessReport(checks: [check])
@@ -610,7 +639,7 @@ enum CopilotHomeAccessCheck {
         providersFileBlocks: Bool = true
     ) -> RuntimeReadinessCheck? {
         guard !report.isClean else { return nil }
-        let blocks = report.problems.contains { $0.blocksCopilot && (providersFileBlocks || !$0.isProvidersFile) }
+        let blocks = report.problems.contains { report.blocks($0) && (providersFileBlocks || !$0.isProvidersFile) }
         return RuntimeReadinessCheck(
             id: readinessCheckID,
             title: "Copilot settings folder",
@@ -718,6 +747,7 @@ enum CopilotHomeAccessCheck {
         problem.hasACL = ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
             && hasExtendedACL(path)
         problem.requiresWrite = requiresWrite
+        problem.pathIsLink = type == .typeSymbolicLink
         // A locked entry refuses writes, and a move aside as well.
         let locks = lockState(of: path, followLinks: false)
         let lockMatters = requiresWrite || access == .notADirectory || access == .wrongType
@@ -825,6 +855,7 @@ enum CopilotHomeAccessCheck {
             symlinkTarget: target
         )
         problem.isSpecialFile = targetExists && !isDirectory.boolValue && targetType != .typeRegular
+        problem.pathIsLink = true
         problem.hasLockFlag = access == .unwritable && lockState(of: path, followLinks: true).any
         // A link the user has to replace (broken or the wrong type) must be
         // unlocked first.

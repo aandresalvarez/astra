@@ -62,6 +62,8 @@ private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
 protocol AgentRuntimeProcessRunning: AnyObject {
     func cancel()
     func isHostControlBrokerAvailable() -> Bool
+    /// See `AgentRuntimeProcessRunner+SandboxReads.swift`.
+    @MainActor func sandboxEnforcesReads(runtime: AgentRuntimeID, permissionPolicy: PermissionPolicy, executionPolicy: AgentRuntimeExecutionPolicy) -> Bool
 
     @MainActor
     func runRuntimeProcess(
@@ -97,7 +99,7 @@ final class AgentRuntimeProcessRunner {
     typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var currentProcess: AgentRuntimeProcessControl?
-    private let sandboxSettingsProvider: SandboxSettingsProvider
+    let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
     private let dockerRuntimeProvider: DockerRuntimeProvider
     private let hostControlBrokerSessionManager: any HostControlBrokerSessionManaging

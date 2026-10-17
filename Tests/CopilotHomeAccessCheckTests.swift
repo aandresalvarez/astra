@@ -269,8 +269,10 @@ struct CopilotHomeAccessCheckTests {
         #expect(own.cause.contains("cannot create"))
         #expect(own.fixCommand == "chmod u+rwx '\(parent)'")
 
+        // A parent the user does not own is an administrator's to repair.
         let foreign = CopilotHomeAccessCheck.inspect(home: missingHome, currentUserID: getuid() + 1)
-        #expect(foreign.fixCommand == "sudo chown \"$USER\" '\(parent)' && chmod u+rwx '\(parent)'")
+        #expect(foreign.blocksCopilot)
+        #expect(foreign.fixCommand.isEmpty)
 
         try home.setMode(0o755, of: parent)
         #expect(CopilotHomeAccessCheck.inspect(home: missingHome).isClean)
@@ -533,7 +535,7 @@ struct CopilotHomeAccessCheckTests {
         let problem = try #require(report.problems.first { $0.path == override })
         #expect(problem.access == .wrongType)
         #expect(problem.backupPath == "\(override).bak-2")
-        #expect(report.fixCommand.contains("mv -n '\(override)' '\(override).bak-2'"))
+        #expect(!report.fixCommand.contains("mv -n"))
     }
 
     @Test("A FIFO where a config file belongs blocks as a special file")
@@ -643,7 +645,9 @@ struct CopilotHomeAccessCheckTests {
             home: missingHome, environment: [CopilotHomeAccessCheck.providersOverrideVariable: inside]
         )
         #expect(report.problems.filter { $0.path == inside }.count == 1)
-        #expect(report.fixCommand == "chmod u+r '\(inside)'")
+        // The override is the variable's to fix: no command, even inside the home.
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("suggests no command for it"))
         try root.setMode(0o600, of: inside)
     }
 
@@ -944,6 +948,80 @@ struct CopilotHomeAccessCheckTests {
         #expect(report.remediation.contains("replace the link at"))
         try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(!CopilotHomeAccessCheck.lockState(of: link, followLinks: false).any)
+    }
+
+    @Test("A linked providers override is never chmod-ed through its link")
+    func linkedOverrideGetsNoCommand() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let external = try elsewhere.write("providers.json", mode: 0o600)
+        let link = (home.path as NSString).appendingPathComponent("providers-link.json")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: external)
+
+        let report = CopilotHomeAccessCheck.inspect(
+            home: home.path, environment: [CopilotHomeAccessCheck.providersOverrideVariable: link]
+        )
+
+        #expect(report.problems.map(\.access) == [.linksOutsideHome])
+        #expect(report.problems.first?.pathIsLink == true)
+        #expect(report.fixCommand.isEmpty)
+    }
+
+    @Test("An override naming the home itself never moves the home aside")
+    func overrideAliasingHomeIsNotMoved() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+
+        let report = CopilotHomeAccessCheck.inspect(
+            home: home.path, environment: [CopilotHomeAccessCheck.providersOverrideVariable: home.path]
+        )
+
+        #expect(report.problems.map(\.access) == [.wrongType])
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("point the variable at a file you own"))
+    }
+
+    @Test("A shared ancestor of a missing home is never chowned")
+    func sharedAncestorIsNotRepaired() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        // root stands in for /Users: the user's own folder below it is missing.
+        let missingHome = (root.path as NSString).appendingPathComponent("absent-user/.copilot")
+        try root.setMode(0o555, of: root.path)
+        defer { try? root.setMode(0o755, of: root.path) }
+
+        let report = CopilotHomeAccessCheck.inspect(home: missingHome)
+
+        #expect(report.problems.map(\.access) == [.cannotCreateHome])
+        #expect(report.problems.first?.path == root.path)
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.isEmpty)
+    }
+
+    @Test("Under an enforced read scope, a startup entry read from outside the home blocks")
+    func outsideEntryBlocksWhenSandboxEnforcesReads() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let external = try elsewhere.write("config.json", mode: 0o600)
+        try FileManager.default.createSymbolicLink(
+            atPath: (home.path as NSString).appendingPathComponent("config.json"), withDestinationPath: external
+        )
+
+        #expect(!CopilotHomeAccessCheck.inspect(home: home.path).blocksCopilot)
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path, sandboxEnforcesReads: true).blocksCopilot)
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil
+        ) == nil)
+        #expect(CopilotHomeAccessCheck.launchBlocker(
+            home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil,
+            sandboxEnforcesReads: true
+        ) != nil)
     }
 
     @Test("A home symlink loop blocks like a dangling link")

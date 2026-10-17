@@ -748,10 +748,15 @@ final class AgentRuntimeWorker {
             environment: providerLaunchEnvironment
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
+        // Under an enforced read scope, a startup entry Copilot reads from
+        // outside its home is unreachable, so it blocks rather than warns.
+        let copilotSandboxEnforcesReads = selectedRuntime == .copilotCLI && processRunner.sandboxEnforcesReads(
+            runtime: selectedRuntime, permissionPolicy: launchPermissionPolicy, executionPolicy: executionPolicy
+        )
         if selectedRuntime == .copilotCLI,
            let blocker = CopilotHomeAccessCheck.launchBlocker(
                resumeSessionID: nativeContinuationSessionID, environment: providerLaunchEnvironment,
-               workingDirectory: executionPath
+               workingDirectory: executionPath, sandboxEnforcesReads: copilotSandboxEnforcesReads
            ),
            !AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunchResult(
                task: task, run: run, modelContext: modelContext, phase: auditPhase, report: blocker
@@ -1122,7 +1127,8 @@ final class AgentRuntimeWorker {
             maxTurnsExceeded: result.maxTurnsExceeded,
             copilotHomeAccess: copilotFailureEnvironment.map { environment in
                 { CopilotHomeAccessCheck.inspect(
-                    resumeSessionID: nativeContinuationSessionID, environment: environment, workingDirectory: executionPath
+                    resumeSessionID: nativeContinuationSessionID, environment: environment,
+                    workingDirectory: executionPath, sandboxEnforcesReads: copilotSandboxEnforcesReads
                 ) }
             }
         )
