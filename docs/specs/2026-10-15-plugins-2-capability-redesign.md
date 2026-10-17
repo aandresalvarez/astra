@@ -187,6 +187,14 @@ reconciliation finishes or undoes what an exit interrupted:
 
 - **Add:** approval file, library entry, then activation. An approved entry
   with no activation is just an installed plugin; it shows under Available.
+  The same order holds whenever a write replaces an approved copy: Create
+  and enable of a newer version saves the new version's approval before the
+  library write (`CapabilityApprovalStore.saveBeforeDependentWrite`, taken
+  back if the install fails), so an exit between them leaves the new copy
+  approved. A file import of a newer version writes no approval at all: an
+  imported update is a draft until the person approves it, crash or not.
+  The row's Update never writes the library; it reconciles activations with
+  the copy already there.
 - **Update:** library entry, then the activations. Reconciling needs only
   the new definition and the activation's own record (`knownComponentIDs`,
   its setting keys and `secretSettingKeys`), never the previous manifest, so
@@ -510,9 +518,13 @@ stored.
    Remove deletes the activations; their projected skills' secret
    namespaces are written to `PluginSecretCleanupOutbox` before the save,
    cleaned after it, taken back if it fails, and finished at the next launch
-   if a quit came between (only while nothing live names them). The
-   migration records the namespaces of the skill rows it deletes the same
-   way.
+   if a quit came between (only while nothing live names them). Adding the
+   plugin again in that workspace derives the same namespaces, so Add first
+   settles the ones it would reuse (no activation owns them yet) and refuses
+   ("can't be added yet") while one is still pending or the record can't be
+   read (`PluginSecretCleanupOutbox.settleBeforeAdding`): a new activation
+   never inherits the old values. The migration records the namespaces of
+   the skill rows it deletes the same way.
 9. **The startup definition repair is retired.** It rewrote plugin skill
    rows to the current definition; the projection always reads the current
    definition, and the repair would have reverted edited (authored) rows.
