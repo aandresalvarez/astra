@@ -255,20 +255,41 @@ enum CopilotHomeAccessCheck {
     /// Top-level entries of a Copilot CLI 1.0.x home that hold its config or
     /// session state, and the type Copilot needs each to be. Only these can
     /// block a launch; anything else in the folder (backups, caches, other
-    /// tools' files) is at most a warning.
+    /// tools' files) is at most a warning. `settings.json` is not here:
+    /// Copilot ignores an unreadable one with a startup warning.
     static let startupEntries: [String: EntryKind] = readOnlyConfigFileNames
         .reduce(into: [
-            "settings.json": .file,
             // The user-level provider and model registry BYOK models read.
-            "providers.json": .file,
+            providersFileName: .file,
             "permissions-config.json": .file,
-            // The extensionless name older CLI releases used; still loaded.
+            // The extensionless name older CLI releases used; read only when
+            // `permissions-config.json` does not exist.
             "permissions-config": .file,
             "session-state": .directory,
             "session-store.db": .file,
             "session-store.db-wal": .file,
             "session-store.db-shm": .file
         ]) { entries, name in entries[name] = .file }
+
+    static let providersFileName = "providers.json"
+    /// Replaces `~/.copilot/providers.json` when set in Copilot's environment.
+    static let providersOverrideVariable = "COPILOT_PROVIDERS_CONFIG"
+
+    /// The startup entries Copilot will actually open for this home and
+    /// environment, following its own fallback rules.
+    static func effectiveStartupEntries(
+        present children: Set<String>,
+        providersOverride: String?
+    ) -> [String: EntryKind] {
+        var entries = startupEntries
+        if children.contains("permissions-config.json") {
+            entries["permissions-config"] = nil
+        }
+        if providersOverride != nil {
+            entries[providersFileName] = nil
+        }
+        return entries
+    }
 
     static let readinessCheckID = "copilot-home-access"
 
@@ -278,9 +299,13 @@ enum CopilotHomeAccessCheck {
     static func inspect(
         home: String = CopilotCLIRuntime.defaultHome(),
         resumeSessionID: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default,
         currentUserID: uid_t = getuid()
     ) -> CopilotHomeAccessReport {
+        let providersOverride = environment[providersOverrideVariable]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmptyExpandingTilde
         let trimmedHome = home.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHome.isEmpty else {
             return CopilotHomeAccessReport(home: home, problems: [])
@@ -336,13 +361,14 @@ enum CopilotHomeAccessCheck {
         guard let children = try? fileManager.contentsOfDirectory(atPath: resolvedHome) else {
             return CopilotHomeAccessReport(home: trimmedHome, problems: problems)
         }
+        let startup = effectiveStartupEntries(present: Set(children), providersOverride: providersOverride)
         for child in children.sorted() {
             let path = (resolvedHome as NSString).appendingPathComponent(child)
             if var problem = problem(
                 at: path,
                 requiresWrite: !readOnlyConfigFileNames.contains(child),
-                isReadAtStartup: startupEntries[child] != nil,
-                expectedKind: startupEntries[child],
+                isReadAtStartup: startup[child] != nil,
+                expectedKind: startup[child],
                 home: resolvedHome,
                 fileManager: fileManager,
                 currentUserID: currentUserID
@@ -362,6 +388,13 @@ enum CopilotHomeAccessCheck {
             ) {
                 problems.append(problem)
             }
+        }
+        // The override replaces the default file, so it is what must be readable.
+        if let providersOverride, let problem = problem(
+            at: providersOverride, requiresWrite: false, isReadAtStartup: true, expectedKind: .file,
+            fileManager: fileManager, currentUserID: currentUserID
+        ) {
+            problems.append(problem)
         }
         // Blocking entries first: they are the ones that kill the CLI.
         let ordered = problems.filter(\.blocksCopilot) + problems.filter { !$0.blocksCopilot }
@@ -534,5 +567,12 @@ enum CopilotHomeAccessCheck {
                 : ((current as NSString).deletingLastPathComponent as NSString).appendingPathComponent(destination)
         }
         return (current as NSString).standardizingPath
+    }
+}
+
+private extension String {
+    /// nil for an empty value, else the path with a leading `~` expanded.
+    var nonEmptyExpandingTilde: String? {
+        isEmpty ? nil : (self as NSString).expandingTildeInPath
     }
 }

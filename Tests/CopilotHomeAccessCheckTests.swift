@@ -419,7 +419,7 @@ struct CopilotHomeAccessCheckTests {
         defer { home.remove() }
         try home.write("providers.json", mode: 0o000)
 
-        #expect(CopilotHomeAccessCheck.inspect(home: home.path).blocksCopilot)
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path, environment: [:]).blocksCopilot)
     }
 
     @Test("Only Copilot's silent exit 1 is blamed on the home, not a signal or other code")
@@ -438,6 +438,43 @@ struct CopilotHomeAccessCheckTests {
         #expect(category(exitCode: 1) == .providerHomeAccessDenied)
         #expect(category(exitCode: 137) == .providerProcessFailed)
         #expect(category(exitCode: 2) == .providerProcessFailed)
+    }
+
+    @Test("An unreadable settings.json only warns: Copilot ignores it")
+    func unreadableSettingsOnlyWarns() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("settings.json", mode: 0o000)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+        #expect(report.problems.map(\.access) == [.unreadable])
+        #expect(!report.blocksCopilot)
+    }
+
+    @Test("The legacy permissions file is ignored when the current one exists")
+    func legacyPermissionsIgnoredBesideCurrent() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("permissions-config", mode: 0o000)
+        try home.write("permissions-config.json", mode: 0o600)
+
+        #expect(!CopilotHomeAccessCheck.inspect(home: home.path).blocksCopilot)
+    }
+
+    @Test("COPILOT_PROVIDERS_CONFIG replaces providers.json in the check")
+    func providersOverrideReplacesDefault() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("providers.json", mode: 0o000)
+        let override = try home.write("my-providers.json", mode: 0o600)
+        let environment = [CopilotHomeAccessCheck.providersOverrideVariable: override]
+
+        #expect(!CopilotHomeAccessCheck.inspect(home: home.path, environment: environment).blocksCopilot)
+
+        try home.setMode(0o000, of: override)
+        let broken = CopilotHomeAccessCheck.inspect(home: home.path, environment: environment)
+        #expect(broken.blocksCopilot)
+        #expect(broken.problems.contains { $0.path == override && $0.blocksCopilot })
     }
 
     @Test("A home symlink loop blocks like a dangling link")
