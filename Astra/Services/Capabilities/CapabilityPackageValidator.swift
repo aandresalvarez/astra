@@ -83,7 +83,8 @@ enum CapabilityPackageValidator {
         let decoder = JSONDecoder()
         let decoded: PluginPackage
         do {
-            decoded = try decoder.decode(PluginPackage.self, from: data)
+            // A Plugins 2.0 manifest (`components`) converts to its package.
+            decoded = try PluginManifestConverter.decodePackage(from: data, decoder: decoder)
         } catch {
             return CapabilityPackageValidationReport(
                 package: nil,
@@ -613,6 +614,17 @@ enum CapabilityPackageValidator {
                     .unsafeLocalTool,
                     "Unsafe prerequisite",
                     "\(prerequisite.displayName) declares an unsafe binary or liveness arguments: \(reason).",
+                    component: prerequisite.displayName
+                ))
+                continue
+            }
+            // The install link becomes a repair button: a web page only.
+            if let url = prerequisite.installURL, !RepairAction.isSafeRepairURL(url) {
+                issues.append(issue(
+                    .blocker,
+                    .unsafeLocalTool,
+                    "Unsafe install link",
+                    "\(prerequisite.displayName) links to \(url.scheme ?? "a non-web") address; install links must be https.",
                     component: prerequisite.displayName
                 ))
                 continue

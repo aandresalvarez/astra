@@ -155,6 +155,8 @@ struct RailCapabilityItem: Identifiable {
     let templateNames: [String]
     let requirementNames: [String]
     var runtimePermissionAttention: CapabilityRuntimePermissionAttention? = nil
+    /// What gets this capability working again, when a check failed.
+    var repair: RepairAction? = nil
 
     /// The recognizable brand the capability integrates with, if any, so its row
     /// can lead with the real mark instead of a stand-in SF Symbol.
@@ -172,9 +174,62 @@ struct CapabilityRailRow: View {
     let statusColor: Color
     let isEnabled: Bool
     var isCompact = false
+    /// A separate verb ("Sign in", "Install") beside the row, never the row's
+    /// own tap target, per the lean UI system.
+    var repairVerb: String? = nil
+    /// The Terminal command the repair runs. Shown, with a second tap to run
+    /// it, before anything a plugin declared is executed.
+    var repairCommand: String? = nil
+    var repairStatus: String? = nil
+    var onRepair: (() -> Void)? = nil
+    /// A repair with its own control (GitHub repository access), shown in
+    /// place of the verb.
+    var contextualRepair: AnyView? = nil
     let onOpen: () -> Void
 
+    @State private var isConfirmingCommand = false
+
     var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                rowButton
+                if let contextualRepair {
+                    contextualRepair
+                } else if let repairStatus {
+                    Text(repairStatus)
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                } else if let repairVerb, let onRepair {
+                    Button(repairVerb) {
+                        if repairCommand == nil { onRepair() } else { isConfirmingCommand.toggle() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
+                    .accessibilityIdentifier("CapabilityRailRepairButton")
+                }
+            }
+            if isConfirmingCommand, repairStatus == nil, let repairCommand, let onRepair {
+                HStack(spacing: 6) {
+                    Text(repairCommand)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Button("Run in Terminal") {
+                        isConfirmingCommand = false
+                        onRepair()
+                    }
+                    .controlSize(.small)
+                    .accessibilityIdentifier("CapabilityRailRepairRunButton")
+                }
+                .padding(.leading, CapabilityRailLayout.leadingIconFrame + CapabilityRailLayout.leadingIconSpacing)
+            }
+        }
+    }
+
+    private var rowButton: some View {
         Button(action: onOpen) {
             HStack(spacing: CapabilityRailLayout.leadingIconSpacing) {
                 CapabilityLeadingIcon(

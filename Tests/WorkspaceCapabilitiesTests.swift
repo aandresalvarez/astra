@@ -464,6 +464,8 @@ struct WorkspaceCapabilitiesTests {
         #expect(state.readiness.level == .needsAttention)
         #expect(state.readiness.messages == ["Jira: connector not active for this workspace"])
         #expect(state.connectorsNeedingAttention.isEmpty)
+        // The missing account still counts as a step, so the row isn't Ready.
+        #expect(state.missingConnectors.map(\.name) == ["Jira"])
     }
 
     @Test("package state points setup at the linked connector when it is disabled")

@@ -25,6 +25,10 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     public static let browserActionBudgetExceeded: TaskRunStopReason = "browser_action_budget_exceeded"
     public static let cancelled: TaskRunStopReason = "cancelled"
     public static let capabilityRuntimeResourcesMissing: TaskRunStopReason = "capability_runtime_resources_missing"
+    /// A plugin CLI's sign-in expired while the agent was using it (`gcloud`
+    /// "Reauthentication required"). The task view offers the sign-in, then
+    /// Resume; see `CLISessionExpiryClassifier`.
+    public static let capabilitySessionExpired: TaskRunStopReason = "capability_session_expired"
     public static let completed: TaskRunStopReason = "completed"
     public static let connectorPreflightFailed: TaskRunStopReason = "connector_preflight_failed"
     public static let credentialProjectionRequired: TaskRunStopReason = "credential_projection_required"

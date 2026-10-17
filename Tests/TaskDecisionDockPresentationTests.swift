@@ -764,7 +764,8 @@ struct TaskDecisionDockPresentationTests {
         launchBlock: TaskRunLaunchBlockPayload? = nil,
         executableApprovedPlan: TaskPlanPayload? = nil,
         canResume: Bool = false,
-        hasProviderSession: Bool = false
+        hasProviderSession: Bool = false,
+        repair: RepairAction? = nil
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
             mission: mission,
@@ -803,9 +804,29 @@ struct TaskDecisionDockPresentationTests {
             hasProviderSession: hasProviderSession,
             failureReason: nil,
             launchBlock: launchBlock,
+            repair: repair,
             artifactPaths: artifactPaths,
             visibleThreadAffordances: affordances
         )
+    }
+
+    @Test("A run stopped for an expired plugin sign-in leads with the sign-in, then Resume")
+    func repairRequiredLeadsWithSignInThenResume() throws {
+        let repair = CLISessionExpiryClassifier.googleCloud.repair
+        let presentation = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed, canResume: true, hasProviderSession: true, repair: repair
+        )))
+        #expect(presentation.id == "repair-required")
+        #expect(presentation.title == "Sign in to Google Cloud")
+        #expect(presentation.summary.contains("gcloud auth login"))
+        #expect(presentation.primaryAction?.kind == .runRepair)
+        #expect(presentation.primaryAction?.title == "Sign in")
+        #expect(presentation.secondaryActions.map(\.kind) == [.resume, .retry])
+
+        let noSession = try #require(TaskDecisionDockPresentation.build(context(status: .failed, repair: repair)))
+        #expect(noSession.secondaryActions.map(\.kind) == [.retry])
+        let ordinary = try #require(TaskDecisionDockPresentation.build(context(status: .failed)))
+        #expect(ordinary.id == "failed")
     }
 
     private func missionNeedingCorrection() -> MissionControlPresentation {

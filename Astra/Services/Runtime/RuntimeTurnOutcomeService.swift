@@ -347,6 +347,10 @@ enum RuntimeTurnOutcomeService {
         let payload = result.runtimeStopMessage
             ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
         modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
+        if let family = CLISessionExpiryClassifier.family(forStopMessage: result.runtimeStopMessage), family.offersSignIn {
+            let event = TaskEventTypes.System.runtimeRepairRequired
+            modelContext.insert(TaskEvent(task: task, eventType: event, payload: family.repair.encoded(), run: run))
+        }
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
             "phase": phase.rawValue,
             "reason": reason,
