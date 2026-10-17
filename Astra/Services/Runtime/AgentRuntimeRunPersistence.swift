@@ -47,7 +47,9 @@ enum AgentRuntimeRunPersistence {
         fields.merging(["trace_id": traceID], uniquingKeysWith: { _, new in new })
     }
 
-    private static func traceID(for run: TaskRun) -> String { "run-finalize-" + run.id.uuidString }
+    // Use the same short, non-secret identity format as AuditTrace. Prefixing
+    // a full UUID produced a 40+ character token that log redaction removed.
+    static func traceID(for run: TaskRun) -> String { "run-finalize-" + run.id.uuidString.prefix(8).lowercased() }
 
     @discardableResult
     static func recordSessionTurn(
