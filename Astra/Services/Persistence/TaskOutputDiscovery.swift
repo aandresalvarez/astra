@@ -2,7 +2,7 @@ import Foundation
 import ASTRAModels
 import ASTRACore
 
-public struct TaskOutputDiscoveredFile: Hashable {
+public struct TaskOutputDiscoveredFile: Hashable, Sendable {
     public init(path: String, relativePath: String, type: String, modifiedAt: Date? = nil) {
         self.path = path
         self.relativePath = relativePath
@@ -98,6 +98,29 @@ public enum TaskOutputDiscovery {
     public static func filesAsync(in taskFolder: String, fileManager: FileManager = .default) async -> [TaskOutputDiscoveredFile] {
         await Task.detached(priority: .utility) {
             files(in: taskFolder, fileManager: fileManager)
+        }.value
+    }
+
+    public struct Preparation: Sendable {
+        public let files: [TaskOutputDiscoveredFile]
+        public let requestedAt: UInt64
+        public let startedAt: UInt64
+        public let finishedAt: UInt64
+
+        public func phaseMilliseconds(resumedAt: UInt64) -> [String: Double] {
+            ["output_discovery_queue": Double(startedAt - requestedAt) / 1_000_000,
+             "output_discovery_io": Double(finishedAt - startedAt) / 1_000_000,
+             "output_discovery_resume": Double(max(finishedAt, resumedAt) - finishedAt) / 1_000_000]
+        }
+    }
+
+    public static func prepareAsync(in taskFolder: String) async -> Preparation {
+        let requestedAt = DispatchTime.now().uptimeNanoseconds
+        return await Task.detached(priority: .utility) {
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let files = files(in: taskFolder)
+            return Preparation(files: files, requestedAt: requestedAt, startedAt: startedAt,
+                finishedAt: DispatchTime.now().uptimeNanoseconds)
         }.value
     }
 

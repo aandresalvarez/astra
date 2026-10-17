@@ -109,6 +109,16 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     }
 
     func run() throws {
+        var spawned = false
+        defer {
+            if !spawned {
+                // No reaper will run after a launch failure. Release the
+                // caller's callbacks here, including captures of this process.
+                stdoutFileHandle.readabilityHandler = nil
+                stderrFileHandle.readabilityHandler = nil
+                terminationHandler = nil
+            }
+        }
         var actions: posix_spawn_file_actions_t? = nil
         var attr: posix_spawnattr_t? = nil
         var childPID = pid_t(0)
@@ -170,6 +180,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
             }
         }
         try check(spawnResult, operation: "posix_spawn")
+        spawned = true
 
         stdoutPipe.fileHandleForWriting.closeFile()
         stderrPipe.fileHandleForWriting.closeFile()
@@ -254,7 +265,11 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         running = false
         lock.unlock()
 
-        terminationHandler?(self)
+        // Completion is one-shot. Worker parsers capture this process, so
+        // keeping the callback here retains the whole run's output forever.
+        let completion = terminationHandler
+        terminationHandler = nil
+        completion?(self)
     }
 
     private func cleanupResidualProcessGroup() {

@@ -415,6 +415,7 @@ struct PromptContextPreviewSheet: View {
     private func sectionIcon(for kind: PromptContextSectionKind) -> String {
         switch kind {
         case .currentGoal: return "target"
+        case .taskInputs: return "paperclip"
         case .threadState: return "list.clipboard"
         case .recentTranscript: return "text.bubble"
         case .changedFiles: return "doc.text"

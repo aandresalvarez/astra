@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct AgentRuntimePolicyCapabilities: Equatable, Sendable {
     var supportsOutputFormatJSON: Bool
@@ -2021,6 +2022,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
                 RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
             }
             : "none"
+        let diagnosticLogDirectory = CopilotStartupEvidence.directory(
+            taskFolder: TaskWorkspaceAccess(task: context.task).taskFolder, runID: context.runID)
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -2043,13 +2046,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: reasoningEffort, resumeSessionID: context.nativeContinuationSessionID,
+            diagnosticLogDirectory: diagnosticLogDirectory,
             permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
             copilotHome: context.providerHomeDirectory,
             copilotStateHome: copilotStateHome,
             userHome: userHome
-        )
+        ) + [diagnosticLogDirectory].compactMap { $0 }
         let sandboxReadablePaths = CopilotCLIRuntime.authReadablePaths(userHome: userHome) + mcpProjection.readablePaths
         let providerDetectedFields = CopilotLaunchDiagnostics.providerDetectedFields(
             id: id,
@@ -2617,7 +2621,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
                 || taskEnv[HostControlBrokerIPC.endpointEnvironmentKey] != nil,
             diagnosticLogPath: diagnosticLogPath, resumeSessionID: context.nativeContinuationSessionID,
-            permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()
+            permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments(),
+            model: providerModel
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
@@ -2768,7 +2773,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             // This path returns the child's raw stdout to the caller's own
             // parser, which reads `ASTRA_*_SUGGESTION` text — structured
             // envelopes would leave it nothing to decode.
-            structuredOutputAllowed: false
+            structuredOutputAllowed: false,
+            model: model
         )
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
