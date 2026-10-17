@@ -75,6 +75,30 @@ struct PluginSecretCleanupOutbox {
         settle(pending, keys: keys, modelContext: modelContext, outbox: outbox)
     }
 
+    /// Settles what a Remove left pending before `package` is added to
+    /// `workspace` again. With no activation of it there, the namespaces a
+    /// new one would derive are nobody's, so they are cleaned now; while one
+    /// is still pending (its delete failed, or the record can't be read) the
+    /// Add must wait, or the new activation would read the old values.
+    static func settleBeforeAdding(
+        _ package: PluginPackage,
+        to workspace: Workspace,
+        modelContext: ModelContext,
+        outbox: PluginSecretCleanupOutbox? = nil,
+        clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
+    ) -> Bool {
+        guard let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext) else { return true }
+        guard let pending = try? outbox.pending() else { return false }
+        let derived = Set(PluginRuntimeProjection.componentIDs(of: package).map {
+            PluginActivation.projectedID(workspaceID: workspace.id, pluginID: package.id, componentID: $0)
+        })
+        let reused = pending.filter(derived.contains)
+        guard !reused.isEmpty else { return true }
+        settle(reused, keys: [], modelContext: modelContext, outbox: outbox, clean: clean)
+        guard let after = try? outbox.pending() else { return false }
+        return after.allSatisfy { !derived.contains($0) }
+    }
+
     /// Cleans every recorded namespace nothing live names and drops it from
     /// the record; one still in use (re-added, restored) is dropped uncleaned.
     /// A recorded key is deleted unless a live activation records that
@@ -83,7 +107,8 @@ struct PluginSecretCleanupOutbox {
         _ skillIDs: [UUID],
         keys: [PluginUpdateService.StaleSecret],
         modelContext: ModelContext,
-        outbox: PluginSecretCleanupOutbox?
+        outbox: PluginSecretCleanupOutbox?,
+        clean: (UUID) -> Bool = { SkillKeychainCleanup(skillID: $0).run() }
     ) {
         // What is live can't be told without the store: every record stays.
         guard let live = liveSkillIDs(modelContext: modelContext),
@@ -94,7 +119,7 @@ struct PluginSecretCleanupOutbox {
             return
         }
         var settled = Set<String>()
-        for id in skillIDs where live.contains(id) || SkillKeychainCleanup(skillID: id).run() {
+        for id in skillIDs where live.contains(id) || clean(id) {
             settled.insert(id.uuidString)
         }
         let persistence = SkillSecretSeam.required

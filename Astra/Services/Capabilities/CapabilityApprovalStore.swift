@@ -184,6 +184,38 @@ struct CapabilityApprovalStore {
         return record
     }
 
+    /// `save` for an approval a library write depends on, so it can go first:
+    /// an exit before that write leaves a record for a digest nobody
+    /// installed, which approves nothing. `revert` takes it back when the
+    /// write fails, restoring a record it replaced.
+    func saveBeforeDependentWrite(
+        package: PluginPackage,
+        status: CapabilityApprovalStatus,
+        approvedBy: String,
+        reviewNotes: String = "",
+        approvedAt: Date = Date()
+    ) throws -> (record: CapabilityApprovalRecord, revert: () -> Void) {
+        let digest = try CapabilityApprovalDigest.digest(for: package)
+        let url = recordURL(for: CapabilityApprovalRecord(
+            packageID: package.id, packageVersion: package.version, status: status, approvedBy: approvedBy,
+            approvedAt: approvedAt, reviewNotes: reviewNotes, sourceDigest: digest
+        ))
+        let previous = try? HostFileAccessBroker(fileManager: fileManager)
+            .readData(at: url, intent: .astraManagedStorage(root: directory))
+        let record = try save(
+            package: package, status: status, approvedBy: approvedBy, reviewNotes: reviewNotes, approvedAt: approvedAt
+        )
+        let fileManager = fileManager
+        return (record, {
+            if let previous {
+                try? previous.write(to: url, options: [.atomic])
+            } else {
+                try? fileManager.removeItem(at: url)
+            }
+            NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil)
+        })
+    }
+
     func recordURL(for record: CapabilityApprovalRecord) -> URL {
         let digestPrefix = String(record.sourceDigest.prefix(16))
         let fileName = [

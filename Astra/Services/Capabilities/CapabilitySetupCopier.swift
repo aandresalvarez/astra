@@ -67,11 +67,16 @@ struct CapabilitySetupCopier {
     ) -> OnboardingCapabilityInstallationInputs {
         var inputs = OnboardingCapabilityInstallationInputs()
         let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
+        // A plugin turned off keeps its bindings so Add can bring them back,
+        // not so a copy can: nonempty inputs select the package, which would
+        // turn it back on in the new workspace.
+        let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+        if let activation, !activation.isEnabled { return inputs }
 
         for pluginConnector in package.connectors {
             let connectors = matchingConnectors(
                 for: pluginConnector,
-                of: package,
+                activation: activation,
                 in: workspace,
                 globalConnectors: globalConnectors
             )
@@ -141,24 +146,23 @@ struct CapabilitySetupCopier {
         return !name.isEmpty && normalizedKey.contains(name)
     }
 
-    /// The accounts this package's own component uses in `workspace`, its
-    /// default first, then the workspace's rows no plugin is bound to. An
-    /// account another plugin uses is never a source: two plugins of one
-    /// service must not swap URLs or credentials.
+    /// The accounts this package's own (enabled) activation binds to the
+    /// component, its default first, then the workspace's rows no plugin is
+    /// bound to. An account another plugin uses is never a source: two
+    /// plugins of one service must not swap URLs or credentials.
     private func matchingConnectors(
         for pluginConnector: PluginConnector,
-        of package: PluginPackage,
+        activation: PluginActivation?,
         in workspace: Workspace,
         globalConnectors: [Connector]
     ) -> [Connector] {
+        let ownAccounts = activation?
+            .accounts(forComponent: CapabilityResourceOrigin.componentID(for: pluginConnector))
+            .filter { !$0.isDeleted } ?? []
         let enabledGlobalConnectorIDs = Set(workspace.enabledGlobalConnectorIDs.map(Self.normalizedID))
         let enabledGlobalConnectors = globalConnectors.filter { connector in
             enabledGlobalConnectorIDs.contains(Self.normalizedID(connector.id.uuidString))
         }
-        let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
-        let ownAccounts = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)?
-            .accounts(forComponent: componentID)
-            .filter { !$0.isDeleted } ?? []
         let boundElsewhere = Set(WorkspaceCapabilityActivation.activations(of: workspace)
             .flatMap(\.bindings)
             .filter { !$0.isDeleted }

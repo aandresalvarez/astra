@@ -112,6 +112,34 @@ struct PluginOperationsReviewTests {
         }
     }
 
+    @Test("A credential an update stopped declaring stays on the plugin's account but never reaches a run")
+    func undeclaredAccountCredentialIsNotProjected() throws {
+        let env = try Fixtures.Environment()
+        var v1 = Fixtures.package(version: "1.0.0")
+        v1.connectors[0].credentialHints.append(.init(key: "LEGACY_TOKEN", hint: "Legacy"))
+        try env.install(v1)
+        let account = try #require(env.workspace.connectors.first { $0.originPackageID == v1.id })
+        let store = MockSecretStore()
+        for key in ["TRACKER_TOKEN", "LEGACY_TOKEN"] {
+            store.save(key: key, value: "\(key)-value", entityID: KeychainSecretStore.connectorEntityID(for: account.id), label: nil)
+        }
+        func projectedCredentials(_ package: PluginPackage) -> [String] {
+            let projection = PluginRuntimeProjection.project(workspace: env.workspace, packages: [package], connectorMode: .runtimeCopies)
+            return ConnectorRuntimeProjection(connectors: projection.connectors, secretStore: store, credentialExposurePolicy: .allowAllCredentials)
+                .environmentBindings().filter { $0.kind == .credential }.map(\.originalKey)
+        }
+        #expect(projectedCredentials(v1) == ["TRACKER_TOKEN", "LEGACY_TOKEN"])
+
+        let v2 = Fixtures.package(version: "2.0.0")
+        for mode in [PluginUpdateService.Mode.automatic, .release] {
+            try env.importUpdate(v2, mode: mode)
+            // The row keeps the key (an Update never deletes what the person
+            // entered); the runtime sees only what v2 declares.
+            #expect(account.credentialKeys == ["TRACKER_TOKEN", "LEGACY_TOKEN"])
+            #expect(projectedCredentials(v2) == ["TRACKER_TOKEN"])
+        }
+    }
+
     @Test("A manifest an earlier ASTRA installed by name keeps its settings and accounts when its ids are adopted")
     func adoptedManifestIDsReplaceNameIdentities() throws {
         let env = try Fixtures.Environment()

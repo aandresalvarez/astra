@@ -304,6 +304,51 @@ struct CapabilityPackageRoundTripE2ETests {
             #expect(workspace.enabledCapabilityIDs.isEmpty)
         }
     }
+
+    /// A failed approval write stands in for an exit between the two writes:
+    /// the new version must not be in the library without its approval.
+    @Test("create flow writes an update's approval before replacing the library entry")
+    func createFlowWritesApprovalBeforeReplacingLibraryEntry() throws {
+        let root = try roundTripTemporaryDirectory(named: "astra-capability-approval-order-e2e")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blockedApprovalsURL = root.appendingPathComponent("blocked-approvals")
+        try Data("not a directory".utf8).write(to: blockedApprovalsURL)
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("app-library", isDirectory: true))
+        let container = try makeRoundTripContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Approval Order Workspace", primaryPath: root.appendingPathComponent("workspace", isDirectory: true).path)
+        context.insert(workspace)
+
+        var installed = roundTripPackage(name: "Approval Order Round Trip")
+        installed.version = "1.0.0"
+        try library.install(installed, sourceMetadata: .localLibrary())
+        var update = installed
+        update.version = "1.1.0"
+        let service = CapabilityPackageCreationService(
+            library: library,
+            sourceExporter: CapabilityPackageSourceExporter(),
+            approvalStore: CapabilityApprovalStore(directory: blockedApprovalsURL),
+            appVersion: SemanticVersion(1, 0, 0)
+        )
+
+        #expect(throws: (any Error).self) {
+            try service.create(
+                update,
+                enableHere: true,
+                sourceURL: nil,
+                workspace: workspace,
+                modelContext: context,
+                policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                    workspace: workspace,
+                    isAdmin: true,
+                    currentAppVersion: SemanticVersion(1, 0, 0),
+                    approvalRecords: []
+                )
+            )
+        }
+        #expect(library.installedPackage(id: installed.id)?.version == "1.0.0")
+        #expect(workspace.enabledCapabilityIDs.isEmpty)
+    }
 }
 
 private func makeRoundTripContainer() throws -> ModelContainer {
