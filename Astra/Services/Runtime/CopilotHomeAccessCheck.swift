@@ -1,4 +1,5 @@
 import Foundation
+import AstraObjCSupport
 
 /// An entry under Copilot's state home that the current user cannot use.
 struct CopilotHomeAccessProblem: Equatable, Sendable {
@@ -269,7 +270,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         }
         let unlockedForMove = problems.filter { $0.isMisplaced && $0.isRepairable && $0.moveDeniedByOwnACL }
         if !unlockedForMove.isEmpty {
-            commands.append("chmod -h -N \(Self.quotedPaths(unlockedForMove))")
+            // A misplaced entry is never chowned first, so another user's
+            // needs sudo for its ACL too.
+            let sudo = unlockedForMove.contains { !$0.ownedByCurrentUser } ? "sudo " : ""
+            commands.append("\(sudo)chmod -h -N \(Self.quotedPaths(unlockedForMove))")
         }
         // Moves last: renaming an entry needs its parent repaired first.
         for misplaced in problems where misplaced.isMisplaced && misplaced.isRepairable {
@@ -479,13 +483,19 @@ enum CopilotHomeAccessCheck {
         // not grant (it drops broad roots such as /Applications); then Copilot
         // cannot read even its config there.
         let reachedIndirectly = homeIsLink || hasAncestorLink(trimmedHome, fileManager: fileManager)
-        if let sandboxReceipt, reachedIndirectly,
-           sandboxReceipt.explains(RuntimeSandboxFileDenial(
-               operation: .read, path: canonicalPath(resolvedHome), detail: ""
-           )) || sandboxReceipt.explains(RuntimeSandboxFileDenial(
-               // Copilot writes its session state there too.
-               operation: .write, path: canonicalPath(resolvedHome), detail: ""
-           )) {
+        // Through a link, the home is judged like any outside path. A direct
+        // home is only judged against the boundary's explicit denials (a task
+        // that passes ~/.copilot in as a read-only input denies writing it),
+        // since the launch grants the home itself.
+        let canonicalHome = canonicalPath(resolvedHome)
+        let explicitlyDenied = sandboxReceipt.map {
+            Self.isWithin(canonicalHome, roots: $0.writeDeniedRoots + $0.readDeniedRoots)
+        } ?? false
+        if let sandboxReceipt, explicitlyDenied || (reachedIndirectly && (
+            sandboxReceipt.explains(RuntimeSandboxFileDenial(operation: .read, path: canonicalHome, detail: ""))
+            // Copilot writes its session state there too.
+            || sandboxReceipt.explains(RuntimeSandboxFileDenial(operation: .write, path: canonicalHome, detail: ""))
+        )) {
             var unreachable = CopilotHomeAccessProblem(
                 path: trimmedHome, isDirectory: true, owner: nil, ownedByCurrentUser: true,
                 posixPermissions: nil, access: .linksOutsideHome, isReadAtStartup: true,
@@ -538,6 +548,10 @@ enum CopilotHomeAccessCheck {
         var orderedReport = CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
         orderedReport.sandboxReceipt = sandboxReceipt
         return orderedReport
+    }
+
+    private static func isWithin(_ path: String, roots: [String]) -> Bool {
+        roots.map(canonicalPath).contains { root in path == root || path.hasPrefix(root + "/") }
     }
 
     /// Whether any folder above `path` is a symlink, ignoring the system's own
@@ -812,10 +826,20 @@ enum CopilotHomeAccessCheck {
             var tag = ACL_UNDEFINED_TAG
             var permissions: acl_permset_t?
             guard acl_get_tag_type(current, &tag) == 0, tag == ACL_EXTENDED_DENY,
-                  acl_get_permset(current, &permissions) == 0, let permissions else { continue }
-            if acl_get_perm_np(permissions, permission) == 1 { return true }
+                  acl_get_permset(current, &permissions) == 0, let permissions,
+                  acl_get_perm_np(permissions, permission) == 1 else { continue }
+            // Only a deny that applies to this user (directly, or through a
+            // group they belong to) explains the refusal; one aimed at someone
+            // else is legitimate sharing policy and must survive the fix.
+            if aceAppliesToCurrentUser(current) { return true }
         }
         return false
+    }
+
+    private static func aceAppliesToCurrentUser(_ entry: acl_entry_t) -> Bool {
+        guard let qualifier = acl_get_qualifier(entry) else { return false }
+        defer { acl_free(qualifier) }
+        return AstraMembership.currentUserMatchesPrincipal(qualifier.assumingMemoryBound(to: UInt8.self))
     }
 
     /// Whether the entry itself (not a link target) carries an extended ACL.

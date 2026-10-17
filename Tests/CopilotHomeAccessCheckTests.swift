@@ -1357,6 +1357,52 @@ struct CopilotHomeAccessCheckTests {
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
+    @Test("Removing another user's deny-delete ACL before a move needs sudo")
+    func foreignMisplacedACLRemovalUsesSudo() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let notAFolder = try root.write("copilot-home", mode: 0o600)
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny delete", notAFolder])
+        defer { _ = try? Self.shell("/bin/chmod", ["-N", notAFolder]) }
+
+        let report = CopilotHomeAccessCheck.inspect(home: notAFolder, currentUserID: getuid() + 1)
+
+        #expect(report.fixCommand.hasPrefix("sudo chmod -h -N '\(notAFolder)'"))
+    }
+
+    @Test("A deny ACL aimed at someone else is kept")
+    func denyACLForAnotherUserIsKept() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        try Self.shell("/bin/chmod", ["+a", "user:nobody deny read", config])
+        try home.setMode(0o000, of: config)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.problems.first?.hasACL == false)
+        #expect(!report.fixCommand.contains("chmod -N"))
+    }
+
+    @Test("A direct home the boundary write-denies (passed as a read-only input) blocks")
+    func directHomeWriteDeniedBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("config.json", mode: 0o600)
+        func blocker(writeDenied: [String]) -> RuntimeReadinessReport? {
+            CopilotHomeAccessCheck.launchBlocker(
+                home: home.path, resumeSessionID: nil, environment: [:], workingDirectory: nil,
+                sandboxReceipt: ExecutionSandboxBoundaryReceipt(
+                    writableRoots: [home.path], writeDeniedRoots: writeDenied, readScope: .enforce,
+                    readableRoots: [home.path]
+                )
+            )
+        }
+
+        #expect(blocker(writeDenied: []) == nil)
+        #expect(blocker(writeDenied: [home.path]) != nil)
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()

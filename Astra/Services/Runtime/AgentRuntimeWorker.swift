@@ -1128,7 +1128,9 @@ final class AgentRuntimeWorker {
         // Only Copilot's silent exit 1 looks at its home, with the launch's own
         // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere),
         // resolved only once that failure has happened.
+        // Inside a container Copilot used the container's home, not the host's.
         let copilotFailureEnvironment = selectedRuntime == .copilotCLI && result.exitCode == 1
+            && !runEnvironment.runSnapshot.providerRunsInsideContainer
             ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: executionTask,
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch,
