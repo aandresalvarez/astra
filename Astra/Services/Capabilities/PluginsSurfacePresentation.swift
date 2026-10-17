@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRACore
 import ASTRAModels
 
@@ -142,6 +143,47 @@ enum PluginsSurfacePresentation {
                 && !($0.provider == GoogleWorkspaceCapability.connectorBinding && googleAccountConnected)
         }
     }
+
+    /// The accounts this workspace sees (its own rows and the shared ones it
+    /// lists) that no listed plugin row shows under a connector component:
+    /// kept by Remove, released by an Update that dropped their component,
+    /// or bound to a component the listed definition no longer declares.
+    /// Delete account is the only operation that clears their credentials,
+    /// so the surface lists them on their own. A row attached to a skill
+    /// belongs to that skill's row.
+    static func unusedAccounts(
+        workspaceConnectors: [Connector],
+        sharedConnectors: [Connector],
+        listedPackages: [PluginPackage],
+        query: String = ""
+    ) -> [Connector] {
+        var offered: [String: Set<String>] = [:]
+        for package in listedPackages {
+            offered[package.id, default: []].formUnion(package.connectors.map(CapabilityResourceOrigin.componentID(for:)))
+        }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var seen = Set<UUID>()
+        return (workspaceConnectors + sharedConnectors)
+            .filter { account in
+                guard !account.isDeleted, account.skill == nil, seen.insert(account.id).inserted else { return false }
+                let shown = account.accountBindings.contains { binding in
+                    guard !binding.isDeleted, let activation = binding.activation, !activation.isDeleted else { return false }
+                    return offered[activation.pluginID]?.contains(binding.componentID) == true
+                }
+                guard !shown else { return false }
+                return needle.isEmpty || [account.name, account.serviceType, account.baseURL]
+                    .contains { $0.lowercased().contains(needle) }
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// "Jira · Shared · https://example.atlassian.net": the service first.
+    static func accountSubtitle(_ account: Connector) -> String {
+        let service = account.serviceType.replacingOccurrences(of: "_", with: " ").capitalized
+        return [service, account.isGlobal ? "Shared" : "", account.baseURL]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
 }
 
 /// The second tap before a destructive row action: it names what goes and
@@ -167,10 +209,16 @@ enum PluginsSurfaceConfirmation: Equatable {
                 "Remove"
             )
         case .deleteAccount:
-            let reach = workspaces.isEmpty
-                ? ""
-                : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
-            return ("Delete the account \(name) and its saved keys?\(reach)", "Delete")
+            return Self.deleteAccountCopy(name: name, workspaces: workspaces)
         }
+    }
+
+    /// The account delete's copy, also asked by an account no plugin row
+    /// shows (`PluginAccountsSection`).
+    static func deleteAccountCopy(name: String, workspaces: [String]) -> (message: String, verb: String) {
+        let reach = workspaces.isEmpty
+            ? ""
+            : " \(workspaces.count == 1 ? "It is used in" : "It is used in \(workspaces.count) workspaces:") \(workspaces.joined(separator: ", "))."
+        return ("Delete the account \(name) and its saved keys?\(reach)", "Delete")
     }
 }

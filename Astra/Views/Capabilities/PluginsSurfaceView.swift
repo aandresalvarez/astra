@@ -72,8 +72,9 @@ struct PluginsSurfaceView: View {
     private var googleAccountConnected: Bool { false }
 
     /// The rows and their display, built in one pass so every action takes
-    /// the same package and activation the row shows.
-    private var surface: (state: PluginsSurfaceState, rows: [String: PluginRow]) {
+    /// the same package and activation the row shows, and the accounts none
+    /// of the listed rows shows.
+    private var surface: (state: PluginsSurfaceState, rows: [String: PluginRow], unusedAccounts: [Connector]) {
         let context = policyContext
         let currentCapabilities = capabilities
         let googleConnected = googleAccountConnected
@@ -104,7 +105,13 @@ struct PluginsSurfaceView: View {
                 [input], query: ""
             ).allRows.first ?? placeholderRow(package))
         }
-        return (PluginsSurfacePresentation.makeState(inputs, query: query), rows)
+        let unusedAccounts = PluginsSurfacePresentation.unusedAccounts(
+            workspaceConnectors: currentCapabilities.workspaceConnectors,
+            sharedConnectors: currentCapabilities.enabledGlobalConnectors,
+            listedPackages: inputs.filter(\.isVisible).map(\.package),
+            query: query
+        )
+        return (PluginsSurfacePresentation.makeState(inputs, query: query), rows, unusedAccounts)
     }
 
     private func placeholderRow(_ package: PluginPackage) -> PluginsSurfaceRow {
@@ -145,7 +152,13 @@ struct PluginsSurfaceView: View {
                         group("Action needed", current.actionNeeded, rows: model.rows)
                         group("Ready", current.ready, rows: model.rows)
                         group("Available", current.available, rows: model.rows)
-                        if current.isEmpty {
+                        PluginAccountsSection(
+                            accounts: model.unusedAccounts,
+                            onEditAccount: { onEditElement(.connectors, $0) },
+                            onChanged: { onCatalogChanged() },
+                            onError: { errorMessage = $0 }
+                        )
+                        if current.isEmpty && model.unusedAccounts.isEmpty {
                             Text(query.isEmpty ? "No plugins yet." : "Nothing matches \u{201C}\(query)\u{201D}.")
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
@@ -567,26 +580,18 @@ struct PluginsSurfaceView: View {
             (try? PluginOperations.workspacesUsing(account))?.map(\.name)
         } ?? []
         let copy = confirmation.copy(name: account?.name ?? row.package.name, workspaces: reach ?? [])
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message)
-                .font(Stanford.caption(12))
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button("Cancel") { confirming = nil }
-                .controlSize(.small)
-            if reach != nil {
-                Button(copy.verb, role: .destructive) {
-                    confirming = nil
-                    switch confirmation {
-                    case .remove: remove(row.package)
-                    case .deleteAccount: if let account { deleteAccount(account) }
-                    }
+        return PluginsSurfaceConfirmationRow(
+            message: reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message,
+            verb: reach == nil ? nil : copy.verb,
+            onCancel: { confirming = nil },
+            onConfirm: {
+                confirming = nil
+                switch confirmation {
+                case .remove: remove(row.package)
+                case .deleteAccount: if let account { deleteAccount(account) }
                 }
-                .controlSize(.small)
             }
-        }
-        .padding(8)
-        .background(Stanford.statusError.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        )
     }
 
     private func deleteAccount(_ account: Connector) {
