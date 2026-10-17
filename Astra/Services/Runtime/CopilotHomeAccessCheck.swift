@@ -49,6 +49,12 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// A deny-delete_child ACL on the folder holding this misplaced entry.
     /// That folder's ACLs may be deliberate, so this is advice only.
     var moveDeniedByParentACL = false
+    /// The entry does not exist or cannot be reached at all (a missing
+    /// COPILOT_PROVIDERS_CONFIG target).
+    var isMissing = false
+    /// For `.cannotCreateHome`: the nearest existing ancestor is a file, so
+    /// no permission change can make room for the home.
+    var ancestorIsFile = false
     /// For `.danglingLink`: the link ends in a loop rather than a missing path.
     var isLinkLoop = false
     /// An unreadable folder whose children could not be listed. The fix
@@ -117,6 +123,7 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         if let owner { parts.append("owned by \(owner)") }
         if let posixPermissions { parts.append("mode \(String(posixPermissions & 0o777, radix: 8))") }
         if hasACL { parts.append("with an ACL") }
+        if isMissing { return "missing" }
         if hasLockFlag { parts.append("locked") }
         if hasSystemLockFlag { parts.append("system-locked") }
         return parts.joined(separator: ", ")
@@ -166,6 +173,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if let dangling = problems.first(where: { $0.access == .danglingLink }) {
             let why = dangling.isLinkLoop ? "which loops back on itself" : "which does not exist"
             return "\(dangling.displayPath) is \(dangling.detail), \(why), so Copilot cannot create its settings folder."
+        }
+        if let parent = problems.first(where: { $0.access == .cannotCreateHome && $0.ancestorIsFile }) {
+            let homePath = (home as NSString).abbreviatingWithTildeInPath
+            return "Copilot cannot create \(homePath) because \(parent.displayPath) is a file, not a folder; move or rename it yourself."
         }
         if let parent = problems.first(where: { $0.access == .cannotCreateHome }) {
             let homePath = (home as NSString).abbreviatingWithTildeInPath
@@ -237,9 +248,16 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !withACL.isEmpty {
             commands.append("chmod -N \(Self.quotedPaths(withACL))")
         }
-        let directories = repairable.filter(\.isDirectory)
-        if !directories.isEmpty {
-            commands.append("chmod u+rwx \(Self.quotedPaths(directories))")
+        // Write comes back only where Copilot writes: the home, its state
+        // folders and the folder a missing home is created in. Any other
+        // folder gets read and search back, so read-only content stays so.
+        let mutableDirectories = repairable.filter { $0.isDirectory && Self.isMutableFolder($0) }
+        if !mutableDirectories.isEmpty {
+            commands.append("chmod u+rwx \(Self.quotedPaths(mutableDirectories))")
+        }
+        let otherDirectories = repairable.filter { $0.isDirectory && !Self.isMutableFolder($0) }
+        if !otherDirectories.isEmpty {
+            commands.append("chmod u+rx \(Self.quotedPaths(otherDirectories))")
         }
         let files = repairable.filter { !$0.isDirectory && $0.requiresWrite }
         if !files.isEmpty {
@@ -334,6 +352,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let shown = problems.prefix(CopilotHomeAccessCheck.maximumListedProblems).map(\.describedPath)
         let hidden = problems.count - shown.count
         return (shown + (hidden > 0 ? ["and \(hidden) more"] : [])).joined(separator: ", ")
+    }
+
+    private static func isMutableFolder(_ problem: CopilotHomeAccessProblem) -> Bool {
+        problem.isHome || problem.access == .cannotCreateHome || (problem.isReadAtStartup && problem.requiresWrite)
     }
 
     private static func quoted(_ path: String) -> String {
@@ -656,9 +678,20 @@ enum CopilotHomeAccessCheck {
         // Readable here, but a sandboxed task is granted only the Copilot
         // home. ASTRA does not widen the sandbox to it: the variable would
         // then grant the whole task read access to any file it names.
-        guard !insideHome, let attributes = try? fileManager.attributesOfItem(atPath: override) else {
-            return []
+        guard let attributes = try? fileManager.attributesOfItem(atPath: override) else {
+            // Missing or unreachable: Copilot is told to read a registry it
+            // cannot open. The variable is what needs fixing.
+            var missing = CopilotHomeAccessProblem(
+                path: override, isDirectory: false, owner: nil, ownedByCurrentUser: true,
+                posixPermissions: nil, access: .unreadable, isReadAtStartup: true
+            )
+            missing.isMissing = true
+            missing.isProvidersOverride = true
+            missing.isProvidersFile = true
+            missing.requiresWrite = false
+            return [missing]
         }
+        guard !insideHome else { return [] }
         var outside = CopilotHomeAccessProblem(
             path: override,
             isDirectory: false,
@@ -732,9 +765,20 @@ enum CopilotHomeAccessCheck {
         while !parent.isEmpty, parent != "/", !fileManager.fileExists(atPath: parent, isDirectory: &isDirectory) {
             parent = (parent as NSString).deletingLastPathComponent
         }
+        guard !parent.isEmpty else { return nil }
+        // A file where a folder of the home's path should be: nothing short
+        // of moving the user's file makes room, so advice only.
+        if !isDirectory.boolValue, parent != "/" {
+            var blocked = problem(
+                at: parent, requiresWrite: true, isReadAtStartup: true,
+                fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .cannotCreateHome
+            )
+            blocked?.ancestorIsFile = true
+            blocked?.isRepairable = false
+            return blocked
+        }
         // A lock flag forbids creating entries even where `access` says yes.
-        guard !parent.isEmpty, isDirectory.boolValue || parent == "/",
-              Darwin.access(parent, W_OK | X_OK) != 0 || lockState(of: parent, followLinks: true).any else {
+        guard Darwin.access(parent, W_OK | X_OK) != 0 || lockState(of: parent, followLinks: true).any else {
             return nil
         }
         return problem(
@@ -837,9 +881,12 @@ enum CopilotHomeAccessCheck {
         let locked = lockState(of: path, followLinks: false).any
         let accessRefused = access == .unreadable
             || ((access == .unwritable || access == .cannotCreateHome) && writeDenied(path) && !locked)
-        problem.hasACL = accessRefused
-            && ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
-            && hasExtendedACL(path)
+        // Blamed when the owner bits allow the access (so only the ACL can be
+        // refusing it), or when the ACL itself carries a matching deny entry
+        // (then it refuses whatever the mode bits become).
+        problem.hasACL = accessRefused && hasExtendedACL(path)
+            && (ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
+                || deniedPermissions(for: access, isDirectory: isDirectory).contains { aclDenies(path, $0) })
         var linkCount = stat()
         problem.hasOtherHardLinks = !isDirectory && lstat(path, &linkCount) == 0 && linkCount.st_nlink > 1
         problem.requiresWrite = requiresWrite
@@ -887,6 +934,23 @@ enum CopilotHomeAccessCheck {
             user: flags & (userImmutable | userAppend) != 0,
             system: flags & (systemImmutable | systemAppend) != 0
         )
+    }
+
+    /// The ACL permissions whose deny entry would cause `access`.
+    private static func deniedPermissions(
+        for access: CopilotHomeAccessProblem.Access,
+        isDirectory: Bool
+    ) -> [acl_perm_t] {
+        switch access {
+        case .unreadable:
+            return isDirectory ? [ACL_LIST_DIRECTORY, ACL_SEARCH] : [ACL_READ_DATA]
+        case .unwritable:
+            return isDirectory ? [ACL_ADD_FILE, ACL_ADD_SUBDIRECTORY] : [ACL_WRITE_DATA, ACL_APPEND_DATA]
+        case .cannotCreateHome:
+            return [ACL_ADD_SUBDIRECTORY, ACL_SEARCH]
+        default:
+            return []
+        }
     }
 
     private static func ownerBitsAllow(

@@ -864,7 +864,8 @@ struct CopilotHomeAccessCheckTests {
 
         let report = CopilotHomeAccessCheck.inspect(home: home.path)
 
-        #expect(report.fixCommand == "chmod u+rwx '\(agents)'")
+        // Read and search back, not write: Copilot does not write there.
+        #expect(report.fixCommand == "chmod u+rx '\(agents)'")
         #expect(!report.fixCommand.contains("-R"))
     }
 
@@ -1303,6 +1304,57 @@ struct CopilotHomeAccessCheckTests {
         let folder = CopilotHomeAccessCheck.inspect(home: notAFolder)
         #expect(folder.problems.first?.moveDeniedByParentACL == true)
         #expect(folder.remediation.contains("forbids removing entries from it"))
+    }
+
+    @Test("A providers override that does not exist blocks with advice to fix the variable")
+    func missingProvidersOverrideBlocks() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("providers.json", mode: 0o600)
+        let missing = (home.path as NSString).appendingPathComponent("nowhere/providers.json")
+
+        let report = CopilotHomeAccessCheck.inspect(
+            home: home.path, environment: [CopilotHomeAccessCheck.providersOverrideVariable: missing]
+        )
+
+        let problem = try #require(report.problems.first { $0.path == missing })
+        #expect(problem.isMissing)
+        #expect(report.blocksCopilot)
+        #expect(report.cause.contains("missing"))
+        #expect(report.fixCommand.isEmpty)
+        #expect(report.remediation.contains("point the variable at a file you own"))
+    }
+
+    @Test("A file where the home's folder should be blocks with advice only")
+    func fileInHomePathBlocks() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let blocker = try root.write("not-a-folder", mode: 0o600)
+        let home = (blocker as NSString).appendingPathComponent(".copilot")
+
+        let report = CopilotHomeAccessCheck.inspect(home: home)
+
+        #expect(report.problems.map(\.access) == [.cannotCreateHome])
+        #expect(report.problems.first?.ancestorIsFile == true)
+        #expect(report.blocksCopilot)
+        #expect(report.cause.contains("is a file, not a folder"))
+        #expect(report.fixCommand.isEmpty)
+    }
+
+    @Test("A deny ACL is removed even when the mode bits deny too")
+    func denyACLRemovedAlongsideModeBits() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let config = try home.write("config.json", mode: 0o600)
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny read", config])
+        try home.setMode(0o000, of: config)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.problems.first?.hasACL == true)
+        #expect(report.fixCommand == "chmod -N '\(config)' && chmod u+r '\(config)'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
     @Test("A home symlink loop blocks like a dangling link")
