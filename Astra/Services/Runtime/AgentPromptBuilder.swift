@@ -1911,7 +1911,7 @@ enum AgentPromptBuilder {
             return notice.count > budget ? String(notice.prefix(budget)) : notice
         }
 
-        return String(text.prefix(contentCharacterLimit)) + separator + notice
+        return PromptUntrustedDataBlock.boundedPrefix(text, maxCharacters: contentCharacterLimit) + separator + notice
     }
 
     private static func budgetOmissionNotice(
@@ -1921,7 +1921,7 @@ enum AgentPromptBuilder {
     ) -> String {
         let originalTokens = estimatedTokens(forCharacterCount: originalCharacters)
         var lines = [
-            "[ASTRA context budget: \(section.kind.displayName) truncated from about \(originalTokens) tokens to \(tokenBudget) tokens.]",
+            "[ASTRA context budget: \(section.kind.displayName) truncated: ~\(originalTokens) to \(tokenBudget) tokens.]",
             "Use these source pointers for omitted detail:"
         ]
 

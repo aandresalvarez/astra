@@ -177,6 +177,27 @@ struct ComposerAttachmentsTests {
         #expect(presentation.fileCount == 2)
     }
 
+    @Test("The toolbar count uses the same durable input presentation as Files")
+    func headerCountIncludesMissingInputsAndFolders() throws {
+        let view = try sourceFile("Astra/Views/TaskMainView.swift")
+        let start = try #require(view.range(of: "private var headerFileCount: Int {"))
+        let end = try #require(view[start.upperBound...].firstIndex(of: "}"))
+        #expect(view[start.upperBound..<end].contains("TaskFilesPopoverPresentation"))
+    }
+
+    @Test("Selected directories with file-like names open as directories", arguments: ["docs.html", "data.sql", "README"])
+    func folderMetadataPreservesDirectoryKind(name: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-input-kind-\(UUID())")
+        let folder = root.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let snapshot = TaskInputFileMetadata.load(paths: [folder.path, root.appendingPathComponent("missing.pdf").path])
+        let item = try #require(snapshot.items[folder.path])
+        #expect(item.isDirectory)
+        #expect(item.destination == nil)
+        #expect(snapshot.missing.count == 1)
+    }
+
     /// Start Over deletes the draft, so the chips restored from it have to go
     /// with it; left behind, the next `quickRun()` or `saveDraft()` files them
     /// under a task they never belonged to.

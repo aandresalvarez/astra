@@ -1013,7 +1013,7 @@ struct TaskMainView: View {
     }
 
     private var headerFileCount: Int {
-        headerFileItems.count
+        TaskFilesPopoverPresentation(items: headerFileItems, inputs: task.inputs).fileCount
     }
 
     private var diagnosticFileCount: Int {

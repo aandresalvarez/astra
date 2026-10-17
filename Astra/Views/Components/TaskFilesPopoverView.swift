@@ -59,11 +59,7 @@ struct TaskFilesPopoverView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        TaskInputFilesView(task: task) { path in
-                            let path = TaskFileIndex.normalizedPath(path)
-                            onOpenFile(TaskFileItem(path: path, source: "input",
-                                destination: TaskGeneratedFiles.shelfDestination(for: path)))
-                        }
+                        TaskInputFilesView(task: task) { onOpenFile($0) }
                         if !presentation.inputPaths.isEmpty && !presentation.otherFiles.isEmpty {
                             Divider()
                         }

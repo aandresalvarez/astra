@@ -3,7 +3,7 @@ import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
 
-struct TaskFileItem: Identifiable, Hashable {
+struct TaskFileItem: Identifiable, Hashable, Sendable {
     let path: String
     let name: String
     let isDirectory: Bool

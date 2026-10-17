@@ -869,7 +869,7 @@ struct AgentRuntimeAdapterTests {
         #expect(copilotPlan.environment["XDG_CACHE_HOME"] == "/tmp/astra-provider-home/.cache")
         #expect(copilotPlan.environment["XDG_CONFIG_HOME"] == "/tmp/astra-provider-home/.config")
         #expect(copilotPlan.providerDetectedFields["runtime"] == AgentRuntimeID.copilotCLI.rawValue)
-
+        #expect(["supports_private_env_filter", "uses_private_env_filter"].allSatisfy { LogSanitizer.sanitizeFields(copilotPlan.commandPlannedFields)[$0] != nil })
         #expect(antigravityPlan.runtime == .antigravityCLI)
         #expect(antigravityPlan.executablePath == "/bin/agy-not-present")
         // This binary was never probed for `--output-format`, and an

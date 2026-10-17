@@ -9,10 +9,10 @@ import ASTRAPersistence
 /// from future context without deleting their original conversation record.
 struct TaskInputFilesView: View {
     let task: AgentTask
-    let onOpen: (String) -> Void
+    let onOpen: (TaskFileItem) -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @State private var missingInputs: Set<String> = []
+    @State private var metadata: TaskInputFileMetadata?
 
     private var fileInputs: [String] { ComposerAttachments.paths(in: task.inputs) }
 
@@ -31,24 +31,23 @@ struct TaskInputFilesView: View {
             }
             .task(id: fileInputs) {
                 let inputs = fileInputs
-                let missing = await Task.detached(priority: .utility) {
-                    Set(inputs.filter {
-                        !FileManager.default.fileExists(atPath: TaskFileIndex.normalizedPath($0))
-                    })
+                let snapshot = await Task.detached(priority: .utility) {
+                    TaskInputFileMetadata.load(paths: inputs)
                 }.value
                 guard !Task.isCancelled, fileInputs == inputs else { return }
-                missingInputs = missing
+                metadata = snapshot
             }
         }
     }
 
     private func inputRow(_ path: String) -> some View {
         let name = ComposerAttachments.displayName(for: path)
-        let isMissing = missingInputs.contains(path)
+        let isMissing = metadata?.missing.contains(path) == true
+        let item = metadata?.items[path]
         return HStack(spacing: 8) {
-            Button { onOpen(path) } label: {
+            Button { if let item { onOpen(item) } } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: isMissing ? "exclamationmark.triangle.fill" : Formatters.fileIcon(for: path))
+                    Image(systemName: isMissing ? "exclamationmark.triangle.fill" : (item?.isDirectory == true ? "folder" : Formatters.fileIcon(for: path)))
                         .font(Stanford.ui(13))
                         .foregroundStyle(isMissing ? Stanford.poppy : Stanford.lagunita)
                         .frame(width: 18)
@@ -69,7 +68,7 @@ struct TaskInputFilesView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(isMissing)
+            .disabled(item == nil)
             .accessibilityLabel(isMissing ? "Missing chat attachment \(name)" : "Open chat attachment \(name)")
             Button { remove(path, wasMissing: isMissing) } label: {
                 Image(systemName: "xmark.circle.fill")

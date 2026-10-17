@@ -47,6 +47,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
     enum SummarySource: String, Codable, Sendable {
         case stderr
         case resultOutput = "result_output"
+        case providerLog = "provider_log"
         case fallback
         case none
     }
@@ -69,7 +70,8 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         stream: AgentRuntimeStreamTelemetrySnapshot?,
         timedOut: Bool = false,
         budgetExceeded: Bool = false,
-        maxTurnsExceeded: Bool = false
+        maxTurnsExceeded: Bool = false,
+        startupEvidence: String? = nil
     ) -> AgentRuntimeFailureDiagnostic {
         let raw = rawError ?? ""
         // Strip benign provider warnings (e.g. deprecation notices) so they never
@@ -88,9 +90,10 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         // has_error_output=false / an empty error_summary.
         let resultOutput = (runOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let redactedResult = LogSanitizer.sanitize(resultOutput, maxLength: 800)
+        let redactedLog = LogSanitizer.sanitize(startupEvidence ?? "", maxLength: 800)
         // Keyword classification (auth/model/quota/...) inspects stderr AND the
         // result payload so a real error carried only in stdout is still matched.
-        let haystack = "\(raw)\n\(redactedStderr)\n\(redactedResult)".lowercased()
+        let haystack = "\(raw)\n\(redactedStderr)\n\(redactedResult)\n\(redactedLog)".lowercased()
         // The noVisibleOutput empty-check still uses only the warning-stripped
         // stderr, so a substantive result payload upgrades the surfaced summary
         // without changing the "produced events but no visible output" verdict.
@@ -112,10 +115,15 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         } else if !redactedResult.isEmpty {
             summarySource = .resultOutput
             summary = redactedResult
+        } else if !redactedLog.isEmpty {
+            summarySource = .providerLog
+            summary = redactedLog
         } else {
             let fallback = fallbackSummary(for: category, runtime: runtime)
             summarySource = fallback.isEmpty ? .none : .fallback
-            summary = fallback
+            summary = category == .noVisibleOutput && stream?.rawLineCount == 0
+                ? "\(runtime.displayName) \(providerVersion ?? "unknown version") exited with code \(exitCode) before emitting any stdout, stderr, or provider events. The provider did not report a cause."
+                : fallback
         }
         let resolvedModel = RuntimeModelAvailability.normalizedModel(model, for: runtime)
         let approvable = isApprovableRuntimePermission(category: category, haystack: haystack)
@@ -273,7 +281,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
         if containsAny(haystack, [
             "api key", "apikey", "base url", "base_url", "endpoint", "deployment",
             "byok", "provider config", "provider configuration", "openai-compatible",
-            "azure openai", "missing provider", "invalid provider"
+            "azure openai", "missing provider", "invalid provider", "plan model not specified"
         ]) {
             return .providerConfigurationInvalid
         }
@@ -308,7 +316,7 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
             return .networkFailed
         }
         if let stream,
-           stream.rawLineCount > 0,
+           (stream.rawLineCount > 0 || haystack.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
            stream.textEventCount == 0,
            stream.completedEventCount == 0,
            meaningfulHaystackEmpty {
@@ -389,6 +397,9 @@ struct AgentRuntimeFailureDiagnostic: Codable, Equatable, Sendable {
             if runtime == .claudeCode {
                 let hint = CommonCLIPrerequisites.claude.authHint ?? "Run `claude /login` or set `ANTHROPIC_API_KEY`."
                 return "\(runtime.displayName) returned no output. It is usually not logged in (\(hint)) or a SessionStart hook failed before any response was produced."
+            }
+            if runtime == .copilotCLI {
+                return "Copilot exited without a visible response. Check `copilot login` and the selected account/model in the CLI, then retry. If it repeats, include the provider version and launch diagnostics; no provider error was supplied."
             }
             return "\(runtime.displayName) exited before returning a visible assistant response."
         case .providerProcessFailed:

@@ -107,15 +107,22 @@ final class ShelfFileIndexController: ObservableObject {
             return
         }
 
+        let requestedAt = DispatchTime.now().uptimeNanoseconds
         scanTask = Task { [weak self] in
             guard let self else { return }
+            FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "dispatch", startedAt: requestedAt)
             var presentedCachedSnapshot = false
 
-            if !force,
-               let cached = await store.cachedSnapshot(roots: selectedRoots, includeHidden: includeHidden),
-               !Task.isCancelled {
+            let cacheStartedAt = DispatchTime.now().uptimeNanoseconds
+            let cached = force ? nil : await store.cachedSnapshot(roots: selectedRoots, includeHidden: includeHidden)
+            FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "cache_lookup", startedAt: cacheStartedAt)
+            if let cached, !Task.isCancelled {
+                let filterStartedAt = DispatchTime.now().uptimeNanoseconds
                 guard let displayed = await displayedNodesForCurrentSearch(cached.nodesByRoot) else { return }
+                FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "cached_filter", startedAt: filterStartedAt)
+                let applyStartedAt = DispatchTime.now().uptimeNanoseconds
                 apply(cached, displayedNodesByRoot: displayed, source: .cache)
+                FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "cached_apply", startedAt: applyStartedAt)
                 presentedCachedSnapshot = true
                 if let responsivenessScope {
                     FilesShelfResponsivenessTelemetry.firstResultsReady(
@@ -131,9 +138,13 @@ final class ShelfFileIndexController: ObservableObject {
             let scanStart = DispatchTime.now().uptimeNanoseconds
             let fresh = await store.refreshedSnapshot(roots: selectedRoots, includeHidden: includeHidden)
             guard !Task.isCancelled else { return }
+            FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "scan_and_resume", startedAt: scanStart)
+            let filterStartedAt = DispatchTime.now().uptimeNanoseconds
             guard let displayed = await displayedNodesForCurrentSearch(fresh.nodesByRoot) else { return }
-
+            FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "fresh_filter", startedAt: filterStartedAt)
+            let applyStartedAt = DispatchTime.now().uptimeNanoseconds
             apply(fresh, displayedNodesByRoot: displayed, source: .fresh)
+            FilesShelfResponsivenessTelemetry.phase(scope: responsivenessScope, phase: "fresh_apply", startedAt: applyStartedAt)
             isScanning = false
             let cacheState = presentedCachedSnapshot ? "refresh" : "miss"
             FilesShelfResponsivenessTelemetry.logIndexScan(

@@ -422,7 +422,7 @@ struct ArchitectureFitnessTests {
         let root = try repositoryRoot()
         let checkedFiles = [
             "Astra/Services/Runtime/AgentPromptBuilder.swift",
-            "Astra/Services/Runtime/PromptInputContextReader.swift",
+            "Astra/Services/Runtime/TaskInputsPromptSectionProvider.swift",
             "Astra/Services/Runtime/PromptContextIOSnapshotLoader.swift"
         ]
         let forbiddenPatterns = [
