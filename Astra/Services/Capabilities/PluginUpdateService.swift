@@ -172,9 +172,9 @@ enum PluginUpdateService {
         let previousValue: String?
     }
 
-    /// A secret setting a kept component no longer declares, deleted once
-    /// the reconciliation is saved.
-    struct StaleSecret: Equatable {
+    /// A secret setting a kept component no longer declares: recorded in
+    /// `PluginSecretCleanupOutbox` with the save and deleted after it.
+    struct StaleSecret: Hashable {
         let key: String
         let skillID: UUID
     }
@@ -230,7 +230,7 @@ enum PluginUpdateService {
                 if !changedWorkspaces.contains(where: { $0 === workspace }) { changedWorkspaces.append(workspace) }
             }
             guard changed > 0 else { return 0 }
-            let saved = PluginSecretCleanupOutbox.deleteThenClean(total.released, modelContext: modelContext) {
+            let saved = PluginSecretCleanupOutbox.deleteThenClean(total.released, keys: total.staleSecrets, modelContext: modelContext) {
                 (try? WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspaces: changedWorkspaces, modelContext: modelContext)) != nil
             }
             guard saved else { throw UpdateError.saveFailed }
@@ -239,7 +239,6 @@ enum PluginUpdateService {
             undo(total.copied)
             throw error
         }
-        clearStaleSecrets(total.staleSecrets)
         return changed
     }
 
@@ -341,16 +340,6 @@ enum PluginUpdateService {
             } else {
                 persistence.deleteSecret(key: secret.key, skillID: secret.skillID)
             }
-        }
-    }
-
-    /// Deletes secret settings a definition stopped declaring, once saved.
-    static func clearStaleSecrets(_ stale: [StaleSecret]) {
-        let persistence = SkillSecretSeam.required
-        for secret in stale where !persistence.deleteSecret(key: secret.key, skillID: secret.skillID) {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                "scope": "plugin_stale_setting", "skill_id": secret.skillID.uuidString
-            ], level: .warning)
         }
     }
 

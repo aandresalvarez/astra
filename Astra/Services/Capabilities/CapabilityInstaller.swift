@@ -312,12 +312,11 @@ struct CapabilityInstaller {
             }
 
             workspace.updatedAt = Date()
-            guard PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext, save: {
+            guard PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, keys: reconciliation.staleSecrets, modelContext: modelContext, save: {
                 persist(workspace, modelContext)
             }) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
-            PluginUpdateService.clearStaleSecrets(reconciliation.staleSecrets)
             var enabledFields = [
                 "package_id": package.id,
                 "package_name": package.name,
