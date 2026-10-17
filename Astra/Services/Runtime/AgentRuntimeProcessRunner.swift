@@ -643,7 +643,7 @@ final class AgentRuntimeProcessRunner {
         timeoutResult: (@Sendable (_ timeoutSeconds: TimeInterval) -> AgentUtilityRunResult)? = nil
     ) async -> AgentUtilityRunResult {
         let resolvedPlan: AgentUtilityLaunchPlan
-        switch sandboxedUtilityPlan(utilityPlan) {
+        switch guardedSandboxedUtilityPlan(utilityPlan) {
         case .plan(let plan):
             resolvedPlan = plan
         case .blocked(let result):
@@ -807,7 +807,7 @@ final class AgentRuntimeProcessRunner {
                 return AgentProcessResult(exitCode: -1, error: error.localizedDescription)
             }
             let plan: AgentRuntimeProcessLaunchPlan
-            switch sandboxedPlan(adapter: adapter, context: launchContext) {
+            switch guardedSandboxedPlan(adapter: adapter, context: launchContext) {
             case .plan(let resolvedPlan):
                 plan = resolvedPlan
             case .blocked(let blockedResult):
@@ -835,7 +835,7 @@ final class AgentRuntimeProcessRunner {
         }
 
         let plan: AgentRuntimeProcessLaunchPlan
-        switch sandboxedPlan(adapter: adapter, context: launchContext) {
+        switch guardedSandboxedPlan(adapter: adapter, context: launchContext) {
         case .plan(let resolvedPlan):
             plan = resolvedPlan
         case .blocked(let blockedResult):

@@ -109,16 +109,19 @@ struct RuntimeProviderAvailabilityService {
         cacheMaxAge: TimeInterval = RuntimeProviderAvailabilityService.cacheMaxAge
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
         if let cache, let cached = await cache.states(for: configuration, maxAge: cacheMaxAge) {
-            AppLogger.debug("runtime.availability_refresh source=cache \(Self.summary(of: cached))", category: "Runtime")
-            return cached
+            let refreshed = refreshingUncachedChecks(cached)
+            AppLogger.debug("runtime.availability_refresh source=cache \(Self.summary(of: refreshed))", category: "Runtime")
+            return refreshed
         }
+        // The cache stores states without the uncached checks; they are
+        // re-run on every answer, cached or probed.
         let states = await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
             for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
                 group.addTask {
                     let report = await readinessService.check(
                         configuration: configuration.readinessConfiguration(for: runtime)
                     )
-                    return (runtime, report.state)
+                    return (runtime, report.cacheable.state)
                 }
             }
 
@@ -145,8 +148,23 @@ struct RuntimeProviderAvailabilityService {
         if let cache, states.count == AgentRuntimeAdapterRegistry.runtimeIDs.count {
             await cache.store(states, for: configuration)
         }
-        AppLogger.debug("runtime.availability_refresh source=probe \(Self.summary(of: states))", category: "Runtime")
-        return states
+        let refreshed = refreshingUncachedChecks(states)
+        AppLogger.debug("runtime.availability_refresh source=probe \(Self.summary(of: refreshed))", category: "Runtime")
+        return refreshed
+    }
+
+    private func refreshingUncachedChecks(
+        _ states: [AgentRuntimeID: RuntimeReadinessState]
+    ) -> [AgentRuntimeID: RuntimeReadinessState] {
+        var refreshed = states
+        // A warning at most: this answer is global, but whether the host home
+        // matters depends on the launch (a container never reads it). The
+        // final-plan guard blocks the launches it would actually break.
+        for (runtime, state) in states {
+            let checked = readinessService.refreshingUncachedChecks(.ready, runtime: runtime)
+            refreshed[runtime] = state.combined(with: checked == .blocked ? .warning : checked)
+        }
+        return refreshed
     }
 
     private static func summary(of states: [AgentRuntimeID: RuntimeReadinessState]) -> String {

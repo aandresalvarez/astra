@@ -735,11 +735,14 @@ enum AgentRuntimeLaunchPreflight {
         verdictCache: RuntimeLaunchReadinessCache? = nil
     ) async -> Bool {
         let cached = await verdictCache?.hit(for: configuration)
+        // Uncached checks (Copilot's home) are left out here: they are decided
+        // on the final launch plan (`guardedSandboxedPlan`), which alone knows
+        // the task's environment, sandbox boundary and container placement.
         let report: RuntimeReadinessReport
         if let cached {
-            report = cached.report
+            report = cached.report.cacheable
         } else {
-            report = await readinessService.check(configuration: configuration)
+            report = await readinessService.check(configuration: configuration).cacheable
             await verdictCache?.record(report, for: configuration)
         }
         return preflightRuntimeReadinessBeforeLaunchResult(

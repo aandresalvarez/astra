@@ -1125,6 +1125,20 @@ final class AgentRuntimeWorker {
             }.value
         }
         let processSucceeded = result.exitCode == 0 || result.terminatedAfterTerminalProgress
+        // Only Copilot's silent exit 1 looks at its home, with the launch's own
+        // environment (a skill can point COPILOT_PROVIDERS_CONFIG elsewhere),
+        // resolved only once that failure has happened.
+        // Inside a container Copilot used the container's home, not the host's.
+        let copilotFailureEnvironment = selectedRuntime == .copilotCLI && result.exitCode == 1
+            && !runEnvironment.runSnapshot.providerRunsInsideContainer
+            ? baseLaunchEnvironment.merging(AgentRuntimeProcessRunner.scopedEnvironmentVariables(
+                for: executionTask,
+                capabilityScope: capabilityResolutionSnapshot.providerLaunch,
+                contextText: providerLaunchContextText,
+                executionPolicy: executionPolicy,
+                runtimeRequirements: appliedRuntime.requirements
+            )) { _, scoped in scoped }
+            : nil
         let failureDiagnostic = (processSucceeded || result.runtimeStopped || result.repetitionKilled || cancellationRequested || task.status == .cancelled) ? nil : AgentRuntimeFailureDiagnostic.classify(
             runtime: selectedRuntime,
             model: task.model,
@@ -1138,7 +1152,14 @@ final class AgentRuntimeWorker {
             stream: streamSnapshot,
             timedOut: result.timedOut,
             budgetExceeded: result.budgetExceeded,
-            maxTurnsExceeded: result.maxTurnsExceeded, startupEvidence: startupEvidence
+            maxTurnsExceeded: result.maxTurnsExceeded, startupEvidence: startupEvidence,
+            copilotHomeAccess: copilotFailureEnvironment.map { environment in
+                // A file the sandbox would have hidden was already refused
+                // at launch (`guardedSandboxedPlan`), so no boundary here.
+                { CopilotHomeAccessCheck.inspect(
+                    resumeSessionID: nativeContinuationSessionID, environment: environment, workingDirectory: executionPath
+                ) }
+            }
         )
         if let failureDiagnostic {
             AppLogger.audit(
@@ -1621,7 +1642,9 @@ final class AgentRuntimeWorker {
     /// invisible from the outside until someone notices a run that never moves.
     static func isTerminalRuntimeStop(_ reason: String) -> Bool {
         guard let stopReason = TaskRunStopReason(rawValue: reason) else { return false }
-        if stopReason.isDockerRuntimeBlocked {
+        // A launch refused before Copilot started (its home is unusable)
+        // fails the task, as the readiness preflight's own refusal does.
+        if stopReason.isDockerRuntimeBlocked || reason == CopilotHomeAccessCheck.launchStopReason {
             return true
         }
         return [
