@@ -134,8 +134,12 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     func blocks(_ problem: CopilotHomeAccessProblem) -> Bool {
         if problem.blocksCopilot { return true }
         guard problem.access == .linksOutsideHome, let sandboxReceipt else { return false }
-        let denial = RuntimeSandboxFileDenial(operation: .read, path: problem.readPath ?? problem.path, detail: "")
-        return sandboxReceipt.explains(denial)
+        let path = problem.readPath ?? problem.path
+        if sandboxReceipt.explains(RuntimeSandboxFileDenial(operation: .read, path: path, detail: "")) { return true }
+        // A state entry Copilot writes (session-state, session-store.db) must
+        // also be writable under the boundary, or its first update fails.
+        return problem.requiresWrite
+            && sandboxReceipt.explains(RuntimeSandboxFileDenial(operation: .write, path: path, detail: ""))
     }
 
     /// An unreadable startup entry kills every Copilot turn before it prints
@@ -435,6 +439,23 @@ enum CopilotHomeAccessCheck {
                 providersOverride, home: resolvedHome, fileManager: fileManager, currentUserID: currentUserID
             )
         }
+        // A home reached through a link may land in a folder the sandbox does
+        // not grant (it drops broad roots such as /Applications); then Copilot
+        // cannot read even its config there.
+        let reachedIndirectly = homeIsLink || hasAncestorLink(trimmedHome, fileManager: fileManager)
+        if let sandboxReceipt, reachedIndirectly,
+           sandboxReceipt.explains(RuntimeSandboxFileDenial(
+               operation: .read, path: canonicalPath(resolvedHome), detail: ""
+           )) {
+            var unreachable = CopilotHomeAccessProblem(
+                path: trimmedHome, isDirectory: true, owner: nil, ownedByCurrentUser: true,
+                posixPermissions: nil, access: .linksOutsideHome, isReadAtStartup: true,
+                symlinkTarget: canonicalPath(resolvedHome)
+            )
+            unreachable.readPath = canonicalPath(resolvedHome)
+            unreachable.pathIsLink = homeIsLink
+            problems.append(unreachable)
+        }
         // One rule decides where a command may be suggested, after every
         // branch has reported: only inside a Copilot home ASTRA trusts (a real
         // folder, or a link to one the user owns), plus the home entry itself
@@ -444,7 +465,9 @@ enum CopilotHomeAccessCheck {
         // The fully resolved target, every hop and intermediate link included:
         // trust is never decided from a partially resolved chain.
         let targetOwner = (try? fileManager.attributesOfItem(atPath: canonicalPath(resolvedHome)))?[.ownerAccountID] as? NSNumber
-        let homeTrusted = !homeIsLink || targetOwner.map { uid_t($0.uint32Value) == currentUserID } ?? false
+        // A link anywhere on the way counts, not only the final `.copilot`
+        // (a `/Users/alice` that links to someone else's folder, say).
+        let homeTrusted = !reachedIndirectly || targetOwner.map { uid_t($0.uint32Value) == currentUserID } ?? false
         let trustedRoot = canonicalPath(resolvedHome)
         // The providers override never gets a command: it can name any path,
         // the home itself included, and the fix there is the variable.
@@ -469,6 +492,22 @@ enum CopilotHomeAccessCheck {
         var orderedReport = CopilotHomeAccessReport(home: trimmedHome, problems: ordered)
         orderedReport.sandboxReceipt = sandboxReceipt
         return orderedReport
+    }
+
+    /// Whether any folder above `path` is a symlink, ignoring the system's own
+    /// top-level links (`/var`, `/tmp`, `/etc` point into `/private`).
+    private static func hasAncestorLink(_ path: String, fileManager: FileManager) -> Bool {
+        var current = (path as NSString).deletingLastPathComponent
+        while !current.isEmpty, current != "/" {
+            let parent = (current as NSString).deletingLastPathComponent
+            var info = stat()
+            if lstat(current, &info) == 0, (info.st_mode & S_IFMT) == S_IFLNK,
+               !(parent == "/" && info.st_uid == 0) {
+                return true
+            }
+            current = parent
+        }
+        return false
     }
 
     /// The canonical path of an entry's folder plus its own name: a link is
@@ -498,7 +537,9 @@ enum CopilotHomeAccessCheck {
             dangling.isLinkLoop = (try? fileManager.attributesOfItem(atPath: resolvedHome))?[.type] as? FileAttributeType
                 == .typeSymbolicLink
             dangling.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
-            return [dangling]
+            // Moving it aside needs write and search on its parent.
+            let parent = creationProblem(for: trimmedHome, fileManager: fileManager, currentUserID: currentUserID)
+            return [dangling] + (parent.map { [$0] } ?? [])
         }
         var isDirectory: ObjCBool = false
         // A missing home is fine as long as Copilot can create it.
@@ -512,7 +553,9 @@ enum CopilotHomeAccessCheck {
                 fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .notADirectory
             )
             problem?.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
-            return problem.map { [$0] } ?? []
+            // Moving it aside needs write and search on its parent.
+            let parent = creationProblem(for: trimmedHome, fileManager: fileManager, currentUserID: currentUserID)
+            return (problem.map { [$0] } ?? []) + (parent.map { [$0] } ?? [])
         }
         var problems: [CopilotHomeAccessProblem] = []
         if var homeProblem = problem(
@@ -603,6 +646,7 @@ enum CopilotHomeAccessCheck {
         )
         outside.isProvidersOverride = true
         outside.isProvidersFile = true
+        outside.requiresWrite = false
         outside.readPath = canonicalPath(override)
         var linkInfo = stat()
         outside.pathIsLink = lstat(override, &linkInfo) == 0 && (linkInfo.st_mode & S_IFMT) == S_IFLNK
@@ -711,7 +755,7 @@ enum CopilotHomeAccessCheck {
         // A forced verdict is about the entry itself, link or not.
         if type == .typeSymbolicLink, forcedAccess == nil {
             return symlinkProblem(
-                at: path, requiresWrite: requiresWrite, isReadAtStartup: isReadAtStartup,
+                at: path, requiresWrite: requiresWrite, isReadAtStartup: isReadAtStartup, currentUserID: currentUserID,
                 expectedKind: expectedKind, home: home, fileManager: fileManager
             )
         }
@@ -833,11 +877,15 @@ enum CopilotHomeAccessCheck {
         at path: String,
         requiresWrite: Bool,
         isReadAtStartup: Bool,
+        currentUserID: uid_t,
         expectedKind: EntryKind?,
         home: String?,
         fileManager: FileManager
     ) -> CopilotHomeAccessProblem? {
         guard isReadAtStartup else { return nil }
+        // The link's own owner: unlocking it needs sudo when it is not the user's.
+        var linkInfo = stat()
+        let linkOwnerID: uid_t? = lstat(path, &linkInfo) == 0 ? linkInfo.st_uid : nil
         var isDirectory: ObjCBool = false
         let targetExists = fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
         let readMode = isDirectory.boolValue ? (R_OK | X_OK) : R_OK
@@ -864,12 +912,13 @@ enum CopilotHomeAccessCheck {
             path: path,
             isDirectory: isDirectory.boolValue,
             owner: nil,
-            ownedByCurrentUser: true,
+            ownedByCurrentUser: linkOwnerID.map { $0 == currentUserID } ?? true,
             posixPermissions: nil,
             access: access,
             isReadAtStartup: true,
             symlinkTarget: target
         )
+        problem.requiresWrite = requiresWrite
         problem.isSpecialFile = targetExists && !isDirectory.boolValue && targetType != .typeRegular
         problem.pathIsLink = true
         problem.readPath = canonicalPath(path)

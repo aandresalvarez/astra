@@ -1145,6 +1145,109 @@ struct CopilotHomeAccessCheckTests {
         #expect(category(startupEvidence: "[ERROR] something else went wrong") != .providerHomeAccessDenied)
     }
 
+    @Test("A home reached through a linked ancestor is trusted only when its real folder is the user's")
+    func ancestorLinkUsesOwnershipTrust() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let realUser = try root.makeDirectory("real-user", mode: 0o755)
+        let home = (realUser as NSString).appendingPathComponent(".copilot")
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: false)
+        let config = (home as NSString).appendingPathComponent("config.json")
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: config))
+        try root.setMode(0o000, of: config)
+        defer { try? root.setMode(0o600, of: config) }
+        let userLink = (root.path as NSString).appendingPathComponent("alice")
+        try FileManager.default.createSymbolicLink(atPath: userLink, withDestinationPath: realUser)
+        let linkedHome = (userLink as NSString).appendingPathComponent(".copilot")
+
+        // Another uid stands in for "alice links to someone else's folder".
+        let foreign = CopilotHomeAccessCheck.inspect(home: linkedHome, currentUserID: getuid() + 1)
+        #expect(foreign.blocksCopilot)
+        #expect(foreign.fixCommand.isEmpty)
+        #expect(!CopilotHomeAccessCheck.inspect(home: linkedHome).fixCommand.isEmpty)
+    }
+
+    @Test("A linked home in a folder the sandbox does not grant blocks the launch")
+    func linkedHomeOutsideBoundaryBlocks() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let target = try root.makeDirectory("broad-root", mode: 0o755)
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: (target as NSString).appendingPathComponent("config.json")))
+        let link = (root.path as NSString).appendingPathComponent("home-link")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+        func blocker(readable: [String]) -> RuntimeReadinessReport? {
+            CopilotHomeAccessCheck.launchBlocker(
+                home: link, resumeSessionID: nil, environment: [:], workingDirectory: nil,
+                sandboxReceipt: ExecutionSandboxBoundaryReceipt(
+                    writableRoots: readable, writeDeniedRoots: [], readScope: .enforce, readableRoots: readable
+                )
+            )
+        }
+
+        // The boundary canonicalizes its roots, so the home is judged by its real folder.
+        let unrelated = try root.makeDirectory("unrelated", mode: 0o755)
+        #expect(blocker(readable: [unrelated]) != nil)
+        #expect(blocker(readable: [target]) == nil)
+    }
+
+    @Test("A state entry linked outside the home must be writable under the boundary, a config only readable")
+    func mutableOutsideLinkNeedsWrite() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let shared = try FakeCopilotHome()
+        defer { shared.remove() }
+        let sessions = try shared.makeDirectory("sessions", mode: 0o755)
+        let config = try shared.write("config.json", mode: 0o600)
+        try FileManager.default.createSymbolicLink(
+            atPath: (home.path as NSString).appendingPathComponent("session-state"), withDestinationPath: sessions
+        )
+        let readOnlyBoundary = ExecutionSandboxBoundaryReceipt(
+            writableRoots: [home.path], writeDeniedRoots: [], readScope: .enforce,
+            readableRoots: [home.path, shared.path]
+        )
+
+        let stateReport = CopilotHomeAccessCheck.inspect(home: home.path, sandboxReceipt: readOnlyBoundary)
+        #expect(stateReport.blocksCopilot)
+
+        try FileManager.default.removeItem(atPath: (home.path as NSString).appendingPathComponent("session-state"))
+        try FileManager.default.createSymbolicLink(
+            atPath: (home.path as NSString).appendingPathComponent("config.json"), withDestinationPath: config
+        )
+        #expect(!CopilotHomeAccessCheck.inspect(home: home.path, sandboxReceipt: readOnlyBoundary).blocksCopilot)
+    }
+
+    @Test("Unlocking another user's locked link needs sudo")
+    func foreignLockedLinkUnlockUsesSudo() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let link = (home.path as NSString).appendingPathComponent("config.json")
+        try FileManager.default.createSymbolicLink(
+            atPath: link, withDestinationPath: (home.path as NSString).appendingPathComponent("missing.json")
+        )
+        try Self.shell("/usr/bin/chflags", ["-h", "uchg", link])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+
+        #expect(report.fixCommand.hasPrefix("sudo chflags -h nouchg,nouappnd '\(link)'"))
+    }
+
+    @Test("A file-shaped home in a folder the user cannot write gets that folder repaired before the move")
+    func malformedHomeRepairsParentBeforeMove() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let parent = try root.makeDirectory("parent", mode: 0o755)
+        let notAFolder = (parent as NSString).appendingPathComponent(".copilot")
+        try Data("x".utf8).write(to: URL(fileURLWithPath: notAFolder))
+        try root.setMode(0o555, of: parent)
+        defer { try? root.setMode(0o755, of: parent) }
+
+        let report = CopilotHomeAccessCheck.inspect(home: notAFolder)
+
+        #expect(report.fixCommand == "chmod u+rwx '\(parent)' && mv -n '\(notAFolder)' '\(notAFolder).bak'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(!FileManager.default.fileExists(atPath: notAFolder))
+    }
+
     @Test("A home symlink loop blocks like a dangling link")
     func homeLinkLoopBlocks() throws {
         let root = try FakeCopilotHome()
