@@ -85,6 +85,16 @@ enum PluginTemplateSync {
         return !matches(row, spec)
     }
 
+    /// `isEdited` for a stamped row of `package`, whose declared template
+    /// may be gone: a row without a digest or a template to compare with is
+    /// counted as edited, so Remove keeps it.
+    static func isEdited(_ row: TaskTemplate, of package: PluginPackage, recorded: String?) -> Bool {
+        guard let spec = package.templates.first(where: { CapabilityResourceOrigin.componentID(for: $0) == row.originComponentID }) else {
+            return recorded.map { contentDigest(of: row) != $0 } ?? true
+        }
+        return isEdited(row, spec: spec, recorded: recorded)
+    }
+
     /// A digest of everything a sync writes on a row.
     static func contentDigest(of row: TaskTemplate) -> String {
         let fields: [String] = [
@@ -96,7 +106,8 @@ enum PluginTemplateSync {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func unstamp(_ row: TaskTemplate) {
+    /// Makes a row the person's own: it no longer names the plugin.
+    static func unstamp(_ row: TaskTemplate) {
         row.originPackageID = nil
         row.originPackageVersion = nil
         row.originComponentID = nil

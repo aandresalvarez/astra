@@ -440,25 +440,29 @@ struct PluginsSurfaceView: View {
             guard case .deleteAccount(_, let accountID) = confirmation else { return nil }
             return row.activation?.bindings.compactMap(\.account).first { $0.id == accountID }
         }()
-        let copy = confirmation.copy(
-            name: account?.name ?? row.package.name,
-            workspaces: account.map { PluginOperations.workspacesUsing($0).map(\.name) } ?? []
-        )
+        // An unreadable delete scope offers no Delete: the confirmation
+        // would not name every workspace the deletion reaches.
+        let reach: [String]? = account.map { account in
+            (try? PluginOperations.workspacesUsing(account))?.map(\.name)
+        } ?? []
+        let copy = confirmation.copy(name: account?.name ?? row.package.name, workspaces: reach ?? [])
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(copy.message)
+            Text(reach == nil ? PluginOperations.OperationError.storeUnreadable.localizedDescription : copy.message)
                 .font(Stanford.caption(12))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Button("Cancel") { confirming = nil }
                 .controlSize(.small)
-            Button(copy.verb, role: .destructive) {
-                confirming = nil
-                switch confirmation {
-                case .remove: remove(row.package)
-                case .deleteAccount: if let account { deleteAccount(account) }
+            if reach != nil {
+                Button(copy.verb, role: .destructive) {
+                    confirming = nil
+                    switch confirmation {
+                    case .remove: remove(row.package)
+                    case .deleteAccount: if let account { deleteAccount(account) }
+                    }
                 }
+                .controlSize(.small)
             }
-            .controlSize(.small)
         }
         .padding(8)
         .background(Stanford.statusError.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))

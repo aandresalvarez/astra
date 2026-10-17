@@ -158,12 +158,24 @@ enum PluginOperations {
 
     /// Every workspace deleting `account` reaches, for the delete
     /// confirmation to name: its owner, the workspaces whose plugins bind
-    /// it, and those that list it as a shared connector.
-    static func workspacesUsing(_ account: Connector) -> [Workspace] {
+    /// it, and those that list it as a shared connector. Throws when the
+    /// store can't be read: a scope missing the workspaces that only list
+    /// the account must never be confirmed.
+    static func workspacesUsing(_ account: Connector) throws -> [Workspace] {
+        try workspacesUsing(account) {
+            guard let context = account.modelContext else { throw OperationError.storeUnreadable }
+            return try context.fetch(FetchDescriptor<Workspace>())
+        }
+    }
+
+    static func workspacesUsing(
+        _ account: Connector,
+        fetchingWith fetchWorkspaces: () throws -> [Workspace]
+    ) throws -> [Workspace] {
         var seen = Set<UUID>()
         let id = account.id.uuidString
-        let listing = account.modelContext.flatMap { try? $0.fetch(FetchDescriptor<Workspace>()) }?
-            .filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) } ?? []
+        guard let workspaces = try? fetchWorkspaces() else { throw OperationError.storeUnreadable }
+        let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
         let bound = account.accountBindings.filter { !$0.isDeleted }.compactMap { $0.activation?.workspace }
         return ([account.workspace].compactMap { $0 } + bound + listing)
             .filter { !$0.isDeleted && seen.insert($0.id).inserted }
@@ -184,7 +196,7 @@ enum PluginOperations {
         let listing = workspaces.filter { WorkspaceCapabilityActivation.state(of: $0).globalConnectorIDs.contains(id) }
         // Every workspace whose mirror names the account is exported after
         // the deletion, so recovery can't bring it back.
-        var affected = listing + workspacesUsing(account)
+        var affected = try listing + workspacesUsing(account) { workspaces }
         if let owner = account.workspace { affected.append(owner) }
         // rollback() doesn't restore bindings and memberships: every
         // workspace the deletion touches is put back by hand if it fails.

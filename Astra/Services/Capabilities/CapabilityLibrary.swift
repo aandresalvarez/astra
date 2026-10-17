@@ -423,6 +423,13 @@ struct CapabilityLibrary {
         try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
     }
 
+    /// Deletes a snapshot that is no longer needed: the change it guarded
+    /// was kept, or never started.
+    func discardPackageStorageSnapshot(_ snapshot: PackageStorageSnapshot) {
+        guard let snapshotURL = snapshot.snapshotURL else { return }
+        try? fileManager.removeItem(at: snapshotURL.deletingLastPathComponent())
+    }
+
     static func safeFileName(for id: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         let scalars = id.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }

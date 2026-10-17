@@ -95,9 +95,18 @@ struct WorkspaceCapabilities {
         return uniqueConnectors(authored.filter { !boundAccountIDs.contains($0.id) } + projection.connectors)
     }
 
-    /// A workspace row a plugin created for one of its connector components.
+    /// A workspace row a plugin created for one of its connector components,
+    /// while an activation binds it or its plugin is still added there (a
+    /// dropped component's account stays out). A stamped row nothing owns,
+    /// one the migration couldn't bind or one Remove left stamped because
+    /// its credentials couldn't be copied out, is the person's.
     static func isPluginAccount(_ connector: Connector) -> Bool {
-        !connector.isGlobal && !(connector.originPackageID ?? "").isEmpty
+        let pluginID = (connector.originPackageID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !connector.isGlobal, !pluginID.isEmpty else { return false }
+        if connector.accountBindings.contains(where: { !$0.isDeleted && $0.activation.map { !$0.isDeleted } == true }) {
+            return true
+        }
+        return connector.workspace.map { WorkspaceCapabilityActivation.activation(for: pluginID, in: $0) != nil } ?? false
     }
 
     /// Connector rows bound as accounts to any of this workspace's
