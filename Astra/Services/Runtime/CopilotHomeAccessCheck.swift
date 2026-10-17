@@ -58,6 +58,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     var isHome = false
     /// The file `COPILOT_PROVIDERS_CONFIG` names.
     var isProvidersOverride = false
+    /// A macOS user-immutable or append-only flag blocks writes the mode bits
+    /// allow; the fix clears it.
+    var hasLockFlag = false
     /// False under a symlinked home ASTRA cannot vouch for (one that links to
     /// a folder the user does not own): no command is suggested there, so the
     /// fix can never chown or chmod an unrelated or system folder.
@@ -89,6 +92,7 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         if let owner { parts.append("owned by \(owner)") }
         if let posixPermissions { parts.append("mode \(String(posixPermissions & 0o777, radix: 8))") }
         if hasACL { parts.append("with an ACL") }
+        if hasLockFlag { parts.append("locked") }
         return parts.joined(separator: ", ")
     }
 
@@ -165,6 +169,13 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     var fixCommand: String {
         var commands: [String] = []
         let repairable = problems.filter { $0.isRepairable && $0.symlinkTarget == nil && !$0.isMisplaced }
+        // First: a locked entry refuses even a chown. Clearing another user's
+        // flag needs sudo.
+        let locked = repairable.filter(\.hasLockFlag)
+        if !locked.isEmpty {
+            let sudo = locked.contains { !$0.ownedByCurrentUser } ? "sudo " : ""
+            commands.append("\(sudo)chflags nouchg,nouappnd \(Self.quotedPaths(locked))")
+        }
         let foreign = repairable.filter { !$0.ownedByCurrentUser }
         if !foreign.isEmpty {
             // Recursive only inside the Copilot home: the parent a missing home
@@ -239,7 +250,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// Advice for problems no command is suggested for.
     private var manualRemediation: [String] {
         var sentences: [String] = []
-        let unvouched = problems.filter { !$0.isRepairable && $0.symlinkTarget == nil }
+        let unvouched = problems.filter { !$0.isRepairable && $0.symlinkTarget == nil && !$0.isProvidersOverride }
+        if let override = problems.first(where: { !$0.isRepairable && $0.isProvidersOverride }) {
+            sentences.append("COPILOT_PROVIDERS_CONFIG names \(override.displayPath), outside the Copilot folder, so ASTRA suggests no command for it; fix it yourself or point the variable at a file you own.")
+        }
         if !unvouched.isEmpty {
             let homePath = (home as NSString).abbreviatingWithTildeInPath
             sentences.append("\(homePath) links to a folder you do not own, so ASTRA suggests no command; restore access to \(Self.listed(unvouched)) yourself or point \(homePath) at a folder you own.")
@@ -346,12 +360,19 @@ enum CopilotHomeAccessCheck {
         home: String = CopilotCLIRuntime.defaultHome(),
         resumeSessionID: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        workingDirectory: String? = nil,
         fileManager: FileManager = .default,
         currentUserID: uid_t = getuid()
     ) -> CopilotHomeAccessReport {
+        // A relative override is relative to Copilot's own working directory,
+        // the task workspace, not ASTRA's.
         let providersOverride = environment[providersOverrideVariable]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nonEmptyExpandingTilde
+            .map { path in
+                guard !path.hasPrefix("/"), let workingDirectory, !workingDirectory.isEmpty else { return path }
+                return ((workingDirectory as NSString).appendingPathComponent(path) as NSString).standardizingPath
+            }
         let trimmedHome = home.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHome.isEmpty else {
             return CopilotHomeAccessReport(home: home, problems: [])
@@ -478,18 +499,21 @@ enum CopilotHomeAccessCheck {
         fileManager: FileManager,
         currentUserID: uid_t
     ) -> [CopilotHomeAccessProblem] {
+        let insideHome = canonicalPath(override).hasPrefix(canonicalPath(home) + "/")
         if var problem = problem(
             at: override, requiresWrite: false, isReadAtStartup: true, expectedKind: .file,
             fileManager: fileManager, currentUserID: currentUserID
         ) {
             problem.isProvidersOverride = true
+            // The variable can name any file (`/etc/sudoers`); outside the
+            // Copilot home no chown, chmod or move is ever suggested for it.
+            problem.isRepairable = insideHome
             return [problem]
         }
         // Readable here, but a sandboxed task is granted only the Copilot
         // home. ASTRA does not widen the sandbox to it: the variable would
         // then grant the whole task read access to any file it names.
-        guard !canonicalPath(override).hasPrefix(canonicalPath(home) + "/"),
-              let attributes = try? fileManager.attributesOfItem(atPath: override) else {
+        guard !insideHome, let attributes = try? fileManager.attributesOfItem(atPath: override) else {
             return []
         }
         var outside = CopilotHomeAccessProblem(
@@ -514,10 +538,12 @@ enum CopilotHomeAccessCheck {
         home: String = CopilotCLIRuntime.defaultHome(),
         resumeSessionID: String?,
         environment: [String: String],
+        workingDirectory: String?,
         fileManager: FileManager = .default
     ) -> RuntimeReadinessReport? {
         let report = inspect(
-            home: home, resumeSessionID: resumeSessionID, environment: environment, fileManager: fileManager
+            home: home, resumeSessionID: resumeSessionID, environment: environment,
+            workingDirectory: workingDirectory, fileManager: fileManager
         )
         guard report.blocksCopilot, let check = readinessCheck(for: report) else { return nil }
         return RuntimeReadinessReport(checks: [check])
@@ -608,7 +634,8 @@ enum CopilotHomeAccessCheck {
             access = .wrongType
         } else if Darwin.access(path, readMode) != 0 {
             access = .unreadable
-        } else if requiresWrite, Darwin.access(path, W_OK) != 0 {
+        } else if requiresWrite, Darwin.access(path, W_OK) != 0 || isLocked(attributes) {
+            // BSD flags override the mode bits, and `access` may not see them.
             access = .unwritable
         } else {
             return nil
@@ -630,6 +657,7 @@ enum CopilotHomeAccessCheck {
             && ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
             && hasExtendedACL(path)
         problem.requiresWrite = requiresWrite
+        problem.hasLockFlag = requiresWrite && isLocked(attributes)
         problem.isSpecialFile = !isDirectory && type != .typeRegular
         // An unreadable folder hides what is inside it, so its repair must
         // reach below it (a resumed session under session-state, say).
@@ -638,6 +666,10 @@ enum CopilotHomeAccessCheck {
             problem.backupPath = unusedBackupPath(for: path, fileManager: fileManager)
         }
         return problem
+    }
+
+    private static func isLocked(_ attributes: [FileAttributeKey: Any]) -> Bool {
+        attributes[.immutable] as? Bool == true || attributes[.appendOnly] as? Bool == true
     }
 
     private static func ownerBitsAllow(

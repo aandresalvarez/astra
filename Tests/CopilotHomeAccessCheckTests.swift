@@ -691,10 +691,10 @@ struct CopilotHomeAccessCheckTests {
 
         // The launch's override replaces a stale process-level one.
         #expect(CopilotHomeAccessCheck.launchBlocker(
-            home: home.path, resumeSessionID: nil, environment: [variable: active]
+            home: home.path, resumeSessionID: nil, environment: [variable: active], workingDirectory: nil
         ) == nil)
         let blocked = try #require(CopilotHomeAccessCheck.launchBlocker(
-            home: home.path, resumeSessionID: nil, environment: [variable: stale]
+            home: home.path, resumeSessionID: nil, environment: [variable: stale], workingDirectory: nil
         ))
         #expect(blocked.state == .blocked)
         #expect(blocked.checks.first?.id == CopilotHomeAccessCheck.readinessCheckID)
@@ -702,7 +702,7 @@ struct CopilotHomeAccessCheckTests {
         // A warning (an unwritable state folder) never stops a launch.
         try home.makeDirectory("session-state", mode: 0o555)
         #expect(CopilotHomeAccessCheck.launchBlocker(
-            home: home.path, resumeSessionID: nil, environment: [variable: active]
+            home: home.path, resumeSessionID: nil, environment: [variable: active], workingDirectory: nil
         ) == nil)
     }
 
@@ -716,6 +716,65 @@ struct CopilotHomeAccessCheckTests {
 
         #expect(report.fixCommand.hasPrefix("sudo chown \"$USER\" '"))
         #expect(!report.fixCommand.contains(":staff"))
+    }
+
+    @Test("A providers override outside the home is never chowned, chmod-ed or moved")
+    func externalOverrideIsNeverRepaired() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let elsewhere = try FakeCopilotHome()
+        defer { elsewhere.remove() }
+        let unreadable = try elsewhere.write("providers.json", mode: 0o000)
+        let folder = try elsewhere.makeDirectory("providers-dir", mode: 0o755)
+        let variable = CopilotHomeAccessCheck.providersOverrideVariable
+
+        for override in [unreadable, folder] {
+            let report = CopilotHomeAccessCheck.inspect(
+                home: home.path, environment: [variable: override], currentUserID: getuid() + 1
+            )
+            #expect(report.blocksCopilot)
+            #expect(report.fixCommand.isEmpty, "\(override)")
+            #expect(report.remediation.contains("ASTRA suggests no command for it"))
+        }
+    }
+
+    @Test("A relative providers override is resolved against the launch's working directory")
+    func relativeOverrideUsesWorkingDirectory() throws {
+        let workspace = try FakeCopilotHome()
+        defer { workspace.remove() }
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try workspace.makeDirectory("config", mode: 0o755)
+        let registry = (workspace.path as NSString).appendingPathComponent("config/providers.json")
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: registry))
+        try workspace.setMode(0o000, of: registry)
+        defer { try? workspace.setMode(0o600, of: registry) }
+        let environment = [CopilotHomeAccessCheck.providersOverrideVariable: "config/providers.json"]
+
+        let report = CopilotHomeAccessCheck.inspect(
+            home: home.path, environment: environment, workingDirectory: workspace.path
+        )
+
+        #expect(report.problems.map(\.path) == [registry])
+        #expect(report.blocksCopilot)
+    }
+
+    @Test("A locked state file is unwritable even when its mode allows writing")
+    func lockedStateFileIsUnwritable() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let store = try home.write("session-store.db", mode: 0o600)
+        try Self.shell("/usr/bin/chflags", ["uchg", store])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        let problem = try #require(report.problems.first)
+        #expect(problem.access == .unwritable)
+        #expect(problem.hasLockFlag)
+        #expect(report.cause.contains("locked"))
+        #expect(report.fixCommand.hasPrefix("chflags nouchg,nouappnd '\(store)'"))
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
     @Test("A home symlink loop blocks like a dangling link")
@@ -1052,7 +1111,9 @@ struct FakeCopilotHome {
     func remove() {
         try? setMode(0o700, of: path)
         for child in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] {
-            try? setMode(0o700, of: (path as NSString).appendingPathComponent(child))
+            let childPath = (path as NSString).appendingPathComponent(child)
+            _ = lchflags(childPath, 0)
+            try? setMode(0o700, of: childPath)
         }
         try? FileManager.default.removeItem(atPath: path)
     }

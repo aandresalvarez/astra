@@ -750,7 +750,8 @@ final class AgentRuntimeWorker {
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
         if selectedRuntime == .copilotCLI,
            let blocker = CopilotHomeAccessCheck.launchBlocker(
-               resumeSessionID: nativeContinuationSessionID, environment: providerLaunchEnvironment
+               resumeSessionID: nativeContinuationSessionID, environment: providerLaunchEnvironment,
+               workingDirectory: executionPath
            ),
            !AgentRuntimeLaunchPreflight.preflightRuntimeReadinessBeforeLaunchResult(
                task: task, run: run, modelContext: modelContext, phase: auditPhase, report: blocker
@@ -1120,7 +1121,9 @@ final class AgentRuntimeWorker {
             budgetExceeded: result.budgetExceeded,
             maxTurnsExceeded: result.maxTurnsExceeded,
             copilotHomeAccess: copilotFailureEnvironment.map { environment in
-                { CopilotHomeAccessCheck.inspect(resumeSessionID: nativeContinuationSessionID, environment: environment) }
+                { CopilotHomeAccessCheck.inspect(
+                    resumeSessionID: nativeContinuationSessionID, environment: environment, workingDirectory: executionPath
+                ) }
             }
         )
         if let failureDiagnostic {
