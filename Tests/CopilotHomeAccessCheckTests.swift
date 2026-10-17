@@ -413,8 +413,10 @@ struct CopilotHomeAccessCheckTests {
         let report = CopilotHomeAccessCheck.inspect(home: home.path)
 
         #expect(report.problems.map(\.path) == [home.path])
-        #expect(report.fixCommand == "chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
-        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        // It may hide entries owned by someone else, so ownership comes back too.
+        #expect(report.fixCommand
+            == "sudo chown -R \"$USER\" '\(home.path)' && chmod u+rwx '\(home.path)' && chmod -R u+rX '\(home.path)'")
+        try Self.runSkippingChown(report.fixCommand)
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
 
@@ -513,7 +515,7 @@ struct CopilotHomeAccessCheckTests {
 
         #expect(report.problems.first?.hidesChildren == true)
         #expect(report.fixCommand.contains("chmod -R u+rwX '\(sessions)'"))
-        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        try Self.runSkippingChown(report.fixCommand)
         #expect(!CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc").blocksCopilot)
     }
 
@@ -601,7 +603,7 @@ struct CopilotHomeAccessCheckTests {
 
         let report = CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc")
         #expect(report.fixCommand.contains("chmod -R u+rwX '\(sessions)'"))
-        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        try Self.runSkippingChown(report.fixCommand)
 
         #expect(CopilotHomeAccessCheck.inspect(home: home.path, resumeSessionID: "abc").isClean)
     }
@@ -772,7 +774,7 @@ struct CopilotHomeAccessCheckTests {
         #expect(problem.access == .unwritable)
         #expect(problem.hasLockFlag)
         #expect(report.cause.contains("locked"))
-        #expect(report.fixCommand.hasPrefix("chflags nouchg,nouappnd '\(store)'"))
+        #expect(report.fixCommand.hasPrefix("chflags -h nouchg,nouappnd '\(store)'"))
         try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
     }
@@ -824,9 +826,69 @@ struct CopilotHomeAccessCheckTests {
         let report = CopilotHomeAccessCheck.inspect(home: notAFolder)
 
         #expect(report.fixCommand
-            == "chflags nouchg,nouappnd '\(notAFolder)' && mv -n '\(notAFolder)' '\(notAFolder).bak'")
+            == "chflags -h nouchg,nouappnd '\(notAFolder)' && mv -n '\(notAFolder)' '\(notAFolder).bak'")
         try Self.shell("/bin/sh", ["-c", report.fixCommand])
         #expect(!FileManager.default.fileExists(atPath: notAFolder))
+    }
+
+    @Test("A denying ACL on another user's entry is removed after the chown")
+    func foreignDenyingACLIsRemoved() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let store = try home.write("session-store.db", mode: 0o600)
+        try Self.shell("/bin/chmod", ["+a", "user:\(NSUserName()) deny read", store])
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path, currentUserID: getuid() + 1)
+
+        #expect(report.problems.first?.hasACL == true)
+        #expect(report.fixCommand
+            == "sudo chown \"$USER\" '\(store)' && chmod -N '\(store)' && chmod u+rw '\(store)'")
+    }
+
+    @Test("A missing home under a locked parent blocks and the parent is unlocked")
+    func lockedParentBlocksHomeCreation() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let parent = try root.makeDirectory("parent", mode: 0o755)
+        try Self.shell("/usr/bin/chflags", ["uchg", parent])
+        let missingHome = (parent as NSString).appendingPathComponent(".copilot")
+
+        let report = CopilotHomeAccessCheck.inspect(home: missingHome)
+
+        #expect(report.problems.map(\.access) == [.cannotCreateHome])
+        #expect(report.blocksCopilot)
+        #expect(report.fixCommand.hasPrefix("chflags -h nouchg,nouappnd '\(parent)'"))
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect(CopilotHomeAccessCheck.inspect(home: missingHome).isClean)
+    }
+
+    @Test("An unreadable folder Copilot does not write below gets read access back, not write")
+    func unknownHiddenFolderGetsReadOnlyRepair() throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        let agents = try home.makeDirectory("agents", mode: 0o000)
+
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+
+        #expect(report.fixCommand.contains("chmod -R u+rX '\(agents)'"))
+        #expect(!report.fixCommand.contains("u+rwX"))
+    }
+
+    @Test("A locked dangling home link is unlocked with -h before it is moved")
+    func lockedDanglingLinkIsUnlockedFirst() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let link = (root.path as NSString).appendingPathComponent("home-link")
+        try FileManager.default.createSymbolicLink(
+            atPath: link, withDestinationPath: (root.path as NSString).appendingPathComponent("gone")
+        )
+        try Self.shell("/usr/bin/chflags", ["-h", "uchg", link])
+
+        let report = CopilotHomeAccessCheck.inspect(home: link)
+
+        #expect(report.fixCommand == "chflags -h nouchg,nouappnd '\(link)' && mv -n '\(link)' '\(link).bak'")
+        try Self.shell("/bin/sh", ["-c", report.fixCommand])
+        #expect((try? FileManager.default.attributesOfItem(atPath: link)) == nil)
     }
 
     @Test("A home symlink loop blocks like a dangling link")
@@ -1088,6 +1150,13 @@ struct CopilotHomeAccessCheckTests {
         )
         #expect(clean.category == .providerProcessFailed)
         #expect(clean.userMessage.contains("failed before ASTRA received a visible assistant response"))
+    }
+
+    /// Runs a fix without its `sudo chown` step: the test already owns
+    /// everything, and cannot sudo.
+    private static func runSkippingChown(_ command: String) throws {
+        let rest = command.components(separatedBy: " && ").filter { !$0.hasPrefix("sudo chown") }
+        try shell("/bin/sh", ["-c", rest.joined(separator: " && ")])
     }
 
     private static func shell(_ executable: String, _ arguments: [String]) throws {

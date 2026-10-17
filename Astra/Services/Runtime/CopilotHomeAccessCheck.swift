@@ -64,6 +64,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
     /// A macOS user-immutable or append-only flag blocks writes the mode bits
     /// allow; the fix clears it.
     var hasLockFlag = false
+    /// A system lock (schg/sappnd): only root can clear it, sometimes only
+    /// from recovery, so the fix never tries; the user is told instead.
+    var hasSystemLockFlag = false
     /// False under a symlinked home ASTRA cannot vouch for (one that links to
     /// a folder the user does not own): no command is suggested there, so the
     /// fix can never chown or chmod an unrelated or system folder.
@@ -96,6 +99,7 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         if let posixPermissions { parts.append("mode \(String(posixPermissions & 0o777, radix: 8))") }
         if hasACL { parts.append("with an ACL") }
         if hasLockFlag { parts.append("locked") }
+        if hasSystemLockFlag { parts.append("system-locked") }
         return parts.joined(separator: ", ")
     }
 
@@ -172,15 +176,20 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     var fixCommand: String {
         var commands: [String] = []
         let repairable = problems.filter { $0.isRepairable && $0.symlinkTarget == nil && !$0.isMisplaced }
-        // First: a locked entry refuses even a chown. Clearing another user's
-        // flag needs sudo.
-        // Misplaced entries too: a locked entry cannot be moved aside either.
-        let locked = problems.filter { $0.isRepairable && $0.symlinkTarget == nil && $0.hasLockFlag }
+        // First: a locked entry refuses even a chown, and a move aside too, so
+        // misplaced entries (a dangling home link among them) are unlocked
+        // here as well. `-h` acts on a link itself, never on what it points
+        // to. Clearing another user's flag needs sudo.
+        let locked = problems.filter {
+            $0.isRepairable && $0.hasLockFlag && ($0.symlinkTarget == nil || $0.isMisplaced)
+        }
         if !locked.isEmpty {
             let sudo = locked.contains { !$0.ownedByCurrentUser } ? "sudo " : ""
-            commands.append("\(sudo)chflags nouchg,nouappnd \(Self.quotedPaths(locked))")
+            commands.append("\(sudo)chflags -h nouchg,nouappnd \(Self.quotedPaths(locked))")
         }
-        let foreign = repairable.filter { !$0.ownedByCurrentUser }
+        // An unreadable folder may hide entries owned by someone else, which a
+        // plain chmod -R cannot repair, so it gets its ownership back too.
+        let foreign = repairable.filter { !$0.ownedByCurrentUser || $0.hidesChildren }
         if !foreign.isEmpty {
             // Recursive only inside the Copilot home: the parent a missing home
             // would be created in is usually the user's whole home folder.
@@ -207,13 +216,14 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         }
         // Below the home: read and traverse only, so a deliberately read-only
         // config file is not loosened.
-        let hidingHome = repairable.filter { $0.hidesChildren && $0.isHome }
-        if !hidingHome.isEmpty {
-            commands.append("chmod -R u+rX \(Self.quotedPaths(hidingHome))")
+        // The same for any folder Copilot does not write below.
+        let hidingReadOnly = repairable.filter { $0.hidesChildren && !Self.isMutableState($0) }
+        if !hidingReadOnly.isEmpty {
+            commands.append("chmod -R u+rX \(Self.quotedPaths(hidingReadOnly))")
         }
-        // Below a state folder (session-state): Copilot writes there, so
-        // write comes back too.
-        let hidingState = repairable.filter { $0.hidesChildren && !$0.isHome }
+        // Below a state folder Copilot writes into (session-state, a resumed
+        // session): write comes back too.
+        let hidingState = repairable.filter { $0.hidesChildren && Self.isMutableState($0) }
         if !hidingState.isEmpty {
             commands.append("chmod -R u+rwX \(Self.quotedPaths(hidingState))")
         }
@@ -254,7 +264,13 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
     /// Advice for problems no command is suggested for.
     private var manualRemediation: [String] {
         var sentences: [String] = []
-        let unvouched = problems.filter { !$0.isRepairable && $0.symlinkTarget == nil && !$0.isProvidersOverride }
+        let systemLocked = problems.filter(\.hasSystemLockFlag)
+        if !systemLocked.isEmpty {
+            sentences.append("\(Self.listed(systemLocked)) carry a system lock flag (schg or sappnd), which only an administrator can clear; ASTRA suggests no command for it.")
+        }
+        let unvouched = problems.filter {
+            !$0.isRepairable && $0.symlinkTarget == nil && !$0.isProvidersOverride && !$0.hasSystemLockFlag
+        }
         if let override = problems.first(where: { !$0.isRepairable && $0.isProvidersOverride }) {
             sentences.append("COPILOT_PROVIDERS_CONFIG names \(override.displayPath), outside the Copilot folder, so ASTRA suggests no command for it; fix it yourself or point the variable at a file you own.")
         }
@@ -280,6 +296,10 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         let shown = problems.prefix(CopilotHomeAccessCheck.maximumListedProblems).map(\.describedPath)
         let hidden = problems.count - shown.count
         return (shown + (hidden > 0 ? ["and \(hidden) more"] : [])).joined(separator: ", ")
+    }
+
+    private static func isMutableState(_ problem: CopilotHomeAccessProblem) -> Bool {
+        !problem.isHome && problem.isReadAtStartup && problem.requiresWrite
     }
 
     private static func quoted(_ path: String) -> String {
@@ -590,8 +610,9 @@ enum CopilotHomeAccessCheck {
         while !parent.isEmpty, parent != "/", !fileManager.fileExists(atPath: parent, isDirectory: &isDirectory) {
             parent = (parent as NSString).deletingLastPathComponent
         }
+        // A lock flag forbids creating entries even where `access` says yes.
         guard !parent.isEmpty, isDirectory.boolValue || parent == "/",
-              Darwin.access(parent, W_OK | X_OK) != 0 else {
+              Darwin.access(parent, W_OK | X_OK) != 0 || lockState(of: parent, followLinks: true).any else {
             return nil
         }
         return problem(
@@ -649,7 +670,7 @@ enum CopilotHomeAccessCheck {
             access = .wrongType
         } else if Darwin.access(path, readMode) != 0 {
             access = .unreadable
-        } else if requiresWrite, Darwin.access(path, W_OK) != 0 || isLocked(attributes) {
+        } else if requiresWrite, Darwin.access(path, W_OK) != 0 || lockState(of: path, followLinks: false).any {
             // BSD flags override the mode bits, and `access` may not see them.
             access = .unwritable
         } else {
@@ -668,13 +689,18 @@ enum CopilotHomeAccessCheck {
         // An ACL is blamed (and removed by the fix) only when the owner's mode
         // bits already allow the access that failed; otherwise the mode bits
         // are the cause, and a legitimate sharing ACL is left alone.
-        problem.hasACL = problem.ownedByCurrentUser
-            && ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
+        // Ownership does not matter here: the fix makes the user the owner
+        // first, and a chown leaves a denying ACL in place.
+        problem.hasACL = ownerBitsAllow(access, isDirectory: isDirectory, mode: problem.posixPermissions)
             && hasExtendedACL(path)
         problem.requiresWrite = requiresWrite
         // A locked entry refuses writes, and a move aside as well.
-        problem.hasLockFlag = isLocked(attributes)
-            && (requiresWrite || access == .notADirectory || access == .wrongType)
+        let locks = lockState(of: path, followLinks: false)
+        let lockMatters = requiresWrite || access == .notADirectory || access == .wrongType
+            || access == .danglingLink || access == .cannotCreateHome
+        problem.hasLockFlag = lockMatters && locks.user
+        problem.hasSystemLockFlag = lockMatters && locks.system
+        if problem.hasSystemLockFlag { problem.isRepairable = false }
         problem.isSpecialFile = !isDirectory && type != .typeRegular
         // An unreadable folder hides what is inside it, so its repair must
         // reach below it (a resumed session under session-state, say).
@@ -685,8 +711,26 @@ enum CopilotHomeAccessCheck {
         return problem
     }
 
-    private static func isLocked(_ attributes: [FileAttributeKey: Any]) -> Bool {
-        attributes[.immutable] as? Bool == true || attributes[.appendOnly] as? Bool == true
+    struct LockState {
+        var user = false
+        var system = false
+        var any: Bool { user || system }
+    }
+
+    /// The BSD lock flags, read straight from `st_flags` so the user ones
+    /// (uchg, uappnd: the owner can clear them) are told apart from the
+    /// system ones (schg, sappnd: root only).
+    static func lockState(of path: String, followLinks: Bool) -> LockState {
+        var info = stat()
+        let result = followLinks ? stat(path, &info) : lstat(path, &info)
+        guard result == 0 else { return LockState() }
+        let flags = info.st_flags
+        let userImmutable: UInt32 = 0x0000_0002, userAppend: UInt32 = 0x0000_0004
+        let systemImmutable: UInt32 = 0x0002_0000, systemAppend: UInt32 = 0x0004_0000
+        return LockState(
+            user: flags & (userImmutable | userAppend) != 0,
+            system: flags & (systemImmutable | systemAppend) != 0
+        )
     }
 
     private static func ownerBitsAllow(
@@ -741,7 +785,7 @@ enum CopilotHomeAccessCheck {
             // counts. ASTRA does not widen the sandbox to follow it: a link
             // would then grant a task read access to whatever it points at.
             access = .linksOutsideHome
-        } else if requiresWrite, Darwin.access(path, W_OK) != 0 || isLocked(targetAttributes ?? [:]) {
+        } else if requiresWrite, Darwin.access(path, W_OK) != 0 || lockState(of: path, followLinks: true).any {
             access = .unwritable
         } else {
             return nil
@@ -757,7 +801,7 @@ enum CopilotHomeAccessCheck {
             symlinkTarget: target
         )
         problem.isSpecialFile = targetExists && !isDirectory.boolValue && targetType != .typeRegular
-        problem.hasLockFlag = access == .unwritable && isLocked(targetAttributes ?? [:])
+        problem.hasLockFlag = access == .unwritable && lockState(of: path, followLinks: true).any
         return problem
     }
 
