@@ -312,6 +312,23 @@ struct CopilotHomeAccessCheckTests {
         #expect(readOnly.blocksCopilot)
     }
 
+    @Test("A home symlink to nothing blocks and the link is moved aside")
+    func danglingHomeLinkBlocks() throws {
+        let root = try FakeCopilotHome()
+        defer { root.remove() }
+        let gone = (root.path as NSString).appendingPathComponent("unmounted/copilot")
+        let link = (root.path as NSString).appendingPathComponent("home-link")
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: gone)
+
+        let report = CopilotHomeAccessCheck.inspect(home: link)
+
+        #expect(report.problems.map(\.access) == [.danglingLink])
+        #expect(report.blocksCopilot)
+        #expect(report.cause.contains("unmounted/copilot, which does not exist"))
+        #expect(report.fixCommand == "mv -n '\(link)' '\(link).bak'")
+        #expect(!report.remediation.contains("readable again"))
+    }
+
     @Test("A startup entry of the wrong type blocks and is moved aside")
     func wrongTypeStartupEntriesBlock() throws {
         let home = try FakeCopilotHome()

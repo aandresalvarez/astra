@@ -16,6 +16,9 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
         /// A startup entry is a folder where Copilot expects a file, or the
         /// other way round.
         case wrongType
+        /// The state home is a symlink to nothing: Copilot cannot create a
+        /// folder through it, because the link itself already exists.
+        case danglingLink
     }
 
     let path: String
@@ -40,13 +43,13 @@ struct CopilotHomeAccessProblem: Equatable, Sendable {
 
     /// Fixed by moving the entry aside rather than by changing permissions.
     var isMisplaced: Bool {
-        (access == .notADirectory || access == .wrongType) && symlinkTarget == nil
+        access == .danglingLink || ((access == .notADirectory || access == .wrongType) && symlinkTarget == nil)
     }
 
     /// Kills every Copilot turn before it prints a byte.
     var blocksCopilot: Bool {
         switch access {
-        case .notADirectory, .cannotCreateHome, .wrongType: return true
+        case .notADirectory, .cannotCreateHome, .wrongType, .danglingLink: return true
         case .unreadable: return isReadAtStartup
         case .unwritable: return false
         }
@@ -93,6 +96,9 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         guard !problems.isEmpty else { return "" }
         if let misplaced = problems.first(where: { $0.access == .notADirectory }) {
             return "\(misplaced.displayPath) is a file, not a folder, so Copilot has nowhere to keep its settings."
+        }
+        if let dangling = problems.first(where: { $0.access == .danglingLink }) {
+            return "\(dangling.displayPath) is \(dangling.detail), which does not exist, so Copilot cannot create its settings folder."
         }
         if let parent = problems.first(where: { $0.access == .cannotCreateHome }) {
             let homePath = (home as NSString).abbreviatingWithTildeInPath
@@ -162,7 +168,7 @@ struct CopilotHomeAccessReport: Equatable, Sendable {
         if !command.isEmpty {
             sentences.append("Run `\(command)` in Terminal.")
         }
-        for linked in problems where linked.symlinkTarget != nil {
+        for linked in problems where linked.symlinkTarget != nil && !linked.isMisplaced {
             if linked.access == .wrongType {
                 sentences.append("Replace the link at \(linked.displayPath).")
                 continue
@@ -248,6 +254,15 @@ enum CopilotHomeAccessCheck {
         let homeIsLink = (try? fileManager.attributesOfItem(atPath: trimmedHome))?[.type] as? FileAttributeType
             == .typeSymbolicLink
         let resolvedHome = homeIsLink ? linkTarget(of: trimmedHome, fileManager: fileManager) : trimmedHome
+        if homeIsLink, (try? fileManager.attributesOfItem(atPath: resolvedHome)) == nil,
+           var dangling = problem(
+               at: trimmedHome, requiresWrite: true, isReadAtStartup: true,
+               fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .danglingLink
+           ) {
+            dangling.symlinkTarget = resolvedHome
+            dangling.backupPath = unusedBackupPath(for: trimmedHome, fileManager: fileManager)
+            return CopilotHomeAccessReport(home: trimmedHome, problems: [dangling])
+        }
         var isDirectory: ObjCBool = false
         // A missing home is fine as long as Copilot can create it.
         guard fileManager.fileExists(atPath: resolvedHome, isDirectory: &isDirectory) else {
