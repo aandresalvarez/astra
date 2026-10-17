@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 import ASTRACore
@@ -7,7 +8,10 @@ import ASTRAModels
 /// and the template's component. Add creates them; an Update brings them to
 /// the definition: a declared template is written (created when missing), and
 /// a stamped one the definition no longer declares stays as the person's own
-/// row, its stamp cleared, never deleted.
+/// row, its stamp cleared, never deleted. A stamped row the person edited
+/// since the last sync (its content no longer has the digest the activation
+/// recorded) is theirs too: it is unstamped and kept, and the definition's
+/// template is written as a new row beside it.
 @MainActor
 enum PluginTemplateSync {
     /// The workspace's rows stamped with `packageID`.
@@ -26,20 +30,79 @@ enum PluginTemplateSync {
         }
     }
 
-    /// Writes every declared template and unstamps the dropped ones.
+    /// Writes every declared template and unstamps the dropped and the
+    /// edited ones, then records what it wrote.
     @discardableResult
     static func sync(_ package: PluginPackage, in workspace: Workspace, modelContext: ModelContext) -> [TaskTemplate] {
+        let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+        let specs = Dictionary(
+            package.templates.map { (CapabilityResourceOrigin.componentID(for: $0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for row in stamped(package.id, in: workspace) {
+            let componentID = row.originComponentID ?? ""
+            guard let spec = specs[componentID] else {
+                unstamp(row)
+                continue
+            }
+            if isEdited(row, spec: spec, recorded: activation?.templateDigest(forComponent: componentID)) {
+                unstamp(row)
+            }
+        }
         let written = package.templates.map { upsert($0, package: package, in: workspace, modelContext: modelContext) }
-        let declared = Set(package.templates.map(CapabilityResourceOrigin.componentID(for:)))
-        for row in stamped(package.id, in: workspace) where !declared.contains(row.originComponentID ?? "") {
-            row.originPackageID = nil
-            row.originPackageVersion = nil
-            row.originComponentID = nil
-            row.originComponentKind = nil
-            row.originSourceKind = nil
-            row.updatedAt = Date()
+        if let activation {
+            WorkspaceCapabilityActivation.setTemplateDigests(
+                Dictionary(
+                    written.compactMap { row in row.originComponentID.map { ($0, contentDigest(of: row)) } },
+                    uniquingKeysWith: { first, _ in first }
+                ),
+                on: activation
+            )
         }
         return written
+    }
+
+    /// Records the digest of each stamped row that still has the
+    /// definition's content (the migration's starting point).
+    static func recordUnedited(_ package: PluginPackage, in workspace: Workspace, on activation: PluginActivation) {
+        var digests: [String: String] = [:]
+        for spec in package.templates {
+            let componentID = CapabilityResourceOrigin.componentID(for: spec)
+            guard let row = stamped(package.id, in: workspace).first(where: { $0.originComponentID == componentID }),
+                  matches(row, spec) else { continue }
+            digests[componentID] = contentDigest(of: row)
+        }
+        guard !digests.isEmpty else { return }
+        WorkspaceCapabilityActivation.setTemplateDigests(digests, on: activation)
+    }
+
+    /// True when the person changed a stamped row since a sync wrote it. A
+    /// row with no recorded digest (written before digests were kept) counts
+    /// as edited unless it already has the definition's content: keeping a
+    /// row is recoverable, overwriting an edit is not.
+    static func isEdited(_ row: TaskTemplate, spec: PluginTemplate, recorded: String?) -> Bool {
+        if let recorded { return contentDigest(of: row) != recorded }
+        return !matches(row, spec)
+    }
+
+    /// A digest of everything a sync writes on a row.
+    static func contentDigest(of row: TaskTemplate) -> String {
+        let fields: [String] = [
+            row.name, row.icon, row.templateDescription, row.beforeGoal, row.mainGoal, row.afterGoal,
+            "\(row.beforeBudget)", "\(row.mainBudget)", "\(row.afterBudget)",
+            row.variablesJSON, "\(row.passContextToMain)", "\(row.passContextToAfter)"
+        ]
+        let data = (try? JSONEncoder().encode(fields)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func unstamp(_ row: TaskTemplate) {
+        row.originPackageID = nil
+        row.originPackageVersion = nil
+        row.originComponentID = nil
+        row.originComponentKind = nil
+        row.originSourceKind = nil
+        row.updatedAt = Date()
     }
 
     /// The row for one declared template: the one stamped with this plugin
@@ -80,7 +143,7 @@ enum PluginTemplateSync {
         return template
     }
 
-    private static func matches(_ row: TaskTemplate, _ spec: PluginTemplate) -> Bool {
+    static func matches(_ row: TaskTemplate, _ spec: PluginTemplate) -> Bool {
         row.name == spec.name
             && row.icon == spec.icon
             && row.templateDescription == spec.description

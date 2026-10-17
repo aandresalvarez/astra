@@ -148,6 +148,25 @@ struct CapabilityCatalogActionService {
         approvalStore: CapabilityApprovalStore = CapabilityApprovalStore(),
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
+        let context = try grantPendingApproval(for: package, policyContext: policyContext, approvalStore: approvalStore)
+        return try enable(
+            package,
+            workspace: workspace,
+            modelContext: modelContext,
+            policyContext: context,
+            source: "plugins_add",
+            traceID: traceID
+        )
+    }
+
+    /// The approval Add writes when the policy holds `package` for review:
+    /// the person adding it is the reviewer. Returns the context to enable
+    /// against.
+    func grantPendingApproval(
+        for package: PluginPackage,
+        policyContext: CapabilityCatalogPolicyContext,
+        approvalStore: CapabilityApprovalStore = CapabilityApprovalStore()
+    ) throws -> CapabilityCatalogPolicyContext {
         var context = policyContext
         if let record = try CapabilityApprovalGrant.pendingRecord(
             for: package,
@@ -164,14 +183,7 @@ struct CapabilityCatalogActionService {
             )
             context.approvalRecords.append(saved)
         }
-        return try enable(
-            package,
-            workspace: workspace,
-            modelContext: modelContext,
-            policyContext: context,
-            source: "plugins_add",
-            traceID: traceID
-        )
+        return context
     }
 
     /// Turns a package off in one workspace, leaving it installed.
@@ -196,6 +208,11 @@ struct CapabilityCatalogActionService {
     /// to its definition in the library, releasing what it dropped.
     func update(_ package: PluginPackage, modelContext: ModelContext) throws {
         let definition = library.installedPackages().filter { $0.id == package.id }
+        // Refused for every workspace if one with an activation of it would
+        // refuse this definition, as an import is, before anything changes.
+        if let refusal = PluginUpdateService.refusals(for: definition.first ?? package, modelContext: modelContext).first {
+            throw refusal
+        }
         try PluginUpdateService.reconcileAll(
             modelContext: modelContext,
             packages: definition.isEmpty ? [package] : definition,

@@ -8,6 +8,10 @@ struct CapabilityLibrary {
         var packageDirectoryURL: URL
         var existingStorageURL: URL?
         var snapshotURL: URL?
+
+        /// False when there was an installed copy and it couldn't be copied
+        /// aside: a restore would leave the new copy in place.
+        var canRestore: Bool { existingStorageURL == nil || snapshotURL != nil }
     }
 
     enum RemovalError: Error, Equatable, LocalizedError {

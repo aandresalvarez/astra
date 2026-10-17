@@ -29,6 +29,12 @@ extension WorkspaceConfigManager.CapabilityImportVerifier {
                     ))
                 },
                 uniquingKeysWith: { first, _ in first }
+            ),
+            installedDigests: Dictionary(
+                installed.compactMap { package in
+                    (try? CapabilityApprovalDigest.digest(for: package)).map { (package.id, $0) }
+                },
+                uniquingKeysWith: { first, _ in first }
             )
         )
     }

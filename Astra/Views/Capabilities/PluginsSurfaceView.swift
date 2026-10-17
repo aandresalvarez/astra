@@ -41,6 +41,7 @@ struct PluginsSurfaceView: View {
     /// Only the latest health scan may publish; an older one finishing last
     /// would bring back failures a repair already fixed.
     @State private var statusGeneration = 0
+    @State private var approvalGeneration = 0
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -418,8 +419,13 @@ struct PluginsSurfaceView: View {
     }
 
     private func refreshApprovalRecords() {
+        // Only the latest read publishes: an older one finishing last would
+        // bring back obsolete approvals.
+        approvalGeneration += 1
+        let generation = approvalGeneration
         Task {
             let records = await Task.detached(priority: .utility) { CapabilityApprovalStore().records() }.value
+            guard generation == approvalGeneration else { return }
             approvalRecords = records
         }
     }

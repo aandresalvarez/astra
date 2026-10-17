@@ -16,6 +16,16 @@ struct CapabilityPackageImportError: LocalizedError {
     }
 }
 
+/// An Update whose installed copy couldn't be copied aside is refused: a
+/// reconciliation that failed afterwards could not put it back.
+struct CapabilityPackageSnapshotUnavailable: LocalizedError, Equatable {
+    var packageID: String
+
+    var errorDescription: String? {
+        "ASTRA couldn't keep a copy of the installed \(packageID) to go back to, so it didn't update it. Try again."
+    }
+}
+
 @MainActor
 struct CapabilityPackageImporter {
     let library: CapabilityLibrary
@@ -72,6 +82,9 @@ struct CapabilityPackageImporter {
             throw refusal
         }
         let previousStorage = library.makePackageStorageSnapshot(for: package.id)
+        if modelContext != nil, !previousStorage.canRestore {
+            throw CapabilityPackageSnapshotUnavailable(packageID: package.id)
+        }
         var currentSource = report.source ?? CapabilityPackageSource(
             package: package,
             manifestURL: report.sourceURL,

@@ -282,6 +282,17 @@ enum CapabilityPackageValidator {
                 component: duplicate
             ))
         }
+        // Templates are matched to their rows by identity too.
+        let templateIDs = package.templates.map(CapabilityResourceOrigin.componentID(for:))
+        for duplicate in Dictionary(grouping: templateIDs, by: { $0 }).filter({ $0.value.count > 1 }).keys.sorted() {
+            issues.append(issue(
+                .blocker,
+                .invalidComponentIdentity,
+                "Duplicate template",
+                "Two templates share the identity \(duplicate); give one of them another name.",
+                component: duplicate
+            ))
+        }
         for problem in PluginUpdateService.replacesProblems(in: package) {
             issues.append(issue(.blocker, .invalidComponentIdentity, "Invalid replaces", problem))
         }

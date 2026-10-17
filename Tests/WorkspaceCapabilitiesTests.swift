@@ -108,6 +108,51 @@ struct WorkspaceCapabilitiesTests {
         #expect(WorkspaceCapabilities(workspace: workspace).activeConnectors.isEmpty)
     }
 
+    @Test("package state checks each connector component against its own accounts")
+    @MainActor
+    func packageStateChecksAccountsPerComponent() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Two Jira Components", primaryPath: "/tmp/two-jira-components")
+        context.insert(workspace)
+        func jira(_ name: String) -> PluginConnector {
+            PluginConnector(
+                name: name, serviceType: "jira", icon: "list.clipboard", description: "Jira API", baseURL: "",
+                authMethod: "none", credentialHints: [], configHints: [], notes: ""
+            )
+        }
+        let package = PluginPackage(
+            id: "two-jira-workflow", name: "Two Jira", icon: "list.clipboard", description: "Two Jira sites",
+            author: "Tests", category: "Tests", tags: [], version: "1.0.0", skills: [],
+            connectors: [jira("Jira Cloud"), jira("Jira Server")], localTools: [], templates: [],
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        workspace.testEnabledCapabilityIDs = [package.id]
+        let account = Connector(name: "Jira Cloud", serviceType: "jira", authMethod: "none")
+        account.workspace = workspace
+        context.insert(account)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        WorkspaceCapabilityActivation.bind(
+            account, toComponent: CapabilityResourceOrigin.componentID(for: package.connectors[0]), of: activation
+        )
+
+        // The server component has no account: the runtime leaves it out, so
+        // the Cloud account of the same service doesn't count for it.
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: [package])
+        #expect(capabilities.projection.unboundConnectorComponents[package.id]
+            == [CapabilityResourceOrigin.componentID(for: package.connectors[1])])
+        let state = CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
+        let expected = ["Jira Server: connector not active for this workspace"]
+        #expect(state.missingConnectors.map(\.name) == ["Jira Server"])
+        #expect(state.readiness.messages == expected)
+        #expect(state.attentionMessages(for: account).isEmpty)
+        let rail = CapabilityRailPackageSnapshotState(
+            package: package,
+            index: CapabilityRailWorkspaceResourceIndex(workspace: workspace, capabilities: capabilities)
+        )
+        #expect(rail.readiness.messages == expected)
+    }
+
     @Test("enabled pack IDs do not grant capability package resources")
     @MainActor
     func enabledPackIDsDoNotGrantCapabilityPackageResources() {
