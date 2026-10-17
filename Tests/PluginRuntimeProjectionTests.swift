@@ -229,6 +229,75 @@ struct PluginRuntimeProjectionTests {
         #expect(Set(expected).isSubset(of: Set(record.skills.map(\.skillID))))
     }
 
+    @Test("An account two plugins bind is owned by both for scope pruning")
+    func sharedAccountKeepsEveryOwner() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        var second = jira
+        second.id = "jira-ops"
+        second.skills[0].name = "Jira Ops Agent"
+        let workspace = Workspace(name: "Shared", primaryPath: "/tmp/projection-shared")
+        context.insert(workspace)
+        let account = Connector(name: "Jira", serviceType: jira.connectors[0].serviceType)
+        account.workspace = workspace
+        context.insert(account)
+        WorkspaceCapabilityActivation.mutate(workspace) {
+            $0.enableCapability(jira.id)
+            $0.enableCapability(second.id)
+        }
+        let component = CapabilityResourceOrigin.componentID(for: jira.connectors[0])
+        for id in [jira.id, second.id] {
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: id, in: workspace))
+            WorkspaceCapabilityActivation.bind(account, toComponent: component, of: activation)
+        }
+        try context.save()
+
+        let projection = PluginRuntimeProjection.project(workspace: workspace, packages: [jira, second], connectorMode: .runtimeCopies)
+        #expect(projection.connectors.map(\.id) == [account.id])
+        let primaries = Set(projection.skills.filter { $0.name == jira.skills[0].name || $0.name == "Jira Ops Agent" }.map(\.id))
+        #expect(primaries.count == 2)
+        #expect(projection.accountOwnerSkillIDs[account.id] == primaries)
+    }
+
+    @Test("Adding a version without a connector releases its binding and keeps the account")
+    func addReleasesDroppedConnectorBindings() throws {
+        let context = try makeContext()
+        let jira = try builtIn("jira-workflow")
+        let workspace = Workspace(name: "Dropped", primaryPath: "/tmp/projection-dropped")
+        context.insert(workspace)
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-dropped-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = CapabilityInstaller(library: CapabilityLibrary(directory: root))
+        try installer.install(jira, into: workspace, modelContext: context)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+        let account = try #require(activation.bindings.first?.account)
+
+        var next = jira
+        next.version = "9.0.0"
+        next.connectors = []
+        try installer.install(next, into: workspace, modelContext: context)
+        #expect(activation.bindings.isEmpty)
+        #expect(workspace.connectors.contains { $0.id == account.id })
+    }
+
+    @Test("Unbinding one component keeps the account's other bindings and the default")
+    func unbindOneComponent() throws {
+        let context = try makeContext()
+        let workspace = Workspace(name: "Two components", primaryPath: "/tmp/projection-two")
+        context.insert(workspace)
+        let account = Connector(name: "Tracker", serviceType: "tracker")
+        context.insert(account)
+        WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability("p") }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "p", in: workspace))
+        WorkspaceCapabilityActivation.bind(account, toComponent: "connector:tracker:a", of: activation)
+        WorkspaceCapabilityActivation.bind(account, toComponent: "connector:tracker:b", of: activation)
+        WorkspaceCapabilityActivation.unbind(account, from: activation, componentID: "connector:tracker:a")
+        #expect(activation.accounts(forComponent: "connector:tracker:a").isEmpty)
+        #expect(activation.accounts(forComponent: "connector:tracker:b").map(\.id) == [account.id])
+        #expect(WorkspaceCapabilityActivation.defaultAccount(forService: "tracker", in: workspace)?.id == account.id)
+    }
+
     // MARK: - Helpers
 
     private func makeContext() throws -> ModelContext {

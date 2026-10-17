@@ -599,8 +599,14 @@ struct TaskCapabilityResolver {
             includeSkill(connector.skill)
         }
 
+        // An account several plugins bind stays for whichever of them is in
+        // scope, not only the plugin its copy is wired to.
+        let accountOwners = pluginProjection.accountOwnerSkillIDs
         let includedConnectors = connectors.filter { connector in
             if relevantConnectors.contains(where: { $0.id == connector.id }) {
+                return true
+            }
+            if let owners = accountOwners[connector.id], !owners.isDisjoint(with: includedSkillIDs) {
                 return true
             }
             guard let skill = canonicalSkill(connector.skill) else { return false }

@@ -228,6 +228,15 @@ struct CapabilityInstaller {
                 activation.knownComponentIDs + PluginRuntimeProjection.componentIDs(of: package),
                 on: activation
             )
+            // An account bound to a connector component this version no
+            // longer declares is released (the account itself stays), so it
+            // is back in the workspace's own scope rather than unreachable.
+            let declaredConnectors = Set(package.connectors.map { CapabilityResourceOrigin.componentID(for: $0) })
+            for binding in activation.bindings where !binding.isDeleted && !declaredConnectors.contains(binding.componentID) {
+                if let account = binding.account {
+                    WorkspaceCapabilityActivation.unbind(account, from: activation, componentID: binding.componentID)
+                }
+            }
 
             let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
             let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
@@ -290,7 +299,9 @@ struct CapabilityInstaller {
                         allowCredentialUserInteraction: allowCredentialUserInteraction
                     )
                     if let bound, bound.id != account.id, bound.isGlobal {
-                        WorkspaceCapabilityActivation.unbind(bound, from: activation)
+                        // Only this component moves to the new account; the
+                        // shared one stays bound wherever else it serves.
+                        WorkspaceCapabilityActivation.unbind(bound, from: activation, componentID: componentID)
                     }
                 }
                 WorkspaceCapabilityActivation.bind(account, toComponent: componentID, of: activation, isDefault: inheritsDefault)

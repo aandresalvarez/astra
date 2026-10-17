@@ -1593,7 +1593,7 @@ public enum WorkspaceConfigManager {
         let enabledGlobalIDs = Set(workspace.enabledGlobalSkillIDs.compactMap(UUID.init(uuidString:)))
         let taskSkills = workspace.tasks.flatMap(\.skills)
         let enabledGlobals = globalSkills.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals) { $0.id }
+        let all = uniqueByID(workspace.skills + taskSkills + enabledGlobals + overridingRows(of: workspace, among: globalSkills)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 
@@ -1616,7 +1616,8 @@ public enum WorkspaceConfigManager {
     ) -> [LocalTool] {
         let enabledGlobalIDs = Set(workspace.enabledGlobalToolIDs.compactMap(UUID.init(uuidString:)))
         let enabledGlobals = globalTools.filter { enabledGlobalIDs.contains($0.id) }
-        let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals) { $0.id }
+        let all = uniqueByID(workspace.localTools + skills.flatMap(\.localTools) + enabledGlobals
+            + overridingRows(of: workspace, among: globalTools)) { $0.id }
         return all.filter { !$0.isDeleted && $0.modelContext != nil }
     }
 

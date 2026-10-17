@@ -424,6 +424,7 @@ enum PluginActivationMigration {
             return false
         }
         return skill.name != spec.name
+            || skill.icon != spec.icon
             || skill.skillDescription != spec.description
             || skill.allowedTools != spec.allowedTools
             || skill.customTools != spec.customTools

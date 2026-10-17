@@ -38,6 +38,10 @@ struct PluginRuntimeProjection {
     /// Components the projection could not produce because the activation's
     /// connector component has no account bound yet, keyed by plugin ID.
     let unboundConnectorComponents: [String: [String]]
+    /// Every plugin skill that owns each account, by account ID. An account
+    /// two plugins bind is emitted once, wired to the first plugin's skill;
+    /// scope pruning keeps it for any of its owners.
+    var accountOwnerSkillIDs: [UUID: Set<UUID>] = [:]
 
     static let empty = PluginRuntimeProjection(skills: [], tools: [], connectors: [], unboundConnectorComponents: [:])
 
@@ -55,6 +59,7 @@ struct PluginRuntimeProjection {
         var connectors: [Connector] = []
         var unbound: [String: [String]] = [:]
         var seenConnectorIDs = Set<UUID>()
+        var owners: [UUID: Set<UUID>] = [:]
 
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) where activation.isEnabled {
             guard let package = packagesByID[activation.pluginID] else { continue }
@@ -96,6 +101,9 @@ struct PluginRuntimeProjection {
                 if accounts.isEmpty {
                     unbound[package.id, default: []].append(componentID)
                 }
+                if let primarySkill {
+                    for account in accounts { owners[account.id, default: []].insert(primarySkill.id) }
+                }
                 for account in accounts where seenConnectorIDs.insert(account.id).inserted {
                     switch connectorMode {
                     case .accounts:
@@ -125,7 +133,8 @@ struct PluginRuntimeProjection {
             skills: skills,
             tools: tools,
             connectors: connectors,
-            unboundConnectorComponents: unbound
+            unboundConnectorComponents: unbound,
+            accountOwnerSkillIDs: owners
         )
     }
 
@@ -134,7 +143,7 @@ struct PluginRuntimeProjection {
     /// plugin and component IDs. Removing and adding the plugin again yields
     /// the same IDs; the Remove cleanup spares a namespace a live activation
     /// names again (`PluginSecretCleanupOutbox`).
-    static func derivedID(workspaceID: UUID, pluginID: String, componentID: String) -> UUID {
+    static func derivedID(workspaceID: UUID, pluginID: String, componentID: String, seed: String = "") -> UUID {
         var hasher = SHA256()
         hasher.update(data: Data("astra.plugin-component.v2|".utf8))
         hasher.update(data: Data(workspaceID.uuidString.utf8))
@@ -142,6 +151,10 @@ struct PluginRuntimeProjection {
         hasher.update(data: Data(pluginID.utf8))
         hasher.update(data: Data("|".utf8))
         hasher.update(data: Data(componentID.utf8))
+        if !seed.isEmpty {
+            hasher.update(data: Data("|".utf8))
+            hasher.update(data: Data(seed.utf8))
+        }
         var bytes = Array(hasher.finalize().prefix(16))
         bytes[6] = (bytes[6] & 0x0F) | 0x50
         bytes[8] = (bytes[8] & 0x3F) | 0x80
@@ -157,7 +170,8 @@ struct PluginRuntimeProjection {
         derivedID(
             workspaceID: activation.workspace?.id ?? activation.id,
             pluginID: activation.pluginID,
-            componentID: componentID
+            componentID: componentID,
+            seed: activation.namespaceSeed
         )
     }
 
