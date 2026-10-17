@@ -74,7 +74,8 @@ struct PluginsSurfaceView: View {
                 pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
                     + failingSetup(for: package).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
-                isRemovable: Self.isRemovable(package)
+                isRemovable: Self.isRemovable(package),
+                unavailableReason: PluginsSurfacePresentation.unavailableReason(for: package)
             )
             // Any drift an Update would settle: version, digest, components
             // or templates.
@@ -259,7 +260,11 @@ struct PluginsSurfaceView: View {
         let packageState = isEnabled && component.kind == .connector
             ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
             : nil
-        let connector = packageState?.connectorsNeedingAttention.first { $0.name == component.name }
+        // Matched like the package state matches them (service type, aliases),
+        // so a renamed account still gets its action.
+        let connector = component.connector.flatMap { spec in
+            packageState?.connectorsNeedingAttention.first { CapabilityRuntimeResourceMatcher.connectorMatches(spec, connector: $0) }
+        }
         return HStack(spacing: 8) {
             Text(component.name).font(Stanford.ui(13))
             Text(kindLabel(component.kind)).font(Stanford.caption(11)).foregroundStyle(.secondary)

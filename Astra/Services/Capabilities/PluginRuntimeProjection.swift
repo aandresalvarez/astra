@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import ASTRACore
 import ASTRAModels
@@ -144,24 +143,7 @@ struct PluginRuntimeProjection {
     /// the same IDs; the Remove cleanup spares a namespace a live activation
     /// names again (`PluginSecretCleanupOutbox`).
     static func derivedID(workspaceID: UUID, pluginID: String, componentID: String, seed: String = "") -> UUID {
-        var hasher = SHA256()
-        hasher.update(data: Data("astra.plugin-component.v2|".utf8))
-        hasher.update(data: Data(workspaceID.uuidString.utf8))
-        hasher.update(data: Data("|".utf8))
-        hasher.update(data: Data(pluginID.utf8))
-        hasher.update(data: Data("|".utf8))
-        hasher.update(data: Data(componentID.utf8))
-        if !seed.isEmpty {
-            hasher.update(data: Data("|".utf8))
-            hasher.update(data: Data(seed.utf8))
-        }
-        var bytes = Array(hasher.finalize().prefix(16))
-        bytes[6] = (bytes[6] & 0x0F) | 0x50
-        bytes[8] = (bytes[8] & 0x3F) | 0x80
-        return UUID(uuid: (
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-        ))
+        PluginActivation.projectedID(workspaceID: workspaceID, pluginID: pluginID, componentID: componentID, seed: seed)
     }
 
     /// `derivedID` for a component of `activation`. An activation always has

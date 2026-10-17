@@ -131,7 +131,17 @@ struct CapabilityPackageState {
         }
         let credentialMessages = activeConnectors.contains(where: { $0.id == connector.id })
             ? readinessMessages(for: connector) : []
-        return missingConnectorMessages + credentialMessages
+        return missingConnectorMessages + credentialMessages + authMethodMessages(for: connector)
+    }
+
+    /// An account this plugin created whose sign-in method the current
+    /// definition no longer declares keeps working until the person
+    /// reconnects it, but has no setup or repair path: it needs a step.
+    private func authMethodMessages(for connector: Connector) -> [String] {
+        guard connector.originPackageID == package.id,
+              let spec = package.connectors.first(where: { CapabilityRuntimeResourceMatcher.connectorMatches($0, connector: connector) }),
+              !spec.authMethod.isEmpty, spec.authMethod != connector.authMethod else { return [] }
+        return ["\(connector.name): this version signs in with \(spec.authMethod); reconnect the account"]
     }
 
     private var activeLinkedConnectors: [Connector] {

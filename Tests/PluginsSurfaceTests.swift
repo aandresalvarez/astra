@@ -157,4 +157,26 @@ struct PluginsSurfaceTests {
             .appendingPathComponent("Astra/Resources/Capabilities/\(id).json")
         return try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: url))
     }
+
+    @Test("A plugin whose setup connects an account is listed without Add, saying where to add it")
+    func oauthSetupIsNotAddedHere() throws {
+        let google = try #require(PluginCatalog.builtInPackages.first { $0.id == "google-workspace" })
+        let reason = try #require(PluginsSurfacePresentation.unavailableReason(for: google))
+        let input = PluginsSurfacePresentation.Input(
+            package: google, isEnabled: false, pendingSteps: 0, isVisible: true, isRemovable: false,
+            unavailableReason: reason
+        )
+        let row = try #require(PluginsSurfacePresentation.makeState([input], query: "").available.first)
+        #expect(row.verb == nil)
+        #expect(row.subtitle == reason)
+    }
+
+    @Test("Importing a Plugins 2.0 manifest file decodes it as a package")
+    func manifestFilesImport() throws {
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        let data = try JSONEncoder().encode(PluginManifestConverter.manifest(from: jira))
+        let report = CapabilityPackageValidator.validate(data: data, installedPackages: [], checkPrerequisites: false)
+        #expect(report.package?.id == "jira-workflow")
+        #expect(report.package?.connectors.count == jira.connectors.count)
+    }
 }

@@ -44,6 +44,13 @@ struct CLISessionExpiryTests {
         #expect(!CLISessionExpiryClassifier.runs("gcloud", in: "grep gcloud notes.txt"))
         #expect(!CLISessionExpiryClassifier.runs("gh", in: "echo gh is the GitHub CLI"))
         #expect(CLISessionExpiryClassifier.stop(content: gcloudReauth, command: "grep gcloud notes.txt") == nil)
+        // A wrapper's options (and the values they take) come before the CLI.
+        #expect(CLISessionExpiryClassifier.runs("gcloud", in: "env -i gcloud projects list"))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "sudo -u build gh pr list"))
+        #expect(CLISessionExpiryClassifier.runs("gh", in: "sudo -E -- gh pr list"))
+        #expect(CLISessionExpiryClassifier.runs("gcloud", in: "env -u HOME X=1 gcloud auth list"))
+        #expect(!CLISessionExpiryClassifier.runs("gcloud", in: "env --help"))
+        #expect(!CLISessionExpiryClassifier.runs("gh", in: "sudo -u gh whoami"))
     }
 
     @Test("A bad GH_TOKEN stops with advice about the variable, not a sign-in")
@@ -54,6 +61,11 @@ struct CLISessionExpiryTests {
         #expect(!family.offersSignIn)
         #expect(family.stopMessage.contains("GH_TOKEN"))
         #expect(CLISessionExpiryClassifier.family(forStopMessage: family.stopMessage) == family)
+        // Its repair only checks; a failed check repeats the token advice.
+        #expect(family.repair.command == nil)
+        #expect(family.repair.checkBinary == "gh")
+        #expect(family.repair.detail.contains("GH_TOKEN"))
+        #expect(!family.repair.detail.contains("gh auth login"))
     }
 
     @Test("gh logged out is a GitHub session expiry")

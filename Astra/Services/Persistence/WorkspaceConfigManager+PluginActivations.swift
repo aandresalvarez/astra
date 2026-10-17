@@ -123,7 +123,11 @@ extension WorkspaceConfigManager {
     /// bindings once `apply` has created the activations. Row IDs from the
     /// file resolve through the maps the import built, so a validated import
     /// (fresh row IDs) binds the rows it created, never an unrelated one.
+    ///
+    /// Returns the projected-skill IDs a validated import re-minted (file ID
+    /// → new ID), for the templates and schedules the file names them in.
     @MainActor
+    @discardableResult
     static func restoreActivationDetails(
         from config: WorkspaceConfig,
         into workspace: Workspace,
@@ -131,7 +135,8 @@ extension WorkspaceConfigManager {
         skillsByID: [String: Skill],
         toolsByID: [String: LocalTool],
         trust: CapabilityImportTrustPolicy
-    ) {
+    ) -> [String: String] {
+        var projectedIDs: [String: String] = [:]
         for ref in config.installedPlugins ?? [] {
             guard let activation = WorkspaceCapabilityActivation.activation(for: ref.id, in: workspace) else { continue }
             let declared: Set<String>?
@@ -141,6 +146,17 @@ extension WorkspaceConfigManager {
                 // gets its own namespaces: it never reads the secrets of the
                 // workspace it may replace.
                 WorkspaceCapabilityActivation.setNamespaceSeed(UUID().uuidString, on: activation)
+                // The file's projected IDs (its workspace, its seed) name the
+                // same components under the fresh seed.
+                for componentID in declared ?? [] {
+                    let old = PluginActivation.projectedID(
+                        workspaceID: workspace.id, pluginID: ref.id, componentID: componentID, seed: ref.namespaceSeed ?? ""
+                    )
+                    let new = PluginActivation.projectedID(
+                        workspaceID: workspace.id, pluginID: ref.id, componentID: componentID, seed: activation.namespaceSeed
+                    )
+                    projectedIDs[old.uuidString] = new.uuidString
+                }
             } else {
                 if let seed = ref.namespaceSeed, !seed.isEmpty {
                     WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)
@@ -195,5 +211,6 @@ extension WorkspaceConfigManager {
                 )
             }
         }
+        return projectedIDs
     }
 }

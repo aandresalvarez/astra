@@ -35,6 +35,7 @@ enum PluginUpdateService {
     enum UpdateError: Error, Equatable, LocalizedError {
         case refusedByWorkspace(workspace: String, reason: String)
         case secretCopyFailed(component: String, key: String)
+        case ambiguousRename(component: String)
         case storeUnreadable
         case saveFailed
 
@@ -44,6 +45,8 @@ enum PluginUpdateService {
                 "\(workspace) can't take this version: \(reason)"
             case .secretCopyFailed(let component, let key):
                 "Couldn't move the saved \(key) of \(component) to the new version."
+            case .ambiguousRename(let component):
+                "\(component) takes over more than one component this workspace still has settings for, so the update can't tell whose to keep."
             case .storeUnreadable:
                 "Couldn't read the workspaces that use this plugin."
             case .saveFailed:
@@ -98,23 +101,19 @@ enum PluginUpdateService {
                 }
             }
         }
-        // One predecessor per component: two components folded into one
-        // can't both hand over their settings, accounts and secrets.
-        func single(_ olds: [String], name: String) {
-            if olds.count > 1 { problems.append("\(name) replaces more than one component.") }
-        }
+        // A component may list several historical identities (A, then B,
+        // for an update straight from A to C). Only when an activation still
+        // holds more than one of them is the rename ambiguous, and that is
+        // refused when reconciling (`UpdateError.ambiguousRename`).
         for skill in package.skills {
             check(CapabilityResourceOrigin.replacedComponentIDs(for: skill), kindPrefix: "skill:", name: skill.name)
-            single(CapabilityResourceOrigin.replacedComponentIDs(for: skill), name: skill.name)
         }
         for connector in package.connectors {
             let service = "connector:\(CapabilityRuntimeResourceMatcher.normalizedServiceType(connector.serviceType)):"
             check(CapabilityResourceOrigin.replacedComponentIDs(for: connector), kindPrefix: service, name: connector.name)
-            single(CapabilityResourceOrigin.replacedComponentIDs(for: connector), name: connector.name)
         }
         for tool in package.localTools {
             check(CapabilityResourceOrigin.replacedComponentIDs(for: tool), kindPrefix: "tool:", name: tool.name)
-            single(CapabilityResourceOrigin.replacedComponentIDs(for: tool), name: tool.name)
         }
         problems += claimed.filter { $0.value > 1 }.keys.sorted().map { "\($0) is replaced by more than one component." }
         return problems
@@ -219,6 +218,12 @@ enum PluginUpdateService {
         var total = Reconciliation()
         var changedWorkspaces: [Workspace] = []
         var changed = 0
+        // rollback() doesn't restore array-backed fields (activation
+        // records, template and schedule skill IDs, account keys), so a
+        // failed update puts them back itself.
+        let restore = captureState(of: activations.compactMap(\.workspace).filter { workspace in
+            WorkspaceCapabilityActivation.activations(of: workspace).contains { packagesByID[$0.pluginID] != nil }
+        })
         do {
             for activation in activations where !activation.isDeleted {
                 guard let workspace = activation.workspace,
@@ -239,10 +244,97 @@ enum PluginUpdateService {
             guard saved else { throw UpdateError.saveFailed }
         } catch {
             modelContext.rollback()
+            restore()
             undo(total.copied)
             throw error
         }
         return changed
+    }
+
+    /// What reconciling may change in `workspaces`, as a closure that puts
+    /// it back.
+    static func captureState(of workspaces: [Workspace]) -> () -> Void {
+        var restorers: [() -> Void] = []
+        var seen = Set<UUID>()
+        for workspace in workspaces where seen.insert(workspace.id).inserted {
+            let snapshot = WorkspaceCapabilityActivation.snapshot(workspace)
+            restorers.append { WorkspaceCapabilityActivation.restore(snapshot, to: workspace) }
+            for template in workspace.templates where !template.isDeleted {
+                let saved = TemplateState(template)
+                restorers.append { saved.restore(onto: template) }
+            }
+            for schedule in workspace.schedules where !schedule.isDeleted {
+                let skillIDs = schedule.skillIDs
+                restorers.append { if schedule.skillIDs != skillIDs { schedule.skillIDs = skillIDs } }
+            }
+            for account in WorkspaceCapabilityActivation.activations(of: workspace)
+                .flatMap(\.bindings).compactMap(\.account) where !account.isDeleted {
+                let saved = (account.credentialKeys, account.credentialValues, account.configKeys, account.configValues,
+                             account.connectorDescription, account.icon, account.notes, account.originPackageVersion)
+                restorers.append {
+                    account.credentialKeys = saved.0
+                    account.credentialValues = saved.1
+                    account.configKeys = saved.2
+                    account.configValues = saved.3
+                    account.connectorDescription = saved.4
+                    account.icon = saved.5
+                    account.notes = saved.6
+                    account.originPackageVersion = saved.7
+                }
+            }
+        }
+        return { restorers.forEach { $0() } }
+    }
+
+    /// A template's fields Update may write.
+    private struct TemplateState {
+        let defaultSkillIDs: [String]
+        let name, icon, templateDescription, mainGoal, beforeGoal, afterGoal, variablesJSON: String
+        let mainBudget, beforeBudget, afterBudget: Int
+        let passContextToMain, passContextToAfter: Bool
+        let originPackageID, originPackageVersion, originComponentID, originComponentKind, originSourceKind: String?
+
+        init(_ template: TaskTemplate) {
+            defaultSkillIDs = template.defaultSkillIDs
+            name = template.name
+            icon = template.icon
+            templateDescription = template.templateDescription
+            mainGoal = template.mainGoal
+            beforeGoal = template.beforeGoal
+            afterGoal = template.afterGoal
+            variablesJSON = template.variablesJSON
+            mainBudget = template.mainBudget
+            beforeBudget = template.beforeBudget
+            afterBudget = template.afterBudget
+            passContextToMain = template.passContextToMain
+            passContextToAfter = template.passContextToAfter
+            originPackageID = template.originPackageID
+            originPackageVersion = template.originPackageVersion
+            originComponentID = template.originComponentID
+            originComponentKind = template.originComponentKind
+            originSourceKind = template.originSourceKind
+        }
+
+        func restore(onto template: TaskTemplate) {
+            template.defaultSkillIDs = defaultSkillIDs
+            template.name = name
+            template.icon = icon
+            template.templateDescription = templateDescription
+            template.mainGoal = mainGoal
+            template.beforeGoal = beforeGoal
+            template.afterGoal = afterGoal
+            template.variablesJSON = variablesJSON
+            template.mainBudget = mainBudget
+            template.beforeBudget = beforeBudget
+            template.afterBudget = afterBudget
+            template.passContextToMain = passContextToMain
+            template.passContextToAfter = passContextToAfter
+            template.originPackageID = originPackageID
+            template.originPackageVersion = originPackageVersion
+            template.originComponentID = originComponentID
+            template.originComponentKind = originComponentKind
+            template.originSourceKind = originSourceKind
+        }
     }
 
     /// Reconciles one activation in memory. Secret settings of a renamed
@@ -266,6 +358,17 @@ enum PluginUpdateService {
             .union(activation.overriddenComponentIDs)
         let known = Set(activation.knownComponentIDs).union(stateIDs)
         let renames = renames(in: package)
+        // Two live predecessors of one component can't both hand over their
+        // settings, accounts and secrets: Update refuses, the automatic pass
+        // leaves the activation alone.
+        let livePredecessors = Dictionary(grouping: renames.filter { known.contains($0.key) && !currentSet.contains($0.key) }, by: \.value)
+        if let (new, _) = livePredecessors.first(where: { $0.value.count > 1 }) {
+            guard mode == .release else {
+                result.withheld = [new]
+                return result
+            }
+            throw UpdateError.ambiguousRename(component: new)
+        }
 
         for (old, new) in renames.sorted(by: { $0.key < $1.key })
         where known.contains(old) && !currentSet.contains(old) {

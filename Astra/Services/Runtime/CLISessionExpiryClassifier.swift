@@ -34,14 +34,20 @@ enum CLISessionExpiryClassifier {
                 ?? "The \(displayName) sign-in expired while the agent was using it. Run `\(signInCommand)`, then resume."
         }
 
+        /// The sign-in repair, or for a family whose fix is outside ASTRA
+        /// (`offersSignIn` false) a check-only one whose guidance is the
+        /// family's own: Resume still re-runs the check, and a failed check
+        /// repeats what actually fixes it.
         var repair: RepairAction {
             RepairAction(
                 strategy: .terminal,
                 componentName: "\(displayName) login",
-                title: "Sign in to \(displayName)",
-                verb: "Sign in",
-                detail: "Run `\(signInCommand)` in Terminal, then resume the task.",
-                command: signInCommand,
+                title: offersSignIn ? "Sign in to \(displayName)" : "Fix \(displayName) access",
+                verb: offersSignIn ? "Sign in" : "Check",
+                detail: offersSignIn || customStopMessage == nil
+                    ? "Run `\(signInCommand)` in Terminal, then resume the task."
+                    : customStopMessage ?? "",
+                command: offersSignIn ? signInCommand : nil,
                 checkBinary: checkBinary,
                 checkArguments: checkArguments,
                 checkExpect: checkBinary == "gcloud" ? SemanticCheck.stdoutNonEmpty.rawValue : nil
@@ -133,16 +139,48 @@ enum CLISessionExpiryClassifier {
     /// counts. An argument that merely names the CLI does not.
     static func runs(_ cli: String, in command: String) -> Bool {
         let separators = CharacterSet(charactersIn: ";&|\n()`")
-        let wrappers: Set<String> = ["env", "command", "exec", "time", "sudo", "nohup", "xargs"]
         for segment in command.components(separatedBy: separators) {
             var words = segment.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-            while let first = words.first,
-                  first.contains("=") && !first.hasPrefix("=") || wrappers.contains(first) || first.hasPrefix("$(") {
-                words.removeFirst()
-            }
+            stripWrappers(&words)
             guard let executable = words.first?.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) else { continue }
             if (executable as NSString).lastPathComponent == cli { return true }
         }
         return false
+    }
+
+    /// Wrappers and the options each takes a value for, so `env -i gcloud`
+    /// and `sudo -u build gh` find the command they run.
+    private static let wrapperValueOptions: [String: Set<String>] = [
+        "env": ["-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"],
+        "sudo": ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--user", "--group", "--host", "--prompt", "--chdir"],
+        "command": [],
+        "exec": ["-a"],
+        "time": ["-f", "-o", "--format", "--output"],
+        "nohup": [],
+        "xargs": ["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a"]
+    ]
+
+    /// Drops leading assignments, wrappers with their options, and command
+    /// substitutions, leaving the executable first.
+    static func stripWrappers(_ words: inout [String]) {
+        while let first = words.first {
+            if first.range(of: #"^[A-Za-z_][A-Za-z0-9_]*="#, options: .regularExpression) != nil {
+                words.removeFirst()
+                continue
+            }
+            if first.hasPrefix("$(") {
+                words.removeFirst()
+                continue
+            }
+            let name = (first as NSString).lastPathComponent
+            guard let valueOptions = wrapperValueOptions[name] else { return }
+            words.removeFirst()
+            while let option = words.first, option.hasPrefix("-") {
+                words.removeFirst()
+                if option == "--" { break }
+                // `-u name` takes the next word; `-uname` and `--user=name` don't.
+                if valueOptions.contains(option), !option.contains("=") { _ = words.isEmpty ? nil : words.removeFirst() }
+            }
+        }
     }
 }
