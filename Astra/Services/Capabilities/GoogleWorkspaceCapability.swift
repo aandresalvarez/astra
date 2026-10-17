@@ -18,10 +18,11 @@ enum GoogleWorkspaceCapability {
     }
 
     /// Whether the account a Google Workspace plugin runs as can still get a
-    /// token: the profile is active and its Keychain token was neither revoked
-    /// nor lost. An expired access token refreshes on use
-    /// (`GoogleWorkspaceRemoteMCPVaultTokenResolver`), so it still counts; an
-    /// unchecked one (nil) is judged by the profile alone.
+    /// usable token: the profile is active, its Keychain token was neither
+    /// revoked nor lost, and it holds every scope the Workspace products need
+    /// (`GoogleWorkspaceSetupStateFactory.missingScopes`). An expired access
+    /// token refreshes on use (`GoogleWorkspaceRemoteMCPVaultTokenResolver`),
+    /// so it still counts; an unchecked one (nil) is judged by the profile.
     static func isAccountConnected(
         _ profile: GoogleOAuthAccountProfile?,
         credentialStatus: GoogleOAuthCredentialStatus?
@@ -29,7 +30,8 @@ enum GoogleWorkspaceCapability {
         guard let profile, profile.authState == .active else { return false }
         switch credentialStatus {
         case .missingAccount, .revokedToken: return false
-        case .available, .expiredToken, nil: return true
+        case .available, .expiredToken, nil:
+            return GoogleWorkspaceSetupStateFactory.missingScopes(profile: profile, credentialStatus: credentialStatus).isEmpty
         }
     }
 }

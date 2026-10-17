@@ -34,9 +34,9 @@ public struct RepairAction: Codable, Sendable, Equatable {
     public var checkArguments: [String]?
     /// The check's semantic test (`SemanticCheck` raw value), if any.
     public var checkExpect: String?
-    /// Variables the stopped run gave the CLI (a projected `GH_TOKEN`), so
-    /// the check sees what the resumed run will. Set when checking, not
-    /// stored with the repair.
+    /// Variables the stopped run gave the CLI (a projected `GH_TOKEN` or
+    /// `CLOUDSDK_CONFIG`), so the check sees what the resumed run will. Set
+    /// when checking, not stored with the repair.
     public var checkEnvironment: [String: String]?
 
     /// `checkEnvironment` can hold a token: it is never encoded.
@@ -108,6 +108,16 @@ public struct RepairAction: Codable, Sendable, Equatable {
             guard let step else { continue }
             switch step.kind {
             case .terminal:
+                // Prose-only guidance ("Start Docker Desktop…") has nothing
+                // to run: the person follows it and ASTRA checks again. It is
+                // not a reason to offer Install for a CLI that is installed.
+                if step.command == nil, verb != "Install", let binary = check?.binary {
+                    return RepairAction(
+                        strategy: .terminal, componentName: component.name, title: component.name, verb: "Check",
+                        detail: step.hint ?? "Fix \(component.name), then ASTRA checks again.",
+                        checkBinary: binary, checkArguments: check?.arguments, checkExpect: check?.expect
+                    )
+                }
                 guard let command = step.command,
                       isSafeTerminalCommand(command, binary: check?.binary, allowsInstaller: verb == "Install")
                 else { continue }
