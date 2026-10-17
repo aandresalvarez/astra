@@ -16,7 +16,9 @@ import ASTRAModels
 /// result's error flag), so an agent reading documentation or an issue body
 /// that quotes these errors does not stop the run. A line that succeeded
 /// still counts when a later command decided its exit status
-/// (`gcloud projects list | cat`), which hides the CLI's own failure.
+/// (`gcloud projects list | cat`), or when the CLI ran in a substitution
+/// inside another command (`echo "$(gh auth token)"`), which hides the CLI's
+/// own failure.
 /// Patterns are whole diagnostics, not fragments.
 enum CLISessionExpiryClassifier {
     struct Family: Equatable, Sendable {
@@ -150,13 +152,18 @@ enum CLISessionExpiryClassifier {
     private static let statusMaskingSeparators: Set<String> = ["|", "|&", "||", ";", "&", "\n"]
 
     /// True when `command` runs `cli` with another command after it that
-    /// decides the line's exit status, so the CLI could fail while the line
-    /// succeeds. A CLI that runs last, alone or after `&&`, does not count:
-    /// its own success is the line's.
+    /// decides the line's exit status, or inside a substitution whose
+    /// enclosing command is another program, so the CLI could fail while the
+    /// line succeeds. A CLI that runs last, alone or after `&&`, does not
+    /// count: its own success is the line's. Nor does `token=$(gh auth token)`,
+    /// which exits with the substitution's status.
     static func masksExitStatus(of cli: String, in command: String) -> Bool {
         let segments = segments(command)
-        return segments.dropLast().contains { segment in
-            statusMaskingSeparators.contains(segment.separator) && executes(cli, segment.words)
+        return segments.indices.contains { index in
+            let segment = segments[index]
+            guard executes(cli, segment.words) else { return false }
+            return segment.enclosingCommands.contains { !executes(cli, $0) }
+                || (index < segments.count - 1 && statusMaskingSeparators.contains(segment.separator))
         }
     }
 
@@ -182,6 +189,10 @@ enum CLISessionExpiryClassifier {
     struct Segment: Equatable {
         var words: [String]
         var separator: String
+        /// The commands whose arguments this one's substitution produced,
+        /// outermost first (`echo` in `echo "$(gh auth token)"`); their exit
+        /// status, not this command's, is the line's.
+        var enclosingCommands: [[String]] = []
     }
 
     static func segments(_ line: String) -> [Segment] {
@@ -195,6 +206,10 @@ enum CLISessionExpiryClassifier {
         // character that closes each, and the `(` depth inside it. Closing
         // one reopens the double quote it interrupted.
         var substitutions: [(closer: Character, depth: Int)] = []
+        // Every open parenthesis or backtick, innermost last, with the
+        // command a substitution there feeds (nil for a subshell, or for a
+        // substitution that is the whole command, as in an assignment).
+        var groups: [(closer: Character, command: [String]?)] = []
         let characters = Array(line)
         var index = 0
         func endWord() {
@@ -206,11 +221,31 @@ enum CLISessionExpiryClassifier {
             endWord()
             words.removeAll { $0 == "$" }
             if !words.isEmpty {
-                segments.append(Segment(words: words, separator: separator))
+                segments.append(Segment(
+                    words: words, separator: separator, enclosingCommands: groups.compactMap(\.command)
+                ))
             } else if segments.last?.separator == ")" {
                 segments[segments.count - 1].separator = separator
             }
             words = []
+        }
+        // A `$(` or backtick substitution records the command it feeds when
+        // that command runs a program (`echo`, not `token=`).
+        func openGroup(_ opener: Character, closer: Character) {
+            var enclosing = words + (inWord ? [word] : [])
+            let substitutes = opener == "`" || enclosing.last?.hasSuffix("$") == true
+            if opener == "(", substitutes { enclosing[enclosing.count - 1].removeLast() }
+            enclosing.removeAll(where: \.isEmpty)
+            stripWrappers(&enclosing)
+            endCommand(String(opener))
+            groups.append((closer: closer, command: substitutes && !enclosing.isEmpty ? enclosing : nil))
+        }
+        func closeOrOpenGroup(_ character: Character) {
+            guard character == ")" || (character == "`" && groups.last?.closer == "`") else {
+                return openGroup(character, closer: character == "`" ? "`" : ")")
+            }
+            endCommand(String(character))
+            if groups.last?.closer == character { groups.removeLast() }
         }
         while index < characters.count {
             let character = characters[index]
@@ -234,7 +269,7 @@ enum CLISessionExpiryClassifier {
                         word.append(character)
                         index += 1
                     }
-                    endCommand(character == "`" ? "`" : "(")
+                    openGroup(character == "`" ? "`" : "(", closer: character == "`" ? "`" : ")")
                     substitutions.append((closer: character == "`" ? "`" : ")", depth: 0))
                     quote = nil
                 } else {
@@ -266,12 +301,15 @@ enum CLISessionExpiryClassifier {
             case ")" where substitutions.last?.closer == ")" && substitutions.last?.depth == 0,
                  "`" where substitutions.last?.closer == "`":
                 endCommand(String(character))
+                _ = groups.popLast()
                 substitutions.removeLast()
                 quote = "\""
             case "(" where substitutions.last?.closer == ")", ")" where substitutions.last?.closer == ")":
                 substitutions[substitutions.count - 1].depth += character == "(" ? 1 : -1
-                endCommand(String(character))
-            case ";", "\n", "(", ")", "`":
+                closeOrOpenGroup(character)
+            case "(", ")", "`":
+                closeOrOpenGroup(character)
+            case ";", "\n":
                 endCommand(String(character))
             default:
                 // `$(` ends at the `(`, which starts the substituted command.

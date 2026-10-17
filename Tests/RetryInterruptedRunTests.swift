@@ -285,6 +285,48 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("The gcloud check runs with the credential-selecting variables the resumed run gets")
+    func gcloudCheckUsesLaunchEnvironment() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Cloud Config", primaryPath: env.root)
+            let task = AgentTask(title: "Projects", goal: "List Google Cloud projects", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            // The stopped `gcloud` read this configuration, not ASTRA's own login.
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "Cloud Agent", icon: "cloud", description: "Google Cloud projects",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["CLOUDSDK_CONFIG"], environmentValues: ["/tmp/broken-gcloud-config"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.googleCloud
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments == [["CLOUDSDK_CONFIG": "/tmp/broken-gcloud-config"]], "retry: \(useRetry)")
+        }
+    }
+
     @Test("Without a provider session Retry still relaunches from scratch")
     func noSessionRelaunches() async throws {
         let submitted = try await retry(sessionID: nil, stopReason: "cancelled")
