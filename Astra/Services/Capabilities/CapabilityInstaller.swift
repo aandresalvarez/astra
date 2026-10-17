@@ -197,15 +197,13 @@ struct CapabilityInstaller {
                 $0.enableCapability(package.id)
                 $0.recordInstalledPlugin(id: package.id, version: package.version)
             }
-            WorkspaceCapabilityActivation.recordAccepted(
-                pluginID: package.id,
-                version: package.version,
-                digest: (try? CapabilityApprovalDigest.digest(for: package)) ?? "",
-                in: workspace
-            )
             guard let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
+            // Adding a version this workspace had at another one is an Update
+            // for it: renamed components keep their state, dropped ones
+            // release theirs, and the version and digest are recorded.
+            let releasedSkillIDs = try PluginUpdateService.reconcile(activation, in: workspace, to: package)
 
             let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
             let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
@@ -284,7 +282,9 @@ struct CapabilityInstaller {
             }
 
             workspace.updatedAt = Date()
-            guard persist(workspace, modelContext) else {
+            guard PluginSecretCleanupOutbox.deleteThenClean(releasedSkillIDs, modelContext: modelContext, save: {
+                persist(workspace, modelContext)
+            }) else {
                 throw InstallationError.persistenceFailed(packageID: package.id)
             }
             var enabledFields = [

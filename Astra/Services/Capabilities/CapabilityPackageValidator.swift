@@ -27,6 +27,7 @@ struct CapabilityPackageValidationIssue: Equatable, Identifiable {
         case packageUpdate
         case invalidIconAsset
         case missingIconAsset
+        case invalidComponentIdentity
     }
 
     var severity: Severity
@@ -263,6 +264,24 @@ enum CapabilityPackageValidator {
         if id.isEmpty {
             issues.append(issue(.blocker, .invalidPackageID, "Missing package ID", "Package ID cannot be empty."))
             return
+        }
+
+        // Settings, accounts and secrets are keyed by component identity, so
+        // two components may not share one, and a rename must be declared
+        // unambiguously (`replaces`).
+        let componentIDs = PluginUpdateService.componentIDs(of: package)
+        let duplicates = Dictionary(grouping: componentIDs, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
+        for duplicate in duplicates {
+            issues.append(issue(
+                .blocker,
+                .invalidComponentIdentity,
+                "Duplicate component",
+                "Two components share the identity \(duplicate); give one of them its own id.",
+                component: duplicate
+            ))
+        }
+        for problem in PluginUpdateService.replacesProblems(in: package) {
+            issues.append(issue(.blocker, .invalidComponentIdentity, "Invalid replaces", problem))
         }
 
         if !isValidPackageIDLiteral(rawID) {

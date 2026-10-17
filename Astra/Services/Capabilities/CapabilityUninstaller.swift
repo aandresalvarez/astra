@@ -93,6 +93,10 @@ struct CapabilityUninstaller {
             legacyMatches: { _ in false }
         )
 
+        // The Remove's intent outlives an exit between the save below and
+        // the library removal at the end.
+        let removeJournal = PluginRemoveJournal(for: modelContext)
+        try removeJournal?.begin(package.id)
         var result = RemovalResult(packageID: package.id)
         // Membership arrays are mutated per workspace below; rollback does not
         // revert them, so snapshot for the save-failure path.
@@ -197,6 +201,7 @@ struct CapabilityUninstaller {
             // resources (file gone) or credentials (records still present).
             modelContext.rollback()
             membershipSnapshots.forEach { WorkspaceCapabilityActivation.restore($1, to: $0) }
+            removeJournal?.finish(package.id)
             throw UninstallError.saveFailed(packageID: package.id)
         }
         pendingKeychainCleanups.forEach { $0() }
@@ -212,6 +217,7 @@ struct CapabilityUninstaller {
         // make the caller report a failed uninstall that actually succeeded.
         do {
             _ = try library.removePackage(id: package.id)
+            removeJournal?.finish(package.id)
         } catch {
             AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                 "source": "package_uninstall",

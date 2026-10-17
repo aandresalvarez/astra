@@ -202,6 +202,63 @@ public enum WorkspaceCapabilityActivation {
         touch(activation)
     }
 
+    /// Moves everything an activation keeps for component `old` (settings,
+    /// account bindings, an override) to component `new`, for a rename an
+    /// Update declares. A setting `new` already has is kept.
+    public static func moveComponentState(from old: String, to new: String, on activation: PluginActivation) {
+        let oldPrefix = old + "."
+        var keys = activation.configKeys
+        for (index, key) in keys.enumerated() where key.hasPrefix(oldPrefix) {
+            let moved = new + "." + key.dropFirst(oldPrefix.count)
+            if !keys.contains(moved) { keys[index] = moved }
+        }
+        if keys != activation.configKeys {
+            activation.configKeys = keys
+            dropComponentSettings(old, on: activation)
+        }
+        for binding in activation.bindings where !binding.isDeleted && binding.componentID == old {
+            binding.componentID = new
+        }
+        if let index = activation.overriddenComponentIDs.firstIndex(of: old) {
+            var ids = activation.overriddenComponentIDs
+            ids[index] = new
+            activation.overriddenComponentIDs = ids
+        }
+        touch(activation)
+    }
+
+    /// Releases everything an activation keeps for a component its plugin
+    /// no longer declares: settings, account bindings (the accounts stay) and
+    /// an override (the authored row stays).
+    public static func dropComponentState(_ componentID: String, on activation: PluginActivation) {
+        dropComponentSettings(componentID, on: activation)
+        for binding in activation.bindings where !binding.isDeleted && binding.componentID == componentID {
+            activation.bindings.removeAll { $0 === binding }
+            binding.modelContext?.delete(binding)
+        }
+        setOverridden(false, componentID: componentID, on: activation)
+        touch(activation)
+    }
+
+    /// Records the components the activation now reconciles against.
+    public static func setKnownComponents(_ componentIDs: [String], on activation: PluginActivation) {
+        guard activation.knownComponentIDs != componentIDs else { return }
+        activation.knownComponentIDs = componentIDs
+        touch(activation)
+    }
+
+    private static func dropComponentSettings(_ componentID: String, on activation: PluginActivation) {
+        let prefix = componentID + "."
+        var keys: [String] = []
+        var values: [String] = []
+        for (index, key) in activation.configKeys.enumerated() where !key.hasPrefix(prefix) {
+            keys.append(key)
+            values.append(index < activation.configValues.count ? activation.configValues[index] : "")
+        }
+        if activation.configKeys != keys { activation.configKeys = keys }
+        if activation.configValues != values { activation.configValues = values }
+    }
+
     /// The enablement state, every activation's full record and the
     /// workspace's `updatedAt`, for undoing in-memory changes after a failed
     /// save.
@@ -264,6 +321,7 @@ public enum WorkspaceCapabilityActivation {
             activation.configValues = record.configValues
             activation.overriddenComponentIDs = record.overriddenComponentIDs
             activation.overridingRowIDs = record.overridingRowIDs
+            activation.knownComponentIDs = record.knownComponentIDs
             activation.revision = record.revision
             activation.updatedAt = record.updatedAt
             activation.workspace = target
@@ -390,6 +448,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
     public let configValues: [String]
     public let overriddenComponentIDs: [String]
     public let overridingRowIDs: [String]
+    public let knownComponentIDs: [String]
     public let revision: Int
     public let createdAt: Date
     public let updatedAt: Date
@@ -405,6 +464,7 @@ public struct PluginActivationRecord: Equatable, Sendable {
         configValues = activation.configValues
         overriddenComponentIDs = activation.overriddenComponentIDs
         overridingRowIDs = activation.overridingRowIDs
+        knownComponentIDs = activation.knownComponentIDs
         revision = activation.revision
         createdAt = activation.createdAt
         updatedAt = activation.updatedAt
@@ -435,6 +495,9 @@ public struct PluginActivationRecord: Equatable, Sendable {
         }
         if activation.overridingRowIDs != overridingRowIDs {
             activation.overridingRowIDs = overridingRowIDs
+        }
+        if activation.knownComponentIDs != knownComponentIDs {
+            activation.knownComponentIDs = knownComponentIDs
         }
         if activation.createdAt != createdAt { activation.createdAt = createdAt }
         let current = activation.bindings.filter { !$0.isDeleted }

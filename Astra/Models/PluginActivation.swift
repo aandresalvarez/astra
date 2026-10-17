@@ -32,6 +32,11 @@ public final class PluginActivation {
     /// nothing is duplicated and nothing is found by name.
     public var overriddenComponentIDs: [String]
     public var overridingRowIDs: [String]
+    /// The components of the definition this activation was last reconciled
+    /// against. An Update compares them with the new definition: one that is
+    /// gone (and not taken over through `replaces`) has its settings,
+    /// accounts and secrets released. Empty means not yet reconciled.
+    public var knownComponentIDs: [String]
     public var revision: Int
     public var createdAt: Date
     public var updatedAt: Date
@@ -58,6 +63,7 @@ public final class PluginActivation {
         self.configValues = []
         self.overriddenComponentIDs = []
         self.overridingRowIDs = []
+        self.knownComponentIDs = []
         self.revision = 0
         self.createdAt = createdAt
         self.updatedAt = createdAt

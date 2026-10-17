@@ -11,15 +11,32 @@ enum CapabilityResourceComponentKind: String {
 
 enum CapabilityResourceOrigin {
     static func componentID(for skill: PluginSkill) -> String {
-        "skill:\(normalized(skill.name))"
+        "skill:\(normalized(skill.id ?? skill.name))"
     }
 
     static func componentID(for connector: PluginConnector) -> String {
-        "connector:\(normalized(connector.serviceType)):\(normalized(connector.name))"
+        "connector:\(normalized(connector.serviceType)):\(normalized(connector.id ?? connector.name))"
     }
 
     static func componentID(for tool: PluginLocalTool) -> String {
-        "tool:\(normalized(tool.toolType)):\(normalized(tool.command)):\(normalized(tool.name))"
+        if let id = tool.id { return "tool:\(normalized(id))" }
+        return "tool:\(normalized(tool.toolType)):\(normalized(tool.command)):\(normalized(tool.name))"
+    }
+
+    /// The component identities `replaces` names, in the same form as
+    /// `componentID(for:)`: a bare value is that kind's `id`.
+    static func replacedComponentIDs(for skill: PluginSkill) -> [String] {
+        (skill.replaces ?? []).map { $0.contains(":") ? $0 : "skill:\(normalized($0))" }
+    }
+
+    static func replacedComponentIDs(for connector: PluginConnector) -> [String] {
+        (connector.replaces ?? []).map {
+            $0.contains(":") ? $0 : "connector:\(normalized(connector.serviceType)):\(normalized($0))"
+        }
+    }
+
+    static func replacedComponentIDs(for tool: PluginLocalTool) -> [String] {
+        (tool.replaces ?? []).map { $0.contains(":") ? $0 : "tool:\(normalized($0))" }
     }
 
     static func componentID(for template: PluginTemplate) -> String {

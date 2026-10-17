@@ -975,6 +975,7 @@ public struct ASTRAApp: App {
                                                                   movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
                     ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
                     PluginSecretCleanupOutbox.resumePending(modelContext: modelContext)
+                    PluginRemoveJournal.resumePending(modelContext: modelContext)
                     WorkspaceDeletionCleanupService.dropUnconfirmed(
                         modelContext: modelContext, rescanMarker: WorkspaceRecoveryService.defaultIncompleteRecoveryMarker
                     )
@@ -984,6 +985,15 @@ public struct ASTRAApp: App {
         // Recovery may have re-created plugin rows from a mirror an older build
         // wrote; fold them onto activations now rather than next launch.
         PluginActivationMigration.migrateIfNeeded(modelContext: modelContext)
+        // The built-in sync in ContentView.handleAppear may have brought new
+        // definitions; every activation is reconciled with what is installed.
+        do {
+            try PluginUpdateService.reconcileAll(modelContext: modelContext)
+        } catch {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                "operation": "plugin_reconcile", "error_type": String(describing: error)
+            ], level: .error)
+        }
         runOneTimeSkillMigrationsIfNeeded(modelContext: modelContext)
         settleInterruptedWork(modelContext: modelContext, autoExportWorkspaces: !skipWorkspaceRecovery)
     }

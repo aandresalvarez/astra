@@ -1,0 +1,242 @@
+import Foundation
+import SwiftData
+import Testing
+import ASTRAModels
+@testable import ASTRA
+import ASTRACore
+
+/// Plugins 2.0 R3: Update, accounts, settings and Remove on the activation
+/// model (spec, "Operations").
+@Suite("Plugin operations")
+@MainActor
+struct PluginOperationsTests {
+    @Test("Renaming a component across an Update keeps its settings, accounts and schedule")
+    func renameAcrossUpdateKeepsState() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        let workspace = env.workspace
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: workspace, modelContext: env.context)
+        let account = try #require(workspace.connectors.first)
+        let oldSkillID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: "skill:report-agent")
+        let schedule = TaskSchedule(name: "Weekly", goal: "Report", workspace: workspace)
+        schedule.skillIDs = [oldSkillID.uuidString]
+        env.context.insert(schedule)
+        try env.context.save()
+
+        var v2 = Self.package(version: "2.0.0")
+        v2.skills[0].id = "summary-agent"
+        v2.skills[0].name = "Summary Agent"
+        v2.skills[0].replaces = ["report-agent"]
+        v2.connectors[0].id = "tracker"
+        v2.connectors[0].replaces = ["connector:tracker:tracker-api"]
+        try env.importUpdate(v2)
+
+        let newSkillComponent = "skill:summary-agent"
+        #expect(activation.configuration(forComponent: newSkillComponent) == ["PROJECT": "alpha"])
+        #expect(activation.configuration(forComponent: "skill:report-agent").isEmpty)
+        #expect(activation.accounts(forComponent: "connector:tracker:tracker").map(\.id) == [account.id])
+        let newSkillID = PluginRuntimeProjection.derivedID(activationID: activation.id, componentID: newSkillComponent)
+        #expect(schedule.skillIDs == [newSkillID.uuidString])
+        #expect(activation.recordedVersion == "2.0.0")
+        #expect(activation.knownComponentIDs.contains(newSkillComponent))
+
+        let projected = WorkspaceCapabilities(workspace: workspace, packageDefinitions: [v2]).activeSkills
+        #expect(projected.map(\.id) == [newSkillID])
+        #expect(projected.first?.environmentVariables["PROJECT"] == "alpha")
+    }
+
+    @Test("A component an Update drops is gone, with its state; its account stays")
+    func droppedComponentIsReleased() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        let workspace = env.workspace
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: workspace))
+        let account = try #require(workspace.connectors.first)
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: v1.skills[0], pluginID: v1.id, in: workspace, modelContext: env.context)
+
+        var v2 = Self.package(version: "2.0.0")
+        v2.connectors = []
+        v2.localTools = []
+        v2.skills[0].id = "unrelated-agent"
+        v2.skills[0].name = "Unrelated Agent"
+        try env.importUpdate(v2)
+
+        #expect(activation.bindings.isEmpty)
+        #expect(activation.configKeys.isEmpty)
+        #expect(activation.knownComponentIDs == ["skill:unrelated-agent"])
+        #expect(workspace.connectors.map(\.id) == [account.id])
+        let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: [v2])
+        #expect(capabilities.activeTools.isEmpty)
+        #expect(capabilities.activeConnectors.isEmpty)
+        #expect(capabilities.activeSkills.map(\.name) == ["Unrelated Agent"])
+    }
+
+    @Test("An Update a workspace would refuse is refused for every workspace")
+    func updateRefusedByAWorkspace() throws {
+        let env = try Environment()
+        let v1 = Self.package(version: "1.0.0")
+        try env.install(v1)
+        var v2 = Self.package(version: "2.0.0")
+        v2.requires = ["not-installed-plugin"]
+
+        #expect(throws: PluginUpdateService.UpdateError.self) { try env.importUpdate(v2) }
+        #expect(env.library.installedPackage(id: v1.id)?.version == "1.0.0")
+        #expect(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace)?.recordedVersion == "1.0.0")
+    }
+
+    @Test("Two components may not share an identity, and replaces must be unambiguous")
+    func componentIdentityIsValidated() {
+        var package = Self.package(version: "1.0.0")
+        package.skills.append(package.skills[0])
+        package.localTools[0].replaces = ["skill:report-agent"]
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        let identityIssues = report.issues.filter { $0.code == .invalidComponentIdentity }
+        #expect(identityIssues.contains { $0.title == "Duplicate component" })
+        #expect(identityIssues.contains { $0.message.contains("different kind") })
+        #expect(identityIssues.contains { $0.message.contains("still declares") })
+        #expect(!report.canInstall)
+
+        #expect(PluginUpdateService.replacesProblems(in: Self.package(version: "1.0.0")).isEmpty)
+    }
+
+    @Test("Accounts: a second one gets its own alias, can become the default, and deleting one unbinds it everywhere")
+    func accountOperations() throws {
+        let env = try Environment()
+        let package = Self.package(version: "1.0.0")
+        try env.install(package)
+        let workspace = env.workspace
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let component = CapabilityResourceOrigin.componentID(for: package.connectors[0])
+        let first = try #require(activation.accounts(forComponent: component).first)
+
+        let second = try PluginOperations.addAccount(for: package.connectors[0], of: package, in: workspace, modelContext: env.context)
+        #expect(second.name == "\(first.name) 2")
+        #expect(second.workspace?.id == workspace.id)
+        #expect(activation.accounts(forComponent: component).map(\.id) == [first.id, second.id])
+
+        try PluginOperations.makeDefault(second, componentID: component, pluginID: package.id, in: workspace, modelContext: env.context)
+        #expect(activation.accounts(forComponent: component).first?.id == second.id)
+        #expect(PluginOperations.workspacesUsing(second).map(\.id) == [workspace.id])
+
+        try PluginOperations.deleteAccount(second, modelContext: env.context)
+        #expect(activation.accounts(forComponent: component).map(\.id) == [first.id])
+        #expect(activation.bindings.first?.isDefault == true)
+        #expect(!workspace.connectors.contains { $0.id == second.id })
+    }
+
+    @Test("A setting is per workspace and falls back to the plugin's default")
+    func settingsArePerWorkspace() throws {
+        let env = try Environment()
+        let package = Self.package(version: "1.0.0")
+        try env.install(package)
+        let other = Workspace(name: "Other", primaryPath: "/tmp/plugin-ops-other")
+        env.context.insert(other)
+        try env.installer.install(package, into: other, modelContext: env.context, announceCatalogMutation: false)
+
+        try PluginOperations.setSetting("PROJECT", to: "alpha", of: package.skills[0], pluginID: package.id, in: env.workspace, modelContext: env.context)
+        let here = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: env.workspace))
+        let there = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: other))
+        #expect(PluginOperations.setting("PROJECT", of: package.skills[0], in: here) == "alpha")
+        #expect(PluginOperations.setting("PROJECT", of: package.skills[0], in: there) == "default-project")
+    }
+
+    @Test("An interrupted Remove is finished at launch; one never saved is dropped")
+    func removeJournalResumes() throws {
+        let env = try Environment()
+        let package = Self.package(version: "1.0.0")
+        try env.install(package)
+        let journal = PluginRemoveJournal(fileURL: env.root.appendingPathComponent("PluginRemoveIntents.json"))
+
+        // Never saved: the activation is still there, so the library stays.
+        try journal.begin(package.id)
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        #expect(env.library.installedPackage(id: package.id) != nil)
+        #expect(journal.pending().isEmpty)
+
+        // Saved, then the exit came before the library entry went.
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0 = WorkspaceCapabilityActivationState() }
+        try env.context.save()
+        try journal.begin(package.id)
+        PluginRemoveJournal.resumePending(modelContext: env.context, library: env.library, journal: journal)
+        #expect(env.library.installedPackage(id: package.id) == nil)
+        #expect(journal.pending().isEmpty)
+    }
+
+    // MARK: - Fixtures
+
+    static func package(version: String) -> PluginPackage {
+        PluginPackage(
+            id: "ops.report",
+            name: "Reports",
+            icon: "doc.text",
+            description: "Weekly reports",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: version,
+            skills: [PluginSkill(
+                name: "Report Agent", icon: "doc.text", description: "Writes reports",
+                allowedTools: ["Read"], disallowedTools: [], customTools: [],
+                behaviorInstructions: "Write the weekly report.",
+                environmentKeys: ["PROJECT"], environmentValues: ["default-project"]
+            )],
+            connectors: [PluginConnector(
+                name: "Tracker API", serviceType: "tracker", icon: "network", description: "Tracker",
+                baseURL: "https://tracker.example.com", authMethod: "bearer",
+                credentialHints: [.init(key: "TRACKER_TOKEN", hint: "Token")],
+                configHints: [], notes: ""
+            )],
+            localTools: [PluginLocalTool(
+                name: "report-cli", description: "Report CLI", icon: "terminal",
+                toolType: "cli", command: "report-cli", arguments: ""
+            )],
+            templates: [],
+            governance: .builtInApproved(riskLevel: .low)
+        )
+    }
+
+    @MainActor
+    struct Environment {
+        let container: ModelContainer
+        let context: ModelContext
+        let workspace: Workspace
+        let root: URL
+        let library: CapabilityLibrary
+        let installer: CapabilityInstaller
+
+        static var retained: [ModelContainer] = []
+
+        init() throws {
+            container = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            Self.retained.append(container)
+            context = container.mainContext
+            workspace = Workspace(name: "Ops", primaryPath: "/tmp/plugin-ops")
+            context.insert(workspace)
+            root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("astra-plugin-ops-\(UUID().uuidString)", isDirectory: true)
+            library = CapabilityLibrary(directory: root.appendingPathComponent("Capabilities", isDirectory: true))
+            installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+        }
+
+        func install(_ package: PluginPackage) throws {
+            try installer.install(package, into: workspace, modelContext: context, announceCatalogMutation: false)
+        }
+
+        /// What an import of a newer version does: refuse it if a workspace
+        /// would, replace the library entry, reconcile every activation.
+        func importUpdate(_ package: PluginPackage) throws {
+            if let refusal = PluginUpdateService.refusals(for: package, modelContext: context, approvalRecords: []).first {
+                throw refusal
+            }
+            try library.install(package, sourceMetadata: .builtIn())
+            try PluginUpdateService.reconcileAll(modelContext: context, packages: library.installedPackages())
+        }
+    }
+}

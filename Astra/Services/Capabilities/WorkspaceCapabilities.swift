@@ -85,12 +85,19 @@ struct WorkspaceCapabilities {
             }
             return connector.workspace?.id == workspace.id
         }
-        // An account bound to one of this workspace's plugins is in scope only
-        // through its binding, so turning the plugin off takes it out.
+        // An account is in scope only through its binding, so turning its
+        // plugin off, removing the plugin or dropping the component takes it
+        // out: a row bound here, or a workspace row a plugin created. A
+        // shared row this workspace listed itself stays an authored choice.
         let boundAccountIDs = boundAccountIDs
-        let authored = (workspaceConnectors + attached + enabledGlobalConnectors)
-            .filter { !boundAccountIDs.contains($0.id) }
-        return uniqueConnectors(authored + projection.connectors)
+        let authored = (workspaceConnectors + attached).filter { !Self.isPluginAccount($0) }
+            + enabledGlobalConnectors
+        return uniqueConnectors(authored.filter { !boundAccountIDs.contains($0.id) } + projection.connectors)
+    }
+
+    /// A workspace row a plugin created for one of its connector components.
+    static func isPluginAccount(_ connector: Connector) -> Bool {
+        !connector.isGlobal && !(connector.originPackageID ?? "").isEmpty
     }
 
     /// Connector rows bound as accounts to any of this workspace's
