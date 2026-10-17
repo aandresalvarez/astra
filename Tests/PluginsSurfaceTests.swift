@@ -199,6 +199,44 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("An optional account neither sends Add through account setup nor refuses it")
+    func addIgnoresOptionalOAuthRequirements() throws {
+        let google = try #require(try builtIn("google-workspace").setupRequirements.first)
+        for provider in [google.provider, "salesforce"] {
+            var imported = package("imported-optional", name: "Optional")
+            imported.setupRequirements = [
+                PluginSetupRequirement(id: "acct", kind: .oauthAccount, displayName: "Account", provider: provider, required: false)
+            ]
+            #expect(try CapabilityCatalogActionService.addRoute(for: imported) == .enable)
+        }
+    }
+
+    @Test("A required account with no working sign-in is a pending step")
+    func requiredOAuthAccountsArePendingUntilConnected() throws {
+        let google = try builtIn("google-workspace")
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: google, googleAccountConnected: false).count == 1)
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: google, googleAccountConnected: true).isEmpty)
+        var optional = google
+        optional.setupRequirements = optional.setupRequirements.map { var r = $0; r.required = false; return r }
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: optional, googleAccountConnected: false).isEmpty)
+        var crm = package("imported-crm", name: "CRM")
+        crm.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM", provider: "salesforce")]
+        #expect(PluginsSurfacePresentation.pendingAccounts(for: crm, googleAccountConnected: true).map(\.id) == ["crm"])
+
+        // Connected means the runtime can still get a token: an expired one
+        // refreshes, a revoked or lost one does not.
+        let active = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com")
+        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .expiredToken))
+        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: nil))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .missingAccount))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .revokedToken))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(nil, credentialStatus: nil))
+        for state in [GoogleOAuthAccountAuthState.needsReauth, .revoked] {
+            let stale = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", authState: state)
+            #expect(!GoogleWorkspaceCapability.isAccountConnected(stale, credentialStatus: .expiredToken))
+        }
+    }
+
     @Test("The preview is on by default in development builds only, and remembers a choice")
     func previewFlagDefaultsByChannel() {
         let defaults = InMemoryDefaults()

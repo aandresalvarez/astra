@@ -23,6 +23,7 @@ struct PluginsSurfaceView: View {
     @Query(filter: #Predicate<Skill> { $0.isGlobal == true }) private var globalSkills: [Skill]
     @Query(filter: #Predicate<Connector> { $0.isGlobal == true }) private var globalConnectors: [Connector]
     @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true }) private var globalTools: [LocalTool]
+    @Query private var googleAccounts: [GoogleOAuthAccountProfile]
 
     @State private var query = ""
     @State private var expanded: Set<String> = []
@@ -39,6 +40,9 @@ struct PluginsSurfaceView: View {
     @State private var accountSetupPackage: PluginPackage?
     @State private var accountSetupContext: CapabilityCatalogPolicyContext?
     @State private var approvalGeneration = 0
+    /// The Keychain side of the Google account, read on refresh rather than
+    /// on every render; the profile's own state comes from the store.
+    @State private var googleCredentialStatuses: [UUID: GoogleOAuthCredentialStatus] = [:]
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -62,9 +66,15 @@ struct PluginsSurfaceView: View {
         )
     }
 
+    private var googleAccountConnected: Bool {
+        let account = GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts)
+        return GoogleWorkspaceCapability.isAccountConnected(account, credentialStatus: account.flatMap { googleCredentialStatuses[$0.id] })
+    }
+
     private var state: PluginsSurfaceState {
         let context = policyContext
         let currentCapabilities = capabilities
+        let googleConnected = googleAccountConnected
         return PluginsSurfacePresentation.makeState(packages.map { package in
             let packageState = CapabilityPackageState(package: package, workspace: workspace, capabilities: currentCapabilities)
             let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
@@ -72,7 +82,8 @@ struct PluginsSurfaceView: View {
                 package: package,
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
-                    + failingSetup(for: package).count,
+                    + failingSetup(for: package).count
+                    + PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleConnected).count,
                 isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
                 isRemovable: Self.isRemovable(package)
             )
@@ -137,6 +148,8 @@ struct PluginsSurfaceView: View {
             }
             refreshStatuses()
         }
+        // A sign-in, reauthorization or revocation stamps the profile.
+        .onChange(of: googleAccounts.map(\.updatedAt)) { _, _ in refreshGoogleCredential() }
         .onChange(of: expanded) { _, ids in
             PluginsSurfacePreferences.setExpandedPluginIDs(ids, workspaceID: workspace.id)
         }
@@ -265,7 +278,8 @@ struct PluginsSurfaceView: View {
     }
 
     private func componentRow(_ component: PluginComponent, package: PluginPackage, isEnabled: Bool) -> some View {
-        let failing = isEnabled ? failingSetup(for: package).first { $0.component.name == component.name } : nil
+        let checkID = PluginManifestConverter.prerequisiteID(of: component)
+        let failing = isEnabled && checkID != nil ? failingSetup(for: package).first { $0.prerequisite.id == checkID } : nil
         let packageState = isEnabled && component.kind == .connector
             ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
             : nil
@@ -275,6 +289,10 @@ struct PluginsSurfaceView: View {
             packageState?.connectorsNeedingAttention.first { CapabilityRuntimeResourceMatcher.connectorMatches(spec, connector: $0) }
         }
         let missing = packageState?.missingConnectors.contains { $0.name == component.name } ?? false
+        let accountPending = isEnabled && component.requirement.map { requirement in
+            PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleAccountConnected)
+                .contains { $0.id == requirement.id }
+        } == true
         return HStack(spacing: 8) {
             Text(component.name).font(Stanford.ui(13))
             Text(kindLabel(component.kind)).font(Stanford.caption(11)).foregroundStyle(.secondary)
@@ -308,6 +326,12 @@ struct PluginsSurfaceView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(Stanford.lagunita)
+            } else if accountPending {
+                // Add routes through the install flow that signs in again.
+                Button("Reconnect") { add(package.id) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
             } else if failing != nil {
                 Text("Not working").font(Stanford.caption(11)).foregroundStyle(Stanford.statusError)
             } else if isEnabled, component.kind == .setup, isUsable(component, package: package) {
@@ -337,16 +361,16 @@ struct PluginsSurfaceView: View {
 
     /// This setup component's own prerequisite was checked and works.
     private func isUsable(_ component: PluginComponent, package: PluginPackage) -> Bool {
-        guard let prerequisite = package.prerequisites.first(where: { $0.displayName == component.name }),
-              let status = statuses[prerequisite.id] else { return false }
+        guard let id = PluginManifestConverter.prerequisiteID(of: component), let status = statuses[id] else { return false }
         return status.isUsable
     }
 
+    /// Matched by check identity, not label: two prerequisites may share a name.
     private func failingSetup(for package: PluginPackage) -> [FailingSetup] {
         let components = PluginManifestConverter.manifest(from: package).components
         return package.prerequisites.compactMap { prerequisite in
             guard let status = statuses[prerequisite.id], !status.isUsable,
-                  let component = components.first(where: { $0.kind == .setup && $0.name == prerequisite.displayName })
+                  let component = components.first(where: { PluginManifestConverter.prerequisiteID(of: $0) == prerequisite.id })
             else { return nil }
             let needsInstall: Bool = { if case .missingBinary = status { return true } else { return false } }()
             return FailingSetup(
@@ -357,7 +381,14 @@ struct PluginsSurfaceView: View {
         }
     }
 
+    private func refreshGoogleCredential() {
+        let usesGoogle = packages.contains(where: GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup)
+        let account = usesGoogle ? GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts) : nil
+        googleCredentialStatuses = account.map { [$0.id: GoogleOAuthCredentialVault().credentialStatus(for: $0)] } ?? [:]
+    }
+
     private func refreshStatuses() {
+        refreshGoogleCredential()
         let enabled = packages.filter {
             !$0.prerequisites.isEmpty
                 && CapabilityPackageState(package: $0, workspace: workspace, capabilities: capabilities).isEnabled
