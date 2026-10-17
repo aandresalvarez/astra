@@ -282,6 +282,55 @@ struct PluginOperationsTests {
         }
     }
 
+    @Test("A secret a kept skill stops declaring is journaled with the save and deleted after it")
+    func droppedSecretKeyIsJournaledAndDeleted() throws {
+        guard AstraSecureKeychainTestSupport.isAvailable else { return }
+        let keychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let bootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: bootstrap)
+        defer {
+            AstraSecureKeychainTestSupport.cleanup(keychainPath: keychainPath, bootstrapService: bootstrap, services: [])
+        }
+        try AstraSecureKeychainStore.$keychainPathOverride.withValue(keychainPath) {
+            try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(bootstrap) {
+                let env = try Environment()
+                var v1 = Self.package(version: "1.0.0")
+                v1.skills[0].environmentKeys = ["PROJECT", "API_TOKEN"]
+                v1.skills[0].environmentValues = ["default-project", ""]
+                try env.install(v1)
+                try PluginOperations.setSetting("API_TOKEN", to: "s3cret", of: v1.skills[0], pluginID: v1.id, in: env.workspace, modelContext: env.context)
+                let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+                let namespace = PluginRuntimeProjection.derivedID(of: activation, componentID: "skill:report-agent")
+                let persistence = SkillSecretSeam.required
+                #expect(persistence.secretExists(key: "API_TOKEN", skillID: namespace))
+                #expect(activation.secretSettingKeys == ["skill:report-agent#API_TOKEN"])
+
+                try env.importUpdate(Self.package(version: "2.0.0"))
+                #expect(activation.secretSettingKeys.isEmpty)
+                #expect(!persistence.secretExists(key: "API_TOKEN", skillID: namespace))
+
+                // The journal: recorded before the save, spared while a live
+                // activation records the key again, cleaned otherwise.
+                let outbox = PluginSecretCleanupOutbox(fileURL: env.root.appendingPathComponent("PluginSecretCleanup.json"))
+                let stale = PluginUpdateService.StaleSecret(key: "API_TOKEN", skillID: namespace)
+                var recorded: [PluginUpdateService.StaleSecret] = []
+                #expect(persistence.saveSecretValue("again", key: "API_TOKEN", skillID: namespace, skillName: "", allowUserInteraction: false))
+                WorkspaceCapabilityActivation.setSecretRecorded(true, forKey: "skill:report-agent#API_TOKEN", on: activation)
+                #expect(PluginSecretCleanupOutbox.deleteThenClean([], keys: [stale], modelContext: env.context, outbox: outbox) {
+                    recorded = (try? outbox.pendingKeys()) ?? []
+                    return true
+                })
+                #expect(recorded == [stale])
+                #expect(persistence.secretExists(key: "API_TOKEN", skillID: namespace))
+                WorkspaceCapabilityActivation.setSecretRecorded(false, forKey: "skill:report-agent#API_TOKEN", on: activation)
+                try outbox.writeEntries(["\(namespace.uuidString)#API_TOKEN"])
+                PluginSecretCleanupOutbox.resumePending(modelContext: env.context, outbox: outbox)
+                #expect(!persistence.secretExists(key: "API_TOKEN", skillID: namespace))
+                #expect(try outbox.entries().isEmpty)
+            }
+        }
+    }
+
     @Test("A component may take over one predecessor only")
     func onePredecessorPerComponent() {
         var package = Self.package(version: "2.0.0")
