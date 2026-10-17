@@ -117,9 +117,13 @@ target_for_path() {
       ;;
     Astra/Services/Runtime/AgentRuntimeProcessRunner.swift|Astra/Services/Runtime/AgentProcessPipeReader.swift|Astra/Services/Runtime/AgentExecutionScopedProcess.swift|Tests/AgentRuntimePipeCompletionTests.swift|Tests/AgentExecutionScopedProcessTests.swift)
       add_target "AgentRuntimePipeCompletionTests"
+      add_target "StreamVolumeAccountingTests"
       add_target "AgentExecutionScopedProcessTests"
       add_target "AgentUtilityRuntimeTests"
       add_target "ProcessMonitorTests"
+      ;;
+    Tests/RuntimeProgressSignalTests.swift)
+      add_target "StreamVolumeAccountingTests"
       ;;
     Astra/Views/UsageDashboard*.swift|Tests/UsageDashboard*.swift|Tests/LargeHistoryResponsivenessTests.swift)
       add_target "UsageDashboardStoreTests"

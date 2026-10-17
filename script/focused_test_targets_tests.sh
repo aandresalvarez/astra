@@ -159,7 +159,7 @@ assert_targets "OrphanedV12StoreMigratorTests" \
   "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift" \
   "Tests/OrphanedV12StoreMigratorTests.swift"
 
-assert_targets $'AgentRuntimePipeCompletionTests\nAgentExecutionScopedProcessTests\nAgentUtilityRuntimeTests\nProcessMonitorTests' \
+assert_targets $'AgentRuntimePipeCompletionTests\nStreamVolumeAccountingTests\nAgentExecutionScopedProcessTests\nAgentUtilityRuntimeTests\nProcessMonitorTests' \
   "Astra/Services/Runtime/AgentProcessPipeReader.swift" \
   "Astra/Services/Runtime/AgentExecutionScopedProcess.swift" \
   "Tests/AgentExecutionScopedProcessTests.swift" \
@@ -173,3 +173,5 @@ assert_targets $'UsageDashboardStoreTests\nUsageDashboardRenderingTests' \
   "Tests/UsageDashboardStoreTests.swift" \
   "Tests/UsageDashboardRenderingTests.swift" \
   "Tests/LargeHistoryResponsivenessTests.swift"
+
+assert_targets "StreamVolumeAccountingTests" "Tests/RuntimeProgressSignalTests.swift"
