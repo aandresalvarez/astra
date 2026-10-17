@@ -38,9 +38,10 @@ struct CapabilityCatalogActionService {
     /// How Add handles `package`. A package that needs an account of a
     /// provider ASTRA can't sign in to is refused: the router's fallback
     /// sheet would enable it with no account, and it would read as ready
-    /// though its setup never ran.
+    /// though its setup never ran. An optional account neither routes nor
+    /// refuses: the plugin works without it.
     static func addRoute(for package: PluginPackage) throws -> AddRoute {
-        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount }
+        let accounts = package.setupRequirements.filter { $0.kind == .oauthAccount && $0.required }
         if let unsupported = accounts.first(where: { !supportedOAuthProviders.contains($0.provider ?? "") }) {
             throw CapabilityAccountSetupError.unsupportedProvider(account: unsupported.displayName, provider: unsupported.provider)
         }

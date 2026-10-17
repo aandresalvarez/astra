@@ -88,9 +88,11 @@ public struct RepairAction: Codable, Sendable, Equatable {
             command: executable,
             arguments: words.dropFirst().joined(separator: " ")
         ) == nil else { return false }
-        let name = (executable as NSString).lastPathComponent
-        if let binary, name == (binary as NSString).lastPathComponent { return true }
-        return allowsInstaller && installers.contains(name)
+        // The executable is the declared CLI itself: its bare name (found on
+        // PATH, like the check) or the exact path declared. A same-named file
+        // elsewhere (`./gcloud`, `/tmp/gcloud`) is a different program.
+        if let binary, executable == binary || executable == (binary as NSString).lastPathComponent { return true }
+        return allowsInstaller && installers.contains(executable)
     }
 
     /// The repair a component's setup contract offers: its `repair` step,

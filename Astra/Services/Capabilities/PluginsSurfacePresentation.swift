@@ -93,6 +93,16 @@ enum PluginsSurfacePresentation {
             + package.connectors.flatMap { [$0.name, $0.serviceType] }
         return haystack.contains { $0.lowercased().contains(needle) }
     }
+
+    /// The required accounts an added plugin has no working sign-in for: a
+    /// pending step each. Google is the only provider ASTRA signs in to, so
+    /// any other stays pending.
+    static func pendingAccounts(for package: PluginPackage, googleAccountConnected: Bool) -> [PluginSetupRequirement] {
+        package.setupRequirements.filter {
+            $0.kind == .oauthAccount && $0.required
+                && !($0.provider == GoogleWorkspaceCapability.connectorBinding && googleAccountConnected)
+        }
+    }
 }
 
 /// The second tap before a destructive row action: it names what goes and
