@@ -104,16 +104,15 @@ enum ProviderNativeSessionStore {
         fileManager: FileManager
     ) -> Lookup {
         // The launch's own XDG_DATA_HOME wins, then the launch HOME (a skill can scope either), then ASTRA's.
-        let configured = environment["XDG_DATA_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let launchHome = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let configured = environment["XDG_DATA_HOME"] ?? ""
+        let launchHome = environment["HOME"] ?? ""
         let dataHome = !configured.isEmpty
             ? configured
             : path(launchHome.isEmpty ? userHome : launchHome, ".local", "share")
         // OPENCODE_DB overrides the file: absolute as given, relative to OpenCode's own data directory.
-        let override = environment["OPENCODE_DB"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let databasePath = override.isEmpty
-            ? path(dataHome, "opencode", "opencode.db")
-            : (override.hasPrefix("/") ? override : path(dataHome, "opencode", override))
+        let databasePath = RuntimeHomeAccessPolicy.openCodeDatabase.path(
+            environment: environment, directory: path(dataHome, "opencode")
+        )
         let databaseEntry = entryLookup(databasePath, fileManager: fileManager)
         guard databaseEntry == .present else { return databaseEntry }
 
@@ -148,7 +147,7 @@ enum ProviderNativeSessionStore {
         return errno == ENOENT || errno == ENOTDIR ? .absent : .unverifiable
     }
 
-    private static func isPlainSessionToken(_ value: String) -> Bool {
+    static func isPlainSessionToken(_ value: String) -> Bool {
         guard let first = value.unicodeScalars.first,
               value.unicodeScalars.count <= 128,
               CharacterSet.alphanumerics.contains(first) else { return false }

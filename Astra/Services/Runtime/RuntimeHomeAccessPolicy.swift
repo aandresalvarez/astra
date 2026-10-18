@@ -4,6 +4,18 @@ import ASTRACore
 /// Provider-owned startup layout. History is never enumerated. Environment
 /// overrides replace the default location rather than adding a second home.
 struct RuntimeHomeAccessPolicy: Sendable {
+    struct StateFile: Sendable {
+        let name: String
+        let overrideVariable: String
+
+        func path(environment: [String: String], directory: String) -> String {
+            let override = environment[overrideVariable].flatMap { $0.isEmpty ? nil : $0 }
+            let value = override ?? name
+            return value.hasPrefix("/") ? value : (directory as NSString).appendingPathComponent(value)
+        }
+    }
+    static let openCodeDatabase = StateFile(name: "opencode.db", overrideVariable: "OPENCODE_DB")
+
     struct Root: Sendable {
         var variable: String? = nil
         var fallback: String
@@ -14,6 +26,7 @@ struct RuntimeHomeAccessPolicy: Sendable {
         var linuxFallbackSuffix = ""
         var files: [String] = []
         var directories: [String] = []
+        var stateFiles: [StateFile] = []
         var fileOverrides: [String: String] = [:]
         var fallbacks: [String: String] = [:]
 
@@ -88,7 +101,7 @@ extension CursorCLIRuntimeAdapter {
 extension OpenCodeCLIRuntimeAdapter {
     var homeAccessPolicy: RuntimeHomeAccessPolicy {
         .init(roots: [.init(variable: "XDG_CONFIG_HOME", fallback: ".config", suffix: "opencode", writable: false, files: ["opencode.json", "opencode.jsonc"]),
-                      .init(variable: "XDG_DATA_HOME", fallback: ".local/share", suffix: "opencode", files: ["auth.json"]),
+                      .init(variable: "XDG_DATA_HOME", fallback: ".local/share", suffix: "opencode", files: ["auth.json"], stateFiles: [RuntimeHomeAccessPolicy.openCodeDatabase]),
                       .init(variable: "XDG_STATE_HOME", fallback: ".local/state", suffix: "opencode"),
                       .init(variable: "XDG_CACHE_HOME", fallback: ".cache", suffix: "opencode")], environmentFiles: ["OPENCODE_CONFIG"])
     }

@@ -158,7 +158,7 @@ assert_targets $'WorkspaceRightPanelLayoutTests\nPanelLayoutGeometryTests' \
 
 assert_targets ""
 
-assert_targets $'RuntimeHomeAccessTests\nCopilotHomeAccessCheckTests\nRuntimeReadinessServiceTests\nAgentRuntimeAdapterTests\nExecutionEnvironmentTests' \
+assert_targets $'RuntimeHomeAccessTests\nRuntimeHomeAccessEdgeCaseTests\nNativeContinuationFallbackTests\nExecutionSandboxRunnerTests\nCopilotHomeAccessCheckTests\nRuntimeReadinessServiceTests\nAgentRuntimeAdapterTests\nExecutionEnvironmentTests' \
   "Astra/Services/Runtime/AgentRuntimeAdapter.swift"
 
 assert_targets $'CodexMCPConfigRendererTests\nMCPRuntimeProjectionTests' \
@@ -264,11 +264,16 @@ assert_targets $'GitHubReviewPublicationTests\nSwiftDataDeletionPreparationTests
   "Astra/Services/Git/GitHubReviewPublicationService.swift" \
   "Tests/GitHubReviewPublicationTests.swift"
 
-assert_targets $'RuntimeHomeAccessTests\nCopilotHomeAccessCheckTests\nRuntimeReadinessServiceTests\nAgentRuntimeAdapterTests\nExecutionEnvironmentTests' \
+assert_targets $'RuntimeHomeAccessTests\nRuntimeHomeAccessEdgeCaseTests\nNativeContinuationFallbackTests\nExecutionSandboxRunnerTests\nCopilotHomeAccessCheckTests\nRuntimeReadinessServiceTests\nAgentRuntimeAdapterTests\nExecutionEnvironmentTests' \
   "Astra/Services/Runtime/RuntimeHomeAccessPolicy.swift" \
   "Astra/Services/Runtime/RuntimeHomeAccessService.swift" \
   "Astra/Services/Runtime/RuntimeHomeAccessContainerCommand.swift" \
   "Astra/Services/Runtime/RuntimeAccessACL.swift" \
   "Astra/Services/Runtime/AgentRuntimeProcessRunner+HomeAccessGuard.swift" \
   "AstraObjCSupport/AstraMembership.m" \
-  "Tests/RuntimeHomeAccessTests.swift"
+  "Tests/RuntimeHomeAccessTests.swift" \
+  "Tests/RuntimeHomeAccessEdgeCaseTests.swift" \
+  "Astra/Services/Runtime/RuntimeHomeAccessContainerPreflight.swift" \
+  "Astra/Services/Runtime/ProviderNativeSessionStore.swift" \
+  "Astra/Services/Runtime/RuntimeHomeAccessCancellationGate.swift" \
+  "Tests/ExecutionSandboxRunnerTests.swift"

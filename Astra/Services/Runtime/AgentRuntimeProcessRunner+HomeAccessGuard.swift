@@ -8,13 +8,23 @@ extension AgentRuntimeProcessRunner {
     @MainActor
     func guardedSandboxedPlan(
         adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
-        context: AgentRuntimeProcessLaunchContext
-    ) async -> SandboxedPlanOutcome {
-        let outcome = sandboxedPlan(adapter: adapter, context: context)
-        guard case .plan(let plan) = outcome,
-              let message = await Self.providerHomeBlock(for: plan, resumeSessionID: context.nativeContinuationSessionID) else {
-            return outcome
+        context: AgentRuntimeProcessLaunchContext,
+        homeAccessCheck: @MainActor (AgentRuntimeProcessLaunchPlan, String?) async -> String? = { plan, session in
+            await AgentRuntimeProcessRunner.providerHomeBlock(for: plan, resumeSessionID: session)
         }
+    ) async -> SandboxedPlanOutcome {
+        let cancellation = homeAccessCancellation.snapshot()
+        func cancelled() -> Bool {
+            !homeAccessCancellation.isCurrent(cancellation) || Task.isCancelled || context.task.status == .cancelled
+        }
+        guard !cancelled() else { return .blocked(Self.cancelledHomeLaunch) }
+        let outcome = sandboxedPlan(adapter: adapter, context: context)
+        guard case .plan(let original) = outcome else { return outcome }
+        let plan = await RuntimeHomeAccessContainerPreflight.prepare(original, resumeSessionID: context.nativeContinuationSessionID)
+        guard !cancelled() else { return .blocked(Self.cancelledHomeLaunch) }
+        let message = await homeAccessCheck(plan, context.nativeContinuationSessionID)
+        guard !cancelled() else { return .blocked(Self.cancelledHomeLaunch) }
+        guard let message else { return .plan(plan) }
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
             "runtime": plan.runtime.rawValue,
             "reason": RuntimeHomeAccessService.launchStopReason,
@@ -33,17 +43,28 @@ extension AgentRuntimeProcessRunner {
     /// "Verifier failed to run:".
     @MainActor
     func guardedSandboxedUtilityPlan(_ utilityPlan: AgentUtilityLaunchPlan) async -> SandboxedUtilityPlanOutcome {
+        let cancellation = homeAccessCancellation.snapshot()
+        func cancelled() -> Bool { !homeAccessCancellation.isCurrent(cancellation) || Task.isCancelled }
+        let cancelledResult = AgentUtilityRunResult(exitCode: -1, output: "", error: "Utility cancelled before provider launch.")
+        guard !cancelled() else { return .blocked(cancelledResult) }
         let outcome = sandboxedUtilityPlan(utilityPlan)
-        guard case .plan(let plan) = outcome,
-              let message = await Self.providerHomeBlock(for: plan.process, resumeSessionID: nil) else {
-            return outcome
-        }
+        guard case .plan(var plan) = outcome else { return outcome }
+        plan.process = await RuntimeHomeAccessContainerPreflight.prepare(plan.process, resumeSessionID: nil)
+        guard !cancelled() else { return .blocked(cancelledResult) }
+        let message = await Self.providerHomeBlock(for: plan.process, resumeSessionID: nil)
+        guard !cancelled() else { return .blocked(cancelledResult) }
+        guard let message else { return .plan(plan) }
         AppLogger.audit(.workerBlocked, category: "Utility", fields: [
             "runtime": plan.process.runtime.rawValue,
             "reason": RuntimeHomeAccessService.launchStopReason,
             "source": "provider_home_access"
         ], level: .error)
         return .blocked(AgentUtilityRunResult(exitCode: -1, output: "", error: message))
+    }
+
+    private static var cancelledHomeLaunch: AgentProcessResult {
+        AgentProcessResult(exitCode: -1, error: "Run cancelled before provider launch.",
+                           runtimeStopReason: "cancelled", runtimeStopMessage: "Run cancelled before provider launch.")
     }
 
     /// Only immutable launch facts cross into the background filesystem probe.

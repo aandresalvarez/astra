@@ -386,9 +386,9 @@ enum DockerExecutionPlanner {
         }
         dockerArgs.append("--")
         dockerArgs.append(image)
-        dockerArgs.append(contentsOf: RuntimeHomeAccessContainerCommand.command(
-            runtime: base.runtime, executable: containerExecutable, arguments: base.arguments
-        ))
+        let providerCommandIndex = dockerArgs.count
+        dockerArgs.append(containerExecutable)
+        dockerArgs.append(contentsOf: base.arguments)
 
         var commandFields = base.commandPlannedFields
         commandFields["execution_environment_kind"] = environment.kind.rawValue
@@ -420,7 +420,7 @@ enum DockerExecutionPlanner {
             processEnvironment[key] = value
         }
 
-        return .success(AgentRuntimeProcessLaunchPlan(
+        var resolvedPlan = AgentRuntimeProcessLaunchPlan(
             runtime: base.runtime,
             executablePath: dockerRuntime.executablePath,
             arguments: dockerArgs,
@@ -438,7 +438,9 @@ enum DockerExecutionPlanner {
             interactiveAsk: base.interactiveAsk,
             pathMapper: mapper,
             executionEnvironment: resolvedEnvironment
-        ))
+        )
+        resolvedPlan.containerProviderCommandIndex = providerCommandIndex
+        return .success(resolvedPlan)
     }
 
     private static func hostProviderWorkspaceContainerPlan(

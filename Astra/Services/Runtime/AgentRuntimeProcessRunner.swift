@@ -97,6 +97,7 @@ final class AgentRuntimeProcessRunner {
     typealias DockerRuntimeProvider = @Sendable () -> DockerRuntimeResolution?
 
     private var currentProcess: AgentRuntimeProcessControl?
+    let homeAccessCancellation = RuntimeHomeAccessCancellationGate()
     private let sandboxSettingsProvider: SandboxSettingsProvider
     private let gitCredentialContextProvider: GitCredentialContextProvider
     private let dockerRuntimeProvider: DockerRuntimeProvider
@@ -126,6 +127,7 @@ final class AgentRuntimeProcessRunner {
     }
 
     func cancel() {
+        homeAccessCancellation.invalidate()
         currentProcess?.terminate()
         currentProcess = nil
     }

@@ -7,27 +7,30 @@ import ASTRACore
 enum RuntimeHomeAccessContainerCommand {
     static let failureMarker = "ASTRA_PROVIDER_HOME_ACCESS_DENIED:"
 
-    static func command(runtime: AgentRuntimeID, executable: String, arguments: [String]) -> [String] {
+    static func command(runtime: AgentRuntimeID, executable: String, arguments: [String], resumeSessionID: String? = nil) -> [String] {
         let policy = AgentRuntimeAdapterRegistry.homeAccessPolicy(for: runtime)
-        return ["/bin/sh", "-c", script(policy: policy), "astra-home-preflight", executable] + arguments
+        return ["/bin/sh", "-c", script(policy: policy, resumeSessionID: runtime == .copilotCLI ? resumeSessionID : nil), "astra-home-preflight", executable] + arguments
     }
 
-    static func script(policy: RuntimeHomeAccessPolicy) -> String {
+    static func script(policy: RuntimeHomeAccessPolicy, resumeSessionID: String? = nil) -> String {
         var lines = [#"""
         astra_home_fail() {
             printf '%s %s\n' 'ASTRA_PROVIDER_HOME_ACCESS_DENIED:' "$1" >&2
             exit 78
         }
+        astra_home_parent() {
+            astra_parent=${1%/*}
+            case "$1" in */*) [ -n "$astra_parent" ] || astra_parent=/;; *) astra_parent=.;; esac
+        }
         astra_home_directory() {
             astra_p=$1
             if [ -e "$astra_p" ] || [ -L "$astra_p" ]; then
-                [ -d "$astra_p" ] && [ -r "$astra_p" ] && [ -x "$astra_p" ] || astra_home_fail "Cannot read settings/state folder: $astra_p"
+                [ -d "$astra_p" ] && [ -x "$astra_p" ] && { [ "${4:-1}" = 0 ] || [ -r "$astra_p" ]; } || astra_home_fail "Cannot read settings/state folder: $astra_p"
                 if [ "$2" = 1 ]; then
                     [ -w "$astra_p" ] || astra_home_fail "Cannot write state folder: $astra_p"
                 fi
             elif [ "${3:-$2}" = 1 ]; then
-                astra_parent=${astra_p%/*}
-                [ -n "$astra_parent" ] || astra_parent=.
+                astra_home_parent "$astra_p"
                 while [ ! -e "$astra_parent" ] && [ ! -L "$astra_parent" ]; do
                     case "$astra_parent" in */*) astra_parent=${astra_parent%/*};; *) astra_parent=.;; esac
                     [ -n "$astra_parent" ] || astra_parent=/
@@ -41,6 +44,14 @@ enum RuntimeHomeAccessContainerCommand {
             elif [ "$2" = 1 ]; then
                 astra_home_fail "Settings override does not exist: $1"
             fi
+        }
+        astra_home_state_file() {
+            astra_home_file "$1" 0
+            if [ -e "$1" ]; then
+                [ -w "$1" ] || astra_home_fail "Cannot write state file: $1"
+            fi
+            astra_home_parent "$1"
+            astra_home_directory "$astra_parent" 1 1 0
         }
         if [ -z "${HOME:-}" ]; then
             HOME=$(cd ~ && pwd) || astra_home_fail 'Cannot resolve provider home'
@@ -70,6 +81,14 @@ enum RuntimeHomeAccessContainerCommand {
             }
             for directory in root.directories {
                 lines.append("astra_home_directory \"$\(variable)\"/\(quoted(directory)) \(root.writable ? 1 : 0) \((root.createIfMissing ?? root.writable) ? 1 : 0)")
+            }
+            for file in root.stateFiles {
+                lines.append("astra_state_file=\"$\(variable)\"/\(quoted(file.name))")
+                lines.append("if [ -n \"${\(file.overrideVariable):-}\" ]; then case \"$\(file.overrideVariable)\" in /*) astra_state_file=\"$\(file.overrideVariable)\";; *) astra_state_file=\"$\(variable)\"/\"$\(file.overrideVariable)\";; esac; fi")
+                lines.append("astra_home_state_file \"$astra_state_file\"")
+            }
+            if let sessionID = resumeSessionID, ProviderNativeSessionStore.isPlainSessionToken(sessionID), root.directories.contains("session-state") {
+                lines.append("astra_home_directory \"$\(variable)\"/\(quoted("session-state/" + sessionID)) 1 1")
             }
         }
         lines.append("astra_home_config=\"$HOME\"")

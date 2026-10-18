@@ -64,6 +64,17 @@ enum RuntimeHomeAccessService {
                     problems.append(issue)
                 }
             }
+            for file in root.stateFiles {
+                let statePath = file.path(environment: request.environment, directory: path)
+                if let issue = problem(statePath,
+                                       directory: false, writable: true, create: true, receipt: request.sandboxReceipt) {
+                    problems.append(issue)
+                } else if let issue = problem((statePath as NSString).deletingLastPathComponent,
+                                              directory: true, writable: true, create: true, readable: false, receipt: request.sandboxReceipt) {
+                    // SQLite must be able to create/update journals beside its database.
+                    problems.append(issue)
+                }
+            }
         }
         var extraFiles = request.policy.homeFilePaths(
             environment: request.environment, userHome: request.userHome, workingDirectory: request.workingDirectory
@@ -89,7 +100,7 @@ enum RuntimeHomeAccessService {
     }
 
     private static func problem(
-        _ path: String, directory: Bool, writable: Bool, create: Bool = false,
+        _ path: String, directory: Bool, writable: Bool, create: Bool = false, readable: Bool = true,
         receipt: ExecutionSandboxBoundaryReceipt?
     ) -> String? {
         let display = (path as NSString).abbreviatingWithTildeInPath
@@ -112,7 +123,8 @@ enum RuntimeHomeAccessService {
         } else {
             let correctKind = directory ? (info.st_mode & S_IFMT) == S_IFDIR : (info.st_mode & S_IFMT) == S_IFREG
             guard correctKind else { return "\(display) has the wrong file type" }
-            guard access(path, directory ? R_OK | X_OK : R_OK) == 0 else { return "\(display) is unreadable" }
+            let requiredAccess = (readable ? R_OK : 0) | (directory ? X_OK : 0)
+            guard access(path, requiredAccess) == 0 else { return "\(display) is unreadable" }
             if writable, access(path, W_OK) != 0 || CopilotHomeAccessCheck.lockState(of: path, followLinks: true).any {
                 return "\(display) is not writable"
             }
