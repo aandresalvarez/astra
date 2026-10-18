@@ -8,6 +8,33 @@ import ASTRACore
 /// only means something when it runs as a normal user.
 @Suite("CopilotHomeAccessCheck", .enabled(if: getuid() != 0))
 struct CopilotHomeAccessCheckTests {
+    @Test("Only exact root-owned macOS system aliases bypass linked-home ownership checks")
+    func systemAliasTrustIsNarrow() {
+        for name in ["var", "tmp", "etc"] {
+            #expect(CopilotHomeAccessCheck.isTrustedSystemHomeAlias(path: "/" + name, owner: 0, canonicalTarget: "/private/" + name))
+            #expect(!CopilotHomeAccessCheck.isTrustedSystemHomeAlias(path: "/" + name, owner: 0, canonicalTarget: "/Users/another/state"))
+            #expect(!CopilotHomeAccessCheck.isTrustedSystemHomeAlias(path: "/" + name, owner: getuid(), canonicalTarget: "/private/" + name))
+        }
+        #expect(!CopilotHomeAccessCheck.isTrustedSystemHomeAlias(path: "/shared", owner: 0, canonicalTarget: "/Users/another/state"))
+        #expect(!CopilotHomeAccessCheck.isTrustedSystemHomeAlias(path: "/shared", owner: 0, canonicalTarget: "/private/var"))
+    }
+
+    @Test("Non-startup Copilot files never require write permission", arguments: ["config.json.bak", "notes.txt", "permissions-config"])
+    func unrelatedFilesRemainReadOnly(name: String) throws {
+        let home = try FakeCopilotHome()
+        defer { home.remove() }
+        try home.write("permissions-config.json", mode: 0o600)
+        let path = try home.write(name, mode: 0o400)
+        #expect(CopilotHomeAccessCheck.inspect(home: home.path).isClean)
+        try home.setMode(0o000, of: path)
+        let report = CopilotHomeAccessCheck.inspect(home: home.path)
+        let problem = try #require(report.problems.first { $0.path == path })
+        #expect(!problem.requiresWrite)
+        #expect(!report.blocksCopilot)
+        #expect(!report.fixCommand.contains("u+rw"))
+        #expect(!report.fixCommand.contains("chflags"))
+    }
+
     @Test("A healthy or missing Copilot home reports nothing")
     func healthyAndMissingHomesAreClean() throws {
         let home = try FakeCopilotHome()

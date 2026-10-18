@@ -118,7 +118,7 @@ struct RuntimeProviderAvailabilityService {
         let states = await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
             for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
                 group.addTask {
-                    let report = await readinessService.check(
+                    let report = await readinessService.checkDescriptor(
                         configuration: configuration.readinessConfiguration(for: runtime)
                     )
                     return (runtime, report.cacheable.state)

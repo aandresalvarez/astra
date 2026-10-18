@@ -6,6 +6,79 @@ import ASTRAModels
 
 @Suite("Runtime home access edge cases", .enabled(if: getuid() != 0))
 struct RuntimeHomeAccessEdgeCaseTests {
+    @Test("Every provider stops at a dangling ancestor instead of accepting a writable grandparent",
+          arguments: AgentRuntimeAdapterRegistry.runtimeIDs, ["dangling", "loop"])
+    func brokenAncestor(runtime: AgentRuntimeID, mode: String) async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let link = home + "/linked"
+        let target = home + "/target"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: mode == "loop" ? link : target)
+        let providerHome = link + "/nested"
+        let request = RuntimeHomeAccessRequest(runtime: runtime, policy: AgentRuntimeAdapterRegistry.homeAccessPolicy(for: runtime),
+                                               environment: ["HOME": providerHome], workingDirectory: home, userHome: providerHome)
+        #expect(await RuntimeHomeAccessService.check(request)?.state == .blocked)
+        #expect(try shell(runtime: runtime, home: home, environment: ["HOME": providerHome]).exitCode == 78)
+        try FileManager.default.removeItem(atPath: link)
+        try FileManager.default.createDirectory(atPath: target, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: target)
+        #expect(await RuntimeHomeAccessService.check(request)?.state != .blocked)
+        #expect(try shell(runtime: runtime, home: home, environment: ["HOME": providerHome]).exitCode == 0)
+    }
+
+    @MainActor
+    @Test("Shell capability is checked against the planned mounted filesystem")
+    func probeIncludesEffectiveMounts() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        var original = try containerPlan(home: home)
+        original.executionEnvironment.mounts.append(.init(hostPath: home + "/not-a-shell", containerPath: "/bin/sh", access: .readWrite, role: .additionalPath))
+        let record = ProbeRecord()
+        let prepared = await RuntimeHomeAccessContainerPreflight.prepare(original, resumeSessionID: nil, runner: MountedShellRunner(record: record))
+        let call = try #require(await record.calls.first)
+        #expect(call.contains(where: { $0.contains("target=/bin/sh") && $0.contains("readonly") }))
+        #expect(prepared.arguments == original.arguments)
+        #expect(prepared.commandPlannedFields["provider_home_access_check"] == "not_checked_shell_probe_failed")
+    }
+
+    struct MountedShellRunner: BinaryRunner {
+        let record: ProbeRecord
+        func run(path: String, args: [String], timeout: TimeInterval, environment: [String: String]?) async -> RunResult {
+            await record.append(args)
+            return .exited(code: args.contains(where: { $0.contains("target=/bin/sh") }) ? 126 : 0, stdout: "", stderr: "")
+        }
+    }
+
+    @MainActor
+    @Test("Real Docker preserves a valid provider command when mounts hide the shell or its target",
+          .enabled(if: ProcessInfo.processInfo.environment["ASTRA_LIVE_HOME_DOCKER"] == "1"),
+          arguments: ["/bin", "/bin/sh", "/qa-shell", "/qa-shell/sh"])
+    func realDockerMountedShell(target: String) async throws {
+        let image = try #require(ProcessInfo.processInfo.environment["ASTRA_HOME_MOUNTED_SHELL_IMAGE"])
+        let docker = try #require(DockerRuntimeResolver.resolve(environment: RuntimeProcessEnvironment.enriched()))
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let source = home + "/shadow,source"
+        if target.hasSuffix("/sh") { FileManager.default.createFile(atPath: source, contents: Data(), attributes: [.posixPermissions: 0o400]) }
+        else { try FileManager.default.createDirectory(atPath: source, withIntermediateDirectories: false) }
+        let mount = ExecutionEnvironmentMount(hostPath: source, containerPath: target, access: .readOnly, role: .additionalPath)
+        let args = ["run", "--rm", "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL",
+                    "--security-opt", "no-new-privileges", "--user", "65534", "--volume", source + ":" + target + ":ro",
+                    "--", image, "/qa/busybox", "echo", "PR516_MOUNTED_SHELL_OK"]
+        var original = AgentRuntimeProcessLaunchPlan(runtime: .codexCLI, executablePath: docker.executablePath, arguments: args,
+                                                     currentDirectory: home, environment: docker.environment, browserShimDirectory: nil,
+                                                     providerVersion: nil, parsesJSONLines: false,
+                                                     executionEnvironment: .init(id: "mounted-shell", kind: .dockerImage, displayName: "QA", image: image,
+                                                                                 providerPlacement: .container, mounts: [mount], networkMode: "none", user: "65534"))
+        original.containerProviderCommandIndex = args.count - 3
+        let prepared = await RuntimeHomeAccessContainerPreflight.prepare(original, resumeSessionID: nil)
+        #expect(prepared.arguments == original.arguments)
+        #expect(prepared.commandPlannedFields["provider_home_access_check"] == "not_checked_shell_probe_failed")
+        let result = await ProcessBinaryRunner().run(path: prepared.executablePath, args: prepared.arguments, timeout: 15, environment: prepared.environment)
+        #expect(result.isSuccess, "\(result.stderr)")
+        #expect(result.stdout == "PR516_MOUNTED_SHELL_OK\n")
+    }
+
     @Test("A missing top-level container home is judged against root, not the workspace", arguments: [AgentRuntimeID.claudeCode, .copilotCLI, .codexCLI])
     func topLevelContainerHome(runtime: AgentRuntimeID) throws {
         let home = try temporaryHome()

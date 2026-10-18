@@ -622,12 +622,19 @@ enum CopilotHomeAccessCheck {
             let parent = (current as NSString).deletingLastPathComponent
             var info = stat()
             if lstat(current, &info) == 0, (info.st_mode & S_IFMT) == S_IFLNK,
-               !(parent == "/" && info.st_uid == 0) {
+               !isTrustedSystemHomeAlias(path: current, owner: info.st_uid, canonicalTarget: canonicalPath(current)) {
                 return true
             }
             current = parent
         }
         return false
+    }
+
+    static func isTrustedSystemHomeAlias(path: String, owner: uid_t, canonicalTarget: String) -> Bool {
+        // Root ownership alone says nothing about a custom link's destination.
+        // Exempt only the OS aliases, with their exact fully resolved targets.
+        let aliases = ["/var": "/private/var", "/tmp": "/private/tmp", "/etc": "/private/etc"]
+        return owner == 0 && aliases[path] == canonicalTarget
     }
 
     /// The canonical path of an entry's folder plus its own name: a link is
@@ -709,7 +716,7 @@ enum CopilotHomeAccessCheck {
                 if let overridePath, canonicalPath(path) == overridePath { continue }
                 if var problem = problem(
                     at: path,
-                    requiresWrite: !readOnlyConfigFileNames.contains(child),
+                    requiresWrite: startup[child] != nil && !readOnlyConfigFileNames.contains(child),
                     isReadAtStartup: startup[child] != nil,
                     expectedKind: startup[child],
                     home: resolvedHome,
@@ -843,6 +850,14 @@ enum CopilotHomeAccessCheck {
         var parent = (home as NSString).deletingLastPathComponent
         var isDirectory: ObjCBool = false
         while !parent.isEmpty, parent != "/", !fileManager.fileExists(atPath: parent, isDirectory: &isDirectory) {
+            if (try? fileManager.attributesOfItem(atPath: parent))?[.type] as? FileAttributeType == .typeSymbolicLink {
+                var blocked = problem(at: parent, requiresWrite: true, isReadAtStartup: true,
+                                      fileManager: fileManager, currentUserID: currentUserID, forcedAccess: .danglingLink)
+                blocked?.symlinkTarget = canonicalPath(parent)
+                // An ancestor is outside the requested home: no move or permission repair.
+                blocked?.isRepairable = false
+                return blocked
+            }
             parent = (parent as NSString).deletingLastPathComponent
         }
         guard !parent.isEmpty else { return nil }

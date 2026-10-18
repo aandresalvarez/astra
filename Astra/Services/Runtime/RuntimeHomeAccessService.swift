@@ -130,8 +130,13 @@ enum RuntimeHomeAccessService {
             guard error == ENOENT else { return "\(display) is inaccessible" }
             guard create else { return nil }
             var parent = (path as NSString).deletingLastPathComponent
-            while parent != "/", stat(parent, &info) != 0 {
-                guard errno == ENOENT else { return "\(display) has an inaccessible parent" }
+            while stat(parent, &info) != 0 {
+                let parentError = errno
+                var entry = stat()
+                if lstat(parent, &entry) == 0 {
+                    return "\(display) has a broken or inaccessible ancestor: \(parent)"
+                }
+                guard parentError == ENOENT, parent != "/" else { return "\(display) has an inaccessible parent" }
                 parent = (parent as NSString).deletingLastPathComponent
             }
             guard (info.st_mode & S_IFMT) == S_IFDIR, access(parent, W_OK | X_OK) == 0,

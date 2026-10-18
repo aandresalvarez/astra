@@ -284,7 +284,11 @@ struct LaunchReadinessPreflightCacheTests {
             runner: runner,
             detectExecutable: { _ in "/opt/copilot" },
             isExecutable: { _ in true },
-            copilotStateHome: home.path
+            copilotStateHome: home.path,
+            homeAccessCheck: { request in
+                Issue.record("Descriptor preflight must leave home inspection to the final plan guard")
+                return await RuntimeHomeAccessService.check(request)
+            }
         )
         let configuration = readinessConfiguration(.copilotCLI, executablePath: "/opt/copilot")
 

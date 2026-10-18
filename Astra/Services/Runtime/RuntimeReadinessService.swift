@@ -161,6 +161,7 @@ struct RuntimeReadinessService {
     private let detectExecutable: @Sendable (String) -> String
     private let isExecutable: @Sendable (String) -> Bool
     private let copilotStateHome: String
+    private let homeAccessCheck: @Sendable (RuntimeHomeAccessRequest) async -> RuntimeReadinessCheck?
 
     init(
         runner: BinaryRunner = ProcessBinaryRunner(),
@@ -171,26 +172,34 @@ struct RuntimeReadinessService {
         isExecutable: @escaping @Sendable (String) -> Bool = {
             FileManager.default.isExecutableFile(atPath: $0)
         },
-        copilotStateHome: String = CopilotCLIRuntime.defaultHome()
+        copilotStateHome: String = CopilotCLIRuntime.defaultHome(),
+        homeAccessCheck: @escaping @Sendable (RuntimeHomeAccessRequest) async -> RuntimeReadinessCheck? = { await RuntimeHomeAccessService.check($0) }
     ) {
         self.runner = runner
         self.timeout = timeout
         self.detectExecutable = detectExecutable
         self.isExecutable = isExecutable
         self.copilotStateHome = copilotStateHome
+        self.homeAccessCheck = homeAccessCheck
     }
 
     func check(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessReport {
+        let probed = await checkDescriptor(configuration: configuration)
+        return RuntimeReadinessReport(checks: probed.checks + (await uncachedChecks(configuration: configuration)))
+    }
+
+    /// Cacheable CLI/account facts only. Callers that refresh home access
+    /// themselves must not inspect it here and immediately discard the result.
+    func checkDescriptor(configuration: RuntimeReadinessConfiguration) async -> RuntimeReadinessReport {
         let probes = RuntimeReadinessProbeContext(
             runner: runner,
             timeout: timeout,
             detectExecutable: detectExecutable,
             isExecutable: isExecutable
         )
-        let probed = await AgentRuntimeAdapterRegistry
+        return await AgentRuntimeAdapterRegistry
             .descriptorReadiness(for: configuration.runtime)
             .readinessReport(configuration: configuration, probes: probes)
-        return RuntimeReadinessReport(checks: probed.checks + (await uncachedChecks(configuration: configuration)))
     }
 
     /// Checks of local state the user can break at any moment, and cheap
@@ -214,7 +223,7 @@ struct RuntimeReadinessService {
             copilotHomeOverride: runtime == .copilotCLI ? copilotStateHome : nil,
             providersFileBlocks: false
         )
-        guard let check = await RuntimeHomeAccessService.check(request) else { return [] }
+        guard let check = await homeAccessCheck(request) else { return [] }
         return [check]
     }
 

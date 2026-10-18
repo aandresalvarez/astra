@@ -2,8 +2,8 @@ import Foundation
 import ASTRACore
 
 /// Permission diagnostics must not add an undeclared shell dependency to valid
-/// minimal provider images. Probe only that capability, without mounts, network,
-/// credentials, or an image entrypoint. The actual provider is invoked once.
+/// minimal provider images. Probe the planned filesystem with read-only mounts,
+/// no network, no capabilities, and no image entrypoint. The provider runs once.
 enum RuntimeHomeAccessContainerPreflight {
     @MainActor
     static func prepare(
@@ -18,6 +18,12 @@ enum RuntimeHomeAccessContainerPreflight {
         var probeArguments = ["run", "--rm", "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL",
                               "--security-opt", "no-new-privileges", "--workdir", "/", "--entrypoint", "/bin/sh"]
         if let user = original.executionEnvironment.user, !user.isEmpty { probeArguments += ["--user", user] }
+        // A bare image can have /bin/sh while the actual mount plan hides it
+        // (or a linked interpreter elsewhere). Use the validated final mounts,
+        // without giving this observational probe any host write access.
+        for mount in original.executionEnvironment.mounts {
+            probeArguments += ["--mount", readOnlyBind(mount)]
+        }
         let policy = AgentRuntimeAdapterRegistry.homeAccessPolicy(for: original.runtime)
         let needsOwnershipCheck = policy.roots.contains { $0.stateFiles.contains(where: \.requiresPrivateOwner) }
         let probe = needsOwnershipCheck ? "[ -O /proc/self ] && [ -r /proc/self/status ]" : "exit 0"
@@ -47,5 +53,14 @@ enum RuntimeHomeAccessContainerPreflight {
         plan.commandPlannedFields["provider_home_access_check"] = "container"
         plan.commandPlannedFields["docker_argument_count"] = String(plan.arguments.count)
         return plan
+    }
+
+    private static func readOnlyBind(_ mount: ExecutionEnvironmentMount) -> String {
+        // Docker --mount is CSV; quoting the whole field preserves commas and
+        // quotes in paths. Unlike --volume, it cannot create a missing host path.
+        ["type=bind", "source=\(mount.hostPath)", "target=\(mount.containerPath)", "readonly"].map { field in
+            field.contains(where: { ",\"\r\n".contains($0) })
+                ? "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : field
+        }.joined(separator: ",")
     }
 }

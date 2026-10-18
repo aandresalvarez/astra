@@ -5,6 +5,38 @@ import ASTRACore
 
 @Suite("Runtime readiness state cache")
 struct RuntimeReadinessStateCacheTests {
+    @Test("An availability miss and a cache hit each inspect provider homes exactly once")
+    func homeChecksRunOncePerAnswer() async {
+        let cache = RuntimeReadinessStateCache()
+        let runner = StubBinaryRunner()
+        await runner.setResponse(forKey: "/opt/codex --version", result: .exited(code: 0, stdout: "codex-cli 0.130.0", stderr: ""))
+        let probe = HomeInspectionCounter()
+        let service = RuntimeProviderAvailabilityService(readinessService: RuntimeReadinessService(
+            runner: runner, detectExecutable: { "/opt/" + $0 }, isExecutable: { $0 == "/opt/codex" },
+            homeAccessCheck: { await probe.check($0) }
+        ))
+        let first = await service.states(configuration: configuration(), cache: cache)
+        #expect(first[.codexCLI] == .warning)
+        #expect(await cache.states(for: configuration(), maxAge: 300)?[.codexCLI] == .ready)
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs { #expect(await probe.count(runtime) == 1) }
+        await probe.repair()
+        let second = await service.states(configuration: configuration(), cache: cache)
+        #expect(second[.codexCLI] == .ready)
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs { #expect(await probe.count(runtime) == 2) }
+    }
+
+    actor HomeInspectionCounter {
+        private var counts: [AgentRuntimeID: Int] = [:]
+        private var blocked = true
+        func count(_ runtime: AgentRuntimeID) -> Int { counts[runtime, default: 0] }
+        func repair() { blocked = false }
+        func check(_ request: RuntimeHomeAccessRequest) -> RuntimeReadinessCheck? {
+            counts[request.runtime, default: 0] += 1
+            guard request.runtime == .codexCLI, blocked else { return nil }
+            return .init(id: RuntimeHomeAccessService.checkID(for: request.runtime), title: "QA", detail: "QA", state: .blocked, remediation: nil)
+        }
+    }
+
     private func configuration(claudePath: String = "/opt/claude") -> RuntimeProviderAvailabilityConfiguration {
         RuntimeProviderAvailabilityConfiguration(
             claudePath: claudePath,
