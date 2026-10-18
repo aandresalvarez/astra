@@ -141,15 +141,7 @@ struct PluginRuntimeProjection {
                             // A bound account is in scope through its binding,
                             // wherever the row itself lives.
                             copy.isGlobal = true
-                            // An account a plugin created carries the
-                            // credentials its creator's installed definition
-                            // declares, whether or not that plugin is on here.
-                            // A key an update stopped declaring stays on the
-                            // row (Update keeps what the person entered) but
-                            // never reaches a run.
-                            if let creatorSpec = creatorSpec(of: account, binding: spec, in: package, creator: creator) {
-                                retainDeclaredCredentials(of: creatorSpec, on: copy)
-                            }
+                            retainDeclaredKeys(of: account, on: copy, binding: spec, in: package, creator: creator)
                             connectors.append(copy)
                         }
                     }
@@ -351,31 +343,76 @@ struct PluginRuntimeProjection {
         return skill
     }
 
-    /// The connector declaration that created `account`: `binding` when the
-    /// account is `package`'s, else its creator's component of the same ID,
-    /// or the one that `replaces` it (a stamp an Update hasn't moved yet).
-    /// Nil for an account no installed plugin created.
-    private static func creatorSpec(
+    /// An account a plugin created carries the credentials and settings its
+    /// creator's installed definition declares, whether or not that plugin
+    /// is on here. A key an update stopped declaring stays on the row
+    /// (Update keeps what the person entered) but never reaches a run. A
+    /// creator whose definition can't be found (unreadable, or removed while
+    /// its provenance stayed) fails closed: no credential reaches the run,
+    /// and only the settings the binding plugin declares do. An account no
+    /// plugin created keeps everything the person entered. A setting its
+    /// creator stores as a credential (`PluginConnectorFieldTrust`) reaches
+    /// the run from the Keychain; one an older row still holds as plain text
+    /// is kept as a setting until Add moves it.
+    private static func retainDeclaredKeys(
         of account: Connector,
+        on copy: Connector,
         binding spec: PluginConnector,
         in package: PluginPackage,
         creator: (String) -> PluginPackage?
-    ) -> PluginConnector? {
-        guard let originID = account.originPackageID, !originID.isEmpty else { return nil }
-        if originID == package.id { return spec }
-        guard let connectors = creator(originID)?.connectors, let stamp = account.originComponentID else { return nil }
-        return connectors.first { CapabilityResourceOrigin.componentID(for: $0) == stamp }
-            ?? connectors.first { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }
+    ) {
+        guard let originID = account.originPackageID, !originID.isEmpty else { return }
+        guard let declaration = creatorDeclaration(of: account, originID: originID, binding: spec, in: package, creator: creator) else {
+            retain(credentials: [], config: declaredConfigKeys(of: spec, in: package, on: copy), on: copy)
+            return
+        }
+        retain(
+            credentials: Set(PluginConnectorFieldTrust.asStored(declaration.spec, in: declaration.package).credentialHints.map(\.key)),
+            config: declaredConfigKeys(of: declaration.spec, in: declaration.package, on: copy),
+            on: copy
+        )
     }
 
-    /// Drops from a runtime copy the credential keys `spec` doesn't declare.
-    /// An account two plugins bind is filtered by the one that created it.
-    private static func retainDeclaredCredentials(of spec: PluginConnector, on copy: Connector) {
-        let declared = Set(spec.credentialHints.map(\.key))
-        let kept = copy.credentialKeys.indices.filter { declared.contains(copy.credentialKeys[$0]) }
-        guard kept.count < copy.credentialKeys.count else { return }
-        copy.credentialValues = kept.map { $0 < copy.credentialValues.count ? copy.credentialValues[$0] : "" }
-        copy.credentialKeys = kept.map { copy.credentialKeys[$0] }
+    /// The connector declaration that created `account`: `binding` when the
+    /// account is `package`'s, else its creator's component of the same ID,
+    /// or the one that `replaces` it (a stamp an Update hasn't moved yet).
+    private static func creatorDeclaration(
+        of account: Connector,
+        originID: String,
+        binding spec: PluginConnector,
+        in package: PluginPackage,
+        creator: (String) -> PluginPackage?
+    ) -> (spec: PluginConnector, package: PluginPackage)? {
+        if originID == package.id { return (spec, package) }
+        guard let creatorPackage = creator(originID), let stamp = account.originComponentID else { return nil }
+        let connectors = creatorPackage.connectors
+        let found = connectors.first { CapabilityResourceOrigin.componentID(for: $0) == stamp }
+            ?? connectors.first { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }
+        return found.map { ($0, creatorPackage) }
+    }
+
+    /// The setting keys Add gives an account of `spec`: its config hints and
+    /// its plugin's skill settings (`CapabilityInstaller`), plus the ones a
+    /// Stanford Outlook account always carries.
+    private static func declaredConfigKeys(of spec: PluginConnector, in package: PluginPackage, on copy: Connector) -> Set<String> {
+        var keys = Set(spec.configHints.map(\.key)).union(package.skills.flatMap(\.environmentKeys))
+        if copy.isStanfordOutlookMail { keys.formUnion([StanfordOutlookMail.tenantDomainKey, StanfordOutlookMail.scopesKey]) }
+        return keys
+    }
+
+    /// Drops from a runtime copy the credential and setting keys outside
+    /// the declared sets, with their values.
+    private static func retain(credentials: Set<String>, config: Set<String>, on copy: Connector) {
+        let keptCredentials = copy.credentialKeys.indices.filter { credentials.contains(copy.credentialKeys[$0]) }
+        if keptCredentials.count < copy.credentialKeys.count {
+            copy.credentialValues = keptCredentials.map { $0 < copy.credentialValues.count ? copy.credentialValues[$0] : "" }
+            copy.credentialKeys = keptCredentials.map { copy.credentialKeys[$0] }
+        }
+        let keptConfig = copy.configKeys.indices.filter { config.contains(copy.configKeys[$0]) }
+        if keptConfig.count < copy.configKeys.count {
+            copy.configValues = keptConfig.map { $0 < copy.configValues.count ? copy.configValues[$0] : "" }
+            copy.configKeys = keptConfig.map { copy.configKeys[$0] }
+        }
     }
 
     private static func makeTool(

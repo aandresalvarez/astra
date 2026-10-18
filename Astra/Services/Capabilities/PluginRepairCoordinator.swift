@@ -124,10 +124,11 @@ final class PluginRepairCoordinator: ObservableObject {
                 path: path, args: repair.checkArguments ?? ["--version"], timeout: 10, environment: merged
             )
             guard result.exitCode == 0 else { return false }
-            if repair.checkExpect == SemanticCheck.stdoutNonEmpty.rawValue {
-                return !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            return true
+            // Every declared semantic test, on stdout and stderr, as the
+            // health check applies it: `docker version` exits 0 with the
+            // daemon down and says so only on stderr.
+            let semantic = repair.checkExpect.flatMap(SemanticCheck.init(rawValue:))
+            return semantic?.passes(stdout: result.stdout, stderr: result.stderr) ?? true
         }
         let status = await EnvironmentHealthChecker().check(
             binary: binary,

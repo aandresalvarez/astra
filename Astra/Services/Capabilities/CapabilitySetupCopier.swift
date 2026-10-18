@@ -66,14 +66,18 @@ struct CapabilitySetupCopier {
         globalConnectors: [Connector] = []
     ) -> OnboardingCapabilityInstallationInputs {
         var inputs = OnboardingCapabilityInstallationInputs()
-        let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
+        // A setting only a bundled definition keeps plain; any other is
+        // copied as the credential it is stored as, never as a skill setting.
+        let movedSettings = Set(package.connectors.flatMap { PluginConnectorFieldTrust.settingsStoredAsCredentials(of: $0, in: package) })
+        let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys).filter { !movedSettings.contains($0) }
         // A plugin turned off keeps its bindings so Add can bring them back,
         // not so a copy can: nonempty inputs select the package, which would
         // turn it back on in the new workspace.
         let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
         if let activation, !activation.isEnabled { return inputs }
 
-        for pluginConnector in package.connectors {
+        for declaredConnector in package.connectors {
+            let pluginConnector = PluginConnectorFieldTrust.asStored(declaredConnector, in: package)
             let connectors = matchingConnectors(
                 for: pluginConnector,
                 activation: activation,

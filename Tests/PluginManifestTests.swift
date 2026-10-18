@@ -31,6 +31,26 @@ struct PluginManifestTests {
         #expect(!PluginManifestConverter.isManifest(packageData))
     }
 
+    @Test("A document with components but no manifestVersion is a manifest, and is refused")
+    func componentsWithoutVersionAreRefused() throws {
+        let original = try builtIn("gcloud-workflow")
+        // A legacy package with a manifest's components but no version.
+        var hybrid = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        let manifest = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(PluginManifestConverter.manifest(from: original))) as? [String: Any]
+        )
+        hybrid["components"] = manifest["components"]
+        hybrid["worksOn"] = ["claude_code": "unsupported"]
+        let data = try JSONSerialization.data(withJSONObject: hybrid)
+        #expect(PluginManifestConverter.isManifest(data))
+        do {
+            let decoded = try PluginManifestConverter.decodePackage(from: data)
+            Issue.record("imported as a package without its components: \(decoded.id)")
+        } catch DecodingError.keyNotFound(let key, _) {
+            #expect(key.stringValue == "manifestVersion")
+        }
+    }
+
     @Test("A CLI dependency becomes setup rows with check, connect, repair and install")
     func cliPrerequisitesBecomeSetupComponents() throws {
         let manifest = PluginManifestConverter.manifest(from: try builtIn("gcloud-workflow"))
@@ -165,6 +185,26 @@ struct PluginManifestTests {
         #expect(checked.connectors[index + 1].credentialHints.map(\.key) == ["JIRA_SERVER_PAT"])
     }
 
+    @Test("Same-named components with distinct IDs claim no shared name-derived predecessor")
+    func sameNamedComponentsClaimNoSharedPredecessor() throws {
+        var package = try builtIn("jira-workflow")
+        let index = try #require(package.connectors.firstIndex { !$0.credentialHints.isEmpty })
+        var second = package.connectors[index]
+        package.connectors[index].id = "jira-cloud"
+        second.id = "jira-server"
+        package.connectors.insert(second, at: index + 1)
+        var lone = package.connectors[index]
+        lone.name = "Jira Lone"
+        lone.id = "jira-solo"
+        package.connectors.append(lone)
+
+        let checked = try PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: package))
+        #expect(PluginUpdateService.replacesProblems(in: checked).isEmpty)
+        #expect(checked.connectors[index].replaces == nil && checked.connectors[index + 1].replaces == nil)
+        // A name only one component derives is still its predecessor.
+        #expect(checked.connectors.last?.replaces?.count == 1)
+    }
+
     @Test("A setup component ID the package would re-derive is refused, not silently replaced")
     func undeclarableSetupIDsAreRefused() throws {
         // A CLI check comes back with its name's slug.
@@ -184,6 +224,23 @@ struct PluginManifestTests {
         #expect(throws: PluginManifestError.unrepresentableComponentID(
             component: "Jira account", id: "outer-account-id"
         )) { try PluginManifestConverter.checkedPackage(from: account) }
+    }
+
+    @Test("Two setup components sharing a name but checking different CLIs both round-trip")
+    func sameNamedSetupComponentsRoundTripByPosition() throws {
+        var manifest = PluginManifestConverter.manifest(from: try builtIn("gcloud-workflow"))
+        var twin = try #require(manifest.components.first { $0.kind == .setup && $0.name == "Google Cloud login" })
+        twin.setup.check?.arguments = ["auth", "list", "--filter=status:ACTIVE", "--format=value(account)"]
+        manifest.components.append(twin)
+        let package = try PluginManifestConverter.checkedPackage(from: manifest)
+        let logins = package.prerequisites.filter { $0.displayName == "Google Cloud login" }
+        #expect(logins.map(\.livenessArgs).last == twin.setup.check?.arguments)
+        #expect(logins.count == 2)
+        // A dropped step on the twin is still refused, named by its component.
+        manifest.components[manifest.components.count - 1].setup.verify = PluginSetupStep(kind: .exec, binary: "gcloud")
+        #expect(throws: PluginManifestError.unrepresentableSetup(component: "Google Cloud login")) {
+            try PluginManifestConverter.checkedPackage(from: manifest)
+        }
     }
 
     @Test("A hint's first backticked command is the repair command")

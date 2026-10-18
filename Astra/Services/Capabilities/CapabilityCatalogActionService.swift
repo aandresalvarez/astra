@@ -417,7 +417,9 @@ struct CapabilityCatalogActionService {
 
     /// Turns a shared account on in this workspace: the step an added
     /// plugin's account needs when it exists, shared, but is off here. False
-    /// when the save fails; the activation is then undone.
+    /// when the save fails; the activation is then undone. Audited like the
+    /// Configure toggle (`connectorUpdated`): it grants the workspace the
+    /// account's credentials.
     @discardableResult
     func activateSharedConnector(
         _ connector: Connector,
@@ -429,11 +431,23 @@ struct CapabilityCatalogActionService {
         guard !WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString) else {
             return true
         }
+        var fields = [
+            "connector_id": connector.id.uuidString,
+            "workspace_id": workspace.id.uuidString,
+            "source": "plugins_turn_on"
+        ]
         CapabilitySharing.enableShared(connector, in: workspace)
         guard persist(workspace, modelContext) else {
             CapabilitySharing.disableShared(connector, in: workspace)
+            fields["enabled_global"] = "false"
+            fields["result"] = "failed"
+            AppLogger.audit(.connectorUpdated, category: "Capabilities", fields: fields, level: .error)
             return false
         }
+        fields["enabled_global"] = String(
+            WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString)
+        )
+        AppLogger.audit(.connectorUpdated, category: "Capabilities", fields: fields)
         CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         return true
     }

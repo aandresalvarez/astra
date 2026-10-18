@@ -3963,7 +3963,7 @@ struct TaskMainView: View {
         case .resume:
             onResumeTask?(task)
         case .runRepair:
-            RepairActionRunner.run(TaskRunStopEvidence.repair(events: sortedEvents, runID: latestRun?.id))
+            RepairActionRunner.run(TaskRunStopEvidence.signInRepair(events: sortedEvents, runID: latestRun?.id, task: task))
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:
@@ -4249,7 +4249,7 @@ struct TaskMainView: View {
                     onToggleSkill: { skill, enabled in
                         if enabled {
                             if !task.skills.contains(where: { $0.id == skill.id }),
-                               !AgentTask.storableSkills([skill]).isEmpty {
+                               !AgentTask.storableSkills([skill], in: task.workspace).isEmpty {
                                 task.skills.append(skill)
                             }
                         } else {

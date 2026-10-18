@@ -541,7 +541,12 @@ enum PluginUpdateService {
     @discardableResult
     static func syncOwnedAccounts(of activation: PluginActivation, to package: PluginPackage) -> Bool {
         var changed = false
-        for spec in package.connectors {
+        for declared in package.connectors {
+            // Settings only a bundled definition keeps plain; any other is a
+            // credential key. A row that still holds one as plain text keeps
+            // it there until Add moves it to the Keychain.
+            let spec = PluginConnectorFieldTrust.asStored(declared, in: package)
+            let moved = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
             let componentID = CapabilityResourceOrigin.componentID(for: spec)
             let predecessors = Set(CapabilityResourceOrigin.replacedComponentIDs(for: spec))
             for account in activation.accounts(forComponent: componentID)
@@ -551,7 +556,8 @@ enum PluginUpdateService {
                     account.originComponentID = componentID
                     touched = true
                 }
-                for hint in spec.credentialHints where !account.credentialKeys.contains(hint.key) {
+                for hint in spec.credentialHints where !account.credentialKeys.contains(hint.key)
+                    && !(moved.contains(hint.key) && account.configKeys.contains(hint.key)) {
                     while account.credentialValues.count < account.credentialKeys.count { account.credentialValues.append("") }
                     account.credentialKeys.append(hint.key)
                     account.credentialValues.append("")

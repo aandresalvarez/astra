@@ -210,6 +210,15 @@ struct CapabilityInstaller {
             throw InstallationError.secretCleanupPending(packageID: package.id)
         }
         let membershipSnapshot = WorkspaceCapabilityActivation.snapshot(workspace)
+        // The library holds one definition for every workspace: each other
+        // one whose activation kept rows while it was missing gets them as
+        // overrides in the same save, so none projects a second copy.
+        let pendingElsewhere = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).filter { other in
+            other.id != workspace.id
+                && WorkspaceCapabilityActivation.pendingOverridePluginIDs(of: other).contains(package.id)
+                && WorkspaceCapabilityActivation.activation(for: package.id, in: other) != nil
+        }
+        let pendingSnapshots = pendingElsewhere.map { ($0, WorkspaceCapabilityActivation.snapshot($0)) }
         var savedSkillSecrets: [SavedSkillSecret] = []
         var renamedSecrets: [PluginUpdateService.CopiedSecret] = []
         var restoreReconciled: () -> Void = {}
@@ -239,8 +248,14 @@ struct CapabilityInstaller {
             }
             // Added back after a Remove: the same projected IDs (templates
             // and schedules name them) and the person's overrides again,
-            // before reconciling derives anything from them.
-            WorkspaceCapabilityActivation.reinstateRetired(on: activation, in: workspace)
+            // before reconciling derives anything from them, the rows the
+            // migration kept while it was missing included.
+            let componentIDs = PluginRuntimeProjection.componentIDs(of: package)
+            WorkspaceCapabilityActivation.reinstateRetired(on: activation, declaring: componentIDs, in: workspace)
+            for (other, _) in pendingSnapshots {
+                guard let otherActivation = WorkspaceCapabilityActivation.activation(for: package.id, in: other) else { continue }
+                WorkspaceCapabilityActivation.adoptPendingOverrides(on: otherActivation, declaring: componentIDs, in: other)
+            }
             // Adding a version this workspace had at another one is an Update
             // for it: renamed components keep their state, dropped ones
             // release theirs, and the version and digest are recorded.
@@ -257,7 +272,10 @@ struct CapabilityInstaller {
             let releasedSkillIDs = reconciliation.released
 
             let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
-            let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
+            // A skill setting an account carries as a plain setting, unless a
+            // connector of this plugin stores that key as a credential.
+            let movedSettings = Set(package.connectors.flatMap { PluginConnectorFieldTrust.settingsStoredAsCredentials(of: $0, in: package) })
+            let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys).filter { !movedSettings.contains($0) }
 
             for pluginSkill in package.skills {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginSkill)
@@ -276,16 +294,17 @@ struct CapabilityInstaller {
 
             for pluginConnector in package.connectors {
                 let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
+                let fields = StoredConnectorFields(pluginConnector, in: package, credentialInputs: credentialInputs, configInputs: configInputs)
                 let configKeys = connectorConfigKeys(
-                    hints: pluginConnector.configHints,
+                    hints: fields.connector.configHints,
                     extraConfigKeys: packageEnvironmentKeys,
                     configInputs: configInputs
                 )
                 let baseURL = baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
                 let hasScopedInputs = connectorHasScopedInputs(
-                    pluginConnector,
+                    fields.connector,
                     configKeys: configKeys,
-                    credentialInputs: credentialInputs,
+                    credentialInputs: fields.credentialInputs,
                     configInputs: configInputs,
                     baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
                 )
@@ -305,12 +324,11 @@ struct CapabilityInstaller {
                     // inputs would change is replaced here, not edited for
                     // every workspace that uses it.
                     account = try upsertWorkspaceConnector(
-                        pluginConnector,
+                        fields,
                         package: package,
                         workspace: workspace,
                         existing: bound.flatMap { $0.isGlobal ? nil : $0 },
                         modelContext: modelContext,
-                        credentialInputs: credentialInputs,
                         configInputs: configInputs,
                         extraConfigKeys: packageEnvironmentKeys,
                         baseURL: baseURL,
@@ -375,6 +393,7 @@ struct CapabilityInstaller {
             modelContext.rollback()
             restoreReconciled()
             WorkspaceCapabilityActivation.restore(membershipSnapshot, to: workspace)
+            for (other, snapshot) in pendingSnapshots { WorkspaceCapabilityActivation.restore(snapshot, to: other) }
             let unrestored = restoreSkillSecrets(savedSkillSecrets)
                 + PluginUpdateService.undo(renamedSecrets)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
@@ -558,21 +577,40 @@ struct CapabilityInstaller {
         return unrestored
     }
 
+    /// A connector component's fields as its account stores them
+    /// (`PluginConnectorFieldTrust.asStored`), with the credential inputs
+    /// that fill them: a setting stored as a credential takes its value from
+    /// either input, whichever the caller filled.
+    struct StoredConnectorFields {
+        let connector: PluginConnector
+        let movedSettings: Set<String>
+        let credentialInputs: [String: String]
+
+        init(_ declared: PluginConnector, in package: PluginPackage, credentialInputs: [String: String], configInputs: [String: String]) {
+            connector = PluginConnectorFieldTrust.asStored(declared, in: package)
+            movedSettings = PluginConnectorFieldTrust.settingsStoredAsCredentials(of: declared, in: package)
+            var inputs = credentialInputs
+            for key in movedSettings where (inputs[key] ?? "").isEmpty {
+                if let value = configInputs[key], !value.isEmpty { inputs[key] = value }
+            }
+            self.credentialInputs = inputs
+        }
+    }
+
     private func upsertWorkspaceConnector(
-        _ pluginConnector: PluginConnector,
+        _ fields: StoredConnectorFields,
         package: PluginPackage,
         workspace: Workspace,
         existing: Connector?,
         modelContext: ModelContext,
-        credentialInputs: [String: String],
         configInputs: [String: String],
         extraConfigKeys: [String],
         baseURL: String,
         allowCredentialUserInteraction: Bool
     ) throws -> Connector {
+        let pluginConnector = fields.connector
         let connector = existing ?? existingWorkspaceConnector(
-            name: pluginConnector.name,
-            serviceType: pluginConnector.serviceType,
+            for: pluginConnector,
             workspace: workspace
         ) ?? Connector(
             name: pluginConnector.name,
@@ -584,6 +622,12 @@ struct CapabilityInstaller {
         )
         if connector.modelContext == nil {
             modelContext.insert(connector)
+        }
+        // A row from before its plugin's settings were credentials can hold
+        // one as plain text: it moves to the Keychain with this save.
+        var credentialInputs = fields.credentialInputs
+        for key in fields.movedSettings where (credentialInputs[key] ?? "").isEmpty && !connector.configValue(key).isEmpty {
+            credentialInputs[key] = connector.configValue(key)
         }
         connector.name = pluginConnector.name
         connector.serviceType = pluginConnector.serviceType
@@ -739,13 +783,21 @@ struct CapabilityInstaller {
         }
     }
 
+    /// The workspace's same-named account of the connector's service that
+    /// serves this component, or no component yet: one stamped with or bound
+    /// to another component (two same-named connectors with distinct IDs) is
+    /// that component's account, and Add makes this one its own.
     private func existingWorkspaceConnector(
-        name: String,
-        serviceType: String,
+        for pluginConnector: PluginConnector,
         workspace: Workspace
     ) -> Connector? {
-        workspace.connectors.first {
-            $0.name == name && $0.serviceType == serviceType
+        let identities = Set([CapabilityResourceOrigin.componentID(for: pluginConnector)]
+            + CapabilityResourceOrigin.replacedComponentIDs(for: pluginConnector))
+        return workspace.connectors.first { candidate in
+            guard candidate.name == pluginConnector.name, candidate.serviceType == pluginConnector.serviceType else { return false }
+            let stamp = candidate.originComponentID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let served = Set(candidate.accountBindings.filter { !$0.isDeleted }.map(\.componentID) + (stamp.isEmpty ? [] : [stamp]))
+            return served.isEmpty || !served.isDisjoint(with: identities)
         }
     }
 

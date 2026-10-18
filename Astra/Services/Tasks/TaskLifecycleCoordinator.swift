@@ -163,7 +163,7 @@ final class TaskLifecycleCoordinator {
               var repair = pendingRepair(for: task), repair.checkBinary != nil else {
             return retryVerifiedTask(task)
         }
-        repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
         repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
@@ -357,7 +357,7 @@ final class TaskLifecycleCoordinator {
         guard var repair = pendingRepair(for: task), repair.checkBinary != nil else {
             return resumeVerifiedTask(task)
         }
-        repair.checkEnvironment = projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        repair.checkEnvironment = Self.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
         repair = CLISessionExpiryClassifier.checkingLaunchHost(repair)
         let check = repairCheck
         let origin = RepairCheckOrigin(task)
@@ -412,21 +412,25 @@ final class TaskLifecycleCoordinator {
     }
 
     private static let gitHubCheckVariables: Set<String> = [
-        "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+        "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_REPO", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
         "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "PATH"
     ]
 
     /// The variables the resumed run gives the checked CLI, so a repair check
     /// judges the credentials that run gets: for `gh` its token variables
     /// (which override any sign-in), the GitHub Enterprise host and
-    /// tokens (`GH_HOST` picks the host), the configuration directory its
-    /// stored login lives in (`GH_CONFIG_DIR`, else `XDG_CONFIG_HOME`) and the
-    /// `PATH` that finds the binary, for `gcloud` the whole stripped launch
-    /// environment, where `CLOUDSDK_CONFIG`, `CLOUDSDK_CORE_ACCOUNT` or
+    /// tokens (`GH_HOST`, else `GH_REPO`'s host, picks the host), the
+    /// configuration directory its stored login lives in (`GH_CONFIG_DIR`,
+    /// else `XDG_CONFIG_HOME`) and the `PATH` that finds the binary, for
+    /// `gcloud` the whole stripped launch environment, where
+    /// `CLOUDSDK_CONFIG`, `CLOUDSDK_CORE_ACCOUNT` or
     /// `GOOGLE_APPLICATION_CREDENTIALS` pick the account it uses. Built from
     /// the same launch scope as the run, detached skill snapshots included: a
     /// snapshot whose skill was removed still delivers its variables.
-    private func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
+    /// `binary` may be the path of the installation that failed; its name
+    /// picks the variables.
+    static func projectedCheckEnvironment(for task: AgentTask, binary: String?) -> [String: String]? {
+        let binary = binary.map { ($0 as NSString).lastPathComponent }
         guard binary == "gh" || binary == "gcloud" else { return nil }
         let scope = TaskCapabilityResolutionSnapshot.capture(
             for: task,
