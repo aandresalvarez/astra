@@ -24,18 +24,25 @@ enum CLISessionExpiryClassifier {
     struct Family: Equatable, Sendable {
         let commands: [String]
         let displayName: String
-        let signInCommand: String
-        let checkBinary: String
-        let checkArguments: [String]
+        var signInCommand: String
+        var checkBinary: String
+        var checkArguments: [String]
         let patterns: [String]
         /// Signing in again fixes it. Not so for a token the environment
         /// supplies (`GH_TOKEN`), which overrides the stored sign-in.
         var offersSignIn = true
         var customStopMessage: String? = nil
+        /// A custom stop message ends by naming the check Resume runs, so a
+        /// host or executable path it targets survives in the message that
+        /// `family(forStopMessage:)` reads back.
+        var namesCheck = false
 
         var stopMessage: String {
-            customStopMessage
-                ?? "The \(displayName) sign-in expired while the agent was using it. Run `\(signInCommand)`, then resume."
+            guard let customStopMessage else {
+                return "The \(displayName) sign-in expired while the agent was using it. Run `\(signInCommand)`, then resume."
+            }
+            guard namesCheck else { return customStopMessage }
+            return "\(customStopMessage) Resume first checks `\(checkBinary) \(checkArguments.joined(separator: " "))`."
         }
 
         /// The sign-in repair, or for a family whose fix is outside ASTRA
@@ -50,28 +57,33 @@ enum CLISessionExpiryClassifier {
                 verb: offersSignIn ? "Sign in" : "Check",
                 detail: offersSignIn || customStopMessage == nil
                     ? "Run `\(signInCommand)` in Terminal, then resume the task."
-                    : customStopMessage ?? "",
+                    : stopMessage,
                 command: offersSignIn ? signInCommand : nil,
                 checkBinary: checkBinary,
                 checkArguments: checkArguments,
-                checkExpect: checkBinary == "gcloud" ? SemanticCheck.stdoutNonEmpty.rawValue : nil
+                checkExpect: (checkBinary as NSString).lastPathComponent == "gcloud" ? SemanticCheck.stdoutNonEmpty.rawValue : nil
             )
         }
 
         /// The same family signing in to and checking a GitHub Enterprise
-        /// host (`enterpriseHost` validated) instead of github.com. A custom
-        /// stop message names the host check, so the host survives in the
-        /// stop message `family(forStopMessage:)` reads back.
+        /// host (`enterpriseHost` validated) instead of github.com.
         func onHost(_ host: String) -> Family {
-            let checkArguments = ["auth", "status", "--hostname", host]
-            return Family(
-                commands: commands, displayName: displayName,
-                signInCommand: "\(signInCommand) --hostname \(host)", checkBinary: checkBinary,
-                checkArguments: checkArguments, patterns: patterns, offersSignIn: offersSignIn,
-                customStopMessage: customStopMessage.map {
-                    "\($0) Resume first checks `\(checkBinary) \(checkArguments.joined(separator: " "))`."
-                }
-            )
+            var family = self
+            family.signInCommand += " --hostname \(host)"
+            family.checkArguments = ["auth", "status", "--hostname", host]
+            family.namesCheck = true
+            return family
+        }
+
+        /// The same family checking and signing in with the installation the
+        /// failed command ran (`exactExecutable` validated), not whichever
+        /// one PATH finds first.
+        func at(_ executable: String) -> Family {
+            var family = self
+            family.signInCommand = executable + signInCommand.dropFirst(checkBinary.count)
+            family.checkBinary = executable
+            family.namesCheck = true
+            return family
         }
     }
 
@@ -157,43 +169,94 @@ enum CLISessionExpiryClassifier {
     static func family(content: String, command: String?, failed: Bool = true) -> Family? {
         guard let command, !command.isEmpty else { return nil }
         let lowered = content.lowercased()
-        let family = families.first { family in
+        guard var family = families.first(where: { family in
             family.commands.contains { failed ? runs($0, in: command) : masksExitStatus(of: $0, in: command) }
                 && family.patterns.contains { lowered.contains($0) }
-        }
+        }) else { return nil }
         // A GitHub Enterprise host the command targeted is the one to sign
         // in to and check; github.com's login says nothing about it.
-        if let family, family.checkBinary == "gh", let host = gitHubHost(in: command) { return family.onHost(host) }
+        if family.checkBinary == "gh", let host = gitHubHost(in: command) { family = family.onHost(host) }
+        // So is the installation it ran by path: another one on PATH may be
+        // signed in while this one is not.
+        if let executable = executablePath(of: family.checkBinary, in: command) { family = family.at(executable) }
         return family
     }
 
     /// The family whose stop message this is; the message is ASTRA's own.
     static func family(forStopMessage message: String?) -> Family? {
         guard let message else { return nil }
-        if let family = families.first(where: { $0.stopMessage == message }) { return family }
-        // An enterprise stop names its host in the sign-in or check command.
-        guard let start = message.range(of: " --hostname "),
-              let end = message[start.upperBound...].firstIndex(of: "`"),
-              let host = enterpriseHost(String(message[start.upperBound..<end])) else { return nil }
-        return families.lazy.filter { $0.checkBinary == "gh" }.map { $0.onHost(host) }.first { $0.stopMessage == message }
+        // An enterprise stop names its host, and a stop for an installation
+        // run by path names that path, in the sign-in or check command.
+        let host = message.range(of: " --hostname ").flatMap { start in
+            message[start.upperBound...].firstIndex(of: "`").flatMap { enterpriseHost(String(message[start.upperBound..<$0])) }
+        }
+        let executable = message.range(of: "`/").flatMap { start in
+            let path = message[message.index(before: start.upperBound)...].prefix { $0 != " " && $0 != "`" }
+            return exactExecutable(String(path))
+        }
+        for family in families {
+            var candidates = [family]
+            if let host, family.checkBinary == "gh" { candidates.append(family.onHost(host)) }
+            if let executable, (executable as NSString).lastPathComponent == family.checkBinary {
+                candidates += candidates.map { $0.at(executable) }
+            }
+            if let match = candidates.first(where: { $0.stopMessage == message }) { return match }
+        }
+        return nil
+    }
+
+    /// The absolute path `command` runs `cli` by (`/opt/team/bin/gh api
+    /// user`), when every call to `cli` in it names that same path. Nil for a
+    /// bare name, for calls that disagree, or for a path that is not safe as
+    /// one Terminal word.
+    static func executablePath(of cli: String, in command: String) -> String? {
+        let executables = Set(simpleCommands(command).compactMap { words -> String? in
+            var rest = words
+            stripWrappers(&rest)
+            guard let executable = rest.first, (executable as NSString).lastPathComponent == cli else { return nil }
+            return executable
+        })
+        guard executables.count == 1, let executable = executables.first else { return nil }
+        return exactExecutable(executable)
+    }
+
+    /// `candidate` when it is an absolute path of plain components (no
+    /// `.` or `..`, no shell syntax), so it is safe as one Terminal word.
+    private static func exactExecutable(_ candidate: String) -> String? {
+        let components = candidate.split(separator: "/", omittingEmptySubsequences: false).dropFirst()
+        guard candidate.hasPrefix("/"), candidate.count <= 1024,
+              candidate.range(of: #"^(/[A-Za-z0-9._+-]+)+$"#, options: .regularExpression) != nil,
+              !components.contains(where: { $0 == "." || $0 == ".." })
+        else { return nil }
+        return candidate
     }
 
     /// The GitHub Enterprise host a `gh` call in `command` targets: its
-    /// `--hostname` flag, else a `GH_HOST=` assignment before it. Nil for
-    /// github.com or a value that is not a plain host name.
+    /// `--hostname` flag or the host of its `-R/--repo HOST/OWNER/REPO`, else
+    /// a `GH_HOST=` assignment before it, else the host of a `GH_REPO=` one.
+    /// Nil for github.com or a value that is not a plain host name.
     static func gitHubHost(in command: String) -> String? {
         for words in simpleCommands(command) {
             var rest = words
             var assignments: [String] = []
             stripWrappers(&rest, assignments: &assignments)
             guard let executable = rest.first, (executable as NSString).lastPathComponent == "gh" else { continue }
-            var declared = assignments.last { $0.hasPrefix("GH_HOST=") }.map { String($0.dropFirst("GH_HOST=".count)) }
+            func assigned(_ name: String) -> String? {
+                assignments.last { $0.hasPrefix("\(name)=") }.map { String($0.dropFirst(name.count + 1)) }
+            }
+            var declared = assigned("GH_HOST") ?? assigned("GH_REPO").flatMap(repositoryHost)
             let arguments = Array(rest.dropFirst())
             for (index, argument) in arguments.enumerated() {
-                if argument == "--hostname", index + 1 < arguments.count {
-                    declared = arguments[index + 1]
+                let value = index + 1 < arguments.count ? arguments[index + 1] : nil
+                if argument == "--hostname", let value {
+                    declared = value
                 } else if argument.hasPrefix("--hostname=") {
                     declared = String(argument.dropFirst("--hostname=".count))
+                } else if argument == "-R" || argument == "--repo", let host = value.flatMap(repositoryHost) {
+                    declared = host
+                } else if let host = ["--repo=", "-R"].lazy.compactMap({ argument.hasPrefix($0) ? String(argument.dropFirst($0.count)) : nil })
+                    .first.flatMap(repositoryHost) {
+                    declared = host
                 }
             }
             if let host = declared.flatMap(enterpriseHost) { return host }
@@ -201,12 +264,23 @@ enum CLISessionExpiryClassifier {
         return nil
     }
 
+    /// The host of a `HOST/OWNER/REPO` repository selector (`gh --repo`,
+    /// `GH_REPO`); nil for `OWNER/REPO`, which means the default host.
+    private static func repositoryHost(_ selector: String) -> String? {
+        let parts = selector.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 3, !parts.contains(where: \.isEmpty) else { return nil }
+        return String(parts[0])
+    }
+
     /// A GitHub check still aimed at github.com while the resumed run's
-    /// `GH_HOST` names an enterprise host checks that host instead: `gh`
-    /// sends that run's calls there.
+    /// `GH_HOST` (else its `GH_REPO`'s host) names an enterprise host checks
+    /// that host instead: `gh` sends that run's calls there.
     static func checkingLaunchHost(_ repair: RepairAction) -> RepairAction {
-        guard repair.checkBinary == "gh", repair.checkArguments == gitHub.checkArguments,
-              let host = repair.checkEnvironment?["GH_HOST"].flatMap(enterpriseHost) else { return repair }
+        let environment = repair.checkEnvironment ?? [:]
+        guard let binary = repair.checkBinary, (binary as NSString).lastPathComponent == "gh",
+              repair.checkArguments == gitHub.checkArguments,
+              let host = (environment["GH_HOST"] ?? environment["GH_REPO"].flatMap(repositoryHost)).flatMap(enterpriseHost)
+        else { return repair }
         var hosted = repair
         hosted.checkArguments = gitHub.onHost(host).checkArguments
         return hosted

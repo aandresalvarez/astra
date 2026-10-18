@@ -325,6 +325,23 @@ struct PluginsSurfaceTests {
         }
     }
 
+    @Test("A cached access token that has since expired counts only while a refresh token is stored")
+    func cachedStatusExpiresWithItsToken() throws {
+        let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
+        let profile = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let cached = GoogleOAuthCredentialStatus.available(expiresAt: now, grantedScopes: scopes)
+        #expect(GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: false, now: now.addingTimeInterval(-60)))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: false, now: now))
+        #expect(GoogleWorkspaceCapability.isAccountConnected(profile, credentialStatus: cached, hasRefreshToken: true, now: now.addingTimeInterval(60)))
+        // The surface reads the Keychain again when the cached token expires.
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains(".task(id: googleCredentialExpiry) { await refreshGoogleCredential(at: googleCredentialExpiry) }"))
+    }
+
     @Test("An account missing a newly required Workspace scope is a pending step, not Ready")
     func missingOAuthScopesArePending() throws {
         let google = try builtIn("google-workspace")

@@ -157,6 +157,8 @@ struct PluginsSurfaceView: View {
         }
         // A sign-in, reauthorization or revocation stamps the profile.
         .onChange(of: googleAccounts.map(\.updatedAt)) { _, _ in refreshGoogleCredential() }
+        // Nor does an access token reaching its expiry: read it again then.
+        .task(id: googleCredentialExpiry) { await refreshGoogleCredential(at: googleCredentialExpiry) }
         // Contextual checks (GitHub repository access) describe one checkout:
         // a new working path, from any window, scans again.
         .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }
@@ -399,6 +401,22 @@ struct PluginsSurfaceView: View {
         let vault = GoogleOAuthCredentialVault()
         googleCredentialStatuses = account.map { [$0.id: vault.credentialStatus(for: $0)] } ?? [:]
         googleRefreshableAccountIDs = account.map { vault.hasRefreshToken(for: $0) ? [$0.id] : [] } ?? []
+    }
+
+    /// When the cached access token expires; the row may change then.
+    private var googleCredentialExpiry: Date? {
+        googleCredentialStatuses.values.compactMap { status -> Date? in
+            if case .available(let expiresAt, _) = status { return expiresAt }
+            return nil
+        }.min()
+    }
+
+    private func refreshGoogleCredential(at expiry: Date?) async {
+        guard let expiry else { return }
+        let delay = max(expiry.timeIntervalSinceNow, 0) + 1
+        try? await Task.sleep(for: .seconds(delay))
+        guard !Task.isCancelled else { return }
+        refreshGoogleCredential()
     }
 
     private func refreshStatuses() {

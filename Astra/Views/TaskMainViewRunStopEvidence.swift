@@ -18,6 +18,18 @@ enum TaskRunStopEvidence {
             .flatMap(RepairAction.decode(from:))
     }
 
+    /// The repair Sign in runs: the run's, its sign-in aimed at the
+    /// credential store the resumed task reads (`CLOUDSDK_CONFIG`,
+    /// `GH_CONFIG_DIR`…), the store Resume's check reads too. Resolved on
+    /// the click, not in `body`: it walks the task's launch scope.
+    @MainActor
+    static func signInRepair(events: [TaskEventSnapshot], runID: UUID?, task: AgentTask) -> RepairAction? {
+        guard let repair = repair(events: events, runID: runID) else { return nil }
+        return repair.targetingCredentialStore(
+            TaskLifecycleCoordinator.projectedCheckEnvironment(for: task, binary: repair.checkBinary)
+        )
+    }
+
     private static func latestPayload(events: [TaskEventSnapshot], runID: UUID?, type: TaskEventType) -> String? {
         guard let runID else { return nil }
         return events.last { $0.runID == runID && $0.type == type.rawValue }?.payload
@@ -44,7 +56,9 @@ enum RepairActionRunner {
         case .terminal:
             // Checked again here: a repair can also arrive from a stored event.
             guard let command = repair.command,
-                  RepairAction.isSafeTerminalCommand(command, binary: repair.checkBinary, allowsInstaller: repair.verb == "Install")
+                  RepairAction.isSafeTerminalCommand(
+                      command, binary: repair.checkBinary, allowsInstaller: repair.verb == "Install", allowsStoreSelectors: true
+                  )
             else { return }
             do {
                 try terminal.launchInTerminal(command: command)
