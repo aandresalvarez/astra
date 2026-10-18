@@ -59,13 +59,18 @@ enum CLISessionExpiryClassifier {
         }
 
         /// The same family signing in to and checking a GitHub Enterprise
-        /// host (`enterpriseHost` validated) instead of github.com.
+        /// host (`enterpriseHost` validated) instead of github.com. A custom
+        /// stop message names the host check, so the host survives in the
+        /// stop message `family(forStopMessage:)` reads back.
         func onHost(_ host: String) -> Family {
-            Family(
+            let checkArguments = ["auth", "status", "--hostname", host]
+            return Family(
                 commands: commands, displayName: displayName,
                 signInCommand: "\(signInCommand) --hostname \(host)", checkBinary: checkBinary,
-                checkArguments: ["auth", "status", "--hostname", host], patterns: patterns,
-                offersSignIn: offersSignIn, customStopMessage: customStopMessage
+                checkArguments: checkArguments, patterns: patterns, offersSignIn: offersSignIn,
+                customStopMessage: customStopMessage.map {
+                    "\($0) Resume first checks `\(checkBinary) \(checkArguments.joined(separator: " "))`."
+                }
             )
         }
     }
@@ -118,7 +123,22 @@ enum CLISessionExpiryClassifier {
         customStopMessage: "GitHub rejected the token in GH_TOKEN or GITHUB_TOKEN. That variable overrides any sign-in, so signing in again won't help: update or remove it where ASTRA's environment gets it, then resume."
     )
 
-    static let families = [googleCloud, gitHubEnvironmentToken, gitHub]
+    /// The same for `GH_ENTERPRISE_TOKEN` or `GITHUB_ENTERPRISE_TOKEN`, the
+    /// tokens `gh` uses for a GitHub Enterprise Server host. The host the
+    /// command targeted is kept (`onHost`), else the launch's `GH_HOST`
+    /// retargets the check (`checkingLaunchHost`).
+    static let gitHubEnterpriseToken = Family(
+        commands: ["gh"],
+        displayName: "GitHub",
+        signInCommand: "gh auth login",
+        checkBinary: "gh",
+        checkArguments: ["auth", "status", "--hostname", "github.com"],
+        patterns: ["the token in gh_enterprise_token is invalid", "the token in github_enterprise_token is invalid"],
+        offersSignIn: false,
+        customStopMessage: "GitHub Enterprise rejected the token in GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN. That variable overrides any sign-in, so signing in again won't help: update or remove it where ASTRA's environment gets it, then resume."
+    )
+
+    static let families = [googleCloud, gitHubEnterpriseToken, gitHubEnvironmentToken, gitHub]
 
     struct Stop: Equatable {
         let reason: String
@@ -143,7 +163,7 @@ enum CLISessionExpiryClassifier {
         }
         // A GitHub Enterprise host the command targeted is the one to sign
         // in to and check; github.com's login says nothing about it.
-        if family == gitHub, let host = gitHubHost(in: command) { return gitHub.onHost(host) }
+        if let family, family.checkBinary == "gh", let host = gitHubHost(in: command) { return family.onHost(host) }
         return family
     }
 
@@ -151,13 +171,11 @@ enum CLISessionExpiryClassifier {
     static func family(forStopMessage message: String?) -> Family? {
         guard let message else { return nil }
         if let family = families.first(where: { $0.stopMessage == message }) { return family }
-        // An enterprise stop names its host in the sign-in command.
-        let prefix = "`\(gitHub.signInCommand) --hostname "
-        guard let start = message.range(of: prefix),
+        // An enterprise stop names its host in the sign-in or check command.
+        guard let start = message.range(of: " --hostname "),
               let end = message[start.upperBound...].firstIndex(of: "`"),
               let host = enterpriseHost(String(message[start.upperBound..<end])) else { return nil }
-        let hosted = gitHub.onHost(host)
-        return hosted.stopMessage == message ? hosted : nil
+        return families.lazy.filter { $0.checkBinary == "gh" }.map { $0.onHost(host) }.first { $0.stopMessage == message }
     }
 
     /// The GitHub Enterprise host a `gh` call in `command` targets: its

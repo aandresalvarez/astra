@@ -90,6 +90,10 @@ struct CapabilityCatalogActionService {
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
+            // Every enable path (the legacy catalog's install sheets and
+            // Configure included) refuses a required account ASTRA can't
+            // sign in to, not only Plugins Add.
+            _ = try Self.addRoute(for: package)
             let result = try installer.install(
                 package,
                 into: workspace,

@@ -43,6 +43,7 @@ struct PluginsSurfaceView: View {
     /// The Keychain side of the Google account, read on refresh rather than
     /// on every render; the profile's own state comes from the store.
     @State private var googleCredentialStatuses: [UUID: GoogleOAuthCredentialStatus] = [:]
+    @State private var googleRefreshableAccountIDs: Set<UUID> = []
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -68,7 +69,11 @@ struct PluginsSurfaceView: View {
 
     private var googleAccountConnected: Bool {
         let account = GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts)
-        return GoogleWorkspaceCapability.isAccountConnected(account, credentialStatus: account.flatMap { googleCredentialStatuses[$0.id] })
+        return GoogleWorkspaceCapability.isAccountConnected(
+            account,
+            credentialStatus: account.flatMap { googleCredentialStatuses[$0.id] },
+            hasRefreshToken: account.map { googleRefreshableAccountIDs.contains($0.id) } ?? false
+        )
     }
 
     private var state: PluginsSurfaceState {
@@ -380,7 +385,9 @@ struct PluginsSurfaceView: View {
     private func refreshGoogleCredential() {
         let usesGoogle = packages.contains(where: GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup)
         let account = usesGoogle ? GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts) : nil
-        googleCredentialStatuses = account.map { [$0.id: GoogleOAuthCredentialVault().credentialStatus(for: $0)] } ?? [:]
+        let vault = GoogleOAuthCredentialVault()
+        googleCredentialStatuses = account.map { [$0.id: vault.credentialStatus(for: $0)] } ?? [:]
+        googleRefreshableAccountIDs = account.map { vault.hasRefreshToken(for: $0) ? [$0.id] : [] } ?? []
     }
 
     private func refreshStatuses() {
