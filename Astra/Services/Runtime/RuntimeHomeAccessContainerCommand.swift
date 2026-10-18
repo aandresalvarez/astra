@@ -111,7 +111,9 @@ enum RuntimeHomeAccessContainerCommand {
             }
             if let sessionID = resumeSessionID, ProviderNativeSessionStore.isPlainSessionToken(sessionID), let state = root.resumedState {
                 let path = "\"$\(variable)\"/\(quoted(state.directory))/\(quoted(sessionID + (state.fileSuffix ?? "")))"
-                lines.append(state.isDirectory ? "astra_home_directory \(path) 1 1" : "astra_home_state_file \(path) 0")
+                lines.append("astra_resumed_state=\(path)")
+                lines.append(#"[ -e "$astra_resumed_state" ] || [ -L "$astra_resumed_state" ] || astra_home_fail "Selected resumed state is missing: $astra_resumed_state""#)
+                lines.append(state.isDirectory ? #"astra_home_directory "$astra_resumed_state" 1 0"# : #"astra_home_state_file "$astra_resumed_state" 0"#)
             }
             if root.onlyWhenConfigured, root.variable != nil {
                 lines.append("fi")

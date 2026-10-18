@@ -157,15 +157,24 @@ struct RuntimeProviderAvailabilityService {
         _ states: [AgentRuntimeID: RuntimeReadinessState],
         configuration: RuntimeProviderAvailabilityConfiguration
     ) async -> [AgentRuntimeID: RuntimeReadinessState] {
-        var refreshed = states
         // A warning at most: this answer is global, but whether the host home
         // matters depends on the launch (a container never reads it). The
         // final-plan guard blocks the launches it would actually break.
-        for (runtime, state) in states {
-            let checked = await readinessService.refreshingUncachedChecks(.ready, configuration: configuration.readinessConfiguration(for: runtime))
-            refreshed[runtime] = state.combined(with: checked == .blocked ? .warning : checked)
+        // Independent homes must not add their filesystem latency together,
+        // including when the descriptor states came from the cache.
+        return await withTaskGroup(of: (AgentRuntimeID, RuntimeReadinessState).self) { group in
+            for (runtime, state) in states {
+                group.addTask {
+                    let checked = await readinessService.refreshingUncachedChecks(
+                        .ready, configuration: configuration.readinessConfiguration(for: runtime)
+                    )
+                    return (runtime, state.combined(with: checked == .blocked ? .warning : checked))
+                }
+            }
+            var refreshed: [AgentRuntimeID: RuntimeReadinessState] = [:]
+            for await (runtime, state) in group { refreshed[runtime] = state }
+            return refreshed
         }
-        return refreshed
     }
 
     private static func summary(of states: [AgentRuntimeID: RuntimeReadinessState]) -> String {

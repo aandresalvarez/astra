@@ -5,6 +5,45 @@ import ASTRACore
 
 @Suite("Runtime readiness state cache")
 struct RuntimeReadinessStateCacheTests {
+    @Test("Independent home inspections overlap on availability misses and cache hits", arguments: [false, true])
+    func homeChecksOverlap(cacheHit: Bool) async {
+        let cache = RuntimeReadinessStateCache()
+        let configuration = configuration()
+        if cacheHit {
+            var states = Dictionary(uniqueKeysWithValues: AgentRuntimeAdapterRegistry.runtimeIDs.map { ($0, RuntimeReadinessState.ready) })
+            states[.claudeCode] = .blocked
+            states[.copilotCLI] = .warning
+            await cache.store(states, for: configuration)
+        }
+        let inspections = OverlappingHomeInspections()
+        // Only a deadlock escape for the old serial implementation. Success
+        // depends on all inspections entering the barrier, never elapsed time.
+        let escape = Task {
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            await inspections.release()
+        }
+        defer { escape.cancel() }
+        let runner = StubBinaryRunner()
+        await runner.setResponse(forKey: "/opt/codex --version", result: .exited(code: 0, stdout: "codex-cli 0.130.0", stderr: ""))
+        let service = RuntimeProviderAvailabilityService(readinessService: RuntimeReadinessService(
+            runner: runner, detectExecutable: { "/opt/" + $0 }, isExecutable: { $0 == "/opt/codex" },
+            homeAccessCheck: { await inspections.check($0) }
+        ))
+        let states = await service.states(configuration: configuration, cache: cache)
+        #expect(await inspections.allEnteredBeforeRelease)
+        let cached = await cache.states(for: configuration, maxAge: 300)
+        for runtime in AgentRuntimeAdapterRegistry.runtimeIDs {
+            #expect(await inspections.count(runtime) == 1)
+            let base = cached?[runtime]
+            #expect(base != nil)
+            let expected: RuntimeReadinessState? = base == .blocked ? .blocked
+                : ([.codexCLI, .antigravityCLI].contains(runtime) ? .warning : base)
+            #expect(states[runtime] == expected)
+        }
+        #expect(cached?[.codexCLI] == .ready)
+        #expect(states[.codexCLI] == .warning)
+    }
+
     @Test("An availability miss and a cache hit each inspect provider homes exactly once")
     func homeChecksRunOncePerAnswer() async {
         let cache = RuntimeReadinessStateCache()
@@ -143,6 +182,32 @@ struct RuntimeReadinessStateCacheTests {
 
         #expect(states.isEmpty)
         #expect(await cache.states(for: configuration(), maxAge: 300) == nil)
+    }
+}
+
+private actor OverlappingHomeInspections {
+    private var counts: [AgentRuntimeID: Int] = [:]
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private(set) var allEnteredBeforeRelease = false
+
+    func count(_ runtime: AgentRuntimeID) -> Int { counts[runtime, default: 0] }
+
+    func release() {
+        guard !released else { return }
+        allEnteredBeforeRelease = counts.count == AgentRuntimeAdapterRegistry.runtimeIDs.count
+        released = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+
+    func check(_ request: RuntimeHomeAccessRequest) async -> RuntimeReadinessCheck? {
+        counts[request.runtime, default: 0] += 1
+        if counts.count == AgentRuntimeAdapterRegistry.runtimeIDs.count { release() }
+        if !released { await withCheckedContinuation { waiters.append($0) } }
+        guard request.runtime == .codexCLI || request.runtime == .antigravityCLI else { return nil }
+        return .init(id: RuntimeHomeAccessService.checkID(for: request.runtime), title: "QA", detail: "QA",
+                     state: request.runtime == .codexCLI ? .blocked : .warning, remediation: nil)
     }
 }
 

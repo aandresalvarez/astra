@@ -85,7 +85,9 @@ enum RuntimeHomeAccessService {
             }
             if let session = request.resumeSessionID, ProviderNativeSessionStore.isPlainSessionToken(session), let state = root.resumedState {
                 let statePath = state.path(root: path, sessionID: session)
-                if let issue = problem(statePath, directory: state.isDirectory, writable: true, create: true, receipt: request.sandboxReceipt) {
+                // A new session can create state; a selected native session
+                // must survive until this final launch check.
+                if let issue = problem(statePath, directory: state.isDirectory, writable: true, required: true, receipt: request.sandboxReceipt) {
                     problems.append(issue)
                 } else if !state.isDirectory,
                           let issue = problem((statePath as NSString).deletingLastPathComponent, directory: true, writable: true,
@@ -118,7 +120,8 @@ enum RuntimeHomeAccessService {
     }
 
     private static func problem(
-        _ path: String, directory: Bool, writable: Bool, create: Bool = false, readable: Bool = true, privateOwner: uid_t? = nil,
+        _ path: String, directory: Bool, writable: Bool, create: Bool = false, required: Bool = false,
+        readable: Bool = true, privateOwner: uid_t? = nil,
         receipt: ExecutionSandboxBoundaryReceipt?
     ) -> String? {
         let display = (path as NSString).abbreviatingWithTildeInPath
@@ -128,6 +131,7 @@ enum RuntimeHomeAccessService {
             var link = stat()
             if lstat(path, &link) == 0 { return "\(display) is a broken link" }
             guard error == ENOENT else { return "\(display) is inaccessible" }
+            if required { return "\(display) is missing; the selected session cannot be resumed" }
             guard create else { return nil }
             var parent = (path as NSString).deletingLastPathComponent
             while stat(parent, &info) != 0 {
