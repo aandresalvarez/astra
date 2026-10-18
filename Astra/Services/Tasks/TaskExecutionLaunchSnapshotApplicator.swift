@@ -68,12 +68,14 @@ enum TaskExecutionLaunchSnapshotApplicator {
             workspace.launchPluginDefinitions = snapshot.pluginDefinitions
             // The activations frozen at submission, when the request has
             // them: a plugin turned off, on or reconfigured while it waited
-            // does not change the run.
+            // does not change the run. Frozen with its definitions, each
+            // keeps the acceptance it had with them.
             WorkspaceCapabilityActivation.copyActivations(
                 snapshot.pluginActivations ?? WorkspaceCapabilityActivation.activations(of: live).map(PluginActivationRecord.init),
                 of: live,
                 to: workspace,
-                accountsByID: Dictionary(workspace.connectors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                accountsByID: Dictionary(workspace.connectors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+                definitionsFrozen: snapshot.pluginActivations != nil && snapshot.pluginDefinitions != nil
             )
         }
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)

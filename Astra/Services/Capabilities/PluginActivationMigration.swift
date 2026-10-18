@@ -514,15 +514,26 @@ enum PluginActivationMigration {
         return "connector:\(service):\(CapabilityRuntimeResourceMatcher.normalizedName(connector.name))"
     }
 
+    /// A stamped row is the component its stamp names: the spec's own ID,
+    /// or one the spec `replaces` (an earlier build stamped the identity a
+    /// later definition renamed, such as a name-derived one a stable ID took
+    /// over), so its settings and secrets move instead of a second component
+    /// being projected beside it.
     private static func matches(_ spec: PluginSkill, skill: Skill) -> Bool {
         let stamped = trimmed(skill.originComponentID)
-        if !stamped.isEmpty { return stamped == CapabilityResourceOrigin.componentID(for: spec) }
+        if !stamped.isEmpty {
+            return stamped == CapabilityResourceOrigin.componentID(for: spec)
+                || CapabilityResourceOrigin.replacedComponentIDs(for: spec).contains(stamped)
+        }
         return CapabilityRuntimeResourceMatcher.skillMatches(spec, skill: skill)
     }
 
     private static func matches(_ spec: PluginLocalTool, tool: LocalTool) -> Bool {
         let stamped = trimmed(tool.originComponentID)
-        if !stamped.isEmpty { return stamped == CapabilityResourceOrigin.componentID(for: spec) }
+        if !stamped.isEmpty {
+            return stamped == CapabilityResourceOrigin.componentID(for: spec)
+                || CapabilityResourceOrigin.replacedComponentIDs(for: spec).contains(stamped)
+        }
         return CapabilityRuntimeResourceMatcher.toolMatches(spec, tool: tool)
     }
 

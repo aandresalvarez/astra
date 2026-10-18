@@ -494,6 +494,25 @@ struct PluginActivationMigrationTests {
         #expect(skill.environmentValues == [""])
     }
 
+    @Test("A V19 row stamped with the identity a stable ID replaced moves its settings to the renamed component")
+    func stampedPredecessorRowMigrates() throws {
+        let fixture = try Fixture(gcloudSkillProject: "my-project")
+        var gcloud = fixture.gcloud
+        let legacy = CapabilityResourceOrigin.componentID(for: gcloud.skills[0])
+        gcloud.skills[0].id = "gcp-operator"
+        gcloud.skills[0].replaces = [legacy]
+        let packages = fixture.packages.map { $0.id == gcloud.id ? gcloud : $0 }
+        try PluginActivationMigration.migrate(modelContext: fixture.context, packages: packages)
+
+        let a = try fixture.workspace(fixture.aID)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: gcloud.id, in: a))
+        let renamed = CapabilityResourceOrigin.componentID(for: gcloud.skills[0])
+        #expect(activation.configuration[PluginActivation.settingKey(componentID: renamed, key: "GCP_PROJECT")] == "my-project")
+        // The row became the projection, not an authored row beside it.
+        #expect(try fixture.context.fetch(FetchDescriptor<Skill>()).allSatisfy { $0.id != fixture.gcloudSkillID })
+        #expect(activation.overriddenComponentIDs.isEmpty)
+    }
+
     @Test("A plugin tool whose description was edited stays an authored row")
     func editedToolDescriptionIsKept() throws {
         let fixture = try Fixture(editedToolDescription: "My own words")

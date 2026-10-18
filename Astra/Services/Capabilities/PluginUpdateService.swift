@@ -27,7 +27,9 @@ import ASTRAPersistence
 /// automatic pass (`Mode.automatic`: launch after the built-in sync, after
 /// workspace recovery) only moves renamed components and records the new
 /// definition when nothing else would change; otherwise the activation stays
-/// on its recorded version and the row offers Update.
+/// on its recorded version, marked as awaiting Update (`awaitingUpdate`, so
+/// its plugin doesn't run even when only the digest changed), and the row
+/// offers Update.
 ///
 /// A rename is never inferred from a name, a kind or a service.
 @MainActor
@@ -40,6 +42,8 @@ enum PluginUpdateService {
         /// value waiting to be cleared from the Keychain.
         case secretCleanupPending(key: String)
         case storeUnreadable
+        /// The plugin's installed definition couldn't be read back.
+        case definitionUnreadable(plugin: String)
         case saveFailed
         /// The update failed and a secret it had copied couldn't be put back.
         case credentialRestoreFailed(keys: [String])
@@ -56,6 +60,8 @@ enum PluginUpdateService {
                 "The earlier saved \(key) couldn't be cleared from the Keychain yet, so this version can't use it. Try again."
             case .storeUnreadable:
                 "Couldn't read the workspaces that use this plugin."
+            case .definitionUnreadable(let plugin):
+                "Couldn't read the installed \(plugin), so nothing was updated. Install it again and retry."
             case .saveFailed:
                 "Couldn't save the update."
             case .credentialRestoreFailed(let keys):
@@ -201,12 +207,17 @@ enum PluginUpdateService {
         /// Whether a rename moved state (a connector's binding, a tool's
         /// override) without copying a secret.
         var moved = false
-        var changed: Bool { recorded || moved || !copied.isEmpty || !released.isEmpty }
+        /// Whether a held-back pass newly marked the activation as awaiting
+        /// Update.
+        var marked = false
+        var changed: Bool { recorded || moved || marked || !copied.isEmpty || !released.isEmpty }
     }
 
-    /// True when the activation was not reconciled against this definition.
+    /// True when the activation was not reconciled against this definition,
+    /// or a pass held it back from it.
     static func needsReconcile(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
-        activation.recordedVersion != package.version
+        activation.awaitingUpdate
+            || activation.recordedVersion != package.version
             || activation.recordedDigest != digest(of: package)
             || activation.knownComponentIDs != componentIDs(of: package)
     }
@@ -285,7 +296,8 @@ enum PluginUpdateService {
             for account in WorkspaceCapabilityActivation.activations(of: workspace)
                 .flatMap(\.bindings).compactMap(\.account) where !account.isDeleted {
                 let saved = (account.credentialKeys, account.credentialValues, account.configKeys, account.configValues,
-                             account.connectorDescription, account.icon, account.notes, account.originPackageVersion)
+                             account.connectorDescription, account.icon, account.notes, account.originPackageVersion,
+                             account.originComponentID)
                 restorers.append {
                     account.credentialKeys = saved.0
                     account.credentialValues = saved.1
@@ -295,6 +307,7 @@ enum PluginUpdateService {
                     account.icon = saved.5
                     account.notes = saved.6
                     account.originPackageVersion = saved.7
+                    account.originComponentID = saved.8
                 }
             }
         }
@@ -382,6 +395,7 @@ enum PluginUpdateService {
         if let (new, _) = livePredecessors.first(where: { $0.value.count > 1 }) {
             guard mode == .release else {
                 result.withheld = [new]
+                result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
                 return result
             }
             throw UpdateError.ambiguousRename(component: new)
@@ -431,6 +445,7 @@ enum PluginUpdateService {
                 activation.knownComponentIDs.map { renames[$0] ?? $0 },
                 on: activation
             )
+            result.marked = WorkspaceCapabilityActivation.setAwaitingUpdate(true, on: activation)
             return result
         }
 
@@ -494,16 +509,24 @@ enum PluginUpdateService {
 
     /// Brings the account rows this plugin created to its connector
     /// declarations: credential and setting keys it now declares are added,
-    /// and its description, icon and notes follow. What the person entered
-    /// (URL, auth method, values) is kept. Returns whether a row changed.
+    /// and its description, icon and notes follow; one stamped with a
+    /// component this one `replaces` is stamped with this one, so its
+    /// creator's declaration is found by ID (`PluginRuntimeProjection`).
+    /// What the person entered (URL, auth method, values) is kept. Returns
+    /// whether a row changed.
     @discardableResult
     static func syncOwnedAccounts(of activation: PluginActivation, to package: PluginPackage) -> Bool {
         var changed = false
         for spec in package.connectors {
             let componentID = CapabilityResourceOrigin.componentID(for: spec)
+            let predecessors = Set(CapabilityResourceOrigin.replacedComponentIDs(for: spec))
             for account in activation.accounts(forComponent: componentID)
             where !account.isDeleted && account.originPackageID == package.id {
                 var touched = false
+                if let stamp = account.originComponentID, predecessors.contains(stamp) {
+                    account.originComponentID = componentID
+                    touched = true
+                }
                 for hint in spec.credentialHints where !account.credentialKeys.contains(hint.key) {
                     while account.credentialValues.count < account.credentialKeys.count { account.credentialValues.append("") }
                     account.credentialKeys.append(hint.key)

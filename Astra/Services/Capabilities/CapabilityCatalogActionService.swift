@@ -279,19 +279,19 @@ struct CapabilityCatalogActionService {
     }
 
     /// The row's Update: brings every workspace's activations of `package`
-    /// to its definition in the library, releasing what it dropped.
+    /// to its definition in the library, releasing what it dropped. Only
+    /// the definition read back from the library is reconciled against,
+    /// never the row's own copy: with none readable, nothing changes.
     func update(_ package: PluginPackage, modelContext: ModelContext) throws {
-        let definition = library.installedPackages().filter { $0.id == package.id }
+        guard let definition = library.installedPackages().first(where: { $0.id == package.id }) else {
+            throw PluginUpdateService.UpdateError.definitionUnreadable(plugin: package.name)
+        }
         // Refused for every workspace if one with an activation of it would
         // refuse this definition, as an import is, before anything changes.
-        if let refusal = PluginUpdateService.refusals(for: definition.first ?? package, modelContext: modelContext).first {
+        if let refusal = PluginUpdateService.refusals(for: definition, modelContext: modelContext).first {
             throw refusal
         }
-        try PluginUpdateService.reconcileAll(
-            modelContext: modelContext,
-            packages: definition.isEmpty ? [package] : definition,
-            mode: .release
-        )
+        try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [definition], mode: .release)
         CapabilityCatalogPersistenceEvents.post(.global)
     }
 

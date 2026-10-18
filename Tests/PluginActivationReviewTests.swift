@@ -271,6 +271,126 @@ struct PluginActivationReviewTests {
         #expect(!PluginsSurfacePresentation.showsTurnOff(try pluginRow(shared, enabled: false)))
         #expect(!PluginsSurfacePresentation.showsTurnOff(try pluginRow(own)))
     }
+
+    // MARK: - Round 11
+
+    @Test("A same-version definition the automatic pass held back doesn't run until Update")
+    func digestOnlyWithheldActivationDoesNotRun() throws {
+        let env = try Fixtures.Environment()
+        var v1 = Fixtures.package(version: "1.0.0")
+        v1.skills[0].environmentKeys = ["PROJECT", "REGION"]
+        v1.skills[0].environmentValues = ["default-project", ""]
+        try env.install(v1)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: v1.id, in: env.workspace))
+        WorkspaceCapabilityActivation.setConfigValue(
+            "us-east", forKey: PluginActivation.settingKey(componentID: "skill:report-agent", key: "REGION"), on: activation
+        )
+        try env.context.save()
+        // Reseeded with the same version and components, without REGION: only
+        // the digest differs, and the pass can't release the setting.
+        try env.importUpdate(Fixtures.package(version: "1.0.0"), mode: .automatic)
+        #expect(activation.recordedVersion == "1.0.0")
+        #expect(activation.knownComponentIDs == PluginRuntimeProjection.componentIDs(of: Fixtures.package(version: "1.0.0")))
+
+        let library = env.library.installedPackages()
+        func runs() -> Bool { !PluginRuntimeProjection.project(workspace: env.workspace, packages: library).skills.isEmpty }
+        #expect(activation.awaitingUpdate)
+        #expect(!runs())
+        #expect(PluginRuntimeProjection.runnable(library, in: env.workspace).isEmpty)
+        // Snapshots, queued records and the workspace mirror carry it.
+        #expect(PluginActivationRecord(activation).awaitingUpdate)
+        #expect(WorkspaceConfigManager.installedPluginRefs(for: env.workspace).first { $0.id == v1.id }?.awaitingUpdate == true)
+
+        try PluginUpdateService.reconcileAll(modelContext: env.context, packages: library, mode: .release)
+        #expect(!activation.awaitingUpdate)
+        #expect(runs())
+    }
+
+    @Test("A shared account is trimmed to its creator's declaration after the creator renamed the connector")
+    func sharedAccountFollowsRenamedCreator() throws {
+        let env = try Fixtures.Environment()
+        var v1 = Fixtures.package(version: "1.0.0")
+        v1.connectors[0].credentialHints.append(.init(key: "LEGACY_TOKEN", hint: "Legacy"))
+        try env.install(v1)
+        let account = try #require(env.workspace.connectors.first { $0.originPackageID == v1.id })
+        var other = Fixtures.package(version: "1.0.0")
+        other.id = "ops.other"
+        other.skills[0].name = "Other Agent"
+        other.connectors[0].credentialHints = [.init(key: "TRACKER_TOKEN", hint: "Token"), .init(key: "LEGACY_TOKEN", hint: "Legacy")]
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableCapability(other.id) }
+        let otherActivation = try #require(WorkspaceCapabilityActivation.activation(for: other.id, in: env.workspace))
+        WorkspaceCapabilityActivation.bind(
+            account, toComponent: CapabilityResourceOrigin.componentID(for: other.connectors[0]), of: otherActivation
+        )
+        var v2 = Fixtures.package(version: "2.0.0")
+        let predecessor = CapabilityResourceOrigin.componentID(for: v2.connectors[0])
+        v2.connectors[0].id = "issues"
+        v2.connectors[0].replaces = [predecessor]
+        try env.importUpdate(v2)
+        #expect(account.originComponentID == CapabilityResourceOrigin.componentID(for: v2.connectors[0]))
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0.capabilityIDs.removeAll { $0 == v1.id } }
+
+        func projectedKeys() -> [String]? {
+            PluginRuntimeProjection.project(
+                workspace: env.workspace, packages: [other], connectorMode: .runtimeCopies,
+                definitions: env.library.installedPackages() + [other]
+            ).connectors.first { $0.id == account.id }?.credentialKeys
+        }
+        #expect(projectedKeys() == ["TRACKER_TOKEN"])
+        // A stamp no Update moved (an earlier build's) resolves through the
+        // creator's `replaces`.
+        account.originComponentID = predecessor
+        #expect(projectedKeys() == ["TRACKER_TOKEN"])
+        #expect(account.credentialKeys == ["TRACKER_TOKEN", "LEGACY_TOKEN"])
+    }
+
+    @Test("A queued launch keeps its frozen acceptance with its frozen definitions, and takes the live one without them")
+    func queuedLaunchAcceptanceFollowsItsDefinitions() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let submitted = env.library.installedPackages().filter { $0.id == "ops.report" }
+        let task = AgentTask(title: "Report", goal: "Write the weekly report", workspace: env.workspace)
+        env.context.insert(task)
+        // One request froze its definitions; an earlier build's froze none.
+        let frozen = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, kind: .retry, pluginDefinitions: submitted)
+        let older = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        [frozen, older].forEach { env.context.insert($0) }
+        try env.context.save()
+        try env.importUpdate(Fixtures.package(version: "2.0.0"))
+
+        func launch(_ request: TaskTurnRequest) throws -> AgentTask {
+            let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+            return TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        }
+        func version(_ launch: AgentTask) -> String? {
+            launch.workspace.flatMap { WorkspaceCapabilityActivation.activation(for: "ops.report", in: $0) }?.recordedVersion
+        }
+        // Frozen v1 definition, frozen v1 acceptance: the plugin runs as submitted.
+        let frozenLaunch = try launch(frozen)
+        #expect(version(frozenLaunch) == "1.0.0")
+        #expect(TaskCapabilityResolver(task: frozenLaunch).allBehaviorSkills.contains { $0.name == "Report Agent" })
+        // No frozen definitions: the library's v2, with the acceptance the
+        // Update recorded.
+        let olderLaunch = try launch(older)
+        #expect(version(olderLaunch) == "2.0.0")
+        #expect(!PluginRuntimeProjection.project(workspace: olderLaunch.workspace, packages: env.library.installedPackages()).skills.isEmpty)
+    }
+
+    @Test("The row's Update fails, changing nothing, when the installed definition can't be read back")
+    func rowUpdateNeedsReadableDefinition() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "ops.report", in: env.workspace))
+        try Data("not a package".utf8).write(to: env.library.packageURL(for: "ops.report"))
+        // The row still shows a definition that dropped the connector.
+        var shown = Fixtures.package(version: "2.0.0")
+        shown.connectors = []
+        #expect(throws: PluginUpdateService.UpdateError.definitionUnreadable(plugin: shown.name)) {
+            try CapabilityCatalogActionService(library: env.library).update(shown, modelContext: env.context)
+        }
+        #expect(activation.recordedVersion == "1.0.0")
+        #expect(!activation.bindings.isEmpty)
+    }
 }
 
 /// Skill secrets with no values whose deletes all fail.

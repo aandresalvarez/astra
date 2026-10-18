@@ -26,7 +26,8 @@ extension WorkspaceConfigManager {
             secretSettingKeys: [String]? = nil,
             namespaceSeed: String? = nil,
             digest: String? = nil,
-            templateDigests: [String]? = nil
+            templateDigests: [String]? = nil,
+            awaitingUpdate: Bool? = nil
         ) {
             self.id = id
             self.activationID = activationID
@@ -41,6 +42,7 @@ extension WorkspaceConfigManager {
             self.namespaceSeed = namespaceSeed
             self.digest = digest
             self.templateDigests = templateDigests
+            self.awaitingUpdate = awaitingUpdate
         }
 
         public var id: String
@@ -71,6 +73,9 @@ extension WorkspaceConfigManager {
         /// The template rows' content digests (`componentID#digest`). Restored
         /// only from the workspace's own mirror, whose rows keep their stamps.
         public var templateDigests: [String]?
+        /// Whether an automatic reconcile held the activation back from its
+        /// library definition; restored only from the workspace's own mirror.
+        public var awaitingUpdate: Bool?
     }
 
     public struct PluginAccountRef: Codable, Sendable, Equatable {
@@ -127,7 +132,8 @@ extension WorkspaceConfigManager {
                 secretSettingKeys: activation.secretSettingKeys.isEmpty ? nil : activation.secretSettingKeys,
                 namespaceSeed: activation.namespaceSeed.isEmpty ? nil : activation.namespaceSeed,
                 digest: activation.recordedDigest.isEmpty ? nil : activation.recordedDigest,
-                templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests
+                templateDigests: activation.templateDigests.isEmpty ? nil : activation.templateDigests,
+                awaitingUpdate: activation.awaitingUpdate ? true : nil
             )
         }
     }
@@ -191,6 +197,7 @@ extension WorkspaceConfigManager {
                     WorkspaceCapabilityActivation.setNamespaceSeed(seed, on: activation)
                 }
                 WorkspaceCapabilityActivation.setTemplateDigests(entries: ref.templateDigests ?? [], on: activation)
+                WorkspaceCapabilityActivation.setAwaitingUpdate(ref.awaitingUpdate ?? false, on: activation)
                 declared = nil
                 // The workspace's own mirror keeps the activation's identity,
                 // so its secret settings resolve again. A chosen file never
