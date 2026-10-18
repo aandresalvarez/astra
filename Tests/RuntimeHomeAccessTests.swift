@@ -141,6 +141,22 @@ struct RuntimeHomeAccessTests {
         #expect(result.stderr.contains(xdg))
     }
 
+    @Test("Codex ignores an unreadable user config when ASTRA disables user configuration")
+    func codexIgnoresUnusedUserConfig() async throws {
+        let fixture = try Fixture(.codexCLI)
+        defer { fixture.remove() }
+        let ignored = fixture.home + "/.codex/config.toml"
+        FileManager.default.createFile(atPath: ignored, contents: Data(), attributes: [.posixPermissions: 0])
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: .codexCLI, executablePath: "/unused/codex", arguments: ["exec", "--ignore-user-config"],
+            currentDirectory: fixture.home, environment: ["HOME": fixture.home],
+            browserShimDirectory: nil, providerVersion: nil, parsesJSONLines: true
+        )
+        #expect(await AgentRuntimeProcessRunner.providerHomeBlock(for: plan, resumeSessionID: nil) == nil)
+        let container = try runShell(RuntimeHomeAccessContainerCommand.script(policy: fixture.request.policy), home: fixture.home)
+        #expect(container.exitCode == 0)
+    }
+
     @Test("A sandbox denial blocks mutable state but allows hardened read-only config")
     func respectsAppliedSandbox() async throws {
         let fixture = try Fixture(.codexCLI)

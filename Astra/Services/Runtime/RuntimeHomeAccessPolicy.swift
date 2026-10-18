@@ -72,7 +72,9 @@ extension AntigravityCLIRuntimeAdapter {
 
 extension CodexCLIRuntimeAdapter {
     var homeAccessPolicy: RuntimeHomeAccessPolicy {
-        .init(roots: [.init(variable: "CODEX_HOME", fallback: ".codex", files: ["config.toml", "auth.json"], directories: ["sessions"])], configuredHomeVariable: "CODEX_HOME")
+        // Both initial and resumed ASTRA commands pass --ignore-user-config.
+        // config.toml is not a launch dependency; auth and session state are.
+        .init(roots: [.init(variable: "CODEX_HOME", fallback: ".codex", files: ["auth.json"], directories: ["sessions"])], configuredHomeVariable: "CODEX_HOME")
     }
 }
 
