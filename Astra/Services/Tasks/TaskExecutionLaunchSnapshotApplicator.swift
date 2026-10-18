@@ -258,6 +258,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             record.apply(to: copy)
             if !workspace.skills.contains(where: { $0 === copy }) { workspace.skills.append(copy) }
             skills[record.id] = copy
+            applyFrozenAttachments(of: record, to: copy, in: workspace)
         }
         for record in records.localTools {
             let copy = workspace.localTools.first { $0.id == record.id }
@@ -270,13 +271,46 @@ enum TaskExecutionLaunchSnapshotApplicator {
         return records.rowIDs
     }
 
+    /// An override skill's copy carries exactly the attachments frozen with
+    /// it, as submitted: one edited since takes its submitted contents, one
+    /// deleted since is brought back, one attached since is left off. A
+    /// request recorded before attachments were frozen keeps the live ones.
+    private static func applyFrozenAttachments(
+        of record: PluginOverrideRecords.SkillRecord,
+        to skill: Skill,
+        in workspace: Workspace
+    ) {
+        if let connectorRecords = record.attachedConnectors {
+            skill.connectors = connectorRecords.map { attached in
+                let existing = skill.connectors.first { $0.id == attached.id }
+                    ?? workspace.connectors.first { $0.id == attached.id }
+                let copy = existing ?? attached.makeAccount()
+                attached.apply(to: copy)
+                if existing == nil, !attached.isGlobal { copy.workspace = workspace }
+                copy.skill = skill
+                return copy
+            }
+        }
+        if let toolRecords = record.attachedTools {
+            skill.localTools = toolRecords.map { attached in
+                let existing = skill.localTools.first { $0.id == attached.id }
+                    ?? workspace.localTools.first { $0.id == attached.id }
+                let copy = existing ?? attached.makeTool()
+                attached.apply(to: copy)
+                if existing == nil, !attached.isGlobal { copy.workspace = workspace }
+                copy.skill = skill
+                return copy
+            }
+        }
+    }
+
     /// The definitions a request should freeze for `task`: a launch copy's
     /// own frozen ones, else the library's for the plugins its workspace has
     /// on. The run's policy gates still apply at launch.
     static func pluginDefinitions(for task: AgentTask) -> [PluginPackage]? {
         guard let workspace = task.workspace else { return nil }
         if let frozen = workspace.launchPluginDefinitions { return frozen }
-        let enabled = Set(WorkspaceCapabilityActivation.activations(of: workspace).filter(\.isEnabled).map(\.pluginID))
+        let enabled = Set(WorkspaceCapabilityActivation.enabledPluginIDs(of: workspace))
         guard !enabled.isEmpty else { return [] }
         return CapabilityRuntimeResourceMatcher.packageDefinitions().filter { enabled.contains($0.id) }
     }
@@ -380,6 +414,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         state.pluginVersions = []
         WorkspaceCapabilityActivation.apply(state, to: workspace)
         WorkspaceCapabilityActivation.copyRetired(from: source, to: workspace)
+        WorkspaceCapabilityActivation.copyPendingLegacyEnablement(from: source, to: workspace)
         workspace.shelfVisibilityOverrideIDs = source.shelfVisibilityOverrideIDs
         workspace.shelfVisibilityOverrideValues = source.shelfVisibilityOverrideValues
         workspace.memories = source.memories

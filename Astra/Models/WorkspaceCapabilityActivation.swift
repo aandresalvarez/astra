@@ -31,6 +31,32 @@ public enum WorkspaceCapabilityActivation {
         )
     }
 
+    /// The plugins on in `workspace`: its enabled activations, then each
+    /// plugin its V19 enablement still lists without an activation. That
+    /// list is cleared once `PluginActivationMigration` has moved it; one a
+    /// failed migration rolled back (it retries on the next launch) keeps
+    /// the plugins it lists on meanwhile, so what only a definition
+    /// provides (MCP servers, browser adapters) stays available. Their
+    /// skills, tools and accounts are still the V19 rows, which the rollback
+    /// kept in scope. Writes never read it: `state(of:)` is activations only.
+    public static func enabledPluginIDs(of workspace: Workspace) -> [String] {
+        let enabled = state(of: workspace).capabilityIDs
+        let legacy = workspace.legacyEnabledCapabilityIDs
+        guard !legacy.isEmpty else { return enabled }
+        var ids = enabled
+        for id in legacy where !ids.contains(id) && activation(for: id, in: workspace) == nil {
+            ids.append(id)
+        }
+        return ids
+    }
+
+    /// Carries the V19 enablement a migration hasn't moved yet into a launch
+    /// copy, so the run sees the plugins `enabledPluginIDs(of:)` does.
+    public static func copyPendingLegacyEnablement(from source: Workspace, to target: Workspace) {
+        guard target.legacyEnabledCapabilityIDs != source.legacyEnabledCapabilityIDs else { return }
+        target.legacyEnabledCapabilityIDs = source.legacyEnabledCapabilityIDs
+    }
+
     /// The workspace's live activations in a stable order (creation, then ID).
     public static func activations(of workspace: Workspace) -> [PluginActivation] {
         workspace.pluginActivations

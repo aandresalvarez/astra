@@ -436,9 +436,12 @@ enum PluginActivationMigration {
             guard let package = packagesByID[id],
                   let activation = WorkspaceCapabilityActivation.activation(for: id, in: workspace),
                   activation.recordedDigest.isEmpty else { continue }
+            // The rows move onto this definition's components, so the
+            // activation accepts it: one recording the legacy version would
+            // await an Update that nothing in this phase offers.
             WorkspaceCapabilityActivation.recordAccepted(
                 pluginID: id,
-                version: activation.recordedVersion.isEmpty ? package.version : activation.recordedVersion,
+                version: package.version,
                 digest: (try? CapabilityApprovalDigest.digest(for: package)) ?? "",
                 in: workspace
             )

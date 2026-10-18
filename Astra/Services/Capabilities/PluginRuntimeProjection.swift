@@ -45,7 +45,8 @@ struct PluginRuntimeProjection {
     static let empty = PluginRuntimeProjection(skills: [], tools: [], connectors: [], unboundConnectorComponents: [:])
 
     /// Projects every enabled activation of `workspace` whose plugin is in
-    /// `packages` (the caller's enabled, policy-allowed definitions).
+    /// `packages` (the caller's enabled, policy-allowed definitions), except
+    /// one that awaits Update (`awaitsUpdate`).
     static func project(
         workspace: Workspace?,
         packages: [PluginPackage],
@@ -61,7 +62,7 @@ struct PluginRuntimeProjection {
         var owners: [UUID: Set<UUID>] = [:]
 
         for activation in WorkspaceCapabilityActivation.activations(of: workspace) where activation.isEnabled {
-            guard let package = packagesByID[activation.pluginID] else { continue }
+            guard let package = packagesByID[activation.pluginID], !awaitsUpdate(activation, to: package) else { continue }
             let overridden = Set(activation.overriddenComponentIDs)
             // Only a projected skill is ever wired to projected resources: a
             // row assigned to a never-inserted model's relationship would
@@ -200,6 +201,31 @@ struct PluginRuntimeProjection {
         return componentIDs
             .filter { seen.insert($0).inserted }
             .map { derivedID(of: activation, componentID: $0) }
+    }
+
+    /// Whether `activation` accepted another definition of its plugin than
+    /// `package`: the library holds one definition for every workspace, so
+    /// an import or an Add elsewhere replaces it here too. Until this
+    /// workspace accepts it (Add again records the version and components),
+    /// its plugin doesn't run here, in a run or a queued launch: a different
+    /// version, or a component the activation never recorded. The recorded
+    /// digest only says the activation recorded a definition: it also
+    /// covers where a copy came from, so two copies of one definition
+    /// differ in it. Known components are compared as a superset because an
+    /// Add keeps the ones a definition dropped, for secret cleanup.
+    static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
+        guard !activation.recordedDigest.isEmpty else { return false }
+        if activation.recordedVersion != package.version { return true }
+        return !activation.knownComponentIDs.isEmpty
+            && !Set(componentIDs(of: package)).isSubset(of: Set(activation.knownComponentIDs))
+    }
+
+    /// `packages` without the plugins whose activation in `workspace` awaits
+    /// Update.
+    static func runnable(_ packages: [PluginPackage], in workspace: Workspace) -> [PluginPackage] {
+        packages.filter { package in
+            WorkspaceCapabilityActivation.activation(for: package.id, in: workspace).map { !awaitsUpdate($0, to: package) } ?? true
+        }
     }
 
     /// True for a skill this projection built rather than a stored row.

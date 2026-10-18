@@ -341,6 +341,41 @@ struct PluginRuntimeProjectionTests {
         #expect(workspace.connectors.contains { $0.id == account.id })
     }
 
+    @Test("A definition another workspace added doesn't run here until this workspace accepts it")
+    func activationRunsOnlyTheDefinitionItAccepted() throws {
+        let context = try makeContext()
+        let gcloud = try builtIn("gcloud-workflow")
+        let a = Workspace(name: "A", primaryPath: "/tmp/projection-accepted-a")
+        let b = Workspace(name: "B", primaryPath: "/tmp/projection-accepted-b")
+        context.insert(a)
+        context.insert(b)
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-accepted-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(gcloud, into: a, modelContext: context)
+        try installer.install(gcloud, into: b, modelContext: context)
+        func instructions(_ workspace: Workspace) -> [String] {
+            PluginRuntimeProjection.project(workspace: workspace, packages: library.installedPackages()).skills.map(\.behaviorInstructions)
+        }
+        #expect(instructions(a) == gcloud.skills.map(\.behaviorInstructions))
+
+        // B adds a newer version: the library's one definition changes for A too.
+        var next = gcloud
+        next.version = "9.0.0"
+        next.skills[0].behaviorInstructions = "Version nine rules."
+        try installer.install(next, into: b, modelContext: context)
+        #expect(instructions(b).first == "Version nine rules.")
+        #expect(instructions(a).isEmpty)
+        #expect(PluginRuntimeProjection.runnable(library.installedPackages(), in: a).allSatisfy { $0.id != gcloud.id })
+        #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: a, in: library.installedPackages()).allSatisfy { $0.id != gcloud.id })
+
+        // Adding it in A accepts it there.
+        try installer.install(next, into: a, modelContext: context)
+        #expect(instructions(a).first == "Version nine rules.")
+    }
+
     @Test("Unbinding one component keeps the account's other bindings and the default")
     func unbindOneComponent() throws {
         let context = try makeContext()

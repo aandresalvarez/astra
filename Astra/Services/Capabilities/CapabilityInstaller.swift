@@ -582,8 +582,8 @@ struct CapabilityInstaller {
         allowCredentialUserInteraction: Bool
     ) throws -> Connector {
         let connector = existing ?? existingWorkspaceConnector(
-            name: pluginConnector.name,
-            serviceType: pluginConnector.serviceType,
+            for: pluginConnector,
+            package: package,
             workspace: workspace
         ) ?? Connector(
             name: pluginConnector.name,
@@ -786,13 +786,22 @@ struct CapabilityInstaller {
         return template
     }
 
+    /// A workspace row this plugin's component created itself. A row the
+    /// person authored is never taken over just because its name and service
+    /// match: Add would overwrite its URL, keys and skill attachment, and a
+    /// Remove could not put them back. Only the activation's own binding
+    /// (`existing`) or a row this component stamped is reused.
     private func existingWorkspaceConnector(
-        name: String,
-        serviceType: String,
+        for pluginConnector: PluginConnector,
+        package: PluginPackage,
         workspace: Workspace
     ) -> Connector? {
-        workspace.connectors.first {
-            $0.name == name && $0.serviceType == serviceType
+        let componentID = CapabilityResourceOrigin.componentID(for: pluginConnector)
+        return workspace.connectors.first {
+            $0.name == pluginConnector.name
+                && $0.serviceType == pluginConnector.serviceType
+                && CapabilityResourceOrigin.isOwnedBy($0, packageID: package.id)
+                && $0.originComponentID == componentID
         }
     }
 
