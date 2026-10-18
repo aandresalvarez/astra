@@ -12,6 +12,11 @@ struct AgentRuntimePipeCompletionTests {
     @Test("A reaped provider finishes despite escaped pipe holders", arguments: [false, true])
     func naturalExit(worker: Bool) async throws { try await exercise(.natural, worker: worker) }
 
+    @Test("Slow provider startup does not turn a natural-exit pipe check into a timeout", arguments: [false, true])
+    func slowNaturalExit(worker: Bool) async throws {
+        try await exercise(.natural, worker: worker, startupDelay: 2.5)
+    }
+
     @Test("Timeout does not wait for an escaped descendant's EOF", arguments: [false, true])
     func timeout(worker: Bool) async throws { try await exercise(.timeout, worker: worker) }
 
@@ -20,6 +25,11 @@ struct AgentRuntimePipeCompletionTests {
 
     @Test("A utility terminal result still drains diagnostics and reaps the provider")
     func earlyResult() async throws { try await exercise(.earlyResult, worker: false) }
+
+    @Test("Slow provider startup preserves early-result diagnostics")
+    func slowEarlyResult() async throws {
+        try await exercise(.earlyResult, worker: false, startupDelay: 2.5)
+    }
 
     @Test("Worker reports raw stdout bytes including newlines and the final partial line")
     func rawByteAccounting() async throws {
@@ -54,15 +64,22 @@ struct AgentRuntimePipeCompletionTests {
         #expect(message.contains("unknown_events=2"))
     }
 
-    private func exercise(_ stop: Stop, worker: Bool) async throws {
+    private func exercise(_ stop: Stop, worker: Bool, startupDelay: TimeInterval = 0) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-pipe-holder-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let hold = root.appendingPathComponent("hold")
         let ready = root.appendingPathComponent("ready")
         try Data().write(to: hold)
-        // Old readToEOF must fail finitely, with no helper left behind.
+        // Python startup/host scheduling is not part of pipe completion. Start
+        // the EOF hang breaker only once the escaped holder actually exists.
+        // The ready wait is bounded separately; a broken fixture still fails.
         let breaker = Task.detached {
+            let startupDeadline = ContinuousClock.now + .seconds(30)
+            while !FileManager.default.fileExists(atPath: ready.path), ContinuousClock.now < startupDeadline {
+                do { try await Task.sleep(for: .milliseconds(10)) }
+                catch { return }
+            }
             try? await Task.sleep(for: .seconds(8))
             guard !Task.isCancelled else { return }
             try? FileManager.default.removeItem(at: hold)
@@ -84,6 +101,7 @@ struct AgentRuntimePipeCompletionTests {
             os._exit(0)
         while not ready.exists():
             time.sleep(0.01)
+        time.sleep(\(startupDelay))
         os.write(2, 'last stderr — fin'.encode('utf-8'))
         os.write(1, 'last stdout — fin\(stop == .earlyResult ? "\\n" : "")'.encode('utf-8'))
         \(stop == .natural ? "os._exit(0)" : "os.waitpid(child, 0)")
@@ -101,7 +119,7 @@ struct AgentRuntimePipeCompletionTests {
         }
         defer { operation.cancel(); runner.cancel() }
         if stop == .cancellation {
-            let deadline = ContinuousClock.now + .seconds(5)
+            let deadline = ContinuousClock.now + .seconds(30)
             while !FileManager.default.fileExists(atPath: ready.path), ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(10))
             }
@@ -132,13 +150,18 @@ struct AgentRuntimePipeCompletionTests {
         plan: AgentRuntimeProcessLaunchPlan, root: URL, runner: AgentRuntimeProcessRunner,
         stop: Stop, worker: Bool, diagnostics: AgentLockedBuffer
     ) async -> AgentUtilityRunResult {
+        // Only the timeout case is testing a two-second watchdog. Natural
+        // exit, cancellation and early-result checks must not lose a race
+        // against that unrelated deadline during interpreter startup. The
+        // holder marker above still fails an EOF wait, even at exit code 0.
+        let timeoutSeconds: TimeInterval = stop == .timeout ? 2 : 60
         if worker {
             let output = AgentLockedBuffer()
             let task = AgentTask(title: "Pipe completion", goal: "Synthetic provider")
             let result = await runner.runRuntimeProcess(
                 adapter: PipeFixtureAdapter(plan: plan), prompt: "Synthetic", task: task,
                 workspacePath: root.path, executablePath: plan.executablePath, homeDirectory: root.path,
-                permissionPolicy: .restricted, timeoutSeconds: 2,
+                permissionPolicy: .restricted, timeoutSeconds: timeoutSeconds,
                 onLine: { line, _ in output.append(line) }
             )
             #expect(result.timedOut == (stop == .timeout))
@@ -149,7 +172,7 @@ struct AgentRuntimePipeCompletionTests {
             lineHandler = { _ in AgentUtilityRunResult(exitCode: 0, output: "terminal", error: "") }
         } else { lineHandler = nil }
         return await runner.runUtilityProcess(
-            AgentUtilityLaunchPlan(process: plan, providerHomeDirectory: "", permissionPolicy: .restricted, timeoutSeconds: 2),
+            AgentUtilityLaunchPlan(process: plan, providerHomeDirectory: "", permissionPolicy: .restricted, timeoutSeconds: timeoutSeconds),
             stdoutLineHandler: lineHandler,
             stderrChunkHandler: { diagnostics.append($0) }
         )

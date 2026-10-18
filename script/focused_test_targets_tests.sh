@@ -46,6 +46,27 @@ assert_targets "" \
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 
+for path in \
+  Astra/Services/Persistence/SSHConnectionManager.swift \
+  Astra/Services/Persistence/WorkspaceAutoExportWriter.swift \
+  Astra/Services/Persistence/WorkspaceConfigManager.swift \
+  Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift \
+  Astra/Services/Persistence/WorkspacePersistenceWork.swift \
+  Astra/Services/Persistence/WorkspaceSavedAutoExport.swift \
+  Astra/Services/Persistence/WorkspaceExportChangeScope.swift \
+  Astra/Services/Persistence/WorkspaceSavedExportLease.swift \
+  Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift \
+  Tests/WorkspaceSavedExportPendingTests.swift \
+  Tests/WorkspaceSavedExportReplacementTests.swift \
+  Tests/WorkspaceSnapshotDirectoryTests.swift \
+  Tests/WorkspaceSavedAutoExportTests.swift \
+  Tests/WorkspaceSavedExportReviewTests.swift \
+  Tests/WorkspaceExportTerminationFlushTests.swift \
+  Tests/RunFinalizationResponsivenessTests.swift \
+  Tests/RuntimeSettlementReviewRegressionTests.swift; do
+  assert_targets $'RuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceSavedExportPendingTests\nWorkspaceSavedExportReplacementTests\nWorkspaceSnapshotDirectoryTests\nWorkspaceExportTerminationFlushTests\nAgentRuntimeRunPersistenceTests\nTaskThreadChangeObserverTests' "$path"
+done
+
 assert_targets "FeedbackEvidencePrivacyTests" \
   "Astra/Services/Feedback/FeedbackEvidenceBuilder.swift" \
   "Tests/FeedbackEvidencePrivacyTests.swift"
@@ -212,8 +233,10 @@ assert_targets $'HostFileAccessBrokerTests\nShelfPreviewFailureTests\nShelfMarkd
   "Astra/Services/Browser/ShelfPreviewFailure.swift"
 
 assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests' \
-  "Astra/Services/Runtime/AgentRuntimeRunPersistence.swift" \
   "Astra/Services/Persistence/TaskOutputDiscovery.swift"
+
+assert_targets $'TaskOutputDiscoveryTests\nAgentRuntimeRunPersistenceTests\nRuntimeSettlementReviewRegressionTests\nWorkspaceSavedAutoExportTests\nWorkspaceSavedExportSnapshotTests\nWorkspaceSavedExportReviewTests\nWorkspaceSavedExportPendingTests\nWorkspaceSavedExportReplacementTests\nWorkspaceSnapshotDirectoryTests\nWorkspaceExportTerminationFlushTests\nTaskThreadChangeObserverTests' \
+  "Astra/Services/Runtime/AgentRuntimeRunPersistence.swift"
 
 assert_targets $'PendingP2RegressionTests\nSpecEngineTests\nAntigravityCLIRuntimeTests' \
   "Astra/Services/Tasks/TaskTitleGenerationService.swift" \
@@ -235,3 +258,8 @@ assert_targets $'ShelfFileIndexControllerTests\nFilesShelfResponsivenessTelemetr
   "Tests/ShelfFileIndexControllerTests.swift" \
   "Astra/Services/Diagnostics/FilesShelfResponsivenessTelemetry.swift" \
   "Astra/Services/Diagnostics/UIResponsivenessDiagnostics.swift"
+
+assert_targets $'GitHubReviewPublicationTests\nSwiftDataDeletionPreparationTests' \
+  "Astra/Services/Persistence/SwiftDataTaskRollbackPreparation.swift" \
+  "Astra/Services/Git/GitHubReviewPublicationService.swift" \
+  "Tests/GitHubReviewPublicationTests.swift"
