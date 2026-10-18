@@ -31,6 +31,26 @@ struct PluginManifestTests {
         #expect(!PluginManifestConverter.isManifest(packageData))
     }
 
+    @Test("A document with components but no manifestVersion is a manifest, and is refused")
+    func componentsWithoutVersionAreRefused() throws {
+        let original = try builtIn("gcloud-workflow")
+        // A legacy package with a manifest's components but no version.
+        var hybrid = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        let manifest = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(PluginManifestConverter.manifest(from: original))) as? [String: Any]
+        )
+        hybrid["components"] = manifest["components"]
+        hybrid["worksOn"] = ["claude_code": "unsupported"]
+        let data = try JSONSerialization.data(withJSONObject: hybrid)
+        #expect(PluginManifestConverter.isManifest(data))
+        do {
+            let decoded = try PluginManifestConverter.decodePackage(from: data)
+            Issue.record("imported as a package without its components: \(decoded.id)")
+        } catch DecodingError.keyNotFound(let key, _) {
+            #expect(key.stringValue == "manifestVersion")
+        }
+    }
+
     @Test("A CLI dependency becomes setup rows with check, connect, repair and install")
     func cliPrerequisitesBecomeSetupComponents() throws {
         let manifest = PluginManifestConverter.manifest(from: try builtIn("gcloud-workflow"))

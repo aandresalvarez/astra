@@ -537,9 +537,9 @@ struct WorkspaceRightRailView: View {
             checkGitRepositories()
             checkDockerEnvironments()
         }
-        .task(id: signature) {
-            rebuildCapabilityRailSnapshot(for: signature)
-        }
+        .task(id: signature) { rebuildCapabilityRailSnapshot(for: signature) }
+        // Contextual repairs (GitHub repository access) describe one checkout.
+        .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshCapabilityPrerequisiteStatuses() }
         .onChange(of: workspace.primaryPath) {
             loadSSHConnections()
             checkGitRepositories()
