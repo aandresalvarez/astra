@@ -94,6 +94,10 @@ struct CapabilityCatalogActionService {
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
+            // Every enable path (the legacy catalog's install sheets and
+            // Configure included) refuses a required account ASTRA can't
+            // sign in to, not only Plugins Add.
+            _ = try Self.addRoute(for: package)
             let result = try installer.install(
                 package,
                 into: workspace,
@@ -279,19 +283,19 @@ struct CapabilityCatalogActionService {
     }
 
     /// The row's Update: brings every workspace's activations of `package`
-    /// to its definition in the library, releasing what it dropped.
+    /// to its definition in the library, releasing what it dropped. Only
+    /// the definition read back from the library is reconciled against,
+    /// never the row's own copy: with none readable, nothing changes.
     func update(_ package: PluginPackage, modelContext: ModelContext) throws {
-        let definition = library.installedPackages().filter { $0.id == package.id }
+        guard let definition = library.installedPackages().first(where: { $0.id == package.id }) else {
+            throw PluginUpdateService.UpdateError.definitionUnreadable(plugin: package.name)
+        }
         // Refused for every workspace if one with an activation of it would
         // refuse this definition, as an import is, before anything changes.
-        if let refusal = PluginUpdateService.refusals(for: definition.first ?? package, modelContext: modelContext).first {
+        if let refusal = PluginUpdateService.refusals(for: definition, modelContext: modelContext).first {
             throw refusal
         }
-        try PluginUpdateService.reconcileAll(
-            modelContext: modelContext,
-            packages: definition.isEmpty ? [package] : definition,
-            mode: .release
-        )
+        try PluginUpdateService.reconcileAll(modelContext: modelContext, packages: [definition], mode: .release)
         CapabilityCatalogPersistenceEvents.post(.global)
     }
 
@@ -409,6 +413,29 @@ struct CapabilityCatalogActionService {
             ], level: .error)
             throw error
         }
+    }
+
+    /// Turns a shared account on in this workspace: the step an added
+    /// plugin's account needs when it exists, shared, but is off here. False
+    /// when the save fails; the activation is then undone.
+    @discardableResult
+    func activateSharedConnector(
+        _ connector: Connector,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+    ) -> Bool {
+        guard connector.isGlobal else { return false }
+        guard !WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString) else {
+            return true
+        }
+        CapabilitySharing.enableShared(connector, in: workspace)
+        guard persist(workspace, modelContext) else {
+            CapabilitySharing.disableShared(connector, in: workspace)
+            return false
+        }
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+        return true
     }
 
     private func failureFields(

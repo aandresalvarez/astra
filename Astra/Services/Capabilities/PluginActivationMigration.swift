@@ -26,7 +26,8 @@ import ASTRAPersistence
 ///   activation is. Tools follow the same rule.
 /// - A row whose plugin is no longer in the library, that no activation
 ///   uses, or that a workspace turned on by itself without the plugin, is
-///   kept as an authored row rather than lost.
+///   kept as an authored row rather than lost; so is an account whose plugin
+///   is no longer in the library.
 /// - Deleted rows' secret namespaces go through `PluginSecretCleanupOutbox`,
 ///   recorded before the save.
 ///
@@ -197,6 +198,13 @@ enum PluginActivationMigration {
             // each component's oldest account its default.
             for connector in connectors.sorted(by: { $0.createdAt < $1.createdAt }) where isPluginOrigin(connector) {
                 let pluginID = trimmed(connector.originPackageID)
+                // Without its definition (a custom plugin's file missing or
+                // unreadable) nothing could project a bound account back into
+                // scope: it stays the person's, as authored, as skills do.
+                guard packagesByID[pluginID] != nil else {
+                    CapabilityResourceOrigin.releaseProvenance(of: connector)
+                    continue
+                }
                 let componentID = connectorComponentID(connector, package: packagesByID[pluginID])
                 let bindTo = targets(pluginID: pluginID, owner: connector.isGlobal ? nil : connector.workspace)
                     .filter { !replacedShared(connector, componentID: componentID, in: $0.0) }
@@ -514,15 +522,26 @@ enum PluginActivationMigration {
         return "connector:\(service):\(CapabilityRuntimeResourceMatcher.normalizedName(connector.name))"
     }
 
+    /// A stamped row is the component its stamp names: the spec's own ID,
+    /// or one the spec `replaces` (an earlier build stamped the identity a
+    /// later definition renamed, such as a name-derived one a stable ID took
+    /// over), so its settings and secrets move instead of a second component
+    /// being projected beside it.
     private static func matches(_ spec: PluginSkill, skill: Skill) -> Bool {
         let stamped = trimmed(skill.originComponentID)
-        if !stamped.isEmpty { return stamped == CapabilityResourceOrigin.componentID(for: spec) }
+        if !stamped.isEmpty {
+            return stamped == CapabilityResourceOrigin.componentID(for: spec)
+                || CapabilityResourceOrigin.replacedComponentIDs(for: spec).contains(stamped)
+        }
         return CapabilityRuntimeResourceMatcher.skillMatches(spec, skill: skill)
     }
 
     private static func matches(_ spec: PluginLocalTool, tool: LocalTool) -> Bool {
         let stamped = trimmed(tool.originComponentID)
-        if !stamped.isEmpty { return stamped == CapabilityResourceOrigin.componentID(for: spec) }
+        if !stamped.isEmpty {
+            return stamped == CapabilityResourceOrigin.componentID(for: spec)
+                || CapabilityResourceOrigin.replacedComponentIDs(for: spec).contains(stamped)
+        }
         return CapabilityRuntimeResourceMatcher.toolMatches(spec, tool: tool)
     }
 

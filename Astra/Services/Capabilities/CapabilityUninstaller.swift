@@ -138,10 +138,13 @@ struct CapabilityUninstaller {
             // The activation's secret settings live under its projected
             // skills' IDs, which nothing names once the activation is gone:
             // they are recorded before the save and cleaned after it, every
-            // component it ever knew included.
+            // component it ever knew included. Its seed and the person's
+            // override rows are retired, not lost: those rows stay out of
+            // the workspace's scope until the plugin is added back.
             let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
             if let activation {
                 activationSecretSkillIDs += PluginRuntimeProjection.secretNamespaces(of: activation, package: package)
+                WorkspaceCapabilityActivation.retire(activation, in: workspace)
             }
             // Read before the activation goes: they tell a template the
             // person edited from the plugin's own.
@@ -266,30 +269,15 @@ struct CapabilityUninstaller {
         return result
     }
 
-    /// Clears the plugin's origin stamp from an account it leaves behind.
-    /// The stamp also names a shared Keychain namespace, so credentials only
-    /// there are first copied into the row's own (which loads first); one
-    /// the copy can't reach keeps the stamp rather than be stranded.
+    /// Clears the plugin's origin stamp from an account it leaves behind
+    /// (`CapabilityResourceOrigin.releaseProvenance`).
     private func releaseProvenance(of account: Connector, packageID: String) {
-        KeychainService.synchronizeConnectorCredentialNamespaces(connector: account)
-        let stranded = account.credentialKeys.contains { key in
-            KeychainService.load(key: key, connectorID: account.id) == nil
-                && KeychainService.load(key: key, connector: account) != nil
-        }
-        guard !stranded else {
-            AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
-                "source": "package_uninstall",
-                "package_id": packageID,
-                "result": "account_provenance_kept_credentials_not_copied"
-            ], level: .warning)
-            return
-        }
-        account.originPackageID = nil
-        account.originPackageVersion = nil
-        account.originComponentID = nil
-        account.originComponentKind = nil
-        account.originSourceKind = nil
-        account.updatedAt = Date()
+        guard !CapabilityResourceOrigin.releaseProvenance(of: account) else { return }
+        AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
+            "source": "package_uninstall",
+            "package_id": packageID,
+            "result": "account_provenance_kept_credentials_not_copied"
+        ], level: .warning)
     }
 
     private func matches(_ connector: Connector, pluginConnector: PluginConnector) -> Bool {

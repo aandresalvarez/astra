@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -113,5 +114,105 @@ struct CapabilityUninstallerTests {
             index: CapabilityRailWorkspaceResourceIndex(workspace: workspace, capabilities: capabilities)
         )
         #expect(!rail.isEnabled)
+    }
+
+    @Test("Remove keeps a workspace's own override rows out of its scope, and Add makes them overrides again")
+    func removeRetiresLocalOverrides() throws {
+        let container = try makeCapabilityUninstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Retired Overrides", primaryPath: "/tmp/capability-retired-overrides")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityUninstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = retirementPackage(id: "retired-overrides-package")
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(package, into: workspace, modelContext: context)
+        // The person's own edited skill and tool replace the plugin's.
+        let skill = Skill(name: "My Report", allowedTools: ["Read"], behaviorInstructions: "My own report rules.")
+        skill.workspace = workspace
+        context.insert(skill)
+        let tool = LocalTool(name: "my-report", toolType: "cli", command: "echo", arguments: "mine")
+        tool.workspace = workspace
+        context.insert(tool)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        let skillComponent = CapabilityResourceOrigin.componentID(for: package.skills[0])
+        let toolComponent = CapabilityResourceOrigin.componentID(for: package.localTools[0])
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: skillComponent, rowID: skill.id, on: activation)
+        WorkspaceCapabilityActivation.setOverridden(true, componentID: toolComponent, rowID: tool.id, on: activation)
+        try context.save()
+        func inScope() -> (skill: Bool, tool: Bool) {
+            let capabilities = WorkspaceCapabilities(workspace: workspace, packageDefinitions: library.installedPackages())
+            return (capabilities.activeSkills.contains { $0.id == skill.id }, capabilities.activeTools.contains { $0.id == tool.id })
+        }
+        #expect(inScope() == (true, true))
+
+        try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+
+        // Kept, listed, and acting for nothing.
+        #expect(try context.fetch(FetchDescriptor<Skill>()).map(\.id) == [skill.id])
+        #expect(try context.fetch(FetchDescriptor<LocalTool>()).map(\.id) == [tool.id])
+        #expect(WorkspaceCapabilities(workspace: workspace).workspaceSkills.map(\.id) == [skill.id])
+        #expect(inScope() == (false, false))
+        // The workspace's own mirror carries what Remove kept.
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        #expect(config.retiredPlugins?.first?.overridingRowIDs.sorted() == [skill.id.uuidString, tool.id.uuidString].sorted())
+
+        try installer.install(package, into: workspace, modelContext: context)
+        let added = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        #expect(added.overridingRowID(forComponent: skillComponent) == skill.id)
+        #expect(added.overridingRowID(forComponent: toolComponent) == tool.id)
+        #expect(inScope() == (true, true))
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: workspace).isEmpty)
+    }
+
+    @Test("Remove keeps an activation's namespace seed, so Add resolves the schedules that name its skills")
+    func removeKeepsNamespaceSeed() throws {
+        let container = try makeCapabilityUninstallerContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Retired Seed", primaryPath: "/tmp/capability-retired-seed")
+        context.insert(workspace)
+        let (library, root) = makeCapabilityUninstallerLibrary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = retirementPackage(id: "retired-seed-package")
+        let installer = CapabilityInstaller(library: library)
+        try installer.install(package, into: workspace, modelContext: context)
+        // As a chosen-file import leaves it: its own seed, and a schedule
+        // pointed at the projected ID that seed derives.
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        WorkspaceCapabilityActivation.setNamespaceSeed("imported-seed", on: activation)
+        let component = CapabilityResourceOrigin.componentID(for: package.skills[0])
+        let seeded = PluginRuntimeProjection.derivedID(of: activation, componentID: component)
+        let schedule = TaskSchedule(name: "Weekly report")
+        schedule.skillIDs = [seeded.uuidString]
+        schedule.workspace = workspace
+        context.insert(schedule)
+        try context.save()
+
+        try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+        try installer.install(package, into: workspace, modelContext: context)
+
+        let added = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        #expect(added.namespaceSeed == "imported-seed")
+        let projected = PluginRuntimeProjection.project(workspace: workspace, packages: library.installedPackages()).skills
+        #expect(projected.map(\.id) == [seeded])
+        #expect(schedule.skillIDs == [seeded.uuidString])
+    }
+
+    private func retirementPackage(id: String) -> PluginPackage {
+        PluginPackage(
+            id: id, name: "Reports", icon: "doc.text", description: "Report plugin",
+            author: "Tests", category: "Tests", tags: [], version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Report Writer", icon: "doc.text", description: "Writes reports", allowedTools: ["Read"],
+                disallowedTools: [], customTools: [], behaviorInstructions: "Plugin report rules.",
+                environmentKeys: [], environmentValues: []
+            )],
+            connectors: [],
+            localTools: [PluginLocalTool(
+                name: "report", description: "Report tool", icon: "terminal", toolType: "cli", command: "echo", arguments: "plugin"
+            )],
+            templates: [],
+            governance: .builtInApproved(riskLevel: .medium)
+        )
     }
 }

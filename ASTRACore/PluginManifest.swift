@@ -447,11 +447,13 @@ public enum PluginManifestConverter {
         // The package doesn't carry `worksOn`; a manifest that restricts a
         // runtime more than ASTRA's own reading of its components would lose
         // that restriction, so it is refused rather than run where it says
-        // it doesn't work.
+        // it doesn't work. Every runtime ASTRA derives is compared, and one
+        // the manifest leaves out counts as unsupported there: the
+        // regenerated package would otherwise run it on that runtime. A
+        // runtime this build doesn't know is ignored.
         let derived = self.manifest(from: package).worksOn
-        for (runtime, declared) in manifest.worksOn.sorted(by: { $0.key < $1.key }) {
-            guard let allowed = derived[runtime] else { continue }
-            if rank(declared) < rank(allowed) {
+        for (runtime, allowed) in derived.sorted(by: { $0.key < $1.key }) {
+            if rank(manifest.worksOn[runtime] ?? .unsupported) < rank(allowed) {
                 throw PluginManifestError.unenforcedRuntimeRestriction(runtime: runtime)
             }
         }
@@ -475,6 +477,17 @@ public enum PluginManifestConverter {
             }?.setup
             guard kept == component.setup else {
                 throw PluginManifestError.unrepresentableSetup(component: component.name)
+            }
+        }
+        // Setup components come back too: an account with its requirement's
+        // ID, a CLI check with its name's slug, each group in its own order.
+        // Checked after the steps, so a dropped step reports as setup.
+        for hasRequirement in [false, true] {
+            let derived = carried.filter { $0.kind == .setup && ($0.requirement != nil) == hasRequirement }
+            let declared = manifest.components.filter { $0.kind == .setup && ($0.requirement != nil) == hasRequirement }
+            for (index, component) in declared.enumerated()
+            where index >= derived.count || derived[index].id != component.id {
+                throw PluginManifestError.unrepresentableComponentID(component: component.name, id: component.id)
             }
         }
         return package

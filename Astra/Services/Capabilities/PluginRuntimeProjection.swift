@@ -91,16 +91,17 @@ struct PluginRuntimeProjection {
                         // The authored row that replaced the first skill
                         // still owns the plugin's resources. A stored row
                         // can't own a never-inserted one, so the runtime gets
-                        // a detached copy.
-                        if index == 0, row.modelContext == nil {
-                            primarySkill = row
+                        // a detached copy, of every replacing row: a shared
+                        // one may carry another workspace's attachments.
+                        if row.modelContext == nil {
+                            if index == 0 { primarySkill = row }
                             skills.append(row)
-                        } else if index == 0, connectorMode == .runtimeCopies {
+                        } else if connectorMode == .runtimeCopies {
                             let copy = TaskExecutionLaunchSnapshotApplicator.detachedSkill(row)
-                            primarySkill = copy
+                            if index == 0 { primarySkill = copy }
                             skills.append(copy)
-                            // The row's own attachments come with it, wired
-                            // to the copy, as they would with the row.
+                            // The row's own attachments in this workspace
+                            // come with it, wired to the copy.
                             for tool in row.localTools where !tool.isDeleted
                                 && (tool.isGlobal || tool.workspace == nil || tool.workspace?.id == workspace.id) {
                                 tools.append(TaskExecutionLaunchSnapshotApplicator.detachedLocalTool(tool, skill: copy))
@@ -231,13 +232,16 @@ struct PluginRuntimeProjection {
 
     /// Whether `activation` was reconciled against another definition of
     /// its plugin than `package`: an automatic pass that would have released
-    /// something left it on its recorded version and components
+    /// something held it back (`awaitingUpdate`, which also covers a
+    /// definition with the recorded version and components), or left it on
+    /// its recorded version and components
     /// (`PluginUpdateService.Mode.automatic`). Its plugin doesn't run, here
     /// or in a scheduled launch, until Update reconciles it; the Plugins row
     /// offers Update meanwhile. The recorded digest only says the activation
     /// was reconciled: it also covers where a copy came from (its source and
     /// clamped governance), so two copies of one definition differ in it.
     static func awaitsUpdate(_ activation: PluginActivation, to package: PluginPackage) -> Bool {
+        if activation.awaitingUpdate { return true }
         guard !activation.recordedDigest.isEmpty else { return false }
         if activation.recordedVersion != package.version { return true }
         return !activation.knownComponentIDs.isEmpty && Set(activation.knownComponentIDs) != Set(componentIDs(of: package))
@@ -348,7 +352,8 @@ struct PluginRuntimeProjection {
     }
 
     /// The connector declaration that created `account`: `binding` when the
-    /// account is `package`'s, else its creator's component of the same ID.
+    /// account is `package`'s, else its creator's component of the same ID,
+    /// or the one that `replaces` it (a stamp an Update hasn't moved yet).
     /// Nil for an account no installed plugin created.
     private static func creatorSpec(
         of account: Connector,
@@ -358,9 +363,9 @@ struct PluginRuntimeProjection {
     ) -> PluginConnector? {
         guard let originID = account.originPackageID, !originID.isEmpty else { return nil }
         if originID == package.id { return spec }
-        return creator(originID)?.connectors.first {
-            CapabilityResourceOrigin.componentID(for: $0) == account.originComponentID
-        }
+        guard let connectors = creator(originID)?.connectors, let stamp = account.originComponentID else { return nil }
+        return connectors.first { CapabilityResourceOrigin.componentID(for: $0) == stamp }
+            ?? connectors.first { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }
     }
 
     /// Drops from a runtime copy the credential keys `spec` doesn't declare.

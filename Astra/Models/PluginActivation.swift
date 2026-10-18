@@ -52,6 +52,11 @@ public final class PluginActivation {
     /// was edited by the person: a sync keeps it as their own row
     /// (`PluginTemplateSync`) instead of overwriting it.
     public var templateDigests: [String] = []
+    /// Set when an automatic reconcile held back a definition it would have
+    /// released something for (`PluginUpdateService.Mode.automatic`), cleared
+    /// when a definition is accepted. The plugin doesn't run meanwhile, even
+    /// when the held-back definition has the recorded version and components.
+    public var awaitingUpdate: Bool = false
     public var revision: Int
     public var createdAt: Date
     public var updatedAt: Date
@@ -92,6 +97,7 @@ public final class PluginActivation {
         self.knownComponentIDs = []
         self.namespaceSeed = ""
         self.templateDigests = []
+        self.awaitingUpdate = false
         self.revision = 0
         self.createdAt = createdAt
         self.updatedAt = createdAt

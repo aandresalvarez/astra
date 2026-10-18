@@ -59,6 +59,22 @@ enum PluginsSurfacePresentation {
         var needsUpdate: Bool = false
         /// Why it can't be added whatever the policy says; shown instead of Add.
         var unavailableReason: String? = nil
+        /// Why a plugin that is not on can't be added, when approval would
+        /// not clear it: shown in place of Add, which could only fail.
+        var blocker: String?
+    }
+
+    /// Whether a package is listed and what keeps it from being added. Listed
+    /// when policy shows it and it is on, can be turned on, or needs only the
+    /// approval Add grants. One that also has a blocker approval can't clear
+    /// (a missing dependency, an unsafe tool) names it instead of offering Add.
+    static func listing(
+        for decision: CapabilityCatalogDecision,
+        isEnabled: Bool
+    ) -> (isVisible: Bool, blocker: String?) {
+        let isVisible = decision.isVisible && (decision.canEnable || isEnabled || decision.requiresApproval)
+        let blocker = isEnabled ? nil : decision.nonApprovalBlockers.first?.message
+        return (isVisible, blocker)
     }
 
     static func makeState(_ inputs: [Input], query: String) -> PluginsSurfaceState {
@@ -75,7 +91,7 @@ enum PluginsSurfacePresentation {
                 pendingSteps: input.pendingSteps,
                 isEnabled: input.isEnabled,
                 isRemovable: input.isRemovable,
-                verb: input.unavailableReason != nil ? nil : (!input.isEnabled ? .add : (input.needsUpdate ? .update : nil))
+                verb: input.unavailableReason != nil ? nil : (!input.isEnabled ? (input.blocker == nil ? .add : nil) : (input.needsUpdate ? .update : nil))
             )
             if !input.isEnabled {
                 state.available.append(row)
@@ -91,8 +107,9 @@ enum PluginsSurfacePresentation {
     /// "1 step pending · 1 skill, 3 tools" for an added plugin with work left;
     /// the contents alone otherwise.
     static func subtitle(for input: Input) -> String {
-        let contents = input.package.contentParts.joined(separator: ", ")
         if let reason = input.unavailableReason { return reason }
+        if !input.isEnabled, let blocker = input.blocker { return blocker }
+        let contents = input.package.contentParts.joined(separator: ", ")
         if input.isEnabled, input.needsUpdate {
             return contents.isEmpty ? "Update to \(input.package.version)" : "Update to \(input.package.version) · \(contents)"
         }

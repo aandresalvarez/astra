@@ -590,8 +590,11 @@ struct PluginOperationsTests {
         let roundTrip = try PluginManifestConverter.checkedPackage(from: first)
         #expect(try CapabilityApprovalDigest.digest(for: roundTrip) == CapabilityApprovalDigest.digest(for: gcloud))
 
+        // Skills, connectors and tools carry their id; a setup component's
+        // comes back derived (its requirement's ID or its name's slug), so a
+        // renamed CLI check is a different component and is not renamed here.
         var renamed = first
-        for index in renamed.components.indices {
+        for index in renamed.components.indices where [.skill, .connector, .tool].contains(renamed.components[index].kind) {
             renamed.components[index].name += " renamed"
             renamed.components[index].skill?.name += " renamed"
             renamed.components[index].connector?.name += " renamed"
