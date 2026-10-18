@@ -46,7 +46,7 @@ enum CapabilityRuntimeIntegrityService {
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard let workspace = task.workspace else { return [] }
 
-        let packages = suppliedPackages ?? CapabilityRuntimeResourceMatcher.packageDefinitions()
+        let packages = suppliedPackages ?? CapabilityRuntimeResourceMatcher.packageDefinitions(for: workspace)
         let rawEnabledPackageIDs = Set(workspace.enabledCapabilityIDs)
         let runtimePackPolicy = policyContext?.packPolicy ?? PackWorkspacePolicyProvider.resolvedPolicy(for: workspace)
         let runtimeEnabledPackageIDs = Set(

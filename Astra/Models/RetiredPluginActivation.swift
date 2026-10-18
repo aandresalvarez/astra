@@ -58,7 +58,7 @@ extension WorkspaceCapabilityActivation {
     }
 
     /// The rows a removed activation named as overrides: kept out of the
-    /// workspace's ambient scope (`WorkspaceCapabilities.overridingRowIDs`).
+    /// workspace's ambient scope (`overridingRowIDs(of:)`).
     public static func retiredOverrideRowIDs(of workspace: Workspace) -> Set<UUID> {
         Set(retiredActivations(of: workspace).flatMap { $0.overrides.map(\.rowID) })
     }

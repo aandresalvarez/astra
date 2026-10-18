@@ -147,7 +147,7 @@ final class TaskScheduler {
         if schedule.workspace != nil {
             let globalDescriptor = FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })
             let globals = (try? modelContext.fetch(globalDescriptor)) ?? []
-            for skill in AgentTask.storableSkills(Self.resolvedSkills(for: schedule, globalSkills: globals)) {
+            for skill in AgentTask.storableSkills(Self.resolvedSkills(for: schedule, globalSkills: globals), in: task.workspace) {
                 task.skills.append(skill)
             }
         }

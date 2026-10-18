@@ -45,6 +45,18 @@ public enum WorkspaceCapabilityActivation {
         activations(of: workspace).first { $0.pluginID == pluginID }
     }
 
+    /// Rows any of the workspace's activations, on or off, names as a
+    /// component's override, and those a removed one named (retired by
+    /// Remove until the plugin is added back or the row deleted). Such a row
+    /// reaches a run only through its activation's projection, while that is
+    /// on: never as one of the workspace's own, and never pinned to a task.
+    public static func overridingRowIDs(of workspace: Workspace) -> Set<UUID> {
+        Set(activations(of: workspace)
+            .flatMap(\.overridingRowIDs)
+            .compactMap(UUID.init(uuidString:)))
+            .union(retiredOverrideRowIDs(of: workspace))
+    }
+
     /// Writes `state` back, touching only what changed. Assigning an equal
     /// value to a SwiftData property still notifies its observers, and every
     /// writer used to touch only the arrays it changed.

@@ -1110,7 +1110,7 @@ enum AgentRuntimeLaunchPreflight {
             )
             var mcpServers = MCPRuntimeProjection.enabledServers(
                 for: task.workspace,
-                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(),
+                packages: CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace),
                 approvalRecords: CapabilityApprovalStore().records()
             )
             let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
@@ -1284,7 +1284,7 @@ enum AgentRuntimeLaunchPreflight {
         workingDirectory: String,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
     ) async -> [String: HealthStatus] {
-        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+        let packages = CapabilityRuntimeResourceMatcher.packageDefinitions(for: task.workspace)
         let enabledPackageIDs = Set(task.workspace?.enabledCapabilityIDs ?? [])
         let resolvedScope = capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))
         let selectedSkillNames = Set(
