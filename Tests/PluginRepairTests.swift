@@ -207,6 +207,43 @@ struct PluginRepairTests {
         #expect(RepairAction.isSafeTerminalCommand("/opt/gcloud/bin/gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
         #expect(!RepairAction.isSafeTerminalCommand("/tmp/gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
     }
+
+    @Test("A path-qualified check accepts only a repair that runs that exact path")
+    func terminalRepairRequiresTheDeclaredPath() {
+        // The check runs /opt/gcloud/bin/gcloud; a bare `gcloud` in Terminal
+        // resolves through PATH and may be a different program.
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
+        #expect(!RepairAction.isSafeTerminalCommand("gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: true))
+        #expect(RepairAction.isSafeTerminalCommand("/opt/gcloud/bin/gcloud auth login", binary: "/opt/gcloud/bin/gcloud", allowsInstaller: false))
+    }
+
+    @Test("A repair check runs the CLI the resumed run's projected PATH finds")
+    func liveCheckResolvesTheProjectedPATH() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-repair-path-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let name = "astra-check-\(UUID().uuidString.prefix(8))"
+        func install(_ directory: String, exitCode: Int) throws -> String {
+            let folder = root.appendingPathComponent(directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let file = folder.appendingPathComponent(name)
+            try "#!/bin/sh\nexit \(exitCode)\n".write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+            return folder.path
+        }
+        let broken = try install("task-bin", exitCode: 1)
+        let working = try install("other-bin", exitCode: 0)
+        var repair = RepairAction(strategy: .terminal, componentName: "CLI login", title: "Check", verb: "Check", detail: "")
+        repair.checkBinary = name
+        repair.checkArguments = []
+        // Only the projected PATH has the CLI; ASTRA's own lookup does not.
+        repair.checkEnvironment = ["PATH": "\(working):/usr/bin:/bin"]
+        #expect(await PluginRepairCoordinator.liveCheck(repair))
+        // The first match on that PATH is the one the shell runs.
+        repair.checkEnvironment = ["PATH": "\(broken):\(working):/usr/bin:/bin"]
+        #expect(PluginRepairCoordinator.checkExecutablePath(name, environment: repair.checkEnvironment ?? [:]) == "\(broken)/\(name)")
+        #expect(await PluginRepairCoordinator.liveCheck(repair) == false)
+    }
 }
 
 private actor CheckScript {

@@ -91,16 +91,17 @@ struct PluginRuntimeProjection {
                         // The authored row that replaced the first skill
                         // still owns the plugin's resources. A stored row
                         // can't own a never-inserted one, so the runtime gets
-                        // a detached copy.
-                        if index == 0, row.modelContext == nil {
-                            primarySkill = row
+                        // a detached copy, of every replacing row: a shared
+                        // one may carry another workspace's attachments.
+                        if row.modelContext == nil {
+                            if index == 0 { primarySkill = row }
                             skills.append(row)
-                        } else if index == 0, connectorMode == .runtimeCopies {
+                        } else if connectorMode == .runtimeCopies {
                             let copy = TaskExecutionLaunchSnapshotApplicator.detachedSkill(row)
-                            primarySkill = copy
+                            if index == 0 { primarySkill = copy }
                             skills.append(copy)
-                            // The row's own attachments come with it, wired
-                            // to the copy, as they would with the row.
+                            // The row's own attachments in this workspace
+                            // come with it, wired to the copy.
                             for tool in row.localTools where !tool.isDeleted
                                 && (tool.isGlobal || tool.workspace == nil || tool.workspace?.id == workspace.id) {
                                 tools.append(TaskExecutionLaunchSnapshotApplicator.detachedLocalTool(tool, skill: copy))

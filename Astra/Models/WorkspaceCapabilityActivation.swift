@@ -451,12 +451,13 @@ public enum WorkspaceCapabilityActivation {
         if activation.secretSettingKeys != secrets { activation.secretSettingKeys = secrets }
     }
 
-    /// The enablement state, every activation's full record and the
-    /// workspace's `updatedAt`, for undoing in-memory changes after a failed
-    /// save.
+    /// The enablement state, every activation's full record, what Remove
+    /// kept of removed ones and the workspace's `updatedAt`, for undoing
+    /// in-memory changes after a failed save.
     public struct Snapshot: Equatable, Sendable {
         public let state: WorkspaceCapabilityActivationState
         public let activations: [PluginActivationRecord]
+        public let retired: [RetiredPluginActivation]
         public let updatedAt: Date
     }
 
@@ -464,6 +465,7 @@ public enum WorkspaceCapabilityActivation {
         Snapshot(
             state: state(of: workspace),
             activations: activations(of: workspace).map(PluginActivationRecord.init),
+            retired: retiredActivations(of: workspace),
             updatedAt: workspace.updatedAt
         )
     }
@@ -488,6 +490,7 @@ public enum WorkspaceCapabilityActivation {
                 )
             record.restore(onto: activation)
         }
+        setRetired(snapshot.retired, on: workspace)
         workspace.updatedAt = snapshot.updatedAt
     }
 
@@ -514,12 +517,16 @@ public enum WorkspaceCapabilityActivation {
     /// definitions, so it takes the acceptance from the live activation: one
     /// queued before an Update runs what the Update accepted, and none runs a
     /// plugin awaiting Update.
+    ///
+    /// An override whose row's contents the request froze (`frozenRowIDs`)
+    /// is kept even when the store no longer has the row.
     public static func copyActivations(
         _ records: [PluginActivationRecord],
         of source: Workspace,
         to target: Workspace,
         accountsByID: [UUID: Connector],
-        definitionsFrozen: Bool = false
+        definitionsFrozen: Bool = false,
+        frozenRowIDs: Set<UUID> = []
     ) {
         for record in records {
             let accepted = definitionsFrozen ? nil : activations(of: source).first { $0.id == record.id }
@@ -537,7 +544,7 @@ public enum WorkspaceCapabilityActivation {
             // one it didn't copy, so overrides whose row the store no longer
             // has are dropped here, where the store can still say: the copy
             // projects the plugin's component, as the live workspace does.
-            let live = liveOverrides(record, in: source)
+            let live = liveOverrides(record, in: source, frozenRowIDs: frozenRowIDs)
             activation.overriddenComponentIDs = live.map(\.componentID)
             activation.overridingRowIDs = live.map(\.rowID)
             activation.secretSettingKeys = record.secretSettingKeys
@@ -565,10 +572,12 @@ public enum WorkspaceCapabilityActivation {
     // MARK: - Private
 
     /// The overrides of `record` whose authored row still exists in the
-    /// store `workspace` is in; all of them when there is no store to ask.
+    /// store `workspace` is in, or was frozen; all of them when there is no
+    /// store to ask.
     private static func liveOverrides(
         _ record: PluginActivationRecord,
-        in workspace: Workspace
+        in workspace: Workspace,
+        frozenRowIDs: Set<UUID>
     ) -> [(componentID: String, rowID: String)] {
         let pairs = record.overriddenComponentIDs.enumerated().map { index, componentID in
             (componentID: componentID, rowID: index < record.overridingRowIDs.count ? record.overridingRowIDs[index] : "")
@@ -576,6 +585,7 @@ public enum WorkspaceCapabilityActivation {
         guard let context = workspace.modelContext else { return pairs }
         return pairs.filter { pair in
             guard let id = UUID(uuidString: pair.rowID) else { return false }
+            if frozenRowIDs.contains(id) { return true }
             var skills = FetchDescriptor<Skill>(predicate: #Predicate { $0.id == id })
             skills.fetchLimit = 1
             if ((try? context.fetchCount(skills)) ?? 1) > 0 { return true }

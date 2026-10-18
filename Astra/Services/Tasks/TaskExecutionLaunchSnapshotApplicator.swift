@@ -42,7 +42,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
             runtimePermissionGrantsJSON: policy.runtimePermissionGrantsJSON,
             pluginActivations: policy.pluginActivations,
             pluginDefinitions: policy.pluginDefinitions,
-            pluginAccounts: policy.pluginAccounts
+            pluginAccounts: policy.pluginAccounts,
+            pluginOverrides: policy.pluginOverrides
         )
     }
 
@@ -65,6 +66,11 @@ enum TaskExecutionLaunchSnapshotApplicator {
             // edited or deleted, or a plugin updated, while the request
             // waited does not change the run either.
             applyFrozenAccounts(snapshot.pluginAccounts, to: workspace)
+            // So are the override rows' contents: an override edited or
+            // deleted while it waited runs as submitted.
+            let frozenRowIDs = applyFrozenOverrides(
+                snapshot.pluginOverrides, to: workspace, skillsByID: capabilityGraph.skillsByID
+            )
             workspace.launchPluginDefinitions = snapshot.pluginDefinitions
             // The activations frozen at submission, when the request has
             // them: a plugin turned off, on or reconfigured while it waited
@@ -75,7 +81,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
                 of: live,
                 to: workspace,
                 accountsByID: Dictionary(workspace.connectors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
-                definitionsFrozen: snapshot.pluginActivations != nil && snapshot.pluginDefinitions != nil
+                definitionsFrozen: snapshot.pluginActivations != nil && snapshot.pluginDefinitions != nil,
+                frozenRowIDs: frozenRowIDs
             )
         }
         let task = AgentTask(title: source.title, goal: source.goal, workspace: workspace)
@@ -203,7 +210,8 @@ enum TaskExecutionLaunchSnapshotApplicator {
 
     /// The rows the frozen activations name that the live inventory may no
     /// longer reach (a shared account or edited shared skill of a plugin
-    /// turned off since), so the launch copy resolves them as submitted.
+    /// turned off since), so the launch copy resolves them as submitted. A
+    /// request that froze its override rows' contents never reads them live.
     private static func frozenRows(of snapshot: AgentTaskLaunchSnapshot, source: AgentTask) -> FrozenActivationRows {
         guard let records = snapshot.pluginActivations?.filter(\.isEnabled),
               let context = source.modelContext ?? source.workspace?.modelContext else { return FrozenActivationRows() }
@@ -214,7 +222,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
             let descriptor = FetchDescriptor<Connector>(predicate: #Predicate { accountIDs.contains($0.id) })
             rows.accounts = ((try? context.fetch(descriptor)) ?? []).filter { !$0.isDeleted }
         }
-        if !rowIDs.isEmpty {
+        if !rowIDs.isEmpty, snapshot.pluginOverrides == nil {
             let skills = FetchDescriptor<Skill>(predicate: #Predicate { rowIDs.contains($0.id) })
             rows.skills = ((try? context.fetch(skills)) ?? []).filter { !$0.isDeleted }
             let tools = FetchDescriptor<LocalTool>(predicate: #Predicate { rowIDs.contains($0.id) })
@@ -234,6 +242,34 @@ enum TaskExecutionLaunchSnapshotApplicator {
                 workspace.connectors.append(record.makeAccount())
             }
         }
+    }
+
+    /// The override rows' copies take the contents frozen at submission; one
+    /// deleted since, or out of the live inventory, is brought back as a copy
+    /// of what was submitted. Secret settings are still read from the
+    /// Keychain by the row's ID. Returns the frozen rows' IDs.
+    private static func applyFrozenOverrides(
+        _ records: PluginOverrideRecords?,
+        to workspace: Workspace,
+        skillsByID: [UUID: Skill]
+    ) -> Set<UUID> {
+        guard let records else { return [] }
+        var skills = skillsByID
+        for record in records.skills {
+            let copy = workspace.skills.first { $0.id == record.id } ?? skills[record.id] ?? record.makeSkill()
+            record.apply(to: copy)
+            if !workspace.skills.contains(where: { $0 === copy }) { workspace.skills.append(copy) }
+            skills[record.id] = copy
+        }
+        for record in records.localTools {
+            let copy = workspace.localTools.first { $0.id == record.id }
+                ?? skills.values.lazy.flatMap(\.localTools).first { $0.id == record.id }
+                ?? record.makeTool()
+            record.apply(to: copy)
+            copy.skill = record.skillID.flatMap { skills[$0] }
+            if !workspace.localTools.contains(where: { $0 === copy }) { workspace.localTools.append(copy) }
+        }
+        return records.rowIDs
     }
 
     /// The definitions a request should freeze for `task`: a launch copy's
@@ -345,6 +381,7 @@ enum TaskExecutionLaunchSnapshotApplicator {
         state.pluginIDs = []
         state.pluginVersions = []
         WorkspaceCapabilityActivation.apply(state, to: workspace)
+        WorkspaceCapabilityActivation.copyRetired(from: source, to: workspace)
         workspace.shelfVisibilityOverrideIDs = source.shelfVisibilityOverrideIDs
         workspace.shelfVisibilityOverrideValues = source.shelfVisibilityOverrideValues
         workspace.memories = source.memories

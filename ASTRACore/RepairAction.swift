@@ -88,10 +88,12 @@ public struct RepairAction: Codable, Sendable, Equatable {
             command: executable,
             arguments: words.dropFirst().joined(separator: " ")
         ) == nil else { return false }
-        // The executable is the declared CLI itself: its bare name (found on
-        // PATH, like the check) or the exact path declared. A same-named file
-        // elsewhere (`./gcloud`, `/tmp/gcloud`) is a different program.
-        if let binary, executable == binary || executable == (binary as NSString).lastPathComponent { return true }
+        // The executable is the declared CLI itself, written exactly as the
+        // check declares it: a bare name (found on PATH, like the check) or
+        // that exact path. A same-named file elsewhere (`./gcloud`,
+        // `/tmp/gcloud`) is a different program, and so is a bare name when
+        // the check runs a path: Terminal would resolve it through PATH.
+        if let binary, executable == binary { return true }
         return allowsInstaller && installers.contains(executable)
     }
 

@@ -43,6 +43,7 @@ struct PluginsSurfaceView: View {
     /// The Keychain side of the Google account, read on refresh rather than
     /// on every render; the profile's own state comes from the store.
     @State private var googleCredentialStatuses: [UUID: GoogleOAuthCredentialStatus] = [:]
+    @State private var googleRefreshableAccountIDs: Set<UUID> = []
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -68,7 +69,11 @@ struct PluginsSurfaceView: View {
 
     private var googleAccountConnected: Bool {
         let account = GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts)
-        return GoogleWorkspaceCapability.isAccountConnected(account, credentialStatus: account.flatMap { googleCredentialStatuses[$0.id] })
+        return GoogleWorkspaceCapability.isAccountConnected(
+            account,
+            credentialStatus: account.flatMap { googleCredentialStatuses[$0.id] },
+            hasRefreshToken: account.map { googleRefreshableAccountIDs.contains($0.id) } ?? false
+        )
     }
 
     /// The rows and their display, built in one pass so every action takes
@@ -83,14 +88,16 @@ struct PluginsSurfaceView: View {
             let packageState = CapabilityPackageState(package: package, workspace: workspace, capabilities: currentCapabilities)
             let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
             let activation = WorkspaceCapabilityActivation.activation(for: package.id, in: workspace)
+            let listing = PluginsSurfacePresentation.listing(for: decision, isEnabled: packageState.isEnabled)
             var input = PluginsSurfacePresentation.Input(
                 package: package,
                 isEnabled: packageState.isEnabled,
                 pendingSteps: packageState.connectorsNeedingAttention.count + packageState.missingConnectors.count
                     + failingSetup(for: package).count
                     + PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleConnected).count,
-                isVisible: decision.isVisible && (decision.canEnable || packageState.isEnabled || decision.requiresApproval),
-                isRemovable: Self.isRemovable(package)
+                isVisible: listing.isVisible,
+                isRemovable: Self.isRemovable(package),
+                blocker: listing.blocker
             )
             // Any drift an Update would settle: version, digest, components
             // or templates.
@@ -174,6 +181,9 @@ struct PluginsSurfaceView: View {
         }
         // A sign-in, reauthorization or revocation stamps the profile.
         .onChange(of: googleAccounts.map(\.updatedAt)) { _, _ in refreshGoogleCredential() }
+        // Contextual checks (GitHub repository access) describe one checkout:
+        // a new working path, from any window, scans again.
+        .onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }
         .onChange(of: expanded) { _, ids in
             PluginsSurfacePreferences.setExpandedPluginIDs(ids, workspaceID: workspace.id)
         }
@@ -291,12 +301,10 @@ struct PluginsSurfaceView: View {
         let packageState = isEnabled && component.kind == .connector
             ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
             : nil
-        // Matched like the package state matches them (service type, aliases),
-        // so a renamed account still gets its action.
-        let connector = component.connector.flatMap { spec in
-            packageState?.connectorsNeedingAttention.first { CapabilityRuntimeResourceMatcher.connectorMatches(spec, connector: $0) }
-        }
-        let missing = packageState?.missingConnectors.contains { $0.name == component.name } ?? false
+        // The account bound to this very component, so a renamed account
+        // still gets its action and a second one of the service its own.
+        let connector = component.connector.flatMap { packageState?.connectorNeedingAttention(for: $0) }
+        let missing = component.connector.map { packageState?.isMissing($0) ?? false } ?? false
         let accountPending = isEnabled && component.requirement.map { requirement in
             PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleAccountConnected)
                 .contains { $0.id == requirement.id }
@@ -323,6 +331,12 @@ struct PluginsSurfaceView: View {
                         .controlSize(.small)
                         .tint(Stanford.lagunita)
                 }
+            } else if let connector, packageState?.inactiveSharedConnectors.contains(where: { $0.id == connector.id }) == true {
+                // A shared account that is off here: turning it on is the step.
+                Button("Turn on") { activate(connector, for: package) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(Stanford.lagunita)
             } else if let connector {
                 Button("Add key") { onEditElement(.connectors, connector.id) }
                     .buttonStyle(.bordered)
@@ -392,7 +406,9 @@ struct PluginsSurfaceView: View {
     private func refreshGoogleCredential() {
         let usesGoogle = packages.contains(where: GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup)
         let account = usesGoogle ? GoogleWorkspaceSetupStateFactory.selectedAccount(from: googleAccounts) : nil
-        googleCredentialStatuses = account.map { [$0.id: GoogleOAuthCredentialVault().credentialStatus(for: $0)] } ?? [:]
+        let vault = GoogleOAuthCredentialVault()
+        googleCredentialStatuses = account.map { [$0.id: vault.credentialStatus(for: $0)] } ?? [:]
+        googleRefreshableAccountIDs = account.map { vault.hasRefreshToken(for: $0) ? [$0.id] : [] } ?? []
     }
 
     private func refreshStatuses() {
@@ -473,6 +489,15 @@ struct PluginsSurfaceView: View {
         } catch {
             errorMessage = "Couldn't update \(row.package.name): \(error.localizedDescription)"
         }
+    }
+
+    private func activate(_ connector: Connector, for package: PluginPackage) {
+        errorMessage = nil
+        guard CapabilityCatalogActionService().activateSharedConnector(connector, workspace: workspace, modelContext: modelContext) else {
+            errorMessage = "Couldn't turn on \(connector.name) for \(package.name). Try again."
+            return
+        }
+        onCatalogChanged()
     }
 
     private func confirmationRow(_ confirmation: PluginsSurfaceConfirmation, row: PluginRow) -> some View {

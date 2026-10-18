@@ -47,6 +47,11 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
     /// account edited or deleted while the request waits does not change what
     /// it runs with. Nil for older requests, which read the live rows.
     public let pluginAccounts: [PluginAccountRecord]?
+    /// The contents of the authored rows those activations name as
+    /// overrides, so an override edited or deleted while the request waits
+    /// does not change what it runs with. Nil for older requests, which read
+    /// the live rows.
+    public let pluginOverrides: PluginOverrideRecords?
 
     public init(
         task: AgentTask,
@@ -74,6 +79,7 @@ public struct TaskExecutionPolicySnapshotV1: Codable, Equatable, Sendable {
         }
         self.pluginDefinitions = pluginDefinitions
         pluginAccounts = task.workspace.map(PluginAccountRecord.boundAccounts(of:))
+        pluginOverrides = task.workspace.map(PluginOverrideRecords.init(workspace:))
     }
 }
 

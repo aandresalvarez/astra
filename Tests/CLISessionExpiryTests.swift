@@ -144,6 +144,27 @@ struct CLISessionExpiryTests {
         #expect(CLISessionExpiryClassifier.checkingLaunchHost(projected).checkArguments?.last == "github.example.com")
     }
 
+    @Test("A rejected Enterprise token stops with token guidance and keeps the host it targeted")
+    func gitHubEnterpriseTokenIsRecognised() throws {
+        for variable in ["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] {
+            let output = "The token in \(variable) is invalid.\nTo re-authenticate, run: gh auth login"
+            let stop = try #require(CLISessionExpiryClassifier.stop(
+                content: output, command: "GH_HOST=github.example.com gh auth status"
+            ), "missed: \(variable)")
+            let family = try #require(CLISessionExpiryClassifier.family(forStopMessage: stop.message))
+            #expect(family.offersSignIn == false)
+            #expect(family.repair.command == nil)
+            #expect(family.repair.detail.contains("GH_ENTERPRISE_TOKEN"))
+            #expect(family.repair.checkArguments == ["auth", "status", "--hostname", "github.example.com"], "\(variable)")
+        }
+        // Without a targeted host the stop still round-trips to the token family.
+        let plain = try #require(CLISessionExpiryClassifier.family(
+            content: "The token in GH_ENTERPRISE_TOKEN is invalid.", command: "gh api user"
+        ))
+        #expect(plain == CLISessionExpiryClassifier.gitHubEnterpriseToken)
+        #expect(CLISessionExpiryClassifier.family(forStopMessage: plain.stopMessage) == plain)
+    }
+
     @Test("The process monitor stops the run when the agent's gcloud call hits an expired sign-in")
     func monitorStopsOnExpiredSignIn() {
         let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
@@ -216,6 +237,17 @@ struct CLISessionExpiryTests {
         let kill = monitor.processEvent(.toolResult(toolId: "toolu_cat", content: gcloudReauth, isError: false), process: nil)
         #expect(kill == false)
         #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("A shell-negated CLI runs, and its failure is the line's success")
+    func shellNegationMasksTheCLI() {
+        let ghLoggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login"
+        for command in ["! gh auth status", "cd /tmp && ! gh auth status", "time ! gh auth status", "( ! gh auth status )"] {
+            #expect(CLISessionExpiryClassifier.runs("gh", in: command), "not run: \(command)")
+            #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: command, failed: false) != nil, "missed: \(command)")
+        }
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "! cat notes.md", failed: false) == nil)
+        #expect(CLISessionExpiryClassifier.stop(content: ghLoggedOut, command: "echo ! gh auth status", failed: false) == nil)
     }
 
     @Test("A substitution inside another command masks the CLI's failure; an assignment does not")

@@ -31,6 +31,46 @@ struct PluginsSurfaceTests {
         #expect(state.available.allSatisfy { $0.verb == .add })
     }
 
+    @Test("A draft plugin with a blocker approval can't clear names the blocker instead of offering Add")
+    func hardBlockersReplaceAdd() {
+        let workspace = Workspace(name: "Blocked", primaryPath: "/tmp/plugins-blocked")
+        let policy = CapabilityCatalogPolicyContext.currentUser(workspace: workspace, approvalRecords: [])
+        let reviewable = package("draft", name: "Draft", governance: .localDraft())
+        var blocked = package("blocked", name: "Blocked", governance: .localDraft())
+        blocked.requires = ["base-capability"]
+        let blockedDecision = CapabilityCatalogPolicy.decision(for: blocked, context: policy)
+        #expect(blockedDecision.requiresApproval && blockedDecision.hasNonApprovalBlockers)
+
+        let inputs = [reviewable, blocked].map { package in
+            let listing = PluginsSurfacePresentation.listing(
+                for: CapabilityCatalogPolicy.decision(for: package, context: policy), isEnabled: false
+            )
+            return PluginsSurfacePresentation.Input(
+                package: package, isEnabled: false, pendingSteps: 0,
+                isVisible: listing.isVisible, isRemovable: true, blocker: listing.blocker
+            )
+        }
+        let state = PluginsSurfacePresentation.makeState(inputs, query: "")
+
+        #expect(state.available.map(\.id) == ["blocked", "draft"])
+        let blockedRow = state.available.first { $0.id == "blocked" }
+        #expect(blockedRow?.verb == nil)
+        #expect(blockedRow?.subtitle == "Capability requires base-capability to be installed or enabled first.")
+        // Approval alone is what Add grants, so a plain draft still offers it.
+        #expect(state.available.first { $0.id == "draft" }?.verb == .add)
+    }
+
+    /// The rescan lives in the view's lifecycle (no hosted view here), so
+    /// its trigger is pinned in the source.
+    @Test("A new working path rescans the surface's health")
+    func workingPathChangeRescansHealth() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views/Capabilities/PluginsSurfaceView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        #expect(source.contains(".onChange(of: workspace.resolvedWorkingPath) { _, _ in refreshStatuses() }"))
+    }
+
     @Test("Removing and deleting an account ask first; removing keeps accounts")
     func destructiveActionsConfirm() {
         let remove = PluginsSurfaceConfirmation.remove(packageID: "jira").copy(name: "Jira")
@@ -254,6 +294,35 @@ struct PluginsSurfaceTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("The legacy catalog's enable refuses an account ASTRA can't sign in to")
+    func legacyEnableRefusesUnsupportedOAuthProviders() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Legacy", primaryPath: "/tmp/plugins-legacy-oauth")
+        context.insert(workspace)
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-plugins-legacy-oauth-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library"))
+        var imported = package("imported-crm", name: "CRM")
+        imported.setupRequirements = [PluginSetupRequirement(id: "crm", kind: .oauthAccount, displayName: "CRM account", provider: "salesforce")]
+        // `PluginInstallSheet` (the router's fallback) and Configure call this.
+        #expect(throws: CapabilityAccountSetupError.self) {
+            try CapabilityCatalogActionService(library: library).enable(
+                imported, workspace: workspace, modelContext: context,
+                policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
+                source: "setup_sheet", traceID: "trace-legacy-oauth"
+            )
+        }
+        #expect(library.installedPackages().isEmpty)
+        #expect(WorkspaceCapabilityActivation.state(of: workspace).capabilityIDs.isEmpty)
+        withExtendedLifetime(container) {}
+    }
+
     @Test("An optional account neither sends Add through account setup nor refuses it")
     func addIgnoresOptionalOAuthRequirements() throws {
         let google = try #require(try builtIn("google-workspace").setupRequirements.first)
@@ -282,14 +351,35 @@ struct PluginsSurfaceTests {
         // refreshes, a revoked or lost one does not.
         let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
         let active = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
-        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .expiredToken))
-        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: nil))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .missingAccount))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .revokedToken))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(nil, credentialStatus: nil))
+        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .expiredToken, hasRefreshToken: true))
+        #expect(GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: nil, hasRefreshToken: true))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .missingAccount, hasRefreshToken: true))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(active, credentialStatus: .revokedToken, hasRefreshToken: true))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(nil, credentialStatus: nil, hasRefreshToken: true))
         for state in [GoogleOAuthAccountAuthState.needsReauth, .revoked] {
             let stale = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", grantedScopes: scopes, authState: state)
-            #expect(!GoogleWorkspaceCapability.isAccountConnected(stale, credentialStatus: .expiredToken))
+            #expect(!GoogleWorkspaceCapability.isAccountConnected(stale, credentialStatus: .expiredToken, hasRefreshToken: true))
+        }
+    }
+
+    @Test("An expired token counts as connected only while a refresh token is stored")
+    func expiredTokenWithoutRefreshTokenIsNotConnected() throws {
+        let scopes = GoogleWorkspaceSetupStateFactory.requiredScopes
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for refreshToken in ["1//refresh", nil] {
+            let profile = GoogleOAuthAccountProfile(subject: "1", email: "a@example.com", grantedScopes: scopes)
+            let vault = GoogleOAuthCredentialVault(secretStore: MockSecretStore())
+            try vault.save(
+                GoogleOAuthTokenSet(accessToken: "ya29.access", refreshToken: refreshToken, expiresAt: now, grantedScopes: scopes),
+                for: profile, now: now
+            )
+            let status = vault.credentialStatus(for: profile, now: now.addingTimeInterval(60))
+            #expect(status == .expiredToken)
+            #expect(vault.hasRefreshToken(for: profile) == (refreshToken != nil))
+            let connected = GoogleWorkspaceCapability.isAccountConnected(
+                profile, credentialStatus: status, hasRefreshToken: vault.hasRefreshToken(for: profile)
+            )
+            #expect(connected == (refreshToken != nil), "refresh token: \(refreshToken ?? "none")")
         }
     }
 
@@ -302,11 +392,11 @@ struct PluginsSurfaceTests {
         let full = GoogleOAuthAccountProfile(subject: "2", email: "b@example.com", grantedScopes: required)
         let expires = Date().addingTimeInterval(3_600)
         // The runtime refuses a token without the scope, whichever side lacks it.
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .available(expiresAt: expires, grantedScopes: required)))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: nil))
-        #expect(!GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: [])))
-        #expect(GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: required)))
-        let connected = GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .expiredToken)
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .available(expiresAt: expires, grantedScopes: required), hasRefreshToken: true))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: nil, hasRefreshToken: true))
+        #expect(!GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: []), hasRefreshToken: true))
+        #expect(GoogleWorkspaceCapability.isAccountConnected(full, credentialStatus: .available(expiresAt: expires, grantedScopes: required), hasRefreshToken: true))
+        let connected = GoogleWorkspaceCapability.isAccountConnected(lacking, credentialStatus: .expiredToken, hasRefreshToken: true)
         #expect(PluginsSurfacePresentation.pendingAccounts(for: google, googleAccountConnected: connected).count == 1)
     }
 
@@ -367,6 +457,20 @@ struct PluginsSurfaceTests {
             try PluginManifestConverter.checkedPackage(from: restricted)
         }
         #expect((try? PluginManifestConverter.checkedPackage(from: PluginManifestConverter.manifest(from: jira))) != nil)
+    }
+
+    @Test("A runtime the manifest's support matrix leaves out counts as unsupported, so the manifest is refused")
+    func incompleteRuntimeMatrixIsRefused() throws {
+        let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
+        var incomplete = PluginManifestConverter.manifest(from: jira)
+        incomplete.worksOn["cursor_cli"] = nil
+        #expect(throws: PluginManifestError.unenforcedRuntimeRestriction(runtime: "cursor_cli")) {
+            try PluginManifestConverter.checkedPackage(from: incomplete)
+        }
+        // A runtime this build doesn't know neither restricts nor refuses.
+        var extra = PluginManifestConverter.manifest(from: jira)
+        extra.worksOn["future_cli"] = .unsupported
+        #expect(throws: Never.self) { try PluginManifestConverter.checkedPackage(from: extra) }
     }
 
     @Test("A manifest that conditions a runtime on a recent CLI where ASTRA derives full is refused")

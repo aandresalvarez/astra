@@ -92,6 +92,10 @@ struct CapabilityCatalogActionService {
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
+            // Every enable path (the legacy catalog's install sheets and
+            // Configure included) refuses a required account ASTRA can't
+            // sign in to, not only Plugins Add.
+            _ = try Self.addRoute(for: package)
             let result = try installer.install(
                 package,
                 into: workspace,
@@ -336,6 +340,29 @@ struct CapabilityCatalogActionService {
     func deleteAccount(_ account: Connector, modelContext: ModelContext) throws {
         try PluginOperations.deleteAccount(account, modelContext: modelContext)
         CapabilityCatalogPersistenceEvents.post(.global)
+    }
+
+    /// Turns a shared account on in this workspace: the step an added
+    /// plugin's account needs when it exists, shared, but is off here. False
+    /// when the save fails; the activation is then undone.
+    @discardableResult
+    func activateSharedConnector(
+        _ connector: Connector,
+        workspace: Workspace,
+        modelContext: ModelContext,
+        persist: @MainActor (Workspace?, ModelContext) -> Bool = CapabilityPersistence.defaultPersist
+    ) -> Bool {
+        guard connector.isGlobal else { return false }
+        guard !WorkspaceCapabilityActivation.state(of: workspace).globalConnectorIDs.contains(connector.id.uuidString) else {
+            return true
+        }
+        CapabilitySharing.enableShared(connector, in: workspace)
+        guard persist(workspace, modelContext) else {
+            CapabilitySharing.disableShared(connector, in: workspace)
+            return false
+        }
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+        return true
     }
 
     private func failureFields(

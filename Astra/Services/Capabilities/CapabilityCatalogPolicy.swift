@@ -184,7 +184,12 @@ struct CapabilityCatalogDecision: Equatable {
     /// status, visibility scoping, unsafe tooling, version conflicts, etc.)
     /// genuinely prevents the user from acting and belongs in "Blocked".
     var hasNonApprovalBlockers: Bool {
-        blockers.contains { blocker in
+        !nonApprovalBlockers.isEmpty
+    }
+
+    /// The blockers `hasNonApprovalBlockers` counts, in order.
+    var nonApprovalBlockers: [CapabilityCatalogBlocker] {
+        blockers.filter { blocker in
             switch blocker {
             case .draftRequiresApproval, .adminApprovalRequired, .approvalDigestMismatch, .packPolicyReviewRequired:
                 return false

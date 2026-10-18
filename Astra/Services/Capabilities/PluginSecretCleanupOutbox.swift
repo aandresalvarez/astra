@@ -89,8 +89,11 @@ struct PluginSecretCleanupOutbox {
     ) -> Bool {
         guard let outbox = outbox ?? PluginSecretCleanupOutbox(for: modelContext) else { return true }
         guard let pending = try? outbox.pending() else { return false }
+        // The seed a Remove kept is the one the new activation derives with.
+        let seed = WorkspaceCapabilityActivation.retiredActivations(of: workspace)
+            .first { $0.pluginID == package.id }?.namespaceSeed ?? ""
         let derived = Set(PluginRuntimeProjection.componentIDs(of: package).map {
-            PluginActivation.projectedID(workspaceID: workspace.id, pluginID: package.id, componentID: $0)
+            PluginActivation.projectedID(workspaceID: workspace.id, pluginID: package.id, componentID: $0, seed: seed)
         })
         let reused = pending.filter(derived.contains)
         guard !reused.isEmpty else { return true }

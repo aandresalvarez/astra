@@ -138,6 +138,13 @@ extension WorkspaceConfigManager {
         }
     }
 
+    /// What Remove kept of the workspace's removed activations
+    /// (`RetiredPluginActivation`), nil when nothing.
+    static func retiredPluginRefs(for workspace: Workspace) -> [RetiredPluginActivation]? {
+        let retired = WorkspaceCapabilityActivation.retiredActivations(of: workspace)
+        return retired.isEmpty ? nil : retired
+    }
+
     /// Restores each imported activation's settings, overrides and account
     /// bindings once `apply` has created the activations. Row IDs from the
     /// file resolve through the maps the import built, so a validated import
@@ -251,6 +258,11 @@ extension WorkspaceConfigManager {
                     isDefault: account.isDefault
                 )
             }
+        }
+        // What a Remove kept comes back only from the workspace's own mirror:
+        // a chosen file's seeds and row IDs are this workspace's no longer.
+        if case .preserveRecordedState = trust, let retired = config.retiredPlugins {
+            WorkspaceCapabilityActivation.restoreRetired(retired, to: workspace)
         }
         return projectedIDs
     }

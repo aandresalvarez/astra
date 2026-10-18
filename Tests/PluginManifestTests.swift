@@ -165,6 +165,27 @@ struct PluginManifestTests {
         #expect(checked.connectors[index + 1].credentialHints.map(\.key) == ["JIRA_SERVER_PAT"])
     }
 
+    @Test("A setup component ID the package would re-derive is refused, not silently replaced")
+    func undeclarableSetupIDsAreRefused() throws {
+        // A CLI check comes back with its name's slug.
+        var cli = PluginManifestConverter.manifest(from: try builtIn("gcloud-workflow"))
+        let cliIndex = try #require(cli.components.firstIndex { $0.kind == .setup && $0.requirement == nil })
+        cli.components[cliIndex].id = "stable-cli-id"
+        #expect(throws: PluginManifestError.unrepresentableComponentID(
+            component: cli.components[cliIndex].name, id: "stable-cli-id"
+        )) { try PluginManifestConverter.checkedPackage(from: cli) }
+
+        // An account comes back with its requirement's ID, not the outer one.
+        let requirement = PluginSetupRequirement(id: "jira-account", kind: .oauthAccount, displayName: "Jira account")
+        var account = PluginManifestConverter.manifest(from: try builtIn("jira-workflow"))
+        account.components.append(PluginComponent(
+            kind: .setup, id: "outer-account-id", name: requirement.displayName, requirement: requirement
+        ))
+        #expect(throws: PluginManifestError.unrepresentableComponentID(
+            component: "Jira account", id: "outer-account-id"
+        )) { try PluginManifestConverter.checkedPackage(from: account) }
+    }
+
     @Test("A hint's first backticked command is the repair command")
     func firstCommandExtraction() {
         #expect(PluginManifestConverter.firstCommand("Run `gh auth login`.") == "gh auth login")

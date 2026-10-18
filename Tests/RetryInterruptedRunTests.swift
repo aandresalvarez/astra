@@ -328,6 +328,51 @@ struct RetryInterruptedRunTests {
         }
     }
 
+    @Test("The gh check reads the configuration directory and PATH the resumed run gets")
+    func gitHubCheckUsesProjectedConfigDirectory() async throws {
+        for useRetry in [false, true] {
+            let env = try makeEnvironment()
+            defer { try? FileManager.default.removeItem(atPath: env.root) }
+            let workspace = Workspace(name: "Config Dir", primaryPath: env.root)
+            let task = AgentTask(title: "Token", goal: "Open a GitHub pull request", workspace: workspace, runtime: .claudeCode)
+            task.status = .failed
+            task.sessionId = "claude-session-1"
+            // The stopped `gh` read its login from this task-scoped store.
+            task.skillSnapshots = [SkillSnapshotConfig(
+                id: UUID().uuidString, name: "GitHub Agent", icon: "key", description: "GitHub pull requests",
+                allowedTools: ["Bash"], disallowedTools: [], customTools: [], behaviorInstructions: "",
+                environmentKeys: ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "PATH", "UNRELATED"],
+                environmentValues: ["/tmp/task-gh", "/tmp/task-xdg", "/tmp/task-bin", "x"], isGlobal: false,
+                connectorIDs: nil, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+                createdAt: Date(), updatedAt: Date()
+            )]
+            env.context.insert(workspace)
+            env.context.insert(task)
+            let run = TaskRun(task: task)
+            run.status = .failed
+            run.stopReason = "capability_session_expired"
+            run.completedAt = Date()
+            env.context.insert(run)
+            let family = CLISessionExpiryClassifier.gitHub
+            env.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: family.stopMessage, run: run))
+            try env.context.save()
+            var environments: [[String: String]?] = []
+            env.coordinator.repairCheck = { repair in
+                environments.append(repair.checkEnvironment)
+                return false
+            }
+
+            if useRetry {
+                await env.coordinator.retryTask(task)?.value
+            } else {
+                await env.coordinator.resumeTask(task)?.value
+            }
+            #expect(environments == [[
+                "GH_CONFIG_DIR": "/tmp/task-gh", "XDG_CONFIG_HOME": "/tmp/task-xdg", "PATH": "/tmp/task-bin"
+            ]], "retry: \(useRetry)")
+        }
+    }
+
     @Test("The gcloud check runs with the credential-selecting variables the resumed run gets")
     func gcloudCheckUsesLaunchEnvironment() async throws {
         for useRetry in [false, true] {
