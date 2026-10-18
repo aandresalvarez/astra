@@ -412,7 +412,8 @@ enum PluginUpdateService {
                 .map { String($0.dropFirst(new.count + 1)) })
             let settled = PluginSecretCleanupOutbox.settleRenameDestination(
                 PluginRuntimeProjection.derivedID(of: activation, componentID: new),
-                keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext
+                keys: spec.environmentKeys, kept: kept, modelContext: modelContext ?? activation.modelContext,
+                clean: { persistence.deleteAllSecretsReportingResult(skillID: $0) }
             ) { persistence.deleteSecret(key: $0, skillID: PluginRuntimeProjection.derivedID(of: activation, componentID: new)) }
             return settled ? nil : new
         }

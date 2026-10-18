@@ -187,14 +187,15 @@ struct CapabilityApprovalStore {
     /// `save` for an approval a library write depends on, so it can go first:
     /// an exit before that write leaves a record for a digest nobody
     /// installed, which approves nothing. `revert` takes it back when the
-    /// write fails, restoring a record it replaced.
+    /// write fails, restoring a record it replaced, and throws when it
+    /// can't: the approval is then still in force.
     func saveBeforeDependentWrite(
         package: PluginPackage,
         status: CapabilityApprovalStatus,
         approvedBy: String,
         reviewNotes: String = "",
         approvedAt: Date = Date()
-    ) throws -> (record: CapabilityApprovalRecord, revert: () -> Void) {
+    ) throws -> (record: CapabilityApprovalRecord, revert: () throws -> Void) {
         let digest = try CapabilityApprovalDigest.digest(for: package)
         let url = recordURL(for: CapabilityApprovalRecord(
             packageID: package.id, packageVersion: package.version, status: status, approvedBy: approvedBy,
@@ -207,12 +208,12 @@ struct CapabilityApprovalStore {
         )
         let fileManager = fileManager
         return (record, {
+            defer { NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil) }
             if let previous {
-                try? previous.write(to: url, options: [.atomic])
-            } else {
-                try? fileManager.removeItem(at: url)
+                try previous.write(to: url, options: [.atomic])
+            } else if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
             }
-            NotificationCenter.default.post(name: .capabilityApprovalsChanged, object: nil)
         })
     }
 

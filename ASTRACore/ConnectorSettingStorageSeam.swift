@@ -14,8 +14,12 @@ import os
 
 public protocol ConnectorSettingStorageResolving: Sendable {
     /// The setting keys the plugin that created an account stores as
-    /// credentials, or `nil` when its definition can't be found.
-    static func settingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>?
+    /// credentials. When its definition can't be found, the account's own
+    /// `accountKeys` that the resolver can't prove plain: the export fails
+    /// closed rather than writing a creator's credential out as text.
+    static func settingKeysStoredAsCredentials(
+        originPackageID: String, originComponentID: String?, accountKeys: [String]
+    ) -> Set<String>
 }
 
 public enum ConnectorSettingStorageSeam {
@@ -33,7 +37,8 @@ public enum ConnectorSettingStorageSeam {
 
     /// An account's settings as the mirror may write them: without the ones
     /// its creator stores as credentials. An account no plugin created keeps
-    /// every setting the person entered.
+    /// every setting the person entered; one whose creator can't be read
+    /// keeps only what the resolver can prove plain.
     public static func exportableConfig(
         keys: [String],
         values: [String],
@@ -44,7 +49,8 @@ public enum ConnectorSettingStorageSeam {
         guard !keys.isEmpty, let originPackageID, !originPackageID.isEmpty,
               let withheld = resolver?.settingKeysStoredAsCredentials(
                 originPackageID: originPackageID,
-                originComponentID: originComponentID
+                originComponentID: originComponentID,
+                accountKeys: keys
               ), !withheld.isEmpty else { return (keys, values) }
         let kept = keys.indices.filter { !withheld.contains(keys[$0]) }
         return (kept.map { keys[$0] }, kept.map { $0 < values.count ? values[$0] : "" })

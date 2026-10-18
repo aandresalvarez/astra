@@ -137,14 +137,39 @@ struct CapabilityApprovalTests {
 
         let fresh = try store.saveBeforeDependentWrite(package: package, status: .approved, approvedBy: "user")
         #expect(store.record(for: package) == fresh.record)
-        fresh.revert()
+        try fresh.revert()
         #expect(store.records().isEmpty)
 
         let blocked = try store.save(package: package, status: .blocked, approvedBy: "Security")
         let replacing = try store.saveBeforeDependentWrite(package: package, status: .approved, approvedBy: "user")
         #expect(store.record(for: package)?.status == .approved)
-        replacing.revert()
+        try replacing.revert()
         #expect(store.records() == [blocked])
+    }
+
+    @Test("reverting an approval it can't take back throws, for a fresh and a replaced record")
+    func revertThatCannotWriteThrows() throws {
+        let (store, root) = makeApprovalStore()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let package = makeApprovalPackage()
+        func lockingDirectory(_ revert: () throws -> Void) throws {
+            try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path) }
+            #expect(throws: (any Error).self) { try revert() }
+        }
+
+        let fresh = try store.saveBeforeDependentWrite(package: package, status: .approved, approvedBy: "user")
+        try lockingDirectory(fresh.revert)
+        #expect(store.record(for: package) == fresh.record)
+        try fresh.revert()
+
+        _ = try store.save(package: package, status: .blocked, approvedBy: "Security")
+        let replacing = try store.saveBeforeDependentWrite(package: package, status: .approved, approvedBy: "user")
+        try lockingDirectory(replacing.revert)
+        #expect(store.record(for: package)?.status == .approved)
     }
 }
 

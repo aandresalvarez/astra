@@ -69,12 +69,21 @@ enum PluginConnectorFieldTrust {
 extension PluginConnectorFieldTrust: ConnectorSettingStorageResolving {
     /// The settings an account's creator stores as credentials, from its
     /// installed definition: the stamped component, else the one that
-    /// `replaces` it. Nil when the creator or component can't be found.
-    static func settingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>? {
-        guard let package = CapabilityRuntimeResourceMatcher.packageDefinitions().first(where: { $0.id == originPackageID }),
-              let stamp = originComponentID else { return nil }
-        let spec = package.connectors.first { CapabilityResourceOrigin.componentID(for: $0) == stamp }
-            ?? package.connectors.first { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }
-        return spec.map { settingsStoredAsCredentials(of: $0, in: package) }
+    /// `replaces` it. When the creator or component can't be found (its
+    /// library entry is unreadable, a Remove kept the stamp), every one of
+    /// `accountKeys` except those ASTRA's bundled definition of that plugin
+    /// ID declares plain: an older row may still hold a credential's value.
+    static func settingKeysStoredAsCredentials(
+        originPackageID: String, originComponentID: String?, accountKeys: [String]
+    ) -> Set<String> {
+        if let package = CapabilityRuntimeResourceMatcher.packageDefinitions().first(where: { $0.id == originPackageID }),
+           let stamp = originComponentID,
+           let spec = package.connectors.first(where: { CapabilityResourceOrigin.componentID(for: $0) == stamp })
+            ?? package.connectors.first(where: { CapabilityResourceOrigin.replacedComponentIDs(for: $0).contains(stamp) }) {
+            return settingsStoredAsCredentials(of: spec, in: package)
+        }
+        let bundled = bundledPlainSettingKeys[originPackageID] ?? [:]
+        let plain = originComponentID.flatMap { bundled[$0] } ?? bundled.values.reduce(into: Set()) { $0.formUnion($1) }
+        return Set(accountKeys).subtracting(plain)
     }
 }

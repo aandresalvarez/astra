@@ -158,8 +158,10 @@ struct PluginConnectorFieldTrustTests {
 
     /// Stands in for the installed definitions an account's creator is found in.
     enum StubCreator: ConnectorSettingStorageResolving {
-        static func settingKeysStoredAsCredentials(originPackageID: String, originComponentID: String?) -> Set<String>? {
-            originPackageID == "imported.tracker" ? ["TRACKER_PROJECT"] : nil
+        static func settingKeysStoredAsCredentials(
+            originPackageID: String, originComponentID: String?, accountKeys: [String]
+        ) -> Set<String> {
+            originPackageID == "imported.tracker" ? ["TRACKER_PROJECT"] : []
         }
     }
 
@@ -173,14 +175,33 @@ struct PluginConnectorFieldTrustTests {
         )
         #expect(withheld.keys == ["TRACKER_BASE_URL"])
         #expect(withheld.values == ["https://tracker.example.com"])
-        // A row no plugin created, or whose creator can't be found, is unchanged.
+        // A row no plugin created is unchanged.
         let own = ConnectorSettingStorageSeam.exportableConfig(
             keys: keys, values: values, originPackageID: nil, originComponentID: nil, resolver: StubCreator.self
         )
         #expect(own.keys == keys && own.values == values)
-        let unknown = ConnectorSettingStorageSeam.exportableConfig(
-            keys: keys, values: values, originPackageID: "gone", originComponentID: nil, resolver: StubCreator.self
+    }
+
+    @Test("The mirror withholds every setting of an account whose third-party creator can't be read")
+    func mirrorFailsClosedForUnreadableCreator() throws {
+        let keys = ["TRACKER_PROJECT", "TRACKER_BASE_URL"]
+        let values = ["ENG-1", "https://tracker.example.com"]
+        // Its library entry is unreadable, or a Remove kept the stamp.
+        for stamp in ["connector:tracker:tracker-api", nil] {
+            let unknown = ConnectorSettingStorageSeam.exportableConfig(
+                keys: keys, values: values, originPackageID: "gone.\(UUID().uuidString)", originComponentID: stamp,
+                resolver: PluginConnectorFieldTrust.self
+            )
+            #expect(unknown.keys.isEmpty && unknown.values.isEmpty)
+        }
+        // A bundled plugin's account still exports what ASTRA's own
+        // definition declares plain, and nothing else.
+        let jira = try #require(Self.jira().connectors.first { !$0.configHints.isEmpty })
+        let bundled = ConnectorSettingStorageSeam.exportableConfig(
+            keys: ["JIRA_PROJECTS", "JIRA_SITE"], values: ["ENG", "secret"], originPackageID: "jira-workflow",
+            originComponentID: "connector:jira:unknown-\(UUID().uuidString)", resolver: PluginConnectorFieldTrust.self
         )
-        #expect(unknown.keys == keys && unknown.values == values)
+        #expect(jira.configHints.map(\.key).contains("JIRA_PROJECTS"))
+        #expect(bundled.keys == ["JIRA_PROJECTS"] && bundled.values == ["ENG"])
     }
 }

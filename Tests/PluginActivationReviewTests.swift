@@ -200,6 +200,35 @@ struct PluginActivationReviewTests {
         #expect(!(try outbox.entries()).contains(destination.uuidString))
     }
 
+    @Test("A journaled rename destination is cleared whole, and stays journaled until that succeeds")
+    func renameDestinationNamespaceIsClearedWhole() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-rename-whole-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outbox = PluginSecretCleanupOutbox(fileURL: root.appendingPathComponent("PluginSecretCleanup.json"))
+        let destination = UUID()
+        func settle(kept: Set<String> = [], cleans: Bool, deleted: inout [String], cleaned: inout [UUID]) -> Bool {
+            PluginSecretCleanupOutbox.settleRenameDestination(
+                destination, keys: ["DECLARED"], kept: kept, modelContext: nil, outbox: outbox,
+                clean: { cleaned.append($0); return cleans }
+            ) { deleted.append($0); return true }
+        }
+        var deleted: [String] = [], cleaned: [UUID] = []
+        // The earlier cleanup may have left keys the destination doesn't
+        // declare: deleting the declared ones isn't enough to drop the intent.
+        try outbox.writeEntries([destination.uuidString])
+        #expect(!settle(cleans: false, deleted: &deleted, cleaned: &cleaned))
+        #expect(try outbox.entries() == [destination.uuidString])
+        #expect(settle(cleans: true, deleted: &deleted, cleaned: &cleaned))
+        #expect(cleaned == [destination, destination] && deleted.isEmpty)
+        #expect(try outbox.entries().isEmpty)
+        // Secrets the activation records there keep the namespace: only
+        // what isn't the person's is deleted.
+        try outbox.writeEntries([destination.uuidString])
+        #expect(settle(kept: ["KEPT"], cleans: false, deleted: &deleted, cleaned: &cleaned))
+        #expect(deleted == ["DECLARED"] && cleaned.count == 2)
+        #expect(try outbox.entries().isEmpty)
+    }
+
     @Test("An import whose new library entry can't be read back fails and puts the previous version back")
     func importFailsWhenTheInstalledCopyIsUnreadable() throws {
         let env = try Fixtures.Environment()
@@ -509,6 +538,7 @@ private enum SecretsRefusingDeletes: SkillSecretPersisting {
     static func deleteSecret(key: String, skillID: UUID) -> Bool { false }
     static func secretExists(key: String, skillID: UUID) -> Bool { false }
     static func deleteAllSecrets(skillID: UUID) {}
+    static func deleteAllSecretsReportingResult(skillID: UUID) -> Bool { false }
 }
 
 /// Skill secrets with no values whose deletes all succeed.
