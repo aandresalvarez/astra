@@ -347,7 +347,18 @@ Each is a decision R1 implements and its fixture tests.
    are kept for when it is added again. Its skill, tool and template rows
    cannot be compared with a manifest, so none is deleted: each is kept as
    an authored row with its origin stamps cleared, and the migration logs
-   it.
+   it. So that re-adding the plugin does not project a second copy, the
+   migration records each kept skill and tool row with the component it came
+   from as pending on the workspace's retired-plugin record
+   (`RetiredPluginActivation.pendingOverrides`, in the existing JSON column).
+   When the definition is back, through Add or a launch that finds the
+   library entry, `adoptPendingOverrides` makes each row the activation's
+   override of the component it names, if the definition still declares it,
+   and takes shared rows out of the shared lists, as for an edited override.
+   Every workspace with an activation of the plugin is reconciled in the same
+   save. A row that was deleted, or names a component no longer declared,
+   stays authored. Templates need nothing: Add upserts a plugin template by
+   name.
 5. **Cleanup ownership.** `ConnectorCredentialCleanup.Ownership` counts the
    namespaces accounts own, so deleting a migrated connector row in R2 never
    cleans the account's UUID namespace; R2 enqueues only the obsolete stable
@@ -825,16 +836,21 @@ a form with a field that declares none, so no value is ever classified by
 its name, and a token can never land in SwiftData. A declared destination
 is not trusted on its own either: `account.config` is plain text and goes
 into the workspace mirror, and the key is the package's choice, so a name
-heuristic alone can't keep a token out. A plain field must be of a known
-non-secret kind: its key ends in one of a fixed list (project, region,
-zone, URL, host, domain, org, site, tenant, workspace, dataset, space,
-channel, repo, team, labels, tags, board) and matches nothing the Keychain
-treats as a credential; every other field must be `secret`. *(As built, a
-connector declares its fields as `credentialHints`, which go to the
-Keychain, and `configHints`, plain settings; `CapabilityPackageValidator`
-refuses a config hint outside that list,
-`CapabilityPackageValidator.isPlainSettingKey`, "Credential stored as a
-setting". Every built-in setting fits.)*
+heuristic alone can't keep a token out. Plain storage is therefore decided by
+who wrote the definition, not by the field's name: a field stays
+`account.config` only when ASTRA's bundled definition for the same plugin ID
+declares it on the same connector component and its key matches nothing the
+Keychain treats as a credential. Every field of any other plugin (an
+imported file, a plugin source, one made in ASTRA) is stored as a `secret`,
+whatever it declares: it goes to the Keychain, the form masks it, and the
+mirror never writes it. *(As built, a connector declares its fields as
+`credentialHints`, which go to the Keychain, and `configHints`, plain
+settings; `PluginConnectorFieldTrust` owns the decision and is applied by
+account creation, Update's account sync, setup copy, the install sheet and
+the runtime copy. A plain value an older row still holds keeps reaching the
+run and moves to the Keychain the next time Add saves the account.
+`CapabilityPackageValidator` still refuses a bundled definition that names a
+setting like a credential, "Credential stored as a setting".)*
 
 A CLI extension declares the same contract with different legs:
 

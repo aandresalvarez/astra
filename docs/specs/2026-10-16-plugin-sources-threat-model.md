@@ -110,6 +110,13 @@ R5 is on `plugins2-r5`, stacked on R4. Each row above has a test in
   only after the library write does `recordProvenance` settle on the new
   digest. An exit between the two leaves whichever copy the library holds
   recognised as the source's own, so it can still be updated from there.
+  Digest matching alone is not enough when the same bytes come back by
+  another route, so a local install also forgets the record: Remove drops it
+  after the uninstall, and a file import or Create drops it for the plugin
+  it installs (`PluginSourceStore.forgetProvenance`, through
+  `CapabilityCatalogActionService.forgetSource`). A removed source plugin
+  imported again from a file is local, with no updates from the old source
+  and no conflict shown to other sources.
 - **Updates (T7).** Shown in the Sources section: "Review update" for a
   greater version, "Changed: review" for the same version with another
   digest. The import replaces only the copy installed from the same source.
