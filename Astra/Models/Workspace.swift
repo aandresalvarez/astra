@@ -35,6 +35,9 @@ public final class Workspace: Identifiable {
     /// JSON-encoded default execution environment for new runs. Nil means host.
     /// Existing threads keep their own task/run snapshot once execution starts.
     public var activeExecutionEnvironmentJSON: String?
+    /// What Remove kept of this workspace's plugin activations, as JSON
+    /// (`RetiredPluginActivation`). Owned by `WorkspaceCapabilityActivation`.
+    public var retiredPluginActivationsJSON: String?
     public var createdAt: Date
     public var updatedAt: Date
 

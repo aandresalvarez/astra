@@ -153,6 +153,50 @@ struct WorkspaceCapabilitiesTests {
         #expect(rail.readiness.messages == expected)
     }
 
+    @Test("each connector component gets its own repair action, even when two share a service")
+    @MainActor
+    func repairActionFollowsTheBoundComponent() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Two Jira Repairs", primaryPath: "/tmp/two-jira-repairs")
+        context.insert(workspace)
+        func jira(_ name: String) -> PluginConnector {
+            PluginConnector(
+                name: name, serviceType: "jira", icon: "list.clipboard", description: "Jira API", baseURL: "",
+                authMethod: "basic", credentialHints: [], configHints: [], notes: ""
+            )
+        }
+        let package = PluginPackage(
+            id: "two-jira-repairs", name: "Two Jira", icon: "list.clipboard", description: "Two Jira sites",
+            author: "Tests", category: "Tests", tags: [], version: "1.0.0", skills: [],
+            connectors: [jira("Jira Cloud"), jira("Jira Server")], localTools: [], templates: [],
+            governance: .builtInApproved(riskLevel: .medium)
+        )
+        workspace.testEnabledCapabilityIDs = [package.id]
+        // The Cloud account lacks its key; the Server component has none.
+        let account = Connector(name: "Jira Cloud", serviceType: "jira", authMethod: "basic")
+        account.credentialKeys = ["JIRA_API_TOKEN"]
+        account.workspace = workspace
+        context.insert(account)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: package.id, in: workspace))
+        WorkspaceCapabilityActivation.bind(
+            account, toComponent: CapabilityResourceOrigin.componentID(for: package.connectors[0]), of: activation
+        )
+
+        let state = CapabilityPackageState(
+            package: package,
+            workspace: workspace,
+            capabilities: WorkspaceCapabilities(workspace: workspace, packageDefinitions: [package]),
+            secretStore: MockSecretStore()
+        )
+        #expect(state.connectorsNeedingAttention.map(\.id) == [account.id])
+        // Cloud: add its key. Server: set it up, not Cloud's key.
+        #expect(state.connectorNeedingAttention(for: package.connectors[0])?.id == account.id)
+        #expect(!state.isMissing(package.connectors[0]))
+        #expect(state.connectorNeedingAttention(for: package.connectors[1]) == nil)
+        #expect(state.isMissing(package.connectors[1]))
+    }
+
     @Test("enabled pack IDs do not grant capability package resources")
     @MainActor
     func enabledPackIDsDoNotGrantCapabilityPackageResources() {

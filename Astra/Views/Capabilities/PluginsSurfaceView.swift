@@ -283,12 +283,10 @@ struct PluginsSurfaceView: View {
         let packageState = isEnabled && component.kind == .connector
             ? CapabilityPackageState(package: package, workspace: workspace, capabilities: capabilities)
             : nil
-        // Matched like the package state matches them (service type, aliases),
-        // so a renamed account still gets its action.
-        let connector = component.connector.flatMap { spec in
-            packageState?.connectorsNeedingAttention.first { CapabilityRuntimeResourceMatcher.connectorMatches(spec, connector: $0) }
-        }
-        let missing = packageState?.missingConnectors.contains { $0.name == component.name } ?? false
+        // The account bound to this very component, so a renamed account
+        // still gets its action and a second one of the service its own.
+        let connector = component.connector.flatMap { packageState?.connectorNeedingAttention(for: $0) }
+        let missing = component.connector.map { packageState?.isMissing($0) ?? false } ?? false
         let accountPending = isEnabled && component.requirement.map { requirement in
             PluginsSurfacePresentation.pendingAccounts(for: package, googleAccountConnected: googleAccountConnected)
                 .contains { $0.id == requirement.id }

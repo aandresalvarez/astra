@@ -141,6 +141,21 @@ struct CapabilityPackageState {
         linkedConnectors.filter { !attentionMessages(for: $0).isEmpty }
     }
 
+    /// The account of `required`'s own component that needs attention, for
+    /// that component's repair action. Matched by the component the account
+    /// is bound to, never by service: two components of one service each
+    /// get their own action (without an activation, any row of the kind).
+    func connectorNeedingAttention(for required: PluginConnector) -> Connector? {
+        let bound = boundAccountIDs
+        return connectorsNeedingAttention.first { Self.connector($0, serves: required, boundAccountIDs: bound) }
+    }
+
+    /// Whether `required`'s component has no account at all (`missingConnectors`).
+    func isMissing(_ required: PluginConnector) -> Bool {
+        let componentID = CapabilityResourceOrigin.componentID(for: required)
+        return missingConnectors.contains { CapabilityResourceOrigin.componentID(for: $0) == componentID }
+    }
+
     /// Connectors an added plugin requires that have no row at all (deleted
     /// since): a pending step with nothing to edit, so Add sets it up again.
     var missingConnectors: [PluginConnector] {

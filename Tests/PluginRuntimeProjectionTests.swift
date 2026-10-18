@@ -77,6 +77,43 @@ struct PluginRuntimeProjectionTests {
         #expect(accounts.skills.contains { $0 === authored })
     }
 
+    @Test("A shared row that replaced a later skill brings only this workspace's tools")
+    func secondaryOverrideSkillIsScopedToItsWorkspace() throws {
+        let context = try makeContext()
+        var jira = try builtIn("jira-workflow")
+        jira.skills.append(PluginSkill(
+            name: "Jira Triage", icon: "ticket", description: "", allowedTools: ["Read"],
+            disallowedTools: [], customTools: [], behaviorInstructions: "", environmentKeys: [], environmentValues: []
+        ))
+        let a = Workspace(name: "A", primaryPath: "/tmp/projection-second-a")
+        let b = Workspace(name: "B", primaryPath: "/tmp/projection-second-b")
+        context.insert(a)
+        context.insert(b)
+        let shared = Skill(name: "My Triage", allowedTools: ["Read"])
+        shared.isGlobal = true
+        context.insert(shared)
+        // A attached its own command to the shared replacement.
+        let aTool = LocalTool(name: "a-only", toolDescription: "", icon: "terminal", toolType: "cli", command: "a-only", arguments: "")
+        aTool.workspace = a
+        aTool.skill = shared
+        context.insert(aTool)
+        let component = CapabilityResourceOrigin.componentID(for: jira.skills[1])
+        for workspace in [a, b] {
+            WorkspaceCapabilityActivation.mutate(workspace) { $0.enableCapability(jira.id) }
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: jira.id, in: workspace))
+            WorkspaceCapabilityActivation.setOverridden(true, componentID: component, rowID: shared.id, on: activation)
+        }
+        try context.save()
+
+        let inB = PluginRuntimeProjection.project(workspace: b, packages: [jira], connectorMode: .runtimeCopies)
+        let replacement = try #require(inB.skills.first { $0.id == shared.id })
+        #expect(replacement.modelContext == nil)
+        #expect(!inB.skills.flatMap(\.localTools).contains { $0.id == aTool.id })
+        #expect(!inB.tools.contains { $0.id == aTool.id })
+        let inA = PluginRuntimeProjection.project(workspace: a, packages: [jira], connectorMode: .runtimeCopies)
+        #expect(inA.tools.contains { $0.id == aTool.id && $0.skill?.id == shared.id })
+    }
+
     @Test("Deleting the row that replaced a component gives the component back to the plugin")
     func deletedOverrideRowRestoresComponent() throws {
         let context = try makeContext()

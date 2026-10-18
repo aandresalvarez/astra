@@ -417,6 +417,24 @@ struct PluginActivationMigrationTests {
         #expect(!PluginActivationMigration.needsMigration(modelContext: context, packages: packages))
     }
 
+    @Test("An account whose plugin is missing from the library stays the person's, in scope")
+    func missingLibraryEntryKeepsAccountsAuthored() throws {
+        let fixture = try Fixture()
+        let context = fixture.context
+        let packages = fixture.packages.filter { $0.id != "gcloud-workflow" }
+        try PluginActivationMigration.migrate(modelContext: context, packages: packages)
+        let a = try fixture.workspace(fixture.aID)
+        // Nothing could project a bound account without the definition.
+        let gcloud = try #require(WorkspaceCapabilityActivation.activation(for: "gcloud-workflow", in: a))
+        #expect(gcloud.bindings.isEmpty)
+        let connectors = try context.fetch(FetchDescriptor<Connector>())
+        let shared = try #require(connectors.first { $0.id == fixture.sharedGCloudID })
+        #expect(shared.originPackageID == nil)
+        // Still on where it was turned on, as the person's own account.
+        #expect(WorkspaceCapabilityActivation.state(of: a).globalConnectorIDs.contains(fixture.sharedGCloudID.uuidString))
+        #expect(!WorkspaceCapabilities(workspace: a).boundAccountIDs.contains(fixture.sharedGCloudID))
+    }
+
     @Test("A skill's secret setting moves to the projected skill's Keychain namespace")
     func secretSettingMovesToProjectedNamespace() throws {
         guard AstraSecureKeychainTestSupport.isAvailable else { return }
@@ -1108,6 +1126,49 @@ struct PluginActivationMigrationTests {
         // The store was never touched.
         #expect(try context.fetch(FetchDescriptor<Connector>()).first { $0.id == fixture.jiraAccount1ID }?.baseURL
             == "https://edited.atlassian.net")
+    }
+
+    @Test("A queued request runs with its override rows as submitted, not as edited or deleted while it waited")
+    func queuedRequestKeepsSubmittedOverrides() throws {
+        let fixture = try Fixture(editedToolDescription: "My own words", workspaceScopedRows: true)
+        let context = fixture.context
+        try PluginActivationMigration.migrate(modelContext: context, packages: fixture.packages)
+        let a = try fixture.workspace(fixture.aID)
+        let edited = try #require(try context.fetch(FetchDescriptor<Skill>()).first { $0.id == fixture.editedJiraSkillID })
+        edited.environmentKeys = ["JIRA_API_TOKEN", "JIRA_SITE"]
+        edited.environmentValues = ["legacy-secret", "clinical"]
+        let tool = try #require(try context.fetch(FetchDescriptor<LocalTool>()).first)
+        let submittedArguments = tool.arguments
+        let task = AgentTask(title: "A", goal: "Use Jira and Google Cloud", workspace: a)
+        context.insert(task)
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, kind: .retry)
+        context.insert(request)
+        try context.save()
+        // Never a secret value, not even one still in the row.
+        let json = try #require(request.executionPolicySnapshotJSON)
+        #expect(!json.contains("legacy-secret"))
+        #expect(json.contains("clinical"))
+
+        // While it waits, the tool override is edited and the skill one
+        // deleted.
+        tool.arguments = "--edited"
+        context.delete(edited)
+        try context.save()
+
+        let snapshot = try #require(TaskExecutionLaunchSnapshotApplicator.snapshot(request: request, from: task))
+        let detached = TaskExecutionLaunchSnapshotApplicator.detachedTask(snapshot, from: task)
+        let relaunched = TaskExecutionLaunchSnapshotApplicator.detachedTask(AgentTaskLaunchSnapshot(task: detached), from: detached)
+        let jiraComponent = CapabilityResourceOrigin.componentID(for: fixture.jira.skills[0])
+        for launch in [detached, relaunched] {
+            let resolver = TaskCapabilityResolver(task: launch)
+            let skill = resolver.allBehaviorSkills.first { $0.id == fixture.editedJiraSkillID }
+            #expect(skill?.behaviorInstructions == "My own Jira rules.")
+            #expect(skill?.environmentValues == ["", "clinical"])
+            // Not the plugin's own skill in its place.
+            #expect(!resolver.allBehaviorSkills.contains { $0.originComponentID == jiraComponent })
+            #expect(resolver.allLocalTools.first { $0.id == tool.id }?.arguments == submittedArguments)
+        }
+        #expect(tool.arguments == "--edited")
     }
 }
 

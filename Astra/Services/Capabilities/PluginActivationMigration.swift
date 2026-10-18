@@ -26,7 +26,8 @@ import ASTRAPersistence
 ///   activation is. Tools follow the same rule.
 /// - A row whose plugin is no longer in the library, that no activation
 ///   uses, or that a workspace turned on by itself without the plugin, is
-///   kept as an authored row rather than lost.
+///   kept as an authored row rather than lost; so is an account whose plugin
+///   is no longer in the library.
 /// - Deleted rows' secret namespaces go through `PluginSecretCleanupOutbox`,
 ///   recorded before the save.
 ///
@@ -188,6 +189,13 @@ enum PluginActivationMigration {
             // each component's oldest account its default.
             for connector in connectors.sorted(by: { $0.createdAt < $1.createdAt }) where isPluginOrigin(connector) {
                 let pluginID = trimmed(connector.originPackageID)
+                // Without its definition (a custom plugin's file missing or
+                // unreadable) nothing could project a bound account back into
+                // scope: it stays the person's, as authored, as skills do.
+                guard packagesByID[pluginID] != nil else {
+                    CapabilityResourceOrigin.releaseProvenance(of: connector)
+                    continue
+                }
                 let componentID = connectorComponentID(connector, package: packagesByID[pluginID])
                 let bindTo = targets(pluginID: pluginID, owner: connector.isGlobal ? nil : connector.workspace)
                     .filter { !replacedShared(connector, componentID: componentID, in: $0.0) }

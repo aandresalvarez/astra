@@ -65,11 +65,13 @@ struct WorkspaceCapabilities {
     }
 
     /// Rows any of the workspace's activations, on or off, names as a
-    /// component's override.
+    /// component's override, and those a removed one named (retired by
+    /// Remove until the plugin is added back or the row deleted).
     static func overridingRowIDs(of workspace: Workspace) -> Set<UUID> {
         Set(WorkspaceCapabilityActivation.activations(of: workspace)
             .flatMap(\.overridingRowIDs)
             .compactMap(UUID.init(uuidString:)))
+            .union(WorkspaceCapabilityActivation.retiredOverrideRowIDs(of: workspace))
     }
 
     var workspaceConnectors: [Connector] {
