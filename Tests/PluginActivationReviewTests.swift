@@ -244,6 +244,27 @@ struct PluginActivationReviewTests {
         #expect(WorkspaceCapabilityActivation.activation(for: "ops.report", in: env.workspace)?.recordedVersion == "1.0.0")
     }
 
+    @Test("An import that can't put the previous version back reports it, and keeps the copy")
+    func importReportsAFailedRestore() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let library = CapabilityLibrary(directory: env.library.directory, fileManager: RestoreRefusingFileManager(hidden: "2.0.0"))
+        let update = CapabilityPackageValidator.validate(
+            package: Fixtures.package(version: "2.0.0"), installedPackages: library.installedPackages(), checkPrerequisites: false
+        )
+        let error = #expect(throws: CapabilityPackageUpdateNotRolledBack.self) {
+            try CapabilityPackageImporter(library: library).importValidatedPackage(update, modelContext: env.context)
+        }
+        let failure = try #require(error)
+        defer { try? FileManager.default.removeItem(atPath: failure.snapshotPath) }
+        #expect(failure.packageID == "ops.report")
+        #expect(failure.updateError == CapabilityPackageInstallUnreadable(packageID: "ops.report").localizedDescription)
+        #expect(env.library.installedPackage(id: "ops.report") == nil)
+        // The previous version survives only in the kept snapshot.
+        let kept = try FileManager.default.subpathsOfDirectory(atPath: failure.snapshotPath)
+        #expect(!kept.isEmpty)
+    }
+
     @Test("Remove keeps a plugin template the person changed only in its models, hooks or default skills")
     func removeKeepsTemplatesEditedInOwnFields() throws {
         let env = try Fixtures.Environment()
@@ -482,6 +503,43 @@ struct PluginActivationReviewTests {
         #expect(account.credentialKeys == ["TRACKER_TOKEN"])
     }
 
+    /// One runtime copy serves a run scoped to either binder, so with no
+    /// creator to read it keeps only the settings both declare.
+    @Test("A shared account whose creator can't be found keeps only the settings every binder declares")
+    func sharedAccountWithUnresolvableCreatorKeepsCommonSettings() throws {
+        let env = try Fixtures.Environment()
+        try env.install(Fixtures.package(version: "1.0.0"))
+        let account = try #require(env.workspace.connectors.first { $0.originPackageID == "ops.report" })
+        account.setConfigValue("ONLY_B", value: "b-value")
+        account.setConfigValue("SHARED", value: "shared-value")
+        func binder(_ id: String, configKeys: [String]) throws -> PluginPackage {
+            var package = Fixtures.package(version: "1.0.0")
+            package.id = id
+            package.skills[0].name = "\(id) Agent"
+            package.connectors[0].configHints = configKeys.map { .init(key: $0, hint: $0, isList: false) }
+            WorkspaceCapabilityActivation.mutate(env.workspace) { $0.enableCapability(id) }
+            let activation = try #require(WorkspaceCapabilityActivation.activation(for: id, in: env.workspace))
+            WorkspaceCapabilityActivation.bind(
+                account, toComponent: CapabilityResourceOrigin.componentID(for: package.connectors[0]), of: activation
+            )
+            return package
+        }
+        let b = try binder("ops.b", configKeys: ["ONLY_B", "SHARED"])
+        let c = try binder("ops.c", configKeys: ["SHARED"])
+        WorkspaceCapabilityActivation.mutate(env.workspace) { $0.capabilityIDs.removeAll { $0 == "ops.report" } }
+
+        // Either order of the binders: the first one no longer decides.
+        for packages in [[b, c], [c, b]] {
+            let copy = try #require(PluginRuntimeProjection.project(
+                workspace: env.workspace, packages: packages, connectorMode: .runtimeCopies, definitions: packages
+            ).connectors.first { $0.id == account.id })
+            #expect(copy.configKeys.contains("SHARED"))
+            #expect(!copy.configKeys.contains("ONLY_B") && !copy.configValues.contains("b-value"))
+            #expect(copy.credentialKeys.isEmpty)
+        }
+        #expect(account.config["ONLY_B"] == "b-value")
+    }
+
     @Test("A queued launch keeps its frozen acceptance with its frozen definitions, and takes the live one without them")
     func queuedLaunchAcceptanceFollowsItsDefinitions() throws {
         let env = try Fixtures.Environment()
@@ -584,5 +642,20 @@ private final class HidingVersionFileManager: FileManager, @unchecked Sendable {
     override func contents(atPath path: String) -> Data? {
         guard let data = super.contents(atPath: path) else { return nil }
         return String(decoding: data, as: UTF8.self).contains("\"\(hidden)\"") ? nil : data
+    }
+}
+
+/// Hides a version like `HidingVersionFileManager`, and refuses to copy a
+/// snapshot back, the way a full disk would.
+private final class RestoreRefusingFileManager: FileManager, @unchecked Sendable {
+    let hidden: String
+    init(hidden: String) { self.hidden = hidden }
+    override func contents(atPath path: String) -> Data? {
+        guard let data = super.contents(atPath: path) else { return nil }
+        return String(decoding: data, as: UTF8.self).contains("\"\(hidden)\"") ? nil : data
+    }
+    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        if srcURL.path.contains("astra-capability-snapshot-") { throw CocoaError(.fileWriteOutOfSpace) }
+        try super.copyItem(at: srcURL, to: dstURL)
     }
 }

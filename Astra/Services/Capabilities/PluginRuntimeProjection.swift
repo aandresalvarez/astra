@@ -79,7 +79,10 @@ struct PluginRuntimeProjection {
         var connectors: [Connector] = []
         var unbound: [String: [String]] = [:]
         var seenConnectorIDs = Set<UUID>()
-        var copies: [UUID: Connector] = [:]
+        // A runtime copy is filtered once every plugin that binds its
+        // account is known: the copy serves any of them.
+        var copies: [UUID: (account: Connector, copy: Connector)] = [:]
+        var bindingOwners: [UUID: [(spec: PluginConnector, package: PluginPackage)]] = [:]
         var owners: [UUID: Set<UUID>] = [:]
         var defaults = Set<UUID>()
 
@@ -143,6 +146,7 @@ struct PluginRuntimeProjection {
                     return account.id
                 })
                 for account in accounts {
+                    if connectorMode == .runtimeCopies { bindingOwners[account.id, default: []].append((spec, package)) }
                     if seenConnectorIDs.insert(account.id).inserted {
                         switch connectorMode {
                         case .accounts:
@@ -152,7 +156,7 @@ struct PluginRuntimeProjection {
                             // A bound account is in scope through its binding,
                             // wherever the row itself lives.
                             copy.isGlobal = true
-                            retainDeclaredKeys(of: account, on: copy, binding: spec, in: package, creator: creator)
+                            copies[account.id] = (account, copy)
                             connectors.append(copy)
                         }
                     }
@@ -179,6 +183,9 @@ struct PluginRuntimeProjection {
                 }
                 tools.append(makeTool(spec, package: package, activation: activation, componentID: componentID, skill: primarySkill))
             }
+        }
+        for (id, entry) in copies {
+            retainDeclaredKeys(of: entry.account, on: entry.copy, bindings: bindingOwners[id] ?? [], creator: creator)
         }
         return PluginRuntimeProjection(
             skills: skills,
@@ -361,7 +368,8 @@ struct PluginRuntimeProjection {
     /// (Update keeps what the person entered) but never reaches a run. A
     /// creator whose definition can't be found (unreadable, or removed while
     /// its provenance stayed) fails closed: no credential reaches the run,
-    /// and only the settings the binding plugin declares do. An account no
+    /// and only the settings every plugin that binds it declares do, since
+    /// the one copy serves a run scoped to any of them. An account no
     /// plugin created keeps everything the person entered. A setting its
     /// creator stores as a credential (`PluginConnectorFieldTrust`) reaches
     /// the run from the Keychain; one an older row still holds as plain text
@@ -369,13 +377,19 @@ struct PluginRuntimeProjection {
     private static func retainDeclaredKeys(
         of account: Connector,
         on copy: Connector,
-        binding spec: PluginConnector,
-        in package: PluginPackage,
+        bindings: [(spec: PluginConnector, package: PluginPackage)],
         creator: (String) -> PluginPackage?
     ) {
-        guard let originID = account.originPackageID, !originID.isEmpty else { return }
-        guard let declaration = creatorDeclaration(of: account, originID: originID, binding: spec, in: package, creator: creator) else {
-            retain(credentials: [], config: declaredConfigKeys(of: spec, in: package, on: copy), on: copy)
+        guard let originID = account.originPackageID, !originID.isEmpty, let first = bindings.first else { return }
+        var found: (spec: PluginConnector, package: PluginPackage)?
+        for binding in bindings where found == nil {
+            found = creatorDeclaration(of: account, originID: originID, binding: binding.spec, in: binding.package, creator: creator)
+        }
+        guard let declaration = found else {
+            let shared = bindings.dropFirst().reduce(declaredConfigKeys(of: first.spec, in: first.package, on: copy)) {
+                $0.intersection(declaredConfigKeys(of: $1.spec, in: $1.package, on: copy))
+            }
+            retain(credentials: [], config: shared, on: copy)
             return
         }
         retain(
