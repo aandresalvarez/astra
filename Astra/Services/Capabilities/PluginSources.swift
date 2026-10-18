@@ -202,6 +202,15 @@ struct PluginSourceStore {
         try write(records)
     }
 
+    /// Drops a plugin's provenance: it was removed, or a file or Create
+    /// installed it, so no source owns the copy in the library any more.
+    /// Writes nothing when there is no record.
+    func forgetProvenance(pluginID: String) throws {
+        var records = provenance()
+        guard records.removeValue(forKey: pluginID) != nil else { return }
+        try write(records)
+    }
+
     private func write(_ records: [String: Provenance]) throws {
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         let encoder = JSONEncoder()

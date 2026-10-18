@@ -54,15 +54,33 @@ struct CapabilityCatalogActionService {
     let creationService: CapabilityPackageCreationService
     let uninstaller: CapabilityUninstaller
     let library: CapabilityLibrary
+    /// Where source-installed plugins record their source (R5).
+    let sourceStore: PluginSourceStore
 
     init(
         library: CapabilityLibrary = CapabilityLibrary(),
-        appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0)
+        appVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
+        sourceStore: PluginSourceStore = PluginSourceStore()
     ) {
         self.installer = CapabilityInstaller(library: library, appVersion: appVersion)
         self.creationService = CapabilityPackageCreationService(library: library, appVersion: appVersion)
         self.uninstaller = CapabilityUninstaller(library: library)
         self.library = library
+        self.sourceStore = sourceStore
+    }
+
+    /// The copy now in the library is no source's: removed, or installed
+    /// from a file or Create. A provenance record left behind would make a
+    /// later file copy with the same bytes look like that source's own.
+    private func forgetSource(of packageID: String) {
+        do {
+            try sourceStore.forgetProvenance(pluginID: packageID)
+        } catch {
+            AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
+                "source": "plugin_source_provenance", "package_id": packageID,
+                "result": "forget_failed", "error_type": String(describing: type(of: error))
+            ], level: .error)
+        }
     }
 
     /// Writes the package's shareable source JSON to `url`. The exported
@@ -145,6 +163,7 @@ struct CapabilityCatalogActionService {
                 policyContext: policyContext,
                 traceID: traceID
             )
+            forgetSource(of: result.package.id)
             // Creation always changes the global library. The creation service
             // owns that event; this additional scoped event represents only
             // the optional workspace enablement.
@@ -174,7 +193,9 @@ struct CapabilityCatalogActionService {
         _ package: PluginPackage,
         modelContext: ModelContext
     ) throws -> CapabilityUninstaller.RemovalResult {
-        try uninstaller.remove(package, modelContext: modelContext)
+        let result = try uninstaller.remove(package, modelContext: modelContext)
+        forgetSource(of: package.id)
+        return result
     }
 
     /// Plugins 2.0 one-step Add: install, approve and enable in this workspace.
@@ -360,6 +381,7 @@ struct CapabilityCatalogActionService {
         }
         do {
             let result = try CapabilityPackageImporter(library: library).importValidatedPackage(report, modelContext: modelContext)
+            forgetSource(of: result.package.id)
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
                 "source": "import_json",
                 "trace_id": traceID,

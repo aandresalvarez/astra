@@ -338,6 +338,36 @@ struct PluginSourcesTests {
         #expect(PluginSourceCatalog.isOwnCopy(new, of: source, provenance: fixture.store.provenance()))
     }
 
+    @Test("T5: Remove, a file import or Create forgets a plugin's source, so a later copy of the same bytes isn't the source's own")
+    func removeAndLocalInstallsForgetProvenance() throws {
+        let fixture = try Fixture()
+        let folder = fixture.root.appendingPathComponent("source", isDirectory: true)
+        let source = try #require(PluginSource.make(from: folder.path))
+        let package = try Self.package(id: "forgotten", version: "1.0.0")
+        try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(package))
+        #expect(PluginSourceCatalog.isOwnCopy(package, of: source, provenance: fixture.store.provenance()))
+        try fixture.store.forgetProvenance(pluginID: package.id)
+        #expect(!PluginSourceCatalog.isOwnCopy(package, of: source, provenance: fixture.store.provenance()))
+        // Forgetting a plugin with no record writes nothing.
+        try fixture.store.forgetProvenance(pluginID: "never-recorded")
+
+        // Through the action service: Remove, then a file import, each forget it.
+        let context = fixture.context
+        let workspace = Workspace(name: "Sources", primaryPath: fixture.root.appendingPathComponent("ws").path)
+        context.insert(workspace)
+        let library = fixture.library
+        let service = CapabilityCatalogActionService(library: library, sourceStore: fixture.store)
+        try library.install(package, sourceMetadata: .localLibrary())
+        try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(package))
+        _ = try service.remove(package, modelContext: context)
+        #expect(fixture.store.provenance()[package.id] == nil)
+
+        try fixture.store.recordProvenance(pluginID: package.id, sourceID: source.id, digest: PluginSourceCatalog.contentDigest(package))
+        let report = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        _ = try service.importPlugin(report, workspace: workspace, modelContext: context, traceID: AuditTrace.make("test"))
+        #expect(fixture.store.provenance()[package.id] == nil)
+    }
+
     @Test("T8: a folder edited after review can't be added")
     func addInstallsWhatWasReviewed() throws {
         let fixture = try Fixture()
