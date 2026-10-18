@@ -241,8 +241,8 @@ struct WorkspaceSavedExportPendingTests {
         #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
     }
 
-    @Test("Termination discards a replaced or removed store before faulting its old workspace models")
-    func removedStoreAtTermination() throws {
+    @Test("Termination discards a replaced or removed store before faulting its old workspace models", arguments: [false, true])
+    func removedStoreAtTermination(recreated: Bool) throws {
         let (root, container, original, _) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let workspaceRoot = root.appendingPathComponent("workspace")
@@ -261,10 +261,15 @@ struct WorkspaceSavedExportPendingTests {
         // that folder so a missing workspace path cannot hide this boundary.
         try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
         let replacement = try ModelContainer(for: ASTRASchema.current,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+            configurations: [recreated ? ModelConfiguration(url: root.appendingPathComponent("source.store"))
+                : ModelConfiguration(isStoredInMemoryOnly: true)])
+        if recreated {
+            replacement.mainContext.insert(Workspace(name: "Replacement owner", primaryPath: workspaceRoot.path))
+            try replacement.mainContext.save()
+        }
         #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: replacement.mainContext) == 0)
         #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceCount == 0)
-        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("source.store").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("source.store").path) == recreated)
         #expect(!FileManager.default.fileExists(atPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceRoot.path)))
         withExtendedLifetime(source) {}
     }

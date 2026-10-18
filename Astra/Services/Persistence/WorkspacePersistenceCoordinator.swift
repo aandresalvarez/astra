@@ -14,7 +14,7 @@ public enum WorkspacePersistenceCoordinator {
         // context (and its autosave timer) alive. Active reads retain their
         // container only while actually reading; termination drains live owners.
         weak var context: ModelContext?
-        weak var container: ModelContainer?
+        let source: WorkspaceSavedExportSource
         let lease: WorkspaceSavedExportLease?
         let task: Task<Void, Never>
     }
@@ -215,7 +215,7 @@ public enum WorkspacePersistenceCoordinator {
         // until its replacement has actually prepared and promoted a ticket.
         if savedExports[workspaceID]?.lease?.isSealed != true { savedExports[workspaceID]?.task.cancel() }
         savedExports[workspaceID] = PendingExport(
-            id: requestID, workspace: workspace, context: modelContext, container: container, lease: lease,
+            id: requestID, workspace: workspace, context: modelContext, source: source, lease: lease,
             task: Task { @MainActor in
                 defer { withExtendedLifetime(lease) {} }
                 guard !Task.isCancelled else { return }
@@ -228,7 +228,7 @@ public enum WorkspacePersistenceCoordinator {
                 }
                 // An old completion must never erase a newer pending request.
                 if savedExports[workspaceID]?.id == requestID,
-                   written || savedExports[workspaceID]?.context == nil || savedExports[workspaceID]?.container == nil ||
+                   written || savedExports[workspaceID]?.context == nil || source.resolve() == nil ||
                     workspace.isDeleted || workspace.modelContext == nil {
                     savedExports[workspaceID] = nil
                 }
@@ -273,7 +273,8 @@ public enum WorkspacePersistenceCoordinator {
         let requestID = UUID()
         debouncedExports[workspaceID]?.task.cancel()
         debouncedExports[workspaceID] = PendingExport(
-            id: requestID, workspace: workspace, context: modelContext, container: container, lease: nil,
+            id: requestID, workspace: workspace, context: modelContext,
+            source: WorkspaceSavedExportSource(container), lease: nil,
             task: Task { @MainActor in
                 defer { withExtendedLifetime(container) {} }
                 do { try await Task.sleep(nanoseconds: delayNanoseconds) }
@@ -328,7 +329,7 @@ public enum WorkspacePersistenceCoordinator {
     public static func flushAllPendingExports(modelContext: ModelContext) -> Int {
         var pending = savedExports
         for (id, entry) in debouncedExports {
-            if entry.context != nil, entry.container != nil { pending[id] = entry }
+            if entry.context != nil, entry.source.resolve() != nil { pending[id] = entry }
             else if pending[id] == nil { pending[id] = entry }
         }
         for entry in savedExports.values { entry.task.cancel() }
@@ -350,41 +351,35 @@ public enum WorkspacePersistenceCoordinator {
             return 0
         }
 
-        var savedContexts: [ObjectIdentifier: Bool] = [:]
-        if WorkspaceSavedExportSource.isAvailable(modelContext.container, workspaceID: "none") {
-            savedContexts[ObjectIdentifier(modelContext)] = saveWithoutAutoExport(
-                modelContext: modelContext, auditFields: ["operation": "pending_export_drain"])
-        }
+        // Validate each original owner before saving. A store recreated at the
+        // same path is a different authority, even if the old context survives.
+        var savedContexts = Set<ObjectIdentifier>()
         var exported = 0
         for (workspaceID, entry) in pending {
-            guard let context = entry.context, let container = entry.container,
-                  WorkspaceSavedExportSource.isAvailable(container, workspaceID: workspaceID.uuidString) else { continue }
+            guard let context = entry.context,
+                  let container = entry.source.resolve(workspaceID: workspaceID.uuidString) else { continue }
             defer { withExtendedLifetime(container) {} }
-            guard !entry.workspace.isDeleted, entry.workspace.modelContext != nil else { continue }
             let owner = ObjectIdentifier(context)
-            if savedContexts[owner] == nil {
-                savedContexts[owner] = saveWithoutAutoExport(modelContext: context,
+            if savedContexts.insert(owner).inserted {
+                saveWithoutAutoExport(modelContext: context,
                     auditFields: ["operation": "pending_export_drain"])
             }
-            if savedContexts[owner] == true {
-                guard let url = WorkspaceConfigManager.autoExportTarget(for: entry.workspace.primaryPath).url else { continue }
-                let result = WorkspaceConfigManager.exportToFileResult(workspace: entry.workspace,
-                    modelContext: context, url: url)
+            do {
+                // Use only stable IDs and freshly read committed rows, even
+                // after successful saves: an old context may have invalidated
+                // lazy relationship snapshots after rollback or replacement.
+                guard let prepared = try WorkspaceSavedAutoExport.prepareForTermination(
+                    container: container, workspaceID: workspaceID),
+                      entry.source.resolve(workspaceID: workspaceID.uuidString) != nil,
+                      let url = WorkspaceConfigManager.autoExportTarget(for: prepared.config.primaryPath).url else { continue }
+                let result = WorkspaceConfigManager.writeResult(prepared.config,
+                    workspaceID: workspaceID.uuidString, to: url)
                 if result.didExport { exported += 1 }
-            } else {
-                do {
-                    guard let prepared = try WorkspaceSavedAutoExport.prepareForTermination(
-                        container: container, workspaceID: entry.workspace.id) else { continue }
-                    guard let url = WorkspaceConfigManager.autoExportTarget(for: prepared.config.primaryPath).url else { continue }
-                    let result = WorkspaceConfigManager.writeResult(prepared.config,
-                        workspaceID: entry.workspace.id.uuidString, to: url)
-                    if result.didExport { exported += 1 }
-                } catch {
-                    AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
-                        "result": "auto_export_failed", "operation": "pending_export_drain_saved_rows",
-                        "workspace_id": entry.workspace.id.uuidString, "error_type": String(describing: type(of: error))
-                    ], level: .error)
-                }
+            } catch {
+                AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                    "result": "auto_export_failed", "operation": "pending_export_drain_saved_rows",
+                    "workspace_id": workspaceID.uuidString, "error_type": String(describing: type(of: error))
+                ], level: .error)
             }
         }
         return exported

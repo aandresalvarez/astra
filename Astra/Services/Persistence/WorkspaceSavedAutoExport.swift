@@ -8,25 +8,46 @@ import ASTRAModels
 /// closed owner's main context and autosave timer. Swift weak access is atomic;
 /// the resolved ModelContainer itself is Sendable.
 final class WorkspaceSavedExportSource: @unchecked Sendable {
-    private weak var container: ModelContainer?
-    init(_ container: ModelContainer) { self.container = container }
-    func resolve() -> ModelContainer? { container }
-
-    /// A deferred owner can remain alive briefly after its store is replaced.
-    /// Check the authority before touching any of its lazy managed models.
-    static func isAvailable(_ container: ModelContainer, workspaceID: String) -> Bool {
-        for configuration in container.configurations where !configuration.isStoredInMemoryOnly {
-            do { _ = try FileManager.default.attributesOfItem(atPath: configuration.url.path) }
-            catch {
-                AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
-                    "result": "auto_export_skipped", "reason": "backing_store_unavailable",
-                    "workspace_id": workspaceID, "error_type": String(describing: type(of: error))
-                ], level: .debug)
-                return false
-            }
-        }
-        return true
+    private struct FileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let created: Date?
     }
+    private weak var container: ModelContainer?
+    // A path may later name a different store. Keep only immutable file
+    // identities, without retaining the original context or container.
+    private let files: [URL: FileIdentity]?
+
+    init(_ container: ModelContainer) {
+        self.container = container
+        files = try? Self.identities(container)
+    }
+
+    func resolve(workspaceID: String = "none") -> ModelContainer? {
+        guard let container else { return nil }
+        guard let files, let current = try? Self.identities(container), files == current else {
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "auto_export_skipped", "reason": "backing_store_removed_or_replaced",
+                "workspace_id": workspaceID
+            ], level: .debug)
+            return nil
+        }
+        return container
+    }
+
+    private static func identities(_ container: ModelContainer) throws -> [URL: FileIdentity] {
+        var result: [URL: FileIdentity] = [:]
+        for configuration in container.configurations where !configuration.isStoredInMemoryOnly {
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: configuration.url.resolvingSymlinksInPath().path)
+            guard let device = attributes[.systemNumber] as? NSNumber,
+                  let inode = attributes[.systemFileNumber] as? NSNumber else { throw CocoaError(.fileReadUnknown) }
+            result[configuration.url] = FileIdentity(device: device.uint64Value, inode: inode.uint64Value,
+                created: attributes[.creationDate] as? Date)
+        }
+        return result
+    }
+
 }
 
 /// A serialized, read-only projection of an immutable saved-store snapshot.
@@ -121,7 +142,9 @@ actor WorkspaceSavedAutoExport {
                 // actor. Only sealing yields to the source context's actor.
                 let captured = try WorkspaceSavedExportSnapshot.capture(container: container,
                     workspaceID: workspaceID.uuidString)
-                guard await MainActor.run(body: { lease.seal() }) else { return nil }
+                guard await MainActor.run(body: {
+                    source.resolve(workspaceID: workspaceID.uuidString) != nil && lease.seal()
+                }) else { return nil }
                 if let beforeProjection = self.beforeProjection { await beforeProjection() }
                 guard !Task.isCancelled, lease.isCurrent else { return nil }
                 return try captured.read { try Self.prepareRows(container: $0, workspaceID: workspaceID) }
@@ -133,10 +156,8 @@ actor WorkspaceSavedAutoExport {
                                   read: ((ModelContainer) async throws -> Prepared?)? = nil) async -> Prepared? {
         // Coalesce queued requests before paying to fault the workspace graph.
         guard !Task.isCancelled, isCurrent(),
-              let container = source.resolve() else { return nil }
-        // A caller may have closed and removed a temporary/replaced store
-        // before this queued read starts. Do not fault models from that store.
-        guard WorkspaceSavedExportSource.isAvailable(container, workspaceID: workspaceID.uuidString) else { return nil }
+              let container = source.resolve(workspaceID: workspaceID.uuidString) else { return nil }
+        // Source resolution also rejects a removed/replaced backing file.
         do {
             let prepared: Prepared?
             if let read { prepared = try await read(container) }
