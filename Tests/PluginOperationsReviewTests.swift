@@ -269,5 +269,17 @@ struct PluginOperationsReviewTests {
         package.connectors[index].configHints[package.connectors[index].configHints.count - 1] = hint
         let named = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
         #expect(!named.blockers.contains { $0.title == "Credential stored as a setting" })
+        // A key the package chose is not trusted to be harmless: an unknown
+        // shape is refused even when nothing in it says "token".
+        hint.key = "VALUE"
+        package.connectors[index].configHints[package.connectors[index].configHints.count - 1] = hint
+        let unknown = CapabilityPackageValidator.validate(package: package, installedPackages: [], checkPrerequisites: false)
+        #expect(unknown.blockers.contains { $0.title == "Credential stored as a setting" })
+        // Every built-in's settings are of a known shape.
+        for builtIn in PluginCatalog.builtInPackages {
+            for hint in builtIn.connectors.flatMap(\.configHints) {
+                #expect(CapabilityPackageValidator.isPlainSettingKey(hint.key), "\(builtIn.id) \(hint.key)")
+            }
+        }
     }
 }
